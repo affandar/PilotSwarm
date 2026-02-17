@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 /**
- * TUI chat client for durable-copilot-sdk.
+ * Unified TUI chat client for durable-copilot-sdk.
  *
- * Two-pane layout:
- *   Left  — chat with markdown rendering (syntax highlighting, bullets, etc.)
- *   Right — live duroxide runtime logs
+ * Modes (set via CLI arg or MODE env var):
+ *   local   — Local runtime + local/remote DB (default)
+ *   scaled  — Client-only, AKS workers execute turns
  *
- * Usage: node --env-file=.env examples/tui.js
+ * Usage:
+ *   node --env-file=.env examples/tui.js              # local mode
+ *   node --env-file=.env.remote examples/tui.js        # local runtime, remote DB
+ *   node --env-file=.env.remote examples/tui.js scaled  # client-only, AKS workers
  */
 
 import { DurableCopilotClient } from "../dist/index.js";
@@ -15,16 +18,13 @@ import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 
 const require = createRequire(import.meta.url);
 const blessed = require("blessed");
-const { initTracing } = require("duroxide");
 
-// ─── Redirect Rust tracing to a log file ─────────────────────────
-// Call initTracing() BEFORE runtime.start() — first-writer-wins via try_init().
-const tracingLogPath = `/tmp/duroxide-tui-${process.pid}.log`;
-fs.writeFileSync(tracingLogPath, "");
-initTracing({ logFile: tracingLogPath, logLevel: "info", logFormat: "compact" });
+const MODE = process.argv[2] || process.env.MODE || "local";
+const isScaled = MODE === "scaled";
 
 // ─── Markdown renderer ──────────────────────────────────────────
 
@@ -45,15 +45,30 @@ function renderMarkdown(md) {
     }
 }
 
+function ts() {
+    return new Date().toLocaleTimeString("en-GB", { hour12: false });
+}
+
+// ─── Tracing (local mode only) ───────────────────────────────────
+
+let tracingLogPath = null;
+if (!isScaled) {
+    const { initTracing } = require("duroxide");
+    tracingLogPath = `/tmp/duroxide-tui-${process.pid}.log`;
+    fs.writeFileSync(tracingLogPath, "");
+    initTracing({ logFile: tracingLogPath, logLevel: "info", logFormat: "compact" });
+}
+
 // ─── Create blessed screen ───────────────────────────────────────
+
+const modeLabel = isScaled ? "Scaled — AKS Workers" : "Local Runtime";
 
 const screen = blessed.screen({
     smartCSR: true,
-    title: "Durable Copilot Chat",
+    title: `Durable Copilot Chat (${modeLabel})`,
     fullUnicode: true,
 });
 
-// Left pane: chat
 const chatBox = blessed.log({
     parent: screen,
     label: " {bold}💬 Chat{/bold} ",
@@ -63,45 +78,34 @@ const chatBox = blessed.log({
     width: "65%",
     height: "100%-3",
     border: { type: "line" },
-    style: {
-        border: { fg: "cyan" },
-        label: { fg: "cyan" },
-    },
+    style: { border: { fg: "cyan" }, label: { fg: "cyan" } },
     scrollable: true,
     alwaysScroll: true,
-    scrollbar: {
-        style: { bg: "cyan" },
-    },
+    scrollbar: { style: { bg: "cyan" } },
     mouse: true,
     keys: true,
     vi: true,
 });
 
-// Right pane: logs
+const logLabel = isScaled ? "📋 Status" : "📋 Runtime Logs";
 const logBox = blessed.log({
     parent: screen,
-    label: " {bold}📋 Runtime Logs{/bold} ",
+    label: ` {bold}${logLabel}{/bold} `,
     tags: true,
     left: "65%",
     top: 0,
     width: "35%",
     height: "100%-3",
     border: { type: "line" },
-    style: {
-        border: { fg: "yellow" },
-        label: { fg: "yellow" },
-    },
+    style: { border: { fg: "yellow" }, label: { fg: "yellow" } },
     scrollable: true,
     alwaysScroll: true,
-    scrollbar: {
-        style: { bg: "yellow" },
-    },
+    scrollbar: { style: { bg: "yellow" } },
     mouse: true,
     keys: true,
     vi: true,
 });
 
-// Input bar at bottom
 const inputBar = blessed.textbox({
     parent: screen,
     label: " {bold}you:{/bold} ",
@@ -121,7 +125,6 @@ const inputBar = blessed.textbox({
     mouse: true,
 });
 
-// Status line (overlays bottom of chat area)
 const statusBar = blessed.box({
     parent: screen,
     bottom: 2,
@@ -157,9 +160,8 @@ function setStatus(text) {
 }
 
 function appendLog(text) {
-    // Color log levels for blessed tags
     const formatted = text
-        .replace(/\x1b\[(\d+;)*\d*m/g, "")  // strip ANSI
+        .replace(/\x1b\[(\d+;)*\d*m/g, "")
         .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
         .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
         .replace(/\bINFO\b/g, "{green-fg}INFO{/green-fg}")
@@ -169,59 +171,114 @@ function appendLog(text) {
     screen.render();
 }
 
-// ─── JS-side log capture ─────────────────────────────────────────
-
-// Intercept Node-level stderr (catches eprintln! from Rust, e.g. "logging already initialized")
-const _origStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = (chunk, encoding, callback) => {
-    const text = typeof chunk === "string" ? chunk : chunk.toString();
-    for (const line of text.split("\n")) {
-        if (line.trim()) appendLog(line);
+function showCopilotMessage(raw) {
+    const rendered = renderMarkdown(raw);
+    const prefix = `{gray-fg}[${ts()}]{/gray-fg} {cyan-fg}{bold}🤖 Copilot:{/bold}{/cyan-fg}`;
+    if (rendered.includes("\n")) {
+        appendChatRaw(prefix);
+        appendChat(rendered);
+    } else {
+        appendChatRaw(`${prefix} ${rendered}`);
     }
-    if (typeof callback === "function") callback();
-    return true;
-};
+}
 
-// Intercept console.error / console.log so JS-side messages show in log pane
-console.error = (...args) => appendLog(args.join(" "));
-console.log = (...args) => appendLog(args.join(" "));
+// ─── Log streaming (mode-specific) ──────────────────────────────
 
-// Tail the tracing log file periodically (captures Rust tracing output)
-let lastLogPos = 0;
-const logTailer = setInterval(() => {
-    try {
-        const stat = fs.statSync(tracingLogPath);
-        if (stat.size > lastLogPos) {
-            const buf = Buffer.alloc(stat.size - lastLogPos);
-            const fd = fs.openSync(tracingLogPath, "r");
-            fs.readSync(fd, buf, 0, buf.length, lastLogPos);
-            fs.closeSync(fd);
-            lastLogPos = stat.size;
-            const text = buf.toString("utf8");
-            for (const line of text.split("\n")) {
-                if (line.trim()) appendLog(line);
-            }
+let logTailer = null;
+let kubectlProc = null;
+
+if (!isScaled && tracingLogPath) {
+    // Local mode: tail the tracing log file
+    const _origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk, encoding, callback) => {
+        const text = typeof chunk === "string" ? chunk : chunk.toString();
+        for (const line of text.split("\n")) {
+            if (line.trim()) appendLog(line);
         }
-    } catch {
-        // ignore read errors
-    }
-}, 250);
+        if (typeof callback === "function") callback();
+        return true;
+    };
+    console.error = (...args) => appendLog(args.join(" "));
+    console.log = (...args) => appendLog(args.join(" "));
 
-// ─── Start the durable client ────────────────────────────────────
+    let lastLogPos = 0;
+    logTailer = setInterval(() => {
+        try {
+            const stat = fs.statSync(tracingLogPath);
+            if (stat.size > lastLogPos) {
+                const buf = Buffer.alloc(stat.size - lastLogPos);
+                const fd = fs.openSync(tracingLogPath, "r");
+                fs.readSync(fd, buf, 0, buf.length, lastLogPos);
+                fs.closeSync(fd);
+                lastLogPos = stat.size;
+                for (const line of buf.toString("utf8").split("\n")) {
+                    if (line.trim()) appendLog(line);
+                }
+            }
+        } catch {}
+    }, 250);
+}
+
+// ─── Start client ────────────────────────────────────────────────
 
 const store = process.env.DATABASE_URL || "sqlite::memory:";
-appendLog(`Store: ${store.startsWith("postgres") ? "PostgreSQL" : store}`);
 
 const client = new DurableCopilotClient({
     store,
-    githubToken: process.env.GITHUB_TOKEN,
+    githubToken: isScaled ? undefined : process.env.GITHUB_TOKEN,
     logLevel: "info",
 });
 
-setStatus("Starting runtime...");
-await client.start();
+if (isScaled) {
+    appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (AKS Workers){/magenta-fg}");
+    appendLog("{bold}Store:{/bold} {green-fg}Remote PostgreSQL{/green-fg}");
+    appendLog("{bold}Runtime:{/bold} {yellow-fg}AKS pods (remote){/yellow-fg}");
+    appendLog("");
+    setStatus("Connecting to remote DB...");
+    await client.startClientOnly();
+    appendLog("Client connected ✓ {gray-fg}(no local runtime){/gray-fg}");
+
+    // Stream AKS worker logs
+    try {
+        kubectlProc = spawn("kubectl", [
+            "logs", "-f", "-n", "copilot-sdk",
+            "-l", "app.kubernetes.io/component=worker",
+            "--prefix", "--tail=20",
+        ], { stdio: ["ignore", "pipe", "pipe"] });
+
+        let logBuf = "";
+        kubectlProc.stdout.on("data", (chunk) => {
+            logBuf += chunk.toString();
+            const lines = logBuf.split("\n");
+            logBuf = lines.pop();
+            for (const line of lines) {
+                if (line.trim()) appendLog(line);
+            }
+        });
+        kubectlProc.stderr.on("data", (chunk) => {
+            const text = chunk.toString().trim();
+            if (text) appendLog(`{gray-fg}${text}{/gray-fg}`);
+        });
+        kubectlProc.on("error", () => {
+            appendLog("{yellow-fg}kubectl not available — logs not streamed{/yellow-fg}");
+        });
+        appendLog("{green-fg}Streaming AKS worker logs ↓{/green-fg}");
+        appendLog("");
+    } catch {
+        appendLog("{yellow-fg}Could not start log stream{/yellow-fg}");
+    }
+} else {
+    appendLog("{bold}Mode:{/bold} {green-fg}Local Runtime{/green-fg}");
+    appendLog(`{bold}Store:{/bold} ${store.startsWith("postgres") ? "PostgreSQL" : store}`);
+    appendLog("");
+    setStatus("Starting runtime...");
+    await client.start();
+    appendLog("Runtime started ✓");
+}
+
 setStatus("Ready — type a message");
-appendLog("Runtime started ✓");
+
+// ─── Create session ──────────────────────────────────────────────
 
 const session = await client.createSession({
     systemMessage: "You are a helpful assistant. Be concise.",
@@ -238,7 +295,68 @@ const session = await client.createSession({
     },
 });
 
-appendLog("Session created ✓");
+const sessionId = session.sessionId;
+appendLog(`Session created ✓ {gray-fg}(${sessionId.slice(0, 8)}…){/gray-fg}`);
+
+// ─── Send message (mode-specific) ────────────────────────────────
+
+async function sendMessage(trimmed) {
+    if (isScaled) {
+        // Scaled: enqueue + poll
+        setStatus("Thinking... (waiting for AKS worker)");
+        appendLog(`→ Enqueued turn: "${trimmed.slice(0, 40)}…"`);
+
+        await session.send(trimmed);
+        const orchId = session.lastOrchestrationId;
+        const dc = client._getDuroxideClient();
+        let lastSeenExecution = 0;
+
+        while (true) {
+            await new Promise((r) => setTimeout(r, 500));
+            const status = await dc.getStatus(orchId);
+
+            if (status.status === "Completed") {
+                showCopilotMessage(status.output || "(no response)");
+                appendLog("← Response received");
+                setStatus("Ready — type a message");
+                return;
+            } else if (status.status === "Failed") {
+                throw new Error(status.error ?? "Orchestration failed");
+            }
+
+            // Check for intermediate content (wait cycles)
+            try {
+                const execs = await dc.listExecutions(orchId);
+                if (execs.length > lastSeenExecution) {
+                    const execId = execs[execs.length - 1];
+                    const history = await dc.readExecutionHistory(orchId, execId);
+                    for (const event of history) {
+                        if (event.kind === "ActivityCompleted" && event.data) {
+                            try {
+                                const data = JSON.parse(event.data);
+                                const result = typeof data.result === "string"
+                                    ? JSON.parse(data.result) : data;
+                                if (result.type === "wait" && result.content) {
+                                    showCopilotMessage(result.content);
+                                    setStatus(`⏳ Waiting ${result.seconds}s (${result.reason})`);
+                                }
+                            } catch {}
+                            lastSeenExecution = execs.length;
+                        }
+                    }
+                }
+            } catch (pollErr) {
+                appendLog(`{red-fg}Poll error: ${pollErr.message}{/red-fg}`);
+            }
+        }
+    } else {
+        // Local: simple sendAndWait
+        setStatus("Thinking...");
+        const response = await session.sendAndWait(trimmed, 120_000);
+        showCopilotMessage(response || "(no response)");
+        setStatus("Ready — type a message");
+    }
+}
 
 // ─── Input handling ──────────────────────────────────────────────
 
@@ -252,11 +370,10 @@ async function handleInput(text) {
     }
 
     if (trimmed.toLowerCase() === "exit" || trimmed.toLowerCase() === "quit") {
-        cleanup();
+        await cleanup();
         process.exit(0);
     }
 
-    // If there's a pending user input question, resolve it
     if (pendingUserInput) {
         const { resolve } = pendingUserInput;
         pendingUserInput = null;
@@ -269,22 +386,15 @@ async function handleInput(text) {
         return;
     }
 
-    // Regular chat message
-    appendChatRaw(`{white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
+    appendChatRaw(`{gray-fg}[${ts()}]{/gray-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
     inputBar.clearValue();
-    setStatus("Thinking...");
     screen.render();
 
     try {
-        const response = await session.sendAndWait(trimmed, 120_000);
-        const raw = response || "(no response)";
-        appendChatRaw("{cyan-fg}{bold}🤖 Copilot:{/bold}{/cyan-fg}");
-        // Render markdown and display line-by-line
-        const rendered = renderMarkdown(raw);
-        appendChat(rendered);
-        setStatus("Ready — type a message");
+        await sendMessage(trimmed);
     } catch (err) {
         appendChatRaw(`{red-fg}❌ ${err.message}{/red-fg}`);
+        appendLog(`{red-fg}Error: ${err.message}{/red-fg}`);
         setStatus("Error — try again");
     }
 
@@ -301,35 +411,39 @@ inputBar.key(["escape"], () => {
 // ─── Cleanup ─────────────────────────────────────────────────────
 
 async function cleanup() {
-    clearInterval(logTailer);
-    try { fs.unlinkSync(tracingLogPath); } catch {}
+    if (logTailer) clearInterval(logTailer);
+    if (tracingLogPath) { try { fs.unlinkSync(tracingLogPath); } catch {} }
+    if (kubectlProc) { try { kubectlProc.kill(); } catch {} }
+    if (isScaled && session.lastOrchestrationId) {
+        try {
+            const dc = client._getDuroxideClient();
+            await dc.cancelInstance(session.lastOrchestrationId);
+            appendLog("Cancelled active orchestration");
+        } catch {}
+    }
     setStatus("Shutting down...");
     await client.stop();
 }
 
-// Global keys
 screen.key(["C-c"], async () => {
     await cleanup();
     process.exit(0);
 });
 screen.key(["tab"], () => {
-    if (screen.focused === chatBox) {
-        logBox.focus();
-    } else if (screen.focused === logBox) {
-        inputBar.focus();
-    } else {
-        chatBox.focus();
-    }
+    if (screen.focused === chatBox) logBox.focus();
+    else if (screen.focused === logBox) inputBar.focus();
+    else chatBox.focus();
     screen.render();
 });
 
-// Welcome message
+// ─── Welcome ─────────────────────────────────────────────────────
+
 appendChatRaw(
     "{cyan-fg}{bold}🤖 Copilot:{/bold}{/cyan-fg} " +
     "Welcome to Durable Copilot Chat!"
 );
 appendChatRaw(
-    "{gray-fg}Ctrl+C to quit · Tab to switch panes · Scroll with mouse/arrows{/gray-fg}"
+    `{gray-fg}Mode: ${modeLabel} · Ctrl+C to quit · Tab to switch panes{/gray-fg}`
 );
 appendChatRaw("");
 
