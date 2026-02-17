@@ -1,0 +1,553 @@
+import type {
+    DurableCopilotClientOptions,
+    DurableSessionConfig,
+    DurableSessionStatus,
+    DurableSessionInfo,
+    TurnInput,
+    UserInputHandler,
+} from "./types.js";
+import { SessionManager } from "./session-manager.js";
+import { createRunAgentTurnActivity } from "./activity.js";
+import { durableTurnOrchestration } from "./orchestration.js";
+
+// duroxide is CommonJS — use createRequire for ESM compatibility
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
+
+const ORCHESTRATION_NAME = "durable-turn";
+const ACTIVITY_NAME = "runAgentTurn";
+
+/**
+ * A durable Copilot client.
+ *
+ * Mirrors the Copilot SDK's CopilotClient API — createSession, resumeSession,
+ * listSessions, deleteSession — but adds durability via duroxide. Sessions
+ * survive process restarts, support durable timers, and can run across
+ * multiple nodes.
+ *
+ * @example
+ * ```typescript
+ * import { DurableCopilotClient, defineTool } from "durable-copilot-sdk";
+ *
+ * const client = new DurableCopilotClient({
+ *     store: "sqlite::memory:",
+ *     githubToken: process.env.GITHUB_TOKEN,
+ * });
+ *
+ * await client.start();
+ *
+ * const session = await client.createSession({
+ *     tools: [getWeather],
+ *     systemMessage: "You are a helpful assistant.",
+ * });
+ *
+ * const response = await session.sendAndWait("Check the weather in NYC");
+ * console.log(response);
+ *
+ * await client.stop();
+ * ```
+ */
+export class DurableCopilotClient {
+    private config: Required<
+        Pick<DurableCopilotClientOptions, "waitThreshold" | "maxIterations">
+    > &
+        DurableCopilotClientOptions;
+
+    private sessionManager: SessionManager | null = null;
+    private runtime: any = null;
+    private duroxideClient: any = null;
+    private sessionConfigs = new Map<string, DurableSessionConfig>();
+    private started = false;
+
+    constructor(options: DurableCopilotClientOptions) {
+        this.config = {
+            ...options,
+            waitThreshold: options.waitThreshold ?? 30,
+            maxIterations: options.maxIterations ?? 50,
+        };
+    }
+
+    // ─── Session Management (mirrors CopilotClient) ─────────────
+
+    /**
+     * Create a new durable session.
+     * Mirrors `CopilotClient.createSession()`.
+     */
+    async createSession(
+        config?: DurableSessionConfig
+    ): Promise<DurableSession> {
+        const sessionId = config?.sessionId ?? crypto.randomUUID();
+
+        // Store config so the activity can access it
+        if (config) {
+            this.sessionConfigs.set(sessionId, config);
+        }
+
+        return new DurableSession(sessionId, this);
+    }
+
+    /**
+     * Resume an existing durable session.
+     * Mirrors `CopilotClient.resumeSession()`.
+     */
+    async resumeSession(
+        sessionId: string,
+        config?: DurableSessionConfig
+    ): Promise<DurableSession> {
+        if (config) {
+            this.sessionConfigs.set(sessionId, config);
+        }
+        return new DurableSession(sessionId, this);
+    }
+
+    /**
+     * List all durable sessions.
+     * Mirrors `CopilotClient.listSessions()`.
+     */
+    async listSessions(): Promise<DurableSessionInfo[]> {
+        // TODO: query duroxide orchestrations
+        return [];
+    }
+
+    /**
+     * Delete a durable session and its state.
+     * Mirrors `CopilotClient.deleteSession()`.
+     */
+    async deleteSession(sessionId: string): Promise<void> {
+        this.sessionConfigs.delete(sessionId);
+        if (this.sessionManager) {
+            await this.sessionManager.destroySession(sessionId);
+        }
+    }
+
+    // ─── Server Lifecycle ────────────────────────────────────────
+
+    /**
+     * Start the duroxide worker runtime.
+     * Registers orchestrations and activities, then begins polling for work.
+     */
+    async start(): Promise<void> {
+        if (this.started) return;
+
+        if (!this.config.githubToken) {
+            throw new Error(
+                "DurableCopilotClient.start() requires githubToken."
+            );
+        }
+
+        // 1. Create duroxide provider
+        const provider = await this._createProvider();
+
+        // 2. Create session manager
+        this.sessionManager = new SessionManager(this.config.githubToken);
+
+        // 3. Create runtime (wrapper auto-detects SQLite vs Postgres)
+        this.runtime = new Runtime(provider, {
+            dispatcherPollIntervalMs: 10,
+            logLevel: this.config.logLevel ?? "error",
+        });
+
+        // 4. Create client for starting orchestrations
+        this.duroxideClient = new Client(provider);
+
+        // 5. Register activity (closes over sessionManager and sessionConfigs)
+        const activityFn = createRunAgentTurnActivity(
+            this.sessionManager,
+            this.sessionConfigs
+        );
+        this.runtime.registerActivity(ACTIVITY_NAME, activityFn);
+
+        // 6. Register orchestration
+        this.runtime.registerOrchestration(
+            ORCHESTRATION_NAME,
+            durableTurnOrchestration
+        );
+
+        // 7. Start runtime in background (non-blocking)
+        const runtimePromise = this.runtime.start();
+        this.started = true;
+
+        // Don't await — runtime.start() blocks until shutdown
+        runtimePromise.catch((err: any) => {
+            console.error("[DurableCopilotClient] Runtime error:", err);
+        });
+
+        // Give the runtime a moment to initialize
+        await new Promise((r) => setTimeout(r, 200));
+    }
+
+    /**
+     * Start in client-only mode (no runtime worker).
+     *
+     * Creates a duroxide Client for enqueuing orchestrations and reading
+     * results, but does NOT start a Runtime. Use this when runtime workers
+     * run elsewhere (e.g., AKS pods) and this process only needs to submit
+     * work and poll for results.
+     *
+     * Does not require githubToken — workers hold the token.
+     */
+    async startClientOnly(): Promise<void> {
+        if (this.started) return;
+
+        const provider = await this._createProvider();
+        this.duroxideClient = new Client(provider);
+        this.started = true;
+    }
+
+    /**
+     * Gracefully shut down the worker runtime.
+     * Mirrors `CopilotClient.stop()`.
+     */
+    async stop(): Promise<void> {
+        if (this.runtime) {
+            await this.runtime.shutdown(5000);
+            this.runtime = null;
+        }
+        if (this.sessionManager) {
+            await this.sessionManager.shutdown();
+            this.sessionManager = null;
+        }
+        this.started = false;
+    }
+
+    /** @internal — start orchestration and wait for result */
+    async _startAndWait(
+        sessionId: string,
+        prompt: string,
+        timeout?: number
+    ): Promise<string | undefined> {
+        if (!this.duroxideClient) {
+            throw new Error("Client not started. Call start() first.");
+        }
+
+        const orchestrationId = `turn-${sessionId}-${Date.now()}`;
+        const config = this.sessionConfigs.get(sessionId);
+        const input: TurnInput = {
+            sessionId,
+            prompt,
+            waitThreshold: this.config.waitThreshold,
+            maxIterations: this.config.maxIterations,
+            iteration: 0,
+            systemMessage: typeof config?.systemMessage === "string"
+                ? config.systemMessage
+                : config?.systemMessage?.content,
+            model: config?.model,
+        };
+
+        await this.duroxideClient.startOrchestration(
+            orchestrationId,
+            ORCHESTRATION_NAME,
+            input
+        );
+
+        const effectiveTimeout = timeout ?? 300_000; // 5 min default
+
+        if (!config?.onUserInputRequest) {
+            // Simple path — no durable user input needed
+            const result = await this.duroxideClient.waitForOrchestration(
+                orchestrationId,
+                effectiveTimeout
+            );
+
+            if (result.status === "Completed") {
+                return result.output;
+            } else if (result.status === "Failed") {
+                throw new Error(result.error ?? "Orchestration failed");
+            }
+
+            return undefined;
+        }
+
+        // Polling path — watch history for input_required events
+        return this._pollForResult(
+            orchestrationId,
+            sessionId,
+            config.onUserInputRequest,
+            effectiveTimeout
+        );
+    }
+
+    /**
+     * Poll orchestration status and history, handling user input requests
+     * via the durable event flow: activity returns input_required →
+     * orchestration waitForEvent → client reads history, calls user
+     * callback, raises event → orchestration resumes.
+     * @internal
+     */
+    private async _pollForResult(
+        orchestrationId: string,
+        sessionId: string,
+        onUserInputRequest: UserInputHandler,
+        timeout: number
+    ): Promise<string | undefined> {
+        const deadline = Date.now() + timeout;
+        let waitingForResponse = false;
+
+        while (Date.now() < deadline) {
+            const status = await this.duroxideClient.getStatus(
+                orchestrationId
+            );
+
+            if (status.status === "Completed") return status.output;
+            if (status.status === "Failed") {
+                throw new Error(status.error ?? "Orchestration failed");
+            }
+
+            // Get the latest execution ID for history queries
+            const executions = await this.duroxideClient.listExecutions(
+                orchestrationId
+            );
+            if (executions.length === 0) {
+                await new Promise((r) => setTimeout(r, 200));
+                continue;
+            }
+            const executionId = executions[executions.length - 1];
+
+            if (!waitingForResponse) {
+                // Look for an unhandled input_required in history
+                const history =
+                    await this.duroxideClient.readExecutionHistory(
+                        orchestrationId,
+                        executionId
+                    );
+                const inputReq =
+                    DurableCopilotClient._findInputRequired(history);
+
+                if (inputReq) {
+                    const response = await onUserInputRequest(inputReq, {
+                        sessionId,
+                    });
+                    await this.duroxideClient.raiseEvent(
+                        orchestrationId,
+                        "user-input",
+                        response
+                    );
+                    waitingForResponse = true;
+                }
+            } else {
+                // After raising event, wait for history to clear (continueAsNew)
+                const history =
+                    await this.duroxideClient.readExecutionHistory(
+                        orchestrationId,
+                        executionId
+                    );
+                if (!DurableCopilotClient._findInputRequired(history)) {
+                    waitingForResponse = false;
+                }
+            }
+
+            await new Promise((r) => setTimeout(r, 200));
+        }
+
+        throw new Error(
+            `Timeout waiting for orchestration ${orchestrationId} (${timeout}ms)`
+        );
+    }
+
+    /** Parse ActivityCompleted events to find input_required results. @internal */
+    private static _findInputRequired(
+        history: any[]
+    ): { question: string; choices?: string[]; allowFreeform?: boolean } | null {
+        for (let i = history.length - 1; i >= 0; i--) {
+            const event = history[i];
+            if (event.kind === "ActivityCompleted" && event.data) {
+                try {
+                    const data = JSON.parse(event.data);
+                    // data is either the result directly or wrapped in { result: "..." }
+                    const result =
+                        typeof data.result === "string"
+                            ? JSON.parse(data.result)
+                            : data;
+                    if (result.type === "input_required") {
+                        return {
+                            question: result.question,
+                            choices: result.choices,
+                            allowFreeform: result.allowFreeform,
+                        };
+                    }
+                } catch {
+                    // Not valid JSON, skip
+                }
+            }
+        }
+        return null;
+    }
+
+    /** @internal — start orchestration without waiting */
+    async _startTurn(
+        sessionId: string,
+        prompt: string
+    ): Promise<string> {
+        if (!this.duroxideClient) {
+            throw new Error("Client not started. Call start() first.");
+        }
+
+        const orchestrationId = `turn-${sessionId}-${Date.now()}`;
+        const config = this.sessionConfigs.get(sessionId);
+        const input: TurnInput = {
+            sessionId,
+            prompt,
+            waitThreshold: this.config.waitThreshold,
+            maxIterations: this.config.maxIterations,
+            iteration: 0,
+            systemMessage: typeof config?.systemMessage === "string"
+                ? config.systemMessage
+                : config?.systemMessage?.content,
+            model: config?.model,
+        };
+
+        await this.duroxideClient.startOrchestration(
+            orchestrationId,
+            ORCHESTRATION_NAME,
+            input
+        );
+
+        return orchestrationId;
+    }
+
+    /** @internal — get the duroxide client for status queries */
+    _getDuroxideClient() {
+        return this.duroxideClient;
+    }
+
+    private async _createProvider(): Promise<any> {
+        const store = this.config.store;
+        if (store === "sqlite::memory:") {
+            return SqliteProvider.inMemory();
+        } else if (store.startsWith("sqlite://")) {
+            return SqliteProvider.open(store);
+        } else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+            return PostgresProvider.connect(store);
+        }
+        throw new Error(`Unsupported store URL: ${store}`);
+    }
+}
+
+/**
+ * A durable session handle.
+ *
+ * Mirrors the Copilot SDK's CopilotSession API — send, sendAndWait,
+ * abort, destroy, getMessages — but operations are routed through
+ * duroxide orchestrations for durability.
+ */
+export class DurableSession {
+    readonly sessionId: string;
+    private client: DurableCopilotClient;
+    /** The orchestration ID of the most recent `send()` call. */
+    lastOrchestrationId?: string;
+
+    /** @internal */
+    constructor(sessionId: string, client: DurableCopilotClient) {
+        this.sessionId = sessionId;
+        this.client = client;
+    }
+
+    /**
+     * Send a message and wait for the agent to respond.
+     * Mirrors `CopilotSession.sendAndWait()`.
+     */
+    async sendAndWait(
+        prompt: string,
+        timeout?: number
+    ): Promise<string | undefined> {
+        return this.client._startAndWait(this.sessionId, prompt, timeout);
+    }
+
+    /**
+     * Send a message without waiting for a response.
+     * Mirrors `CopilotSession.send()`.
+     */
+    async send(prompt: string): Promise<void> {
+        this.lastOrchestrationId = await this.client._startTurn(
+            this.sessionId,
+            prompt
+        );
+    }
+
+    /**
+     * Wait for the session to reach a terminal state.
+     */
+    async wait(timeout?: number): Promise<string | undefined> {
+        if (!this.lastOrchestrationId) {
+            throw new Error("No pending turn. Call send() first.");
+        }
+
+        const duroxideClient = this.client._getDuroxideClient();
+        const effectiveTimeout = timeout ?? 300_000;
+        const result = await duroxideClient.waitForOrchestration(
+            this.lastOrchestrationId,
+            effectiveTimeout
+        );
+
+        if (result.status === "Completed") {
+            return result.output;
+        } else if (result.status === "Failed") {
+            throw new Error(result.error ?? "Orchestration failed");
+        }
+
+        return undefined;
+    }
+
+    /**
+     * Send an event to the session (e.g., user input response).
+     */
+    async sendEvent(eventName: string, data: unknown): Promise<void> {
+        const duroxideClient = this.client._getDuroxideClient();
+        if (duroxideClient && this.lastOrchestrationId) {
+            await duroxideClient.raiseEvent(
+                this.lastOrchestrationId,
+                eventName,
+                data
+            );
+        }
+    }
+
+    /**
+     * Abort the current in-flight operation.
+     * Mirrors `CopilotSession.abort()`.
+     */
+    async abort(): Promise<void> {
+        // TODO: raise abort event to orchestration
+    }
+
+    /**
+     * Destroy the session and release resources.
+     * Mirrors `CopilotSession.destroy()`.
+     */
+    async destroy(): Promise<void> {
+        await this.client.deleteSession(this.sessionId);
+    }
+
+    /**
+     * Get the conversation messages for this session.
+     * Mirrors `CopilotSession.getMessages()`.
+     */
+    async getMessages(): Promise<unknown[]> {
+        // TODO: read from Copilot session files
+        return [];
+    }
+
+    /**
+     * Get detailed info about this durable session.
+     */
+    async getInfo(): Promise<DurableSessionInfo> {
+        // TODO: query duroxide orchestration state
+        return {
+            sessionId: this.sessionId,
+            status: "pending",
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            iterations: 0,
+        };
+    }
+
+    /**
+     * Schedule a recurring invocation of this session.
+     */
+    async schedule(
+        schedule: { cron: string } | { every: number }
+    ): Promise<void> {
+        // TODO: create duroxide orchestration with timer loop
+    }
+}
