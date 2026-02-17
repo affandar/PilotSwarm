@@ -1,0 +1,17 @@
+# Single-stage: install from npm (linux binary published to registry)
+FROM node:24-slim
+
+WORKDIR /app
+
+# Copy package manifests and install (gets duroxide-linux-x64-gnu from npm)
+COPY package.json package-lock.json ./
+RUN npm install --omit=dev --ignore-scripts --force
+
+# Copy built dist and worker script
+COPY dist/ ./dist/
+COPY examples/worker.js ./examples/
+
+# Run as the built-in node user (non-root)
+USER node
+
+ENTRYPOINT ["node", "examples/worker.js"]

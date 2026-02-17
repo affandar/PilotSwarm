@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: copilot-sdk-worker
+  namespace: copilot-sdk
+  labels:
+    app.kubernetes.io/name: durable-copilot-sdk
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: durable-copilot-sdk
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: durable-copilot-sdk
+        app.kubernetes.io/component: worker
+    spec:
+      tolerations:
+        - key: "kubernetes.azure.com/scalesetpriority"
+          operator: "Equal"
+          value: "spot"
+          effect: "NoSchedule"
+      containers:
+        - name: worker
+          image: toygresaksacr.azurecr.io/copilot-sdk-worker:latest
+          imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name: copilot-sdk-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      restartPolicy: Always

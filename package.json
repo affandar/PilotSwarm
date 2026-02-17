@@ -1,0 +1,51 @@
+{
+  "name": "durable-copilot-sdk",
+  "version": "0.1.0",
+  "description": "Make Copilot SDK apps durable with zero orchestration code. Durable timers, crash recovery, multi-node scaling — just add a connection string.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "node --env-file=.env --test test/*.test.js",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "copilot",
+    "durable",
+    "duroxide",
+    "agent",
+    "orchestration",
+    "async"
+  ],
+  "author": "Affan Dar",
+  "license": "MIT",
+  "dependencies": {
+    "@github/copilot-sdk": "^0.1.8",
+    "duroxide": "^0.1.6",
+    "duroxide-darwin-arm64": "^0.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "blessed": "^0.1.81",
+    "chalk": "^5.6.2",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md"
+  ]
+}
