@@ -1,10 +1,11 @@
 #!/bin/bash
-# Run durable-copilot-sdk locally (single-node, PostgreSQL store)
+# Run durable-copilot-sdk locally
 #
 # Usage:
-#   ./run.sh              # TUI mode (split-pane chat + logs)
+#   ./run.sh              # TUI mode — local runtime + local DB
 #   ./run.sh chat         # Simple console chat
-#   ./run.sh scaled       # Client-only TUI (needs remote workers)
+#   ./run.sh remote       # TUI mode — local runtime + remote DB
+#   ./run.sh scaled       # TUI mode — client-only, AKS workers execute
 #
 # Prerequisites:
 #   - Docker container 'duroxide-pg' running on localhost:5432
@@ -47,7 +48,7 @@ MODE="${1:-tui}"
 
 case "$MODE" in
     tui)
-        echo "🚀 Starting TUI chat (Ctrl+C to quit, Tab to switch panes)"
+        echo "🚀 Starting TUI chat — local runtime (Ctrl+C to quit, Tab to switch panes)"
         node --env-file=.env examples/tui.js
         ;;
     chat)
@@ -55,11 +56,15 @@ case "$MODE" in
         node --env-file=.env examples/chat.js
         ;;
     scaled)
-        echo "🚀 Starting scaled TUI (client-only, needs AKS workers)"
-        node --env-file=.env.remote examples/tui-scaled.js
+        echo "🚀 Starting TUI chat — scaled mode, AKS workers (Ctrl+C to quit)"
+        node --env-file=.env.remote examples/tui.js scaled
+        ;;
+    remote)
+        echo "🚀 Starting TUI chat — local runtime, remote DB (Ctrl+C to quit)"
+        node --env-file=.env.remote examples/tui.js
         ;;
     *)
-        echo "Usage: $0 [tui|chat|scaled]"
+        echo "Usage: $0 [tui|chat|scaled|remote]"
         exit 1
         ;;
 esac
