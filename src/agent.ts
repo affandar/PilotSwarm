@@ -285,7 +285,8 @@ export class DurableCopilotClient {
     async _startAndWait(
         sessionId: string,
         prompt: string,
-        timeout?: number
+        timeout?: number,
+        onIntermediateContent?: (content: string) => void
     ): Promise<string | undefined> {
         if (!this.duroxideClient) {
             throw new Error("Client not started. Call start() first.");
@@ -333,7 +334,8 @@ export class DurableCopilotClient {
             orchestrationId,
             sessionId,
             config?.onUserInputRequest,
-            effectiveTimeout
+            effectiveTimeout,
+            onIntermediateContent
         );
     }
 
@@ -346,7 +348,8 @@ export class DurableCopilotClient {
         orchestrationId: string,
         sessionId: string,
         onUserInputRequest: UserInputHandler | undefined,
-        timeout: number
+        timeout: number,
+        onIntermediateContent?: (content: string) => void
     ): Promise<string | undefined> {
         const deadline = Date.now() + timeout;
         let lastSeenActivityCount = 0;
@@ -423,7 +426,8 @@ export class DurableCopilotClient {
                     }
 
                     if (result.type === "wait" && result.content) {
-                        // Intermediate content from a wait cycle — don't return, keep polling
+                        // Intermediate content from a wait cycle — emit and keep polling
+                        if (onIntermediateContent) onIntermediateContent(result.content);
                         lastSeenActivityCount = activityEvents.length;
                     }
                 } catch {}
@@ -562,12 +566,14 @@ export class DurableSession {
     /**
      * Send a message and wait for the agent to respond.
      * Mirrors `CopilotSession.sendAndWait()`.
+     * @param onIntermediateContent — callback for intermediate content (e.g., partial results from long-running tasks)
      */
     async sendAndWait(
         prompt: string,
-        timeout?: number
+        timeout?: number,
+        onIntermediateContent?: (content: string) => void
     ): Promise<string | undefined> {
-        return this.client._startAndWait(this.sessionId, prompt, timeout);
+        return this.client._startAndWait(this.sessionId, prompt, timeout, onIntermediateContent);
     }
 
     /**
