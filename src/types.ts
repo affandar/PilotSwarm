@@ -175,6 +175,7 @@ export type TurnResult =
     | { type: "completed"; content: string }
     | { type: "wait"; seconds: number; reason: string; content?: string }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean }
+    | { type: "cancelled" }
     | { type: "error"; message: string };
 
 // ─── Session Status / Events ─────────────────────────────────────

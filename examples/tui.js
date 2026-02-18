@@ -290,7 +290,7 @@ setStatus("Ready — type a message");
 // ─── Create session ──────────────────────────────────────────────
 
 const session = await client.createSession({
-    systemMessage: "You are a helpful assistant. Be concise.",
+    systemMessage: "You are a helpful assistant running in a durable execution environment. Be concise. CRITICAL RULE: When you need to wait, pause, sleep, delay, or do anything periodically/recurring, you MUST use the 'wait' tool. NEVER use bash sleep, setTimeout, setInterval, detached processes, or any other timing mechanism. The 'wait' tool is the only way to wait — it enables durable timers that survive process restarts and node migrations.",
     onUserInputRequest: async (request) => {
         return new Promise((resolve) => {
             const q = request.question || "?";
@@ -310,18 +310,17 @@ appendLog(`Session created ✓ {gray-fg}(${sessionId.slice(0, 8)}…){/gray-fg}`
 // ─── Send message (mode-specific) ────────────────────────────────
 
 let turnInProgress = false;
-let queuedMessage = null;
 
 async function sendMessage(trimmed) {
     if (turnInProgress) {
-        // Buffer input — will dispatch immediately after current turn
-        if (queuedMessage) {
-            // Already had a queued message — show it was replaced
-            appendLog(`⚡ Replaced queued message`);
+        // Interrupt: raise event to cancel the running turn and start this one
+        setStatus("⚡ Interrupting current turn...");
+        if (isScaled) appendLog(`⚡ Interrupt: "${trimmed.slice(0, 40)}…"`);
+        try {
+            await session.sendEvent("interrupt", { prompt: trimmed });
+        } catch (err) {
+            appendLog(`{red-fg}Interrupt failed: ${err.message}{/red-fg}`);
         }
-        queuedMessage = trimmed;
-        setStatus("⚡ Queued — will send after current turn");
-        if (isScaled) appendLog(`⚡ Queued: "${trimmed.slice(0, 40)}…"`);
         return;
     }
 
@@ -335,7 +334,7 @@ async function sendMessage(trimmed) {
     }
 
     try {
-        const response = await session.sendAndWait(trimmed, 300_000, (intermediate) => {
+        const response = await session.sendAndWait(trimmed, 0, (intermediate) => {
             showCopilotMessage(`⏳ ${intermediate}`);
         });
         showCopilotMessage(response || "(no response)");
@@ -345,17 +344,6 @@ async function sendMessage(trimmed) {
     }
 
     turnInProgress = false;
-
-    // Process queued message immediately (before idle timer fires)
-    if (queuedMessage) {
-        const next = queuedMessage;
-        queuedMessage = null;
-        appendChatRaw(`{gray-fg}[${ts()}]{/gray-fg} {white-fg}{bold}You:{/bold} ${next}{/white-fg}`);
-        screen.render();
-        await sendMessage(next);
-        return;
-    }
-
     setStatus("Ready — type a message");
 }
 

@@ -1,6 +1,9 @@
 # Single-stage: install from npm (linux binary published to registry)
 FROM node:24-slim
 
+# Install CA certificates for HTTPS (needed by Copilot CLI subprocess)
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy package manifests and install (gets duroxide-linux-x64-gnu from npm)

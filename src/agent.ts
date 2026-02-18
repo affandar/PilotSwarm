@@ -160,9 +160,10 @@ export class DurableCopilotClient {
         // 3. Create runtime with session affinity support
         this.runtime = new Runtime(provider, {
             dispatcherPollIntervalMs: 10,
+            workerLockTimeoutMs: 10_000,
             logLevel: this.config.logLevel ?? "error",
             maxSessionsPerRuntime: this.config.maxSessionsPerRuntime ?? 50,
-            sessionIdleTimeoutMs: this.config.sessionIdleTimeoutMs ?? 300_000,
+            sessionIdleTimeoutMs: this.config.sessionIdleTimeoutMs ?? 3_600_000,
             workerNodeId: this.config.workerNodeId,
         });
 
@@ -351,7 +352,7 @@ export class DurableCopilotClient {
         timeout: number,
         onIntermediateContent?: (content: string) => void
     ): Promise<string | undefined> {
-        const deadline = Date.now() + timeout;
+        const deadline = timeout > 0 ? Date.now() + timeout : Infinity;
         let lastSeenActivityCount = 0;
         let lastSeenExecId: string | null = null;
         let waitingForInputResponse = false;
@@ -385,8 +386,38 @@ export class DurableCopilotClient {
             }
             const execId = execs[execs.length - 1];
 
-            // Reset counters when execution changes (continueAsNew)
+            // When execution changes (continueAsNew), drain missed events
+            // from all intermediate executions before moving to the new one.
+            // This prevents losing ActivityCompleted events (e.g. wait results)
+            // when the orchestration does rapid continueAsNew sequences.
             if (lastSeenExecId !== null && execId !== lastSeenExecId) {
+                // Find all executions we haven't seen yet (between old and new)
+                const oldIdx = execs.indexOf(lastSeenExecId);
+                const missedExecs = oldIdx >= 0
+                    ? execs.slice(oldIdx, execs.length - 1)  // old exec + intermediates, exclude latest
+                    : [];
+
+                for (const missedExecId of missedExecs) {
+                    const missedHistory = missedExecId === lastSeenExecId
+                        ? await this.duroxideClient.readExecutionHistory(orchestrationId, missedExecId)
+                        : await this.duroxideClient.readExecutionHistory(orchestrationId, missedExecId);
+                    const missedActivities = missedHistory.filter(
+                        (e: any) => e.kind === "ActivityCompleted"
+                    );
+                    const startIdx = missedExecId === lastSeenExecId ? lastSeenActivityCount : 0;
+                    for (let i = startIdx; i < missedActivities.length; i++) {
+                        try {
+                            const data = JSON.parse(missedActivities[i].data);
+                            const result = typeof data.result === "string"
+                                ? JSON.parse(data.result) : data;
+                            if (result.type === "completed") return result.content;
+                            if (result.type === "wait" && result.content && onIntermediateContent) {
+                                onIntermediateContent(result.content);
+                            }
+                        } catch {}
+                    }
+                }
+
                 lastSeenActivityCount = 0;
                 waitingForInputResponse = false;
             }
@@ -428,6 +459,11 @@ export class DurableCopilotClient {
                     if (result.type === "wait" && result.content) {
                         // Intermediate content from a wait cycle — emit and keep polling
                         if (onIntermediateContent) onIntermediateContent(result.content);
+                        lastSeenActivityCount = activityEvents.length;
+                    }
+
+                    if (result.type === "cancelled") {
+                        // Activity was cancelled (interrupted) — skip, keep polling
                         lastSeenActivityCount = activityEvents.length;
                     }
                 } catch {}
@@ -612,16 +648,13 @@ export class DurableSession {
     }
 
     /**
-     * Send an event to the session (e.g., user input response).
+     * Send an event to the session (e.g., user input response, interrupt).
      */
     async sendEvent(eventName: string, data: unknown): Promise<void> {
         const duroxideClient = this.client._getDuroxideClient();
-        if (duroxideClient && this.lastOrchestrationId) {
-            await duroxideClient.raiseEvent(
-                this.lastOrchestrationId,
-                eventName,
-                data
-            );
+        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
+        if (duroxideClient) {
+            await duroxideClient.raiseEvent(orchestrationId, eventName, data);
         }
     }
 

@@ -32,6 +32,7 @@ export function* durableSessionOrchestration(
     const awaitingMessage = (input as any).awaitingMessage ?? false;
     const awaitingUserInput = (input as any).awaitingUserInput ?? false;
     const pendingQuestion: string = (input as any).pendingQuestion ?? "";
+    const pendingTimer = (input as any).pendingTimer ?? null;
 
     let affinityKey: string = (input as any).affinityKey ?? input.sessionId;
 
@@ -49,6 +50,57 @@ export function* durableSessionOrchestration(
         prompt = `The user was asked: "${pendingQuestion}"\nThe user responded: "${eventData.answer}"`;
     }
 
+    // If we continued-as-new to run a durable timer, race it against interrupt
+    // (separate execution ensures no orphaned "interrupt" subscription from turn race)
+    if (pendingTimer) {
+        ctx.traceInfo(`[session] durable timer: ${pendingTimer.seconds}s — interruptible`);
+        const timerTask = ctx.scheduleTimer(pendingTimer.seconds * 1000);
+        const timerInterrupt = ctx.waitForEvent("interrupt");
+        const timerRace: any = yield ctx.race(timerTask, timerInterrupt);
+
+        if (timerRace.index === 1) {
+            // Interrupted during wait
+            const interruptData = typeof timerRace.value === "string"
+                ? JSON.parse(timerRace.value) : timerRace.value;
+            ctx.traceInfo(
+                `[session] wait interrupted: "${(interruptData.prompt || "").slice(0, 60)}"`
+            );
+            yield ctx.continueAsNew({
+                ...input,
+                prompt: interruptData.prompt,
+                iteration,
+                needsHydration: pendingTimer.dehydrated,
+                pendingTimer: null,
+                awaitingMessage: false,
+                awaitingUserInput: false,
+                blobEnabled,
+                dehydrateThreshold,
+                idleTimeout,
+                inputGracePeriod,
+                affinityKey: pendingTimer.dehydrated ? undefined : affinityKey,
+            });
+            return "";
+        }
+
+        // Timer completed — run the next turn
+        prompt = `The ${pendingTimer.seconds} second wait is now complete. Continue with your task.`;
+        yield ctx.continueAsNew({
+            ...input,
+            prompt,
+            iteration,
+            needsHydration: pendingTimer.dehydrated,
+            pendingTimer: null,
+            awaitingMessage: false,
+            awaitingUserInput: false,
+            blobEnabled,
+            dehydrateThreshold,
+            idleTimeout,
+            inputGracePeriod,
+            affinityKey: pendingTimer.dehydrated ? undefined : affinityKey,
+        });
+        return "";
+    }
+
     while (iteration < input.maxIterations) {
         // ── HYDRATE (if we were dehydrated and haven't hydrated yet) ──
         if (needsHydration && blobEnabled && !hydrated) {
@@ -61,16 +113,46 @@ export function* durableSessionOrchestration(
             hydrated = true;
         }
 
-        // ── RUN TURN ──
+        // ── RUN TURN (raced against interrupt) ──
         ctx.traceInfo(
             `[turn ${iteration}] session=${input.sessionId} affinity=${affinityKey.slice(0, 8)} prompt="${prompt.slice(0, 80)}${prompt.length > 80 ? '...' : ''}"`
         );
 
-        const result: TurnResult = yield ctx.scheduleActivityOnSession(
+        const turnTask = ctx.scheduleActivityOnSession(
             "runAgentTurn",
             { ...input, prompt, iteration },
             affinityKey
         );
+        const interruptEvt = ctx.waitForEvent("interrupt");
+        const turnRace: any = yield ctx.race(turnTask, interruptEvt);
+
+        if (turnRace.index === 1) {
+            // User interrupted — activity will be cancelled cooperatively.
+            // continueAsNew to clean orphaned activity subscription.
+            const interruptData = typeof turnRace.value === "string"
+                ? JSON.parse(turnRace.value) : turnRace.value;
+            ctx.traceInfo(
+                `[session] interrupted by user: "${(interruptData.prompt || "").slice(0, 60)}"`
+            );
+            yield ctx.continueAsNew({
+                ...input,
+                prompt: interruptData.prompt,
+                iteration: iteration + 1,
+                needsHydration: false,
+                awaitingMessage: false,
+                awaitingUserInput: false,
+                blobEnabled,
+                dehydrateThreshold,
+                idleTimeout,
+                inputGracePeriod,
+                affinityKey, // same worker — session is still warm
+            });
+            return ""; // unreachable
+        }
+
+        // Activity completed — parse result
+        const result: TurnResult = typeof turnRace.value === "string"
+            ? JSON.parse(turnRace.value) : turnRace.value;
 
         iteration++;
 
@@ -94,12 +176,27 @@ export function* durableSessionOrchestration(
                     const raceResult: any = yield ctx.race(nextMsg, idleTimer);
 
                     if (raceResult.index === 0) {
-                        // User sent message within idle window — session stays warm
+                        // User sent message within idle window — continueAsNew to clean
+                        // orphaned "interrupt" subscription from the turn race above.
+                        // Same affinityKey = same worker, no dehydration needed.
                         ctx.traceInfo("[session] user responded within idle window, staying warm");
                         const msgData = typeof raceResult.value === "string"
                             ? JSON.parse(raceResult.value) : raceResult.value;
-                        prompt = msgData.prompt;
-                        continue; // same affinityKey, same worker
+
+                        yield ctx.continueAsNew({
+                            ...input,
+                            prompt: msgData.prompt,
+                            iteration,
+                            needsHydration: false,
+                            awaitingMessage: false,
+                            awaitingUserInput: false,
+                            blobEnabled,
+                            dehydrateThreshold,
+                            idleTimeout,
+                            inputGracePeriod,
+                            affinityKey, // same worker
+                        });
+                        return ""; // unreachable
                     }
 
                     // Idle timeout — dehydrate, then continueAsNew.
@@ -148,13 +245,14 @@ export function* durableSessionOrchestration(
                         );
                     }
 
-                    yield ctx.scheduleTimer(result.seconds * 1000);
-
+                    // continueAsNew BEFORE the timer so the new execution has
+                    // clean subscriptions (no orphaned "interrupt" from turn race)
                     yield ctx.continueAsNew({
                         ...input,
-                        prompt: `The ${result.seconds} second wait is now complete. Continue with your task.`,
+                        prompt: "",
                         iteration,
-                        needsHydration: shouldDehydrate,
+                        needsHydration: false, // timer execution handles hydration after
+                        pendingTimer: { seconds: result.seconds, dehydrated: shouldDehydrate },
                         awaitingMessage: false,
                         awaitingUserInput: false,
                         blobEnabled,
@@ -240,6 +338,14 @@ export function* durableSessionOrchestration(
                     });
                     return "";
                 }
+
+            case "cancelled":
+                // Activity was cancelled (interrupted) but completed anyway.
+                // The interrupt handler above (turnRace.index === 1) handles the
+                // normal interrupt path. This handles the edge case where the
+                // activity detects cancellation internally.
+                ctx.traceInfo("[session] activity self-cancelled");
+                continue;
 
             case "error":
                 throw new Error(result.message);

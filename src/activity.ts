@@ -123,6 +123,23 @@ export function createRunAgentTurnActivity(
                 session = await sessionManager.resumeSession(
                     input.sessionId, sessionConfig
                 );
+            } else if (blobStore) {
+                // Files missing (e.g. pod restarted after hydration) — re-hydrate from blob
+                try {
+                    activityCtx.traceInfo(
+                        `[activity] local files missing, re-hydrating ${input.sessionId} from blob`
+                    );
+                    await blobStore.hydrate(input.sessionId);
+                    if (fs.existsSync(sessionDir)) {
+                        session = await sessionManager.resumeSession(
+                            input.sessionId, sessionConfig
+                        );
+                    }
+                } catch (err: any) {
+                    activityCtx.traceWarn(
+                        `[activity] re-hydration failed: ${err.message}`
+                    );
+                }
             }
 
             if (!session) {
@@ -132,35 +149,65 @@ export function createRunAgentTurnActivity(
 
             turnState.session = session;
 
-            // Run one LLM turn
-            const response = await session.sendAndWait(
-                { prompt: input.prompt },
-                300_000 // 5 min timeout per turn
-            );
+            // Poll for cancellation (cooperative cancellation via lock stealing).
+            // When the orchestration drops the activity future (e.g., user interrupted
+            // via race), the lock is stolen and isCancelled() becomes true.
+            let cancelled = false;
+            const cancelPoll = setInterval(() => {
+                if (activityCtx.isCancelled()) {
+                    cancelled = true;
+                    activityCtx.traceInfo(
+                        `[activity] cancellation detected, aborting session ${input.sessionId}`
+                    );
+                    if (turnState.session) {
+                        turnState.session.abort();
+                    }
+                    clearInterval(cancelPoll);
+                }
+            }, 2_000);
 
-            // Check if user input was requested (same pattern as wait tool)
-            if (turnState.pendingInput) {
+            try {
+                // Run one LLM turn
+                const response = await session.sendAndWait(
+                    { prompt: input.prompt },
+                    300_000 // 5 min timeout per turn
+                );
+
+                if (cancelled) {
+                    return { type: "cancelled" };
+                }
+
+                // Check if user input was requested (same pattern as wait tool)
+                if (turnState.pendingInput) {
+                    return {
+                        type: "input_required",
+                        ...turnState.pendingInput,
+                    };
+                }
+
+                // Check if the wait tool fired and aborted
+                if (turnState.pendingWait) {
+                    return {
+                        type: "wait",
+                        seconds: turnState.pendingWait.seconds,
+                        reason: turnState.pendingWait.reason,
+                        content: response?.data?.content,
+                    };
+                }
+
                 return {
-                    type: "input_required",
-                    ...turnState.pendingInput,
+                    type: "completed",
+                    content: response?.data?.content ?? "(no response)",
                 };
+            } finally {
+                clearInterval(cancelPoll);
             }
-
-            // Check if the wait tool fired and aborted
-            if (turnState.pendingWait) {
-                return {
-                    type: "wait",
-                    seconds: turnState.pendingWait.seconds,
-                    reason: turnState.pendingWait.reason,
-                    content: response?.data?.content,
-                };
-            }
-
-            return {
-                type: "completed",
-                content: response?.data?.content ?? "(no response)",
-            };
         } catch (err: any) {
+            // If cancelled via abort, return cancelled result
+            if (activityCtx.isCancelled()) {
+                return { type: "cancelled" };
+            }
+
             // If abort was caused by user input request
             if (turnState.pendingInput) {
                 return {

@@ -22,9 +22,12 @@ export interface TurnState {
 export function createSystemTools(turnState: TurnState): Tool<any>[] {
     const waitTool = defineTool("wait", {
         description:
-            "Wait/pause for a specified duration before continuing. " +
-            "Use this whenever you need to wait, pause, delay, poll, " +
-            "check back later, or schedule a future action.",
+            "REQUIRED: The ONLY way to wait, pause, sleep, or delay. " +
+            "You MUST call this tool whenever you need to wait, pause, delay, " +
+            "poll, check back later, schedule a future action, or implement " +
+            "any recurring/periodic task. NEVER use bash sleep, setTimeout, " +
+            "setInterval, cron, or any other timing mechanism. This tool " +
+            "enables durable waiting that survives process restarts.",
         parameters: {
             type: "object",
             properties: {
