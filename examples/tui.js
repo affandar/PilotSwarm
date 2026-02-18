@@ -309,7 +309,24 @@ appendLog(`Session created ✓ {gray-fg}(${sessionId.slice(0, 8)}…){/gray-fg}`
 
 // ─── Send message (mode-specific) ────────────────────────────────
 
+let turnInProgress = false;
+let queuedMessage = null;
+
 async function sendMessage(trimmed) {
+    if (turnInProgress) {
+        // Buffer input — will dispatch immediately after current turn
+        if (queuedMessage) {
+            // Already had a queued message — show it was replaced
+            appendLog(`⚡ Replaced queued message`);
+        }
+        queuedMessage = trimmed;
+        setStatus("⚡ Queued — will send after current turn");
+        if (isScaled) appendLog(`⚡ Queued: "${trimmed.slice(0, 40)}…"`);
+        return;
+    }
+
+    turnInProgress = true;
+
     if (isScaled) {
         setStatus("Thinking... (waiting for AKS worker)");
         appendLog(`→ Enqueued turn: "${trimmed.slice(0, 40)}…"`);
@@ -318,14 +335,28 @@ async function sendMessage(trimmed) {
     }
 
     try {
-        const response = await session.sendAndWait(trimmed, 300_000);
+        const response = await session.sendAndWait(trimmed, 300_000, (intermediate) => {
+            showCopilotMessage(`⏳ ${intermediate}`);
+        });
         showCopilotMessage(response || "(no response)");
         if (isScaled) appendLog("← Response received");
-        setStatus("Ready — type a message");
     } catch (err) {
         appendChatRaw(`{red-fg}Error: ${err.message}{/red-fg}`);
-        setStatus("Ready — type a message");
     }
+
+    turnInProgress = false;
+
+    // Process queued message immediately (before idle timer fires)
+    if (queuedMessage) {
+        const next = queuedMessage;
+        queuedMessage = null;
+        appendChatRaw(`{gray-fg}[${ts()}]{/gray-fg} {white-fg}{bold}You:{/bold} ${next}{/white-fg}`);
+        screen.render();
+        await sendMessage(next);
+        return;
+    }
+
+    setStatus("Ready — type a message");
 }
 
 // ─── Input handling ──────────────────────────────────────────────
