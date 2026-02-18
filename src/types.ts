@@ -107,7 +107,7 @@ export interface DurableCopilotClientOptions {
      * Grace period (seconds) before dehydrating when waiting for user input.
      * If the user responds within this window, no dehydration occurs.
      * Set to 0 to dehydrate immediately. Set to -1 to never dehydrate on input.
-     * @default 15
+     * @default 30
      */
     dehydrateOnInputRequired?: number;
 
@@ -116,7 +116,7 @@ export interface DurableCopilotClientOptions {
      * After the LLM completes a turn, wait this long for the next message.
      * If no new turn arrives, dehydrate the session to blob.
      * Set to -1 to disable idle dehydration.
-     * @default 15
+     * @default 30
      */
     dehydrateOnIdle?: number;
 
