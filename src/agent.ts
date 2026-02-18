@@ -9,14 +9,14 @@ import type {
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
 import { createRunAgentTurnActivity, createDehydrateActivity, createHydrateActivity } from "./activity.js";
-import { durableTurnOrchestration } from "./orchestration.js";
+import { durableSessionOrchestration } from "./orchestration.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
 
-const ORCHESTRATION_NAME = "durable-turn";
+const ORCHESTRATION_NAME = "durable-session";
 const ACTIVITY_NAME = "runAgentTurn";
 
 /**
@@ -62,6 +62,8 @@ export class DurableCopilotClient {
     private runtime: any = null;
     private duroxideClient: any = null;
     private sessionConfigs = new Map<string, DurableSessionConfig>();
+    /** Tracks which sessions have a running orchestration (instance ID). */
+    private activeOrchestrations = new Map<string, string>();
     private started = false;
 
     constructor(options: DurableCopilotClientOptions) {
@@ -173,7 +175,6 @@ export class DurableCopilotClient {
             this.sessionConfigs,
             this.blobStore,
             this.config.checkpointFrequencyMs ?? 60_000,
-            this.config.dehydrateOnIdle ?? 15,
         );
         this.runtime.registerActivity(ACTIVITY_NAME, activityFn);
 
@@ -192,7 +193,7 @@ export class DurableCopilotClient {
         // 6. Register orchestration
         this.runtime.registerOrchestration(
             ORCHESTRATION_NAME,
-            durableTurnOrchestration
+            durableSessionOrchestration
         );
 
         // 7. Start runtime in background (non-blocking)
@@ -280,7 +281,7 @@ export class DurableCopilotClient {
         await this.stop();
     }
 
-    /** @internal — start orchestration and wait for result */
+    /** @internal — send message and wait for response */
     async _startAndWait(
         sessionId: string,
         prompt: string,
@@ -290,132 +291,158 @@ export class DurableCopilotClient {
             throw new Error("Client not started. Call start() first.");
         }
 
-        const orchestrationId = `turn-${sessionId}-${Date.now()}`;
+        const orchestrationId = `session-${sessionId}`;
         const config = this.sessionConfigs.get(sessionId);
-        const input: TurnInput & Record<string, unknown> = {
-            sessionId,
-            prompt,
-            waitThreshold: this.config.waitThreshold,
-            maxIterations: this.config.maxIterations,
-            iteration: 0,
-            systemMessage: typeof config?.systemMessage === "string"
-                ? config.systemMessage
-                : config?.systemMessage?.content,
-            model: config?.model,
-            // Session relocation config — flows through continueAsNew
-            blobEnabled: this.blobEnabled,
-            dehydrateThreshold: this.config.dehydrateThreshold ?? 30,
-            dehydrateOnInputRequired: this.config.dehydrateOnInputRequired ?? 15,
-        };
+        const effectiveTimeout = timeout ?? 300_000;
 
-        await this.duroxideClient.startOrchestration(
-            orchestrationId,
-            ORCHESTRATION_NAME,
-            input
-        );
+        if (!this.activeOrchestrations.has(sessionId)) {
+            // First message — start the long-lived orchestration
+            const input: TurnInput & Record<string, unknown> = {
+                sessionId,
+                prompt,
+                waitThreshold: this.config.waitThreshold,
+                maxIterations: this.config.maxIterations,
+                iteration: 0,
+                systemMessage: typeof config?.systemMessage === "string"
+                    ? config.systemMessage
+                    : config?.systemMessage?.content,
+                model: config?.model,
+                blobEnabled: this.blobEnabled,
+                dehydrateThreshold: this.config.dehydrateThreshold ?? 30,
+                idleTimeout: this.config.dehydrateOnIdle ?? 30,
+                inputGracePeriod: this.config.dehydrateOnInputRequired ?? 30,
+            };
 
-        const effectiveTimeout = timeout ?? 300_000; // 5 min default
-
-        if (!config?.onUserInputRequest) {
-            // Simple path — no durable user input needed
-            const result = await this.duroxideClient.waitForOrchestration(
+            await this.duroxideClient.startOrchestration(
                 orchestrationId,
-                effectiveTimeout
+                ORCHESTRATION_NAME,
+                input
             );
-
-            if (result.status === "Completed") {
-                return result.output;
-            } else if (result.status === "Failed") {
-                throw new Error(result.error ?? "Orchestration failed");
-            }
-
-            return undefined;
+            this.activeOrchestrations.set(sessionId, orchestrationId);
+        } else {
+            // Subsequent message — raise event on existing orchestration
+            await this.duroxideClient.raiseEvent(
+                orchestrationId,
+                "next-message",
+                { prompt }
+            );
         }
 
-        // Polling path — watch history for input_required events
-        return this._pollForResult(
+        // Poll for the response by watching for new ActivityCompleted events
+        return this._pollForTurnResponse(
             orchestrationId,
             sessionId,
-            config.onUserInputRequest,
+            config?.onUserInputRequest,
             effectiveTimeout
         );
     }
 
     /**
-     * Poll orchestration status and history, handling user input requests
-     * via the durable event flow: activity returns input_required →
-     * orchestration waitForEvent → client reads history, calls user
-     * callback, raises event → orchestration resumes.
+     * Poll orchestration history for the latest runAgentTurn response.
+     * Handles input_required events via user callback + raiseEvent.
      * @internal
      */
-    private async _pollForResult(
+    private async _pollForTurnResponse(
         orchestrationId: string,
         sessionId: string,
-        onUserInputRequest: UserInputHandler,
+        onUserInputRequest: UserInputHandler | undefined,
         timeout: number
     ): Promise<string | undefined> {
         const deadline = Date.now() + timeout;
-        let waitingForResponse = false;
+        let lastSeenActivityCount = 0;
+        let lastSeenExecId: string | null = null;
+        let waitingForInputResponse = false;
+
+        // Count existing completed activities before this turn
+        try {
+            const execs = await this.duroxideClient.listExecutions(orchestrationId);
+            if (execs.length > 0) {
+                lastSeenExecId = execs[execs.length - 1];
+                const history = await this.duroxideClient.readExecutionHistory(
+                    orchestrationId, lastSeenExecId
+                );
+                lastSeenActivityCount = history.filter(
+                    (e: any) => e.kind === "ActivityCompleted"
+                ).length;
+            }
+        } catch {}
 
         while (Date.now() < deadline) {
-            const status = await this.duroxideClient.getStatus(
-                orchestrationId
-            );
+            const status = await this.duroxideClient.getStatus(orchestrationId);
 
-            if (status.status === "Completed") return status.output;
             if (status.status === "Failed") {
                 throw new Error(status.error ?? "Orchestration failed");
             }
 
-            // Get the latest execution ID for history queries
-            const executions = await this.duroxideClient.listExecutions(
-                orchestrationId
-            );
-            if (executions.length === 0) {
+            // Get latest execution history
+            const execs = await this.duroxideClient.listExecutions(orchestrationId);
+            if (execs.length === 0) {
                 await new Promise((r) => setTimeout(r, 200));
                 continue;
             }
-            const executionId = executions[executions.length - 1];
+            const execId = execs[execs.length - 1];
 
-            if (!waitingForResponse) {
-                // Look for an unhandled input_required in history
-                const history =
-                    await this.duroxideClient.readExecutionHistory(
-                        orchestrationId,
-                        executionId
-                    );
-                const inputReq =
-                    DurableCopilotClient._findInputRequired(history);
+            // Reset counters when execution changes (continueAsNew)
+            if (lastSeenExecId !== null && execId !== lastSeenExecId) {
+                lastSeenActivityCount = 0;
+                waitingForInputResponse = false;
+            }
+            lastSeenExecId = execId;
 
-                if (inputReq) {
-                    const response = await onUserInputRequest(inputReq, {
-                        sessionId,
-                    });
-                    await this.duroxideClient.raiseEvent(
-                        orchestrationId,
-                        "user-input",
-                        response
-                    );
-                    waitingForResponse = true;
-                }
-            } else {
-                // After raising event, wait for history to clear (continueAsNew)
-                const history =
-                    await this.duroxideClient.readExecutionHistory(
-                        orchestrationId,
-                        executionId
-                    );
-                if (!DurableCopilotClient._findInputRequired(history)) {
-                    waitingForResponse = false;
-                }
+            const history = await this.duroxideClient.readExecutionHistory(
+                orchestrationId, execId
+            );
+
+            // Find new ActivityCompleted events
+            const activityEvents = history.filter(
+                (e: any) => e.kind === "ActivityCompleted"
+            );
+
+            for (let i = lastSeenActivityCount; i < activityEvents.length; i++) {
+                const event = activityEvents[i];
+                try {
+                    const data = JSON.parse(event.data);
+                    const result = typeof data.result === "string"
+                        ? JSON.parse(data.result) : data;
+
+                    if (result.type === "completed") {
+                        lastSeenActivityCount = activityEvents.length;
+                        return result.content;
+                    }
+
+                    if (result.type === "input_required" && onUserInputRequest && !waitingForInputResponse) {
+                        const response = await onUserInputRequest(
+                            { question: result.question, choices: result.choices, allowFreeform: result.allowFreeform },
+                            { sessionId }
+                        );
+                        await this.duroxideClient.raiseEvent(
+                            orchestrationId, "user-input", response
+                        );
+                        waitingForInputResponse = true;
+                        lastSeenActivityCount = activityEvents.length;
+                    }
+
+                    if (result.type === "wait" && result.content) {
+                        // Intermediate content from a wait cycle — don't return, keep polling
+                        lastSeenActivityCount = activityEvents.length;
+                    }
+                } catch {}
+            }
+
+            if (activityEvents.length > lastSeenActivityCount) {
+                lastSeenActivityCount = activityEvents.length;
+            }
+
+            // Reset input response flag if we moved to a new execution (continueAsNew)
+            if (waitingForInputResponse) {
+                const inputReq = DurableCopilotClient._findInputRequired(history);
+                if (!inputReq) waitingForInputResponse = false;
             }
 
             await new Promise((r) => setTimeout(r, 200));
         }
 
-        throw new Error(
-            `Timeout waiting for orchestration ${orchestrationId} (${timeout}ms)`
-        );
+        throw new Error(`Timeout waiting for response (${timeout}ms)`);
     }
 
     /** Parse ActivityCompleted events to find input_required results. @internal */
@@ -447,7 +474,7 @@ export class DurableCopilotClient {
         return null;
     }
 
-    /** @internal — start orchestration without waiting */
+    /** @internal — send message without waiting (for scaled mode polling) */
     async _startTurn(
         sessionId: string,
         prompt: string
@@ -456,28 +483,41 @@ export class DurableCopilotClient {
             throw new Error("Client not started. Call start() first.");
         }
 
-        const orchestrationId = `turn-${sessionId}-${Date.now()}`;
+        const orchestrationId = `session-${sessionId}`;
         const config = this.sessionConfigs.get(sessionId);
-        const input: TurnInput & Record<string, unknown> = {
-            sessionId,
-            prompt,
-            waitThreshold: this.config.waitThreshold,
-            maxIterations: this.config.maxIterations,
-            iteration: 0,
-            systemMessage: typeof config?.systemMessage === "string"
-                ? config.systemMessage
-                : config?.systemMessage?.content,
-            model: config?.model,
-            blobEnabled: this.blobEnabled,
-            dehydrateThreshold: this.config.dehydrateThreshold ?? 30,
-            dehydrateOnInputRequired: this.config.dehydrateOnInputRequired ?? 15,
-        };
 
-        await this.duroxideClient.startOrchestration(
-            orchestrationId,
-            ORCHESTRATION_NAME,
-            input
-        );
+        if (!this.activeOrchestrations.has(sessionId)) {
+            // First message — start the long-lived orchestration
+            const input: TurnInput & Record<string, unknown> = {
+                sessionId,
+                prompt,
+                waitThreshold: this.config.waitThreshold,
+                maxIterations: this.config.maxIterations,
+                iteration: 0,
+                systemMessage: typeof config?.systemMessage === "string"
+                    ? config.systemMessage
+                    : config?.systemMessage?.content,
+                model: config?.model,
+                blobEnabled: this.blobEnabled,
+                dehydrateThreshold: this.config.dehydrateThreshold ?? 30,
+                idleTimeout: this.config.dehydrateOnIdle ?? 30,
+                inputGracePeriod: this.config.dehydrateOnInputRequired ?? 30,
+            };
+
+            await this.duroxideClient.startOrchestration(
+                orchestrationId,
+                ORCHESTRATION_NAME,
+                input
+            );
+            this.activeOrchestrations.set(sessionId, orchestrationId);
+        } else {
+            // Subsequent message — raise event on existing orchestration
+            await this.duroxideClient.raiseEvent(
+                orchestrationId,
+                "next-message",
+                { prompt }
+            );
+        }
 
         return orchestrationId;
     }
