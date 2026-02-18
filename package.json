@@ -16,7 +16,11 @@
     "dev": "tsc --watch",
     "test": "node --env-file=.env --test test/*.test.js",
     "lint": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "tui": "node --env-file=.env examples/tui.js",
+    "tui:remote": "node --env-file=.env.remote examples/tui.js --mode remote",
+    "tui:scaled": "node --env-file=.env.remote examples/tui.js --mode scaled",
+    "worker": "node --env-file=.env.remote examples/worker.js"
   },
   "keywords": [
     "copilot",
@@ -29,6 +33,7 @@
   "author": "Affan Dar",
   "license": "MIT",
   "dependencies": {
+    "@azure/storage-blob": "^12.31.0",
     "@github/copilot-sdk": "^0.1.8",
     "duroxide": "^0.1.6",
     "duroxide-darwin-arm64": "^0.1.5"

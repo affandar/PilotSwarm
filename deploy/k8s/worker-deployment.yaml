@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: durable-copilot-sdk
     app.kubernetes.io/component: worker
 spec:
-  replicas: 1
+  replicas: 4
   selector:
     matchLabels:
       app.kubernetes.io/name: durable-copilot-sdk
@@ -27,14 +27,21 @@ spec:
         - name: worker
           image: toygresaksacr.azurecr.io/copilot-sdk-worker:latest
           imagePullPolicy: Always
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RUNTIMES_PER_POD
+              value: "4"
           envFrom:
             - secretRef:
                 name: copilot-sdk-secrets
           resources:
             requests:
-              cpu: "100m"
-              memory: "256Mi"
-            limits:
-              cpu: "500m"
+              cpu: "250m"
               memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
       restartPolicy: Always

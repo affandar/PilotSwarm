@@ -59,6 +59,75 @@ export interface DurableCopilotClientOptions {
      * @default 50
      */
     maxIterations?: number;
+
+    // --- Session Affinity options ---
+
+    /**
+     * Maximum concurrent sessions per worker node.
+     * Sessions beyond this limit are routed to other workers.
+     * @default 50
+     */
+    maxSessionsPerRuntime?: number;
+
+    /**
+     * How long a session can sit idle before releasing the worker slot (ms).
+     * @default 300_000 (5 minutes)
+     */
+    sessionIdleTimeoutMs?: number;
+
+    /**
+     * Unique identifier for this worker node.
+     * Used by duroxide for session-to-worker routing.
+     * Defaults to os.hostname() if omitted.
+     */
+    workerNodeId?: string;
+
+    // --- Session Relocation options ---
+
+    /**
+     * Azure Blob connection string for session dehydration/hydration.
+     * If omitted, session relocation is disabled (affinity-only mode).
+     */
+    blobConnectionString?: string;
+
+    /**
+     * Azure Blob container name for session storage.
+     * @default "copilot-sessions"
+     */
+    blobContainer?: string;
+
+    /**
+     * Dehydrate threshold in seconds.
+     * Waits/timers longer than this trigger session dehydration to blob.
+     * @default 30
+     */
+    dehydrateThreshold?: number;
+
+    /**
+     * Grace period (seconds) before dehydrating when waiting for user input.
+     * If the user responds within this window, no dehydration occurs.
+     * Set to 0 to dehydrate immediately. Set to -1 to never dehydrate on input.
+     * @default 15
+     */
+    dehydrateOnInputRequired?: number;
+
+    /**
+     * Idle dehydration grace period (seconds).
+     * After the LLM completes a turn, wait this long for the next message.
+     * If no new turn arrives, dehydrate the session to blob.
+     * Set to -1 to disable idle dehydration.
+     * @default 15
+     */
+    dehydrateOnIdle?: number;
+
+    /**
+     * Background checkpoint frequency in ms.
+     * Periodically saves session state to blob during active turns for crash resilience.
+     * Lower values = less data loss on crash, more blob I/O.
+     * Set to 0 to disable periodic checkpointing.
+     * @default 60_000 (60 seconds)
+     */
+    checkpointFrequencyMs?: number;
 }
 
 // ─── Session Config ──────────────────────────────────────────────

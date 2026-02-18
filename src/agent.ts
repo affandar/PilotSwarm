@@ -7,7 +7,8 @@ import type {
     UserInputHandler,
 } from "./types.js";
 import { SessionManager } from "./session-manager.js";
-import { createRunAgentTurnActivity } from "./activity.js";
+import { SessionBlobStore } from "./blob-store.js";
+import { createRunAgentTurnActivity, createDehydrateActivity, createHydrateActivity } from "./activity.js";
 import { durableTurnOrchestration } from "./orchestration.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
@@ -55,6 +56,9 @@ export class DurableCopilotClient {
         DurableCopilotClientOptions;
 
     private sessionManager: SessionManager | null = null;
+    private blobStore: SessionBlobStore | null = null;
+    /** True when blobConnectionString is configured — independent of whether blobStore is instantiated. */
+    private blobEnabled: boolean;
     private runtime: any = null;
     private duroxideClient: any = null;
     private sessionConfigs = new Map<string, DurableSessionConfig>();
@@ -66,6 +70,7 @@ export class DurableCopilotClient {
             waitThreshold: options.waitThreshold ?? 30,
             maxIterations: options.maxIterations ?? 50,
         };
+        this.blobEnabled = !!options.blobConnectionString;
     }
 
     // ─── Session Management (mirrors CopilotClient) ─────────────
@@ -142,21 +147,47 @@ export class DurableCopilotClient {
         // 2. Create session manager
         this.sessionManager = new SessionManager(this.config.githubToken);
 
-        // 3. Create runtime (wrapper auto-detects SQLite vs Postgres)
+        // 2a. Create blob store if connection string provided
+        if (this.config.blobConnectionString) {
+            this.blobStore = new SessionBlobStore(
+                this.config.blobConnectionString,
+                this.config.blobContainer ?? "copilot-sessions"
+            );
+        }
+
+        // 3. Create runtime with session affinity support
         this.runtime = new Runtime(provider, {
             dispatcherPollIntervalMs: 10,
             logLevel: this.config.logLevel ?? "error",
+            maxSessionsPerRuntime: this.config.maxSessionsPerRuntime ?? 50,
+            sessionIdleTimeoutMs: this.config.sessionIdleTimeoutMs ?? 300_000,
+            workerNodeId: this.config.workerNodeId,
         });
 
         // 4. Create client for starting orchestrations
         this.duroxideClient = new Client(provider);
 
-        // 5. Register activity (closes over sessionManager and sessionConfigs)
+        // 5. Register activity (closes over sessionManager, sessionConfigs, blobStore)
         const activityFn = createRunAgentTurnActivity(
             this.sessionManager,
-            this.sessionConfigs
+            this.sessionConfigs,
+            this.blobStore,
+            this.config.checkpointFrequencyMs ?? 60_000,
+            this.config.dehydrateOnIdle ?? 15,
         );
         this.runtime.registerActivity(ACTIVITY_NAME, activityFn);
+
+        // 5a. Register dehydrate/hydrate activities if blob store is configured
+        if (this.blobStore) {
+            this.runtime.registerActivity(
+                "dehydrateSession",
+                createDehydrateActivity(this.sessionManager, this.blobStore)
+            );
+            this.runtime.registerActivity(
+                "hydrateSession",
+                createHydrateActivity(this.blobStore)
+            );
+        }
 
         // 6. Register orchestration
         this.runtime.registerOrchestration(
@@ -172,6 +203,14 @@ export class DurableCopilotClient {
         runtimePromise.catch((err: any) => {
             console.error("[DurableCopilotClient] Runtime error:", err);
         });
+
+        // 8. Register SIGTERM handler for graceful shutdown (K8s pod termination)
+        const gracefulShutdown = async () => {
+            await this._gracefulShutdown();
+            process.exit(0);
+        };
+        process.on("SIGTERM", gracefulShutdown);
+        process.on("SIGINT", gracefulShutdown);
 
         // Give the runtime a moment to initialize
         await new Promise((r) => setTimeout(r, 200));
@@ -208,7 +247,37 @@ export class DurableCopilotClient {
             await this.sessionManager.shutdown();
             this.sessionManager = null;
         }
+        this.blobStore = null;
         this.started = false;
+    }
+
+    /**
+     * Graceful shutdown: dehydrate all active sessions to blob, then stop.
+     * Called on SIGTERM/SIGINT for zero-loss pod termination.
+     * @internal
+     */
+    private async _gracefulShutdown(): Promise<void> {
+        if (this.blobStore && this.sessionManager) {
+            const activeIds = this.sessionManager.activeSessionIds();
+            if (activeIds.length > 0) {
+                console.error(
+                    `[DurableCopilotClient] Dehydrating ${activeIds.length} active sessions before shutdown...`
+                );
+                await Promise.allSettled(
+                    activeIds.map(async (id) => {
+                        try {
+                            await this.sessionManager!.destroySession(id);
+                            await this.blobStore!.dehydrate(id, { reason: "shutdown" });
+                        } catch (err: any) {
+                            console.error(
+                                `[DurableCopilotClient] Failed to dehydrate session ${id}: ${err.message}`
+                            );
+                        }
+                    })
+                );
+            }
+        }
+        await this.stop();
     }
 
     /** @internal — start orchestration and wait for result */
@@ -223,7 +292,7 @@ export class DurableCopilotClient {
 
         const orchestrationId = `turn-${sessionId}-${Date.now()}`;
         const config = this.sessionConfigs.get(sessionId);
-        const input: TurnInput = {
+        const input: TurnInput & Record<string, unknown> = {
             sessionId,
             prompt,
             waitThreshold: this.config.waitThreshold,
@@ -233,6 +302,10 @@ export class DurableCopilotClient {
                 ? config.systemMessage
                 : config?.systemMessage?.content,
             model: config?.model,
+            // Session relocation config — flows through continueAsNew
+            blobEnabled: this.blobEnabled,
+            dehydrateThreshold: this.config.dehydrateThreshold ?? 30,
+            dehydrateOnInputRequired: this.config.dehydrateOnInputRequired ?? 15,
         };
 
         await this.duroxideClient.startOrchestration(
@@ -385,7 +458,7 @@ export class DurableCopilotClient {
 
         const orchestrationId = `turn-${sessionId}-${Date.now()}`;
         const config = this.sessionConfigs.get(sessionId);
-        const input: TurnInput = {
+        const input: TurnInput & Record<string, unknown> = {
             sessionId,
             prompt,
             waitThreshold: this.config.waitThreshold,
@@ -395,6 +468,9 @@ export class DurableCopilotClient {
                 ? config.systemMessage
                 : config?.systemMessage?.content,
             model: config?.model,
+            blobEnabled: this.blobEnabled,
+            dehydrateThreshold: this.config.dehydrateThreshold ?? 30,
+            dehydrateOnInputRequired: this.config.dehydrateOnInputRequired ?? 15,
         };
 
         await this.duroxideClient.startOrchestration(
