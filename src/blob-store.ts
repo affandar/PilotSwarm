@@ -76,7 +76,11 @@ export class SessionBlobStore {
      */
     async hydrate(sessionId: string): Promise<void> {
         const sessionDir = path.join(SESSION_STATE_DIR, sessionId);
-        if (fs.existsSync(sessionDir)) return; // already local
+
+        // Always download from blob — overwrite any stale local files
+        if (fs.existsSync(sessionDir)) {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
 
         const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
         const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);

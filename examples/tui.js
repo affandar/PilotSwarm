@@ -311,58 +311,19 @@ appendLog(`Session created ✓ {gray-fg}(${sessionId.slice(0, 8)}…){/gray-fg}`
 
 async function sendMessage(trimmed) {
     if (isScaled) {
-        // Scaled: enqueue + poll
         setStatus("Thinking... (waiting for AKS worker)");
         appendLog(`→ Enqueued turn: "${trimmed.slice(0, 40)}…"`);
-
-        await session.send(trimmed);
-        const orchId = session.lastOrchestrationId;
-        const dc = client._getDuroxideClient();
-        let lastSeenExecution = 0;
-
-        while (true) {
-            await new Promise((r) => setTimeout(r, 500));
-            const status = await dc.getStatus(orchId);
-
-            if (status.status === "Completed") {
-                showCopilotMessage(status.output || "(no response)");
-                appendLog("← Response received");
-                setStatus("Ready — type a message");
-                return;
-            } else if (status.status === "Failed") {
-                throw new Error(status.error ?? "Orchestration failed");
-            }
-
-            // Check for intermediate content (wait cycles)
-            try {
-                const execs = await dc.listExecutions(orchId);
-                if (execs.length > lastSeenExecution) {
-                    const execId = execs[execs.length - 1];
-                    const history = await dc.readExecutionHistory(orchId, execId);
-                    for (const event of history) {
-                        if (event.kind === "ActivityCompleted" && event.data) {
-                            try {
-                                const data = JSON.parse(event.data);
-                                const result = typeof data.result === "string"
-                                    ? JSON.parse(data.result) : data;
-                                if (result.type === "wait" && result.content) {
-                                    showCopilotMessage(result.content);
-                                    setStatus(`⏳ Waiting ${result.seconds}s (${result.reason})`);
-                                }
-                            } catch {}
-                            lastSeenExecution = execs.length;
-                        }
-                    }
-                }
-            } catch (pollErr) {
-                appendLog(`{red-fg}Poll error: ${pollErr.message}{/red-fg}`);
-            }
-        }
     } else {
-        // Local: simple sendAndWait
         setStatus("Thinking...");
-        const response = await session.sendAndWait(trimmed, 120_000);
+    }
+
+    try {
+        const response = await session.sendAndWait(trimmed, 300_000);
         showCopilotMessage(response || "(no response)");
+        if (isScaled) appendLog("← Response received");
+        setStatus("Ready — type a message");
+    } catch (err) {
+        appendChatRaw(`{red-fg}Error: ${err.message}{/red-fg}`);
         setStatus("Ready — type a message");
     }
 }

@@ -22,25 +22,11 @@ export function createRunAgentTurnActivity(
     sessionConfigs: Map<string, DurableSessionConfig>,
     blobStore?: SessionBlobStore | null,
     checkpointFrequencyMs = 60_000,
-    dehydrateOnIdleSeconds = 15,
 ) {
-    // Per-session idle dehydration timers (worker-scoped, survives across activities)
-    const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
     return async (activityCtx: any, input: TurnInput): Promise<TurnResult> => {
         activityCtx.traceInfo(
             `[activity] session=${input.sessionId} iteration=${input.iteration}`
         );
-
-        // Cancel any pending idle dehydration for this session
-        const existingTimer = idleTimers.get(input.sessionId);
-        if (existingTimer) {
-            clearTimeout(existingTimer);
-            idleTimers.delete(input.sessionId);
-            activityCtx.traceInfo(
-                `[activity] cancelled idle dehydration timer for ${input.sessionId}`
-            );
-        }
         const config = sessionConfigs.get(input.sessionId);
         // In scaled mode, workers don't have the in-memory config — use
         // the systemMessage/model from TurnInput which travels through the store.
@@ -103,56 +89,45 @@ export function createRunAgentTurnActivity(
         try {
             // Get or create the Copilot SDK session.
             // Three cases:
-            //   1. Warm (same worker, no dehydration): getSession returns live session
-            //   2. Post-hydration (new worker): local files exist from hydrateSession → resumeSession
+            //   1. Warm (same worker, session in memory)
+            //   2. Post-hydration (hydrateSession just ran): local files exist → resumeSession
             //   3. Brand new: no files → createSession
-            let session: CopilotSession | null =
-                sessionManager.getSession(input.sessionId);
+            let session: CopilotSession | null = null;
+
+            const sessionDir = path.join(
+                os.homedir(), ".copilot", "session-state", input.sessionId
+            );
+            const sessionConfig = {
+                sessionId: input.sessionId,
+                tools: allTools,
+                model: effectiveConfig.model,
+                systemMessage:
+                    typeof effectiveConfig.systemMessage === "string"
+                        ? { content: effectiveConfig.systemMessage }
+                        : effectiveConfig.systemMessage,
+                workingDirectory: effectiveConfig.workingDirectory,
+                onUserInputRequest,
+                hooks: effectiveConfig.hooks,
+                infiniteSessions: { enabled: false },
+            };
+
+            session = sessionManager.getSession(input.sessionId);
+            if (session) {
+                // Warm — re-register tools for this turn
+                session.registerTools(allTools);
+            } else if (fs.existsSync(sessionDir)) {
+                // Post-hydration or existing local files — resume
+                activityCtx.traceInfo(
+                    `[activity] resuming session ${input.sessionId} from local files`
+                );
+                session = await sessionManager.resumeSession(
+                    input.sessionId, sessionConfig
+                );
+            }
 
             if (!session) {
-                const sessionDir = path.join(
-                    os.homedir(), ".copilot", "session-state", input.sessionId
-                );
-                const sessionConfig = {
-                    sessionId: input.sessionId,
-                    tools: allTools,
-                    model: effectiveConfig.model,
-                    systemMessage:
-                        typeof effectiveConfig.systemMessage === "string"
-                            ? { content: effectiveConfig.systemMessage }
-                            : effectiveConfig.systemMessage,
-                    workingDirectory: effectiveConfig.workingDirectory,
-                    onUserInputRequest,
-                    hooks: effectiveConfig.hooks,
-                    infiniteSessions: { enabled: false },
-                };
-
-                if (fs.existsSync(sessionDir)) {
-                    // Post-hydration or existing local files — resume from events.jsonl
-                    activityCtx.traceInfo(
-                        `[activity] resuming session ${input.sessionId} from local files`
-                    );
-                    session = await sessionManager.resumeSession(
-                        input.sessionId, sessionConfig
-                    );
-                } else if (blobStore && await blobStore.exists(input.sessionId)) {
-                    // Session was idle-dehydrated — auto-hydrate from blob
-                    activityCtx.traceInfo(
-                        `[activity] auto-hydrating session ${input.sessionId} from blob`
-                    );
-                    await blobStore.hydrate(input.sessionId);
-                    session = await sessionManager.resumeSession(
-                        input.sessionId, sessionConfig
-                    );
-                }
-
-                if (!session) {
-                    // Brand new session
-                    session = await sessionManager.createSession(sessionConfig);
-                }
-            } else {
-                // Re-register tools for this turn (tools include fresh turnState refs)
-                session.registerTools(allTools);
+                // Brand new session
+                session = await sessionManager.createSession(sessionConfig);
             }
 
             turnState.session = session;
@@ -181,29 +156,10 @@ export function createRunAgentTurnActivity(
                 };
             }
 
-            // Schedule idle dehydration if blob is available
-            const completedResult: TurnResult = {
+            return {
                 type: "completed",
                 content: response?.data?.content ?? "(no response)",
             };
-
-            if (blobStore && dehydrateOnIdleSeconds >= 0) {
-                const sid = input.sessionId;
-                const timer = setTimeout(async () => {
-                    idleTimers.delete(sid);
-                    try {
-                        console.log(`[idle-dehydrate] session=${sid} idle for ${dehydrateOnIdleSeconds}s, dehydrating`);
-                        await sessionManager.destroySession(sid);
-                        await blobStore.dehydrate(sid, { reason: "idle" });
-                        console.log(`[idle-dehydrate] session=${sid} dehydrated ✓`);
-                    } catch (err: any) {
-                        console.error(`[idle-dehydrate] session=${sid} failed: ${err.message}`);
-                    }
-                }, dehydrateOnIdleSeconds * 1000);
-                idleTimers.set(sid, timer);
-            }
-
-            return completedResult;
         } catch (err: any) {
             // If abort was caused by user input request
             if (turnState.pendingInput) {
