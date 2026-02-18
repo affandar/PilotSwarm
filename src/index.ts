@@ -23,6 +23,7 @@
  */
 
 export { DurableCopilotClient, DurableSession } from "./agent.js";
+export { SessionBlobStore } from "./blob-store.js";
 export type {
     DurableCopilotClientOptions,
     DurableSessionConfig,

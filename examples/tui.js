@@ -23,8 +23,12 @@ import { spawn } from "node:child_process";
 const require = createRequire(import.meta.url);
 const blessed = require("blessed");
 
-const MODE = process.argv[2] || process.env.MODE || "local";
-const isScaled = MODE === "scaled";
+const MODE = (() => {
+    const idx = process.argv.indexOf("--mode");
+    if (idx !== -1 && process.argv[idx + 1]) return process.argv[idx + 1];
+    return process.env.MODE || "local";
+})();
+const isScaled = MODE === "scaled" || MODE === "remote";
 
 // ─── Markdown renderer ──────────────────────────────────────────
 
@@ -61,7 +65,9 @@ if (!isScaled) {
 
 // ─── Create blessed screen ───────────────────────────────────────
 
-const modeLabel = isScaled ? "Scaled — AKS Workers" : "Local Runtime";
+const modeLabel = MODE === "scaled" ? "Scaled — AKS Workers"
+    : MODE === "remote" ? "Remote Runtime"
+    : "Local Runtime";
 
 const screen = blessed.screen({
     smartCSR: true,
@@ -227,6 +233,8 @@ const client = new DurableCopilotClient({
     store,
     githubToken: isScaled ? undefined : process.env.GITHUB_TOKEN,
     logLevel: "info",
+    blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
+    blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
 });
 
 if (isScaled) {
@@ -244,6 +252,7 @@ if (isScaled) {
             "logs", "-f", "-n", "copilot-sdk",
             "-l", "app.kubernetes.io/component=worker",
             "--prefix", "--tail=20",
+            "--max-log-requests=10",
         ], { stdio: ["ignore", "pipe", "pipe"] });
 
         let logBuf = "";
