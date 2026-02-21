@@ -18,8 +18,9 @@
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
     "tui": "node --env-file=.env examples/tui.js",
+    "tui:local-remote": "node --env-file=.env.remote examples/tui.js",
     "tui:remote": "node --env-file=.env.remote examples/tui.js --mode remote",
-    "tui:scaled": "node --env-file=.env.remote examples/tui.js --mode scaled",
+    "tui:scaled": "node --env-file=.env.remote examples/tui-scaled.js",
     "worker": "node --env-file=.env.remote examples/worker.js"
   },
   "keywords": [
@@ -35,7 +36,7 @@
   "dependencies": {
     "@azure/storage-blob": "^12.31.0",
     "@github/copilot-sdk": "^0.1.8",
-    "duroxide": "^0.1.6",
+    "duroxide": "^0.1.7",
     "duroxide-darwin-arm64": "^0.1.5"
   },
   "devDependencies": {

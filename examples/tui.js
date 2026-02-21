@@ -194,16 +194,10 @@ let logTailer = null;
 let kubectlProc = null;
 
 if (!isScaled && tracingLogPath) {
-    // Local mode: tail the tracing log file
-    const _origStderrWrite = process.stderr.write.bind(process.stderr);
-    process.stderr.write = (chunk, encoding, callback) => {
-        const text = typeof chunk === "string" ? chunk : chunk.toString();
-        for (const line of text.split("\n")) {
-            if (line.trim()) appendLog(line);
-        }
-        if (typeof callback === "function") callback();
-        return true;
-    };
+    // Local mode: redirect stdout/stderr to the log pane so they don't
+    // corrupt the blessed UI, and tail the duroxide tracing log file.
+    // Override console.log/error only — leave process.stderr.write alone
+    // so blessed's own drawing is not intercepted.
     console.error = (...args) => appendLog(args.join(" "));
     console.log = (...args) => appendLog(args.join(" "));
 
@@ -222,7 +216,7 @@ if (!isScaled && tracingLogPath) {
                 }
             }
         } catch {}
-    }, 250);
+    }, 200);
 }
 
 // ─── Start client ────────────────────────────────────────────────
@@ -246,36 +240,48 @@ if (isScaled) {
     await client.startClientOnly();
     appendLog("Client connected ✓ {gray-fg}(no local runtime){/gray-fg}");
 
-    // Stream AKS worker logs
-    try {
-        kubectlProc = spawn("kubectl", [
-            "logs", "-f", "-n", "copilot-sdk",
-            "-l", "app.kubernetes.io/component=worker",
-            "--prefix", "--tail=20",
-            "--max-log-requests=10",
-        ], { stdio: ["ignore", "pipe", "pipe"] });
+    // Stream AKS worker logs (auto-reconnect on pod rollout)
+    function startLogStream() {
+        if (kubectlProc) { try { kubectlProc.kill(); } catch {} kubectlProc = null; }
+        try {
+            kubectlProc = spawn("kubectl", [
+                "logs", "-f", "-n", "copilot-sdk",
+                "-l", "app.kubernetes.io/component=worker",
+                "--prefix", "--tail=20",
+                "--max-log-requests=10",
+            ], { stdio: ["ignore", "pipe", "pipe"] });
 
-        let logBuf = "";
-        kubectlProc.stdout.on("data", (chunk) => {
-            logBuf += chunk.toString();
-            const lines = logBuf.split("\n");
-            logBuf = lines.pop();
-            for (const line of lines) {
-                if (line.trim()) appendLog(line);
-            }
-        });
-        kubectlProc.stderr.on("data", (chunk) => {
-            const text = chunk.toString().trim();
-            if (text) appendLog(`{gray-fg}${text}{/gray-fg}`);
-        });
-        kubectlProc.on("error", () => {
-            appendLog("{yellow-fg}kubectl not available — logs not streamed{/yellow-fg}");
-        });
-        appendLog("{green-fg}Streaming AKS worker logs ↓{/green-fg}");
-        appendLog("");
-    } catch {
-        appendLog("{yellow-fg}Could not start log stream{/yellow-fg}");
+            let logBuf = "";
+            kubectlProc.stdout.on("data", (chunk) => {
+                logBuf += chunk.toString();
+                const lines = logBuf.split("\n");
+                logBuf = lines.pop();
+                for (const line of lines) {
+                    if (line.trim()) appendLog(line);
+                }
+            });
+            kubectlProc.stderr.on("data", (chunk) => {
+                const text = chunk.toString().trim();
+                if (text && !text.includes("proxy error") && !text.includes("Gateway Timeout")) {
+                    appendLog(`{gray-fg}${text}{/gray-fg}`);
+                }
+            });
+            kubectlProc.on("error", () => {
+                appendLog("{yellow-fg}kubectl not available — logs not streamed{/yellow-fg}");
+            });
+            kubectlProc.on("exit", (code) => {
+                kubectlProc = null;
+                if (code !== null) {
+                    setTimeout(() => { startLogStream(); }, 5000);
+                }
+            });
+        } catch {
+            appendLog("{yellow-fg}Could not start log stream{/yellow-fg}");
+        }
     }
+    startLogStream();
+    appendLog("{green-fg}Streaming AKS worker logs ↓{/green-fg}");
+    appendLog("");
 } else {
     appendLog("{bold}Mode:{/bold} {green-fg}Local Runtime{/green-fg}");
     appendLog(`{bold}Store:{/bold} ${store.startsWith("postgres") ? "PostgreSQL" : store}`);
@@ -334,10 +340,20 @@ async function sendMessage(trimmed) {
     }
 
     try {
+        let firstResult = true;
         const response = await session.sendAndWait(trimmed, 0, (intermediate) => {
-            showCopilotMessage(`⏳ ${intermediate}`);
+            if (firstResult) {
+                showCopilotMessage(intermediate);
+                firstResult = false;
+                setStatus("Running (type to interrupt)");
+            } else {
+                showCopilotMessage(`🔄 ${intermediate}`);
+            }
         });
-        showCopilotMessage(response || "(no response)");
+        // Only show response if the intermediate callback never fired
+        // (avoids duplicate display — sendAndWait returns the same content
+        // it already passed to onIntermediateContent).
+        if (response && firstResult) showCopilotMessage(response);
         if (isScaled) appendLog("← Response received");
     } catch (err) {
         appendChatRaw(`{red-fg}Error: ${err.message}{/red-fg}`);

@@ -51,7 +51,7 @@ const ACTIVITY_NAME = "runAgentTurn";
  */
 export class DurableCopilotClient {
     private config: Required<
-        Pick<DurableCopilotClientOptions, "waitThreshold" | "maxIterations">
+        Pick<DurableCopilotClientOptions, "waitThreshold">
     > &
         DurableCopilotClientOptions;
 
@@ -64,15 +64,20 @@ export class DurableCopilotClient {
     private sessionConfigs = new Map<string, DurableSessionConfig>();
     /** Tracks which sessions have a running orchestration (instance ID). */
     private activeOrchestrations = new Map<string, string>();
+    /** Tracks the last-seen custom status version per orchestration, so
+     *  subsequent calls to _waitForTurnResult don't re-read stale status. */
+    private lastSeenStatusVersion = new Map<string, number>();
+    /** Tracks the last-seen iteration per orchestration so we skip
+     *  stale completed results from previous turns. */
+    private lastSeenIteration = new Map<string, number>();
     private started = false;
 
     constructor(options: DurableCopilotClientOptions) {
         this.config = {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
-            maxIterations: options.maxIterations ?? 50,
         };
-        this.blobEnabled = !!options.blobConnectionString;
+        this.blobEnabled = !!(options.blobConnectionString || options.blobEnabled);
     }
 
     // ─── Session Management (mirrors CopilotClient) ─────────────
@@ -113,8 +118,32 @@ export class DurableCopilotClient {
      * Mirrors `CopilotClient.listSessions()`.
      */
     async listSessions(): Promise<DurableSessionInfo[]> {
-        // TODO: query duroxide orchestrations
-        return [];
+        if (!this.duroxideClient) return [];
+        try {
+            const instances = await this.duroxideClient.listAllInstances();
+            const sessions: DurableSessionInfo[] = [];
+            for (const inst of instances) {
+                // Only include our session orchestrations
+                if (typeof inst === "string" && inst.startsWith("session-")) {
+                    const sessionId = inst.slice("session-".length);
+                    try {
+                        const info = await this._getSessionInfo(sessionId);
+                        sessions.push(info);
+                    } catch {
+                        sessions.push({
+                            sessionId,
+                            status: "pending",
+                            createdAt: new Date(),
+                            updatedAt: new Date(),
+                            iterations: 0,
+                        });
+                    }
+                }
+            }
+            return sessions;
+        } catch {
+            return [];
+        }
     }
 
     /**
@@ -303,7 +332,6 @@ export class DurableCopilotClient {
                 sessionId,
                 prompt,
                 waitThreshold: this.config.waitThreshold,
-                maxIterations: this.config.maxIterations,
                 iteration: 0,
                 systemMessage: typeof config?.systemMessage === "string"
                     ? config.systemMessage
@@ -330,8 +358,8 @@ export class DurableCopilotClient {
             );
         }
 
-        // Poll for the response by watching for new ActivityCompleted events
-        return this._pollForTurnResponse(
+        // Wait for the turn result via event queue
+        return this._waitForTurnResult(
             orchestrationId,
             sessionId,
             config?.onUserInputRequest,
@@ -341,11 +369,13 @@ export class DurableCopilotClient {
     }
 
     /**
-     * Poll orchestration history for the latest runAgentTurn response.
-     * Handles input_required events via user callback + raiseEvent.
+     * Wait for a turn result by watching custom status changes.
+     * The orchestration sets custom status with turnResult on every
+     * state transition. Client uses waitForStatusChange() to detect
+     * when a new result is available.
      * @internal
      */
-    private async _pollForTurnResponse(
+    private async _waitForTurnResult(
         orchestrationId: string,
         sessionId: string,
         onUserInputRequest: UserInputHandler | undefined,
@@ -353,165 +383,107 @@ export class DurableCopilotClient {
         onIntermediateContent?: (content: string) => void
     ): Promise<string | undefined> {
         const deadline = timeout > 0 ? Date.now() + timeout : Infinity;
-        let lastSeenActivityCount = 0;
-        let lastSeenExecId: string | null = null;
-        let waitingForInputResponse = false;
-
-        // Count existing completed activities before this turn
-        try {
-            const execs = await this.duroxideClient.listExecutions(orchestrationId);
-            if (execs.length > 0) {
-                lastSeenExecId = execs[execs.length - 1];
-                const history = await this.duroxideClient.readExecutionHistory(
-                    orchestrationId, lastSeenExecId
-                );
-                lastSeenActivityCount = history.filter(
-                    (e: any) => e.kind === "ActivityCompleted"
-                ).length;
-            }
-        } catch {}
+        let lastSeenVersion = this.lastSeenStatusVersion.get(orchestrationId) ?? 0;
+        let lastSeenIteration = this.lastSeenIteration.get(orchestrationId) ?? -1;
 
         while (Date.now() < deadline) {
-            const status = await this.duroxideClient.getStatus(orchestrationId);
+            const remaining = deadline === Infinity ? 30_000 : Math.min(deadline - Date.now(), 30_000);
+            if (remaining <= 0) break;
 
-            if (status.status === "Failed") {
-                throw new Error(status.error ?? "Orchestration failed");
-            }
-
-            // Get latest execution history
-            const execs = await this.duroxideClient.listExecutions(orchestrationId);
-            if (execs.length === 0) {
+            // Wait for any status change (blocks efficiently server-side)
+            let statusResult: any;
+            try {
+                statusResult = await this.duroxideClient.waitForStatusChange(
+                    orchestrationId, lastSeenVersion, 200, remaining
+                );
+            } catch {
+                // Timeout — loop and check orchestration status
                 await new Promise((r) => setTimeout(r, 200));
+                // Check for terminal states
+                const orchStatus = await this.duroxideClient.getStatus(orchestrationId);
+                if (orchStatus.status === "Failed") {
+                    throw new Error(orchStatus.error ?? "Orchestration failed");
+                }
+                if (orchStatus.status === "Completed") {
+                    return orchStatus.output;
+                }
                 continue;
             }
-            const execId = execs[execs.length - 1];
 
-            // When execution changes (continueAsNew), drain missed events
-            // from all intermediate executions before moving to the new one.
-            // This prevents losing ActivityCompleted events (e.g. wait results)
-            // when the orchestration does rapid continueAsNew sequences.
-            if (lastSeenExecId !== null && execId !== lastSeenExecId) {
-                // Find all executions we haven't seen yet (between old and new)
-                const oldIdx = execs.indexOf(lastSeenExecId);
-                const missedExecs = oldIdx >= 0
-                    ? execs.slice(oldIdx, execs.length - 1)  // old exec + intermediates, exclude latest
-                    : [];
+            if (statusResult.customStatusVersion > lastSeenVersion) {
+                lastSeenVersion = statusResult.customStatusVersion;
+            }
 
-                for (const missedExecId of missedExecs) {
-                    const missedHistory = missedExecId === lastSeenExecId
-                        ? await this.duroxideClient.readExecutionHistory(orchestrationId, missedExecId)
-                        : await this.duroxideClient.readExecutionHistory(orchestrationId, missedExecId);
-                    const missedActivities = missedHistory.filter(
-                        (e: any) => e.kind === "ActivityCompleted"
-                    );
-                    const startIdx = missedExecId === lastSeenExecId ? lastSeenActivityCount : 0;
-                    for (let i = startIdx; i < missedActivities.length; i++) {
-                        try {
-                            const data = JSON.parse(missedActivities[i].data);
-                            const result = typeof data.result === "string"
-                                ? JSON.parse(data.result) : data;
-                            if (result.type === "completed") return result.content;
-                            if (result.type === "wait" && result.content && onIntermediateContent) {
-                                onIntermediateContent(result.content);
-                            }
-                        } catch {}
-                    }
+            // Parse custom status
+            let customStatus: any = null;
+            if (statusResult.customStatus) {
+                try {
+                    customStatus = typeof statusResult.customStatus === "string"
+                        ? JSON.parse(statusResult.customStatus) : statusResult.customStatus;
+                } catch {}
+            }
+
+            if (customStatus) {
+                // Emit intermediate content if present
+                if (customStatus.intermediateContent && onIntermediateContent) {
+                    onIntermediateContent(customStatus.intermediateContent);
                 }
 
-                lastSeenActivityCount = 0;
-                waitingForInputResponse = false;
-            }
-            lastSeenExecId = execId;
-
-            const history = await this.duroxideClient.readExecutionHistory(
-                orchestrationId, execId
-            );
-
-            // Find new ActivityCompleted events
-            const activityEvents = history.filter(
-                (e: any) => e.kind === "ActivityCompleted"
-            );
-
-            for (let i = lastSeenActivityCount; i < activityEvents.length; i++) {
-                const event = activityEvents[i];
-                try {
-                    const data = JSON.parse(event.data);
-                    const result = typeof data.result === "string"
-                        ? JSON.parse(data.result) : data;
+                // Check for turn result (present when status is "idle", "waiting", or "input_required")
+                if (customStatus.turnResult && customStatus.iteration > lastSeenIteration) {
+                    lastSeenIteration = customStatus.iteration;
+                    const result = customStatus.turnResult;
 
                     if (result.type === "completed") {
-                        lastSeenActivityCount = activityEvents.length;
-                        return result.content;
+                        if (customStatus.status === "idle") {
+                            // Orchestration is idle — this turn is done.
+                            // Return the final result.
+                            if (onIntermediateContent) {
+                                onIntermediateContent(result.content);
+                            }
+                            this.lastSeenStatusVersion.set(orchestrationId, lastSeenVersion);
+                            this.lastSeenIteration.set(orchestrationId, lastSeenIteration);
+                            return result.content;
+                        } else {
+                            // Non-idle status (e.g., "waiting" for a timer loop) —
+                            // emit as intermediate content and keep polling for
+                            // subsequent timer-loop results or final idle.
+                            if (onIntermediateContent) {
+                                onIntermediateContent(result.content);
+                            }
+                            // Don't return — keep looping
+                        }
                     }
 
-                    if (result.type === "input_required" && onUserInputRequest && !waitingForInputResponse) {
+                    if (result.type === "input_required" && onUserInputRequest) {
                         const response = await onUserInputRequest(
-                            { question: result.question, choices: result.choices, allowFreeform: result.allowFreeform },
+                            {
+                                question: result.question,
+                                choices: result.choices,
+                                allowFreeform: result.allowFreeform,
+                            },
                             { sessionId }
                         );
                         await this.duroxideClient.raiseEvent(
                             orchestrationId, "user-input", response
                         );
-                        waitingForInputResponse = true;
-                        lastSeenActivityCount = activityEvents.length;
+                        // Continue waiting for the next turn result
+                        continue;
                     }
-
-                    if (result.type === "wait" && result.content) {
-                        // Intermediate content from a wait cycle — emit and keep polling
-                        if (onIntermediateContent) onIntermediateContent(result.content);
-                        lastSeenActivityCount = activityEvents.length;
-                    }
-
-                    if (result.type === "cancelled") {
-                        // Activity was cancelled (interrupted) — skip, keep polling
-                        lastSeenActivityCount = activityEvents.length;
-                    }
-                } catch {}
+                }
             }
 
-            if (activityEvents.length > lastSeenActivityCount) {
-                lastSeenActivityCount = activityEvents.length;
+            // Check orchestration-level status for terminal states
+            const orchStatus = await this.duroxideClient.getStatus(orchestrationId);
+            if (orchStatus.status === "Failed") {
+                throw new Error(orchStatus.error ?? "Orchestration failed");
             }
-
-            // Reset input response flag if we moved to a new execution (continueAsNew)
-            if (waitingForInputResponse) {
-                const inputReq = DurableCopilotClient._findInputRequired(history);
-                if (!inputReq) waitingForInputResponse = false;
+            if (orchStatus.status === "Completed") {
+                return orchStatus.output;
             }
-
-            await new Promise((r) => setTimeout(r, 200));
         }
 
         throw new Error(`Timeout waiting for response (${timeout}ms)`);
-    }
-
-    /** Parse ActivityCompleted events to find input_required results. @internal */
-    private static _findInputRequired(
-        history: any[]
-    ): { question: string; choices?: string[]; allowFreeform?: boolean } | null {
-        for (let i = history.length - 1; i >= 0; i--) {
-            const event = history[i];
-            if (event.kind === "ActivityCompleted" && event.data) {
-                try {
-                    const data = JSON.parse(event.data);
-                    // data is either the result directly or wrapped in { result: "..." }
-                    const result =
-                        typeof data.result === "string"
-                            ? JSON.parse(data.result)
-                            : data;
-                    if (result.type === "input_required") {
-                        return {
-                            question: result.question,
-                            choices: result.choices,
-                            allowFreeform: result.allowFreeform,
-                        };
-                    }
-                } catch {
-                    // Not valid JSON, skip
-                }
-            }
-        }
-        return null;
     }
 
     /** @internal — send message without waiting (for scaled mode polling) */
@@ -532,7 +504,6 @@ export class DurableCopilotClient {
                 sessionId,
                 prompt,
                 waitThreshold: this.config.waitThreshold,
-                maxIterations: this.config.maxIterations,
                 iteration: 0,
                 systemMessage: typeof config?.systemMessage === "string"
                     ? config.systemMessage
@@ -565,6 +536,46 @@ export class DurableCopilotClient {
     /** @internal — get the duroxide client for status queries */
     _getDuroxideClient() {
         return this.duroxideClient;
+    }
+
+    /**
+     * Build a DurableSessionInfo from custom status + orchestration status.
+     * @internal
+     */
+    async _getSessionInfo(sessionId: string): Promise<DurableSessionInfo> {
+        const orchestrationId = `session-${sessionId}`;
+        const orchStatus = await this.duroxideClient.getStatus(orchestrationId);
+
+        // Parse custom status (set by orchestration on every state transition)
+        let customStatus: any = {};
+        if (orchStatus.customStatus) {
+            try {
+                customStatus = typeof orchStatus.customStatus === "string"
+                    ? JSON.parse(orchStatus.customStatus) : orchStatus.customStatus;
+            } catch {}
+        }
+
+        // Map orchestration status to session status
+        let status: DurableSessionStatus = customStatus.status ?? "pending";
+        if (orchStatus.status === "Completed") status = "completed";
+        if (orchStatus.status === "Failed") status = "failed";
+
+        return {
+            sessionId,
+            status,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            iterations: customStatus.iteration ?? 0,
+            pendingQuestion: customStatus.pendingQuestion
+                ? { question: customStatus.pendingQuestion, choices: customStatus.choices, allowFreeform: customStatus.allowFreeform }
+                : undefined,
+            waitingUntil: customStatus.waitSeconds
+                ? new Date(Date.now() + customStatus.waitSeconds * 1000)
+                : undefined,
+            waitReason: customStatus.waitReason,
+            result: orchStatus.status === "Completed" ? orchStatus.output : undefined,
+            error: orchStatus.status === "Failed" ? orchStatus.error : undefined,
+        };
     }
 
     private async _createProvider(): Promise<any> {
@@ -663,7 +674,11 @@ export class DurableSession {
      * Mirrors `CopilotSession.abort()`.
      */
     async abort(): Promise<void> {
-        // TODO: raise abort event to orchestration
+        const duroxideClient = this.client._getDuroxideClient();
+        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
+        if (duroxideClient) {
+            await duroxideClient.cancelInstance(orchestrationId, "User abort");
+        }
     }
 
     /**
@@ -687,14 +702,7 @@ export class DurableSession {
      * Get detailed info about this durable session.
      */
     async getInfo(): Promise<DurableSessionInfo> {
-        // TODO: query duroxide orchestration state
-        return {
-            sessionId: this.sessionId,
-            status: "pending",
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            iterations: 0,
-        };
+        return this.client._getSessionInfo(this.sessionId);
     }
 
     /**

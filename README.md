@@ -83,7 +83,6 @@ const client = new DurableCopilotClient({
     // --- Durability (the only new thing) ---
     store: "sqlite://./dev.db",     // or "postgres://..."
     waitThreshold: 60,              // seconds — short waits sleep, long waits dehydrate
-    maxIterations: 50,              // safety guard
 });
 ```
 

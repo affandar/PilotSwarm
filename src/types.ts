@@ -54,12 +54,6 @@ export interface DurableCopilotClientOptions {
      */
     waitThreshold?: number;
 
-    /**
-     * Maximum LLM turns per orchestration before aborting (safety guard).
-     * @default 50
-     */
-    maxIterations?: number;
-
     // --- Session Affinity options ---
 
     /**
@@ -95,6 +89,16 @@ export interface DurableCopilotClientOptions {
      * @default "copilot-sessions"
      */
     blobContainer?: string;
+
+    /**
+     * Explicitly enable blob-based dehydration/hydration for orchestrations.
+     * Set to true when using a thin client that doesn't have the blob connection
+     * string itself, but the workers do. This tells orchestrations to dehydrate
+     * sessions during long waits so workers can hydrate them on any node.
+     * Automatically true when blobConnectionString is provided.
+     * @default false
+     */
+    blobEnabled?: boolean;
 
     /**
      * Dehydrate threshold in seconds.
@@ -219,7 +223,6 @@ export interface TurnInput {
     sessionId: string;
     prompt: string;
     waitThreshold: number;
-    maxIterations: number;
     iteration: number;
     /** System message passed through durable state for scaled/remote workers. */
     systemMessage?: string;

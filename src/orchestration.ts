@@ -1,4 +1,13 @@
-import type { TurnInput, TurnResult } from "./types.js";
+import type { TurnInput, TurnResult, DurableSessionStatus } from "./types.js";
+
+/**
+ * Set custom status as a JSON blob of session state.
+ * Clients read this via waitForStatusChange() or getStatus().
+ * @internal
+ */
+function setStatus(ctx: any, status: DurableSessionStatus, extra?: Record<string, unknown>) {
+    ctx.setCustomStatus(JSON.stringify({ status, ...extra }));
+}
 
 /**
  * Long-lived durable session orchestration.
@@ -15,6 +24,12 @@ import type { TurnInput, TurnResult } from "./types.js";
  *   with a new affinityKey (via ctx.newGuid()) to break old affinity.
  * - hydrateSession + runAgentTurn share the new key = co-located.
  * - The copilotSessionId (conversation identity) never changes.
+ *
+ * Status reporting:
+ * - Custom status is set on every state transition so clients can track
+ *   progress via waitForStatusChange() instead of polling history.
+ * - Turn results are included in the custom status JSON so clients can
+ *   read them directly without scraping execution history.
  *
  * @internal
  */
@@ -38,6 +53,7 @@ export function* durableSessionOrchestration(
 
     // If we continued-as-new after idle dehydration, wait for user message first
     if (awaitingMessage) {
+        setStatus(ctx, "idle", { iteration });
         ctx.traceInfo("[session] awaiting next user message (post-dehydrate)");
         const msgData: any = yield ctx.waitForEvent("next-message");
         prompt = msgData.prompt;
@@ -45,6 +61,7 @@ export function* durableSessionOrchestration(
 
     // If we continued-as-new after input_required grace period, wait for user answer first
     if (awaitingUserInput) {
+        setStatus(ctx, "input_required", { iteration, pendingQuestion });
         ctx.traceInfo("[session] awaiting user input answer (post-dehydrate)");
         const eventData: any = yield ctx.waitForEvent("user-input");
         prompt = `The user was asked: "${pendingQuestion}"\nThe user responded: "${eventData.answer}"`;
@@ -53,6 +70,15 @@ export function* durableSessionOrchestration(
     // If we continued-as-new to run a durable timer, race it against interrupt
     // (separate execution ensures no orphaned "interrupt" subscription from turn race)
     if (pendingTimer) {
+        // Include any intermediate turn result from the previous execution so
+        // the client can see it (waitForStatusChange may skip rapid versions).
+        const lastTurnResult = (input as any).lastTurnResult ?? null;
+        setStatus(ctx, "waiting", {
+            iteration,
+            waitSeconds: pendingTimer.seconds,
+            waitReason: pendingTimer.reason,
+            ...(lastTurnResult ? { turnResult: lastTurnResult } : {}),
+        });
         ctx.traceInfo(`[session] durable timer: ${pendingTimer.seconds}s — interruptible`);
         const timerTask = ctx.scheduleTimer(pendingTimer.seconds * 1000);
         const timerInterrupt = ctx.waitForEvent("interrupt");
@@ -101,7 +127,7 @@ export function* durableSessionOrchestration(
         return "";
     }
 
-    while (iteration < input.maxIterations) {
+    while (true) {
         // ── HYDRATE (if we were dehydrated and haven't hydrated yet) ──
         if (needsHydration && blobEnabled && !hydrated) {
             affinityKey = yield ctx.newGuid();
@@ -114,6 +140,7 @@ export function* durableSessionOrchestration(
         }
 
         // ── RUN TURN (raced against interrupt) ──
+        setStatus(ctx, "running", { iteration });
         ctx.traceInfo(
             `[turn ${iteration}] session=${input.sessionId} affinity=${affinityKey.slice(0, 8)} prompt="${prompt.slice(0, 80)}${prompt.length > 80 ? '...' : ''}"`
         );
@@ -159,11 +186,11 @@ export function* durableSessionOrchestration(
         // ── HANDLE RESULT ──
         switch (result.type) {
             case "completed":
-                // Emit the response for the client to read from history
                 ctx.traceInfo(`[response] ${result.content}`);
 
                 if (!blobEnabled || idleTimeout < 0) {
                     // No blob or idle disabled — wait forever, session stays warm
+                    setStatus(ctx, "idle", { iteration, turnResult: result });
                     const msgData: any = yield ctx.waitForEvent("next-message");
                     prompt = msgData.prompt;
                     continue;
@@ -171,14 +198,12 @@ export function* durableSessionOrchestration(
 
                 // Race: next user message vs idle timer
                 {
+                    setStatus(ctx, "idle", { iteration, turnResult: result });
                     const nextMsg = ctx.waitForEvent("next-message");
                     const idleTimer = ctx.scheduleTimer(idleTimeout * 1000);
                     const raceResult: any = yield ctx.race(nextMsg, idleTimer);
 
                     if (raceResult.index === 0) {
-                        // User sent message within idle window — continueAsNew to clean
-                        // orphaned "interrupt" subscription from the turn race above.
-                        // Same affinityKey = same worker, no dehydration needed.
                         ctx.traceInfo("[session] user responded within idle window, staying warm");
                         const msgData = typeof raceResult.value === "string"
                             ? JSON.parse(raceResult.value) : raceResult.value;
@@ -200,15 +225,15 @@ export function* durableSessionOrchestration(
                     }
 
                     // Idle timeout — dehydrate, then continueAsNew.
-                    // The next execution will waitForEvent with a clean subscription.
-                    // This avoids the orphaned subscription from the race above
-                    // consuming the event meant for the next wait.
                     ctx.traceInfo("[session] idle timeout, dehydrating");
                     yield ctx.scheduleActivityOnSession(
                         "dehydrateSession",
                         { sessionId: input.sessionId, reason: "idle" },
                         affinityKey
                     );
+
+                    // Fresh affinity key — next hydration lands on any available worker
+                    const newAffinityIdle: string = yield ctx.newGuid();
 
                     yield ctx.continueAsNew({
                         ...input,
@@ -221,12 +246,14 @@ export function* durableSessionOrchestration(
                         dehydrateThreshold,
                         idleTimeout,
                         inputGracePeriod,
+                        affinityKey: newAffinityIdle,
                     });
                     return ""; // unreachable
                 }
 
             case "wait":
                 if (result.content) {
+                    setStatus(ctx, "running", { iteration, intermediateContent: result.content });
                     ctx.traceInfo(
                         `[durable-agent] Intermediate content: ${result.content.slice(0, 80)}...`
                     );
@@ -245,21 +272,29 @@ export function* durableSessionOrchestration(
                         );
                     }
 
-                    // continueAsNew BEFORE the timer so the new execution has
-                    // clean subscriptions (no orphaned "interrupt" from turn race)
+                    // Fresh affinity key if dehydrated — next hydration lands on any worker
+                    const timerAffinityKey: string = shouldDehydrate
+                        ? yield ctx.newGuid()
+                        : affinityKey;
+
                     yield ctx.continueAsNew({
                         ...input,
                         prompt: "",
                         iteration,
-                        needsHydration: false, // timer execution handles hydration after
-                        pendingTimer: { seconds: result.seconds, dehydrated: shouldDehydrate },
+                        needsHydration: false,
+                        pendingTimer: { seconds: result.seconds, dehydrated: shouldDehydrate, reason: result.reason },
                         awaitingMessage: false,
                         awaitingUserInput: false,
                         blobEnabled,
                         dehydrateThreshold,
                         idleTimeout,
                         inputGracePeriod,
-                        affinityKey: shouldDehydrate ? undefined : affinityKey,
+                        affinityKey: timerAffinityKey,
+                        // Carry turnResult + intermediateContent into the continueAsNew
+                        // input so the preamble can include them in the "waiting" status.
+                        // This ensures the client sees them even if rapid status changes
+                        // cause version skips in waitForStatusChange.
+                        lastTurnResult: result.content ? { type: "completed", content: result.content } : undefined,
                     });
                     return ""; // unreachable
                 }
@@ -271,6 +306,13 @@ export function* durableSessionOrchestration(
 
                 if (!blobEnabled || inputGracePeriod < 0) {
                     // No blob — just wait, session stays warm
+                    setStatus(ctx, "input_required", {
+                        iteration,
+                        turnResult: result,
+                        pendingQuestion: result.question,
+                        choices: result.choices,
+                        allowFreeform: result.allowFreeform,
+                    });
                     const eventData: any = yield ctx.waitForEvent("user-input");
                     prompt = `The user was asked: "${result.question}"\nThe user responded: "${eventData.answer}"`;
                     continue;
@@ -278,11 +320,20 @@ export function* durableSessionOrchestration(
 
                 if (inputGracePeriod === 0) {
                     // Dehydrate immediately
+                    setStatus(ctx, "input_required", {
+                        iteration,
+                        turnResult: result,
+                        pendingQuestion: result.question,
+                    });
                     yield ctx.scheduleActivityOnSession(
                         "dehydrateSession",
                         { sessionId: input.sessionId, reason: "input_required" },
                         affinityKey
                     );
+
+                    // Fresh affinity key — next hydration lands on any worker
+                    const newAffinityInput: string = yield ctx.newGuid();
+
                     const eventData: any = yield ctx.waitForEvent("user-input");
                     yield ctx.continueAsNew({
                         ...input,
@@ -295,19 +346,26 @@ export function* durableSessionOrchestration(
                         dehydrateThreshold,
                         idleTimeout,
                         inputGracePeriod,
+                        affinityKey: newAffinityInput,
                     });
                     return "";
                 }
 
                 // Race: user answer vs grace period
                 {
+                    setStatus(ctx, "input_required", {
+                        iteration,
+                        turnResult: result,
+                        pendingQuestion: result.question,
+                        choices: result.choices,
+                        allowFreeform: result.allowFreeform,
+                    });
                     ctx.traceInfo(`[durable-agent] Input grace period: ${inputGracePeriod}s`);
                     const answerEvt = ctx.waitForEvent("user-input");
                     const graceTimer = ctx.scheduleTimer(inputGracePeriod * 1000);
                     const raceResult: any = yield ctx.race(answerEvt, graceTimer);
 
                     if (raceResult.index === 0) {
-                        // User answered fast — stay warm
                         ctx.traceInfo("[durable-agent] User answered within grace period");
                         const answerData = typeof raceResult.value === "string"
                             ? JSON.parse(raceResult.value) : raceResult.value;
@@ -316,13 +374,16 @@ export function* durableSessionOrchestration(
                     }
 
                     // Grace elapsed — dehydrate, then continueAsNew.
-                    // New execution will waitForEvent("user-input") with a clean subscription.
                     ctx.traceInfo("[durable-agent] Grace period elapsed, dehydrating");
                     yield ctx.scheduleActivityOnSession(
                         "dehydrateSession",
                         { sessionId: input.sessionId, reason: "input_required" },
                         affinityKey
                     );
+
+                    // Fresh affinity key — next hydration lands on any worker
+                    const newAffinityGrace: string = yield ctx.newGuid();
+
                     yield ctx.continueAsNew({
                         ...input,
                         prompt: "", // placeholder
@@ -335,15 +396,12 @@ export function* durableSessionOrchestration(
                         dehydrateThreshold,
                         idleTimeout,
                         inputGracePeriod,
+                        affinityKey: newAffinityGrace,
                     });
                     return "";
                 }
 
             case "cancelled":
-                // Activity was cancelled (interrupted) but completed anyway.
-                // The interrupt handler above (turnRace.index === 1) handles the
-                // normal interrupt path. This handles the edge case where the
-                // activity detects cancellation internally.
                 ctx.traceInfo("[session] activity self-cancelled");
                 continue;
 
@@ -351,8 +409,4 @@ export function* durableSessionOrchestration(
                 throw new Error(result.message);
         }
     }
-
-    throw new Error(
-        `Max iterations (${input.maxIterations}) reached for session ${input.sessionId}`
-    );
 }
