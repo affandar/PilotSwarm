@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * TUI chat client — Mode 2: Client-Only + AKS Workers.
+ * TUI chat client — Scaled mode with embedded or remote workers.
  *
  * Three-column layout:
  *   Left (20%): Orchestrations panel
@@ -9,14 +9,13 @@
  *   Right (40%): Per-worker log panes (dynamic)
  *   Bottom: Input bar
  *
- * Usage: node --env-file=.env.remote examples/tui-scaled.js
- *
- * Prerequisites:
- *   - AKS worker pods running (kubectl get pods -n copilot-sdk)
- *   - copilot_sdk schema created on the remote PostgreSQL
+ * Usage:
+ *   node --env-file=.env.remote examples/tui-scaled.js         # 4 embedded workers
+ *   WORKERS=0 node --env-file=.env.remote examples/tui-scaled.js # client-only (AKS)
  */
 
 import { DurableCopilotClient } from "../dist/index.js";
+import { initTracing } from "duroxide";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -268,23 +267,139 @@ function showCopilotMessage(raw) {
     screen.render();
 }
 
-// ─── Start the durable client (client-only — no local runtime) ───
+// ─── Start the durable client (embedded workers + client) ────────
 
 const store = process.env.DATABASE_URL || "sqlite::memory:";
-appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (AKS Workers){/magenta-fg}");
-appendLog("{bold}Store:{/bold} {green-fg}Remote PostgreSQL{/green-fg}");
-appendLog("{bold}Runtime:{/bold} {yellow-fg}AKS pods (remote){/yellow-fg}");
+const numWorkers = parseInt(process.env.WORKERS ?? "4", 10);
+const isRemote = numWorkers === 0;
+
+if (isRemote) {
+    appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (AKS Workers){/magenta-fg}");
+    appendLog(`{bold}Store:{/bold} {green-fg}Remote PostgreSQL{/green-fg}`);
+    appendLog("{bold}Runtime:{/bold} {yellow-fg}AKS pods (remote){/yellow-fg}");
+} else {
+    appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (Embedded Workers){/magenta-fg}");
+    appendLog(`{bold}Store:{/bold} {green-fg}${store.includes("postgres") ? "Remote PostgreSQL" : store}{/green-fg}`);
+    appendLog(`{bold}Workers:{/bold} {yellow-fg}${numWorkers} local runtimes{/yellow-fg}`);
+}
 appendLog("");
 
+// 1. Start N worker runtimes (skip if WORKERS=0 for AKS mode)
+const workers = [];
+if (!isRemote) {
+    // Redirect Rust tracing to a log file so it doesn't corrupt the TUI
+    const logFile = "/tmp/duroxide-tui.log";
+    try { fs.writeFileSync(logFile, ""); } catch {} // truncate
+    try {
+        initTracing({
+            logFile,
+            logLevel: process.env.LOG_LEVEL || "info",
+            logFormat: "compact",
+        });
+    } catch {}
+
+    // Suppress stdout/stderr noise from Rust runtime init ("ready initialized" etc.)
+    const origStdoutWrite = process.stdout.write.bind(process.stdout);
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stdout.write = () => true;
+    process.stderr.write = () => true;
+
+    setStatus(`Starting ${numWorkers} workers...`);
+    for (let i = 0; i < numWorkers; i++) {
+        const w = new DurableCopilotClient({
+            store,
+            githubToken: process.env.GITHUB_TOKEN,
+            logLevel: process.env.LOG_LEVEL || "error",
+            blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
+            blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
+            workerNodeId: `local-rt-${i}`,
+        });
+        await w.start();
+        workers.push(w);
+        appendLog(`Worker local-rt-${i} started ✓`);
+    }
+
+    // Restore stdout/stderr after all workers initialized
+    process.stdout.write = origStdoutWrite;
+    process.stderr.write = origStderrWrite;
+
+    // Rust native code writes directly to fd 1/2 during init, bypassing Node
+    // and corrupting blessed's alt-screen buffer. Wipe the terminal and force
+    // blessed to fully repaint from scratch.
+    process.stdout.write("\x1b[2J\x1b[H");
+    screen.alloc();
+    screen.render();
+
+    // Tail the log file into per-worker panes
+    let tailPos = 0;
+    const instanceToWorker = new Map(); // instance_id → last known worker pane name
+    let tailReads = 0;
+    setInterval(() => {
+        try {
+            const stat = fs.statSync(logFile);
+            if (stat.size <= tailPos) return;
+            const fd = fs.openSync(logFile, "r");
+            const buf = Buffer.alloc(stat.size - tailPos);
+            fs.readSync(fd, buf, 0, buf.length, tailPos);
+            fs.closeSync(fd);
+            tailPos = stat.size;
+            const chunk = buf.toString("utf8");
+            // Split on timestamp boundaries — compact tracing format may not
+            // always emit trailing newlines between entries.
+            const entries = chunk.split(/(?=(?:\x1b\[[0-9;]*m)*\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)/);
+            let routed = 0;
+            // eslint-disable-next-line no-control-regex
+            const ansiRe = /\x1b\[[0-9;]*m/g;
+            for (const line of entries) {
+                const trimmed = line.replace(/\n/g, " ").trim();
+                if (!trimmed) continue;
+                // Strip ANSI color codes before matching (compact format adds colors)
+                const plain = trimmed.replace(ansiRe, "");
+                // Extract worker_id from activity logs (e.g., worker_id=work-1-local-rt-0)
+                const wMatch = plain.match(/worker_id=\S*?(local-rt-\d+)/);
+                let paneName = wMatch ? wMatch[1] : null;
+
+                // Extract instance_id to correlate orchestration logs with their worker
+                const iMatch = plain.match(/instance_id=(\S+)/);
+                const instanceId = iMatch ? iMatch[1] : null;
+
+                if (paneName && instanceId) {
+                    // Activity log — remember which worker handles this instance
+                    instanceToWorker.set(instanceId, paneName);
+                } else if (!paneName && instanceId) {
+                    // Orchestration log — route to the worker that last ran an activity for this instance
+                    paneName = instanceToWorker.get(instanceId) || null;
+                }
+
+                if (!paneName) continue; // skip unroutable lines
+
+                const formatted = plain
+                    .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
+                    .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
+                    .replace(/\bINFO\b/g, "{green-fg}INFO{/green-fg}");
+                appendWorkerLog(paneName, formatted);
+                routed++;
+            }
+            tailReads++;
+            screen.render();
+        } catch (e) {
+            appendLog(`{red-fg}Log tail error: ${e.message}{/red-fg}`);
+        }
+    }, 500);
+}
+
+// 2. Start the thin client (for creating orchestrations / reading status)
 const client = new DurableCopilotClient({
     store,
     blobEnabled: true,
 });
 
-setStatus("Connecting to remote DB...");
+setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
 await client.startClientOnly();
 setStatus("Ready — type a message");
-appendLog("Client connected ✓ {gray-fg}(no local runtime){/gray-fg}");
+appendLog(isRemote
+    ? "Client connected ✓ {gray-fg}(no local runtime){/gray-fg}"
+    : `Client connected ✓ {gray-fg}(${numWorkers} embedded workers){/gray-fg}`);
 
 // ─── Orchestrations tracking ─────────────────────────────────────
 
@@ -293,6 +408,9 @@ let orchStatusCache = new Map(); // id → { status, createdAt }
 let orchIdOrder = []; // IDs in display order (matches orchList items)
 const orchLastSeenVersion = new Map(); // id → customStatusVersion last seen by user
 const orchHasChanges = new Set(); // IDs with unseen changes
+const sessionHeadings = new Map(); // orchId → short heading from LLM
+const sessionSummaryBuffer = new Map(); // orchId → buffered summary text to show on switch
+const sessionSummarized = new Set(); // orchIds already summarized (avoid re-asking)
 
 function getDc() {
     try { return client._getDuroxideClient(); } catch { return null; }
@@ -354,13 +472,8 @@ async function refreshOrchestrations() {
         }
     }
 
-    // Sort: Running first, then by createdAt descending
-    entries.sort((a, b) => {
-        const aRunning = a.status === "Running" ? 0 : 1;
-        const bRunning = b.status === "Running" ? 0 : 1;
-        if (aRunning !== bRunning) return aRunning - bRunning;
-        return b.createdAt - a.createdAt;
-    });
+    // Sort by createdAt descending (stable — no status-based reordering)
+    entries.sort((a, b) => b.createdAt - a.createdAt);
 
     // Rebuild ordered ID list to match display order
     orchIdOrder = entries.map(e => e.id);
@@ -392,7 +505,11 @@ async function refreshOrchestrations() {
             const isActive = id === activeOrchId;
             const marker = isActive ? "{bold}▸{/bold}" : " ";
             const changeDot = hasChanges ? "{cyan-fg}{bold}●{/bold}{/cyan-fg} " : "";
-            orchList.addItem(`${marker}${changeDot}{${color}-fg}${uuid4} ${timeStr}{/${color}-fg}`);
+            const heading = sessionHeadings.get(id);
+            const label = heading
+                ? `${heading} (${uuid4})`
+                : `${uuid4} ${timeStr}`;
+            orchList.addItem(`${marker}${changeDot}{${color}-fg}${label}{/${color}-fg}`);
         }
     }
     // Restore cursor position
@@ -532,8 +649,15 @@ function startLogStream() {
     }
 }
 
-startLogStream();
-appendLog("{green-fg}Streaming AKS worker logs ↓{/green-fg}");
+if (isRemote) {
+    startLogStream();
+    appendLog("{green-fg}Streaming AKS worker logs ↓{/green-fg}");
+} else {
+    // In local mode, create panes for the embedded workers
+    for (let i = 0; i < numWorkers; i++) {
+        getOrCreateWorkerPane(`local-rt-${i}`);
+    }
+}
 
 const SYSTEM_MESSAGE = "You are a helpful assistant running in a durable execution environment. Be concise. CRITICAL RULE: When you need to wait, pause, sleep, delay, or do anything periodically/recurring, you MUST use the 'wait' tool. NEVER use bash sleep, setTimeout, setInterval, detached processes, or any other timing mechanism. The 'wait' tool is the only way to wait — it enables durable timers that survive process restarts and node migrations.";
 
@@ -659,8 +783,16 @@ function startObserver(orchId) {
                     if (cs.turnResult && cs.iteration > lastIteration) {
                         lastIteration = cs.iteration;
                         if (cs.turnResult.type === "completed") {
+                            let displayContent = cs.turnResult.content;
+                            // Extract HEADING if present (from summary requests)
+                            const hMatch = displayContent.match(/^HEADING:\s*(.+)/m);
+                            if (hMatch) {
+                                sessionHeadings.set(orchId, hMatch[1].trim().slice(0, 40));
+                                displayContent = displayContent.replace(/^HEADING:.*\n?/m, "").trim();
+                                refreshOrchestrations();
+                            }
                             if (!cs.intermediateContent || cs.intermediateContent !== cs.turnResult.content) {
-                                showCopilotMessage(cs.turnResult.content);
+                                showCopilotMessage(displayContent);
                             }
                             if (cs.status === "idle") {
                                 setStatus("Ready — type a message");
@@ -705,9 +837,10 @@ function startObserver(orchId) {
 
 /**
  * Switch the chat context to a different orchestration.
+ * Sends an interrupt asking for a summary + last message, then asks it to resume.
  */
 function switchToOrchestration(orchId) {
-    if (orchId === activeOrchId) return;
+    const isSameSession = orchId === activeOrchId;
 
     activeOrchId = orchId;
     // Clear unseen-changes flag and snapshot the current version
@@ -730,17 +863,37 @@ function switchToOrchestration(orchId) {
     activeSessionShort = `${uuid4}${timeStr ? " " + timeStr : ""}`;
     turnInProgress = false;
 
-    // Clear chat and show switch indicator
-    chatBox.setContent("");
-    updateChatLabel();
-    appendChatRaw(`{yellow-fg}── Switched to ${activeSessionShort} ──{/yellow-fg}`);
-    appendChatRaw("");
+    // Clear chat and show switch indicator (only when switching to a different session)
+    if (!isSameSession) {
+        chatBox.setContent("");
+        chatBox.setScrollPerc(0);
+        // Wipe the entire screen to clear any residual characters
+        screen.alloc();
+        screen.render();
+        updateChatLabel();
+        appendChatRaw(`{yellow-fg}── Switched to ${activeSessionShort} ──{/yellow-fg}`);
+        appendChatRaw("");
 
-    // Start observing the new orchestration
-    startObserver(orchId);
+        // Start observing the new orchestration
+        startObserver(orchId);
 
-    // Refresh list to update ▸ marker
-    refreshOrchestrations();
+        // Refresh list to update ▸ marker
+        refreshOrchestrations();
+    }
+
+    // Send an interrupt asking for a summary and to resume.
+    // The orchestration may be in different states:
+    //   - waiting on timer → listening for "interrupt"
+    //   - idle (awaiting message) → listening for "next-message"
+    //   - running a turn → listening for "interrupt"
+    // Send both events so whichever listener is active picks it up.
+    // Only show buffered summary if available (populated at TUI startup)
+    const buffered = sessionSummaryBuffer.get(orchId);
+    if (buffered) {
+        showCopilotMessage(buffered);
+        sessionSummaryBuffer.delete(orchId);
+        setStatus("Ready — type a message");
+    }
 }
 
 updateChatLabel();
@@ -865,7 +1018,9 @@ async function cleanup() {
     clearInterval(orchPollTimer);
     if (observerAbort) { observerAbort.abort(); observerAbort = null; }
     if (kubectlProc) { try { kubectlProc.kill(); } catch {} }
-    setStatus("Disconnecting...");
+    setStatus("Shutting down workers...");
+    await Promise.allSettled(workers.map(w => w.stop()));
+    setStatus("Disconnecting client...");
     await client.stop();
 }
 
@@ -964,6 +1119,88 @@ appendChatRaw("");
 
 // Initial orchestration refresh
 await refreshOrchestrations();
+
+// ─── Auto-summarize all existing sessions on startup ─────────────
+async function summarizeSession(orchId) {
+    if (sessionSummarized.has(orchId)) return;
+    sessionSummarized.add(orchId);
+
+    const dc = getDc();
+    if (!dc) return;
+
+    const resumePrompt =
+        'First line of your response MUST be: HEADING: <3-5 word summary of this session>\n' +
+        'Then give me a brief summary of what you\'ve been doing, what the last message you sent me was, and then resume what you were doing.';
+
+    // Get current version before sending
+    let baseVersion = 0;
+    try {
+        const info = await dc.getStatus(orchId);
+        baseVersion = info?.customStatusVersion || 0;
+    } catch { return; }
+
+    // Send both interrupt + next-message (one will land)
+    try {
+        await Promise.allSettled([
+            dc.raiseEvent(orchId, "interrupt", { prompt: resumePrompt }),
+            dc.raiseEvent(orchId, "next-message", { prompt: resumePrompt }),
+        ]);
+    } catch { return; }
+
+    // Wait for a response (up to 60s)
+    const deadline = Date.now() + 60_000;
+    let version = baseVersion;
+    while (Date.now() < deadline) {
+        try {
+            const result = await dc.waitForStatusChange(orchId, version, 200, 15_000);
+            if (result.customStatusVersion > version) {
+                version = result.customStatusVersion;
+            }
+            let cs = null;
+            if (result.customStatus) {
+                try {
+                    cs = typeof result.customStatus === "string"
+                        ? JSON.parse(result.customStatus) : result.customStatus;
+                } catch {}
+            }
+            if (cs?.turnResult?.type === "completed" && cs.turnResult.content) {
+                const content = cs.turnResult.content;
+                // Extract heading from first line
+                const headingMatch = content.match(/^HEADING:\s*(.+)/m);
+                if (headingMatch) {
+                    const heading = headingMatch[1].trim().slice(0, 40);
+                    sessionHeadings.set(orchId, heading);
+                    // Remove the HEADING line from the buffered content
+                    const rest = content.replace(/^HEADING:.*\n?/m, "").trim();
+                    sessionSummaryBuffer.set(orchId, rest);
+                } else {
+                    sessionSummaryBuffer.set(orchId, content);
+                }
+                // Refresh list to show new heading
+                refreshOrchestrations();
+                const uuid4 = orchId.startsWith("session-") ? orchId.slice(8, 12) : orchId.slice(0, 4);
+                appendLog(`{green-fg}✓ Summarized ${uuid4}: ${sessionHeadings.get(orchId) || "done"}{/green-fg}`);
+                return;
+            }
+        } catch {
+            await new Promise(r => setTimeout(r, 1000));
+        }
+    }
+}
+
+// Kick off summarization for all known sessions (in parallel, max 3 at a time)
+(async () => {
+    const ids = [...knownOrchestrationIds].filter(id => id !== activeOrchId);
+    appendLog(`{cyan-fg}Summarizing ${ids.length} session(s)...{/cyan-fg}`);
+    // Process in batches of 3
+    for (let i = 0; i < ids.length; i += 3) {
+        const batch = ids.slice(i, i + 3);
+        await Promise.allSettled(batch.map(id => summarizeSession(id)));
+    }
+    if (ids.length > 0) {
+        appendLog(`{cyan-fg}All sessions summarized ✓{/cyan-fg}`);
+    }
+})();
 
 orchList.focus();
 screen.render();
