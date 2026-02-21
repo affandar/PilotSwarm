@@ -349,14 +349,14 @@ export class DurableCopilotClient {
                 input
             );
             this.activeOrchestrations.set(sessionId, orchestrationId);
-        } else {
-            // Subsequent message — raise event on existing orchestration
-            await this.duroxideClient.raiseEvent(
-                orchestrationId,
-                "next-message",
-                { prompt }
-            );
         }
+
+        // Enqueue prompt to the unified messages queue
+        await this.duroxideClient.enqueueEvent(
+            orchestrationId,
+            "messages",
+            JSON.stringify({ prompt })
+        );
 
         // Wait for the turn result via event queue
         return this._waitForTurnResult(
@@ -464,8 +464,9 @@ export class DurableCopilotClient {
                             },
                             { sessionId }
                         );
-                        await this.duroxideClient.raiseEvent(
-                            orchestrationId, "user-input", response
+                        await this.duroxideClient.enqueueEvent(
+                            orchestrationId, "messages",
+                            JSON.stringify(response)
                         );
                         // Continue waiting for the next turn result
                         continue;
@@ -521,14 +522,14 @@ export class DurableCopilotClient {
                 input
             );
             this.activeOrchestrations.set(sessionId, orchestrationId);
-        } else {
-            // Subsequent message — raise event on existing orchestration
-            await this.duroxideClient.raiseEvent(
-                orchestrationId,
-                "next-message",
-                { prompt }
-            );
         }
+
+        // Enqueue prompt to the unified messages queue
+        await this.duroxideClient.enqueueEvent(
+            orchestrationId,
+            "messages",
+            JSON.stringify({ prompt })
+        );
 
         return orchestrationId;
     }
@@ -659,13 +660,19 @@ export class DurableSession {
     }
 
     /**
-     * Send an event to the session (e.g., user input response, interrupt).
+     * Send an event to the session's message queue.
+     * All messages (prompts, user-input answers, interrupts) go through
+     * the unified "messages" queue.
      */
     async sendEvent(eventName: string, data: unknown): Promise<void> {
         const duroxideClient = this.client._getDuroxideClient();
         const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
         if (duroxideClient) {
-            await duroxideClient.raiseEvent(orchestrationId, eventName, data);
+            await duroxideClient.enqueueEvent(
+                orchestrationId,
+                "messages",
+                JSON.stringify(data)
+            );
         }
     }
 

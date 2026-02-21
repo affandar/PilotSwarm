@@ -319,11 +319,11 @@ let turnInProgress = false;
 
 async function sendMessage(trimmed) {
     if (turnInProgress) {
-        // Interrupt: raise event to cancel the running turn and start this one
+        // Interrupt: enqueue message to cancel the running turn and start this one
         setStatus("⚡ Interrupting current turn...");
         if (isScaled) appendLog(`⚡ Interrupt: "${trimmed.slice(0, 40)}…"`);
         try {
-            await session.sendEvent("interrupt", { prompt: trimmed });
+            await session.sendEvent("messages", { prompt: trimmed });
         } catch (err) {
             appendLog(`{red-fg}Interrupt failed: ${err.message}{/red-fg}`);
         }
