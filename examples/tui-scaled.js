@@ -881,12 +881,7 @@ function switchToOrchestration(orchId) {
         refreshOrchestrations();
     }
 
-    // Send an interrupt asking for a summary and to resume.
-    // The orchestration may be in different states:
-    //   - waiting on timer → listening for "interrupt"
-    //   - idle (awaiting message) → listening for "next-message"
-    //   - running a turn → listening for "interrupt"
-    // Send both events so whichever listener is active picks it up.
+    // Show buffered summary if available (populated at TUI startup via enqueueEvent)
     // Only show buffered summary if available (populated at TUI startup)
     const buffered = sessionSummaryBuffer.get(orchId);
     if (buffered) {
@@ -938,7 +933,7 @@ async function handleInput(text) {
         const dc = getDc();
         if (dc) {
             try {
-                await dc.raiseEvent(activeOrchId, "user-input", { answer: trimmed, wasFreeform: true });
+                await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({ answer: trimmed, wasFreeform: true }));
             } catch {}
         }
         resolve({ answer: trimmed, wasFreeform: true });
@@ -954,7 +949,7 @@ async function handleInput(text) {
         setStatus("Interrupting...");
         try {
             const dc = getDc();
-            if (dc) await dc.raiseEvent(activeOrchId, "interrupt", { prompt: trimmed });
+            if (dc) await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({ prompt: trimmed }));
         } catch (err) {
             appendChatRaw(`{red-fg}Interrupt failed: ${err.message}{/red-fg}`);
         }
@@ -988,10 +983,10 @@ async function handleInput(text) {
                 screen.render();
             });
         } else {
-            // No session object — send via raiseEvent (existing orchestration)
+            // No session object — send via enqueueEvent (existing orchestration)
             const dc = getDc();
             if (dc) {
-                await dc.raiseEvent(activeOrchId, "next-message", { prompt: trimmed });
+                await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({ prompt: trimmed }));
             }
         }
     } catch (err) {
@@ -1139,11 +1134,10 @@ async function summarizeSession(orchId) {
         baseVersion = info?.customStatusVersion || 0;
     } catch { return; }
 
-    // Send both interrupt + next-message (one will land)
+    // Send message to the unified queue (one enqueue is enough — FIFO)
     try {
         await Promise.allSettled([
-            dc.raiseEvent(orchId, "interrupt", { prompt: resumePrompt }),
-            dc.raiseEvent(orchId, "next-message", { prompt: resumePrompt }),
+            dc.enqueueEvent(orchId, "messages", JSON.stringify({ prompt: resumePrompt })),
         ]);
     } catch { return; }
 
