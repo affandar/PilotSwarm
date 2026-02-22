@@ -10,33 +10,6 @@ function setStatus(ctx: any, status: DurableSessionStatus, extra?: Record<string
 }
 
 /**
- * Parse a value returned from ctx.race().
- *
- * Workaround for duroxide-node double-serialization bug (duroxide#59):
- * ctx.race() wraps dequeueEvent values in an extra JSON.stringify(),
- * so callers get a string-within-a-string. This helper peels the
- * extra layer if present.
- *
- * TODO: Remove once duroxide-node fixes the Select handler in handlers.rs.
- * @internal
- */
-function parseRaceValue(value: unknown): any {
-    if (value == null) return {};
-    if (typeof value === "object") return value;
-    if (typeof value !== "string") return {};
-    try {
-        const parsed = JSON.parse(value);
-        // If still a string after one parse, it was double-serialized — parse again
-        if (typeof parsed === "string") {
-            try { return JSON.parse(parsed); } catch { return parsed; }
-        }
-        return parsed;
-    } catch {
-        return {};
-    }
-}
-
-/**
  * Long-lived durable session orchestration.
  *
  * One orchestration per copilot session. Uses a single FIFO event queue
@@ -261,7 +234,8 @@ export function* durableSessionOrchestration(
                     if (raceResult.index === 0) {
                         // User sent a message within idle window — stay warm
                         ctx.traceInfo("[session] user responded within idle window, staying warm");
-                        const raceMsg = parseRaceValue(raceResult.value);
+                        const raceMsg = typeof raceResult.value === "string"
+                            ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
                         const racePrompt = raceMsg.prompt;
                         if (racePrompt) {
                             // continueAsNew with the prompt carried over
@@ -317,7 +291,8 @@ export function* durableSessionOrchestration(
 
                     if (timerRace.index === 1) {
                         // Message arrived during wait — treat as interrupt
-                        const interruptData = parseRaceValue(timerRace.value);
+                        const interruptData = typeof timerRace.value === "string"
+                            ? JSON.parse(timerRace.value) : (timerRace.value ?? {});
                         ctx.traceInfo(
                             `[session] wait interrupted: "${(interruptData.prompt || "").slice(0, 60)}"`
                         );
@@ -411,7 +386,8 @@ export function* durableSessionOrchestration(
 
                     if (raceResult.index === 0) {
                         ctx.traceInfo("[durable-agent] User answered within grace period");
-                        const answerData = parseRaceValue(raceResult.value);
+                        const answerData = typeof raceResult.value === "string"
+                            ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
                         yield ctx.continueAsNew(continueInput({
                             prompt: `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
                             needsHydration: false,
