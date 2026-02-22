@@ -1480,7 +1480,19 @@ let currentModel = process.env.COPILOT_MODEL || "claude-opus-4.5";
 
 // Pending command responses — keyed by correlation ID
 // Observer matches cmdResponse.id and displays results
-const pendingCommands = new Map(); // id → { cmd, resolve }
+const pendingCommands = new Map(); // id → { cmd, resolve, timer }
+
+// Auto-timeout pending commands after 15 seconds
+function addPendingCommand(cmdId, cmd) {
+    const timer = setTimeout(() => {
+        if (pendingCommands.has(cmdId)) {
+            pendingCommands.delete(cmdId);
+            appendChatRaw(`{yellow-fg}⏱ Command timed out: ${cmd} — the orchestration may be restarting. Try again.{/yellow-fg}`);
+            screen.render();
+        }
+    }, 15_000);
+    pendingCommands.set(cmdId, { cmd, resolve: null, timer });
+}
 
 async function createNewSession() {
     const sess = await client.createSession({
@@ -1628,6 +1640,7 @@ function startObserver(orchId) {
                         const resp = cs.cmdResponse;
                         const pending = pendingCommands.get(resp.id);
                         if (pending) {
+                            if (pending.timer) clearTimeout(pending.timer);
                             pendingCommands.delete(resp.id);
                             if (resp.error) {
                                 appendChatRaw(`{red-fg}❌ Command failed: ${resp.error}{/red-fg}`, orchId);
@@ -1833,6 +1846,30 @@ function getActiveSession() {
     return sessions.get(sid) || null;
 }
 
+// Helper: ensure the orchestration for the active session is started.
+// Slash commands need a running orchestration to enqueue events into.
+// If no session/orchestration exists yet, create one via send("") which
+// starts the orchestration and enters the idle dequeue loop.
+async function ensureOrchestrationStarted() {
+    const sess = getActiveSession();
+    if (!sess) return; // shouldn't happen
+    // Check if orchestration exists
+    const dc = getDc();
+    if (!dc) return;
+    try {
+        const info = await dc.getStatus(activeOrchId);
+        if (info && info.status !== "NotFound") return; // already running
+    } catch {
+        // Not found — need to start it
+    }
+    // Start the orchestration by sending an empty prompt
+    await sess.send("");
+    knownOrchestrationIds.add(activeOrchId);
+    startObserver(activeOrchId);
+    // Small delay to let the orchestration enter the idle dequeue loop
+    await new Promise(r => setTimeout(r, 1000));
+}
+
 // ─── Input handling ──────────────────────────────────────────────
 
 let turnInProgress = false;
@@ -1873,8 +1910,10 @@ async function handleInput(text) {
                 const cmdId = crypto.randomUUID().slice(0, 8);
                 appendChatRaw("{yellow-fg}Fetching models...{/yellow-fg}");
                 screen.render();
-                pendingCommands.set(cmdId, { cmd: "list_models", resolve: null });
+                addPendingCommand(cmdId, "list_models");
                 try {
+                    // Ensure orchestration exists before sending command
+                    await ensureOrchestrationStarted();
                     await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({
                         type: "cmd", cmd: "list_models", id: cmdId,
                     }));
@@ -1888,8 +1927,9 @@ async function handleInput(text) {
                 currentModel = arg;
                 appendChatRaw(`{yellow-fg}Switching model to ${arg}...{/yellow-fg}`);
                 screen.render();
-                pendingCommands.set(cmdId, { cmd: "set_model", resolve: null });
+                addPendingCommand(cmdId, "set_model");
                 try {
+                    await ensureOrchestrationStarted();
                     await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({
                         type: "cmd", cmd: "set_model", args: { model: arg }, id: cmdId,
                     }));
@@ -1914,8 +1954,9 @@ async function handleInput(text) {
             const cmdId = crypto.randomUUID().slice(0, 8);
             appendChatRaw("{yellow-fg}Fetching session info...{/yellow-fg}");
             screen.render();
-            pendingCommands.set(cmdId, { cmd: "get_info", resolve: null });
+            addPendingCommand(cmdId, "get_info");
             try {
+                await ensureOrchestrationStarted();
                 await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({
                     type: "cmd", cmd: "get_info", id: cmdId,
                 }));
@@ -1996,6 +2037,7 @@ async function handleInput(text) {
 
     appendChatRaw(`{gray-fg}[${ts()}]{/gray-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
     inputBar.clearValue();
+    inputBar.focus();
     turnInProgress = true;
     setStatus("Thinking... (waiting for AKS worker)");
     screen.render();
