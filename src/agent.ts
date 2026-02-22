@@ -157,6 +157,19 @@ export class DurableCopilotClient {
         }
     }
 
+    /**
+     * Update the model for an existing session.
+     * Takes effect on the next turn (next orchestration start or continueAsNew).
+     */
+    updateSessionModel(sessionId: string, model: string): void {
+        const existing = this.sessionConfigs.get(sessionId);
+        if (existing) {
+            existing.model = model;
+        } else {
+            this.sessionConfigs.set(sessionId, { model });
+        }
+    }
+
     // ─── Server Lifecycle ────────────────────────────────────────
 
     /**

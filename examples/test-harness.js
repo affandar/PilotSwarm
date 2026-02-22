@@ -143,6 +143,7 @@ class CoreEngine {
 
     async createSession(systemMessage) {
         const sess = await this.client.createSession({
+            model: "claude-opus-4.5",
             systemMessage: systemMessage || SYSTEM_MESSAGE,
         });
         const orchId = `session-${sess.sessionId}`;

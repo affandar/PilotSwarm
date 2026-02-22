@@ -47,6 +47,7 @@ const client = new DurableCopilotClient({
 await client.start();
 
 const session = await client.createSession({
+    model: "claude-opus-4.5",
     systemMessage: "You are a helpful assistant. Be concise.",
     onUserInputRequest: async (request) => {
         console.log();
