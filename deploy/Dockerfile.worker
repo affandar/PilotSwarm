@@ -6,9 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 WORKDIR /app
 
-# Copy package manifests and install (gets duroxide-linux-x64-gnu from npm)
+# Copy package manifests and install
 COPY package.json package-lock.json ./
-RUN npm install --omit=dev --ignore-scripts --force
+RUN npm install --omit=dev --force
 
 # Copy built dist and worker script
 COPY dist/ ./dist/

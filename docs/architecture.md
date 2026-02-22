@@ -14,7 +14,7 @@ The GitHub Copilot SDK lets you build AI agents that call tools, answer question
 
 5. **No async user input.** When the agent asks a question (`ask_user`), it blocks the process waiting for stdio input. There's no way to route the question to a web UI, Slack, or email and resume later.
 
-`durable-copilot-sdk` solves all of these by wrapping the Copilot SDK with [duroxide](https://github.com/affandar/duroxide), a durable execution framework. The developer's code barely changes — they use the same `defineTool()` API, the same model selection, the same system prompts. They just swap `CopilotClient` for `DurableCopilotClient` and add a database connection string.
+`durable-copilot-sdk` solves all of these by wrapping the Copilot SDK with [duroxide](https://github.com/microsoft/duroxide), a durable execution framework. The developer's code barely changes — they use the same `defineTool()` API, the same model selection, the same system prompts. They just swap `CopilotClient` for `DurableCopilotClient` and add a database connection string.
 
 ---
 

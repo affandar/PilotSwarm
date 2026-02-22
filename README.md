@@ -2,7 +2,7 @@
 
 Make Copilot SDK apps durable with zero orchestration code.
 
-Wraps the [GitHub Copilot SDK](https://github.com/github/copilot-sdk) with [duroxide](https://github.com/affandar/duroxide) to give your AI agents **durable timers, crash recovery, and multi-node scaling** — just add a connection string.
+Wraps the [GitHub Copilot SDK](https://github.com/github/copilot-sdk) with [duroxide](https://github.com/microsoft/duroxide) to give your AI agents **durable timers, crash recovery, and multi-node scaling** — just add a connection string.
 
 ## Quick Start
 
@@ -66,7 +66,7 @@ await client.stop();
 - No worker affinity or activity tags
 - No blob storage configuration (until Phase 3)
 
-The framework handles all of this internally using [duroxide](https://github.com/affandar/duroxide).
+The framework handles all of this internally using [duroxide](https://github.com/microsoft/duroxide).
 
 ## API
 
