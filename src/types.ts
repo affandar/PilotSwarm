@@ -230,3 +230,36 @@ export interface TurnInput {
     /** Model override passed through durable state. */
     model?: string;
 }
+
+// ─── Command Messages ────────────────────────────────────────────
+// Slash commands sent via the "messages" event queue.
+
+/**
+ * A command message sent from the TUI/client to the orchestration.
+ * Distinguished from prompt messages by `type: "cmd"`.
+ * @internal
+ */
+export interface CommandMessage {
+    type: "cmd";
+    /** Command name: "list_models", "set_model", "get_info" */
+    cmd: string;
+    /** Command arguments */
+    args?: Record<string, unknown>;
+    /** Correlation ID so the TUI can match the response */
+    id: string;
+}
+
+/**
+ * Response to a CommandMessage, embedded in customStatus.
+ * @internal
+ */
+export interface CommandResponse {
+    /** Correlation ID matching the request */
+    id: string;
+    /** Command that was executed */
+    cmd: string;
+    /** Result payload (command-specific) */
+    result?: unknown;
+    /** Error message if command failed */
+    error?: string;
+}

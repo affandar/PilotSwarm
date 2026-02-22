@@ -33,6 +33,8 @@ export type {
     UserInputResponse,
     UserInputHandler,
     TurnResult,
+    CommandMessage,
+    CommandResponse,
 } from "./types.js";
 
 // Re-export defineTool from Copilot SDK for convenience
