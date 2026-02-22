@@ -60,14 +60,14 @@ The system has two endpoints — the **client** (user intent) and the **CopilotS
   +----------------+        |   ORCHESTRATION (coordination / async layer)   |
   |                |        |                                                |        +-------------------+
   |   CLIENT       |        |   Adds:                                        |        |  SESSION MANAGER  |
-  |                |        |     - crash resilience (replay-safe state)      |        |                   |
+  |                |        |     - crash resilience (replay-safe state)     |        |                   |
   |  send()    ----+--enq-->|     - durable timers (PG-backed)               |--act-->|  ManagedSession   |
   |  abort()   ----+--enq-->|     - scale-out / relocation (affinity)        |--act-->|   .runTurn()      |
   |  destroy() ----+--enq-->|     - async mediation (race, dequeue)          |--act-->|   .abort()        |
   |                |        |                                                |        |   .destroy()      |
-  |  on()      <---+--CMS--|= = = = = = = = = = = = = = = = = = = = = = = = |--CMS<--|   .on() --> CMS   |
-  |  getMsg()  <---+--CMS--|   (orchestration never touches CMS --           |        |                   |
-  |                |        |    it's a direct session --> client channel)    |        |  CopilotSession   |
+  |  on()      <---+--CMS-- | = = = = = = = = = = = = = = = = = = = = = = =  |--CMS<--|   .on() --> CMS   |
+  |  getMsg()  <---+--CMS-- |  (orchestration never touches CMS --           |        |                   |
+  |                |        |    it's a direct session --> client channel)   |        |  CopilotSession   |
   +----------------+        |                                                |        |  (real CLI proc)  |
                             +------------------------------------------------+        +-------------------+
                                                |
@@ -76,8 +76,8 @@ The system has two endpoints — the **client** (user intent) and the **CopilotS
                                                |
                                       +--------+--------+
                                       |   PostgreSQL    |
-                                      |  duroxide schema |
-                                      |  CMS schema      |
+                                      |  duroxide schema|
+                                      |  CMS schema     |
                                       +-----------------+
 ```
 
@@ -89,12 +89,38 @@ Two data flows, cleanly separated:
 
 Activities are **not** a logic layer. They exist solely as the mechanism for the orchestration (which runs in the duroxide replay engine) to call methods on the `SessionManager` and `ManagedSession` (which run in normal async code on the worker).
 
-To make this transparent, we define a **`SessionProxy`** — a thin wrapper that replicates the `SessionManager` and `ManagedSession` interface using `scheduleActivity` calls. The orchestration code uses `SessionProxy` instead of raw activity names, so it reads like direct method calls:
+To make this transparent, we define two proxies that replicate the worker-side interfaces using `scheduleActivity` calls. The orchestration code uses these proxies instead of raw activity names, so it reads like direct method calls.
+
+#### SessionManagerProxy
+
+The `SessionManagerProxy` represents the orchestration's view of the `SessionManager` singleton on the worker. It handles session lifecycle operations that are not scoped to a specific session's affinity:
 
 ```typescript
 /**
- * SessionProxy — the orchestration's view of the SessionManager.
- * Each method maps 1:1 to an activity that dispatches to the real interface.
+ * SessionManagerProxy — orchestration's view of the SessionManager.
+ * Operations that manage the session catalog or don't require session affinity.
+ */
+function createSessionManagerProxy(ctx: any) {
+    return {
+        // ─── SessionManager lifecycle ────────────────────
+        listActiveSessions() {
+            return ctx.scheduleActivity("listActiveSessions", {});
+        },
+        listModels() {
+            return ctx.scheduleActivity("listModels", {});
+        },
+    };
+}
+```
+
+#### SessionProxy
+
+The `SessionProxy` represents the orchestration's view of a specific `ManagedSession` on a specific worker node (via affinity key). It wraps both `ManagedSession` methods and session-scoped `SessionManager` methods:
+
+```typescript
+/**
+ * SessionProxy — orchestration's view of a specific ManagedSession.
+ * Each method maps 1:1 to an activity dispatched to the session's worker node.
  */
 function createSessionProxy(ctx: any, sessionId: string, affinityKey: string, config: SessionConfig) {
     return {
@@ -104,10 +130,20 @@ function createSessionProxy(ctx: any, sessionId: string, affinityKey: string, co
                 "runTurn", { sessionId, prompt, config }, affinityKey
             );
         },
+        registerTools(tools: ToolDefinition[]) {
+            return ctx.scheduleActivityOnSession(
+                "registerTools", { sessionId, tools }, affinityKey
+            );
+        },
+        updateModel(model: string) {
+            return ctx.scheduleActivityOnSession(
+                "updateModel", { sessionId, model }, affinityKey
+            );
+        },
         // abort() is not a separate activity — it's handled by
         // cancelling the runTurn activity via race (cooperative cancellation).
 
-        // ─── SessionManager interface ────────────────────
+        // ─── SessionManager (session-scoped) ─────────────
         dehydrate(reason: string) {
             return ctx.scheduleActivityOnSession(
                 "dehydrateSession", { sessionId, reason }, affinityKey
@@ -118,10 +154,10 @@ function createSessionProxy(ctx: any, sessionId: string, affinityKey: string, co
                 "hydrateSession", { sessionId }, affinityKey
             );
         },
-
-        // ─── Standalone ──────────────────────────────────
-        listModels() {
-            return ctx.scheduleActivity("listModels", {});
+        destroy() {
+            return ctx.scheduleActivityOnSession(
+                "destroySession", { sessionId }, affinityKey
+            );
         },
     };
 }
@@ -130,39 +166,50 @@ function createSessionProxy(ctx: any, sessionId: string, affinityKey: string, co
 The orchestration then reads naturally:
 
 ```typescript
+const manager = createSessionManagerProxy(ctx);
 let session = createSessionProxy(ctx, input.sessionId, affinityKey, input.config);
 
-// Reads like: "run a turn on the session"
+// Reads like a normal API
 const result = yield session.runTurn(prompt);
-
-// Reads like: "dehydrate the session"
 yield session.dehydrate("idle-timeout");
 
-// After affinity reset, get a new proxy pointing to the new node
+// After affinity reset, get a new proxy pointing to the (potentially different) node
 affinityKey = yield ctx.newGuid();
 session = createSessionProxy(ctx, input.sessionId, affinityKey, input.config);
-
-// Reads like: "hydrate the session on the new node"
 yield session.hydrate();
+
+// Manager-level operations (no affinity needed)
+const models = yield manager.listModels();
 ```
 
-The mapping is 1:1:
+#### Activity-to-Interface Mapping
 
-| SessionProxy method | Activity | SessionManager / ManagedSession method |
+**SessionProxy (session-scoped, affinity-pinned):**
+
+| SessionProxy method | Activity | Worker-side call |
 |---|---|---|
-| `session.runTurn(prompt)` | `"runTurn"` | `sessionManager.getOrCreate(id).runTurn(prompt)` |
+| `session.runTurn(prompt)` | `"runTurn"` | `sessionManager.getOrCreate(id, cfg).runTurn(prompt)` |
+| `session.registerTools(tools)` | `"registerTools"` | `sessionManager.get(id).registerTools(tools)` |
+| `session.updateModel(model)` | `"updateModel"` | `sessionManager.get(id).updateModel(model)` |
 | `session.dehydrate(reason)` | `"dehydrateSession"` | `sessionManager.dehydrate(id, reason)` |
 | `session.hydrate()` | `"hydrateSession"` | `blobStore.hydrate(id)` |
-| `session.listModels()` | `"listModels"` | `copilotClient.listModels()` + CMS cache write |
+| `session.destroy()` | `"destroySession"` | `sessionManager.get(id).destroy()` |
 
-Four activities. Four proxy methods. Four one-liner activity bodies. All logic lives in `ManagedSession` (turn execution, event handling, CMS writes) and the orchestration (state machine, timers, dehydration decisions).
+**SessionManagerProxy (global, no affinity):**
+
+| SessionManagerProxy method | Activity | Worker-side call |
+|---|---|---|
+| `manager.listActiveSessions()` | `"listActiveSessions"` | `sessionManager.activeSessionIds()` |
+| `manager.listModels()` | `"listModels"` | `copilotClient.listModels()` + CMS cache write |
+
+All activity bodies are one-liners. All logic lives in `ManagedSession` (turn execution, event handling, CMS writes) and the orchestration (state machine, timers, dehydration decisions). The activities and proxies are pure plumbing.
 
 ### 3.2 Physical View
 
 ```
-+----------------------+           +-------------------------------+
-|  Laptop / CI         |           |  PostgreSQL                   |
-|                      |           |                               |
++----------------------+           +------------------------------+
+|  Laptop / CI         |           |  PostgreSQL                  |
+|                      |           |                              |
 |  TUI / API client    |<-------->|  duroxide_copilot schema      |
 |  (DurableSession)    |   SQL    |    (orchestration history,    |
 |                      |          |     work items, timers)       |
