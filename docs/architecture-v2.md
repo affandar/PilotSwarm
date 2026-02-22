@@ -60,8 +60,8 @@ The system has two endpoints — the **client** (user intent) and the **CopilotS
 |  Client  |-------------------------------+
 |          |                               |
 +----+-----+                               v
-     |                       +---------------------------+
-     |                       | Copilot Instance           |
+     |                       +-----------------------------+
+     |                       | Copilot Instance            |
      |                       | Orchestration (coordinator) |
      |                       |                             |
      |                       | Adds:                       |
@@ -77,9 +77,9 @@ The system has two endpoints — the **client** (user intent) and the **CopilotS
      |                  | Session     |------------>| | +--SessionProxy----+
      |                  | Manager     |             | | |  SessionProxy    |
      |                  |             |             +-| |                  |
-     |                  +--+------+---+               +-| Copilot SDK/    |
-     |                     |      |                     | CLI Session     |
-     |                     |      | dehydrate/          +--+--------------+
+     |                  +--+------+---+               +-| Copilot SDK/     |
+     |                     |      |                     | CLI Session      |
+     |                     |      | dehydrate/          +--+---------------+
      |  reads              |      | hydrate                |
      |  (events,           |      |                        | writes
      |   messages,         |      v                        | (events,
