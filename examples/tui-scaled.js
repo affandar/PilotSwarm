@@ -430,6 +430,23 @@ function parseSeqEvent(plain, podName) {
     if (plain.includes("activity_name=hydrateSession")) {
         return { orchId, time, type: "hydrate_act", orchNode, actNode };
     }
+    if (plain.includes("activity_name=listModels")) {
+        return { orchId, time, type: "listmodels_act", orchNode, actNode };
+    }
+
+    // ─── Command dispatch events ──────────
+    if (plain.includes("[orch-cmd]")) {
+        const cmdMatch = plain.match(/received command: (\S+)/);
+        if (cmdMatch) {
+            return { orchId, time, type: "cmd_recv", orchNode, actNode,
+                cmd: cmdMatch[1] };
+        }
+        const modelMatch = plain.match(/model changed: (.+)/);
+        if (modelMatch) {
+            return { orchId, time, type: "cmd_done", orchNode, actNode,
+                detail: modelMatch[1] };
+        }
+    }
 
     // ─── Grace period dehydration ──────────
     if (plain.includes("Grace period elapsed, dehydrating")) {
@@ -584,6 +601,24 @@ function renderSeqEventLine(event, orchId) {
             const col = seqNodes.indexOf(lastAct || event.orchNode);
             seqPane.log(seqLine(event.time, col, "[= done ==]", "cyan"));
             seqPane.log(seqLine("", col, ">> interrupt", "cyan"));
+            break;
+        }
+
+        case "cmd_recv": {
+            const col = seqNodes.indexOf(event.orchNode);
+            seqPane.log(seqLine(event.time, col, `>> /${event.cmd}`, "magenta"));
+            break;
+        }
+
+        case "cmd_done": {
+            const col = seqNodes.indexOf(event.orchNode);
+            seqPane.log(seqLine(event.time, col, `<< ${(event.detail || "ok").slice(0, 15)}`, "magenta"));
+            break;
+        }
+
+        case "listmodels_act": {
+            const col = seqNodes.indexOf(event.actNode);
+            seqPane.log(seqLine(event.time, col, "[= listModels]", "magenta"));
             break;
         }
     }
