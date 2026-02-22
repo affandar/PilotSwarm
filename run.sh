@@ -1,20 +1,20 @@
 #!/bin/bash
-# Run durable-copilot-sdk locally
+# Run durable-copilot-sdk TUI
 #
 # Usage:
-#   ./run.sh              # TUI mode — local runtime + local DB
-#   ./run.sh chat         # Simple console chat
-#   ./run.sh remote       # TUI mode — local runtime + remote DB
-#   ./run.sh scaled       # TUI mode — client-only, AKS workers execute
+#   ./run.sh              # local mode — 4 workers inside TUI, remote PG
+#   ./run.sh local        # same as above
+#   ./run.sh local --db   # local mode — 4 workers inside TUI, local PG
+#   ./run.sh remote       # remote mode — AKS workers, TUI client-only, remote PG
 #
 # Prerequisites:
-#   - Docker container 'duroxide-pg' running on localhost:5432
-#   - GITHUB_TOKEN set in .env (or run: gh auth token)
+#   - .env.remote with DATABASE_URL + GITHUB_TOKEN (remote PG)
+#   - .env with DATABASE_URL + GITHUB_TOKEN (local PG, for --db flag)
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Ensure .env exists
+# Ensure .env exists (for local DB mode)
 if [ ! -f .env ]; then
     echo "Creating .env with fresh GitHub token..."
     cat > .env <<EOF
@@ -24,11 +24,12 @@ EOF
     echo "✅ .env created"
 fi
 
-# Refresh GitHub token (they expire)
+# Refresh GitHub token in both env files
 if command -v gh &>/dev/null; then
     FRESH_TOKEN=$(gh auth token 2>/dev/null || true)
     if [ -n "$FRESH_TOKEN" ]; then
         sed -i '' "s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=$FRESH_TOKEN|" .env
+        [ -f .env.remote ] && sed -i '' "s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=$FRESH_TOKEN|" .env.remote
     fi
 fi
 
@@ -44,27 +45,29 @@ if [ ! -d dist ] || [ "$(find src -newer dist/index.js -name '*.ts' 2>/dev/null 
     npm run build
 fi
 
-MODE="${1:-tui}"
+MODE="${1:-local}"
 
 case "$MODE" in
-    tui)
-        echo "🚀 Starting TUI chat — local runtime (Ctrl+C to quit, Tab to switch panes)"
-        node --env-file=.env examples/tui.js
-        ;;
-    chat)
-        echo "🚀 Starting console chat (type 'exit' to quit)"
-        node --env-file=.env examples/chat.js
-        ;;
-    scaled)
-        echo "🚀 Starting TUI chat — scaled mode, AKS workers (Ctrl+C to quit)"
-        node --env-file=.env.remote examples/tui.js scaled
+    local)
+        ENV_FILE=".env.remote"
+        if [[ "${2:-}" == "--db" ]]; then
+            ENV_FILE=".env"
+            echo "🚀 Starting TUI — 4 local workers, local PG (Ctrl+C to quit)"
+        else
+            echo "🚀 Starting TUI — 4 local workers, remote PG (Ctrl+C to quit)"
+        fi
+        node --env-file="$ENV_FILE" examples/tui-scaled.js
         ;;
     remote)
-        echo "🚀 Starting TUI chat — local runtime, remote DB (Ctrl+C to quit)"
-        node --env-file=.env.remote examples/tui.js
+        echo "🚀 Starting TUI — AKS workers, client-only (Ctrl+C to quit)"
+        WORKERS=0 node --env-file=.env.remote examples/tui-scaled.js
         ;;
     *)
-        echo "Usage: $0 [tui|chat|scaled|remote]"
+        echo "Usage: $0 [local|remote] [--db]"
+        echo ""
+        echo "  local        4 workers inside TUI, remote PG (default)"
+        echo "  local --db   4 workers inside TUI, local PG"
+        echo "  remote       AKS workers, TUI client-only, remote PG"
         exit 1
         ;;
 esac

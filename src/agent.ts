@@ -328,9 +328,10 @@ export class DurableCopilotClient {
 
         if (!this.activeOrchestrations.has(sessionId)) {
             // First message — start the long-lived orchestration
+            // Prompt is NOT included in input — it goes through the event queue.
             const input: TurnInput & Record<string, unknown> = {
                 sessionId,
-                prompt,
+                prompt: "",
                 waitThreshold: this.config.waitThreshold,
                 iteration: 0,
                 systemMessage: typeof config?.systemMessage === "string"
@@ -407,11 +408,21 @@ export class DurableCopilotClient {
                 if (orchStatus.status === "Completed") {
                     return orchStatus.output;
                 }
+                // Detect continueAsNew: version went backwards
+                const currentVersion = orchStatus.customStatusVersion || 0;
+                if (currentVersion < lastSeenVersion) {
+                    lastSeenVersion = 0;
+                    lastSeenIteration = -1;
+                }
                 continue;
             }
 
             if (statusResult.customStatusVersion > lastSeenVersion) {
                 lastSeenVersion = statusResult.customStatusVersion;
+            } else if (statusResult.customStatusVersion < lastSeenVersion) {
+                // continueAsNew happened — version reset. Reset watermarks.
+                lastSeenVersion = statusResult.customStatusVersion;
+                lastSeenIteration = -1;
             }
 
             // Parse custom status
@@ -501,9 +512,10 @@ export class DurableCopilotClient {
 
         if (!this.activeOrchestrations.has(sessionId)) {
             // First message — start the long-lived orchestration
+            // Prompt is NOT included in input — it goes through the event queue.
             const input: TurnInput & Record<string, unknown> = {
                 sessionId,
-                prompt,
+                prompt: "",
                 waitThreshold: this.config.waitThreshold,
                 iteration: 0,
                 systemMessage: typeof config?.systemMessage === "string"
