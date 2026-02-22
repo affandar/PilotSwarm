@@ -1858,15 +1858,6 @@ function switchToOrchestration(orchId) {
             recolorWorkerPanes();
         }
     }
-
-    // Show buffered summary if available (populated at TUI startup via enqueueEvent)
-    // Only show buffered summary if available (populated at TUI startup)
-    const buffered = sessionSummaryBuffer.get(orchId);
-    if (buffered) {
-        showCopilotMessage(buffered);
-        sessionSummaryBuffer.delete(orchId);
-        setStatus("Ready — type a message");
-    }
 }
 
 updateChatLabel();
@@ -2345,18 +2336,8 @@ async function summarizeSession(orchId) {
 }
 
 // Kick off summarization for all known sessions (in parallel, max 3 at a time)
-(async () => {
-    const ids = [...knownOrchestrationIds].filter(id => id !== activeOrchId);
-    appendLog(`{cyan-fg}Summarizing ${ids.length} session(s)...{/cyan-fg}`);
-    // Process in batches of 3
-    for (let i = 0; i < ids.length; i += 3) {
-        const batch = ids.slice(i, i + 3);
-        await Promise.allSettled(batch.map(id => summarizeSession(id)));
-    }
-    if (ids.length > 0) {
-        appendLog(`{cyan-fg}All sessions summarized ✓{/cyan-fg}`);
-    }
-})();
+// Disabled — no longer sending summary interrupts on startup.
+// Headings are populated organically from HEADING: lines in turn results.
 
 orchList.focus();
 screen.render();
