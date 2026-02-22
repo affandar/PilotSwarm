@@ -303,3 +303,24 @@ export function createHydrateActivity(
         await blobStore.hydrate(input.sessionId);
     };
 }
+
+/**
+ * Creates the listModels activity.
+ * Spins up a temporary CopilotClient to fetch available models.
+ * @internal
+ */
+export function createListModelsActivity(githubToken: string) {
+    // Dynamic ESM import for the SDK
+    return async (activityCtx: any, _input: Record<string, unknown>): Promise<string> => {
+        activityCtx.traceInfo("[activity] listing models");
+        const { CopilotClient } = await import("@github/copilot-sdk");
+        const sdk = new CopilotClient({ githubToken });
+        try {
+            await sdk.start();
+            const models = await sdk.listModels();
+            return JSON.stringify(models.map((m: any) => ({ id: m.id })));
+        } finally {
+            try { await sdk.stop(); } catch {}
+        }
+    };
+}

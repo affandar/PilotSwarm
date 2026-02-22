@@ -8,7 +8,7 @@ import type {
 } from "./types.js";
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
-import { createRunAgentTurnActivity, createDehydrateActivity, createHydrateActivity } from "./activity.js";
+import { createRunAgentTurnActivity, createDehydrateActivity, createHydrateActivity, createListModelsActivity } from "./activity.js";
 import { durableSessionOrchestration } from "./orchestration.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
@@ -221,7 +221,15 @@ export class DurableCopilotClient {
         );
         this.runtime.registerActivity(ACTIVITY_NAME, activityFn);
 
-        // 5a. Register dehydrate/hydrate activities if blob store is configured
+        // 5a. Register listModels activity
+        if (this.config.githubToken) {
+            this.runtime.registerActivity(
+                "listModels",
+                createListModelsActivity(this.config.githubToken)
+            );
+        }
+
+        // 5b. Register dehydrate/hydrate activities if blob store is configured
         if (this.blobStore) {
             this.runtime.registerActivity(
                 "dehydrateSession",

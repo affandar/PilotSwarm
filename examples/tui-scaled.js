@@ -14,7 +14,6 @@
  */
 
 import { DurableCopilotClient } from "../dist/index.js";
-import { CopilotClient } from "@github/copilot-sdk";
 import { initTracing } from "duroxide";
 import { createRequire } from "node:module";
 import { marked } from "marked";
@@ -1478,7 +1477,10 @@ const sessions = new Map();
 
 // ─── Model selection ─────────────────────────────────────────────
 let currentModel = process.env.COPILOT_MODEL || "claude-opus-4.5";
-let cachedModelList = null; // populated lazily by /models
+
+// Pending command responses — keyed by correlation ID
+// Observer matches cmdResponse.id and displays results
+const pendingCommands = new Map(); // id → { cmd, resolve }
 
 async function createNewSession() {
     const sess = await client.createSession({
@@ -1619,6 +1621,53 @@ function startObserver(orchId) {
                     // Track live status
                     if (cs.status) {
                         updateLiveStatus(cs.status);
+                    }
+
+                    // ─── Command response handling ───────────────
+                    if (cs.cmdResponse && orchId === activeOrchId) {
+                        const resp = cs.cmdResponse;
+                        const pending = pendingCommands.get(resp.id);
+                        if (pending) {
+                            pendingCommands.delete(resp.id);
+                            if (resp.error) {
+                                appendChatRaw(`{red-fg}❌ Command failed: ${resp.error}{/red-fg}`, orchId);
+                            } else {
+                                switch (resp.cmd) {
+                                    case "list_models": {
+                                        const models = resp.result?.models || [];
+                                        const active = resp.result?.currentModel || currentModel;
+                                        appendChatRaw("{bold}Available models:{/bold}", orchId);
+                                        for (const m of models) {
+                                            const marker = m.id === active ? " {green-fg}← active{/green-fg}" : "";
+                                            appendChatRaw(`  {cyan-fg}${m.id}{/cyan-fg}${marker}`, orchId);
+                                        }
+                                        appendChatRaw("{gray-fg}Use /model <name> to switch{/gray-fg}", orchId);
+                                        break;
+                                    }
+                                    case "set_model": {
+                                        const r = resp.result;
+                                        currentModel = r.newModel;
+                                        appendChatRaw(`{green-fg}✓ Model changed: {bold}${r.oldModel}{/bold} → {bold}${r.newModel}{/bold}{/green-fg}`, orchId);
+                                        appendChatRaw("{gray-fg}Takes effect on the next turn.{/gray-fg}", orchId);
+                                        break;
+                                    }
+                                    case "get_info": {
+                                        const r = resp.result;
+                                        appendChatRaw("{bold}Session info:{/bold}", orchId);
+                                        appendChatRaw(`  Model:       {cyan-fg}${r.model}{/cyan-fg}`, orchId);
+                                        appendChatRaw(`  Iteration:   ${r.iteration}`, orchId);
+                                        appendChatRaw(`  Session:     ${r.sessionId?.slice(0, 12)}…`, orchId);
+                                        appendChatRaw(`  Affinity:    ${r.affinityKey}`, orchId);
+                                        appendChatRaw(`  Hydrated:    ${r.needsHydration ? "no (dehydrated)" : "yes"}`, orchId);
+                                        appendChatRaw(`  Blob:        ${r.blobEnabled ? "enabled" : "disabled"}`, orchId);
+                                        break;
+                                    }
+                                    default:
+                                        appendChatRaw(`{green-fg}✓ ${resp.cmd}: ${JSON.stringify(resp.result)}{/green-fg}`, orchId);
+                                }
+                            }
+                            screen.render();
+                        }
                     }
 
                     // Show turn results
@@ -1812,46 +1861,67 @@ async function handleInput(text) {
             inputBar.clearValue();
             inputBar.focus();
 
+            const dc = getDc();
+            if (!dc) {
+                appendChatRaw("{red-fg}Not connected{/red-fg}");
+                screen.render();
+                return;
+            }
+
             if (!arg) {
-                // List models
+                // List models — send command through duroxide
+                const cmdId = crypto.randomUUID().slice(0, 8);
                 appendChatRaw("{yellow-fg}Fetching models...{/yellow-fg}");
                 screen.render();
+                pendingCommands.set(cmdId, { cmd: "list_models", resolve: null });
                 try {
-                    const sdk = new CopilotClient({ githubToken: process.env.GITHUB_TOKEN });
-                    await sdk.start();
-                    cachedModelList = await sdk.listModels();
-                    await sdk.stop();
-
-                    appendChatRaw("{bold}Available models:{/bold}");
-                    for (const m of cachedModelList) {
-                        const marker = m.id === currentModel ? " {green-fg}← active{/green-fg}" : "";
-                        appendChatRaw(`  {cyan-fg}${m.id}{/cyan-fg}${marker}`);
-                    }
-                    appendChatRaw("{gray-fg}Use /model <name> to switch{/gray-fg}");
+                    await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({
+                        type: "cmd", cmd: "list_models", id: cmdId,
+                    }));
                 } catch (err) {
-                    appendChatRaw(`{red-fg}Failed to list models: ${err.message}{/red-fg}`);
+                    pendingCommands.delete(cmdId);
+                    appendChatRaw(`{red-fg}Failed to send command: ${err.message}{/red-fg}`);
                 }
             } else {
-                // Set model for current + future sessions
-                const oldModel = currentModel;
+                // Set model — send command through duroxide
+                const cmdId = crypto.randomUUID().slice(0, 8);
                 currentModel = arg;
-
-                // Update the current session's stored config so the next turn uses the new model
-                const sid = sessionIdFromOrchId(activeOrchId);
-                const sess = sessions.get(sid);
-                if (sess) {
-                    // Update the config stored in the DurableCopilotClient
-                    try {
-                        client.updateSessionModel(sid, currentModel);
-                        appendChatRaw(`{green-fg}Model changed: {bold}${oldModel}{/bold} → {bold}${currentModel}{/bold}{/green-fg}`);
-                        appendChatRaw("{gray-fg}Takes effect on the next turn of this session and all new sessions.{/gray-fg}");
-                    } catch {
-                        appendChatRaw(`{green-fg}Model changed: {bold}${oldModel}{/bold} → {bold}${currentModel}{/bold} (new sessions only){/green-fg}`);
-                    }
-                } else {
-                    appendChatRaw(`{green-fg}Model changed: {bold}${oldModel}{/bold} → {bold}${currentModel}{/bold}{/green-fg}`);
-                    appendChatRaw("{gray-fg}Applies to new sessions.{/gray-fg}");
+                appendChatRaw(`{yellow-fg}Switching model to ${arg}...{/yellow-fg}`);
+                screen.render();
+                pendingCommands.set(cmdId, { cmd: "set_model", resolve: null });
+                try {
+                    await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({
+                        type: "cmd", cmd: "set_model", args: { model: arg }, id: cmdId,
+                    }));
+                } catch (err) {
+                    pendingCommands.delete(cmdId);
+                    appendChatRaw(`{red-fg}Failed to send command: ${err.message}{/red-fg}`);
                 }
+            }
+            screen.render();
+            return;
+        }
+
+        if (cmd === "/info") {
+            inputBar.clearValue();
+            inputBar.focus();
+            const dc = getDc();
+            if (!dc) {
+                appendChatRaw("{red-fg}Not connected{/red-fg}");
+                screen.render();
+                return;
+            }
+            const cmdId = crypto.randomUUID().slice(0, 8);
+            appendChatRaw("{yellow-fg}Fetching session info...{/yellow-fg}");
+            screen.render();
+            pendingCommands.set(cmdId, { cmd: "get_info", resolve: null });
+            try {
+                await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({
+                    type: "cmd", cmd: "get_info", id: cmdId,
+                }));
+            } catch (err) {
+                pendingCommands.delete(cmdId);
+                appendChatRaw(`{red-fg}Failed to send command: ${err.message}{/red-fg}`);
             }
             screen.render();
             return;
@@ -1861,8 +1931,9 @@ async function handleInput(text) {
             inputBar.clearValue();
             inputBar.focus();
             appendChatRaw("{bold}Commands:{/bold}");
-            appendChatRaw("  {cyan-fg}/models{/cyan-fg}         — List available models");
-            appendChatRaw("  {cyan-fg}/model <name>{/cyan-fg}  — Switch model for new sessions");
+            appendChatRaw("  {cyan-fg}/models{/cyan-fg}         — List available models (via worker)");
+            appendChatRaw("  {cyan-fg}/model <name>{/cyan-fg}  — Switch model for this session");
+            appendChatRaw("  {cyan-fg}/info{/cyan-fg}           — Show session info (model, iteration, etc.)");
             appendChatRaw("  {cyan-fg}/new{/cyan-fg}            — Create a new session");
             appendChatRaw("  {cyan-fg}/help{/cyan-fg}           — Show this help");
             screen.render();

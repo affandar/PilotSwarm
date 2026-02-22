@@ -1,4 +1,4 @@
-import type { TurnInput, TurnResult, DurableSessionStatus } from "./types.js";
+import type { TurnInput, TurnResult, DurableSessionStatus, CommandMessage, CommandResponse } from "./types.js";
 
 /**
  * Set custom status as a JSON blob of session state.
@@ -113,7 +113,7 @@ export function* durableSessionOrchestration(
     // ─── MAIN LOOP ──────────────────────────────────────────────
     while (true) {
         // ① GET NEXT PROMPT (CAN-carried or dequeued)
-        let prompt: string;
+        let prompt: string = "";
         if (pendingPrompt) {
             // Prompt was carried from continueAsNew — use it directly
             ctx.traceInfo(`[orch-debug] using pendingPrompt: "${(pendingPrompt as string).slice(0, 60)}"`);
@@ -123,10 +123,95 @@ export function* durableSessionOrchestration(
             // Wait for next message from the queue
             ctx.traceInfo(`[orch-debug] no pendingPrompt, entering dequeue-idle at iter=${iteration}`);
             setStatus(ctx, "idle", { iteration });
-            const msg: any = yield ctx.dequeueEvent("messages");
-            const msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
-            prompt = msgData.prompt;
-            ctx.traceInfo(`[orch-debug] dequeued message: "${prompt.slice(0, 60)}"`);
+
+            let gotPrompt = false;
+            while (!gotPrompt) {
+                const msg: any = yield ctx.dequeueEvent("messages");
+                const msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
+
+                // ─── Command dispatch ───────────────────────────
+                if (msgData.type === "cmd") {
+                    const cmdMsg = msgData as CommandMessage;
+                    ctx.traceInfo(`[orch-cmd] received command: ${cmdMsg.cmd} id=${cmdMsg.id}`);
+
+                    switch (cmdMsg.cmd) {
+                        case "set_model": {
+                            const newModel = String(cmdMsg.args?.model || "");
+                            const oldModel = (input as any).model || "(default)";
+                            (input as any).model = newModel;
+                            ctx.traceInfo(`[orch-cmd] model changed: ${oldModel} → ${newModel}`);
+                            const resp: CommandResponse = {
+                                id: cmdMsg.id,
+                                cmd: cmdMsg.cmd,
+                                result: { ok: true, oldModel, newModel },
+                            };
+                            setStatus(ctx, "idle", { iteration, cmdResponse: resp });
+                            // continueAsNew to persist the new model in durable state
+                            yield ctx.continueAsNew(continueInput({ model: newModel }));
+                            return ""; // unreachable
+                        }
+
+                        case "list_models": {
+                            ctx.traceInfo("[orch-cmd] scheduling listModels activity");
+                            setStatus(ctx, "idle", { iteration, cmdProcessing: cmdMsg.id });
+                            let models: unknown;
+                            try {
+                                const raw: any = yield ctx.scheduleActivity(
+                                    "listModels", {}
+                                );
+                                models = typeof raw === "string" ? JSON.parse(raw) : raw;
+                            } catch (err: any) {
+                                const resp: CommandResponse = {
+                                    id: cmdMsg.id,
+                                    cmd: cmdMsg.cmd,
+                                    error: err.message || String(err),
+                                };
+                                setStatus(ctx, "idle", { iteration, cmdResponse: resp });
+                                continue; // back to dequeue loop
+                            }
+                            const resp: CommandResponse = {
+                                id: cmdMsg.id,
+                                cmd: cmdMsg.cmd,
+                                result: { models, currentModel: (input as any).model },
+                            };
+                            setStatus(ctx, "idle", { iteration, cmdResponse: resp });
+                            continue; // back to dequeue loop
+                        }
+
+                        case "get_info": {
+                            const resp: CommandResponse = {
+                                id: cmdMsg.id,
+                                cmd: cmdMsg.cmd,
+                                result: {
+                                    model: (input as any).model || "(default)",
+                                    iteration,
+                                    sessionId: input.sessionId,
+                                    affinityKey: affinityKey?.slice(0, 8),
+                                    needsHydration,
+                                    blobEnabled,
+                                },
+                            };
+                            setStatus(ctx, "idle", { iteration, cmdResponse: resp });
+                            continue; // back to dequeue loop
+                        }
+
+                        default:
+                            ctx.traceWarn(`[orch-cmd] unknown command: ${cmdMsg.cmd}`);
+                            const resp: CommandResponse = {
+                                id: cmdMsg.id,
+                                cmd: cmdMsg.cmd,
+                                error: `Unknown command: ${cmdMsg.cmd}`,
+                            };
+                            setStatus(ctx, "idle", { iteration, cmdResponse: resp });
+                            continue; // back to dequeue loop
+                    }
+                }
+
+                // Regular prompt message
+                prompt = msgData.prompt;
+                gotPrompt = true;
+                ctx.traceInfo(`[orch-debug] dequeued message: "${prompt.slice(0, 60)}"`);
+            }
         }
 
         ctx.traceInfo(
