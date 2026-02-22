@@ -49,41 +49,57 @@ The system has two endpoints — the **client** (user intent) and the **CopilotS
 
 | Capability | What the orchestration adds |
 |---|---|
-| **Crash resilience** | Orchestration state survives process restarts. If a worker dies mid-turn, the orchestration retries the activity on another node. |
+| **Crash resilience** | Orchestration state survives process restarts. If a worker dies mid-turn, the orchestration retries on another node. |
 | **Durable timers** | `scheduleTimer()` persists in PG. Process can die, pod can scale to zero, timer still fires. |
-| **Scale-out / relocation** | Affinity keys pin activities to a node; resetting the key after dehydration allows any node to pick up the session. |
+| **Scale-out / relocation** | Affinity keys pin sessions to a node; resetting the key after dehydration allows any node to pick up the session. |
 | **Async mediation** | The orchestration races user messages against running turns and timers — coordinating two async streams (user + LLM) durably. |
 
 ```
-                            +------------------------------------------------+
-                            |                                                |
-  +----------------+        |   ORCHESTRATION (coordination / async layer)   |
-  |                |        |                                                |        +-------------------+
-  |   CLIENT       |        |   Adds:                                        |        |  SESSION MANAGER  |
-  |                |        |     - crash resilience (replay-safe state)     |        |                   |
-  |  send()    ----+--enq-->|     - durable timers (PG-backed)               |--act-->|  ManagedSession   |
-  |  abort()   ----+--enq-->|     - scale-out / relocation (affinity)        |--act-->|   .runTurn()      |
-  |  destroy() ----+--enq-->|     - async mediation (race, dequeue)          |--act-->|   .abort()        |
-  |                |        |                                                |        |   .destroy()      |
-  |  on()      <---+--CMS-- | = = = = = = = = = = = = = = = = = = = = = = =  |--CMS<--|   .on() --> CMS   |
-  |  getMsg()  <---+--CMS-- |  (orchestration never touches CMS --           |        |                   |
-  |                |        |    it's a direct session --> client channel)   |        |  CopilotSession   |
-  +----------------+        |                                                |        |  (real CLI proc)  |
-                            +------------------------------------------------+        +-------------------+
-                                               |
-                               enqueueEvent / customStatus / scheduleTimer
-                               dequeueEvent / race / continueAsNew
-                                               |
-                                      +--------+--------+
-                                      |   PostgreSQL    |
-                                      |  duroxide schema|
-                                      |  CMS schema     |
-                                      +-----------------+
++----------+
+|          |  control (enq)
+|  Client  |-------------------------------+
+|          |                               |
++----+-----+                               v
+     |                       +---------------------------+
+     |                       | Copilot Instance           |
+     |                       | Orchestration (coordinator) |
+     |                       |                             |
+     |                       | Adds:                       |
+     |                       |  - crash resilience         |
+     |                       |  - durable timers           |
+     |                       |  - scale-out / relocation   |
+     |                       |  - async mediation          |
+     |                       +----+-----------------+------+
+     |                            |                 |
+     |                            v                 +-------------------+
+     |                  +----------+--+             |                   |
+     |                  |             |  manages    | +--SessionProxy----+
+     |                  | Session     |------------>| | +--SessionProxy----+
+     |                  | Manager     |             | | |  SessionProxy    |
+     |                  |             |             +-| |                  |
+     |                  +--+------+---+               +-| Copilot SDK/    |
+     |                     |      |                     | CLI Session     |
+     |                     |      | dehydrate/          +--+--------------+
+     |  reads              |      | hydrate                |
+     |  (events,           |      |                        | writes
+     |   messages,         |      v                        | (events,
+     |   sessions)         |  +----------------+           |  metadata)
+     |                     |  |  Blob Store    |           |
+     |                     |  | (session tars) |           |
+     |                     |  +----------------+           |
+     v                     v                               v
+  +--+---------------------+-------------------------------+--+
+  |                          CMS                              |
+  +-----------------------------------------------------------+
 ```
 
-Two data flows, cleanly separated:
-- **Control flow** (solid arrows): client → orchestration → SessionManager / ManagedSession. Durable, ordered, replay-safe.
-- **Event flow** (dashed): ManagedSession → CMS → client. Read-only, cursor-based, eventually consistent. The orchestration never touches this path.
+Five components, three data stores:
+
+- **Client** sends control messages (prompts, abort, destroy) to the orchestration via `enqueueEvent`. Reads events, messages, and session lists directly from **CMS** — bypassing the orchestration entirely.
+- **Copilot Instance Orchestration** is the durable coordinator. It makes all durable decisions (timers, dehydration, abort routing) and calls into the **SessionManager** and **SessionProxy** on the worker.
+- **SessionManager** owns session lifecycle (create, resume, destroy, dehydrate). Writes session metadata to **CMS** and session state tars to **Blob Store** during dehydration/hydration.
+- **SessionProxy** (one per active session) wraps a real **Copilot SDK/CLI Session**. The `on()` handler writes events and metadata to **CMS** continuously.
+- **CMS** (PostgreSQL) is the shared read/write store for session metadata and events. The orchestration never touches it — CMS is a direct ManagedSession → Client channel.
 
 ### 3.1.1 Activities as the SessionProxy
 
