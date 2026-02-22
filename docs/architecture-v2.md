@@ -55,30 +55,30 @@ The system has two endpoints — the **client** (user intent) and the **CopilotS
 | **Async mediation** | The orchestration races user messages against running turns and timers — coordinating two async streams (user + LLM) durably. |
 
 ```
-                           ┌───────────────────────────────────────────────┐
-                           │                                               │
-  ┌──────────────┐         │   ORCHESTRATION (coordination / async layer)  │         ┌──────────────────┐
-  │              │         │                                               │         │                  │
-  │   CLIENT     │         │   Adds:                                       │         │  SESSION MANAGER │
-  │              │         │     • crash resilience (replay-safe state)     │         │                  │
-  │  send()    ──┼── enq ──▶     • durable timers (PG-backed)              ├── act ──▶  ManagedSession  │
-  │  abort()   ──┼── enq ──▶     • scale-out / relocation (affinity)       ├── act ──▶   .runTurn()     │
-  │  destroy() ──┼── enq ──▶     • async mediation (race, dequeue)         ├── act ──▶   .abort()       │
-  │              │         │                                               │         │   .destroy()     │
-  │  on()      ◀─┼── CMS ──│─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│─ CMS ◀──│   .on() → CMS    │
-  │  getMsg()  ◀─┼── CMS ──│   (orchestration never touches CMS —          │         │                  │
-  │              │         │    it's a direct session → client channel)     │         │  CopilotSession  │
-  └──────────────┘         │                                               │         │  (real CLI proc)  │
-                           └───────────────────────────────────────────────┘         └──────────────────┘
-                                              │
-                              enqueueEvent / customStatus / scheduleTimer
-                              dequeueEvent / race / continueAsNew
-                                              │
-                                     ┌────────┴────────┐
-                                     │   PostgreSQL     │
-                                     │  duroxide schema │
-                                     │  CMS schema      │
-                                     └─────────────────┘
+                            +------------------------------------------------+
+                            |                                                |
+  +----------------+        |   ORCHESTRATION (coordination / async layer)   |
+  |                |        |                                                |        +-------------------+
+  |   CLIENT       |        |   Adds:                                        |        |  SESSION MANAGER  |
+  |                |        |     - crash resilience (replay-safe state)      |        |                   |
+  |  send()    ----+--enq-->|     - durable timers (PG-backed)               |--act-->|  ManagedSession   |
+  |  abort()   ----+--enq-->|     - scale-out / relocation (affinity)        |--act-->|   .runTurn()      |
+  |  destroy() ----+--enq-->|     - async mediation (race, dequeue)          |--act-->|   .abort()        |
+  |                |        |                                                |        |   .destroy()      |
+  |  on()      <---+--CMS--|= = = = = = = = = = = = = = = = = = = = = = = = |--CMS<--|   .on() --> CMS   |
+  |  getMsg()  <---+--CMS--|   (orchestration never touches CMS --           |        |                   |
+  |                |        |    it's a direct session --> client channel)    |        |  CopilotSession   |
+  +----------------+        |                                                |        |  (real CLI proc)  |
+                            +------------------------------------------------+        +-------------------+
+                                               |
+                               enqueueEvent / customStatus / scheduleTimer
+                               dequeueEvent / race / continueAsNew
+                                               |
+                                      +--------+--------+
+                                      |   PostgreSQL    |
+                                      |  duroxide schema |
+                                      |  CMS schema      |
+                                      +-----------------+
 ```
 
 Two data flows, cleanly separated:
@@ -160,41 +160,41 @@ Four activities. Four proxy methods. Four one-liner activity bodies. All logic l
 ### 3.2 Physical View
 
 ```
-┌────────────────────┐           ┌──────────────────────────────┐
-│  Laptop / CI       │           │  PostgreSQL                   │
-│                    │           │                               │
-│  TUI / API client  │◀────────▶│  duroxide_copilot schema      │
-│  (DurableSession)  │   SQL     │    (orchestration history,    │
-│                    │           │     work items, timers)        │
-│  Reads CMS ────────┼──────────▶│                               │
-│                    │           │  copilot_sessions schema      │
-└────────────────────┘           │    (sessions, events, models) │
-                                 │                               │
-                                 └────────┬─────────────────────┘
-                                          │
-                    ┌─────────────────────┼─────────────────────┐
-                    │                     │                     │
-           ┌────────┴────────┐   ┌────────┴────────┐   ┌───────┴─────────┐
-           │  Worker Pod 1   │   │  Worker Pod 2   │   │  Worker Pod N   │
-           │                 │   │                 │   │                 │
-           │  duroxide       │   │  duroxide       │   │  duroxide       │
-           │  Runtime        │   │  Runtime        │   │  Runtime        │
-           │                 │   │                 │   │                 │
-           │  SessionManager │   │  SessionManager │   │  SessionManager │
-           │   ├─ session A  │   │   ├─ session C  │   │   └─ session E  │
-           │   └─ session B  │   │   └─ session D  │   │                 │
-           │                 │   │                 │   │                 │
-           │  Copilot CLI    │   │  Copilot CLI    │   │  Copilot CLI    │
-           │  subprocess     │   │  subprocess     │   │  subprocess     │
-           └────────┬────────┘   └────────┬────────┘   └────────┬────────┘
-                    │                     │                     │
-                    └─────────────────────┴─────────────────────┘
-                                          │
-                                 ┌────────┴────────┐
-                                 │  Azure Blob     │
-                                 │  (dehydrated    │
-                                 │   session tars)  │
-                                 └─────────────────┘
++----------------------+           +-------------------------------+
+|  Laptop / CI         |           |  PostgreSQL                   |
+|                      |           |                               |
+|  TUI / API client    |<-------->|  duroxide_copilot schema      |
+|  (DurableSession)    |   SQL    |    (orchestration history,    |
+|                      |          |     work items, timers)       |
+|  Reads CMS ----------+--------->|                               |
+|                      |          |  copilot_sessions schema      |
++----------------------+          |    (sessions, events, models) |
+                                  |                               |
+                                  +----------+--------------------+
+                                             |
+                    +------------------------+------------------------+
+                    |                        |                        |
+           +--------+--------+     +--------+--------+     +---------+-------+
+           |  Worker Pod 1   |     |  Worker Pod 2   |     |  Worker Pod N   |
+           |                 |     |                 |     |                 |
+           |  duroxide       |     |  duroxide       |     |  duroxide       |
+           |  Runtime        |     |  Runtime        |     |  Runtime        |
+           |                 |     |                 |     |                 |
+           |  SessionManager |     |  SessionManager |     |  SessionManager |
+           |   +- session A  |     |   +- session C  |     |   +- session E  |
+           |   +- session B  |     |   +- session D  |     |                 |
+           |                 |     |                 |     |                 |
+           |  Copilot CLI    |     |  Copilot CLI    |     |  Copilot CLI    |
+           |  subprocess     |     |  subprocess     |     |  subprocess     |
+           +--------+--------+     +--------+--------+     +--------+--------+
+                    |                        |                        |
+                    +------------------------+------------------------+
+                                             |
+                                  +----------+--------+
+                                  |  Azure Blob       |
+                                  |  (dehydrated      |
+                                  |   session tars)   |
+                                  +-------------------+
 ```
 
 ### 3.3 Data Flow Summary
@@ -216,26 +216,26 @@ Four activities. Four proxy methods. Four one-liner activity bodies. All logic l
 One orchestration instance per session. Long-lived, uses `continueAsNew` to bound history.
 
 ```
-                    ┌─────────────────────────────────────────────┐
-                    │              ORCHESTRATION                   │
-                    │                                             │
-        start ────▶│  DEQUEUE ──▶ RUNNING ──▶ HANDLE RESULT     │
-                    │    ▲                        │               │
-                    │    │    ┌────────────────────┤               │
-                    │    │    │                    │               │
-                    │    │    ▼                    ▼               │
-                    │  IDLE ◀── completed    TIMER/WAIT           │
-                    │    │                    │                    │
-                    │    │                    ▼                    │
-                    │    │              [dehydrate?]               │
-                    │    │                    │                    │
-                    │    │              continueAsNew              │
-                    │    │                    │                    │
-                    │    ◀────────────────────┘                   │
-                    │                                             │
-                    │  On continueAsNew: new execution, same      │
-                    │  instance ID. Session stays alive on node.  │
-                    └─────────────────────────────────────────────┘
+                    +---------------------------------------------+
+                    |              ORCHESTRATION                   |
+                    |                                             |
+        start ----->|  DEQUEUE --> RUNNING --> HANDLE RESULT      |
+                    |    ^                        |               |
+                    |    |    +-------------------+               |
+                    |    |    |                   |               |
+                    |    |    v                   v               |
+                    |  IDLE <--- completed    TIMER/WAIT          |
+                    |    |                        |               |
+                    |    |                        v               |
+                    |    |                  [dehydrate?]           |
+                    |    |                        |               |
+                    |    |                  continueAsNew          |
+                    |    |                        |               |
+                    |    +------------------------+               |
+                    |                                             |
+                    |  On continueAsNew: new execution, same      |
+                    |  instance ID. Session stays alive on node.  |
+                    +---------------------------------------------+
 ```
 
 States:
@@ -250,37 +250,37 @@ States:
 
 ```
     create/resume
-         │
-         ▼
-    ┌─────────┐   runTurn()    ┌─────────┐   turn done   ┌─────────┐
-    │ CREATED  │──────────────▶│ ACTIVE   │──────────────▶│  IDLE   │
-    └─────────┘                └─────────┘                └────┬────┘
-                                    │                          │
-                                    │ abort()                  │ runTurn()
-                                    ▼                          │
-                               ┌─────────┐                     │
-                               │CANCELLED│                     │
-                               └────┬────┘                     │
-                                    │                          │
-                                    └──────────▶───────────────┘
+         |
+         v
+    +---------+   runTurn()    +---------+   turn done   +---------+
+    | CREATED |--------------->| ACTIVE  |--------------->|  IDLE   |
+    +---------+                +---------+                +----+----+
+                                    |                          |
+                                    | abort()                  | runTurn()
+                                    v                          |
+                               +---------+                     |
+                               |CANCELLED|                     |
+                               +----+----+                     |
+                                    |                          |
+                                    +-------------->>>>--------+
                                     (back to idle)
-                                                               │
+                                                               |
                                                      idle timeout or
                                                      SIGTERM
-                                                               │
-                                                               ▼
-                                                        ┌────────────┐
-                                                        │ DEHYDRATED │
-                                                        │ (blob)     │
-                                                        └────────────┘
-                                                               │
+                                                               |
+                                                               v
+                                                        +------------+
+                                                        | DEHYDRATED |
+                                                        | (blob)     |
+                                                        +------------+
+                                                               |
                                                         hydrate on
                                                         any node
-                                                               │
-                                                               ▼
-                                                        ┌─────────┐
-                                                        │ RESUMED  │──▶ IDLE
-                                                        └─────────┘
+                                                               |
+                                                               v
+                                                        +---------+
+                                                        | RESUMED |--> IDLE
+                                                        +---------+
 ```
 
 Key: the session stays alive across activity invocations. Multiple `runTurn()` calls hit the same `CopilotSession` instance. Dehydration only happens on explicit orchestration decision (idle timeout, long timer, graceful shutdown).
@@ -291,27 +291,27 @@ A session can move between worker nodes:
 
 ```
 Worker A: session active (in SessionManager memory)
-  │
-  ├── idle timeout / long timer / SIGTERM
-  │
-  ├── 1. ManagedSession.destroy() → CopilotSession.destroy()
-  │      └── CLI flushes conversation state to ~/.copilot/session-state/{id}/
-  ├── 2. tar + upload to Azure Blob
-  ├── 3. Remove local files
-  ├── 4. Orchestration resets affinityKey (newGuid)
-  │
-  ▼
-  Session is now "dehydrated" — no worker owns it
+  |
+  +-- idle timeout / long timer / SIGTERM
+  |
+  +-- 1. ManagedSession.destroy() --> CopilotSession.destroy()
+  |      +-- CLI flushes conversation state to ~/.copilot/session-state/{id}/
+  +-- 2. tar + upload to Azure Blob
+  +-- 3. Remove local files
+  +-- 4. Orchestration resets affinityKey (newGuid)
+  |
+  v
+  Session is now "dehydrated" -- no worker owns it
 
 Worker B: next activity arrives (any worker, affinity key is new)
-  │
-  ├── 1. hydrateSession activity: download tar from blob, extract to local disk
-  ├── 2. runTurn activity: SessionManager.getOrCreate(id)
-  │      └── detects local files → CopilotClient.resumeSession(id)
-  │      └── full conversation history restored
-  ├── 3. ManagedSession wraps the new CopilotSession
-  │      └── attaches on() handler → CMS writes resume
-  └── Session is now active on Worker B
+  |
+  +-- 1. hydrateSession activity: download tar from blob, extract to local disk
+  +-- 2. runTurn activity: SessionManager.getOrCreate(id)
+  |      +-- detects local files --> CopilotClient.resumeSession(id)
+  |      +-- full conversation history restored
+  +-- 3. ManagedSession wraps the new CopilotSession
+  |      +-- attaches on() handler --> CMS writes resume
+  +-- Session is now active on Worker B
 ```
 
 ---
