@@ -82,7 +82,7 @@ The system has two endpoints — the **client** (user intent) and the **CopilotS
 ```
 
 Two data flows, cleanly separated:
-- **Control flow** (solid arrows): client → orchestration → activity → ManagedSession. Durable, ordered, replay-safe.
+- **Control flow** (solid arrows): client → orchestration → SessionManager / ManagedSession. Durable, ordered, replay-safe.
 - **Event flow** (dashed): ManagedSession → CMS → client. Read-only, cursor-based, eventually consistent. The orchestration never touches this path.
 
 ### 3.1.1 Activities as the SessionProxy
@@ -204,6 +204,8 @@ const models = yield manager.listModels();
 
 All activity bodies are one-liners. All logic lives in `ManagedSession` (turn execution, event handling, CMS writes) and the orchestration (state machine, timers, dehydration decisions). The activities and proxies are pure plumbing.
 
+> **Convention for the rest of this document:** Since the activity layer is mechanical — each activity is a one-liner that calls the corresponding `SessionManager` or `ManagedSession` method — we omit it from further discussion. When the orchestration calls `session.runTurn(prompt)`, understand that this goes through the `SessionProxy` → activity → `SessionManager.getOrCreate(id).runTurn(prompt)` on the worker. We talk only about the **orchestration** and the **SessionManager / ManagedSession** from here on.
+
 ### 3.2 Physical View
 
 ```
@@ -248,11 +250,11 @@ All activity bodies are one-liners. All logic lives in `ManagedSession` (turn ex
 
 | Flow | Path | Mechanism | Durable? |
 |---|---|---|---|
-| **Prompt** (client → LLM) | Client → duroxide event queue → orchestration → activity → ManagedSession → CopilotSession | `enqueueEvent("messages")` | Yes — queued in PG |
+| **Prompt** (client → LLM) | Client → duroxide event queue → orchestration → ManagedSession → CopilotSession | `enqueueEvent("messages")` | Yes — queued in PG |
 | **Response** (LLM → client) | CopilotSession → `on()` → ManagedSession → CMS `session_events` → client polls | PG INSERT + SELECT with cursor | Yes — persisted |
 | **Real-time status** | Orchestration → `customStatus` → client `waitForStatusChange()` | duroxide custom status | No — ephemeral per execution |
-| **Abort** (client → LLM) | Client → event queue → orchestration → cancel activity → `copilotSession.abort()` | `enqueueEvent({type: "abort"})` | Yes — through orchestration |
-| **Dehydration** | Orchestration → dehydrate activity → SessionManager → blob | Activity + Azure Blob | Yes |
+| **Abort** (client → LLM) | Client → event queue → orchestration → cancels running turn → `copilotSession.abort()` | `enqueueEvent({type: "abort"})` | Yes — through orchestration |
+| **Dehydration** | Orchestration → `session.dehydrate()` → SessionManager → blob | Azure Blob | Yes |
 
 ---
 
@@ -287,7 +289,7 @@ One orchestration instance per session. Long-lived, uses `continueAsNew` to boun
 
 States:
 - **idle** — dequeue loop, waiting for next user message
-- **running** — `runTurn` activity executing on worker
+- **running** — `session.runTurn()` executing on worker
 - **waiting** — durable timer active (wait tool)
 - **input_required** — waiting for user to answer a question
 - **completed** — orchestration terminated normally (rare — sessions are long-lived)
@@ -330,7 +332,7 @@ States:
                                                         +---------+
 ```
 
-Key: the session stays alive across activity invocations. Multiple `runTurn()` calls hit the same `CopilotSession` instance. Dehydration only happens on explicit orchestration decision (idle timeout, long timer, graceful shutdown).
+Key: the session stays alive across orchestration turns. Multiple `runTurn()` calls hit the same `CopilotSession` instance. Dehydration only happens on explicit orchestration decision (idle timeout, long timer, graceful shutdown).
 
 ### 4.3 Relocatability
 
@@ -350,10 +352,10 @@ Worker A: session active (in SessionManager memory)
   v
   Session is now "dehydrated" -- no worker owns it
 
-Worker B: next activity arrives (any worker, affinity key is new)
+Worker B: next orchestration turn (any worker, affinity key is new)
   |
-  +-- 1. hydrateSession activity: download tar from blob, extract to local disk
-  +-- 2. runTurn activity: SessionManager.getOrCreate(id)
+  +-- 1. session.hydrate(): download tar from blob, extract to local disk
+  +-- 2. session.runTurn(): SessionManager.getOrCreate(id)
   |      +-- detects local files --> CopilotClient.resumeSession(id)
   |      +-- full conversation history restored
   +-- 3. ManagedSession wraps the new CopilotSession
@@ -377,12 +379,12 @@ Worker B: next activity arrives (any worker, affinity key is new)
 | `client.resumeSession(id, config?)` | `client.resumeSession(id, config?)` | Returns `DurableSession` wrapping existing orchestration. | Same shape. |
 | `client.listSessions()` | `client.listSessions()` | Queries CMS `sessions` table directly (no orchestration). | Returns `DurableSessionInfo[]` with `name`, `summary`, richer status. |
 | `client.deleteSession(id)` | `client.deleteSession(id)` | Soft-deletes in CMS + cancels orchestration. | Permanent delete vs SDK's disk delete. |
-| `client.listModels()` | `client.listModels()` | Queries CMS `models_cache`. If stale, refreshes via `listModels` activity. | Cached with TTL. |
+| `client.listModels()` | `client.listModels()` | Queries CMS `models_cache`. If stale, refreshes via `manager.listModels()`. | Cached with TTL. |
 | `client.getLastSessionId()` | `client.getLastSessionId()` | `SELECT session_id FROM sessions ORDER BY last_active_at DESC LIMIT 1` | — |
 | `client.getState()` | `client.getState()` | Tracks duroxide client connection state. | Same enum: `"disconnected" \| "connecting" \| "connected" \| "error"`. |
 | `client.ping(msg?)` | `client.ping(msg?)` | Duroxide client health check (query PG). | — |
 | `client.getStatus()` | `client.getStatus()` | Returns SDK + duroxide version info. | — |
-| `client.getAuthStatus()` | `client.getAuthStatus()` | Queries a worker via activity (worker holds the token). | — |
+| `client.getAuthStatus()` | `client.getAuthStatus()` | Queries a worker (worker holds the token). | — |
 | `client.on(eventType, handler)` | `client.on(eventType, handler)` | Polls CMS for session state changes. | Same lifecycle events: `session.created`, `session.deleted`, `session.updated`. |
 | *N/A* | `client.renameSession(id, name)` | Updates CMS `sessions.name` directly. | New method — not in Copilot SDK. |
 
@@ -394,7 +396,7 @@ Worker B: next activity arrives (any worker, affinity key is new)
 | `session.send(opts)` | `session.send(opts)` | Generates messageId client-side. Enqueues prompt via `enqueueEvent("messages", {prompt, messageId, attachments})`. Returns messageId. | Accepts `MessageOptions` (prompt + attachments). |
 | `session.sendAndWait(opts, timeout?)` | `session.sendAndWait(opts, timeout?)` | Calls `send()`, then polls CMS `session_events` for `session.idle` event. Returns last `assistant.message` event. | Returns `AssistantMessageEvent` (full event object, not string). Timeout does NOT abort. |
 | `session.on(type, handler)` | `session.on(type, handler, opts?)` | Polls CMS `session_events` table with cursor (`opts.after`). Dispatches matching events to handler. | Adds `{after: number}` for cursor-based replay. Returns unsubscribe function. |
-| `session.abort()` | `session.abort()` | Enqueues `{type: "abort"}` to message queue → orchestration races vs activity → activity calls `copilotSession.abort()` → session returns to idle. | **Same semantics** — cancels in-flight message, session stays alive. |
+| `session.abort()` | `session.abort()` | Enqueues `{type: "abort"}` to message queue → orchestration cancels running `runTurn()` → `copilotSession.abort()` → session returns to idle. | **Same semantics** — cancels in-flight message, session stays alive. |
 | `session.destroy()` | `session.destroy()` | Enqueues `{type: "destroy"}` → orchestration gracefully shuts down (abort current work, dehydrate if needed). CMS record stays (can resume). | Session can be resumed. Use `client.deleteSession()` for permanent delete. |
 | `session.getMessages()` | `session.getMessages()` | `SELECT * FROM session_events WHERE session_id = $1 AND NOT ephemeral ORDER BY id ASC`. | Returns `SessionEvent[]` — same shape as SDK. |
 | `session.registerTools(tools?)` | `session.registerTools(tools?)` | Enqueues tool update through message queue → orchestration updates config → next `runTurn` uses new tools. | Takes effect on next turn (not mid-turn). |
@@ -554,7 +556,7 @@ const client = new DurableCopilotClient({
 
 ### 7.0 SessionManager and ManagedSession Interfaces
 
-These are the core interfaces that live on the worker node. Everything else — activities, orchestrations, the SessionProxy — exists to call into these.
+These are the core interfaces that live on the worker node. The orchestration calls into these via the `SessionProxy` (see §3.1.1).
 
 ```typescript
 // ═══════════════════════════════════════════════════════
@@ -652,13 +654,13 @@ interface SessionConfig {
 
 **Key design points:**
 
-1. **`ManagedSession` attaches `on()` at creation** — not per-turn. The handler writes non-ephemeral events to CMS and traces all events to structured logs. This runs for the session's entire in-memory lifetime, independent of any activity.
+1. **`ManagedSession` attaches `on()` at creation** — not per-turn. The handler writes non-ephemeral events to CMS and traces all events to structured logs. This runs for the session's entire in-memory lifetime.
 
 2. **`runTurn()` uses `send()` + per-turn `on()` subscriber** — the per-turn subscriber watches for yield-worthy events (idle, abort, wait tool, ask_user). The always-on handler writes to CMS. Two listeners, two purposes.
 
 3. **`abort()` does not destroy the session** — it cancels the in-flight message. The session returns to idle and is ready for the next `runTurn()` call.
 
-4. **Configuration methods are fire-and-forget** — they update internal state applied on the next `runTurn()`. No activity round-trip needed.
+4. **Configuration methods are fire-and-forget** — they update internal state applied on the next `runTurn()`. No round-trip needed.
 
 5. **`destroy()` is final** — after this, the session must be re-created via `SessionManager.getOrCreate()`. Used before dehydration or shutdown.
 
@@ -732,10 +734,10 @@ function* durableSessionOrchestration(ctx, input) {
                 const race = yield ctx.race(turnActivity, interruptMsg);
 
                 if (race.index === 1) {
-                    // Interrupt arrived — activity is cancelled by race loser
+                    // Interrupt arrived — running turn is cancelled by race loser
                     const interruptData = JSON.parse(race.value);
                     if (interruptData.type === "abort") {
-                        // Activity cancelled → copilotSession.abort() called in activity
+                        // Turn cancelled → copilotSession.abort() called on worker
                         setCustomStatus(ctx, "idle", { iteration, turnResult: { type: "cancelled" } });
                         continue;
                     }
@@ -745,7 +747,7 @@ function* durableSessionOrchestration(ctx, input) {
                     return "";
                 }
 
-                // Activity completed — handle result
+                // Turn completed — handle result
                 const result = JSON.parse(race.value);
                 iteration++;
 
@@ -821,7 +823,7 @@ function* durableSessionOrchestration(ctx, input) {
 
 ### 7.2 ManagedSession (Session Manager)
 
-The `ManagedSession` wraps a `CopilotSession` and provides the interface that activities call into.
+The `ManagedSession` wraps a `CopilotSession` and provides the interface that the orchestration calls into (via `SessionProxy`).
 
 ```typescript
 import { CopilotClient, CopilotSession, type SessionEvent } from "@github/copilot-sdk";
@@ -968,7 +970,7 @@ class ManagedSession {
 
     /**
      * Replay events from CMS since a given cursor.
-     * Used by activities that reconnect to an existing session.
+     * Used when reconnecting to an existing session.
      */
     async replayEvents(afterSequence: number): Promise<SessionEvent[]> {
         const result = await this.cmsPool.query(
@@ -1106,91 +1108,7 @@ class SessionManager {
 }
 ```
 
-### 7.4 Activities
-
-Activities are thin dispatchers:
-
-```typescript
-// ─── runTurn ─────────────────────────────────────────
-function createRunTurnActivity(sessionManager: SessionManager) {
-    return async (activityCtx: any, input: {
-        sessionId: string;
-        prompt: string;
-        iteration: number;
-        config?: SessionConfig;
-    }): Promise<TurnResult> => {
-        const session = await sessionManager.getOrCreate(input.sessionId, input.config);
-
-        // Poll for cancellation (cooperative)
-        let cancelled = false;
-        const cancelPoll = setInterval(() => {
-            if (activityCtx.isCancelled()) {
-                cancelled = true;
-                session.abort();
-                clearInterval(cancelPoll);
-            }
-        }, 2_000);
-
-        try {
-            const result = await session.runTurn(input.prompt, {
-                onDelta: (delta) => {
-                    // Could stream via customStatus or just log
-                    activityCtx.traceInfo(`[delta] ${delta}`);
-                },
-                onToolStart: (name, args) => {
-                    activityCtx.traceInfo(`[tool] ${name}(${JSON.stringify(args)})`);
-                },
-            });
-
-            if (cancelled) return { type: "cancelled" };
-            return result;
-        } finally {
-            clearInterval(cancelPoll);
-        }
-    };
-}
-
-// ─── dehydrateSession ─────────────────────────────────
-function createDehydrateActivity(sessionManager: SessionManager, blobStore: SessionBlobStore) {
-    return async (_ctx: any, input: { sessionId: string; reason?: string }) => {
-        await sessionManager.dehydrate(input.sessionId, blobStore, input.reason ?? "unknown");
-    };
-}
-
-// ─── hydrateSession ───────────────────────────────────
-function createHydrateActivity(blobStore: SessionBlobStore) {
-    return async (_ctx: any, input: { sessionId: string }) => {
-        await blobStore.hydrate(input.sessionId);
-    };
-}
-
-// ─── listModels ───────────────────────────────────────
-function createListModelsActivity(githubToken: string, cmsPool: Pool) {
-    return async (_ctx: any, _input: {}) => {
-        const client = new CopilotClient({ githubToken });
-        try {
-            await client.start();
-            const models = await client.listModels();
-            // Write to CMS cache
-            for (const model of models) {
-                await cmsPool.query(
-                    `INSERT INTO copilot_sessions.models_cache (model_id, name, capabilities, policy, billing, reasoning)
-                     VALUES ($1, $2, $3, $4, $5, $6)
-                     ON CONFLICT (model_id) DO UPDATE SET
-                       capabilities = $3, policy = $4, billing = $5, reasoning = $6, fetched_at = now()`,
-                    [model.id, model.name, model.capabilities, model.policy, model.billing,
-                     { supported: model.supportedReasoningEfforts, default: model.defaultReasoningEffort }]
-                );
-            }
-            return JSON.stringify(models);
-        } finally {
-            try { await client.stop(); } catch {}
-        }
-    };
-}
-```
-
-### 7.5 CMS Schema
+### 7.4 CMS Schema
 
 ```sql
 -- ─────────────────────────────────────────────────────
@@ -1316,7 +1234,7 @@ CREATE INDEX idx_models_fetched
     ON copilot_sessions.models_cache(fetched_at DESC);
 ```
 
-### 7.6 CMS Client (for `DurableCopilotClient` reads)
+### 7.5 CMS Client (for `DurableCopilotClient` reads)
 
 ```typescript
 import { Pool } from "pg";
@@ -1448,7 +1366,7 @@ class CMSClient {
 }
 ```
 
-### 7.7 Registration (in `DurableCopilotClient.start()`)
+### 7.6 Registration (in `DurableCopilotClient.start()`)
 
 ```typescript
 async start(): Promise<void> {
@@ -1472,35 +1390,25 @@ async start(): Promise<void> {
         this.blobStore = new SessionBlobStore(this.config.blobConnectionString);
     }
 
-    // 6. Create duroxide Runtime
+    // 6. Create duroxide Runtime + register orchestration and
+    //    SessionProxy activities (see §3.1.1 for the mapping)
     this.runtime = new Runtime(provider, {
         maxSessionsPerRuntime: this.config.maxSessionsPerRuntime ?? 50,
         sessionIdleTimeoutMs: this.config.sessionIdleTimeoutMs ?? 3_600_000,
         workerNodeId: this.config.workerNodeId,
         logLevel: this.config.logLevel ?? "error",
     });
-
-    // 7. Register activities (thin API calls into SessionManager)
-    this.runtime.registerActivity("runTurn",
-        createRunTurnActivity(this.sessionManager));
-    this.runtime.registerActivity("dehydrateSession",
-        createDehydrateActivity(this.sessionManager, this.blobStore));
-    this.runtime.registerActivity("hydrateSession",
-        createHydrateActivity(this.blobStore));
-    this.runtime.registerActivity("listModels",
-        createListModelsActivity(this.config.githubToken, this.cmsPool));
-
-    // 8. Register orchestration
+    registerSessionProxyActivities(this.runtime, this.sessionManager, this.blobStore);
     this.runtime.registerOrchestration("durable-session", durableSessionOrchestration);
 
-    // 9. Create duroxide client (for starting orchestrations, enqueuing events)
+    // 7. Create duroxide client (for starting orchestrations, enqueuing events)
     this.duroxideClient = new Client(provider);
 
-    // 10. Start runtime (non-blocking)
+    // 8. Start runtime (non-blocking)
     this.runtime.start().catch(err => console.error("[runtime]", err));
     this.started = true;
 
-    // 11. Graceful shutdown handler
+    // 9. Graceful shutdown handler
     const shutdown = async () => { await this.stop(); process.exit(0); };
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
@@ -1513,14 +1421,14 @@ async start(): Promise<void> {
 
 1. **CMS is always at least as current as what the client needs.** Events are written by ManagedSession's `on()` handler as they happen, not batched at turn end. If the client disconnects and reconnects, it reads from CMS with its cursor and gets everything it missed.
 
-2. **The orchestration never reads CMS.** It talks to activities and the event queue. Control flow and data flow are cleanly separated.
+2. **The orchestration never reads CMS.** It talks to the `SessionProxy` and the event queue. Control flow and data flow are cleanly separated.
 
-3. **Activities never make durable decisions.** They call into ManagedSession and return a result. The orchestration decides what to do with the result (timer, dehydrate, idle, etc.).
+3. **The `SessionManager` / `ManagedSession` never make durable decisions.** They execute and return a result. The orchestration decides what to do with the result (timer, dehydrate, idle, etc.).
 
-4. **The CopilotSession survives across activity invocations.** Activity yields → session stays alive in SessionManager → next activity finds it. Dehydration is the orchestration's decision, not automatic on every yield.
+4. **The CopilotSession survives across orchestration turns.** When `runTurn()` returns, the session stays alive in `SessionManager` — the next `runTurn()` finds it there. Dehydration is the orchestration's decision, not automatic on every turn.
 
 5. **We never call `sendAndWait()` internally.** Always `send()` + `on()`. This gives the ManagedSession full control over the turn lifecycle — intercept tools, stream deltas, detect abort — instead of being a blackbox blocking call.
 
-6. **CMS writes are idempotent.** `UNIQUE(session_id, event_id)` + `ON CONFLICT DO NOTHING` means activity retries, replays, and duplicate event deliveries are all safe.
+6. **CMS writes are idempotent.** `UNIQUE(session_id, event_id)` + `ON CONFLICT DO NOTHING` means retries, replays, and duplicate event deliveries are all safe.
 
 7. **Only one orchestration per session.** The orchestration ID is `session-{sessionId}`. No fan-out, no sub-orchestrations. One long-lived loop.
