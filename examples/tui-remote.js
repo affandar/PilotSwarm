@@ -215,6 +215,7 @@ setStatus("Ready — type a message");
 appendLog("Runtime started ✓");
 
 const session = await client.createSession({
+    model: "claude-opus-4.5",
     systemMessage: "You are a helpful assistant. Be concise.",
     onUserInputRequest: async (request) => {
         return new Promise((resolve) => {

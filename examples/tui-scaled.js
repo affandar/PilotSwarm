@@ -14,6 +14,7 @@
  */
 
 import { DurableCopilotClient } from "../dist/index.js";
+import { CopilotClient } from "@github/copilot-sdk";
 import { initTracing } from "duroxide";
 import { createRequire } from "node:module";
 import { marked } from "marked";
@@ -43,8 +44,10 @@ function renderMarkdown(md) {
         marked.use(markedTerminal({ reflowText: true, width: mdWidth, showSectionPrefix: false, tab: 2 }));
         const unescaped = md.replace(/\\n/g, "\n");
         let rendered = marked(unescaped).replace(/\n{3,}/g, "\n\n").trimEnd();
-        // Escape blessed tags in rendered markdown so they display as literal text
-        rendered = rendered.replace(/\{\//g, "{\/");
+        // marked-terminal uses ANSI codes for styling, not blessed tags.
+        // Escape ALL curly braces so blessed doesn't misinterpret them as tags.
+        // Use fullwidth braces (U+FF5B / U+FF5D) which render fine in terminals.
+        rendered = rendered.replace(/\{/g, "\uFF5B").replace(/\}/g, "\uFF5D");
         return rendered;
     } catch {
         return md;
@@ -137,7 +140,7 @@ const workerLogBuffers = new Map(); // podName → [{orchId, text}] — raw entr
 const paneColors = ["yellow", "magenta", "green", "blue"];
 let nextColorIdx = 0;
 
-// Log viewing mode: "workers" (per-worker panes) or "orchestration" (single pane filtered by active session)
+// Log viewing mode: "workers" | "orchestration" | "sequence"
 let logViewMode = "workers";
 
 // Per-orchestration log buffer — every log line tagged with an instance_id is stored here
@@ -177,6 +180,458 @@ const orchLogPane = blessed.log({
     hidden: true,
 });
 
+// ─── Sequence Diagram Mode (swimlane) ────────────────────────────
+// Vertical scrolling swimlane: one column per worker node.
+// Activity boxes stay in the same column (session affinity).
+// Migration arrows show when affinity resets after dehydrate.
+
+const TIME_W = 10; // "HH:MM:SS  " — time + trailing space
+
+const seqEventBuffers = new Map(); // orchId → [event]
+const seqNodes = [];               // ordered short node names
+const seqNodeSet = new Set();
+
+// Track per-session state for rendering
+const seqLastActivityNode = new Map(); // orchId → last node that ran activity
+
+const seqHeaderBox = blessed.box({
+    parent: screen,
+    tags: true,
+    left: 0,
+    top: 0,
+    width: 10,
+    height: 3,
+    style: {
+        fg: "white",
+        bg: "black",
+    },
+    hidden: true,
+});
+
+const seqPane = blessed.log({
+    parent: screen,
+    label: " Sequence ",
+    tags: true,
+    left: 0,
+    top: 0,
+    width: 10,
+    height: 10,
+    border: { type: "line" },
+    style: {
+        border: { fg: "magenta" },
+        label: { fg: "magenta" },
+        focus: { border: { fg: "white" } },
+    },
+    scrollable: true,
+    alwaysScroll: true,
+    scrollbar: { style: { bg: "magenta" } },
+    keys: true,
+    vi: true,
+    mouse: true,
+    hidden: true,
+});
+
+function addSeqNode(podName) {
+    const short = podName.slice(-5);
+    if (seqNodeSet.has(short)) return short;
+    seqNodeSet.add(short);
+    seqNodes.push(short);
+    // Update sticky header when a new node is discovered
+    if (logViewMode === "sequence") {
+        updateSeqHeader();
+    }
+    return short;
+}
+
+// Compute column width dynamically from pane inner width
+function seqColW() {
+    const innerW = (seqPane.width || 60) - 2; // subtract borders
+    const ncols = seqNodes.length || 1;
+    // Available for columns = innerW - TIME_W
+    return Math.max(10, Math.floor((innerW - TIME_W) / ncols));
+}
+
+// Measure display width of a string (emoji = 2 cells)
+// eslint-disable-next-line no-control-regex
+const EMOJI_RE = /[\u{1F300}-\u{1FAD6}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu;
+
+function displayWidth(str) {
+    // Strip blessed tags
+    const noTags = str.replace(/\{[^}]*\}/g, "");
+    let w = 0;
+    for (const ch of noTags) {
+        const cp = ch.codePointAt(0);
+        // Most emoji and wide chars
+        if (cp > 0x1000 ||
+            (cp >= 0x2600 && cp <= 0x27BF) ||
+            (cp >= 0x2500 && cp <= 0x257F) || // box drawing (1 wide but safe)
+            cp === 0x25CF || cp === 0x25C6) {  // ● ◆
+            // Conservative: box-drawing = 1, emoji = 2
+            w += (cp >= 0x1F000 || (cp >= 0x2600 && cp <= 0x27BF)) ? 2 : 1;
+        } else {
+            w += 1;
+        }
+    }
+    return w;
+}
+
+// Pad string to target display width
+function padToWidth(str, targetW) {
+    const w = displayWidth(str);
+    const need = Math.max(0, targetW - w);
+    return str + " ".repeat(need);
+}
+
+// Build one swimlane line: place content in a specific column
+function seqLine(time, colIdx, content, color) {
+    const ncols = seqNodes.length || 1;
+    const colW = seqColW();
+    const timeStr = (time || "").padEnd(TIME_W);
+    let line = `{gray-fg}${timeStr}{/gray-fg}`;
+
+    for (let i = 0; i < ncols; i++) {
+        if (i === colIdx) {
+            // Content cell — clip to fit
+            const maxContent = colW - 2; // 1 space padding each side
+            const clipped = content.length > maxContent ? content.slice(0, maxContent) : content;
+            const colored = color ? `{${color}-fg}${clipped}{/${color}-fg}` : clipped;
+            const cell = ` ${colored} `;
+            // Pad the whole cell to colW
+            line += padToWidth(cell, colW);
+        } else {
+            // Empty cell — just a centered dot for the swimlane
+            const mid = Math.floor(colW / 2);
+            line += " ".repeat(mid) + "{gray-fg}\u00b7{/gray-fg}" + " ".repeat(colW - mid - 1);
+        }
+    }
+    return line;
+}
+
+// Full-width separator line for CAN / migration events
+function seqSeparator(label, color) {
+    const ncols = seqNodes.length || 1;
+    const colW = seqColW();
+    const totalW = TIME_W + ncols * colW;
+    const labelStr = ` ${label} `;
+    const dashCount = Math.max(0, totalW - labelStr.length);
+    const left = Math.floor(dashCount / 2);
+    const right = dashCount - left;
+    return `{${color}-fg}${"─".repeat(left)}${labelStr}${"─".repeat(right)}{/${color}-fg}`;
+}
+
+// Migration arrow from one column to another
+function seqMigrationArrow(fromCol, toCol) {
+    const ncols = seqNodes.length || 1;
+    const colW = seqColW();
+    const minCol = Math.min(fromCol, toCol);
+    const maxCol = Math.max(fromCol, toCol);
+    const goingRight = toCol > fromCol;
+    let line = " ".repeat(TIME_W);
+
+    for (let i = 0; i < ncols; i++) {
+        if (i === fromCol && goingRight) {
+            // Start of arrow going right
+            const mid = Math.floor(colW / 2);
+            line += " ".repeat(mid) + "{yellow-fg}*" + "─".repeat(colW - mid - 1) + "{/yellow-fg}";
+        } else if (i === fromCol && !goingRight) {
+            const mid = Math.floor(colW / 2);
+            line += "{yellow-fg}" + "─".repeat(mid) + "*{/yellow-fg}" + " ".repeat(colW - mid - 1);
+        } else if (i === toCol && goingRight) {
+            line += "{yellow-fg}──>{/yellow-fg}" + " ".repeat(Math.max(0, colW - 3));
+        } else if (i === toCol && !goingRight) {
+            line += " ".repeat(Math.max(0, colW - 3)) + "{yellow-fg}<──{/yellow-fg}";
+        } else if (i > minCol && i < maxCol) {
+            line += "{yellow-fg}" + "─".repeat(colW) + "{/yellow-fg}";
+        } else {
+            const mid = Math.floor(colW / 2);
+            line += " ".repeat(mid) + "{gray-fg}\u00b7{/gray-fg}" + " ".repeat(colW - mid - 1);
+        }
+    }
+    return line;
+}
+
+function seqHeader() {
+    const colW = seqColW();
+    let header = "{bold}" + "TIME".padEnd(TIME_W);
+    for (const node of seqNodes) {
+        const padded = node.padEnd(colW);
+        header += padded.slice(0, colW);
+    }
+    header += "{/bold}";
+
+    let divider = "─".repeat(TIME_W);
+    for (let i = 0; i < seqNodes.length; i++) {
+        divider += "─".repeat(colW);
+    }
+    return [header, divider];
+}
+
+/**
+ * Parse a raw log line into a sequence event.
+ * Returns null if the line isn't relevant for the sequence diagram.
+ */
+function parseSeqEvent(plain, podName) {
+    const iMatch = plain.match(/instance_id=(\S+)/);
+    if (!iMatch) return null;
+    const orchId = iMatch[1].replace(/,.*$/, "");
+    if (!orchId.startsWith("session-")) return null;
+
+    const tMatch = plain.match(/\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2})/);
+    const time = tMatch ? tMatch[1] : "";
+
+    const orchNode = addSeqNode(podName);
+
+    // Extract worker node from activity logs
+    const wMatch = plain.match(/worker_id=work-\d+-(\S+)-rt-\d+/);
+    const actNode = wMatch ? addSeqNode(wMatch[1]) : orchNode;
+
+    // ─── Orchestration events (dots) ──────────
+    if (plain.includes("[turn ")) {
+        const turnMatch = plain.match(/\[turn (\d+)\]/);
+        const promptMatch = plain.match(/prompt="([^"]{0,30})/);
+        return { orchId, time, type: "turn", orchNode, actNode,
+            turn: turnMatch?.[1] || "?",
+            prompt: promptMatch?.[1] || "" };
+    }
+    if (plain.includes("execution start")) {
+        const iterMatch = plain.match(/iteration=(\d+)/);
+        const hydrate = plain.includes("needsHydration=true");
+        return { orchId, time, type: "exec_start", orchNode, actNode,
+            iteration: parseInt(iterMatch?.[1] || "0", 10),
+            hydrate };
+    }
+    if (plain.includes("timer completed")) {
+        const sMatch = plain.match(/seconds=(\d+)/);
+        return { orchId, time, type: "timer_fired", orchNode, actNode,
+            seconds: sMatch?.[1] || "?" };
+    }
+    if (plain.includes("idle timeout")) {
+        return { orchId, time, type: "dehydrate", orchNode, actNode };
+    }
+    if (plain.includes("user responded within idle")) {
+        return { orchId, time, type: "user_idle", orchNode, actNode };
+    }
+    if (plain.includes("wait interrupted")) {
+        return { orchId, time, type: "interrupt", orchNode, actNode };
+    }
+
+    // ─── Activity events (boxes) ──────────
+    if (plain.includes("[activity]") && plain.includes("activity_name=runAgentTurn")) {
+        if (plain.includes("resuming session")) {
+            return { orchId, time, type: "resume", orchNode, actNode };
+        }
+        if (plain.includes("re-hydrating")) {
+            return { orchId, time, type: "resume", orchNode, actNode };
+        }
+        return { orchId, time, type: "activity_start", orchNode, actNode };
+    }
+    if (plain.includes("activity_name=dehydrateSession")) {
+        return { orchId, time, type: "dehydrate_act", orchNode, actNode };
+    }
+    if (plain.includes("activity_name=hydrateSession")) {
+        return { orchId, time, type: "hydrate_act", orchNode, actNode };
+    }
+
+    // ─── Grace period dehydration ──────────
+    if (plain.includes("Grace period elapsed, dehydrating")) {
+        return { orchId, time, type: "dehydrate", orchNode, actNode };
+    }
+
+    // ─── Agent output events ──────────
+    if (plain.includes("[durable-agent] Durable timer")) {
+        const sMatch = plain.match(/Durable timer: (\d+)s/);
+        return { orchId, time, type: "wait", orchNode, actNode,
+            seconds: sMatch?.[1] || "?" };
+    }
+    if (plain.includes("[durable-agent] Intermediate content")) {
+        const cMatch = plain.match(/Intermediate content: (.{0,25})/);
+        return { orchId, time, type: "content", orchNode, actNode,
+            snippet: cMatch?.[1] || "…" };
+    }
+    if (plain.includes("[response]")) {
+        const rMatch = plain.match(/\[response\] (.{0,25})/);
+        return { orchId, time, type: "response", orchNode, actNode,
+            snippet: rMatch?.[1] || "" };
+    }
+
+    return null;
+}
+
+/**
+ * Append a parsed event and render it if sequence mode is active.
+ */
+function appendSeqEvent(orchId, event) {
+    if (!seqEventBuffers.has(orchId)) seqEventBuffers.set(orchId, []);
+    const buf = seqEventBuffers.get(orchId);
+    buf.push(event);
+    if (buf.length > 300) buf.splice(0, buf.length - 300);
+
+    if (logViewMode === "sequence" && orchId === activeOrchId) {
+        renderSeqEventLine(event, orchId);
+    }
+}
+
+/**
+ * Render a single event into the sequence pane.
+ */
+function renderSeqEventLine(event, orchId) {
+    const lastAct = seqLastActivityNode.get(orchId);
+
+    switch (event.type) {
+        case "exec_start":
+            if (event.iteration > 0) {
+                seqPane.log(seqSeparator("continueAsNew", "yellow"));
+            }
+            {
+                const label = event.hydrate ? "- exec (hydrate)" : "- exec";
+                seqPane.log(seqLine(event.time, seqNodes.indexOf(event.orchNode), label, "gray"));
+            }
+            break;
+
+        case "turn": {
+            const orchCol = seqNodes.indexOf(event.orchNode);
+            seqPane.log(seqLine(event.time, orchCol, `- turn ${event.turn}`, "gray"));
+            break;
+        }
+
+        case "activity_start": {
+            const col = seqNodes.indexOf(event.actNode);
+            if (lastAct !== undefined && lastAct !== event.actNode) {
+                const fromCol = seqNodes.indexOf(lastAct);
+                if (fromCol >= 0 && col >= 0 && fromCol !== col) {
+                    seqPane.log(seqMigrationArrow(fromCol, col));
+                }
+            }
+            seqLastActivityNode.set(orchId, event.actNode);
+            seqPane.log(seqLine(event.time, col, "[= pinned =]", "cyan"));
+            seqPane.log(seqLine("", col, "| > agent", "cyan"));
+            break;
+        }
+
+        case "resume": {
+            const col = seqNodes.indexOf(event.actNode);
+            if (lastAct !== undefined && lastAct !== event.actNode) {
+                const fromCol = seqNodes.indexOf(lastAct);
+                if (fromCol >= 0 && col >= 0 && fromCol !== col) {
+                    seqPane.log(seqMigrationArrow(fromCol, col));
+                }
+            }
+            seqLastActivityNode.set(orchId, event.actNode);
+            seqPane.log(seqLine(event.time, col, "[= pinned =]", "cyan"));
+            seqPane.log(seqLine("", col, "| ^ resume", "green"));
+            break;
+        }
+
+        case "content": {
+            const col = seqNodes.indexOf(lastAct || event.orchNode);
+            const colW = seqColW();
+            const maxSnip = Math.max(3, colW - 6);
+            const snip = (event.snippet || "").slice(0, maxSnip);
+            seqPane.log(seqLine(event.time, col, `| ${snip}`, "white"));
+            break;
+        }
+
+        case "response": {
+            const col = seqNodes.indexOf(lastAct || event.orchNode);
+            const colW = seqColW();
+            const maxSnip = Math.max(3, colW - 8);
+            const snip = (event.snippet || "ok").slice(0, maxSnip);
+            seqPane.log(seqLine(event.time, col, `| < ${snip}`, "green"));
+            seqPane.log(seqLine("", col, "[= done ==]", "cyan"));
+            break;
+        }
+
+        case "wait": {
+            const col = seqNodes.indexOf(lastAct || event.orchNode);
+            seqPane.log(seqLine(event.time, col, "[= done ==]", "cyan"));
+            seqPane.log(seqLine("", col, `.. wait ${event.seconds}s`, "yellow"));
+            break;
+        }
+
+        case "timer_fired": {
+            const col = seqNodes.indexOf(lastAct || event.orchNode);
+            seqPane.log(seqLine(event.time, col, `>> ${event.seconds}s up`, "yellow"));
+            break;
+        }
+
+        case "dehydrate": {
+            const col = seqNodes.indexOf(lastAct || event.orchNode);
+            seqPane.log(seqLine(event.time, col, "[= done ==]", "cyan"));
+            seqPane.log(seqLine("", col, "ZZ dehydrate", "red"));
+            seqPane.log(seqSeparator("affinity reset", "red"));
+            break;
+        }
+
+        case "dehydrate_act": {
+            const col = seqNodes.indexOf(event.actNode);
+            seqPane.log(seqLine(event.time, col, "ZZ > blob", "red"));
+            break;
+        }
+
+        case "hydrate_act": {
+            const col = seqNodes.indexOf(event.actNode);
+            seqPane.log(seqLine(event.time, col, "^^ < blob", "green"));
+            break;
+        }
+
+        case "user_idle": {
+            const col = seqNodes.indexOf(lastAct || event.orchNode);
+            seqPane.log(seqLine(event.time, col, "[= done ==]", "cyan"));
+            seqPane.log(seqLine("", col, ">> user msg", "cyan"));
+            break;
+        }
+
+        case "interrupt": {
+            const col = seqNodes.indexOf(lastAct || event.orchNode);
+            seqPane.log(seqLine(event.time, col, "[= done ==]", "cyan"));
+            seqPane.log(seqLine("", col, ">> interrupt", "cyan"));
+            break;
+        }
+    }
+    screen.render();
+}
+
+/**
+ * Update the sticky header box with current node columns.
+ */
+function updateSeqHeader() {
+    if (seqNodes.length > 0) {
+        const [header, divider] = seqHeader();
+        seqHeaderBox.setContent(`${header}\n${divider}`);
+    } else {
+        seqHeaderBox.setContent("{bold}TIME      (waiting for events){/bold}");
+    }
+}
+
+/**
+ * Full re-render of the sequence pane for the active session.
+ */
+function refreshSeqPane() {
+    seqPane.setContent("");
+    const shortId = activeOrchId.startsWith("session-")
+        ? activeOrchId.slice(8, 16) : activeOrchId.slice(0, 8);
+    seqPane.setLabel(` Sequence: ${shortId} `);
+
+    // Update sticky header
+    updateSeqHeader();
+
+    // Reset tracking state for this render pass
+    seqLastActivityNode.delete(activeOrchId);
+
+    const events = seqEventBuffers.get(activeOrchId);
+    if (events && events.length > 0) {
+        for (const event of events) {
+            renderSeqEventLine(event, activeOrchId);
+        }
+    } else {
+        seqPane.log("{gray-fg}No events yet — interact with this session to populate{/gray-fg}");
+        seqPane.log("{gray-fg}the sequence diagram.{/gray-fg}");
+    }
+    screen.render();
+}
+
+// ─── End Sequence Diagram Mode ───────────────────────────────────
+
 function appendOrchLog(orchId, podName, text) {
     if (!orchLogBuffers.has(orchId)) orchLogBuffers.set(orchId, []);
     const color = getPodColor(podName);
@@ -196,15 +651,22 @@ function appendOrchLog(orchId, podName, text) {
 function switchLogMode() {
     if (logViewMode === "workers") {
         logViewMode = "orchestration";
-        // Hide all worker panes
         for (const pane of workerPanes.values()) pane.hide();
-        // Show orchestration pane and populate with current session's logs
+        seqPane.hide();
+        seqHeaderBox.hide();
         orchLogPane.show();
         refreshOrchLogPane();
+    } else if (logViewMode === "orchestration") {
+        logViewMode = "sequence";
+        orchLogPane.hide();
+        seqPane.show();
+        seqHeaderBox.show();
+        refreshSeqPane();
     } else {
         logViewMode = "workers";
+        seqPane.hide();
+        seqHeaderBox.hide();
         orchLogPane.hide();
-        // Show all worker panes
         for (const pane of workerPanes.values()) pane.show();
     }
     relayoutAll();
@@ -347,6 +809,16 @@ function relayoutAll() {
         orchLogPane.width = rW;
         orchLogPane.top = 0;
         orchLogPane.height = bH;
+    } else if (logViewMode === "sequence") {
+        const headerH = 3; // 2 lines + 1 border-like spacer
+        seqHeaderBox.left = lW + 1;
+        seqHeaderBox.width = rW - 2;
+        seqHeaderBox.top = 0;
+        seqHeaderBox.height = headerH;
+        seqPane.left = lW;
+        seqPane.width = rW;
+        seqPane.top = headerH;
+        seqPane.height = bH - headerH;
     } else {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
         if (panes.length > 0) {
@@ -544,7 +1016,7 @@ if (!isRemote) {
     // and corrupting blessed's alt-screen buffer. Wipe the terminal and force
     // blessed to fully repaint from scratch.
     process.stdout.write("\x1b[2J\x1b[H");
-    screen.alloc();
+    screen.realloc();
     screen.render();
 
     // Tail the log file into per-worker panes
@@ -620,6 +1092,12 @@ if (!isRemote) {
                 // Also buffer per-orchestration
                 if (orchId && orchId.startsWith("session-")) {
                     appendOrchLog(orchId, paneName, formatted);
+                }
+
+                // Feed sequence diagram
+                const seqEvtLocal = parseSeqEvent(plain, paneName);
+                if (seqEvtLocal) {
+                    appendSeqEvent(seqEvtLocal.orchId, seqEvtLocal);
                 }
                 routed++;
             }
@@ -928,6 +1406,12 @@ function startLogStream() {
                 if (orchId && orchId.startsWith("session-")) {
                     appendOrchLog(orchId, podName, formatted);
                 }
+
+                // Feed sequence diagram
+                const seqEvt = parseSeqEvent(plain, podName);
+                if (seqEvt) {
+                    appendSeqEvent(seqEvt.orchId, seqEvt);
+                }
             }
             screen.render();
         });
@@ -992,8 +1476,13 @@ const SYSTEM_MESSAGE = "You are a helpful assistant running in a durable executi
 // Map sessionId → DurableSession object
 const sessions = new Map();
 
+// ─── Model selection ─────────────────────────────────────────────
+let currentModel = process.env.COPILOT_MODEL || "claude-opus-4.5";
+let cachedModelList = null; // populated lazily by /models
+
 async function createNewSession() {
     const sess = await client.createSession({
+        model: currentModel,
         systemMessage: SYSTEM_MESSAGE,
         onUserInputRequest: async (request) => {
             return new Promise((resolve) => {
@@ -1233,9 +1722,9 @@ function switchToOrchestration(orchId) {
     if (!isSameSession) {
         chatBox.setContent("");
         chatBox.setScrollPerc(0);
-        // Wipe the entire screen to clear any residual characters
-        screen.alloc();
-        screen.render();
+        // Force blessed to reallocate its screen buffer (same as resize does)
+        // to clear any stray characters from the previous render
+        screen.realloc();
         updateChatLabel();
 
         // Restore buffered chat history for this session
@@ -1257,6 +1746,8 @@ function switchToOrchestration(orchId) {
         // If in orchestration log mode, refresh the log pane for the new session
         if (logViewMode === "orchestration") {
             refreshOrchLogPane();
+        } else if (logViewMode === "sequence") {
+            refreshSeqPane();
         }
 
         // Refresh list to update ▸ marker
@@ -1309,6 +1800,93 @@ async function handleInput(text) {
     if (trimmed.toLowerCase() === "exit" || trimmed.toLowerCase() === "quit") {
         await cleanup();
         process.exit(0);
+    }
+
+    // ─── Slash commands ──────────────────────────────────────────
+    if (trimmed.startsWith("/")) {
+        const parts = trimmed.split(/\s+/);
+        const cmd = parts[0].toLowerCase();
+        const arg = parts.slice(1).join(" ").trim();
+
+        if (cmd === "/models" || cmd === "/model") {
+            inputBar.clearValue();
+            inputBar.focus();
+
+            if (!arg) {
+                // List models
+                appendChatRaw("{yellow-fg}Fetching models...{/yellow-fg}");
+                screen.render();
+                try {
+                    const sdk = new CopilotClient({ githubToken: process.env.GITHUB_TOKEN });
+                    await sdk.start();
+                    cachedModelList = await sdk.listModels();
+                    await sdk.stop();
+
+                    appendChatRaw("{bold}Available models:{/bold}");
+                    for (const m of cachedModelList) {
+                        const marker = m.id === currentModel ? " {green-fg}← active{/green-fg}" : "";
+                        appendChatRaw(`  {cyan-fg}${m.id}{/cyan-fg}${marker}`);
+                    }
+                    appendChatRaw("{gray-fg}Use /model <name> to switch{/gray-fg}");
+                } catch (err) {
+                    appendChatRaw(`{red-fg}Failed to list models: ${err.message}{/red-fg}`);
+                }
+            } else {
+                // Set model for current + future sessions
+                const oldModel = currentModel;
+                currentModel = arg;
+
+                // Update the current session's stored config so the next turn uses the new model
+                const sid = sessionIdFromOrchId(activeOrchId);
+                const sess = sessions.get(sid);
+                if (sess) {
+                    // Update the config stored in the DurableCopilotClient
+                    try {
+                        client.updateSessionModel(sid, currentModel);
+                        appendChatRaw(`{green-fg}Model changed: {bold}${oldModel}{/bold} → {bold}${currentModel}{/bold}{/green-fg}`);
+                        appendChatRaw("{gray-fg}Takes effect on the next turn of this session and all new sessions.{/gray-fg}");
+                    } catch {
+                        appendChatRaw(`{green-fg}Model changed: {bold}${oldModel}{/bold} → {bold}${currentModel}{/bold} (new sessions only){/green-fg}`);
+                    }
+                } else {
+                    appendChatRaw(`{green-fg}Model changed: {bold}${oldModel}{/bold} → {bold}${currentModel}{/bold}{/green-fg}`);
+                    appendChatRaw("{gray-fg}Applies to new sessions.{/gray-fg}");
+                }
+            }
+            screen.render();
+            return;
+        }
+
+        if (cmd === "/help") {
+            inputBar.clearValue();
+            inputBar.focus();
+            appendChatRaw("{bold}Commands:{/bold}");
+            appendChatRaw("  {cyan-fg}/models{/cyan-fg}         — List available models");
+            appendChatRaw("  {cyan-fg}/model <name>{/cyan-fg}  — Switch model for new sessions");
+            appendChatRaw("  {cyan-fg}/new{/cyan-fg}            — Create a new session");
+            appendChatRaw("  {cyan-fg}/help{/cyan-fg}           — Show this help");
+            screen.render();
+            return;
+        }
+
+        if (cmd === "/new") {
+            inputBar.clearValue();
+            inputBar.focus();
+            appendChatRaw("{yellow-fg}Creating new session...{/yellow-fg}");
+            screen.render();
+            try {
+                const newSess = await createNewSession();
+                const newOrchId = `session-${newSess.sessionId}`;
+                knownOrchestrationIds.add(newOrchId);
+                await refreshOrchestrations();
+                switchToOrchestration(newOrchId);
+                appendChatRaw(`{green-fg}New session created ✓ {gray-fg}(${newSess.sessionId.slice(0, 8)}…) model=${currentModel}{/gray-fg}{/green-fg}`);
+            } catch (err) {
+                appendChatRaw(`{red-fg}Failed to create session: ${err.message}{/red-fg}`);
+            }
+            screen.render();
+            return;
+        }
     }
 
     if (pendingUserInput) {
@@ -1416,7 +1994,7 @@ screen.key(["C-c"], async () => {
 // ─── Pane navigation ─────────────────────────────────────────────
 // Esc: exit prompt, enter navigation mode (sessions pane focused)
 // p:   from anywhere, jump back into the prompt
-// m:   toggle log mode (workers ↔ orchestration)
+// m:   cycle log mode (workers → orchestration → sequence)
 // Tab: cycle through panes
 // h/l: left/right between sessions, chat, worker panes (when not in prompt)
 
@@ -1426,7 +2004,16 @@ screen.on("keypress", (ch, key) => {
     // m: toggle log viewing mode (only from non-input panes)
     if (ch === "m" && screen.focused !== inputBar) {
         switchLogMode();
-        appendLog(`{cyan-fg}Log mode: ${logViewMode === "workers" ? "Per-Worker" : "Per-Orchestration"}{/cyan-fg}`);
+        const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram" };
+        appendLog(`{cyan-fg}Log mode: ${modeNames[logViewMode]}{/cyan-fg}`);
+        return;
+    }
+
+    // r: force full redraw (same as resize)
+    if (ch === "r" && screen.focused !== inputBar) {
+        screen.realloc();
+        relayoutAll();
+        if (logViewMode === "sequence") refreshSeqPane();
         return;
     }
 
@@ -1490,7 +2077,12 @@ screen.key(["tab"], () => {
     screen.render();
 });
 
-screen.on("resize", () => relayoutAll());
+screen.on("resize", () => {
+    relayoutAll();
+    if (logViewMode === "sequence") {
+        refreshSeqPane();
+    }
+});
 
 // ─── Welcome message ─────────────────────────────────────────────
 
@@ -1504,7 +2096,7 @@ appendChatRaw("  {yellow-fg}Esc{/yellow-fg}    exit prompt → navigate TUI");
 appendChatRaw("  {yellow-fg}p{/yellow-fg}      back to prompt from anywhere");
 appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes");
 appendChatRaw("  {yellow-fg}h/l{/yellow-fg}    move left/right between panes");
-appendChatRaw("  {yellow-fg}m{/yellow-fg}      toggle log mode (workers ↔ orchestration)");
+appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence diagram)");
 appendChatRaw("");
 appendChatRaw("{bold}Sessions (left pane):{/bold}");
 appendChatRaw("  {yellow-fg}j/k{/yellow-fg}    navigate list");

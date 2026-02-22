@@ -296,6 +296,7 @@ setStatus("Ready — type a message");
 // ─── Create session ──────────────────────────────────────────────
 
 const session = await client.createSession({
+    model: "claude-opus-4.5",
     systemMessage: "You are a helpful assistant running in a durable execution environment. Be concise. CRITICAL RULE: When you need to wait, pause, sleep, delay, or do anything periodically/recurring, you MUST use the 'wait' tool. NEVER use bash sleep, setTimeout, setInterval, detached processes, or any other timing mechanism. The 'wait' tool is the only way to wait — it enables durable timers that survive process restarts and node migrations.",
     onUserInputRequest: async (request) => {
         return new Promise((resolve) => {
