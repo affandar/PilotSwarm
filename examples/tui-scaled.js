@@ -566,7 +566,10 @@ function renderSeqEventLine(event, orchId) {
 
         case "timer_fired": {
             const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, `>> ${event.seconds}s up`, "yellow"));
+            // Show wait context in case the initial "wait" event was missed
+            seqPane.log(seqLine(event.time, col, `[= done ==]`, "cyan"));
+            seqPane.log(seqLine("", col, `.. wait ${event.seconds}s`, "yellow"));
+            seqPane.log(seqLine("", col, `>> ${event.seconds}s up`, "yellow"));
             break;
         }
 
