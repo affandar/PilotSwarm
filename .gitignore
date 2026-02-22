@@ -4,3 +4,4 @@ dist/
 .env.remote
 *.tgz
 vendor/
+nohup.out

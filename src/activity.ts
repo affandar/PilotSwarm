@@ -167,10 +167,15 @@ export function createRunAgentTurnActivity(
             }, 2_000);
 
             try {
-                // Run one LLM turn
+                // Inject current host info so the LLM always knows where it is
+                // (conversation history may contain stale hostnames from prior workers)
+                const hostname = os.hostname();
+                const enrichedPrompt = `[SYSTEM: You are currently running on host "${hostname}". This may differ from previous turns due to worker migration.]\n\n${input.prompt}`;
+
+                // Run one LLM turn (60s timeout — if the agent takes longer, kill it)
                 const response = await session.sendAndWait(
-                    { prompt: input.prompt },
-                    300_000 // 5 min timeout per turn
+                    { prompt: enrichedPrompt },
+                    60_000 // 1 min timeout per turn
                 );
 
                 if (cancelled) {
@@ -240,9 +245,24 @@ export function createRunAgentTurnActivity(
                 };
             }
 
+            // Timeout — the LLM/agent took too long. Abort the CLI and return timeout.
+            const errMsg = err.message ?? String(err);
+            if (errMsg.includes("waiting for session.idle")) {
+                activityCtx.traceWarn(
+                    `[activity] LLM turn timed out for ${input.sessionId}, aborting CLI session`
+                );
+                if (turnState.session) {
+                    try { turnState.session.abort(); } catch {}
+                }
+                return {
+                    type: "timeout",
+                    message: "Copilot was taking too long to process and was killed.",
+                };
+            }
+
             return {
                 type: "error",
-                message: err.message ?? String(err),
+                message: errMsg,
             };
         } finally {
             // Always stop periodic checkpointing when the turn ends

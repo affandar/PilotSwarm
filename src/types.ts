@@ -180,6 +180,7 @@ export type TurnResult =
     | { type: "wait"; seconds: number; reason: string; content?: string }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean }
     | { type: "cancelled" }
+    | { type: "timeout"; message: string }
     | { type: "error"; message: string };
 
 // ─── Session Status / Events ─────────────────────────────────────

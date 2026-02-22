@@ -3,10 +3,9 @@
 /**
  * TUI chat client — Scaled mode with embedded or remote workers.
  *
- * Three-column layout:
- *   Left (20%): Orchestrations panel
- *   Center (40%): Chat pane
- *   Right (40%): Per-worker log panes (dynamic)
+ * Two-column layout:
+ *   Left column: Sessions panel (top, ~25% height) + Chat pane (bottom)
+ *   Right column: Per-worker or per-orchestration log panes (full height)
  *   Bottom: Input bar
  *
  * Usage:
@@ -27,10 +26,11 @@ const blessed = require("blessed");
 
 // ─── Markdown renderer ──────────────────────────────────────────
 
+// Configure marked once; we override width dynamically in renderMarkdown()
 marked.use(
     markedTerminal({
         reflowText: true,
-        width: 60,
+        width: 120,
         showSectionPrefix: false,
         tab: 2,
     })
@@ -38,6 +38,9 @@ marked.use(
 
 function renderMarkdown(md) {
     try {
+        // Dynamically set width to match chat pane (minus borders/padding)
+        const mdWidth = Math.max(40, leftW() - 4);
+        marked.use(markedTerminal({ reflowText: true, width: mdWidth, showSectionPrefix: false, tab: 2 }));
         const unescaped = md.replace(/\\n/g, "\n");
         let rendered = marked(unescaped).replace(/\n{3,}/g, "\n\n").trimEnd();
         // Escape blessed tags in rendered markdown so they display as literal text
@@ -60,12 +63,14 @@ const screen = blessed.screen({
     fullUnicode: true,
 });
 
-// ─── Layout calculations (pixel-based for alignment) ─────────────
+// ─── Layout calculations ─────────────────────────────────────────
+// Left column: sessions (top) + chat (bottom). Right column: full-height logs.
 
-function col1W() { return Math.floor(screen.width * 0.18); }
-function col2W() { return Math.floor(screen.width * 0.40); }
-function col3W() { return screen.width - col1W() - col2W(); }
-function bodyH() { return screen.height - 3; } // input bar = 3
+function leftW() { return Math.floor(screen.width * 0.45); }
+function rightW() { return screen.width - leftW(); }
+function bodyH() { return screen.height - 3; } // total body (minus input bar)
+function sessH() { return Math.max(5, Math.floor(bodyH() * 0.25)); }
+function chatH() { return bodyH() - sessH(); }
 
 // ─── Left pane: Orchestrations ───────────────────────────────────
 
@@ -75,8 +80,8 @@ const orchList = blessed.list({
     tags: true,
     left: 0,
     top: 0,
-    width: col1W(),
-    height: bodyH(),
+    width: leftW(),
+    height: sessH(),
     border: { type: "line" },
     style: {
         border: { fg: "yellow" },
@@ -108,10 +113,10 @@ const chatBox = blessed.log({
     parent: screen,
     label: " {bold}Chat{/bold} ",
     tags: true,
-    left: col1W(),
-    top: 0,
-    width: col2W(),
-    height: bodyH(),
+    left: 0,
+    top: sessH(),
+    width: leftW(),
+    height: chatH(),
     border: { type: "line" },
     style: {
         border: { fg: "cyan" },
@@ -128,8 +133,147 @@ const chatBox = blessed.log({
 
 const workerPanes = new Map(); // podName → blessed.log
 const workerPaneOrder = []; // ordered pod names
+const workerLogBuffers = new Map(); // podName → [{orchId, text}] — raw entries for recoloring
 const paneColors = ["yellow", "magenta", "green", "blue"];
 let nextColorIdx = 0;
+
+// Log viewing mode: "workers" (per-worker panes) or "orchestration" (single pane filtered by active session)
+let logViewMode = "workers";
+
+// Per-orchestration log buffer — every log line tagged with an instance_id is stored here
+const orchLogBuffers = new Map(); // orchId → { lines: string[], podColors: Map<podName, color> }
+const podColorMap = new Map(); // global: podName → color
+const nodeColors = ["yellow", "magenta", "green", "blue", "cyan", "white"];
+let nextNodeColorIdx = 0;
+
+function getPodColor(podName) {
+    if (!podColorMap.has(podName)) {
+        podColorMap.set(podName, nodeColors[nextNodeColorIdx++ % nodeColors.length]);
+    }
+    return podColorMap.get(podName);
+}
+
+// Single orchestration log pane (created once, shown/hidden based on mode)
+const orchLogPane = blessed.log({
+    parent: screen,
+    label: " Orchestration Logs ",
+    tags: true,
+    left: 0,
+    top: 0,
+    width: 10,
+    height: 10,
+    border: { type: "line" },
+    style: {
+        border: { fg: "cyan" },
+        label: { fg: "cyan" },
+        focus: { border: { fg: "white" } },
+    },
+    scrollable: true,
+    alwaysScroll: true,
+    scrollbar: { style: { bg: "cyan" } },
+    keys: true,
+    vi: true,
+    mouse: true,
+    hidden: true,
+});
+
+function appendOrchLog(orchId, podName, text) {
+    if (!orchLogBuffers.has(orchId)) orchLogBuffers.set(orchId, []);
+    const color = getPodColor(podName);
+    const shortPod = podName.slice(-5);
+    const coloredLine = `{${color}-fg}[${shortPod}]{/${color}-fg} ${text}`;
+    orchLogBuffers.get(orchId).push(coloredLine);
+    // Cap buffer at 500 lines
+    const buf = orchLogBuffers.get(orchId);
+    if (buf.length > 500) buf.splice(0, buf.length - 500);
+    // If mode 2 is active and this is the active session, render immediately
+    if (logViewMode === "orchestration" && orchId === activeOrchId) {
+        orchLogPane.log(coloredLine);
+        screen.render();
+    }
+}
+
+function switchLogMode() {
+    if (logViewMode === "workers") {
+        logViewMode = "orchestration";
+        // Hide all worker panes
+        for (const pane of workerPanes.values()) pane.hide();
+        // Show orchestration pane and populate with current session's logs
+        orchLogPane.show();
+        refreshOrchLogPane();
+    } else {
+        logViewMode = "workers";
+        orchLogPane.hide();
+        // Show all worker panes
+        for (const pane of workerPanes.values()) pane.show();
+    }
+    relayoutAll();
+}
+
+function refreshOrchLogPane() {
+    orchLogPane.setContent("");
+    const shortId = activeOrchId.startsWith("session-") ? activeOrchId.slice(8, 16) : activeOrchId.slice(0, 8);
+    orchLogPane.setLabel(` Logs: ${shortId} `);
+    const buf = orchLogBuffers.get(activeOrchId);
+    if (buf && buf.length > 0) {
+        for (const line of buf) orchLogPane.log(line);
+    } else {
+        orchLogPane.log("{gray-fg}Loading logs...{/gray-fg}");
+        // Backfill: one-shot kubectl logs fetch filtered for this orchestration
+        backfillOrchLogs(activeOrchId);
+    }
+    screen.render();
+}
+
+const backfillInProgress = new Set();
+function backfillOrchLogs(orchId) {
+    if (backfillInProgress.has(orchId)) return;
+    backfillInProgress.add(orchId);
+
+    try {
+        const proc = spawn("kubectl", [
+            "logs",
+            "-n", "copilot-sdk",
+            "-l", "app.kubernetes.io/component=worker",
+            "--prefix",
+            "--tail=200",
+        ], { stdio: ["ignore", "pipe", "pipe"] });
+
+        let out = "";
+        proc.stdout.on("data", d => out += d.toString());
+        proc.on("close", () => {
+            backfillInProgress.delete(orchId);
+            const lines = out.split("\n");
+            let added = 0;
+            for (const line of lines) {
+                if (!line.includes(orchId)) continue;
+                const prefixMatch = line.match(/^\[pod\/([^/]+)\//);
+                const podName = prefixMatch ? prefixMatch[1] : "unknown";
+                const content = line.replace(/^\[pod\/[^\]]+\]\s*/, "");
+                const formatted = content
+                    .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
+                    .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
+                    .replace(/\bINFO\b/g, "{green-fg}INFO{/green-fg}");
+                appendOrchLog(orchId, podName, formatted);
+                added++;
+            }
+            // If this is still the active session and we're in orch mode, refresh
+            if (orchId === activeOrchId && logViewMode === "orchestration") {
+                orchLogPane.setContent("");
+                const buf = orchLogBuffers.get(orchId);
+                if (buf && buf.length > 0) {
+                    for (const ln of buf) orchLogPane.log(ln);
+                } else {
+                    orchLogPane.log("{gray-fg}No logs found for this session{/gray-fg}");
+                }
+                screen.render();
+            }
+        });
+        proc.on("error", () => { backfillInProgress.delete(orchId); });
+    } catch {
+        backfillInProgress.delete(orchId);
+    }
+}
 
 function getOrCreateWorkerPane(podName) {
     if (workerPanes.has(podName)) return workerPanes.get(podName);
@@ -142,9 +286,9 @@ function getOrCreateWorkerPane(podName) {
         parent: screen,
         label: ` ${shortName} `,
         tags: true,
-        left: col1W() + col2W(),
+        left: leftW(),
         top: 0,
-        width: col3W(),
+        width: rightW(),
         height: 10,
         border: { type: "line" },
         style: {
@@ -166,22 +310,53 @@ function getOrCreateWorkerPane(podName) {
     return pane;
 }
 
+/**
+ * Remove worker panes that don't match any currently-running pod.
+ * Keeps only panes whose podName is in the activePods set.
+ */
+function pruneWorkerPanes(activePods) {
+    const stale = workerPaneOrder.filter(name => !activePods.has(name));
+    if (stale.length === 0) return;
+    for (const name of stale) {
+        const pane = workerPanes.get(name);
+        if (pane) {
+            pane.detach();
+            screen.remove(pane);
+        }
+        workerPanes.delete(name);
+    }
+    // Rebuild order array in place
+    stale.forEach(name => {
+        const idx = workerPaneOrder.indexOf(name);
+        if (idx !== -1) workerPaneOrder.splice(idx, 1);
+    });
+    relayoutAll();
+}
+
 function relayoutAll() {
-    const h = bodyH();
-    const c1 = col1W(), c2 = col2W(), c3 = col3W();
+    const lW = leftW(), rW = rightW(), bH = bodyH(), sH = sessH(), cH = chatH();
 
-    orchList.left = 0; orchList.width = c1; orchList.height = h;
-    chatBox.left = c1; chatBox.width = c2; chatBox.height = h;
-    statusBar.left = c1 + 1; statusBar.width = c2 - 2;
+    // Left column: sessions on top, chat below
+    orchList.left = 0; orchList.top = 0; orchList.width = lW; orchList.height = sH;
+    chatBox.left = 0; chatBox.top = sH; chatBox.width = lW; chatBox.height = cH;
+    statusBar.left = 1; statusBar.width = lW - 2;
 
-    const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
-    if (panes.length > 0) {
-        const pH = Math.max(5, Math.floor(h / panes.length));
-        for (let i = 0; i < panes.length; i++) {
-            panes[i].left = c1 + c2;
-            panes[i].width = c3;
-            panes[i].top = i * pH;
-            panes[i].height = i === panes.length - 1 ? h - i * pH : pH;
+    // Right column: full-height log panes
+    if (logViewMode === "orchestration") {
+        orchLogPane.left = lW;
+        orchLogPane.width = rW;
+        orchLogPane.top = 0;
+        orchLogPane.height = bH;
+    } else {
+        const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
+        if (panes.length > 0) {
+            const pH = Math.max(5, Math.floor(bH / panes.length));
+            for (let i = 0; i < panes.length; i++) {
+                panes[i].left = lW;
+                panes[i].width = rW;
+                panes[i].top = i * pH;
+                panes[i].height = i === panes.length - 1 ? bH - i * pH : pH;
+            }
         }
     }
     screen.render();
@@ -213,8 +388,8 @@ const inputBar = blessed.textbox({
 const statusBar = blessed.box({
     parent: screen,
     bottom: 2,
-    left: col1W() + 1,
-    width: col2W() - 2,
+    left: 1,
+    width: leftW() - 2,
     height: 1,
     content: "",
     tags: true,
@@ -227,16 +402,23 @@ screen.render();
 
 let pendingUserInput = null;
 
-function appendChat(text) {
+function appendChat(text, orchId) {
     for (const line of text.split("\n")) {
-        chatBox.log(line);
+        appendChatRaw(line, orchId);
     }
-    screen.render();
 }
 
-function appendChatRaw(text) {
-    chatBox.log(text);
-    screen.render();
+function appendChatRaw(text, orchId) {
+    // Buffer the line for this session
+    const targetOrch = orchId || activeOrchId;
+    if (!sessionChatBuffers.has(targetOrch)) sessionChatBuffers.set(targetOrch, []);
+    sessionChatBuffers.get(targetOrch).push(text);
+
+    // Only render to screen if this is the active session
+    if (targetOrch === activeOrchId) {
+        chatBox.log(text);
+        screen.render();
+    }
 }
 
 function setStatus(text) {
@@ -249,22 +431,57 @@ function appendLog(text) {
     screen.render();
 }
 
-function appendWorkerLog(podName, text) {
+function appendWorkerLog(podName, text, orchId) {
     const pane = getOrCreateWorkerPane(podName);
-    pane.log(text);
+    // Buffer raw entry for recoloring on session switch
+    if (!workerLogBuffers.has(podName)) workerLogBuffers.set(podName, []);
+    const buf = workerLogBuffers.get(podName);
+    buf.push({ orchId, text });
+    // Cap at 500 entries
+    if (buf.length > 500) buf.splice(0, buf.length - 500);
+
+    // In worker mode, highlight lines belonging to the active orchestration
+    if (orchId && orchId === activeOrchId) {
+        pane.log(`{bold}${text}{/bold}`);
+    } else if (orchId) {
+        pane.log(`{gray-fg}${text}{/gray-fg}`);
+    } else {
+        pane.log(text);
+    }
     screen.render();
 }
 
-function showCopilotMessage(raw) {
+/**
+ * Re-render all worker panes to highlight the current activeOrchId.
+ * Called when switching sessions.
+ */
+function recolorWorkerPanes() {
+    for (const [podName, pane] of workerPanes) {
+        const buf = workerLogBuffers.get(podName);
+        if (!buf || buf.length === 0) continue;
+        pane.setContent("");
+        for (const entry of buf) {
+            if (entry.orchId && entry.orchId === activeOrchId) {
+                pane.log(`{bold}${entry.text}{/bold}`);
+            } else if (entry.orchId) {
+                pane.log(`{gray-fg}${entry.text}{/gray-fg}`);
+            } else {
+                pane.log(entry.text);
+            }
+        }
+    }
+    screen.render();
+}
+
+function showCopilotMessage(raw, orchId) {
     const rendered = renderMarkdown(raw);
     const prefix = `{gray-fg}[${ts()}]{/gray-fg} {cyan-fg}{bold}🤖 Copilot:{/bold}{/cyan-fg}`;
-    appendChatRaw(prefix);
+    appendChatRaw(prefix, orchId);
     // Always show on separate lines for readability
     for (const line of rendered.split("\n")) {
-        chatBox.log(line);
+        appendChatRaw(line, orchId);
     }
-    appendChatRaw(""); // blank line after each message
-    screen.render();
+    appendChatRaw("", orchId); // blank line after each message
 }
 
 // ─── Start the durable client (embedded workers + client) ────────
@@ -373,11 +590,37 @@ if (!isRemote) {
 
                 if (!paneName) continue; // skip unroutable lines
 
-                const formatted = plain
-                    .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
-                    .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
-                    .replace(/\bINFO\b/g, "{green-fg}INFO{/green-fg}");
-                appendWorkerLog(paneName, formatted);
+                const orchId = instanceId ? instanceId.replace(/,.*$/, "") : null;
+
+                // Color orchestration vs activity differently
+                let formatted;
+                const isOrch = plain.includes("duroxide::orchestration");
+                const isActivity = plain.includes("duroxide::activity");
+                if (isOrch) {
+                    formatted = plain
+                        .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
+                        .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
+                        .replace(/\bINFO\b/g, "{magenta-fg}INFO{/magenta-fg}");
+                    formatted = `{magenta-fg}\u25c6{/magenta-fg} ${formatted}`;
+                } else if (isActivity) {
+                    formatted = plain
+                        .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
+                        .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
+                        .replace(/\bINFO\b/g, "{blue-fg}INFO{/blue-fg}");
+                    formatted = `{blue-fg}\u25cf{/blue-fg} ${formatted}`;
+                } else {
+                    formatted = plain
+                        .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
+                        .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
+                        .replace(/\bINFO\b/g, "{green-fg}INFO{/green-fg}");
+                }
+
+                appendWorkerLog(paneName, formatted, orchId);
+
+                // Also buffer per-orchestration
+                if (orchId && orchId.startsWith("session-")) {
+                    appendOrchLog(orchId, paneName, formatted);
+                }
                 routed++;
             }
             tailReads++;
@@ -411,6 +654,11 @@ const orchHasChanges = new Set(); // IDs with unseen changes
 const sessionHeadings = new Map(); // orchId → short heading from LLM
 const sessionSummaryBuffer = new Map(); // orchId → buffered summary text to show on switch
 const sessionSummarized = new Set(); // orchIds already summarized (avoid re-asking)
+
+// Per-session chat buffers — every observer writes here so content is preserved on switch
+const sessionChatBuffers = new Map(); // orchId → string[]
+const sessionObservers = new Map(); // orchId → AbortController
+const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
 
 function getDc() {
     try { return client._getDuroxideClient(); } catch { return null; }
@@ -505,16 +753,39 @@ async function refreshOrchestrations() {
             const isActive = id === activeOrchId;
             const marker = isActive ? "{bold}▸{/bold}" : " ";
             const changeDot = hasChanges ? "{cyan-fg}{bold}●{/bold}{/cyan-fg} " : "";
+
+            // Live status indicator
+            const liveStatus = sessionLiveStatus.get(id);
+            let statusIcon = "";
+            if (status === "Completed" || status === "Failed" || status === "Terminated") {
+                statusIcon = ""; // no icon for terminal states
+            } else if (liveStatus === "running") {
+                statusIcon = "{green-fg}⚡{/green-fg}";
+            } else if (liveStatus === "waiting") {
+                statusIcon = "{blue-fg}⏳{/blue-fg}";
+            } else if (liveStatus === "input_required") {
+                statusIcon = "{magenta-fg}🙋{/magenta-fg}";
+            } else if (liveStatus === "idle") {
+                statusIcon = "{gray-fg}💤{/gray-fg}";
+            }
+
             const heading = sessionHeadings.get(id);
             const label = heading
                 ? `${heading} (${uuid4})`
                 : `${uuid4} ${timeStr}`;
-            orchList.addItem(`${marker}${changeDot}{${color}-fg}${label}{/${color}-fg}`);
+            orchList.addItem(`${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
         }
     }
     // Restore cursor position
     orchList.select(Math.min(prevSelected, orchIdOrder.length - 1));
     screen.render();
+
+    // Start observers for any sessions that don't have one yet
+    for (const { id, status } of entries) {
+        if (!sessionObservers.has(id) && status !== "Completed" && status !== "Failed" && status !== "Terminated") {
+            startObserver(id);
+        }
+    }
 }
 
 // Poll orchestrations every 3 seconds
@@ -604,7 +875,7 @@ function startLogStream() {
             "-n", "copilot-sdk",
             "-l", "app.kubernetes.io/component=worker",
             "--prefix",
-            "--tail=5",
+            "--tail=50",
         ], { stdio: ["ignore", "pipe", "pipe"] });
 
         let logBuf = "";
@@ -617,11 +888,46 @@ function startLogStream() {
                 const prefixMatch = line.match(/^\[pod\/([^/]+)\//);
                 const podName = prefixMatch ? prefixMatch[1] : "unknown";
                 const content = line.replace(/^\[pod\/[^\]]+\]\s*/, "");
-                const formatted = content
-                    .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
-                    .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
-                    .replace(/\bINFO\b/g, "{green-fg}INFO{/green-fg}");
-                appendWorkerLog(podName, formatted);
+
+                // Strip ANSI codes before matching — duroxide compact format embeds
+                // ANSI escapes inside key=value pairs (e.g. instance_id\x1b[0m\x1b[2m=)
+                // eslint-disable-next-line no-control-regex
+                const plain = content.replace(/\x1b\[[0-9;]*m/g, "");
+                const instanceMatch = plain.match(/instance_id=(\S+)/);
+                const orchId = instanceMatch
+                    ? instanceMatch[1].replace(/,.*$/, "")
+                    : null;
+
+                // Color orchestration vs activity differently
+                let formatted;
+                const isOrch = plain.includes("duroxide::orchestration");
+                const isActivity = plain.includes("duroxide::activity");
+                if (isOrch) {
+                    formatted = plain
+                        .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
+                        .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
+                        .replace(/\bINFO\b/g, "{magenta-fg}INFO{/magenta-fg}");
+                    // Prefix with orch marker
+                    formatted = `{magenta-fg}◆{/magenta-fg} ${formatted}`;
+                } else if (isActivity) {
+                    formatted = plain
+                        .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
+                        .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
+                        .replace(/\bINFO\b/g, "{blue-fg}INFO{/blue-fg}");
+                    formatted = `{blue-fg}●{/blue-fg} ${formatted}`;
+                } else {
+                    formatted = plain
+                        .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
+                        .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
+                        .replace(/\bINFO\b/g, "{green-fg}INFO{/green-fg}");
+                }
+
+                appendWorkerLog(podName, formatted, orchId);
+
+                // Also buffer per-orchestration
+                if (orchId && orchId.startsWith("session-")) {
+                    appendOrchLog(orchId, podName, formatted);
+                }
             }
             screen.render();
         });
@@ -652,6 +958,28 @@ function startLogStream() {
 if (isRemote) {
     startLogStream();
     appendLog("{green-fg}Streaming AKS worker logs ↓{/green-fg}");
+
+    // Periodically prune stale worker panes (every 30s)
+    setInterval(async () => {
+        try {
+            const result = await new Promise((resolve, reject) => {
+                const proc = spawn("kubectl", [
+                    "get", "pods", "-n", "copilot-sdk",
+                    "-l", "app.kubernetes.io/component=worker",
+                    "--field-selector=status.phase=Running",
+                    "-o", "jsonpath={.items[*].metadata.name}",
+                ], { stdio: ["ignore", "pipe", "pipe"] });
+                let out = "";
+                proc.stdout.on("data", d => out += d.toString());
+                proc.on("close", code => code === 0 ? resolve(out.trim()) : reject());
+                proc.on("error", reject);
+            });
+            if (result) {
+                const activePods = new Set(result.split(/\s+/));
+                pruneWorkerPanes(activePods);
+            }
+        } catch {}
+    }, 30_000);
 } else {
     // In local mode, create panes for the embedded workers
     for (let i = 0; i < numWorkers; i++) {
@@ -693,7 +1021,6 @@ appendLog(`Session created ✓ {gray-fg}(${thisSessionId.slice(0, 8)}…){/gray-
 
 let activeOrchId = `session-${thisSessionId}`;  // currently observed orchestration
 let activeSessionShort = thisSessionId.slice(0, 8);
-let observerAbort = null; // AbortController for the status observer loop
 
 function updateChatLabel() {
     chatBox.setLabel(` {bold}Chat{/bold} {gray-fg}[${activeSessionShort}]{/gray-fg} `);
@@ -702,19 +1029,32 @@ function updateChatLabel() {
 
 /**
  * Start observing an orchestration's custom status and pipe turn results
- * into the chat pane. Runs until aborted or the orchestration completes.
+ * into the chat buffer. Runs until aborted or the orchestration completes.
+ * Multiple observers can run concurrently (one per session).
  */
 function startObserver(orchId) {
-    // Stop any previous observer
-    if (observerAbort) { observerAbort.abort(); observerAbort = null; }
+    // Don't start a duplicate observer for the same session
+    if (sessionObservers.has(orchId)) return;
 
     const dc = getDc();
     if (!dc) return;
 
     const ac = new AbortController();
-    observerAbort = ac;
+    sessionObservers.set(orchId, ac);
     let lastVersion = 0;
     let lastIteration = -1;
+
+    // Helper: update status bar only if this is the active session
+    function setStatusIfActive(text) {
+        if (orchId === activeOrchId) setStatus(text);
+    }
+    function setTurnInProgressIfActive(val) {
+        if (orchId === activeOrchId) turnInProgress = val;
+    }
+    function updateLiveStatus(status) {
+        sessionLiveStatus.set(orchId, status);
+        refreshOrchestrations();
+    }
 
     // First, show the current state immediately
     (async () => {
@@ -731,28 +1071,32 @@ function startObserver(orchId) {
                     lastVersion = currentStatus.customStatusVersion || 0;
                     if (cs.turnResult && cs.turnResult.type === "completed") {
                         lastIteration = cs.iteration || 0;
-                        showCopilotMessage(cs.turnResult.content);
+                        showCopilotMessage(cs.turnResult.content, orchId);
                     }
                     if (cs.status === "idle") {
-                        setStatus("Idle — type a message");
-                        turnInProgress = false;
+                        setStatusIfActive("Idle — type a message");
+                        setTurnInProgressIfActive(false);
+                        updateLiveStatus("idle");
                     } else if (cs.status === "running") {
-                        setStatus("Running…");
-                        turnInProgress = true;
+                        setStatusIfActive("Running…");
+                        setTurnInProgressIfActive(true);
+                        updateLiveStatus("running");
                     } else if (cs.status === "waiting") {
-                        setStatus(`Waiting (${cs.waitReason || "timer"})…`);
+                        setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
+                        updateLiveStatus("waiting");
                     } else if (cs.status === "input_required") {
-                        appendChatRaw(`{magenta-fg}🙋 ${cs.pendingQuestion || "?"}{/magenta-fg}`);
-                        setStatus("Waiting for your answer...");
+                        appendChatRaw(`{magenta-fg}🙋 ${cs.pendingQuestion || "?"}{/magenta-fg}`, orchId);
+                        setStatusIfActive("Waiting for your answer...");
+                        updateLiveStatus("input_required");
                     }
                 }
             } else {
                 // No custom status yet — orchestration hasn't started or is fresh
-                setStatus("Ready — type a message");
+                setStatusIfActive("Ready — type a message");
             }
         } catch {
             // Orchestration may not exist yet (new session)
-            setStatus("Ready — type a message");
+            setStatusIfActive("Ready — type a message");
         }
         while (!ac.signal.aborted) {
             try {
@@ -763,6 +1107,10 @@ function startObserver(orchId) {
 
                 if (statusResult.customStatusVersion > lastVersion) {
                     lastVersion = statusResult.customStatusVersion;
+                } else if (statusResult.customStatusVersion < lastVersion) {
+                    // continueAsNew happened — version reset. Reset watermarks.
+                    lastVersion = statusResult.customStatusVersion;
+                    lastIteration = -1;
                 }
 
                 let cs = null;
@@ -776,7 +1124,12 @@ function startObserver(orchId) {
                 if (cs) {
                     // Show intermediate content
                     if (cs.intermediateContent) {
-                        showCopilotMessage(cs.intermediateContent);
+                        showCopilotMessage(cs.intermediateContent, orchId);
+                    }
+
+                    // Track live status
+                    if (cs.status) {
+                        updateLiveStatus(cs.status);
                     }
 
                     // Show turn results
@@ -792,27 +1145,33 @@ function startObserver(orchId) {
                                 refreshOrchestrations();
                             }
                             if (!cs.intermediateContent || cs.intermediateContent !== cs.turnResult.content) {
-                                showCopilotMessage(displayContent);
+                                showCopilotMessage(displayContent, orchId);
                             }
                             if (cs.status === "idle") {
-                                setStatus("Ready — type a message");
-                                turnInProgress = false;
+                                setStatusIfActive("Ready — type a message");
+                                setTurnInProgressIfActive(false);
                             } else {
-                                setStatus(`Running (${cs.status})…`);
+                                setStatusIfActive(`Running (${cs.status})…`);
                             }
                         } else if (cs.turnResult.type === "input_required") {
-                            appendChatRaw(`{magenta-fg}🙋 ${cs.turnResult.question}{/magenta-fg}`);
-                            setStatus("Waiting for your answer...");
+                            appendChatRaw(`{magenta-fg}🙋 ${cs.turnResult.question}{/magenta-fg}`, orchId);
+                            setStatusIfActive("Waiting for your answer...");
                         }
                     } else if (cs.status === "running") {
-                        setStatus("Running…");
-                        turnInProgress = true;
+                        setStatusIfActive("Running…");
+                        setTurnInProgressIfActive(true);
                     } else if (cs.status === "waiting") {
-                        setStatus(`Waiting (${cs.waitReason || "timer"})…`);
+                        setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
+                    }
+
+                    // Mark session as having unseen changes if not active
+                    if (orchId !== activeOrchId) {
+                        orchHasChanges.add(orchId);
+                        refreshOrchestrations();
                     }
                 }
             } catch {
-                // waitForStatusChange timed out — check terminal state
+                // waitForStatusChange timed out — check terminal state or continueAsNew
                 if (ac.signal.aborted) break;
                 try {
                     const info = await dc.getStatus(orchId);
@@ -821,12 +1180,19 @@ function startObserver(orchId) {
                             const reason = info.failureDetails?.errorMessage?.split("\n")[0]
                                 || info.output?.split("\n")[0]
                                 || "Unknown error";
-                            appendChatRaw(`{red-fg}❌ Session failed: ${reason}{/red-fg}`);
+                            appendChatRaw(`{red-fg}❌ Session failed: ${reason}{/red-fg}`, orchId);
                         }
-                        appendLog(`{gray-fg}Orchestration ${info.status}{/gray-fg}`);
-                        turnInProgress = false;
-                        setStatus(`${info.status} — type a message`);
+                        appendChatRaw(`{gray-fg}Orchestration ${info.status}{/gray-fg}`, orchId);
+                        setTurnInProgressIfActive(false);
+                        setStatusIfActive(`${info.status} — type a message`);
+                        sessionObservers.delete(orchId);
                         break;
+                    }
+                    // Detect continueAsNew: customStatusVersion went backwards
+                    const currentVersion = info.customStatusVersion || 0;
+                    if (currentVersion < lastVersion) {
+                        lastVersion = 0;
+                        lastIteration = -1;
                     }
                 } catch {}
                 await new Promise(r => setTimeout(r, 500));
@@ -871,14 +1237,35 @@ function switchToOrchestration(orchId) {
         screen.alloc();
         screen.render();
         updateChatLabel();
-        appendChatRaw(`{yellow-fg}── Switched to ${activeSessionShort} ──{/yellow-fg}`);
-        appendChatRaw("");
 
-        // Start observing the new orchestration
+        // Restore buffered chat history for this session
+        const buffer = sessionChatBuffers.get(orchId);
+        if (buffer && buffer.length > 0) {
+            for (const line of buffer) {
+                chatBox.log(line);
+            }
+            chatBox.log(""); // spacer
+        } else {
+            chatBox.log(`{yellow-fg}── Switched to ${activeSessionShort} ──{/yellow-fg}`);
+            chatBox.log("");
+        }
+        screen.render();
+
+        // Ensure an observer is running for this session
         startObserver(orchId);
+
+        // If in orchestration log mode, refresh the log pane for the new session
+        if (logViewMode === "orchestration") {
+            refreshOrchLogPane();
+        }
 
         // Refresh list to update ▸ marker
         refreshOrchestrations();
+
+        // Recolor worker log panes to highlight the new active session
+        if (logViewMode === "workers") {
+            recolorWorkerPanes();
+        }
     }
 
     // Show buffered summary if available (populated at TUI startup via enqueueEvent)
@@ -966,14 +1353,14 @@ async function handleInput(text) {
 
     try {
         // Use the DurableSession to send — it handles starting the orchestration
-        // on first message. The observer will pick up results via waitForStatusChange.
+        // on first message. The observer picks up results via waitForStatusChange.
         const sess = getActiveSession();
         if (sess) {
-            // Fire-and-forget: sendAndWait starts the orchestration and returns result,
-            // but the observer is what updates the chat. We just need to trigger the send.
-            sess.sendAndWait(trimmed, 0).then(() => {
-                // Add to known orchestrations after send
+            // Fire-and-forget: just send the message, don't wait for result.
+            // The observer is what updates the chat.
+            sess.send(trimmed).then(() => {
                 knownOrchestrationIds.add(activeOrchId);
+                startObserver(activeOrchId);
                 refreshOrchestrations();
             }).catch(err => {
                 const msg = (err.message || String(err)).split("\n")[0];
@@ -1011,7 +1398,9 @@ inputBar.key(["escape"], () => {
 
 async function cleanup() {
     clearInterval(orchPollTimer);
-    if (observerAbort) { observerAbort.abort(); observerAbort = null; }
+    // Stop all session observers
+    for (const [, ac] of sessionObservers) { ac.abort(); }
+    sessionObservers.clear();
     if (kubectlProc) { try { kubectlProc.kill(); } catch {} }
     setStatus("Shutting down workers...");
     await Promise.allSettled(workers.map(w => w.stop()));
@@ -1027,11 +1416,19 @@ screen.key(["C-c"], async () => {
 // ─── Pane navigation ─────────────────────────────────────────────
 // Esc: exit prompt, enter navigation mode (sessions pane focused)
 // p:   from anywhere, jump back into the prompt
+// m:   toggle log mode (workers ↔ orchestration)
 // Tab: cycle through panes
 // h/l: left/right between sessions, chat, worker panes (when not in prompt)
 
 screen.on("keypress", (ch, key) => {
     if (!key) return;
+
+    // m: toggle log viewing mode (only from non-input panes)
+    if (ch === "m" && screen.focused !== inputBar) {
+        switchLogMode();
+        appendLog(`{cyan-fg}Log mode: ${logViewMode === "workers" ? "Per-Worker" : "Per-Orchestration"}{/cyan-fg}`);
+        return;
+    }
 
     // Esc from any pane (except input, handled above) → sessions pane
     if (key.name === "escape" && screen.focused !== inputBar) {
@@ -1051,10 +1448,11 @@ screen.on("keypress", (ch, key) => {
     // h/l navigation only when NOT in the input bar
     if (screen.focused !== inputBar) {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
+        const rightPane = logViewMode === "orchestration" ? orchLogPane : (panes.length > 0 ? panes[0] : null);
 
         if (key.name === "h" || ch === "h") {
             // Left
-            if ([...workerPanes.values()].includes(screen.focused)) {
+            if (screen.focused === orchLogPane || [...workerPanes.values()].includes(screen.focused)) {
                 chatBox.focus();
             } else if (screen.focused === chatBox) {
                 orchList.focus();
@@ -1066,8 +1464,8 @@ screen.on("keypress", (ch, key) => {
             // Right
             if (screen.focused === orchList) {
                 chatBox.focus();
-            } else if (screen.focused === chatBox && panes.length > 0) {
-                panes[0].focus();
+            } else if (screen.focused === chatBox && rightPane) {
+                rightPane.focus();
             }
             screen.render();
             return;
@@ -1075,10 +1473,12 @@ screen.on("keypress", (ch, key) => {
     }
 });
 
-// Tab: cycle sessions → chat → worker panes → sessions
+// Tab: cycle sessions → chat → worker/orch panes → sessions
 screen.key(["tab"], () => {
-    const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
-    const allFocusable = [orchList, chatBox, ...panes];
+    const rightPanes = logViewMode === "orchestration"
+        ? [orchLogPane]
+        : workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
+    const allFocusable = [orchList, chatBox, ...rightPanes];
     if (screen.focused === inputBar) {
         // From input, Tab goes to sessions
         orchList.focus();
@@ -1104,6 +1504,7 @@ appendChatRaw("  {yellow-fg}Esc{/yellow-fg}    exit prompt → navigate TUI");
 appendChatRaw("  {yellow-fg}p{/yellow-fg}      back to prompt from anywhere");
 appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes");
 appendChatRaw("  {yellow-fg}h/l{/yellow-fg}    move left/right between panes");
+appendChatRaw("  {yellow-fg}m{/yellow-fg}      toggle log mode (workers ↔ orchestration)");
 appendChatRaw("");
 appendChatRaw("{bold}Sessions (left pane):{/bold}");
 appendChatRaw("  {yellow-fg}j/k{/yellow-fg}    navigate list");
@@ -1123,6 +1524,14 @@ async function summarizeSession(orchId) {
     const dc = getDc();
     if (!dc) return;
 
+    // Skip terminal orchestrations — no worker is processing them
+    try {
+        const info = await dc.getStatus(orchId);
+        if (info.status === "Completed" || info.status === "Failed" || info.status === "Terminated") {
+            return;
+        }
+    } catch { return; }
+
     const resumePrompt =
         'First line of your response MUST be: HEADING: <3-5 word summary of this session>\n' +
         'Then give me a brief summary of what you\'ve been doing, what the last message you sent me was, and then resume what you were doing.';
@@ -1136,14 +1545,16 @@ async function summarizeSession(orchId) {
 
     // Send message to the unified queue (one enqueue is enough — FIFO)
     try {
-        await Promise.allSettled([
-            dc.enqueueEvent(orchId, "messages", JSON.stringify({ prompt: resumePrompt })),
-        ]);
+        await dc.enqueueEvent(orchId, "messages", JSON.stringify({ prompt: resumePrompt }));
     } catch { return; }
 
-    // Wait for a response (up to 60s)
-    const deadline = Date.now() + 60_000;
+    // Wait for the status to go through "running" → "idle" with turnResult.
+    // We need to see a "running" status first to confirm our message was picked up,
+    // then wait for the subsequent "idle" with a completed turnResult.
+    // Short timeout — if the session doesn't respond quickly, skip it.
+    const deadline = Date.now() + 20_000;
     let version = baseVersion;
+    let sawRunning = false;
     while (Date.now() < deadline) {
         try {
             const result = await dc.waitForStatusChange(orchId, version, 200, 15_000);
@@ -1157,7 +1568,12 @@ async function summarizeSession(orchId) {
                         ? JSON.parse(result.customStatus) : result.customStatus;
                 } catch {}
             }
-            if (cs?.turnResult?.type === "completed" && cs.turnResult.content) {
+            if (cs?.status === "running") {
+                sawRunning = true;
+                continue; // wait for the completed result
+            }
+            // Only accept a turnResult if we've seen "running" (i.e., our message was processed)
+            if (sawRunning && cs?.turnResult?.type === "completed" && cs.turnResult.content) {
                 const content = cs.turnResult.content;
                 // Extract heading from first line
                 const headingMatch = content.match(/^HEADING:\s*(.+)/m);
@@ -1180,6 +1596,9 @@ async function summarizeSession(orchId) {
             await new Promise(r => setTimeout(r, 1000));
         }
     }
+    // Timed out — log and move on
+    const uuid4 = orchId.startsWith("session-") ? orchId.slice(8, 12) : orchId.slice(0, 4);
+    appendLog(`{yellow-fg}⏳ Summarize ${uuid4} timed out (old session?){/yellow-fg}`);
 }
 
 // Kick off summarization for all known sessions (in parallel, max 3 at a time)
