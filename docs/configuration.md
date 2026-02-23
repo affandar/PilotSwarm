@@ -11,7 +11,13 @@ Optional:
 
 ## Environment Variables
 
-Create a `.env` file:
+Start from the template:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env`:
 
 ```bash
 # Required
@@ -81,7 +87,6 @@ const client = new DurableCopilotClient({ store });
 await client.start();
 
 const session = await client.createSession({
-    tools: [myTool],
     systemMessage: "You are a helpful assistant.",
 });
 

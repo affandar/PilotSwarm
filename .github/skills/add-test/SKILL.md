@@ -63,4 +63,4 @@ npm test                       # all tests
 - `pass(name)` — logs a checkmark.
 
 ## Key files
-- [test/sdk.test.js](../../test/sdk.test.js) — the test suite
+- [test/sdk.test.js](../../../test/sdk.test.js) — the test suite

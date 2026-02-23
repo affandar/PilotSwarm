@@ -70,7 +70,7 @@ copilotSession.send({ prompt })         ← LLM sees registered tools
 ```
 
 ## Key files
-- [src/managed-session.ts](../../src/managed-session.ts) — where tools are merged and registered on `CopilotSession`
-- [src/session-manager.ts](../../src/session-manager.ts) — where `toolNames` are resolved from the worker registry
-- [src/worker.ts](../../src/worker.ts) — where `registerTools()` stores tools in the registry
-- [test/sdk.test.js](../../test/sdk.test.js) — integration tests
+- [src/managed-session.ts](../../../src/managed-session.ts) — where tools are merged and registered on `CopilotSession`
+- [src/session-manager.ts](../../../src/session-manager.ts) — where `toolNames` are resolved from the worker registry
+- [src/worker.ts](../../../src/worker.ts) — where `registerTools()` stores tools in the registry
+- [test/sdk.test.js](../../../test/sdk.test.js) — integration tests

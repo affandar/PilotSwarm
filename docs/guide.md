@@ -72,7 +72,7 @@ const client = new DurableCopilotClient({
 });
 await client.start();
 
-// Create a session (serializable config only — model, systemMessage, etc.)
+// Create a session (serializable config for orchestration)
 const session = await client.createSession({
     systemMessage: "You are a weather assistant.",
 });
@@ -310,7 +310,7 @@ console.log(info.title);       // LLM-generated session summary
 | `new DurableCopilotClient(options)` | Create a client |
 | `client.start()` | Initialize (connect to store) |
 | `client.stop()` | Clean up |
-| `client.createSession(config?)` | Create a new session (serializable config only) |
+| `client.createSession(config?)` | Create a new session (serializable config + optional local handlers/tools in same-process mode) |
 | `client.resumeSession(id, config?)` | Resume an existing session |
 | `client.listSessions()` | List all active sessions |
 | `client.deleteSession(id)` | Soft-delete a session |
