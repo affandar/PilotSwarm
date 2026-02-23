@@ -1,5 +1,5 @@
 import { SessionManager } from "./session-manager.js";
-import { SessionBlobStore } from "../blob-store.js";
+import { SessionBlobStore } from "./blob-store.js";
 import { registerActivities } from "./session-proxy.js";
 import { durableSessionOrchestration } from "./orchestration.js";
 import { PgSessionCatalogProvider } from "./cms.js";

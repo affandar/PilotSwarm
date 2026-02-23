@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 
 /**
- * Unified TUI chat client for durable-copilot-sdk.
+ * TUI chat client for durable-copilot-sdk.
  *
  * Modes (set via CLI arg or MODE env var):
- *   local   — Local runtime + local/remote DB (default)
- *   scaled  — Client-only, AKS workers execute turns
+ *   local   — Co-located worker + client (default)
+ *   scaled  — Client-only, remote workers execute turns
  *
  * Usage:
- *   node --env-file=.env examples/tui.js              # local mode
- *   node --env-file=.env.remote examples/tui.js        # local runtime, remote DB
- *   node --env-file=.env.remote examples/tui.js scaled  # client-only, AKS workers
+ *   node --env-file=.env examples/tui.js                # local mode
+ *   node --env-file=.env.remote examples/tui.js          # local runtime, remote DB
+ *   node --env-file=.env.remote examples/tui.js scaled   # client-only, remote workers
  */
 
-import { DurableCopilotClient } from "../dist/index.js";
+import { DurableCopilotClient, DurableCopilotWorker } from "../dist/index.js";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -65,7 +65,7 @@ if (!isScaled) {
 
 // ─── Create blessed screen ───────────────────────────────────────
 
-const modeLabel = MODE === "scaled" ? "Scaled — AKS Workers"
+const modeLabel = isScaled ? "Scaled — Remote Workers"
     : MODE === "remote" ? "Remote Runtime"
     : "Local Runtime";
 
@@ -194,10 +194,6 @@ let logTailer = null;
 let kubectlProc = null;
 
 if (!isScaled && tracingLogPath) {
-    // Local mode: redirect stdout/stderr to the log pane so they don't
-    // corrupt the blessed UI, and tail the duroxide tracing log file.
-    // Override console.log/error only — leave process.stderr.write alone
-    // so blessed's own drawing is not intercepted.
     console.error = (...args) => appendLog(args.join(" "));
     console.log = (...args) => appendLog(args.join(" "));
 
@@ -219,28 +215,46 @@ if (!isScaled && tracingLogPath) {
     }, 200);
 }
 
-// ─── Start client ────────────────────────────────────────────────
+// ─── Start worker + client ───────────────────────────────────────
 
 const store = process.env.DATABASE_URL || "sqlite::memory:";
+let worker = null;
+
+if (isScaled) {
+    appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (Remote Workers){/magenta-fg}");
+    appendLog("{bold}Store:{/bold} {green-fg}Remote PostgreSQL{/green-fg}");
+    appendLog("{bold}Runtime:{/bold} {yellow-fg}Remote pods{/yellow-fg}");
+    appendLog("");
+    setStatus("Connecting to remote DB...");
+} else {
+    appendLog("{bold}Mode:{/bold} {green-fg}Local Runtime{/green-fg}");
+    appendLog(`{bold}Store:{/bold} ${store.startsWith("postgres") ? "PostgreSQL" : store}`);
+    appendLog("");
+    setStatus("Starting runtime...");
+
+    worker = new DurableCopilotWorker({
+        store,
+        githubToken: process.env.GITHUB_TOKEN,
+        logLevel: "info",
+        blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
+        blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
+    });
+    await worker.start();
+    appendLog("Worker started ✓");
+}
 
 const client = new DurableCopilotClient({
     store,
-    githubToken: isScaled ? undefined : process.env.GITHUB_TOKEN,
-    logLevel: "info",
-    blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
-    blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
+    provider: worker?.provider ?? undefined,
+    catalog: worker?.catalog,
+    blobEnabled: !!process.env.AZURE_STORAGE_CONNECTION_STRING,
 });
+await client.start();
 
 if (isScaled) {
-    appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (AKS Workers){/magenta-fg}");
-    appendLog("{bold}Store:{/bold} {green-fg}Remote PostgreSQL{/green-fg}");
-    appendLog("{bold}Runtime:{/bold} {yellow-fg}AKS pods (remote){/yellow-fg}");
-    appendLog("");
-    setStatus("Connecting to remote DB...");
-    await client.startClientOnly();
     appendLog("Client connected ✓ {gray-fg}(no local runtime){/gray-fg}");
 
-    // Stream AKS worker logs (auto-reconnect on pod rollout)
+    // Stream remote worker logs via kubectl
     function startLogStream() {
         if (kubectlProc) { try { kubectlProc.kill(); } catch {} kubectlProc = null; }
         try {
@@ -280,15 +294,10 @@ if (isScaled) {
         }
     }
     startLogStream();
-    appendLog("{green-fg}Streaming AKS worker logs ↓{/green-fg}");
+    appendLog("{green-fg}Streaming remote worker logs ↓{/green-fg}");
     appendLog("");
 } else {
-    appendLog("{bold}Mode:{/bold} {green-fg}Local Runtime{/green-fg}");
-    appendLog(`{bold}Store:{/bold} ${store.startsWith("postgres") ? "PostgreSQL" : store}`);
-    appendLog("");
-    setStatus("Starting runtime...");
-    await client.start();
-    appendLog("Runtime started ✓");
+    appendLog("Runtime ready ✓");
 }
 
 setStatus("Ready — type a message");
@@ -296,7 +305,6 @@ setStatus("Ready — type a message");
 // ─── Create session ──────────────────────────────────────────────
 
 const session = await client.createSession({
-    model: "claude-opus-4.5",
     systemMessage: "You are a helpful assistant running in a durable execution environment. Be concise. CRITICAL RULE: When you need to wait, pause, sleep, delay, or do anything periodically/recurring, you MUST use the 'wait' tool. NEVER use bash sleep, setTimeout, setInterval, detached processes, or any other timing mechanism. The 'wait' tool is the only way to wait — it enables durable timers that survive process restarts and node migrations.",
     onUserInputRequest: async (request) => {
         return new Promise((resolve) => {
@@ -311,16 +319,38 @@ const session = await client.createSession({
     },
 });
 
+// Forward session config to co-located worker
+if (worker) {
+    worker.setSessionConfig(session.sessionId, {});
+}
+
 const sessionId = session.sessionId;
 appendLog(`Session created ✓ {gray-fg}(${sessionId.slice(0, 8)}…){/gray-fg}`);
 
-// ─── Send message (mode-specific) ────────────────────────────────
+// ─── Event subscription ─────────────────────────────────────────
+
+session.on((event) => {
+    const type = event.eventType;
+    // Show interesting events in the log pane
+    if (type === "tool.execution_start") {
+        const name = event.data?.toolName ?? event.data?.name ?? "tool";
+        appendLog(`🔧 Tool: ${name}`);
+    } else if (type === "assistant.usage" || type === "session.usage_info") {
+        const u = event.data;
+        if (u) appendLog(`📊 Tokens: in=${u.inputTokens ?? u.input_tokens ?? "?"} out=${u.outputTokens ?? u.output_tokens ?? "?"}`);
+    } else if (type === "session.dehydrate") {
+        appendLog("{yellow-fg}💤 Session dehydrated{/yellow-fg}");
+    } else if (type === "session.hydrate") {
+        appendLog("{green-fg}🔄 Session rehydrated{/green-fg}");
+    }
+});
+
+// ─── Send message ────────────────────────────────────────────────
 
 let turnInProgress = false;
 
 async function sendMessage(trimmed) {
     if (turnInProgress) {
-        // Interrupt: enqueue message to cancel the running turn and start this one
         setStatus("⚡ Interrupting current turn...");
         if (isScaled) appendLog(`⚡ Interrupt: "${trimmed.slice(0, 40)}…"`);
         try {
@@ -334,7 +364,7 @@ async function sendMessage(trimmed) {
     turnInProgress = true;
 
     if (isScaled) {
-        setStatus("Thinking... (waiting for AKS worker)");
+        setStatus("Thinking... (waiting for remote worker)");
         appendLog(`→ Enqueued turn: "${trimmed.slice(0, 40)}…"`);
     } else {
         setStatus("Thinking...");
@@ -351,9 +381,6 @@ async function sendMessage(trimmed) {
                 showCopilotMessage(`🔄 ${intermediate}`);
             }
         });
-        // Only show response if the intermediate callback never fired
-        // (avoids duplicate display — sendAndWait returns the same content
-        // it already passed to onIntermediateContent).
         if (response && firstResult) showCopilotMessage(response);
         if (isScaled) appendLog("← Response received");
     } catch (err) {
@@ -420,15 +447,9 @@ async function cleanup() {
     if (logTailer) clearInterval(logTailer);
     if (tracingLogPath) { try { fs.unlinkSync(tracingLogPath); } catch {} }
     if (kubectlProc) { try { kubectlProc.kill(); } catch {} }
-    if (isScaled && session.lastOrchestrationId) {
-        try {
-            const dc = client._getDuroxideClient();
-            await dc.cancelInstance(session.lastOrchestrationId);
-            appendLog("Cancelled active orchestration");
-        } catch {}
-    }
     setStatus("Shutting down...");
     await client.stop();
+    if (worker) await worker.stop();
 }
 
 screen.key(["C-c"], async () => {

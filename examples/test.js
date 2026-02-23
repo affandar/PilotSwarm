@@ -7,7 +7,7 @@
  * Run: node --env-file=.env examples/test-v2.js
  */
 
-import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "../dist/v2/index.js";
+import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "../dist/index.js";
 
 const TIMEOUT = 120_000;
 const STORE = process.env.DATABASE_URL || "sqlite::memory:";
