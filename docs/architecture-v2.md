@@ -17,7 +17,7 @@ The API surface mirrors the Copilot SDK exactly. Internally, each SDK call is "r
 
 2. **Orchestration as mediator** — The duroxide orchestration is the sole coordinator between user intent (client) and LLM execution (worker). It makes all durable decisions: timers, dehydration, abort handling. Neither the activity nor the client makes durable decisions.
 
-3. **CMS as the read-only projection** — A PostgreSQL schema (`copilot_sessions`) holds session metadata and the event log. The `ManagedSession` on the worker writes events continuously. The client reads with a cursor. This is a one-way street — the CMS does not go through the orchestration.
+3. **CMS as the client-owned session catalog** — A PostgreSQL schema (`copilot_sessions`) holds session metadata (state, title, model, timestamps). The **client writes first, then makes the corresponding duroxide call** — CMS is the source of truth for session lifecycle. Duroxide state is eventually consistent with CMS. The orchestration never touches CMS. A future reconciler orchestration will scan CMS and fix drift.
 
 4. **Activities as thin API calls** — Activities are the durable boundary between orchestration and session. They dispatch to the `ManagedSession` interface, not implement business logic. The `ManagedSession` owns the real `CopilotSession` and its lifecycle.
 
@@ -95,11 +95,11 @@ The system has two endpoints — the **client** (user intent) and the **CopilotS
 
 Five components, three data stores:
 
-- **Client** sends control messages (prompts, abort, destroy) to the orchestration via `enqueueEvent`. Reads events, messages, and session lists directly from **CMS** — bypassing the orchestration entirely.
-- **Copilot Instance Orchestration** is the durable coordinator. It makes all durable decisions (timers, dehydration, abort routing) and calls into the **SessionManager** and **SessionProxy** on the worker.
-- **SessionManager** owns session lifecycle (create, resume, destroy, dehydrate). Writes session metadata to **CMS** and session state tars to **Blob Store** during dehydration/hydration.
-- **SessionProxy** (one per active session) wraps a real **Copilot SDK/CLI Session**. The `on()` handler writes events and metadata to **CMS** continuously.
-- **CMS** (PostgreSQL) is the shared read/write store for session metadata and events. The orchestration never touches it — CMS is a direct ManagedSession → Client channel.
+- **Client** owns session lifecycle in **CMS** — it writes to CMS first (create, update state, soft-delete), then makes the corresponding duroxide call (startOrchestration, enqueueEvent, cancelInstance). Reads session lists and metadata from CMS directly. Sends prompts and control messages to the orchestration via `enqueueEvent`.
+- **Copilot Instance Orchestration** is the durable coordinator. It makes all durable decisions (timers, dehydration, abort routing) and calls into the **SessionManager** and **SessionProxy** on the worker. It never touches CMS.
+- **SessionManager** owns in-memory session lifecycle on the worker (create, resume, destroy, dehydrate). Writes session state tars to **Blob Store** during dehydration/hydration.
+- **SessionProxy** (one per active session) wraps a real **Copilot SDK/CLI Session**. Executes LLM turns and returns results to the orchestration.
+- **CMS** (PostgreSQL) holds the session catalog — metadata, state, titles, timestamps. The **client** is the sole writer. Duroxide orchestration state is eventually consistent with CMS. CMS is accessed through the `SessionCatalogProvider` interface, allowing alternative backends (e.g. CosmosDB) in the future.
 
 ### 3.1.1 Activities as the SessionProxy
 
@@ -216,9 +216,9 @@ const models = yield manager.listModels();
 | SessionManagerProxy method | Activity | Worker-side call |
 |---|---|---|
 | `manager.listActiveSessions()` | `"listActiveSessions"` | `sessionManager.activeSessionIds()` |
-| `manager.listModels()` | `"listModels"` | `copilotClient.listModels()` + CMS cache write |
+| `manager.listModels()` | `"listModels"` | `copilotClient.listModels()` |
 
-All activity bodies are one-liners. All logic lives in `ManagedSession` (turn execution, event handling, CMS writes) and the orchestration (state machine, timers, dehydration decisions). The activities and proxies are pure plumbing.
+All activity bodies are one-liners. All logic lives in `ManagedSession` (turn execution, event handling) and the orchestration (state machine, timers, dehydration decisions). The activities and proxies are pure plumbing.
 
 > **Convention for the rest of this document:** Since the activity layer is mechanical — each activity is a one-liner that calls the corresponding `SessionManager` or `ManagedSession` method — we omit it from further discussion. When the orchestration calls `session.runTurn(prompt)`, understand that this goes through the `SessionProxy` → activity → `SessionManager.getOrCreate(id).runTurn(prompt)` on the worker. We talk only about the **orchestration** and the **SessionManager / ManagedSession** from here on.
 
@@ -266,11 +266,107 @@ All activity bodies are one-liners. All logic lives in `ManagedSession` (turn ex
 
 | Flow | Path | Mechanism | Durable? |
 |---|---|---|---|
-| **Prompt** (client → LLM) | Client → duroxide event queue → orchestration → ManagedSession → CopilotSession | `enqueueEvent("messages")` | Yes — queued in PG |
-| **Response** (LLM → client) | CopilotSession → `on()` → ManagedSession → CMS `session_events` → client polls | PG INSERT + SELECT with cursor | Yes — persisted |
+| **Prompt** (client → LLM) | Client → CMS update (state=running) → duroxide event queue → orchestration → ManagedSession → CopilotSession | CMS write + `enqueueEvent("messages")` | Yes — queued in PG |
+| **Response** (LLM → client) | CopilotSession → ManagedSession → orchestration `customStatus` → client `waitForStatusChange()` | duroxide custom status | Ephemeral (CMS event log is Phase 2) |
+| **Session lifecycle** | Client → CMS (create/update/delete) → duroxide (start/cancel orchestration) | CMS write-first, duroxide eventually consistent | Yes — CMS is source of truth |
 | **Real-time status** | Orchestration → `customStatus` → client `waitForStatusChange()` | duroxide custom status | No — ephemeral per execution |
 | **Abort** (client → LLM) | Client → event queue → orchestration → cancels running turn → `copilotSession.abort()` | `enqueueEvent({type: "abort"})` | Yes — through orchestration |
 | **Dehydration** | Orchestration → `session.dehydrate()` → SessionManager → blob | Azure Blob | Yes |
+
+### 3.4 Session Catalog (CMS)
+
+The CMS is a PostgreSQL schema that stores session metadata. It is the **source of truth** for session lifecycle — the client writes to CMS before making duroxide calls, and reads from CMS for session listings and info.
+
+#### 3.4.1 Provider Model
+
+CMS access is abstracted behind the `SessionCatalogProvider` interface so different backends can be plugged in:
+
+```typescript
+interface SessionCatalogProvider {
+    initialize(): Promise<void>;
+
+    // Writes (from client, before duroxide calls)
+    createSession(sessionId: string, opts: { model?: string }): Promise<void>;
+    updateSession(sessionId: string, updates: Partial<SessionRow>): Promise<void>;
+    softDeleteSession(sessionId: string): Promise<void>;
+
+    // Reads (from client)
+    listSessions(): Promise<SessionRow[]>;
+    getSession(sessionId: string): Promise<SessionRow | null>;
+    getLastSessionId(): Promise<string | null>;
+}
+```
+
+The initial implementation is `PgSessionCatalogProvider` (PostgreSQL via `pg`). A CosmosDB provider can be added later with the same interface.
+
+#### 3.4.2 Schema
+
+```sql
+CREATE SCHEMA IF NOT EXISTS copilot_sessions;
+
+CREATE TABLE IF NOT EXISTS copilot_sessions.sessions (
+    session_id        TEXT PRIMARY KEY,
+    orchestration_id  TEXT,              -- null until first turn starts
+    title             TEXT,              -- LLM-generated 3-5 word summary
+    state             TEXT NOT NULL DEFAULT 'pending',
+    model             TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_active_at    TIMESTAMPTZ,
+    deleted_at        TIMESTAMPTZ,       -- soft delete
+    current_iteration INTEGER NOT NULL DEFAULT 0,
+    last_error        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_state
+    ON copilot_sessions.sessions(state) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_updated
+    ON copilot_sessions.sessions(updated_at DESC) WHERE deleted_at IS NULL;
+```
+
+#### 3.4.3 Write Path (Client → CMS → Duroxide)
+
+All session lifecycle commands follow the same pattern: **write to CMS first, then make the duroxide call**. If the duroxide call fails, CMS is still correct — the reconciler (Phase 3) will detect and fix the inconsistency.
+
+| Client method | CMS write | Then duroxide call |
+|---|---|---|
+| `createSession()` | `INSERT INTO sessions (session_id, state='pending', orchestration_id=NULL)` | — (orchestration starts lazily on first send) |
+| `_startAndWait()` / `_startTurn()` | `UPDATE sessions SET orchestration_id=$1, state='running', last_active_at=now()` | `startOrchestration()` + `enqueueEvent()` |
+| `deleteSession()` | `UPDATE sessions SET deleted_at=now()` | `cancelInstance()` |
+| `resumeSession()` | — (session already exists in CMS) | — |
+
+#### 3.4.4 Read Path (CMS → Client)
+
+| Client method | CMS query |
+|---|---|
+| `listSessions()` | `SELECT * FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC` |
+| `_getSessionInfo()` | `SELECT * FROM sessions WHERE session_id = $1` — merged with duroxide `customStatus` for live fields (pendingQuestion, waitingUntil) |
+| `getLastSessionId()` | `SELECT session_id FROM sessions ORDER BY last_active_at DESC LIMIT 1` |
+
+#### 3.4.5 Fallback
+
+When no `SessionCatalogProvider` is configured (e.g. SQLite mode for local dev/tests), all methods fall back to the existing duroxide-status-based approach (`listAllInstances()`, `getStatus()` → `customStatus`). CMS is additive — nothing breaks without it.
+
+#### 3.4.6 Consistency Model
+
+CMS → duroxide is **write-first, eventually consistent**:
+
+```
+client.createSession()
+  1. CMS:     INSERT session (state=pending, orchestration_id=null)  ✓ committed
+  2. duroxide: (nothing yet — orchestration starts on first send)
+
+client.sendAndWait(prompt)
+  1. CMS:     UPDATE session (state=running, orchestration_id=X)     ✓ committed
+  2. duroxide: startOrchestration(X) + enqueueEvent(prompt)          ✓ committed
+  3. (poll customStatus for real-time turn result)
+
+client.deleteSession()
+  1. CMS:     UPDATE session (deleted_at=now())                      ✓ committed
+  2. duroxide: cancelInstance(orchestrationId)                       ✓ best effort
+```
+
+If step 2 fails in any of these, CMS is still correct. A future **reconciler orchestration** (always-on, periodic) will scan CMS for sessions in inconsistent states (e.g. `state=pending` with no orchestration, or `deleted_at` set but orchestration still running) and fix them.
 
 ---
 
@@ -375,7 +471,7 @@ Worker B: next orchestration turn (any worker, affinity key is new)
   |      +-- detects local files --> CopilotClient.resumeSession(id)
   |      +-- full conversation history restored
   +-- 3. ManagedSession wraps the new CopilotSession
-  |      +-- attaches on() handler --> CMS writes resume
+  |      +-- session is now live on this node
   +-- Session is now active on Worker B
 ```
 
@@ -388,7 +484,7 @@ Worker B: next orchestration turn (any worker, affinity key is new)
 | Copilot SDK | Durable Copilot SDK | Implementation | Differences |
 |---|---|---|---|
 | `new CopilotClient(opts?)` | `new DurableCopilotClient(opts)` | Constructor. `opts.store` required (PG connection string). | Adds `store`, `waitThreshold`, `blobConnectionString`, `maxSessionsPerRuntime`, `workerNodeId`, etc. |
-| `client.start()` | `client.start()` | Starts duroxide Runtime + initializes CMS schema. | Also `startClientOnly()` for thin clients. |
+| `client.start()` | `client.start()` | Creates duroxide Client. Initializes CMS if `SessionCatalogProvider` is configured. | Also separate `DurableCopilotWorker.start()` for the runtime. |
 | `client.stop()` | `client.stop()` | Shuts down Runtime, dehydrates active sessions on SIGTERM. | Returns `void` (SDK returns `Error[]`). |
 | `client.forceStop()` | `client.stop()` | No separate force stop — `stop()` with timeout handles this. | — |
 | `client.createSession(config?)` | `client.createSession(config?)` | Returns `DurableSession`. Orchestration starts lazily on first `send()`. | `DurableSessionConfig` mirrors `SessionConfig`. |
@@ -1435,9 +1531,9 @@ async start(): Promise<void> {
 
 ## 8. Key Invariants
 
-1. **CMS is always at least as current as what the client needs.** Events are written by ManagedSession's `on()` handler as they happen, not batched at turn end. If the client disconnects and reconnects, it reads from CMS with its cursor and gets everything it missed.
+1. **CMS is the source of truth for session lifecycle.** The client writes to CMS before making duroxide calls. If the client disconnects and reconnects, it reads session state from CMS — not from duroxide. Duroxide state is eventually consistent with CMS.
 
-2. **The orchestration never reads CMS.** It talks to the `SessionProxy` and the event queue. Control flow and data flow are cleanly separated.
+2. **The orchestration never reads or writes CMS.** It talks to the `SessionProxy` and the event queue. Control flow and data flow are cleanly separated.
 
 3. **The `SessionManager` / `ManagedSession` never make durable decisions.** They execute and return a result. The orchestration decides what to do with the result (timer, dehydrate, idle, etc.).
 
@@ -1445,6 +1541,8 @@ async start(): Promise<void> {
 
 5. **We never call `sendAndWait()` internally.** Always `send()` + `on()`. This gives the ManagedSession full control over the turn lifecycle — intercept tools, stream deltas, detect abort — instead of being a blackbox blocking call.
 
-6. **CMS writes are idempotent.** `UNIQUE(session_id, event_id)` + `ON CONFLICT DO NOTHING` means retries, replays, and duplicate event deliveries are all safe.
+6. **CMS writes are idempotent.** `session_id` is the primary key, `createSession` uses `INSERT ... ON CONFLICT DO NOTHING`, `updateSession` uses `UPDATE ... WHERE session_id = $1`. Retries and duplicate calls are safe.
 
 7. **Only one orchestration per session.** The orchestration ID is `session-{sessionId}`. No fan-out, no sub-orchestrations. One long-lived loop.
+
+8. **CMS access is provider-based.** All reads and writes go through the `SessionCatalogProvider` interface. The initial implementation is PostgreSQL; CosmosDB or other backends can be added without changing client or orchestration code.
