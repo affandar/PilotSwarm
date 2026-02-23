@@ -45,6 +45,6 @@ Activities are the durable boundary between the orchestration generator and the 
 - The `affinityKey` ensures the activity runs on the same worker that holds the in-memory session.
 
 ## Key files
-- [src/session-proxy.ts](../../src/session-proxy.ts) — activity definitions and proxy factories
-- [src/orchestration.ts](../../src/orchestration.ts) — orchestration generator function
-- [src/types.ts](../../src/types.ts) — type definitions for activity inputs/outputs
+- [src/session-proxy.ts](../../../src/session-proxy.ts) — activity definitions and proxy factories
+- [src/orchestration.ts](../../../src/orchestration.ts) — orchestration generator function
+- [src/types.ts](../../../src/types.ts) — type definitions for activity inputs/outputs

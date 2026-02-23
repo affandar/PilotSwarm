@@ -12,6 +12,33 @@ import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "../dist/
 const TIMEOUT = 120_000;
 const STORE = process.env.DATABASE_URL || "sqlite::memory:";
 
+async function preflightChecks() {
+    if (!process.env.GITHUB_TOKEN) {
+        throw new Error(
+            "Missing GITHUB_TOKEN. Copy .env.example to .env and set GITHUB_TOKEN before running tests.",
+        );
+    }
+
+    if (STORE.startsWith("postgres://") || STORE.startsWith("postgresql://")) {
+        const { Client } = await import("pg");
+        const client = new Client({
+            connectionString: STORE,
+            connectionTimeoutMillis: 4000,
+        });
+        try {
+            await client.connect();
+            await client.query("SELECT 1");
+        } catch (err) {
+            const message = err?.message || String(err);
+            throw new Error(
+                `PostgreSQL is not reachable at DATABASE_URL (${message}). Start Postgres or set DATABASE_URL=sqlite::memory:.`,
+            );
+        } finally {
+            try { await client.end(); } catch {}
+        }
+    }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────
 
 async function withClient(opts, fn) {
@@ -816,6 +843,8 @@ const tests = [
     ["Registry + Session Tools", testRegistryPlusSessionTools],
     ["Warm Session Tool Update", testWarmSessionToolUpdate],
 ];
+
+await preflightChecks();
 
 console.log("🚀 durable-copilot-sdk Integration Test\n");
 console.log(`  Store: ${STORE.startsWith("postgres") ? "postgres" : STORE}`);

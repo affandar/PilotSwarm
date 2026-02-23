@@ -8,6 +8,8 @@ Wraps the GitHub Copilot SDK with [duroxide](https://github.com/microsoft/duroxi
 
 ```bash
 npm install durable-copilot-sdk
+cp .env.example .env
+# edit .env with DATABASE_URL and GITHUB_TOKEN
 ```
 
 ```typescript
