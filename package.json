@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "node --env-file=.env examples/test.js",
+    "test": "node --env-file=.env test/sdk.test.js",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
     "chat": "node --env-file=.env examples/chat.js",

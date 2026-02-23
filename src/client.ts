@@ -394,7 +394,7 @@ export class DurableCopilotClient {
 }
 
 /**
- * DurableSession (v2) — session handle.
+ * DurableSession — session handle.
  * Mirrors CopilotSession API, routes through duroxide orchestration.
  *
  * Event delivery:

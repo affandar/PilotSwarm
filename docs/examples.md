@@ -23,7 +23,7 @@ node --env-file=.env examples/chat.js
 ### Example Session
 
 ```
-🤖 Durable Copilot Chat (v2)
+🤖 Durable Copilot Chat
    Store: PostgreSQL
 
    Type a message, press Enter. Type 'exit' to quit.
@@ -166,14 +166,14 @@ See [Deploying to AKS](deploying-to-aks.md) for the full production setup.
 
 ---
 
-## Test Suite (`examples/test.js`)
+## Test Suite (`test/sdk.test.js`)
 
 Automated test harness covering the full SDK:
 
 ```bash
 npm test
 # or
-node --env-file=.env examples/test.js
+node --env-file=.env test/sdk.test.js
 ```
 
 ### Tests
@@ -201,5 +201,5 @@ node --env-file=.env examples/test.js
 Run a specific test:
 
 ```bash
-node --env-file=.env examples/test.js --test="durable"
+node --env-file=.env test/sdk.test.js --test="durable"
 ```

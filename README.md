@@ -96,7 +96,7 @@ Client                        PostgreSQL                     Worker Pods
 | [Chat](examples/chat.js) | Interactive console chat | `npm run chat` |
 | [TUI](examples/tui.js) | Multi-session terminal UI with logs | `npm run tui` |
 | [Worker](examples/worker.js) | Headless worker for K8s | `npm run worker` |
-| [Tests](examples/test.js) | Automated test suite | `npm test` |
+| [Tests](test/sdk.test.js) | Automated test suite | `npm test` |
 
 ## Documentation
 

@@ -1,10 +1,10 @@
 /**
- * v2 Architecture Test App — single-process test harness.
+ * durable-copilot-sdk — integration test suite.
  *
- * Tests the full v2 flow: DurableCopilotClient → orchestration → SessionProxy
+ * Tests the full flow: DurableCopilotClient → orchestration → SessionProxy
  * → SessionManager → ManagedSession → CopilotSession.
  *
- * Run: node --env-file=.env examples/test-v2.js
+ * Run: node --env-file=.env test/sdk.test.js
  */
 
 import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "../dist/index.js";
@@ -817,7 +817,7 @@ const tests = [
     ["Warm Session Tool Update", testWarmSessionToolUpdate],
 ];
 
-console.log("🚀 durable-copilot-sdk v2 Architecture Test\n");
+console.log("🚀 durable-copilot-sdk Integration Test\n");
 console.log(`  Store: ${STORE.startsWith("postgres") ? "postgres" : STORE}`);
 
 let passed = 0;

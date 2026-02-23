@@ -6,18 +6,40 @@
  * import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-sdk";
  *
  * const worker = new DurableCopilotWorker({ store, githubToken });
+ * worker.registerTools([myTool]);
  * await worker.start();
  *
- * const client = new DurableCopilotClient({
- *     store,
- *     provider: worker.provider,
- *     catalog: worker.catalog,
- * });
+ * const client = new DurableCopilotClient({ store });
  * await client.start();
  *
- * const session = await client.createSession();
+ * const session = await client.createSession({ toolNames: ["myTool"] });
  * const response = await session.sendAndWait("Hello!");
  * ```
  */
 
-export * from "./v2/index.js";
+export { DurableCopilotClient, DurableSession } from "./client.js";
+export type { SessionEventHandler } from "./client.js";
+export { DurableCopilotWorker } from "./worker.js";
+export { SessionManager } from "./session-manager.js";
+export { ManagedSession } from "./managed-session.js";
+export { SessionBlobStore } from "./blob-store.js";
+export { PgSessionCatalogProvider } from "./cms.js";
+export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent } from "./cms.js";
+export type {
+    DurableCopilotClientOptions,
+    DurableCopilotWorkerOptions,
+    ManagedSessionConfig,
+    DurableSessionStatus,
+    DurableSessionInfo,
+    TurnResult,
+    CapturedEvent,
+    UserInputRequest,
+    UserInputResponse,
+    UserInputHandler,
+    CommandMessage,
+    CommandResponse,
+    OrchestrationInput,
+} from "./types.js";
+
+// Re-export defineTool from Copilot SDK for convenience
+export { defineTool } from "@github/copilot-sdk";

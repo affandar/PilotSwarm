@@ -9,8 +9,8 @@
  *   Bottom: Input bar
  *
  * Usage:
- *   node --env-file=.env.remote examples/tui-scaled.js         # 4 embedded workers
- *   WORKERS=0 node --env-file=.env.remote examples/tui-scaled.js # client-only (AKS)
+ *   node --env-file=.env.remote examples/tui.js         # 4 embedded workers
+ *   WORKERS=0 node --env-file=.env.remote examples/tui.js # client-only (AKS)
  */
 
 import { DurableCopilotClient, DurableCopilotWorker } from "../dist/index.js";
@@ -470,12 +470,12 @@ function parseSeqEvent(plain, podName) {
     if (plain.includes("Grace period elapsed, dehydrating")) {
         return { orchId, time, type: "dehydrate", orchNode, actNode };
     }
-    // v2: explicit dehydrate log from orchestration
+    // explicit dehydrate log from orchestration
     if (plain.includes("[orch] dehydrating session")) {
         return { orchId, time, type: "dehydrate", orchNode, actNode };
     }
 
-    // ─── Agent output events (v1 + v2) ──────────
+    // ─── Agent output events ──────────
     if (plain.includes("[durable-agent] Durable timer") || plain.includes("[orch] durable timer:")) {
         const sMatch = plain.match(/(?:Durable timer|durable timer):\s*(\d+)s/);
         return { orchId, time, type: "wait", orchNode, actNode,
@@ -491,7 +491,7 @@ function parseSeqEvent(plain, podName) {
         return { orchId, time, type: "response", orchNode, actNode,
             snippet: rMatch?.[1] || "" };
     }
-    // v2: [runTurn] activity log
+    // [runTurn] activity log
     if (plain.includes("[runTurn]")) {
         return { orchId, time, type: "activity_start", orchNode, actNode };
     }

@@ -18,7 +18,7 @@ function setStatus(ctx: any, status: DurableSessionStatus, extra?: Record<string
 }
 
 /**
- * Long-lived durable session orchestration (v2).
+ * Long-lived durable session orchestration.
  *
  * One orchestration per copilot session. Uses:
  *   - SessionProxy for session-scoped operations (runTurn, dehydrate, hydrate, destroy)
