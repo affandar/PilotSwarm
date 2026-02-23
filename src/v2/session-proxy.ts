@@ -1,5 +1,6 @@
 import type { SessionManager } from "./session-manager.js";
 import type { SessionBlobStore } from "../blob-store.js";
+import type { SessionCatalogProvider } from "./cms.js";
 import type { SerializableSessionConfig, TurnResult, OrchestrationInput } from "./types.js";
 import os from "node:os";
 
@@ -66,6 +67,7 @@ export function registerActivities(
     sessionManager: SessionManager,
     blobStore: SessionBlobStore | null,
     githubToken?: string,
+    catalog?: SessionCatalogProvider | null,
 ) {
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
@@ -91,8 +93,23 @@ export function registerActivities(
             const hostname = os.hostname();
             const enrichedPrompt = `[SYSTEM: Running on host "${hostname}".]\n\n${input.prompt}`;
 
-            const result = await session.runTurn(enrichedPrompt);
+            // Build onEvent callback: write each non-ephemeral event to CMS as it fires
+            const EPHEMERAL_TYPES = new Set([
+                "assistant.message_delta",
+                "assistant.reasoning_delta",
+            ]);
+            const onEvent = catalog
+                ? (event: { eventType: string; data: unknown }) => {
+                    if (EPHEMERAL_TYPES.has(event.eventType)) return;
+                    catalog.recordEvents(input.sessionId, [event]).catch((err: any) => {
+                        activityCtx.traceInfo(`[runTurn] CMS recordEvent failed: ${err}`);
+                    });
+                }
+                : undefined;
+
+            const result = await session.runTurn(enrichedPrompt, { onEvent });
             if (cancelled) return { type: "cancelled" };
+
             return result;
         } finally {
             clearInterval(cancelPoll);

@@ -3,12 +3,13 @@
  */
 
 export { DurableCopilotClient, DurableSession } from "./client.js";
+export type { SessionEventHandler } from "./client.js";
 export { DurableCopilotWorker } from "./worker.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore } from "../blob-store.js";
 export { PgSessionCatalogProvider } from "./cms.js";
-export type { SessionCatalogProvider, SessionRow, SessionRowUpdates } from "./cms.js";
+export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent } from "./cms.js";
 export type {
     DurableCopilotClientOptions,
     DurableCopilotWorkerOptions,
@@ -16,6 +17,7 @@ export type {
     DurableSessionStatus,
     DurableSessionInfo,
     TurnResult,
+    CapturedEvent,
     UserInputRequest,
     UserInputResponse,
     UserInputHandler,

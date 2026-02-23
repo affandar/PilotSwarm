@@ -196,6 +196,9 @@ export function* durableSessionOrchestration(
             ? JSON.parse(turnResult) : turnResult;
         iteration++;
 
+        // Strip events from result before putting in customStatus (events go to CMS, not status)
+        const { events: _events, ...statusResult } = result as any;
+
         // ④ HANDLE RESULT
         switch (result.type) {
             case "completed":
@@ -203,13 +206,13 @@ export function* durableSessionOrchestration(
 
                 if (!blobEnabled || idleTimeout < 0) {
                     // Store the result so the dequeue-idle setStatus includes it
-                    lastTurnResult = result;
+                    lastTurnResult = statusResult;
                     continue;
                 }
 
                 // Race: next message vs idle timeout
                 {
-                    setStatus(ctx, "idle", { iteration, turnResult: result });
+                    setStatus(ctx, "idle", { iteration, turnResult: statusResult });
                     const nextMsg = ctx.dequeueEvent("messages");
                     const idleTimer = ctx.scheduleTimer(idleTimeout * 1000);
                     const raceResult: any = yield ctx.race(nextMsg, idleTimer);
@@ -281,7 +284,7 @@ export function* durableSessionOrchestration(
                 if (!blobEnabled || inputGracePeriod < 0) {
                     setStatus(ctx, "input_required", {
                         iteration,
-                        turnResult: result,
+                        turnResult: statusResult,
                         pendingQuestion: result.question,
                         choices: result.choices,
                         allowFreeform: result.allowFreeform,
@@ -299,7 +302,7 @@ export function* durableSessionOrchestration(
                 if (inputGracePeriod === 0) {
                     setStatus(ctx, "input_required", {
                         iteration,
-                        turnResult: result,
+                        turnResult: statusResult,
                         pendingQuestion: result.question,
                     });
                     yield* dehydrateAndReset("input_required");
@@ -316,7 +319,7 @@ export function* durableSessionOrchestration(
                 {
                     setStatus(ctx, "input_required", {
                         iteration,
-                        turnResult: result,
+                        turnResult: statusResult,
                         pendingQuestion: result.question,
                         choices: result.choices,
                         allowFreeform: result.allowFreeform,

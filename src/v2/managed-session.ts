@@ -1,5 +1,5 @@
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
-import type { TurnResult, TurnOptions, ManagedSessionConfig } from "./types.js";
+import type { TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -133,69 +133,110 @@ export class ManagedSession {
         // Re-register tools for this turn (may have changed)
         this.copilotSession.registerTools(allTools);
 
-        try {
-            const response = await this.copilotSession.sendAndWait(
-                { prompt },
-                60_000
+        // Collect the final assistant content and all events via on()
+        let finalContent: string | undefined;
+        const collectedEvents: CapturedEvent[] = [];
+        const unsubscribers: (() => void)[] = [];
+
+        const turnComplete = new Promise<void>((resolve, reject) => {
+            // Catch-all event handler — captures every event and fires onEvent immediately.
+            unsubscribers.push(
+                this.copilotSession.on((event: any) => {
+                    const eventType = event.type ?? event.eventType ?? "unknown";
+                    const captured: CapturedEvent = { eventType, data: event.data ?? event };
+                    collectedEvents.push(captured);
+                    // Fire immediately so callers can write to CMS in real-time
+                    if (opts?.onEvent) {
+                        try { opts.onEvent(captured); } catch {}
+                    }
+                }),
             );
 
-            if (turnState.pendingInput) {
-                return { type: "input_required", ...turnState.pendingInput };
-            }
-            if (turnState.pendingWait) {
-                return {
-                    type: "wait",
-                    seconds: turnState.pendingWait.seconds,
-                    reason: turnState.pendingWait.reason,
-                    content: response?.data?.content,
-                };
-            }
+            // Capture the final assistant message
+            unsubscribers.push(
+                this.copilotSession.on("assistant.message", (event: any) => {
+                    finalContent = event.data?.content ?? finalContent;
+                }),
+            );
 
-            return {
-                type: "completed",
-                content: response?.data?.content ?? "(no response)",
-            };
-        } catch (err: any) {
-            // Abort caused by user input request
-            if (turnState.pendingInput) {
-                return { type: "input_required", ...turnState.pendingInput };
-            }
-
-            // Abort caused by wait tool
-            if (turnState.pendingWait) {
-                let content: string | undefined;
-                try {
-                    const msgs = await this.copilotSession.getMessages();
-                    for (let i = msgs.length - 1; i >= 0; i--) {
-                        const m = msgs[i] as any;
-                        if (m.type === "assistant" && m.content) {
-                            content = typeof m.content === "string"
-                                ? m.content
-                                : m.content.content ?? m.content.text;
-                            break;
+            // Stream deltas to the caller if requested
+            if (opts?.onDelta) {
+                unsubscribers.push(
+                    this.copilotSession.on("assistant.message_delta", (event: any) => {
+                        if (event.data?.deltaContent) {
+                            opts.onDelta!(event.data.deltaContent);
                         }
-                    }
-                } catch {}
-                return {
-                    type: "wait",
-                    seconds: turnState.pendingWait.seconds,
-                    reason: turnState.pendingWait.reason,
-                    content,
-                };
+                    }),
+                );
             }
 
-            // Timeout
+            // Notify caller of tool execution starts
+            if (opts?.onToolStart) {
+                unsubscribers.push(
+                    this.copilotSession.on("tool.execution_start", (event: any) => {
+                        opts.onToolStart!(event.data?.toolName ?? "unknown", event.data?.toolArgs);
+                    }),
+                );
+            }
+
+            // session.idle = turn finished (normal completion or post-abort)
+            unsubscribers.push(
+                this.copilotSession.on("session.idle", () => {
+                    resolve();
+                }),
+            );
+        });
+
+        // Set up a timeout race
+        const TURN_TIMEOUT = 60_000;
+        const timeoutPromise = new Promise<void>((_, reject) => {
+            setTimeout(() => reject(new Error("Turn timed out")), TURN_TIMEOUT);
+        });
+
+        try {
+            // Fire the prompt — non-blocking
+            await this.copilotSession.send({ prompt });
+
+            // Wait for session.idle or timeout
+            await Promise.race([turnComplete, timeoutPromise]);
+        } catch (err: any) {
+            // Timeout — kill it
             const errMsg = err.message ?? String(err);
-            if (errMsg.includes("waiting for session.idle")) {
+            if (errMsg.includes("timed out")) {
                 try { this.copilotSession.abort(); } catch {}
                 return {
                     type: "error",
                     message: "Copilot was taking too long to process and was killed.",
                 };
             }
-
-            return { type: "error", message: errMsg };
+            // Other send() errors
+            if (!turnState.pendingInput && !turnState.pendingWait) {
+                return { type: "error", message: errMsg };
+            }
+        } finally {
+            // Always clean up subscriptions
+            for (const unsub of unsubscribers) unsub();
         }
+
+        // Check what ended the turn
+        if (turnState.pendingInput) {
+            return { type: "input_required", ...turnState.pendingInput, events: collectedEvents };
+        }
+        if (turnState.pendingWait) {
+            return {
+                type: "wait",
+                seconds: turnState.pendingWait.seconds,
+                reason: turnState.pendingWait.reason,
+                content: finalContent,
+                events: collectedEvents,
+            };
+        }
+
+        return {
+            type: "completed",
+            content: finalContent ?? "(no response)",
+            events: collectedEvents,
+        };
     }
 
     /**

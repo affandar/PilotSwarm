@@ -10,6 +10,15 @@
 
 // ─── Types ───────────────────────────────────────────────────────
 
+/** A persisted session event (non-ephemeral). */
+export interface SessionEvent {
+    seq: number;
+    sessionId: string;
+    eventType: string;
+    data: unknown;
+    createdAt: Date;
+}
+
 /** A row in the sessions table. */
 export interface SessionRow {
     sessionId: string;
@@ -70,6 +79,14 @@ export interface SessionCatalogProvider {
     /** Get the most recently active session ID. */
     getLastSessionId(): Promise<string | null>;
 
+    // ── Events (written from worker, read from client) ───────
+
+    /** Record a batch of events for a session. */
+    recordEvents(sessionId: string, events: { eventType: string; data: unknown }[]): Promise<void>;
+
+    /** Get events for a session, optionally after a sequence number. */
+    getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<SessionEvent[]>;
+
     /** Cleanup / close connections. */
     close(): Promise<void>;
 }
@@ -96,9 +113,21 @@ CREATE TABLE IF NOT EXISTS ${TABLE} (
     last_error        TEXT
 )`;
 
+const EVENTS_TABLE = `${SCHEMA}.session_events`;
+
+const CREATE_EVENTS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS ${EVENTS_TABLE} (
+    seq           BIGSERIAL PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    event_type    TEXT NOT NULL,
+    data          JSONB,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+)`;
+
 const CREATE_INDEXES_SQL = [
     `CREATE INDEX IF NOT EXISTS idx_sessions_state ON ${TABLE}(state) WHERE deleted_at IS NULL`,
     `CREATE INDEX IF NOT EXISTS idx_sessions_updated ON ${TABLE}(updated_at DESC) WHERE deleted_at IS NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_events_session_seq ON ${EVENTS_TABLE}(session_id, seq)`,
 ];
 
 /**
@@ -126,6 +155,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         if (this.initialized) return;
         await this.pool.query(CREATE_SCHEMA_SQL);
         await this.pool.query(CREATE_TABLE_SQL);
+        await this.pool.query(CREATE_EVENTS_TABLE_SQL);
         for (const idx of CREATE_INDEXES_SQL) {
             await this.pool.query(idx);
         }
@@ -220,6 +250,48 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         return rows.length > 0 ? rows[0].session_id : null;
     }
 
+    // ── Events ───────────────────────────────────────────────
+
+    async recordEvents(sessionId: string, events: { eventType: string; data: unknown }[]): Promise<void> {
+        if (events.length === 0) return;
+
+        // Batch insert with a single multi-row INSERT
+        const valuePlaceholders: string[] = [];
+        const values: unknown[] = [];
+        let idx = 1;
+        for (const evt of events) {
+            valuePlaceholders.push(`($${idx++}, $${idx++}, $${idx++})`);
+            values.push(sessionId, evt.eventType, JSON.stringify(evt.data));
+        }
+
+        await this.pool.query(
+            `INSERT INTO ${EVENTS_TABLE} (session_id, event_type, data)
+             VALUES ${valuePlaceholders.join(", ")}`,
+            values,
+        );
+    }
+
+    async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<SessionEvent[]> {
+        const effectiveLimit = limit ?? 1000;
+        let query: string;
+        let params: unknown[];
+
+        if (afterSeq != null && afterSeq > 0) {
+            query = `SELECT * FROM ${EVENTS_TABLE}
+                     WHERE session_id = $1 AND seq > $2
+                     ORDER BY seq ASC LIMIT $3`;
+            params = [sessionId, afterSeq, effectiveLimit];
+        } else {
+            query = `SELECT * FROM ${EVENTS_TABLE}
+                     WHERE session_id = $1
+                     ORDER BY seq ASC LIMIT $2`;
+            params = [sessionId, effectiveLimit];
+        }
+
+        const { rows } = await this.pool.query(query, params);
+        return rows.map(rowToSessionEvent);
+    }
+
     async close(): Promise<void> {
         if (this.pool) {
             await this.pool.end();
@@ -244,5 +316,16 @@ function rowToSessionRow(row: any): SessionRow {
         deletedAt: row.deleted_at ? new Date(row.deleted_at) : null,
         currentIteration: row.current_iteration ?? 0,
         lastError: row.last_error ?? null,
+    };
+}
+
+/** Map a PG row to SessionEvent. */
+function rowToSessionEvent(row: any): SessionEvent {
+    return {
+        seq: Number(row.seq),
+        sessionId: row.session_id,
+        eventType: row.event_type,
+        data: row.data,
+        createdAt: new Date(row.created_at),
     };
 }
