@@ -573,11 +573,8 @@ function renderSeqEventLine(event, orchId) {
         }
 
         case "content": {
-            const col = seqNodes.indexOf(lastAct || event.orchNode);
-            const colW = seqColW();
-            const maxSnip = Math.max(3, colW - 6);
-            const snip = (event.snippet || "").slice(0, maxSnip);
-            seqPane.log(seqLine(event.time, col, `│ ${snip}`, "white"));
+            // Skip verbose streaming-content rows in sequence mode to keep
+            // vertical density high; full content remains in chat pane.
             break;
         }
 
@@ -1042,18 +1039,14 @@ function showCopilotMessage(raw, orchId) {
     appendChatRaw("", orchId); // blank line after each message
 }
 
-// Track which sessions have already been loaded from CMS
-const cmsLoadedSessions = new Set();
+// Track whether sequence view has been seeded from CMS for a session.
+const seqCmsSeededSessions = new Set();
 
 /**
- * Load conversation history from the CMS database and populate the chat buffer.
- * Called on session switch when the in-memory buffer is empty.
- * Only loads once per session to avoid duplicates with live observer.
+ * Load conversation history from CMS and rebuild chat buffer for the session.
+ * Includes ALL persisted events (not truncated) so switching sessions is deterministic.
  */
 async function loadCmsHistory(orchId) {
-    if (cmsLoadedSessions.has(orchId)) return;
-    cmsLoadedSessions.add(orchId);
-
     const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
 
     // Ensure we have a DurableSession handle (may not exist for sessions from previous TUI runs)
@@ -1070,7 +1063,11 @@ async function loadCmsHistory(orchId) {
 
     try {
         const events = await sess.getMessages();
-        if (!events || events.length === 0) return;
+        if (!events || events.length === 0) {
+            sessionChatBuffers.set(orchId, []);
+            if (orchId === activeOrchId) chatBox.setContent("");
+            return;
+        }
 
         // Strip the [SYSTEM: Running on host ...] prefix from user prompts
         const stripHostPrefix = (text) => text?.replace(/^\[SYSTEM: Running on host "[^"]*"\.\]\n\n/, "") || text;
@@ -1078,52 +1075,88 @@ async function loadCmsHistory(orchId) {
         // Filter out internal timer continuation prompts — these aren't real user messages
         const isTimerPrompt = (text) => /^The \d+ second wait is now complete\./i.test(text);
 
-        // Build a list of displayable messages (user + assistant pairs)
-        const displayable = [];
+        const lines = [];
+        const fmtTime = (value) => {
+            if (!value) return "--:--:--";
+            return new Date(value).toLocaleTimeString("en-GB", {
+                hour12: false,
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+            });
+        };
+
+        // Build display lines from all persisted events
         for (const evt of events) {
             const type = evt.eventType;
+            const timeStr = fmtTime(evt.createdAt);
             if (type === "user.message") {
                 const content = stripHostPrefix(evt.data?.content);
                 if (content && !content.startsWith("[SYSTEM:") && !isTimerPrompt(content)) {
-                    displayable.push({ type: "user", content, createdAt: evt.createdAt });
+                    lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {bold}You:{/bold} ${content}`);
                 }
             } else if (type === "assistant.message") {
                 const content = evt.data?.content;
                 if (content) {
-                    displayable.push({ type: "assistant", content, createdAt: evt.createdAt });
+                    lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {cyan-fg}{bold}🤖 Copilot:{/bold}{/cyan-fg}`);
+                    const rendered = renderMarkdown(content);
+                    for (const line of rendered.split("\n")) {
+                        lines.push(line);
+                    }
+                    lines.push("");
                 }
-            }
-        }
-
-        if (displayable.length === 0) return;
-
-        // For long histories, show a count and only the last N messages
-        const MAX_HISTORY = 20;
-        const skipped = Math.max(0, displayable.length - MAX_HISTORY);
-        const toShow = skipped > 0 ? displayable.slice(-MAX_HISTORY) : displayable;
-
-        if (skipped > 0) {
-            appendChatRaw(`{gray-fg}── ${skipped} earlier messages omitted ──{/gray-fg}`, orchId);
-            appendChatRaw("", orchId);
-        }
-
-        for (const msg of toShow) {
-            const timeStr = msg.createdAt
-                ? new Date(msg.createdAt).toLocaleTimeString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
-                : "";
-            if (msg.type === "user") {
-                appendChatRaw(`{gray-fg}[${timeStr}]{/gray-fg} {bold}You:{/bold} ${msg.content}`, orchId);
+            } else if (type === "tool.execution_start") {
+                const toolName = evt.data?.toolName || "tool";
+                lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {yellow-fg}🛠 start{/yellow-fg} ${toolName}`);
+            } else if (type === "tool.execution_complete") {
+                const toolName = evt.data?.toolName || "tool";
+                lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {green-fg}🛠 done{/green-fg} ${toolName}`);
             } else {
-                const rendered = renderMarkdown(msg.content);
-                appendChatRaw(`{gray-fg}[${timeStr}]{/gray-fg} {cyan-fg}{bold}🤖 Copilot:{/bold}{/cyan-fg}`, orchId);
-                for (const line of rendered.split("\n")) {
-                    appendChatRaw(line, orchId);
-                }
-                appendChatRaw("", orchId);
+                lines.push(`{gray-fg}[${timeStr}] [${type}]{/gray-fg}`);
             }
         }
-        appendChatRaw("{gray-fg}── history loaded from database ──{/gray-fg}", orchId);
-        appendChatRaw("", orchId);
+
+        lines.push("{gray-fg}── full history loaded from database ──{/gray-fg}");
+        lines.push("");
+
+        sessionChatBuffers.set(orchId, lines);
+
+        if (orchId === activeOrchId) {
+            chatBox.setContent("");
+            for (const line of lines) {
+                chatBox.log(line);
+            }
+            screen.render();
+        }
+
+        // Seed sequence view from CMS when no live worker-log sequence exists yet.
+        if (!seqCmsSeededSessions.has(orchId)) {
+            const existingSeq = seqEventBuffers.get(orchId) ?? [];
+            if (existingSeq.length === 0) {
+                const cmsNode = addSeqNode("cms");
+                const seeded = [];
+                for (const evt of events) {
+                    const t = fmtTime(evt.createdAt);
+                    if (evt.eventType === "user.message") {
+                        const txt = stripHostPrefix(evt.data?.content || "");
+                        if (txt && !isTimerPrompt(txt)) {
+                            seeded.push({ type: "user_msg_synth", time: t, orchNode: cmsNode, actNode: cmsNode, label: txt });
+                        }
+                    } else if (evt.eventType === "assistant.message") {
+                        const txt = evt.data?.content || "";
+                        if (txt) {
+                            seeded.push({ type: "response", time: t, orchNode: cmsNode, actNode: cmsNode, snippet: txt.slice(0, 40) });
+                        }
+                    } else if (evt.eventType === "tool.execution_start") {
+                        seeded.push({ type: "activity_start", time: t, orchNode: cmsNode, actNode: cmsNode });
+                    }
+                }
+                if (seeded.length > 0) {
+                    seqEventBuffers.set(orchId, seeded);
+                }
+            }
+            seqCmsSeededSessions.add(orchId);
+        }
     } catch (err) {
         appendLog(`{yellow-fg}CMS history load failed: ${err.message}{/yellow-fg}`);
     }
@@ -1491,10 +1524,10 @@ orchList.key(["r"], async () => {
     await refreshOrchestrations();
 });
 
-orchList.key(["enter"], () => {
+orchList.key(["enter"], async () => {
     const idx = orchList.selected;
     if (idx >= 0 && idx < orchIdOrder.length) {
-        switchToOrchestration(orchIdOrder[idx]);
+        await switchToOrchestration(orchIdOrder[idx]);
         screen.render();
     }
 });
@@ -1505,7 +1538,7 @@ orchList.key(["n"], async () => {
         const orchId = `session-${sess.sessionId}`;
         knownOrchestrationIds.add(orchId);
         appendLog(`{green-fg}New session: ${sess.sessionId.slice(0, 8)}…{/green-fg}`);
-        switchToOrchestration(orchId);
+        await switchToOrchestration(orchId);
         await refreshOrchestrations();
         // Focus prompt so user can type immediately
         inputBar.focus();
@@ -1936,7 +1969,7 @@ function startObserver(orchId) {
  * Switch the chat context to a different orchestration.
  * Sends an interrupt asking for a summary + last message, then asks it to resume.
  */
-function switchToOrchestration(orchId) {
+async function switchToOrchestration(orchId) {
     const isSameSession = orchId === activeOrchId;
 
     activeOrchId = orchId;
@@ -1966,28 +1999,11 @@ function switchToOrchestration(orchId) {
         chatBox.setScrollPerc(0);
         updateChatLabel();
 
-        // Restore buffered chat history for this session
-        const buffer = sessionChatBuffers.get(orchId);
-        if (buffer && buffer.length > 0) {
-            for (const line of buffer) {
-                chatBox.log(line);
-            }
-        } else {
-            // No in-memory buffer — load from CMS database
-            chatBox.log(`{yellow-fg}── Switched to ${activeSessionShort} ──{/yellow-fg}`);
-            chatBox.log("");
-            loadCmsHistory(orchId).then(() => {
-                // Re-render if buffer was populated
-                const loaded = sessionChatBuffers.get(orchId);
-                if (loaded && loaded.length > 1 && orchId === activeOrchId) {
-                    chatBox.setContent("");
-                    for (const line of loaded) {
-                        chatBox.log(line);
-                    }
-                    redrawActiveViews();
-                }
-            });
-        }
+        chatBox.log(`{yellow-fg}── Switched to ${activeSessionShort} ──{/yellow-fg}`);
+        chatBox.log("");
+
+        // Always rebuild from DB so switching sessions shows full persisted history.
+        await loadCmsHistory(orchId);
 
         // Ensure an observer is running for this session
         startObserver(orchId);
@@ -2161,7 +2177,7 @@ async function handleInput(text) {
                 const newOrchId = `session-${newSess.sessionId}`;
                 knownOrchestrationIds.add(newOrchId);
                 await refreshOrchestrations();
-                switchToOrchestration(newOrchId);
+                await switchToOrchestration(newOrchId);
                 appendChatRaw(`{green-fg}New session created ✓ {gray-fg}(${newSess.sessionId.slice(0, 8)}…) model=${currentModel}{/gray-fg}{/green-fg}`);
             } catch (err) {
                 appendChatRaw(`{red-fg}Failed to create session: ${err.message}{/red-fg}`);
