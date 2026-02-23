@@ -37,10 +37,12 @@
     "@azure/storage-blob": "^12.31.0",
     "@github/copilot-sdk": "^0.1.8",
     "duroxide": "^0.1.7",
-    "duroxide-darwin-arm64": "^0.1.5"
+    "duroxide-darwin-arm64": "^0.1.5",
+    "pg": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.16.0",
     "blessed": "^0.1.81",
     "chalk": "^5.6.2",
     "marked": "^15.0.12",
