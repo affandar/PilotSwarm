@@ -538,11 +538,10 @@ function renderSeqEventLine(event, orchId) {
 
     switch (event.type) {
         case "exec_start":
-            if (event.iteration > 0) {
-                seqPane.log(seqSeparator("continueAsNew", "yellow"));
-            }
             {
-                const label = event.hydrate ? "- exec (hydrate)" : "- exec";
+                const label = event.iteration > 0
+                    ? (event.hydrate ? "- exec (hydrate, can)" : "- exec (can)")
+                    : (event.hydrate ? "- exec (hydrate)" : "- exec");
                 seqPane.log(seqLine(event.time, seqNodes.indexOf(event.orchNode), label, "gray"));
             }
             break;
@@ -556,10 +555,7 @@ function renderSeqEventLine(event, orchId) {
         case "activity_start": {
             const col = seqNodes.indexOf(event.actNode);
             if (lastAct !== undefined && lastAct !== event.actNode) {
-                const fromCol = seqNodes.indexOf(lastAct);
-                if (fromCol >= 0 && col >= 0 && fromCol !== col) {
-                    seqPane.log(seqMigrationArrow(fromCol, col));
-                }
+                seqPane.log(seqLine(event.time, col, `↺ ${lastAct}→${event.actNode}`, "yellow"));
             }
             seqLastActivityNode.set(orchId, event.actNode);
             seqPane.log(seqLine(event.time, col, "├─ > agent", "cyan"));
@@ -569,10 +565,7 @@ function renderSeqEventLine(event, orchId) {
         case "resume": {
             const col = seqNodes.indexOf(event.actNode);
             if (lastAct !== undefined && lastAct !== event.actNode) {
-                const fromCol = seqNodes.indexOf(lastAct);
-                if (fromCol >= 0 && col >= 0 && fromCol !== col) {
-                    seqPane.log(seqMigrationArrow(fromCol, col));
-                }
+                seqPane.log(seqLine(event.time, col, `↺ ${lastAct}→${event.actNode}`, "yellow"));
             }
             seqLastActivityNode.set(orchId, event.actNode);
             seqPane.log(seqLine(event.time, col, "├─ ^ resume", "green"));
@@ -611,8 +604,7 @@ function renderSeqEventLine(event, orchId) {
 
         case "dehydrate": {
             const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, "ZZ dehydrate", "red"));
-            seqPane.log(seqSeparator("affinity reset", "red"));
+            seqPane.log(seqLine(event.time, col, "ZZ dehydrate · affinity reset", "red"));
             break;
         }
 
@@ -915,6 +907,17 @@ function relayoutAll() {
         }
     }
     screen.render();
+}
+
+function redrawActiveViews() {
+    if (logViewMode === "orchestration") {
+        refreshOrchLogPane();
+    } else if (logViewMode === "sequence") {
+        refreshSeqPane();
+    } else {
+        recolorWorkerPanes();
+    }
+    relayoutAll();
 }
 
 // ─── Input bar ───────────────────────────────────────────────────
@@ -1961,9 +1964,6 @@ function switchToOrchestration(orchId) {
     if (!isSameSession) {
         chatBox.setContent("");
         chatBox.setScrollPerc(0);
-        // Force blessed to reallocate its screen buffer (same as resize does)
-        // to clear any stray characters from the previous render
-        screen.realloc();
         updateChatLabel();
 
         // Restore buffered chat history for this session
@@ -1972,7 +1972,6 @@ function switchToOrchestration(orchId) {
             for (const line of buffer) {
                 chatBox.log(line);
             }
-            chatBox.log(""); // spacer
         } else {
             // No in-memory buffer — load from CMS database
             chatBox.log(`{yellow-fg}── Switched to ${activeSessionShort} ──{/yellow-fg}`);
@@ -1985,34 +1984,20 @@ function switchToOrchestration(orchId) {
                     for (const line of loaded) {
                         chatBox.log(line);
                     }
-                    screen.render();
+                    redrawActiveViews();
                 }
             });
         }
-        // Schedule a full screen repaint shortly after render settles
-        // — clears stray characters from the previous session's render.
-        setTimeout(() => {
-            screen.realloc();
-            screen.render();
-        }, 50);
 
         // Ensure an observer is running for this session
         startObserver(orchId);
 
-        // If in orchestration log mode, refresh the log pane for the new session
-        if (logViewMode === "orchestration") {
-            refreshOrchLogPane();
-        } else if (logViewMode === "sequence") {
-            refreshSeqPane();
-        }
-
         // Refresh list to update ▸ marker
         refreshOrchestrations();
 
-        // Recolor worker log panes to highlight the new active session
-        if (logViewMode === "workers") {
-            recolorWorkerPanes();
-        }
+        redrawActiveViews();
+    } else {
+        redrawActiveViews();
     }
 }
 

@@ -63,8 +63,8 @@ export class DurableCopilotWorker {
      * Register tools at the worker level.
      *
      * These tools are available to ALL sessions on this worker.
-     * Clients can reference them by name in createSession() via
-     * `tools: ["tool_name_1", "tool_name_2"]` — the names travel
+    * Clients can reference them by name in createSession() via
+    * `toolNames: ["tool_name_1", "tool_name_2"]` — the names travel
      * through duroxide as serializable strings, and the worker
      * resolves them to the actual Tool objects at execution time.
      *

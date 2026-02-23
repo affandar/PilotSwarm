@@ -48,8 +48,8 @@ description: Diagnose and fix a failing integration test in the durable-copilot-
    ```
 
 ## Key files
-- [test/sdk.test.js](../../test/sdk.test.js) — test definitions
-- [src/client.ts](../../src/client.ts) — client-side orchestration polling
-- [src/orchestration.ts](../../src/orchestration.ts) — orchestration logic
-- [src/managed-session.ts](../../src/managed-session.ts) — LLM turn execution
-- [src/session-manager.ts](../../src/session-manager.ts) — session lifecycle and tool resolution
+- [test/sdk.test.js](../../../test/sdk.test.js) — test definitions
+- [src/client.ts](../../../src/client.ts) — client-side orchestration polling
+- [src/orchestration.ts](../../../src/orchestration.ts) — orchestration logic
+- [src/managed-session.ts](../../../src/managed-session.ts) — LLM turn execution
+- [src/session-manager.ts](../../../src/session-manager.ts) — session lifecycle and tool resolution
