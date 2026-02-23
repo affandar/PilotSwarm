@@ -41,6 +41,8 @@ console.log(`   Store: ${STORE.startsWith("postgres") ? "PostgreSQL" : STORE}\n`
 const worker = new DurableCopilotWorker({
     store: STORE,
     githubToken: process.env.GITHUB_TOKEN,
+    blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
+    blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
 });
 await worker.start();
 
@@ -48,6 +50,7 @@ const client = new DurableCopilotClient({
     store: STORE,
     provider: worker.provider,
     catalog: worker.catalog,
+    blobEnabled: true,
 });
 await client.start();
 
