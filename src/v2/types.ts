@@ -1,5 +1,4 @@
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
-import type { SessionCatalogProvider } from "./cms.js";
 
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
@@ -35,6 +34,12 @@ export interface SerializableSessionConfig {
     workingDirectory?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
+    /**
+     * Names of tools registered on the worker via `worker.registerTools()`.
+     * Serializable — travels through duroxide. The worker resolves these
+     * names to actual Tool objects from its registry at activity execution time.
+     */
+    toolNames?: string[];
 }
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */
@@ -52,7 +57,8 @@ export type DurableSessionStatus =
     | "waiting"
     | "input_required"
     | "completed"
-    | "failed";
+    | "failed"
+    | "error";
 
 // ─── Session Info ────────────────────────────────────────────────
 
@@ -107,12 +113,8 @@ export interface DurableCopilotWorkerOptions {
 // ─── Client Options ──────────────────────────────────────────────
 
 export interface DurableCopilotClientOptions {
-    /** Store URL — used to create a provider if none is given. */
+    /** Store URL (postgres:// or sqlite://). */
     store: string;
-    /** Pre-created duroxide provider — pass `worker.provider` to share DB. */
-    provider?: unknown;
-    /** Session catalog provider (required). Pass `worker.catalog` in single-process mode. */
-    catalog: SessionCatalogProvider;
     blobEnabled?: boolean;
     waitThreshold?: number;
     dehydrateThreshold?: number;

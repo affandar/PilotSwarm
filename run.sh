@@ -52,21 +52,21 @@ case "$MODE" in
         ENV_FILE=".env.remote"
         if [[ "${2:-}" == "--db" ]]; then
             ENV_FILE=".env"
-            echo "🚀 Starting TUI — local worker, local PG (Ctrl+C to quit)"
+            echo "🚀 Starting TUI — 4 local workers, local PG (Ctrl+C to quit)"
         else
-            echo "🚀 Starting TUI — local worker, remote PG (Ctrl+C to quit)"
+            echo "🚀 Starting TUI — 4 local workers, remote PG (Ctrl+C to quit)"
         fi
         node --env-file="$ENV_FILE" examples/tui.js
         ;;
     remote|scaled)
         echo "🚀 Starting TUI — AKS workers, client-only (Ctrl+C to quit)"
-        node --env-file=.env.remote examples/tui.js --mode scaled
+        WORKERS=0 node --env-file=.env.remote examples/tui.js
         ;;
     *)
         echo "Usage: $0 [local|remote] [--db]"
         echo ""
-        echo "  local        Local worker + TUI, remote PG (default)"
-        echo "  local --db   Local worker + TUI, local PG"
+        echo "  local        4 embedded workers + TUI, remote PG (default)"
+        echo "  local --db   4 embedded workers + TUI, local PG"
         echo "  remote       AKS workers, TUI client-only, remote PG"
         exit 1
         ;;

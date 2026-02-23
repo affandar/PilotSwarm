@@ -1,15 +1,19 @@
 # durable-copilot-sdk
 
-Make Copilot SDK apps durable with zero orchestration code.
+Make [Copilot SDK](https://github.com/github/copilot-sdk) apps durable with zero orchestration code.
 
-Wraps the [GitHub Copilot SDK](https://github.com/github/copilot-sdk) with [duroxide](https://github.com/microsoft/duroxide) to give your AI agents **durable timers, crash recovery, and multi-node scaling** — just add a connection string.
+Wraps the GitHub Copilot SDK with [duroxide](https://github.com/microsoft/duroxide) to give your AI agents **durable timers, crash recovery, and multi-node scaling** — just add a connection string.
 
 ## Quick Start
 
-```typescript
-import { DurableCopilotClient, defineTool } from "durable-copilot-sdk";
+```bash
+npm install durable-copilot-sdk
+```
 
-// 1. Define tools (same as Copilot SDK — you already know this)
+```typescript
+import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-sdk";
+
+// Define tools — same API as Copilot SDK
 const getWeather = defineTool("get_weather", {
     description: "Get weather for a city",
     parameters: {
@@ -17,190 +21,99 @@ const getWeather = defineTool("get_weather", {
         properties: { city: { type: "string" } },
         required: ["city"],
     },
-    handler: async (args) => {
-        const res = await fetch(`https://wttr.in/${args.city}?format=j1`);
+    handler: async ({ city }) => {
+        const res = await fetch(`https://wttr.in/${city}?format=j1`);
         return await res.json();
     },
 });
 
-// 2. Create a client (same shape as CopilotClient)
-const client = new DurableCopilotClient({
-    store: "sqlite://./dev.db",   // postgres:// for production
+// Start a worker (runs LLM turns, executes tools)
+const worker = new DurableCopilotWorker({
+    store: process.env.DATABASE_URL,          // PostgreSQL connection string
     githubToken: process.env.GITHUB_TOKEN,
 });
+worker.registerTools([getWeather]);           // register tools at the worker level
+await worker.start();
 
-// 3. Create a session (same shape as CopilotClient.createSession)
+// Start a client (manages sessions — can run on a different machine)
+const client = new DurableCopilotClient({
+    store: process.env.DATABASE_URL,
+});
+await client.start();
+
+// Create a session — reference tools by name (serializable)
 const session = await client.createSession({
-    tools: [getWeather],
-    systemMessage: "You are a helpful weather assistant.",
+    toolNames: ["get_weather"],
+    systemMessage: "You are a weather assistant.",
 });
 
-// 4. Send a message (same shape as CopilotSession.sendAndWait)
 const response = await session.sendAndWait("Check NYC weather every hour for 8 hours");
 console.log(response);
+// The agent calls wait(3600) between checks — the process shuts down,
+// a durable timer fires an hour later, and any worker resumes the session.
 
-// 5. Check detailed status (new — exposes durable state)
-const info = await session.getInfo();
-console.log(info.status);  // "completed"
-
-// 6. Clean up
 await client.stop();
+await worker.stop();
 ```
 
-## What You Get (Automatically)
+## What You Get
 
-| Feature | Standard Copilot SDK | durable-copilot-sdk |
-|---------|---------------------|---------------------|
+| Feature | Copilot SDK | durable-copilot-sdk |
+|---------|-------------|---------------------|
 | Tool calling | ✅ | ✅ Same `defineTool()` API |
-| Wait/pause | ❌ `sleep()` blocks process | ✅ Durable timer — process shuts down, wakes up later |
-| Crash recovery | ❌ Lost | ✅ Resumes from last checkpoint |
-| Multi-node | ❌ Single process | ✅ Any node can pick up work (Phase 2) |
-| Triggers | ❌ Manual only | ✅ Timers, events, cron schedules |
-| Session portability | ❌ Local files | ✅ Blob storage (Phase 3) |
-| Progress saving | ❌ None | ✅ LLM-driven checkpoints (Phase 4) |
+| Wait/pause | ❌ Blocks process | ✅ Durable timer — process shuts down, resumes later |
+| Crash recovery | ❌ Session lost | ✅ Automatic resume from last state |
+| Multi-node | ❌ Single process | ✅ Sessions migrate between worker pods |
+| Session persistence | ❌ In-memory | ✅ PostgreSQL + Azure Blob Storage |
+| Event streaming | ❌ Local only | ✅ Cross-process event subscriptions |
 
-## What You Don't Need to Learn
+## How It Works
 
-- No orchestrations, activities, or continue-as-new
-- No session management or hydration/dehydration
-- No worker affinity or activity tags
-- No blob storage configuration (until Phase 3)
+The SDK automatically injects a `wait` tool into every session. When the LLM needs to pause:
 
-The framework handles all of this internally using [duroxide](https://github.com/microsoft/duroxide).
-
-## API
-
-### `new DurableCopilotClient(options)` — mirrors `CopilotClient`
-
-```typescript
-const client = new DurableCopilotClient({
-    // --- Familiar Copilot SDK options ---
-    githubToken: "...",             // GitHub token (server-side only)
-    cliPath: "/path/to/cli",       // CLI binary path (auto-detected)
-    cwd: "/path/to/workspace",     // Working directory
-    logLevel: "error",             // CLI log level
-
-    // --- Durability (the only new thing) ---
-    store: "sqlite://./dev.db",     // or "postgres://..."
-    waitThreshold: 60,              // seconds — short waits sleep, long waits dehydrate
-});
-```
-
-### `client.createSession(config)` — mirrors `CopilotClient.createSession()`
-
-```typescript
-const session = await client.createSession({
-    sessionId: "custom-id",          // optional, auto-generated if omitted
-    model: "claude-sonnet-4",        // LLM model to use
-    tools: [tool1, tool2],           // Your tools (defineTool())
-    systemMessage: "You are...",     // System prompt
-    workingDirectory: "/path",       // Working directory
-    onUserInputRequest: async (req, inv) => ({  // handle ask_user
-        answer: "yes", wasFreeform: false
-    }),
-    hooks: { ... },                  // pre/post tool hooks
-});
-```
-
-### `session.sendAndWait(prompt, timeout?)` — mirrors `CopilotSession.sendAndWait()`
-
-Send a message and wait for the response. Durable timers and tool calls happen transparently. Client process must stay alive until it resolves.
-
-### `session.send(prompt)` — mirrors `CopilotSession.send()`
-
-Fire-and-forget. The client can exit after this call — the work runs durably on the server. Reconnect later with `client.resumeSession(id)` and call `session.wait()`.
-
-### `session.wait(timeout?)` — new (durable-only)
-
-Block until the session reaches a terminal state. Does NOT send a new message — use after `send()` or after resuming a session from a new process.
-
-```typescript
-// Process 1: fire and forget
-const session = await client.createSession({ tools, systemMessage });
-await session.send("Deploy the app and monitor for 1 hour");
-saveToFile(session.sessionId);
-process.exit(0);
-
-// Process 2 (hours later): reconnect and wait
-const id = readFromFile();
-const session = await client.resumeSession(id);
-const response = await session.wait();
-console.log(response); // "Deployment complete. Monitored for 1 hour. All healthy."
-```
-
-### `session.sendEvent(name, data)` — durable equivalent of answering `onUserInputRequest`
-
-Send an event to a waiting session (e.g., user input response).
-
-### `session.getInfo(): Promise<DurableSessionInfo>` — new (durable-only)
-
-Get status, pending questions, wait state, result, iteration count.
-
-Status values: `"pending" | "running" | "idle" | "waiting" | "input_required" | "completed" | "failed"`
-
-### `session.abort()` — mirrors `CopilotSession.abort()`
-
-### `session.destroy()` — mirrors `CopilotSession.destroy()`
-
-### `session.getMessages()` — mirrors `CopilotSession.getMessages()`
-
-### `session.schedule(schedule)` — new (durable-only)
-
-Schedule recurring invocations: `{ cron: "*/30 * * * *" }` or `{ every: 3600 }`.
-
-### `client.resumeSession(id, config?)` — mirrors `CopilotClient.resumeSession()`
-
-### `client.listSessions()` — mirrors `CopilotClient.listSessions()`
-
-### `client.deleteSession(id)` — mirrors `CopilotClient.deleteSession()`
-
-### `client.start()` — server-side only, starts the duroxide worker
-
-### `client.stop()` — mirrors `CopilotClient.stop()`
-
-## How It Works Internally
+1. **Short waits** (< 30s) — sleep in-process
+2. **Long waits** (≥ 30s) — dehydrate session to blob storage → durable timer → any worker hydrates and continues
 
 ```
-session.sendAndWait("Deploy and monitor")
-    │
-    ▼
-┌────────────────────────────────────────────────────────┐
-│ duroxide orchestration (hidden from user)               │
-│                                                         │
-│   loop:                                                 │
-│     activity: runAgentTurn(state)                       │
-│       → CopilotClient.createSession / resumeSession    │
-│       → session.sendAndWait(prompt, tools)              │
-│       → LLM works, calls tools, calls wait/checkpoint  │
-│       → returns: { answer | needWait | needUserInput }  │
-│                                                         │
-│     if answer → complete, sendAndWait() resolves        │
-│     if needWait:                                        │
-│       short (< threshold) → sleep in-process            │
-│       long (> threshold) → durable timer                │
-│     if needUserInput → wait_for_event("user_answer")   │
-│     continue-as-new                                     │
-└────────────────────────────────────────────────────────┘
+Client                        PostgreSQL                     Worker Pods
+  │                              │                              │
+  │── send("monitor hourly") ──→ │                              │
+  │                              │── orchestration queued ────→ │
+  │                              │                              │── runTurn (LLM)
+  │                              │                              │── wait(3600)
+  │                              │                              │── dehydrate → blob
+  │                              │── durable timer (1 hour) ──→ │
+  │                              │                              │── hydrate ← blob
+  │                              │                              │── runTurn (LLM)
+  │                              │                              │── response
+  │←── result ──────────────────│                              │
 ```
 
-The system automatically injects two tools into every session:
-- **`wait(seconds, reason)`** — the LLM calls this to wait. Short waits sleep in-process; long waits become durable timers.
-- **`checkpoint(summary)`** — the LLM calls this to save progress. Enables crash recovery.
+## Examples
+
+| Example | Description | Command |
+|---------|-------------|---------|
+| [Chat](examples/chat.js) | Interactive console chat | `npm run chat` |
+| [TUI](examples/tui.js) | Multi-session terminal UI with logs | `npm run tui` |
+| [Worker](examples/worker.js) | Headless worker for K8s | `npm run worker` |
+| [Tests](examples/test.js) | Automated test suite | `npm test` |
+
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [User Guide](docs/guide.md) | SDK concepts, API reference, standard vs durable comparison |
+| [Configuration](docs/configuration.md) | PostgreSQL, blob storage, environment variables, worker/client options |
+| [Deploying to AKS](docs/deploying-to-aks.md) | Kubernetes deployment, scaling, rolling updates |
+| [Examples](docs/examples.md) | Chat app, TUI, worker, and test suite walkthrough |
+| [Architecture](docs/architecture.md) | Internal design — orchestrations, session proxy, dehydration |
 
 ## Requirements
 
 - Node.js >= 24
-- SQLite (dev) or PostgreSQL (production) for durable state
-- GitHub Copilot access (token) — **server-side only**, not needed for client
-
-## Phases
-
-| Phase | What | Requires |
-|-------|------|----------|
-| **1** | Single node, durable timers + crash recovery | Nothing extra |
-| **2** | Multi-node with worker affinity | duroxide activity tags |
-| **3** | Session dehydration to blob storage | Azure Blob |
-| **4** | Delta checkpointing, crash resilience with RPO | Azure Append Blob |
+- PostgreSQL
+- GitHub Copilot access token (worker-side only)
+- Azure Blob Storage (optional, for session dehydration across nodes)
 
 ## License
 

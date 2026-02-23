@@ -18,11 +18,10 @@
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
     "chat": "node --env-file=.env examples/chat.js",
-    "tui": "node --env-file=.env examples/tui.js",
-    "tui:scaled": "node --env-file=.env.remote examples/tui.js --mode scaled",
+    "tui": "node --env-file=.env.remote examples/tui.js",
+    "tui:remote": "WORKERS=0 node --env-file=.env.remote examples/tui.js",
     "worker": "node --env-file=.env.remote examples/worker.js",
-    "db:reset": "node --env-file=.env scripts/db-reset.js",
-    "db:check": "node --env-file=.env scripts/db-check-hydration.js"
+    "db:reset": "node --env-file=.env scripts/db-reset.js"
   },
   "keywords": [
     "copilot",

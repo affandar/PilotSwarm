@@ -147,7 +147,18 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
     /** Factory: create and connect a PgSessionCatalogProvider. */
     static async create(connectionString: string): Promise<PgSessionCatalogProvider> {
         const { default: pg } = await import("pg");
-        const pool = new pg.Pool({ connectionString });
+
+        // pg v8 treats sslmode=require as verify-full, which rejects Azure/self-signed
+        // certs. Strip sslmode from URL and control SSL entirely via config object.
+        const parsed = new URL(connectionString);
+        const needsSsl = ["require", "prefer", "verify-ca", "verify-full"]
+            .includes(parsed.searchParams.get("sslmode") ?? "");
+        parsed.searchParams.delete("sslmode");
+
+        const pool = new pg.Pool({
+            connectionString: parsed.toString(),
+            ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+        });
         return new PgSessionCatalogProvider(pool);
     }
 

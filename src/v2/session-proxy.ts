@@ -107,6 +107,18 @@ export function registerActivities(
                 }
                 : undefined;
 
+            // Record the user prompt as a CMS event before running the turn.
+            // Skip internal timer continuation prompts — they're system-generated, not user input.
+            const isTimerPrompt = /^The \d+ second wait is now complete\./i.test(input.prompt);
+            if (catalog && !isTimerPrompt) {
+                catalog.recordEvents(input.sessionId, [{
+                    eventType: "user.message",
+                    data: { content: input.prompt },
+                }]).catch((err: any) => {
+                    activityCtx.traceInfo(`[runTurn] CMS recordEvent (user) failed: ${err}`);
+                });
+            }
+
             const result = await session.runTurn(enrichedPrompt, { onEvent });
             if (cancelled) return { type: "cancelled" };
 
