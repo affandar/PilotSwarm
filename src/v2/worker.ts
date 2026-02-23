@@ -4,6 +4,7 @@ import { registerActivities } from "./session-proxy.js";
 import { durableSessionOrchestration } from "./orchestration.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
+import type { Tool } from "@github/copilot-sdk";
 import type { DurableCopilotWorkerOptions, ManagedSessionConfig } from "./types.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
@@ -34,6 +35,8 @@ export class DurableCopilotWorker {
     private _provider: any = null;
     private _catalog: SessionCatalogProvider | null = null;
     private _started = false;
+    /** Worker-level tool registry — name → Tool. */
+    private toolRegistry = new Map<string, Tool<any>>();
 
     constructor(options: DurableCopilotWorkerOptions) {
         this.config = {
@@ -55,6 +58,26 @@ export class DurableCopilotWorker {
     }
 
     // ─── Public API ──────────────────────────────────────────
+
+    /**
+     * Register tools at the worker level.
+     *
+     * These tools are available to ALL sessions on this worker.
+     * Clients can reference them by name in createSession() via
+     * `tools: ["tool_name_1", "tool_name_2"]` — the names travel
+     * through duroxide as serializable strings, and the worker
+     * resolves them to the actual Tool objects at execution time.
+     *
+     * This is the primary mechanism for custom tools in remote/
+     * separate-process mode where client and worker run on
+     * different machines.
+     */
+    registerTools(tools: Tool<any>[]): void {
+        for (const tool of tools) {
+            this.toolRegistry.set((tool as any).name, tool);
+        }
+        this.sessionManager.setToolRegistry(this.toolRegistry);
+    }
 
     /** Store full config (with tools/hooks) for a session. */
     setSessionConfig(sessionId: string, config: ManagedSessionConfig): void {

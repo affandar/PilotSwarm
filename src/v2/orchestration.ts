@@ -68,6 +68,7 @@ export function* durableSessionOrchestration(
 
     // ─── Helper: dehydrate + reset affinity ──────────────────
     function* dehydrateAndReset(reason: string): Generator<any, void, any> {
+        ctx.traceInfo(`[orch] dehydrating session (reason=${reason})`);
         yield session.dehydrate(reason);
         needsHydration = true;
         affinityKey = yield ctx.newGuid();
@@ -189,9 +190,34 @@ export function* durableSessionOrchestration(
             needsHydration = false;
         }
 
-        // ③ RUN TURN via SessionProxy
+        // ③ RUN TURN via SessionProxy (with retry on failure)
         setStatus(ctx, "running", { iteration });
-        const turnResult: any = yield session.runTurn(prompt);
+        let turnResult: any;
+        try {
+            turnResult = yield session.runTurn(prompt);
+        } catch (err: any) {
+            // Activity failed (e.g. Copilot timeout, network error).
+            // Don't let it kill the orchestration — dehydrate and retry after a delay.
+            const errorMsg = err.message || String(err);
+            ctx.traceInfo(`[orch] runTurn FAILED: ${errorMsg}`);
+            setStatus(ctx, "error", { iteration, error: errorMsg });
+
+            // Wait 30s before retrying to avoid hammering a failing service
+            const retryDelay = 30;
+            ctx.traceInfo(`[orch] retrying in ${retryDelay}s after failure`);
+
+            if (blobEnabled) {
+                yield* dehydrateAndReset("error");
+            }
+
+            yield ctx.scheduleTimer(retryDelay * 1000);
+            yield ctx.continueAsNew(continueInput({
+                prompt,
+                needsHydration: blobEnabled ? true : needsHydration,
+            }));
+            return "";
+        }
+
         const result: TurnResult = typeof turnResult === "string"
             ? JSON.parse(turnResult) : turnResult;
         iteration++;

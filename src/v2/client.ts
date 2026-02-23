@@ -10,6 +10,7 @@ import type {
     CommandResponse,
 } from "./types.js";
 import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
+import { PgSessionCatalogProvider } from "./cms.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -20,19 +21,18 @@ const ORCHESTRATION_NAME = "durable-session-v2";
 const DUROXIDE_SCHEMA = "duroxide";
 
 /**
- * DurableCopilotClient (v2) — pure client-side session handle.
+ * DurableCopilotClient — pure client-side session handle.
  *
  * Talks to duroxide only through the Client API (startOrchestration,
  * enqueueEvent, waitForStatusChange, getStatus). Does NOT own
  * SessionManager, Runtime, or CopilotSession.
  *
- * For single-process usage, pass the worker's `provider` so both share
- * the same database connection (required for sqlite::memory:).
+ * Creates its own duroxide Client and CMS catalog from the store URL.
+ * Completely independent of DurableCopilotWorker.
  */
 export class DurableCopilotClient {
     private config: DurableCopilotClientOptions & { waitThreshold: number };
-    private _provider: any;
-    private _catalog: SessionCatalogProvider;
+    private _catalog!: SessionCatalogProvider;
     private duroxideClient: any = null;
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
     private activeOrchestrations = new Map<string, string>();
@@ -41,13 +41,10 @@ export class DurableCopilotClient {
     private started = false;
 
     constructor(options: DurableCopilotClientOptions) {
-        if (!options.catalog) throw new Error("SessionCatalogProvider is required. Pass catalog option.");
         this.config = {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
         };
-        this._provider = options.provider ?? null;
-        this._catalog = options.catalog;
     }
 
     // ─── Session Management ──────────────────────────────────
@@ -55,6 +52,8 @@ export class DurableCopilotClient {
     async createSession(config?: ManagedSessionConfig & {
         sessionId?: string;
         onUserInputRequest?: UserInputHandler;
+        /** Names of tools registered on the worker via worker.registerTools(). */
+        toolNames?: string[];
     }): Promise<DurableSession> {
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         if (config) {
@@ -65,6 +64,7 @@ export class DurableCopilotClient {
                 workingDirectory: config.workingDirectory,
                 hooks: config.hooks,
                 waitThreshold: config.waitThreshold ?? this.config.waitThreshold,
+                toolNames: config.toolNames,
             };
             this.sessionConfigs.set(sessionId, fullConfig);
         }
@@ -117,10 +117,25 @@ export class DurableCopilotClient {
 
     async start(): Promise<void> {
         if (this.started) return;
-        if (!this._provider) {
-            this._provider = await this._createProvider();
+        const store = this.config.store;
+
+        // Create duroxide client
+        let provider: any;
+        if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
+        else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
+        else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+            provider = await PostgresProvider.connectWithSchema(store, DUROXIDE_SCHEMA);
+        } else {
+            throw new Error(`Unsupported store URL: ${store}`);
         }
-        this.duroxideClient = new Client(this._provider);
+        this.duroxideClient = new Client(provider);
+
+        // Create CMS catalog
+        if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+            this._catalog = await PgSessionCatalogProvider.create(store);
+            await this._catalog.initialize();
+        }
+
         this.started = true;
     }
 
@@ -141,11 +156,20 @@ export class DurableCopilotClient {
 
         const orchestrationId = `session-${sessionId}`;
         const fullConfig = this.sessionConfigs.get(sessionId);
+
+        // Build toolNames: merge explicit toolNames with names extracted from Tool objects.
+        const explicitNames: string[] = fullConfig?.toolNames ?? [];
+        const objectNames: string[] = (fullConfig?.tools ?? [])
+            .map((t: any) => typeof t === "string" ? t : t.name)
+            .filter((n: string) => n && n !== "wait" && n !== "ask_user");
+        const allNames = [...new Set([...explicitNames, ...objectNames])];
+
         const serializableConfig: SerializableSessionConfig = {
             model: fullConfig?.model,
             systemMessage: fullConfig?.systemMessage,
             workingDirectory: fullConfig?.workingDirectory,
             waitThreshold: fullConfig?.waitThreshold ?? this.config.waitThreshold,
+            toolNames: allNames.length ? allNames : undefined,
         };
 
         if (!this.activeOrchestrations.has(sessionId)) {
@@ -366,16 +390,6 @@ export class DurableCopilotClient {
         }
 
         throw new Error(`Timeout waiting for response (${timeout}ms)`);
-    }
-
-    private async _createProvider(): Promise<any> {
-        const store = this.config.store;
-        if (store === "sqlite::memory:") return SqliteProvider.inMemory();
-        if (store.startsWith("sqlite://")) return SqliteProvider.open(store);
-        if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            return PostgresProvider.connectWithSchema(store, DUROXIDE_SCHEMA);
-        }
-        throw new Error(`Unsupported store URL: ${store}`);
     }
 }
 

@@ -23,8 +23,6 @@ async function withClient(opts, fn) {
 
     const client = new DurableCopilotClient({
         store: STORE,
-        provider: worker.provider,
-        catalog: worker.catalog,    // CMS — null for SQLite, PgSessionCatalogProvider for PG
         ...opts,
     });
     await client.start();
@@ -341,6 +339,461 @@ async function testSessionOn() {
     });
 }
 
+// ─── Test 10: Tool Registration on Worker ────────────────────────
+
+async function testToolOnWorker() {
+    console.log("\n═══ Test 10: Tool Registration on Worker ═══");
+    let toolCalled = false;
+
+    const calculator = defineTool("add_numbers", {
+        description: "Add two numbers together",
+        parameters: {
+            type: "object",
+            properties: {
+                a: { type: "number" },
+                b: { type: "number" },
+            },
+            required: ["a", "b"],
+        },
+        handler: async (args) => {
+            console.log(`  [TOOL] add_numbers(${args.a}, ${args.b}) called`);
+            toolCalled = true;
+            return { result: args.a + args.b };
+        },
+    });
+
+    // Explicitly test the correct pattern: tools on worker, not client
+    const worker = new DurableCopilotWorker({
+        store: STORE,
+        githubToken: process.env.GITHUB_TOKEN,
+    });
+    await worker.start();
+
+    const client = new DurableCopilotClient({ store: STORE });
+    await client.start();
+
+    try {
+        // Client creates session with serializable config only
+        const session = await client.createSession({
+            systemMessage: {
+                mode: "replace",
+                content: "You have an add_numbers tool. Use it when asked to add. Be brief.",
+            },
+        });
+
+        // Tools registered on the WORKER
+        worker.setSessionConfig(session.sessionId, { tools: [calculator] });
+
+        console.log("  Sending: What is 17 + 25?");
+        const response = await session.sendAndWait("What is 17 + 25?", TIMEOUT);
+
+        console.log(`  Response: "${response}"`);
+        assert(toolCalled, "Tool handler was not called on the worker");
+        assert(
+            response?.includes("42"),
+            `Expected 42 but got: ${response}`,
+        );
+        pass("Tool Registration on Worker");
+    } finally {
+        await client.stop();
+        await worker.stop();
+    }
+}
+
+// ─── Test 11: Session Resume ─────────────────────────────────────
+
+async function testSessionResume() {
+    console.log("\n═══ Test 11: Session Resume ═══");
+    await withClient({}, async (client) => {
+        // Create session and establish context
+        const session = await client.createSession({
+            systemMessage: {
+                mode: "replace",
+                content: "Remember everything the user tells you. Be brief.",
+            },
+        });
+        const savedId = session.sessionId;
+
+        console.log("  Turn 1: My favorite color is purple");
+        await session.sendAndWait("My favorite color is purple", TIMEOUT);
+
+        // Resume the session by ID (simulates reconnecting from another process)
+        console.log("  Resuming session by ID...");
+        const resumed = await client.resumeSession(savedId);
+        assert(resumed.sessionId === savedId, "Resumed session has wrong ID");
+
+        console.log("  Turn 2: What is my favorite color?");
+        const response = await resumed.sendAndWait("What is my favorite color?", TIMEOUT);
+        console.log(`  Response: "${response}"`);
+        assert(
+            response?.toLowerCase().includes("purple"),
+            `Expected 'purple' but got: ${response}`,
+        );
+        pass("Session Resume");
+    });
+}
+
+// ─── Test 12: Session List ──────────────────────────────────────
+
+async function testSessionList() {
+    console.log("\n═══ Test 12: Session List ═══");
+    await withClient({}, async (client) => {
+        // Create two sessions
+        const s1 = await client.createSession({
+            systemMessage: { mode: "replace", content: "Answer in one word." },
+        });
+        const s2 = await client.createSession({
+            systemMessage: { mode: "replace", content: "Answer in one word." },
+        });
+
+        console.log(`  Created: ${s1.sessionId.slice(0, 8)}, ${s2.sessionId.slice(0, 8)}`);
+
+        const sessions = await client.listSessions();
+        console.log(`  listSessions() returned ${sessions.length} session(s)`);
+
+        const ids = sessions.map(s => s.sessionId);
+        assert(ids.includes(s1.sessionId), `Session ${s1.sessionId.slice(0, 8)} not in list`);
+        assert(ids.includes(s2.sessionId), `Session ${s2.sessionId.slice(0, 8)} not in list`);
+
+        pass("Session List");
+    });
+}
+
+// ─── Test 13: Session Info ──────────────────────────────────────
+
+async function testSessionInfo() {
+    console.log("\n═══ Test 13: Session Info ═══");
+    await withClient({}, async (client) => {
+        const session = await client.createSession({
+            systemMessage: { mode: "replace", content: "Answer in one word. No punctuation." },
+        });
+
+        // Before sending anything
+        const info1 = await session.getInfo();
+        console.log(`  Status before send: ${info1.status}`);
+        assert(
+            info1.status === "pending" || info1.status === "idle",
+            `Expected pending/idle but got: ${info1.status}`,
+        );
+        assert(info1.sessionId === session.sessionId, "Wrong sessionId in info");
+
+        // After a turn
+        console.log("  Sending: What is 3+3?");
+        await session.sendAndWait("What is 3+3?", TIMEOUT);
+
+        const info2 = await session.getInfo();
+        console.log(`  Status after send: ${info2.status}, iterations: ${info2.iterations}`);
+        assert(
+            info2.status === "idle" || info2.status === "completed",
+            `Expected idle/completed but got: ${info2.status}`,
+        );
+        assert(info2.iterations >= 1, `Expected iterations >= 1, got ${info2.iterations}`);
+
+        pass("Session Info");
+    });
+}
+
+// ─── Test 14: Session Delete ────────────────────────────────────
+
+async function testSessionDelete() {
+    console.log("\n═══ Test 14: Session Delete ═══");
+    await withClient({}, async (client) => {
+        const session = await client.createSession({
+            systemMessage: { mode: "replace", content: "Answer in one word." },
+        });
+        const id = session.sessionId;
+        console.log(`  Created session: ${id.slice(0, 8)}`);
+
+        // Verify it exists
+        let sessions = await client.listSessions();
+        assert(
+            sessions.some(s => s.sessionId === id),
+            "Session not in list before delete",
+        );
+
+        // Delete it
+        await client.deleteSession(id);
+        console.log("  Deleted session");
+
+        // Verify it's gone
+        sessions = await client.listSessions();
+        assert(
+            !sessions.some(s => s.sessionId === id),
+            "Session still in list after delete",
+        );
+
+        pass("Session Delete");
+    });
+}
+
+// ─── Test 15: Event Type Filter ─────────────────────────────────
+
+async function testEventTypeFilter() {
+    console.log("\n═══ Test 15: Event Type Filter ═══");
+    await withClient({}, async (client) => {
+        const session = await client.createSession({
+            systemMessage: { mode: "replace", content: "Answer in one word. No punctuation." },
+        });
+
+        const userMessages = [];
+        const assistantMessages = [];
+        const allEvents = [];
+
+        session.on("user.message", (event) => { userMessages.push(event); });
+        session.on("assistant.message", (event) => { assistantMessages.push(event); });
+        session.on((event) => { allEvents.push(event); });
+
+        console.log("  Sending: What is 7+7?");
+        await session.sendAndWait("What is 7+7?", TIMEOUT);
+
+        // Wait for events to arrive via polling
+        await new Promise(r => setTimeout(r, 2000));
+
+        console.log(`  user.message events: ${userMessages.length}`);
+        console.log(`  assistant.message events: ${assistantMessages.length}`);
+        console.log(`  all events: ${allEvents.length}`);
+
+        assert(userMessages.length >= 1, `Expected at least 1 user.message, got ${userMessages.length}`);
+        assert(assistantMessages.length >= 1, `Expected at least 1 assistant.message, got ${assistantMessages.length}`);
+        assert(allEvents.length > userMessages.length + assistantMessages.length - 1,
+            "All-events handler should receive more event types than filtered handlers");
+
+        // Verify filtered events only contain the right type
+        for (const evt of userMessages) {
+            assert(evt.eventType === "user.message", `user.message filter got ${evt.eventType}`);
+        }
+        for (const evt of assistantMessages) {
+            assert(evt.eventType === "assistant.message", `assistant.message filter got ${evt.eventType}`);
+        }
+
+        pass("Event Type Filter");
+    });
+}
+
+// ─── Test 16: Worker-Registered Tools (Remote Pattern) ──────────
+
+async function testWorkerRegisteredTools() {
+    console.log("\n═══ Test 16: Worker-Registered Tools (Remote Pattern) ═══");
+    let toolCalled = false;
+
+    // Define a tool that will be registered on the worker at startup
+    const calculator = defineTool("remote_add", {
+        description: "Add two numbers together",
+        parameters: {
+            type: "object",
+            properties: {
+                a: { type: "number", description: "First number" },
+                b: { type: "number", description: "Second number" },
+            },
+            required: ["a", "b"],
+        },
+        handler: async (args) => {
+            console.log(`  [TOOL] remote_add(${args.a}, ${args.b}) called on worker`);
+            toolCalled = true;
+            return { result: args.a + args.b };
+        },
+    });
+
+    // Simulate remote mode: worker and client are independent processes.
+    // Worker registers tools at startup time.
+    const worker = new DurableCopilotWorker({
+        store: STORE,
+        githubToken: process.env.GITHUB_TOKEN,
+    });
+
+    // Register tools BEFORE starting — this is what you'd do in worker.js
+    worker.registerTools([calculator]);
+    await worker.start();
+
+    const client = new DurableCopilotClient({ store: STORE });
+    await client.start();
+
+    try {
+        // Client references tool by NAME only — no Tool objects, no handlers.
+        // The name travels through duroxide as a serializable string.
+        const session = await client.createSession({
+            toolNames: ["remote_add"],
+            systemMessage: {
+                mode: "replace",
+                content: "You have a remote_add tool. Use it when asked to add numbers. Be brief.",
+            },
+        });
+
+        // No worker.setSessionConfig() needed — tools are resolved from the registry.
+
+        console.log("  Sending: What is 100 + 200?");
+        const response = await session.sendAndWait("What is 100 + 200?", TIMEOUT);
+
+        console.log(`  Response: "${response}"`);
+        assert(toolCalled, "Worker-registered tool handler was not called");
+        assert(
+            response?.includes("300"),
+            `Expected 300 but got: ${response}`,
+        );
+        pass("Worker-Registered Tools (Remote Pattern)");
+    } finally {
+        await client.stop();
+        await worker.stop();
+    }
+}
+
+// ─── Test 17: Worker Registry + Per-Session Tools Combined ──────
+
+async function testRegistryPlusSessionTools() {
+    console.log("\n═══ Test 17: Registry + Per-Session Tools Combined ═══");
+    let registryToolCalled = false;
+    let sessionToolCalled = false;
+
+    const registryTool = defineTool("lookup_capital", {
+        description: "Look up the capital city of a country",
+        parameters: {
+            type: "object",
+            properties: { country: { type: "string" } },
+            required: ["country"],
+        },
+        handler: async (args) => {
+            console.log(`  [REGISTRY TOOL] lookup_capital(${args.country})`);
+            registryToolCalled = true;
+            const capitals = { france: "Paris", japan: "Tokyo", brazil: "Brasilia" };
+            return { capital: capitals[args.country.toLowerCase()] || "Unknown" };
+        },
+    });
+
+    const sessionTool = defineTool("reverse_string", {
+        description: "Reverse a string",
+        parameters: {
+            type: "object",
+            properties: { text: { type: "string" } },
+            required: ["text"],
+        },
+        handler: async (args) => {
+            console.log(`  [SESSION TOOL] reverse_string(${args.text})`);
+            sessionToolCalled = true;
+            return { reversed: args.text.split("").reverse().join("") };
+        },
+    });
+
+    const worker = new DurableCopilotWorker({
+        store: STORE,
+        githubToken: process.env.GITHUB_TOKEN,
+    });
+    worker.registerTools([registryTool]);
+    await worker.start();
+
+    const client = new DurableCopilotClient({ store: STORE });
+    await client.start();
+
+    try {
+        // Client creates session with both: toolNames (registry) + per-session tool
+        const session = await client.createSession({
+            toolNames: ["lookup_capital"],
+            systemMessage: {
+                mode: "replace",
+                content: "You have lookup_capital and reverse_string tools. " +
+                         "Use lookup_capital for capital cities and reverse_string to reverse text. " +
+                         "Answer briefly.",
+            },
+        });
+
+        // Per-session tool via setSessionConfig (same-process bridge)
+        worker.setSessionConfig(session.sessionId, { tools: [sessionTool] });
+
+        console.log("  Sending: What is the capital of France? Also reverse the word 'hello'.");
+        const response = await session.sendAndWait(
+            "What is the capital of France? Also reverse the word 'hello'.",
+            TIMEOUT,
+        );
+
+        console.log(`  Response: "${response}"`);
+        assert(registryToolCalled, "Registry tool (lookup_capital) was not called");
+        assert(sessionToolCalled, "Session tool (reverse_string) was not called");
+        assert(
+            response?.includes("Paris") || response?.includes("paris"),
+            `Expected Paris in response: ${response}`,
+        );
+        pass("Registry + Per-Session Tools Combined");
+    } finally {
+        await client.stop();
+        await worker.stop();
+    }
+}
+
+// ─── Test 18: Warm Session Picks Up New Tools ──────────────────
+
+async function testWarmSessionToolUpdate() {
+    console.log("\n═══ Test 18: Warm Session Picks Up New Tools ═══");
+    let multiplyToolCalled = false;
+
+    const worker = new DurableCopilotWorker({
+        store: STORE,
+        githubToken: process.env.GITHUB_TOKEN,
+    });
+    await worker.start();
+
+    const client = new DurableCopilotClient({ store: STORE });
+    await client.start();
+
+    // Wrap createSession to forward config to co-located worker
+    const origCreate = client.createSession.bind(client);
+    client.createSession = async (config) => {
+        const session = await origCreate(config);
+        if (config) worker.setSessionConfig(session.sessionId, config);
+        return session;
+    };
+
+    try {
+        // Turn 1: session is created (cold → warm). No custom tools yet.
+        const session = await client.createSession({
+            systemMessage: {
+                mode: "replace",
+                content: "Use tools when available. Be brief. Answer with just the number.",
+            },
+        });
+
+        console.log("  Turn 1 (no custom tools): What is 3+3?");
+        const r1 = await session.sendAndWait("What is 3+3?", TIMEOUT);
+        console.log(`  Response: "${r1}"`);
+        assert(r1?.includes("6"), `Expected 6 but got: ${r1}`);
+
+        // Session is now warm in SessionManager. Register a new tool AFTER
+        // the session was created — this is the scenario we're testing.
+        const multiplyTool = defineTool("multiply", {
+            description: "Multiply two numbers together",
+            parameters: {
+                type: "object",
+                properties: {
+                    a: { type: "number" },
+                    b: { type: "number" },
+                },
+                required: ["a", "b"],
+            },
+            handler: async (args) => {
+                console.log(`  [TOOL] multiply(${args.a}, ${args.b}) called on warm session`);
+                multiplyToolCalled = true;
+                return { result: args.a * args.b };
+            },
+        });
+
+        // Add the tool to the already-warm session via setSessionConfig
+        worker.setSessionConfig(session.sessionId, { tools: [multiplyTool] });
+
+        // Turn 2: same session (warm). Should see the new multiply tool.
+        console.log("  Turn 2 (multiply tool added): Use the multiply tool to compute 7 * 8");
+        const r2 = await session.sendAndWait(
+            "Use the multiply tool to compute 7 * 8",
+            TIMEOUT,
+        );
+        console.log(`  Response: "${r2}"`);
+        assert(multiplyToolCalled, "multiply tool was NOT called — warm session didn't pick up the new tool");
+        assert(r2?.includes("56"), `Expected 56 but got: ${r2}`);
+
+        pass("Warm Session Picks Up New Tools");
+    } finally {
+        await client.stop();
+        await worker.stop();
+    }
+}
+
 // ─── Runner ──────────────────────────────────────────────────────
 
 const tests = [
@@ -353,6 +806,15 @@ const tests = [
     ["User Input", testUserInput],
     ["Event Persistence", testEventPersistence],
     ["session.on() Events", testSessionOn],
+    ["Tool on Worker", testToolOnWorker],
+    ["Session Resume", testSessionResume],
+    ["Session List", testSessionList],
+    ["Session Info", testSessionInfo],
+    ["Session Delete", testSessionDelete],
+    ["Event Type Filter", testEventTypeFilter],
+    ["Worker-Registered Tools", testWorkerRegisteredTools],
+    ["Registry + Session Tools", testRegistryPlusSessionTools],
+    ["Warm Session Tool Update", testWarmSessionToolUpdate],
 ];
 
 console.log("🚀 durable-copilot-sdk v2 Architecture Test\n");

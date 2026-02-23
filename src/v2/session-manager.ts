@@ -1,4 +1,4 @@
-import { CopilotClient, type CopilotSession } from "@github/copilot-sdk";
+import { CopilotClient, type CopilotSession, type Tool } from "@github/copilot-sdk";
 import { ManagedSession } from "./managed-session.js";
 import { SessionBlobStore } from "./blob-store.js";
 import type { ManagedSessionConfig, SerializableSessionConfig } from "./types.js";
@@ -25,6 +25,8 @@ export class SessionManager {
     private blobStore: SessionBlobStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
+    /** Worker-level tool registry — shared reference from DurableCopilotWorker. */
+    private toolRegistry = new Map<string, Tool<any>>();
 
     constructor(
         private githubToken?: string,
@@ -36,6 +38,11 @@ export class SessionManager {
     /** Store full config (with tools/hooks) for a session. Called by DurableCopilotClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
         this.sessionConfigs.set(sessionId, config);
+    }
+
+    /** Set the worker-level tool registry. Called by DurableCopilotWorker. */
+    setToolRegistry(registry: Map<string, Tool<any>>): void {
+        this.toolRegistry = registry;
     }
 
     /** Ensure the CopilotClient is started. */
@@ -54,29 +61,40 @@ export class SessionManager {
      * Merges serializable config (from duroxide) with in-memory config (tools/hooks).
      */
     async getOrCreate(sessionId: string, serializableConfig: SerializableSessionConfig): Promise<ManagedSession> {
-        // 1. Check if already in memory (warm)
-        const existing = this.sessions.get(sessionId);
-        if (existing) {
-            return existing;
-        }
-
-        // Merge: in-memory full config takes precedence for tools/hooks,
-        // serializable config (from orchestration) takes precedence for model/systemMessage
+        // Resolve tools: merge per-session (setConfig) + registry (toolNames)
         const storedConfig = this.sessionConfigs.get(sessionId);
+        const resolvedTools = this._resolveTools(storedConfig, serializableConfig);
+
         const config: ManagedSessionConfig = {
             ...storedConfig,
             ...serializableConfig,
-            // Non-serializable fields come from in-memory store
-            tools: storedConfig?.tools,
+            tools: resolvedTools.length > 0 ? resolvedTools : undefined,
             hooks: storedConfig?.hooks,
         };
+
+        // 1. Check if already in memory (warm) — update config in case
+        //    tools were registered after the session was first created.
+        const existing = this.sessions.get(sessionId);
+        if (existing) {
+            existing.updateConfig(config);
+            return existing;
+        }
 
         const client = await this.ensureClient();
         const sessionDir = path.join(SESSION_STATE_DIR, sessionId);
 
+        // Merge user tools with system tool definitions (wait, ask_user)
+        // so the LLM sees them at session creation time.
+        const userTools = config.tools ?? [];
+        const systemTools = ManagedSession.systemToolDefs();
+        const allTools = [
+            ...userTools.filter((t: any) => t.name !== "wait" && t.name !== "ask_user"),
+            ...systemTools,
+        ];
+
         const sessionConfig = {
             sessionId,
-            tools: config.tools ?? [],
+            tools: allTools,
             model: config.model,
             systemMessage:
                 typeof config.systemMessage === "string"
@@ -169,5 +187,39 @@ export class SessionManager {
             await this.client.stop();
             this.client = null;
         }
+    }
+
+    /**
+     * Resolve tools from per-session config + worker-level registry.
+     * Per-session tools take precedence over registry tools with the same name.
+     */
+    private _resolveTools(
+        storedConfig: ManagedSessionConfig | undefined,
+        serializableConfig: SerializableSessionConfig,
+    ): Tool<any>[] {
+        const registryTools: Tool<any>[] = [];
+        if (serializableConfig.toolNames?.length) {
+            for (const name of serializableConfig.toolNames) {
+                const tool = this.toolRegistry.get(name);
+                if (tool) registryTools.push(tool);
+            }
+        }
+
+        const combined = [
+            ...(storedConfig?.tools ?? []),
+            ...registryTools,
+        ];
+
+        // Deduplicate by name — per-session tools take precedence
+        const seen = new Set<string>();
+        const deduped: Tool<any>[] = [];
+        for (const tool of combined) {
+            const name = (tool as any).name;
+            if (!seen.has(name)) {
+                seen.add(name);
+                deduped.push(tool);
+            }
+        }
+        return deduped;
     }
 }

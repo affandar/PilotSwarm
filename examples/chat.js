@@ -48,8 +48,6 @@ await worker.start();
 
 const client = new DurableCopilotClient({
     store: STORE,
-    provider: worker.provider,
-    catalog: worker.catalog,
     blobEnabled: true,
 });
 await client.start();

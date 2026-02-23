@@ -42,6 +42,57 @@ export class ManagedSession {
     }
 
     /**
+     * System tool definitions for session creation.
+     * These are registered at createSession time so the LLM sees them.
+     * Handlers are placeholder stubs — real handlers are set per-turn in runTurn().
+     */
+    static systemToolDefs(): Tool<any>[] {
+        const waitTool = defineTool("wait", {
+            description:
+                "REQUIRED: The ONLY way to wait, pause, sleep, or delay. " +
+                "You MUST call this tool whenever you need to wait, pause, delay, " +
+                "poll, check back later, schedule a future action, or implement " +
+                "any recurring/periodic task. NEVER use bash sleep, setTimeout, " +
+                "setInterval, cron, or any other timing mechanism. This tool " +
+                "enables durable waiting that survives process restarts.",
+            parameters: {
+                type: "object",
+                properties: {
+                    seconds: { type: "number", description: "How long to wait in seconds" },
+                    reason: { type: "string", description: "Why you're waiting" },
+                },
+                required: ["seconds"],
+            },
+            handler: async () => "stub",
+        });
+
+        const askUserTool = defineTool("ask_user", {
+            description:
+                "Ask the user a question and wait for their response. " +
+                "Use this when you need clarification or user input before proceeding.",
+            parameters: {
+                type: "object",
+                properties: {
+                    question: { type: "string", description: "The question to ask the user" },
+                    choices: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Optional list of choices for the user",
+                    },
+                    allowFreeform: {
+                        type: "boolean",
+                        description: "Whether to allow freeform text input (default: true)",
+                    },
+                },
+                required: ["question"],
+            },
+            handler: async () => "stub",
+        });
+
+        return [waitTool, askUserTool];
+    }
+
+    /**
      * Run one LLM turn.
      *
      * The wait tool is injected automatically. If the LLM calls wait()
