@@ -1,4 +1,4 @@
-# Durable Copilot SDK — v2 Architecture
+# Durable Copilot SDK — Architecture
 
 ## 1. Design Philosophy
 

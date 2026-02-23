@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
 /**
- * Interactive console chat using durable-copilot-sdk v2.
+ * Interactive console chat using durable-copilot-sdk.
  *
- * Usage: node --env-file=.env examples/chat-v2.js
+ * Usage: node --env-file=.env examples/chat.js
  *
  * Features:
- *   - Full v2 architecture (orchestration → SessionProxy → ManagedSession)
+ *   - Full architecture (orchestration → SessionProxy → ManagedSession)
  *   - CMS session persistence (Postgres)
  *   - Live event streaming via session.on()
  *   - Durable wait tool + ask_user tool
@@ -35,7 +35,7 @@ function stripMarkdown(text) {
 
 // ─── Start worker + client ───────────────────────────────────────
 
-console.log("🤖 Durable Copilot Chat (v2)");
+console.log("🤖 Durable Copilot Chat");
 console.log(`   Store: ${STORE.startsWith("postgres") ? "PostgreSQL" : STORE}\n`);
 
 const worker = new DurableCopilotWorker({
