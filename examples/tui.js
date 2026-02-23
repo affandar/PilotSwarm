@@ -311,10 +311,10 @@ function seqLine(time, colIdx, content, color) {
             // Content cell — clip to fit
             const maxContent = w - 2; // 1 space padding each side
             const clipped = content.length > maxContent ? content.slice(0, maxContent) : content;
-            const colored = color ? `{${color}-fg}${clipped}{/${color}-fg}` : clipped;
-            const cell = ` ${colored} `;
-            // Pad the whole cell to colW
-            line += padToWidth(cell, w);
+            // Pad the clipped text to maxContent BEFORE applying color tags
+            const padded = padToWidth(clipped, maxContent);
+            const colored = color ? `{${color}-fg}${padded}{/${color}-fg}` : padded;
+            line += ` ${colored} `;
         } else {
             // Empty cell — vertical bar for the swimlane
             const mid = Math.floor(w / 2);
@@ -333,37 +333,6 @@ function seqSeparator(label, color) {
     const left = Math.floor(dashCount / 2);
     const right = dashCount - left;
     return `{${color}-fg}${"─".repeat(left)}${labelStr}${"─".repeat(right)}{/${color}-fg}`;
-}
-
-// Migration arrow from one column to another
-function seqMigrationArrow(fromCol, toCol) {
-    const ncols = seqNodes.length || 1;
-    const widths = seqColWidths();
-    const minCol = Math.min(fromCol, toCol);
-    const maxCol = Math.max(fromCol, toCol);
-    const goingRight = toCol > fromCol;
-    let line = " ".repeat(TIME_W);
-
-    for (let i = 0; i < ncols; i++) {
-        const w = widths[i];
-        if (i === fromCol && goingRight) {
-            const mid = Math.floor(w / 2);
-            line += " ".repeat(mid) + "{yellow-fg}*" + "─".repeat(w - mid - 1) + "{/yellow-fg}";
-        } else if (i === fromCol && !goingRight) {
-            const mid = Math.floor(w / 2);
-            line += "{yellow-fg}" + "─".repeat(mid) + "*{/yellow-fg}" + " ".repeat(w - mid - 1);
-        } else if (i === toCol && goingRight) {
-            line += "{yellow-fg}──>{/yellow-fg}" + " ".repeat(Math.max(0, w - 3));
-        } else if (i === toCol && !goingRight) {
-            line += " ".repeat(Math.max(0, w - 3)) + "{yellow-fg}<──{/yellow-fg}";
-        } else if (i > minCol && i < maxCol) {
-            line += "{yellow-fg}" + "─".repeat(w) + "{/yellow-fg}";
-        } else {
-            const mid = Math.floor(w / 2);
-            line += " ".repeat(mid) + "{gray-fg}│{/gray-fg}" + " ".repeat(w - mid - 1);
-        }
-    }
-    return line;
 }
 
 function seqHeader() {
