@@ -32,8 +32,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: RUNTIMES_PER_POD
-              value: "4"
           envFrom:
             - secretRef:
                 name: copilot-sdk-secrets
