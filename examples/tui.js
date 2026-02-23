@@ -13,7 +13,7 @@
  *   node --env-file=.env.remote examples/tui.js scaled   # client-only, remote workers
  */
 
-import { DurableCopilotClient, DurableCopilotWorker } from "../dist/index.js";
+import { DurableCopilotClient, DurableCopilotWorker, PgSessionCatalogProvider } from "../dist/index.js";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -243,10 +243,16 @@ if (isScaled) {
     appendLog("Worker started ✓");
 }
 
+// Create catalog — shared with worker in local mode, standalone in scaled mode
+let catalog = worker?.catalog;
+if (!catalog && store.startsWith("postgres")) {
+    catalog = await PgSessionCatalogProvider.connect(store);
+}
+
 const client = new DurableCopilotClient({
     store,
     provider: worker?.provider ?? undefined,
-    catalog: worker?.catalog,
+    catalog,
     blobEnabled: !!process.env.AZURE_STORAGE_CONNECTION_STRING,
 });
 await client.start();
