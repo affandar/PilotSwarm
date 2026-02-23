@@ -9,7 +9,7 @@ import type {
     CommandMessage,
     CommandResponse,
 } from "./types.js";
-import type { SessionCatalogProvider } from "./cms.js";
+import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -17,6 +17,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
+const DUROXIDE_SCHEMA = "duroxide";
 
 /**
  * DurableCopilotClient (v2) — pure client-side session handle.
@@ -210,6 +211,11 @@ export class DurableCopilotClient {
         return this.duroxideClient;
     }
 
+    /** @internal */
+    _getCatalog(): SessionCatalogProvider {
+        return this._catalog;
+    }
+
     /** @internal — exposed for DurableSession.wait() */
     async _waitForTurnResult_external(
         orchestrationId: string,
@@ -367,7 +373,7 @@ export class DurableCopilotClient {
         if (store === "sqlite::memory:") return SqliteProvider.inMemory();
         if (store.startsWith("sqlite://")) return SqliteProvider.open(store);
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            return PostgresProvider.connect(store);
+            return PostgresProvider.connectWithSchema(store, DUROXIDE_SCHEMA);
         }
         throw new Error(`Unsupported store URL: ${store}`);
     }
@@ -376,12 +382,26 @@ export class DurableCopilotClient {
 /**
  * DurableSession (v2) — session handle.
  * Mirrors CopilotSession API, routes through duroxide orchestration.
+ *
+ * Event delivery:
+ *   on(eventType, handler) — polls CMS session_events table for new events.
+ *   on(handler)            — catch-all, receives every event type.
+ *   Returns unsubscribe function. Polling starts on first subscription.
  */
+export type SessionEventHandler = (event: SessionEvent) => void;
+
 export class DurableSession {
     readonly sessionId: string;
     private client: DurableCopilotClient;
     private onUserInput?: UserInputHandler;
     lastOrchestrationId?: string;
+
+    // Event subscription state
+    private handlers = new Map<string | null, Set<SessionEventHandler>>();
+    private lastSeenSeq = 0;
+    private pollTimer: ReturnType<typeof setInterval> | null = null;
+    private polling = false;
+    private static POLL_INTERVAL = 500; // ms
 
     /** @internal */
     constructor(sessionId: string, client: DurableCopilotClient, onUserInput?: UserInputHandler) {
@@ -410,13 +430,56 @@ export class DurableSession {
 
     async wait(timeout?: number): Promise<string | undefined> {
         if (!this.lastOrchestrationId) throw new Error("No pending turn. Call send() first.");
-        // v2 orchestrations are long-lived — use status polling, not waitForOrchestration
         return this.client._waitForTurnResult_external(
             this.lastOrchestrationId,
             this.sessionId,
             this.onUserInput,
             timeout ?? 300_000,
         );
+    }
+
+    /**
+     * Subscribe to session events.
+     *
+     * Overloads:
+     *   on(eventType, handler) — typed subscription (e.g. "assistant.message")
+     *   on(handler)            — catch-all subscription
+     *
+     * Returns an unsubscribe function. Polling starts automatically.
+     */
+    on(eventType: string, handler: SessionEventHandler): () => void;
+    on(handler: SessionEventHandler): () => void;
+    on(eventTypeOrHandler: string | SessionEventHandler, handler?: SessionEventHandler): () => void {
+        let key: string | null;
+        let fn: SessionEventHandler;
+
+        if (typeof eventTypeOrHandler === "function") {
+            key = null;
+            fn = eventTypeOrHandler;
+        } else {
+            key = eventTypeOrHandler;
+            fn = handler!;
+        }
+
+        if (!this.handlers.has(key)) {
+            this.handlers.set(key, new Set());
+        }
+        this.handlers.get(key)!.add(fn);
+
+        // Start polling if not already running
+        this._startPolling();
+
+        return () => {
+            const set = this.handlers.get(key);
+            if (set) {
+                set.delete(fn);
+                if (set.size === 0) this.handlers.delete(key);
+            }
+            // Stop polling if no handlers left
+            if (this.handlers.size === 0) {
+                this._stopPolling();
+            }
+        };
     }
 
     async sendEvent(eventName: string, data: unknown): Promise<void> {
@@ -440,14 +503,67 @@ export class DurableSession {
     }
 
     async destroy(): Promise<void> {
+        this._stopPolling();
         await this.client.deleteSession(this.sessionId);
     }
 
-    async getMessages(): Promise<unknown[]> {
-        return [];
+    /** Get all persisted events for this session from CMS. */
+    async getMessages(): Promise<SessionEvent[]> {
+        const catalog = this.client._getCatalog();
+        return catalog.getSessionEvents(this.sessionId);
     }
 
     async getInfo(): Promise<DurableSessionInfo> {
         return this.client._getSessionInfo(this.sessionId);
     }
-}
+
+    // ─── Private: event polling ──────────────────────────────
+
+    private _startPolling(): void {
+        if (this.pollTimer) return;
+        this.pollTimer = setInterval(() => this._poll(), DurableSession.POLL_INTERVAL);
+        // Fire immediately too
+        this._poll();
+    }
+
+    private _stopPolling(): void {
+        if (this.pollTimer) {
+            clearInterval(this.pollTimer);
+            this.pollTimer = null;
+        }
+    }
+
+    private async _poll(): Promise<void> {
+        if (this.polling) return; // prevent overlapping polls
+        this.polling = true;
+        try {
+            const catalog = this.client._getCatalog();
+            const events = await catalog.getSessionEvents(
+                this.sessionId,
+                this.lastSeenSeq,
+                200,
+            );
+            for (const event of events) {
+                this.lastSeenSeq = event.seq;
+                this._dispatch(event);
+            }
+        } catch {
+            // Swallow — will retry on next poll
+        } finally {
+            this.polling = false;
+        }
+    }
+
+    private _dispatch(event: SessionEvent): void {
+        // Typed handlers
+        const typed = this.handlers.get(event.eventType);
+        if (typed) {
+            for (const fn of typed) fn(event);
+        }
+        // Catch-all handlers
+        const catchAll = this.handlers.get(null);
+        if (catchAll) {
+            for (const fn of catchAll) fn(event);
+        }
+    }
+}   

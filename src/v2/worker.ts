@@ -12,6 +12,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Runtime } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
+const DUROXIDE_SCHEMA = "duroxide";
 
 /**
  * DurableCopilotWorker — runs activities and orchestrations.
@@ -113,6 +114,7 @@ export class DurableCopilotWorker {
             this.sessionManager,
             this.blobStore,
             this.config.githubToken,
+            this._catalog,
         );
 
         this.runtime.registerOrchestration(ORCHESTRATION_NAME, durableSessionOrchestration);
@@ -165,7 +167,7 @@ export class DurableCopilotWorker {
         if (store === "sqlite::memory:") return SqliteProvider.inMemory();
         if (store.startsWith("sqlite://")) return SqliteProvider.open(store);
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            return PostgresProvider.connect(store);
+            return PostgresProvider.connectWithSchema(store, DUROXIDE_SCHEMA);
         }
         throw new Error(`Unsupported store URL: ${store}`);
     }

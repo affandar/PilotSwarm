@@ -252,6 +252,95 @@ async function testUserInput() {
     });
 }
 
+// ─── Test 8: Event Persistence (CMS session_events) ────────────
+
+async function testEventPersistence() {
+    console.log("\n═══ Test 8: Event Persistence ═══");
+    await withClient({}, async (client) => {
+        const session = await client.createSession({
+            systemMessage: { mode: "replace", content: "Answer in one word only. No punctuation." },
+        });
+
+        console.log("  Sending: What is 2+2?");
+        const response = await session.sendAndWait("What is 2+2?", TIMEOUT);
+        console.log(`  Response: "${response}"`);
+
+        // Wait a moment for events to be written to CMS
+        await new Promise(r => setTimeout(r, 500));
+
+        // getMessages() now returns SessionEvent[] from CMS
+        const events = await session.getMessages();
+        console.log(`  Events persisted: ${events.length}`);
+
+        // Should have at least user.message + assistant.message
+        assert(events.length >= 2, `Expected at least 2 events, got ${events.length}`);
+
+        const eventTypes = events.map(e => e.eventType);
+        console.log(`  Event types: ${[...new Set(eventTypes)].join(", ")}`);
+
+        assert(eventTypes.includes("user.message"), "Missing user.message event");
+        assert(eventTypes.includes("assistant.message"), "Missing assistant.message event");
+
+        // Verify sequential ordering
+        for (let i = 1; i < events.length; i++) {
+            assert(events[i].seq > events[i - 1].seq, `Events not in order: seq ${events[i].seq} <= ${events[i - 1].seq}`);
+        }
+
+        // Verify no ephemeral events were persisted
+        assert(!eventTypes.includes("assistant.message_delta"), "Ephemeral delta events should not be persisted");
+
+        pass("Event Persistence");
+    });
+}
+
+// ─── Test 9: DurableSession.on() event subscription ─────────────
+
+async function testSessionOn() {
+    console.log("\n═══ Test 9: session.on() Events ═══");
+    await withClient({}, async (client) => {
+        const session = await client.createSession({
+            systemMessage: { mode: "replace", content: "Answer in one word only. No punctuation." },
+        });
+
+        // Set up event collection via on()
+        const receivedEvents = [];
+        const assistantMessages = [];
+
+        const unsub1 = session.on((event) => {
+            receivedEvents.push(event);
+        });
+        const unsub2 = session.on("assistant.message", (event) => {
+            assistantMessages.push(event);
+        });
+
+        console.log("  Sending: What color is the sky?");
+        const response = await session.sendAndWait("What color is the sky?", TIMEOUT);
+        console.log(`  Response: "${response}"`);
+
+        // Give the poller time to pick up events
+        await new Promise(r => setTimeout(r, 2000));
+
+        console.log(`  Events via on(): ${receivedEvents.length}`);
+        console.log(`  Assistant messages via on("assistant.message"): ${assistantMessages.length}`);
+
+        assert(receivedEvents.length >= 2, `Expected at least 2 events via on(), got ${receivedEvents.length}`);
+        assert(assistantMessages.length >= 1, `Expected at least 1 assistant.message, got ${assistantMessages.length}`);
+
+        // Verify each event has required fields
+        for (const evt of receivedEvents) {
+            assert(evt.seq > 0, `Event missing seq: ${JSON.stringify(evt)}`);
+            assert(evt.sessionId, `Event missing sessionId: ${JSON.stringify(evt)}`);
+            assert(evt.eventType, `Event missing eventType: ${JSON.stringify(evt)}`);
+        }
+
+        // Unsubscribe
+        unsub1();
+        unsub2();
+
+        pass("session.on() Events");
+    });
+}
+
 // ─── Runner ──────────────────────────────────────────────────────
 
 const tests = [
@@ -262,6 +351,8 @@ const tests = [
     ["Multi-turn", testMultiTurn],
     ["send() + wait()", testSendAndWait],
     ["User Input", testUserInput],
+    ["Event Persistence", testEventPersistence],
+    ["session.on() Events", testSessionOn],
 ];
 
 console.log("🚀 durable-copilot-sdk v2 Architecture Test\n");

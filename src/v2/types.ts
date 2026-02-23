@@ -5,17 +5,25 @@ import type { SessionCatalogProvider } from "./cms.js";
 // What ManagedSession.runTurn() returns to the orchestration.
 
 export type TurnResult =
-    | { type: "completed"; content: string }
-    | { type: "wait"; seconds: number; reason: string; content?: string }
-    | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean }
+    | { type: "completed"; content: string; events?: CapturedEvent[] }
+    | { type: "wait"; seconds: number; reason: string; content?: string; events?: CapturedEvent[] }
+    | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
     | { type: "cancelled" }
-    | { type: "error"; message: string };
+    | { type: "error"; message: string; events?: CapturedEvent[] };
+
+/** A raw event captured from CopilotSession.on() during a turn. */
+export interface CapturedEvent {
+    eventType: string;
+    data: unknown;
+}
 
 // ─── Turn Options ────────────────────────────────────────────────
 
 export interface TurnOptions {
     onDelta?: (delta: string) => void;
     onToolStart?: (name: string, args: any) => void;
+    /** Called for every event as it fires during the turn. */
+    onEvent?: (event: CapturedEvent) => void;
 }
 
 // ─── Session Config ──────────────────────────────────────────────
