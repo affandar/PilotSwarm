@@ -1,6 +1,6 @@
 import { CopilotClient, type CopilotSession } from "@github/copilot-sdk";
 import { ManagedSession } from "./managed-session.js";
-import { SessionBlobStore } from "../blob-store.js";
+import { SessionBlobStore } from "./blob-store.js";
 import type { ManagedSessionConfig, SerializableSessionConfig } from "./types.js";
 import fs from "node:fs";
 import path from "node:path";

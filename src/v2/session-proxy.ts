@@ -1,5 +1,5 @@
 import type { SessionManager } from "./session-manager.js";
-import type { SessionBlobStore } from "../blob-store.js";
+import type { SessionBlobStore } from "./blob-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import type { SerializableSessionConfig, TurnResult, OrchestrationInput } from "./types.js";
 import os from "node:os";

@@ -14,14 +14,15 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "node --env-file=.env --test test/*.test.js",
+    "test": "node --env-file=.env examples/test.js",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
+    "chat": "node --env-file=.env examples/chat.js",
     "tui": "node --env-file=.env examples/tui.js",
-    "tui:local-remote": "node --env-file=.env.remote examples/tui.js",
-    "tui:remote": "node --env-file=.env.remote examples/tui.js --mode remote",
-    "tui:scaled": "node --env-file=.env.remote examples/tui-scaled.js",
-    "worker": "node --env-file=.env.remote examples/worker.js"
+    "tui:scaled": "node --env-file=.env.remote examples/tui.js --mode scaled",
+    "worker": "node --env-file=.env.remote examples/worker.js",
+    "db:reset": "node --env-file=.env scripts/db-reset.js",
+    "db:check": "node --env-file=.env scripts/db-check-hydration.js"
   },
   "keywords": [
     "copilot",
