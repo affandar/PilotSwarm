@@ -94,6 +94,8 @@ export interface OrchestrationInput {
     inputGracePeriod?: number;
     /** Timestamp (ms) when the next title summarization should fire. 0 = not yet scheduled. */
     nextSummarizeAt?: number;
+    /** How many consecutive retries have been attempted for the current prompt. */
+    retryCount?: number;
 }
 
 // ─── Client Options ──────────────────────────────────────────────
