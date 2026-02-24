@@ -21,7 +21,7 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 
 const require = createRequire(import.meta.url);
-const blessed = require("blessed");
+const blessed = require("neo-blessed");
 
 // ─── Markdown renderer ──────────────────────────────────────────
 
@@ -43,9 +43,13 @@ function renderMarkdown(md) {
         const unescaped = md.replace(/\\n/g, "\n");
         let rendered = marked(unescaped).replace(/\n{3,}/g, "\n\n").trimEnd();
         // marked-terminal uses ANSI codes for styling, not blessed tags.
-        // Escape ALL curly braces so blessed doesn't misinterpret them as tags.
-        // Use fullwidth braces (U+FF5B / U+FF5D) which render fine in terminals.
-        rendered = rendered.replace(/\{/g, "\uFF5B").replace(/\}/g, "\uFF5D");
+        // Strip curly braces so blessed doesn't misinterpret them as tags.
+        rendered = rendered.replace(/\{/g, "(").replace(/\}/g, ")");
+        // Strip emoji — blessed miscounts their display width (treats 2-cell
+        // glyphs as 1), which shifts all subsequent characters on the line and
+        // cascades into the right pane layout.
+        // eslint-disable-next-line no-control-regex
+        rendered = rendered.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, "");
         return rendered;
     } catch {
         return md;
@@ -209,6 +213,165 @@ const seqHeaderBox = blessed.box({
     hidden: true,
 });
 
+// ─── Node Map view ───────────────────────────────────────────────
+
+const nodeMapPane = blessed.log({
+    parent: screen,
+    label: " Node Map ",
+    tags: true,
+    left: 0,
+    top: 0,
+    width: 10,
+    height: 10,
+    border: { type: "line" },
+    style: {
+        border: { fg: "yellow" },
+        label: { fg: "yellow" },
+        focus: { border: { fg: "white" } },
+    },
+    wrap: false,
+    scrollable: true,
+    alwaysScroll: true,
+    scrollbar: { style: { bg: "yellow" } },
+    keys: true,
+    vi: true,
+    mouse: true,
+    hidden: true,
+});
+
+/**
+ * Refresh the node map pane — vertical columns, one per worker node,
+ * with sessions stacked underneath, color-coded by live status.
+ */
+function refreshNodeMap() {
+    nodeMapPane.setContent("");
+
+    // Gather all known nodes from seqNodes (worker pane names)
+    // Filter out synthetic nodes like "cms" that aren't real workers.
+    const SYNTHETIC_NODES = new Set(["cms"]);
+    const nodes = (seqNodes.length > 0 ? [...seqNodes] : [...workerPaneOrder])
+        .filter(n => !SYNTHETIC_NODES.has(n));
+    if (nodes.length === 0) {
+        nodeMapPane.log("{gray-fg}No worker nodes discovered yet{/gray-fg}");
+        screen.render();
+        return;
+    }
+
+    // Build node → [{ orchId, status, title }] mapping
+    const nodeSessionMap = new Map(); // nodeName → array
+    for (const node of nodes) nodeSessionMap.set(node, []);
+
+    // Add a virtual "(none)" column for sessions with no known node
+    const UNASSIGNED = "(unknown)";
+    nodeSessionMap.set(UNASSIGNED, []);
+
+    // Walk all known orchestrations and assign to their last-known node
+    for (const orchId of knownOrchestrationIds) {
+        const node = seqLastActivityNode.get(orchId);
+        const status = sessionLiveStatus.get(orchId) || "unknown";
+        const uuid4 = orchId.startsWith("session-") ? orchId.slice(8, 12) : orchId.slice(0, 4);
+        const title = sessionHeadings.get(orchId);
+        const entry = { orchId, uuid4, status, title };
+        if (node && nodeSessionMap.has(node)) {
+            nodeSessionMap.get(node).push(entry);
+        } else {
+            nodeSessionMap.get(UNASSIGNED).push(entry);
+        }
+    }
+
+    // Build final column list — only include (none) if it has sessions
+    const columns = [...nodes];
+    if (nodeSessionMap.get(UNASSIGNED).length > 0) columns.push(UNASSIGNED);
+
+    // Compute column widths
+    const innerW = (nodeMapPane.width || 60) - 4; // borders + scrollbar + margin
+    const ncols = columns.length;
+    const colW = Math.max(10, Math.floor(innerW / ncols));
+
+    // State → color mapping
+    const stateColor = (status) => {
+        switch (status) {
+            case "running": return "green";
+            case "waiting": return "yellow";
+            case "idle": return "gray";
+            case "input_required": return "cyan";
+            case "error": return "red";
+            default: return "white";
+        }
+    };
+
+    // Pad/clip text to column width (plain text, no tags)
+    const fitCol = (text, w) => {
+        if (text.length > w) return text.slice(0, w);
+        return text + " ".repeat(w - text.length);
+    };
+
+    // Render header row: node names
+    let headerLine = "";
+    for (const node of columns) {
+        headerLine += "{bold}" + fitCol(node, colW) + "{/bold}";
+    }
+    nodeMapPane.log(headerLine);
+
+    // Divider
+    let divLine = "";
+    for (let i = 0; i < columns.length; i++) divLine += "-".repeat(colW);
+    nodeMapPane.log(divLine);
+
+    // Find max sessions on any node to know how many rows we need
+    let maxSessions = 0;
+    for (const arr of nodeSessionMap.values()) {
+        if (arr.length > maxSessions) maxSessions = arr.length;
+    }
+
+    // Render session rows — 2 lines per slot (uuid + title)
+    for (let row = 0; row < maxSessions; row++) {
+        let idLine = "";
+        let titleLine = "";
+        for (const node of columns) {
+            const sessions = nodeSessionMap.get(node);
+            if (row < sessions.length) {
+                const s = sessions[row];
+                const isActive = s.orchId === activeOrchId;
+                const color = stateColor(s.status);
+                const idText = fitCol(s.uuid4, colW);
+                const tText = fitCol((s.title || "").slice(0, colW - 1), colW);
+                if (isActive) {
+                    // Bracket + bold + blink the active session
+                    const idBracketed = "[" + s.uuid4 + "]";
+                    idLine += `{${color}-fg}{bold}{blink}${fitCol(idBracketed, colW)}{/blink}{/bold}{/${color}-fg}`;
+                    titleLine += `{${color}-fg}{bold}${tText}{/bold}{/${color}-fg}`;
+                } else {
+                    idLine += `{${color}-fg}${idText}{/${color}-fg}`;
+                    titleLine += `{${color}-fg}${tText}{/${color}-fg}`;
+                }
+            } else {
+                idLine += " ".repeat(colW);
+                titleLine += " ".repeat(colW);
+            }
+        }
+        nodeMapPane.log(idLine);
+        nodeMapPane.log(titleLine);
+    }
+
+    if (maxSessions === 0) {
+        nodeMapPane.log("");
+        nodeMapPane.log("{gray-fg}(no sessions assigned to any node){/gray-fg}");
+    }
+
+    // Legend
+    nodeMapPane.log("");
+    nodeMapPane.log(
+        "{green-fg}* running{/green-fg}  " +
+        "{yellow-fg}~ waiting{/yellow-fg}  " +
+        "{gray-fg}. idle{/gray-fg}  " +
+        "{cyan-fg}? input{/cyan-fg}  " +
+        "{red-fg}! error{/red-fg}"
+    );
+
+    screen.render();
+}
+
 const seqPane = blessed.log({
     parent: screen,
     label: " Sequence ",
@@ -223,6 +386,7 @@ const seqPane = blessed.log({
         label: { fg: "magenta" },
         focus: { border: { fg: "white" } },
     },
+    wrap: false,
     scrollable: true,
     alwaysScroll: true,
     scrollbar: { style: { bg: "magenta" } },
@@ -248,11 +412,11 @@ function addSeqNode(podName) {
 // Returns an array of per-column widths so remaining pixels are distributed
 // across the first N columns instead of leaving a gap at the right.
 function seqColWidths() {
-    const innerW = (seqPane.width || 60) - 2; // subtract borders
+    const innerW = (seqPane.width || 60) - 4; // borders (2) + scrollbar (1) + safety margin (1)
     const ncols = seqNodes.length || 1;
     const available = innerW - TIME_W;
-    const base = Math.max(10, Math.floor(available / ncols));
-    const remainder = available - base * ncols;
+    const base = Math.max(8, Math.floor(available / ncols));
+    const remainder = Math.max(0, available - base * ncols);
     const widths = [];
     for (let i = 0; i < ncols; i++) {
         widths.push(base + (i < remainder ? 1 : 0));
@@ -262,9 +426,9 @@ function seqColWidths() {
 
 // Legacy helper — returns the base column width (used in separator/header)
 function seqColW() {
-    const innerW = (seqPane.width || 60) - 2;
+    const innerW = (seqPane.width || 60) - 4;
     const ncols = seqNodes.length || 1;
-    return Math.max(10, Math.floor((innerW - TIME_W) / ncols));
+    return Math.max(8, Math.floor((innerW - TIME_W) / ncols));
 }
 
 // Measure display width of a string (emoji = 2 cells)
@@ -277,16 +441,23 @@ function displayWidth(str) {
     let w = 0;
     for (const ch of noTags) {
         const cp = ch.codePointAt(0);
-        // Most emoji and wide chars
-        if (cp > 0x1000 ||
-            (cp >= 0x2600 && cp <= 0x27BF) ||
-            (cp >= 0x2500 && cp <= 0x257F) || // box drawing (1 wide but safe)
-            cp === 0x25CF || cp === 0x25C6) {  // ● ◆
-            // Conservative: box-drawing = 1, emoji = 2
-            w += (cp >= 0x1F000 || (cp >= 0x2600 && cp <= 0x27BF)) ? 2 : 1;
-        } else {
-            w += 1;
+        // Zero-width characters (joiners, variation selectors)
+        if ((cp >= 0xFE00 && cp <= 0xFE0F) || cp === 0x200D || cp === 0x200B ||
+            (cp >= 0xE0020 && cp <= 0xE007F) || cp === 0x20E3) {
+            continue;
         }
+        // Emoji: surrogate pairs / high codepoints
+        if (cp >= 0x1F000) { w += 2; continue; }
+        // Misc symbols & dingbats (often 2 cells)
+        if (cp >= 0x2600 && cp <= 0x27BF) { w += 2; continue; }
+        // CJK / Fullwidth characters (2 cells)
+        if ((cp >= 0x3000 && cp <= 0x9FFF) ||
+            (cp >= 0xF900 && cp <= 0xFAFF) ||
+            (cp >= 0xFF01 && cp <= 0xFF60) ||
+            (cp >= 0xFFE0 && cp <= 0xFFE6)) { w += 2; continue; }
+        // Box drawing, block elements, geometric shapes (1 cell)
+        // Everything else: 1 cell
+        w += 1;
     }
     return w;
 }
@@ -316,9 +487,10 @@ function seqLine(time, colIdx, content, color) {
             const colored = color ? `{${color}-fg}${padded}{/${color}-fg}` : padded;
             line += ` ${colored} `;
         } else {
-            // Empty cell — vertical bar for the swimlane
+            // Empty cell — vertical bar for the swimlane (ASCII | avoids
+            // ambiguous-width issues with Unicode box-drawing characters)
             const mid = Math.floor(w / 2);
-            line += " ".repeat(mid) + "{gray-fg}│{/gray-fg}" + " ".repeat(w - mid - 1);
+            line += " ".repeat(mid) + "{gray-fg}|{/gray-fg}" + " ".repeat(w - mid - 1);
         }
     }
     return line;
@@ -332,7 +504,7 @@ function seqSeparator(label, color) {
     const dashCount = Math.max(0, totalW - labelStr.length);
     const left = Math.floor(dashCount / 2);
     const right = dashCount - left;
-    return `{${color}-fg}${"─".repeat(left)}${labelStr}${"─".repeat(right)}{/${color}-fg}`;
+    return `{${color}-fg}${"-".repeat(left)}${labelStr}${"-".repeat(right)}{/${color}-fg}`;
 }
 
 function seqHeader() {
@@ -345,9 +517,9 @@ function seqHeader() {
     }
     header += "{/bold}";
 
-    let divider = "─".repeat(TIME_W);
+    let divider = "-".repeat(TIME_W);
     for (let i = 0; i < seqNodes.length; i++) {
-        divider += "─".repeat(widths[i]);
+        divider += "-".repeat(widths[i]);
     }
     return [header, divider];
 }
@@ -494,8 +666,18 @@ function appendSeqEvent(orchId, event) {
     buf.push(event);
     if (buf.length > 300) buf.splice(0, buf.length - 300);
 
+    // Always track which node each session is on (for node map view),
+    // not just when the sequence pane is rendering.
+    if (event.type === "activity_start" || event.type === "resume" || event.type === "hydrate_act") {
+        seqLastActivityNode.set(orchId, event.actNode);
+    } else if (event.actNode && !seqLastActivityNode.has(orchId)) {
+        // First event for this session — use whatever node we see
+        seqLastActivityNode.set(orchId, event.actNode);
+    }
+
     if (logViewMode === "sequence" && orchId === activeOrchId) {
         renderSeqEventLine(event, orchId);
+        screen.render();
     }
 }
 
@@ -507,37 +689,34 @@ function renderSeqEventLine(event, orchId) {
 
     switch (event.type) {
         case "exec_start":
-            {
-                const label = event.iteration > 0
-                    ? (event.hydrate ? "- exec (hydrate, can)" : "- exec (can)")
-                    : (event.hydrate ? "- exec (hydrate)" : "- exec");
-                seqPane.log(seqLine(event.time, seqNodes.indexOf(event.orchNode), label, "gray"));
-            }
+            // Suppress standalone exec_start — the turn event that always
+            // follows provides enough context. This halves the vertical
+            // density of the diagram.
             break;
 
         case "turn": {
             const orchCol = seqNodes.indexOf(event.orchNode);
-            seqPane.log(seqLine(event.time, orchCol, `- turn ${event.turn}`, "gray"));
+            seqPane.log(seqLine(event.time, orchCol, `turn ${event.turn}`, "gray"));
             break;
         }
 
         case "activity_start": {
             const col = seqNodes.indexOf(event.actNode);
             if (lastAct !== undefined && lastAct !== event.actNode) {
-                seqPane.log(seqLine(event.time, col, `↺ ${lastAct}→${event.actNode}`, "yellow"));
+                seqPane.log(seqLine(event.time, col, `> ${lastAct}->${event.actNode}`, "yellow"));
             }
             seqLastActivityNode.set(orchId, event.actNode);
-            seqPane.log(seqLine(event.time, col, "├─ > agent", "cyan"));
+            seqPane.log(seqLine(event.time, col, "> agent", "cyan"));
             break;
         }
 
         case "resume": {
             const col = seqNodes.indexOf(event.actNode);
             if (lastAct !== undefined && lastAct !== event.actNode) {
-                seqPane.log(seqLine(event.time, col, `↺ ${lastAct}→${event.actNode}`, "yellow"));
+                seqPane.log(seqLine(event.time, col, `> ${lastAct}->${event.actNode}`, "yellow"));
             }
             seqLastActivityNode.set(orchId, event.actNode);
-            seqPane.log(seqLine(event.time, col, "├─ ^ resume", "green"));
+            seqPane.log(seqLine(event.time, col, "^ resume", "green"));
             break;
         }
 
@@ -552,25 +731,25 @@ function renderSeqEventLine(event, orchId) {
             const colW = seqColW();
             const maxSnip = Math.max(3, colW - 8);
             const snip = (event.snippet || "ok").slice(0, maxSnip);
-            seqPane.log(seqLine(event.time, col, `├─< ${snip}`, "green"));
+            seqPane.log(seqLine(event.time, col, `< ${snip}`, "green"));
             break;
         }
 
         case "wait": {
             const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, `├ wait ${event.seconds}s`, "yellow"));
+            seqPane.log(seqLine(event.time, col, `wait ${event.seconds}s`, "yellow"));
             break;
         }
 
         case "timer_fired": {
             const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, `├ ${event.seconds}s up`, "yellow"));
+            seqPane.log(seqLine(event.time, col, `${event.seconds}s up`, "yellow"));
             break;
         }
 
         case "dehydrate": {
             const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, "ZZ dehydrate · affinity reset", "red"));
+            seqPane.log(seqLine(event.time, col, "ZZ dehydrate", "red"));
             break;
         }
 
@@ -588,13 +767,13 @@ function renderSeqEventLine(event, orchId) {
 
         case "user_idle": {
             const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, "│ >> user msg", "cyan"));
+            seqPane.log(seqLine(event.time, col, ">> user msg", "cyan"));
             break;
         }
 
         case "interrupt": {
             const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, "│ >> interrupt", "cyan"));
+            seqPane.log(seqLine(event.time, col, ">> interrupt", "cyan"));
             break;
         }
 
@@ -623,7 +802,7 @@ function renderSeqEventLine(event, orchId) {
             break;
         }
     }
-    screen.render();
+    // Don't render here — callers batch renders
 }
 
 /**
@@ -684,24 +863,28 @@ function appendOrchLog(orchId, podName, text) {
 }
 
 function switchLogMode() {
+    // Hide all right-pane views first
+    for (const pane of workerPanes.values()) pane.hide();
+    orchLogPane.hide();
+    seqPane.hide();
+    seqHeaderBox.hide();
+    nodeMapPane.hide();
+
     if (logViewMode === "workers") {
         logViewMode = "orchestration";
-        for (const pane of workerPanes.values()) pane.hide();
-        seqPane.hide();
-        seqHeaderBox.hide();
         orchLogPane.show();
         refreshOrchLogPane();
     } else if (logViewMode === "orchestration") {
         logViewMode = "sequence";
-        orchLogPane.hide();
         seqPane.show();
         seqHeaderBox.show();
         refreshSeqPane();
+    } else if (logViewMode === "sequence") {
+        logViewMode = "nodemap";
+        nodeMapPane.show();
+        refreshNodeMap();
     } else {
         logViewMode = "workers";
-        seqPane.hide();
-        seqHeaderBox.hide();
-        orchLogPane.hide();
         for (const pane of workerPanes.values()) pane.show();
     }
     relayoutAll();
@@ -860,6 +1043,11 @@ function relayoutAll() {
         seqPane.width = rW;
         seqPane.top = headerH;
         seqPane.height = bH - headerH;
+    } else if (logViewMode === "nodemap") {
+        nodeMapPane.left = lW;
+        nodeMapPane.width = rW;
+        nodeMapPane.top = 0;
+        nodeMapPane.height = bH;
     } else {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
         if (panes.length > 0) {
@@ -880,6 +1068,8 @@ function redrawActiveViews() {
         refreshOrchLogPane();
     } else if (logViewMode === "sequence") {
         refreshSeqPane();
+    } else if (logViewMode === "nodemap") {
+        refreshNodeMap();
     } else {
         recolorWorkerPanes();
     }
@@ -999,7 +1189,7 @@ function recolorWorkerPanes() {
 
 function showCopilotMessage(raw, orchId) {
     const rendered = renderMarkdown(raw);
-    const prefix = `{gray-fg}[${ts()}]{/gray-fg} {cyan-fg}{bold}🤖 Copilot:{/bold}{/cyan-fg}`;
+    const prefix = `{gray-fg}[${ts()}]{/gray-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`;
     appendChatRaw(prefix, orchId);
     // Always show on separate lines for readability
     for (const line of rendered.split("\n")) {
@@ -1067,7 +1257,7 @@ async function loadCmsHistory(orchId) {
             } else if (type === "assistant.message") {
                 const content = evt.data?.content;
                 if (content) {
-                    lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {cyan-fg}{bold}🤖 Copilot:{/bold}{/cyan-fg}`);
+                    lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
                     const rendered = renderMarkdown(content);
                     for (const line of rendered.split("\n")) {
                         lines.push(line);
@@ -1076,10 +1266,10 @@ async function loadCmsHistory(orchId) {
                 }
             } else if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {yellow-fg}🛠 start{/yellow-fg} ${toolName}`);
+                lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`);
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || "tool";
-                lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {green-fg}🛠 done{/green-fg} ${toolName}`);
+                lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {green-fg}[tool] done{/green-fg} ${toolName}`);
             } else {
                 lines.push(`{gray-fg}[${timeStr}] [${type}]{/gray-fg}`);
             }
@@ -1091,10 +1281,9 @@ async function loadCmsHistory(orchId) {
         sessionChatBuffers.set(orchId, lines);
 
         if (orchId === activeOrchId) {
-            chatBox.setContent("");
-            for (const line of lines) {
-                chatBox.log(line);
-            }
+            // Build content as a single string to avoid incremental log() corruption
+            chatBox.setContent(lines.join("\n"));
+            chatBox.setScrollPerc(100);
             screen.render();
         }
 
@@ -1379,6 +1568,16 @@ async function refreshOrchestrations() {
     // Sort by createdAt descending (stable — no status-based reordering)
     entries.sort((a, b) => b.createdAt - a.createdAt);
 
+    // Pull session titles from CMS
+    try {
+        const cmsSessions = await client.listSessions();
+        for (const s of cmsSessions) {
+            if (s.title) {
+                sessionHeadings.set(`session-${s.sessionId}`, s.title);
+            }
+        }
+    } catch {}
+
     // Rebuild ordered ID list to match display order
     orchIdOrder = entries.map(e => e.id);
 
@@ -1416,26 +1615,32 @@ async function refreshOrchestrations() {
             if (status === "Completed" || status === "Failed" || status === "Terminated") {
                 statusIcon = ""; // no icon for terminal states
             } else if (liveStatus === "running") {
-                statusIcon = "{green-fg}⚡{/green-fg}";
+                statusIcon = "{green-fg}*{/green-fg}";
             } else if (liveStatus === "error") {
-                statusIcon = "{red-fg}⚠{/red-fg}";
+                statusIcon = "{red-fg}!{/red-fg}";
             } else if (liveStatus === "waiting") {
-                statusIcon = "{blue-fg}⏳{/blue-fg}";
+                statusIcon = "{blue-fg}~{/blue-fg}";
             } else if (liveStatus === "input_required") {
-                statusIcon = "{magenta-fg}🙋{/magenta-fg}";
+                statusIcon = "{magenta-fg}?{/magenta-fg}";
             } else if (liveStatus === "idle") {
-                statusIcon = "{gray-fg}💤{/gray-fg}";
+                statusIcon = "{gray-fg}z{/gray-fg}";
             }
 
             const heading = sessionHeadings.get(id);
             const label = heading
-                ? `${heading} (${uuid4})`
-                : `${uuid4} ${timeStr}`;
+                ? `${heading} (${uuid4}) ${timeStr}`
+                : `(${uuid4}) ${timeStr}`;
             orchList.addItem(`${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
         }
     }
-    // Restore cursor position
-    orchList.select(Math.min(prevSelected, orchIdOrder.length - 1));
+    // Restore cursor position — prefer the active session's row so switching
+    // sessions via Enter / n key moves the highlight to match.
+    const activeIdx = orchIdOrder.indexOf(activeOrchId);
+    if (activeIdx >= 0) {
+        orchList.select(activeIdx);
+    } else {
+        orchList.select(Math.min(prevSelected, orchIdOrder.length - 1));
+    }
     screen.render();
 
     // Start observers for any sessions that don't have one yet
@@ -1447,7 +1652,10 @@ async function refreshOrchestrations() {
 }
 
 // Poll orchestrations every 3 seconds
-let orchPollTimer = setInterval(() => refreshOrchestrations(), 3000);
+let orchPollTimer = setInterval(() => {
+    refreshOrchestrations();
+    if (logViewMode === "nodemap") refreshNodeMap();
+}, 3000);
 
 // Orchestrations panel key handlers
 orchList.key(["c"], async () => {
@@ -1683,7 +1891,7 @@ async function createNewSession() {
         onUserInputRequest: async (request) => {
             return new Promise((resolve) => {
                 const q = request.question || "?";
-                appendChatRaw(`{magenta-fg}🙋 ${q}{/magenta-fg}`);
+                appendChatRaw(`{magenta-fg}[?] ${q}{/magenta-fg}`);
                 setStatus("Waiting for your answer...");
                 pendingUserInput = { resolve };
                 inputBar.setLabel(" {bold}answer:{/bold} ");
@@ -1770,7 +1978,7 @@ function startObserver(orchId) {
                         setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
                         updateLiveStatus("waiting");
                     } else if (cs.status === "input_required") {
-                        appendChatRaw(`{magenta-fg}🙋 ${cs.pendingQuestion || "?"}{/magenta-fg}`, orchId);
+                        appendChatRaw(`{magenta-fg}[?] ${cs.pendingQuestion || "?"}{/magenta-fg}`, orchId);
                         setStatusIfActive("Waiting for your answer...");
                         updateLiveStatus("input_required");
                     }
@@ -1887,7 +2095,7 @@ function startObserver(orchId) {
                                 setStatusIfActive(`Running (${cs.status})…`);
                             }
                         } else if (cs.turnResult.type === "input_required") {
-                            appendChatRaw(`{magenta-fg}🙋 ${cs.turnResult.question}{/magenta-fg}`, orchId);
+                            appendChatRaw(`{magenta-fg}[?] ${cs.turnResult.question}{/magenta-fg}`, orchId);
                             setStatusIfActive("Waiting for your answer...");
                         }
                     } else if (cs.status === "running") {
@@ -1968,11 +2176,12 @@ async function switchToOrchestration(orchId) {
         chatBox.setScrollPerc(0);
         updateChatLabel();
 
-        chatBox.log(`{yellow-fg}── Switched to ${activeSessionShort} ──{/yellow-fg}`);
-        chatBox.log("");
-
         // Always rebuild from DB so switching sessions shows full persisted history.
         await loadCmsHistory(orchId);
+
+        // Force blessed to recalculate its internal buffer after content change
+        screen.realloc();
+        screen.render();
 
         // Ensure an observer is running for this session
         startObserver(orchId);
@@ -2264,7 +2473,7 @@ screen.key(["C-c"], async () => {
 // ─── Pane navigation ─────────────────────────────────────────────
 // Esc: exit prompt, enter navigation mode (sessions pane focused)
 // p:   from anywhere, jump back into the prompt
-// m:   cycle log mode (workers → orchestration → sequence)
+// m:   cycle log mode (workers → orchestration → sequence → node map)
 // Tab: cycle through panes
 // h/l: left/right between sessions, chat, worker panes (when not in prompt)
 
@@ -2274,7 +2483,7 @@ screen.on("keypress", (ch, key) => {
     // m: toggle log viewing mode (only from non-input panes)
     if (ch === "m" && screen.focused !== inputBar) {
         switchLogMode();
-        const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram" };
+        const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" };
         appendLog(`{cyan-fg}Log mode: ${modeNames[logViewMode]}{/cyan-fg}`);
         return;
     }
@@ -2284,6 +2493,7 @@ screen.on("keypress", (ch, key) => {
         screen.realloc();
         relayoutAll();
         if (logViewMode === "sequence") refreshSeqPane();
+        if (logViewMode === "nodemap") refreshNodeMap();
         return;
     }
 
@@ -2305,11 +2515,14 @@ screen.on("keypress", (ch, key) => {
     // h/l navigation only when NOT in the input bar
     if (screen.focused !== inputBar) {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
-        const rightPane = logViewMode === "orchestration" ? orchLogPane : (panes.length > 0 ? panes[0] : null);
+        const rightPane = logViewMode === "orchestration" ? orchLogPane
+            : logViewMode === "nodemap" ? nodeMapPane
+            : logViewMode === "sequence" ? seqPane
+            : (panes.length > 0 ? panes[0] : null);
 
         if (key.name === "h" || ch === "h") {
             // Left
-            if (screen.focused === orchLogPane || [...workerPanes.values()].includes(screen.focused)) {
+            if (screen.focused === orchLogPane || screen.focused === nodeMapPane || screen.focused === seqPane || [...workerPanes.values()].includes(screen.focused)) {
                 chatBox.focus();
             } else if (screen.focused === chatBox) {
                 orchList.focus();
@@ -2334,6 +2547,10 @@ screen.on("keypress", (ch, key) => {
 screen.key(["tab"], () => {
     const rightPanes = logViewMode === "orchestration"
         ? [orchLogPane]
+        : logViewMode === "nodemap"
+        ? [nodeMapPane]
+        : logViewMode === "sequence"
+        ? [seqPane]
         : workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
     const allFocusable = [orchList, chatBox, ...rightPanes];
     if (screen.focused === inputBar) {
@@ -2349,9 +2566,8 @@ screen.key(["tab"], () => {
 
 screen.on("resize", () => {
     relayoutAll();
-    if (logViewMode === "sequence") {
-        refreshSeqPane();
-    }
+    if (logViewMode === "sequence") refreshSeqPane();
+    if (logViewMode === "nodemap") refreshNodeMap();
 });
 
 // ─── Welcome message ─────────────────────────────────────────────
@@ -2366,7 +2582,7 @@ appendChatRaw("  {yellow-fg}Esc{/yellow-fg}    exit prompt → navigate TUI");
 appendChatRaw("  {yellow-fg}p{/yellow-fg}      back to prompt from anywhere");
 appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes");
 appendChatRaw("  {yellow-fg}h/l{/yellow-fg}    move left/right between panes");
-appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence diagram)");
+appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence → node map)");
 appendChatRaw("");
 appendChatRaw("{bold}Scrolling (when chat/log pane focused):{/bold}");
 appendChatRaw("  {yellow-fg}j/k{/yellow-fg} or {yellow-fg}↑/↓{/yellow-fg}   scroll line by line");

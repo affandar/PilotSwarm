@@ -46,6 +46,12 @@ export function* durableSessionOrchestration(
     let iteration = input.iteration ?? 0;
     let config = { ...input.config };
 
+    // ─── Title summarization timer ───────────────────────────
+    // First summarize at iteration 0 + 60s, then every 300s.
+    // We track the target timestamp (epoch ms) across continueAsNew.
+    // 0 means "schedule on first turn completion".
+    let nextSummarizeAt = input.nextSummarizeAt ?? 0;
+
     // ─── Create proxies ──────────────────────────────────────
     const manager = createSessionManagerProxy(ctx);
     let session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
@@ -62,6 +68,7 @@ export function* durableSessionOrchestration(
             dehydrateThreshold,
             idleTimeout,
             inputGracePeriod,
+            nextSummarizeAt,
             ...overrides,
         };
     }
@@ -73,6 +80,27 @@ export function* durableSessionOrchestration(
         needsHydration = true;
         affinityKey = yield ctx.newGuid();
         session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
+    }
+
+    // ─── Helper: summarize session title if due ──────────────
+    const FIRST_SUMMARIZE_DELAY = 60_000;    // 1 minute
+    const REPEAT_SUMMARIZE_DELAY = 300_000;  // 5 minutes
+    function* maybeSummarize(): Generator<any, void, any> {
+        const now = Date.now();
+        // Schedule first summarize 60s after session start
+        if (nextSummarizeAt === 0) {
+            nextSummarizeAt = now + FIRST_SUMMARIZE_DELAY;
+            return;
+        }
+        if (now < nextSummarizeAt) return;
+        // Time to summarize — fire and forget (best effort)
+        try {
+            ctx.traceInfo(`[orch] summarizing session title`);
+            yield manager.summarizeSession(input.sessionId);
+        } catch (err: any) {
+            ctx.traceInfo(`[orch] summarize failed: ${err.message}`);
+        }
+        nextSummarizeAt = now + REPEAT_SUMMARIZE_DELAY;
     }
 
     // ─── Prompt carried from continueAsNew ───────────────────
@@ -224,6 +252,9 @@ export function* durableSessionOrchestration(
 
         // Strip events from result before putting in customStatus (events go to CMS, not status)
         const { events: _events, ...statusResult } = result as any;
+
+        // ── Summarize title if due ──────────────────────────
+        yield* maybeSummarize();
 
         // ④ HANDLE RESULT
         switch (result.type) {

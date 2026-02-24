@@ -55,6 +55,9 @@ export function createSessionManagerProxy(ctx: any) {
         listModels() {
             return ctx.scheduleActivity("listModels", {});
         },
+        summarizeSession(sessionId: string) {
+            return ctx.scheduleActivity("summarizeSession", { sessionId });
+        },
     };
 }
 
@@ -167,6 +170,69 @@ export function registerActivities(
                 return JSON.stringify(models.map((m: any) => ({ id: m.id })));
             } finally {
                 try { await sdk.stop(); } catch {}
+            }
+        });
+    }
+
+    // ── summarizeSession ────────────────────────────────────
+    // Fetches recent conversation from CMS, asks a lightweight LLM
+    // for a 3-5 word title, and writes it back to CMS.
+    if (githubToken && catalog) {
+        runtime.registerActivity("summarizeSession", async (
+            activityCtx: any,
+            input: { sessionId: string },
+        ): Promise<string> => {
+            activityCtx.traceInfo(`[summarizeSession] session=${input.sessionId}`);
+            const events = await catalog.getSessionEvents(input.sessionId, undefined, 50);
+            if (!events || events.length === 0) return "";
+
+            // Build a condensed conversation transcript
+            const lines: string[] = [];
+            for (const evt of events) {
+                if (evt.eventType === "user.message") {
+                    const content = (evt.data as any)?.content;
+                    if (content) lines.push(`User: ${content.slice(0, 200)}`);
+                } else if (evt.eventType === "assistant.message") {
+                    const content = (evt.data as any)?.content;
+                    if (content) lines.push(`Assistant: ${content.slice(0, 200)}`);
+                }
+            }
+            if (lines.length === 0) return "";
+
+            const transcript = lines.join("\n");
+            const summaryPrompt =
+                "Summarize the following conversation in exactly 3-5 words. " +
+                "Return ONLY the summary, nothing else. No quotes, no punctuation at the end.\n\n" +
+                transcript;
+
+            // Use a one-shot CopilotSession to generate the title
+            const { CopilotClient: SdkClient } = await import("@github/copilot-sdk");
+            const sdk = new SdkClient({ githubToken });
+            try {
+                await sdk.start();
+                const tempSession = await sdk.createSession({ model: "gpt-4o-mini" });
+                let title = "";
+                await new Promise<void>((resolve, reject) => {
+                    tempSession.on("assistant.message", (event: any) => {
+                        title = (event.data?.content || "").trim();
+                    });
+                    tempSession.on("session.idle", () => resolve());
+                    tempSession.on("session.error", (event: any) => reject(new Error(event.data?.message || "session error")));
+                    tempSession.send({ prompt: summaryPrompt });
+                });
+                await sdk.stop();
+
+                // Truncate to 60 chars max
+                title = title.slice(0, 60);
+                if (title) {
+                    await catalog.updateSession(input.sessionId, { title });
+                    activityCtx.traceInfo(`[summarizeSession] title="${title}"`);
+                }
+                return title;
+            } catch (err: any) {
+                activityCtx.traceInfo(`[summarizeSession] failed: ${err.message}`);
+                try { await sdk.stop(); } catch {}
+                return "";
             }
         });
     }
