@@ -92,6 +92,8 @@ export interface OrchestrationInput {
     dehydrateThreshold?: number;
     idleTimeout?: number;
     inputGracePeriod?: number;
+    /** Timestamp (ms) when the next title summarization should fire. 0 = not yet scheduled. */
+    nextSummarizeAt?: number;
 }
 
 // ─── Client Options ──────────────────────────────────────────────
