@@ -107,7 +107,7 @@ const orchList = blessed.list({
 
 // Show contextual help when the orch list gains focus
 orchList.on("focus", () => {
-    setStatus("{yellow-fg}j/k navigate · Enter switch · n new · c cancel · d delete · r refresh · p prompt{/yellow-fg}");
+    setStatus("{yellow-fg}j/k navigate · Enter switch · n new · t title · c cancel · d delete · r refresh{/yellow-fg}");
 });
 orchList.on("blur", () => {
     setStatus("Ready — type a message");
@@ -283,10 +283,12 @@ function refreshNodeMap() {
     const columns = [...nodes];
     if (nodeSessionMap.get(UNASSIGNED).length > 0) columns.push(UNASSIGNED);
 
-    // Compute column widths
+    // Compute column widths (account for │ dividers between columns)
     const innerW = (nodeMapPane.width || 60) - 4; // borders + scrollbar + margin
     const ncols = columns.length;
-    const colW = Math.max(10, Math.floor(innerW / ncols));
+    const dividers = ncols > 1 ? ncols - 1 : 0;
+    const colW = Math.max(10, Math.floor((innerW - dividers) / ncols));
+    const SEP = "{gray-fg}│{/gray-fg}";
 
     // State → color mapping
     const stateColor = (status) => {
@@ -308,14 +310,18 @@ function refreshNodeMap() {
 
     // Render header row: node names
     let headerLine = "";
-    for (const node of columns) {
-        headerLine += "{bold}" + fitCol(node, colW) + "{/bold}";
+    for (let i = 0; i < columns.length; i++) {
+        if (i > 0) headerLine += SEP;
+        headerLine += "{bold}" + fitCol(columns[i], colW) + "{/bold}";
     }
     nodeMapPane.log(headerLine);
 
     // Divider
     let divLine = "";
-    for (let i = 0; i < columns.length; i++) divLine += "-".repeat(colW);
+    for (let i = 0; i < columns.length; i++) {
+        if (i > 0) divLine += "┼";
+        divLine += "─".repeat(colW);
+    }
     nodeMapPane.log(divLine);
 
     // Find max sessions on any node to know how many rows we need
@@ -324,11 +330,13 @@ function refreshNodeMap() {
         if (arr.length > maxSessions) maxSessions = arr.length;
     }
 
-    // Render session rows — 2 lines per slot (uuid + title)
+    // Render session rows — 2 lines per slot (uuid + title) + 1 blank spacer
     for (let row = 0; row < maxSessions; row++) {
         let idLine = "";
         let titleLine = "";
-        for (const node of columns) {
+        for (let ci = 0; ci < columns.length; ci++) {
+            const node = columns[ci];
+            if (ci > 0) { idLine += SEP; titleLine += SEP; }
             const sessions = nodeSessionMap.get(node);
             if (row < sessions.length) {
                 const s = sessions[row];
@@ -337,7 +345,6 @@ function refreshNodeMap() {
                 const idText = fitCol(s.uuid4, colW);
                 const tText = fitCol((s.title || "").slice(0, colW - 1), colW);
                 if (isActive) {
-                    // Bracket + bold + blink the active session
                     const idBracketed = "[" + s.uuid4 + "]";
                     idLine += `{${color}-fg}{bold}{blink}${fitCol(idBracketed, colW)}{/blink}{/bold}{/${color}-fg}`;
                     titleLine += `{${color}-fg}{bold}${tText}{/bold}{/${color}-fg}`;
@@ -352,6 +359,7 @@ function refreshNodeMap() {
         }
         nodeMapPane.log(idLine);
         nodeMapPane.log(titleLine);
+        if (row < maxSessions - 1) nodeMapPane.log(""); // spacer between sessions
     }
 
     if (maxSessions === 0) {
@@ -1633,11 +1641,16 @@ async function refreshOrchestrations() {
             orchList.addItem(`${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
         }
     }
-    // Restore cursor position — prefer the active session's row so switching
-    // sessions via Enter / n key moves the highlight to match.
-    const activeIdx = orchIdOrder.indexOf(activeOrchId);
-    if (activeIdx >= 0) {
-        orchList.select(activeIdx);
+    // Restore cursor position — keep the user's selection stable.
+    // Only jump to activeOrchId when it was *just* changed (e.g. Enter / n).
+    if (orchSelectFollowActive) {
+        const activeIdx = orchIdOrder.indexOf(activeOrchId);
+        if (activeIdx >= 0) {
+            orchList.select(activeIdx);
+        } else {
+            orchList.select(Math.min(prevSelected, orchIdOrder.length - 1));
+        }
+        orchSelectFollowActive = false;
     } else {
         orchList.select(Math.min(prevSelected, orchIdOrder.length - 1));
     }
@@ -1723,6 +1736,116 @@ orchList.key(["n"], async () => {
     } catch (err) {
         appendLog(`{red-fg}Create failed: ${err.message}{/red-fg}`);
     }
+});
+
+// ── Title rename ─────────────────────────────────────────────────
+// Shows a choice: type a custom title or ask the LLM to summarize.
+orchList.key(["t"], async () => {
+    const idx = orchList.selected;
+    if (idx < 0 || idx >= orchIdOrder.length) return;
+    const orchId = orchIdOrder[idx];
+    const sessionId = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+    const uuid4 = sessionId.slice(0, 4);
+
+    // Show a choice list
+    const choiceList = blessed.list({
+        parent: screen,
+        label: ` {bold}Rename (${uuid4}){/bold} `,
+        tags: true,
+        top: "center",
+        left: "center",
+        width: 40,
+        height: 8,
+        border: { type: "line" },
+        style: {
+            border: { fg: "cyan" },
+            label: { fg: "cyan" },
+            selected: { bg: "blue", fg: "white", bold: true },
+            item: { fg: "white" },
+        },
+        keys: true,
+        vi: true,
+        mouse: true,
+        items: [
+            "  Type a custom title",
+            "  Ask LLM to summarize",
+            "  Cancel",
+        ],
+    });
+    choiceList.focus();
+    screen.render();
+
+    const cleanup = () => {
+        choiceList.detach();
+        orchList.focus();
+        screen.render();
+    };
+
+    choiceList.key(["escape", "q"], cleanup);
+
+    choiceList.on("select", async (_item, choiceIdx) => {
+        cleanup();
+
+        if (choiceIdx === 2) return; // Cancel
+
+        if (choiceIdx === 1) {
+            // Ask LLM to summarize
+            appendLog(`{cyan-fg}Asking LLM to summarize (${uuid4})…{/cyan-fg}`);
+            try {
+                await summarizeSession(orchId);
+                await refreshOrchestrations();
+            } catch (err) {
+                appendLog(`{red-fg}Summarize failed: ${err.message}{/red-fg}`);
+            }
+            return;
+        }
+
+        // choiceIdx === 0: Type a custom title
+        const titleInput = blessed.textbox({
+            parent: screen,
+            label: ` {bold}New title (${uuid4}):{/bold} `,
+            tags: true,
+            top: "center",
+            left: "center",
+            width: 50,
+            height: 3,
+            border: { type: "line" },
+            style: {
+                border: { fg: "cyan" },
+                label: { fg: "cyan" },
+                focus: { border: { fg: "white" } },
+            },
+            inputOnFocus: true,
+            keys: true,
+        });
+        titleInput.focus();
+        screen.render();
+
+        titleInput.on("submit", async (newTitle) => {
+            titleInput.detach();
+            screen.render();
+            if (!newTitle || !newTitle.trim()) {
+                orchList.focus();
+                return;
+            }
+            try {
+                const catalog = client._getCatalog();
+                await catalog.updateSession(sessionId, { title: newTitle.trim().slice(0, 60) });
+                sessionHeadings.set(orchId, newTitle.trim().slice(0, 40));
+                appendLog(`{green-fg}✓ Renamed (${uuid4}): ${newTitle.trim()}{/green-fg}`);
+                await refreshOrchestrations();
+            } catch (err) {
+                appendLog(`{red-fg}Rename failed: ${err.message}{/red-fg}`);
+            }
+            orchList.focus();
+        });
+
+        titleInput.on("cancel", () => {
+            titleInput.detach();
+            orchList.focus();
+            screen.render();
+        });
+    });
 });
 
 // ─── Stream AKS worker logs into per-worker panes ───────────────
@@ -1914,6 +2037,7 @@ appendLog(`Session created ✓ {gray-fg}(${thisSessionId.slice(0, 8)}…){/gray-
 
 let activeOrchId = `session-${thisSessionId}`;  // currently observed orchestration
 let activeSessionShort = thisSessionId.slice(0, 8);
+let orchSelectFollowActive = true; // when true, next refresh snaps selection to activeOrchId
 
 function updateChatLabel() {
     chatBox.setLabel(` {bold}Chat{/bold} {gray-fg}[${activeSessionShort}]{/gray-fg} `);
@@ -1981,6 +2105,16 @@ function startObserver(orchId) {
                         appendChatRaw(`{magenta-fg}[?] ${cs.pendingQuestion || "?"}{/magenta-fg}`, orchId);
                         setStatusIfActive("Waiting for your answer...");
                         updateLiveStatus("input_required");
+                    } else if (cs.status === "error") {
+                        const errText = cs.error || "Unknown error";
+                        appendChatRaw(`{red-fg}⚠ ${errText}{/red-fg}`, orchId);
+                        if (cs.retriesExhausted) {
+                            setStatusIfActive("Error — retries exhausted. Send a message to retry.");
+                            setTurnInProgressIfActive(false);
+                        } else {
+                            setStatusIfActive("Error — retrying…");
+                        }
+                        updateLiveStatus("error");
                     }
                 }
             } else {
@@ -2098,6 +2232,15 @@ function startObserver(orchId) {
                             appendChatRaw(`{magenta-fg}[?] ${cs.turnResult.question}{/magenta-fg}`, orchId);
                             setStatusIfActive("Waiting for your answer...");
                         }
+                    } else if (cs.status === "error") {
+                        const errText = cs.error || "Unknown error";
+                        appendChatRaw(`{red-fg}⚠ ${errText}{/red-fg}`, orchId);
+                        if (cs.retriesExhausted) {
+                            setStatusIfActive(`Error — retries exhausted. Send a message to retry.`);
+                            setTurnInProgressIfActive(false);
+                        } else {
+                            setStatusIfActive(`Error — retrying…`);
+                        }
                     } else if (cs.status === "running") {
                         setStatusIfActive("Running…");
                         setTurnInProgressIfActive(true);
@@ -2150,6 +2293,7 @@ async function switchToOrchestration(orchId) {
     const isSameSession = orchId === activeOrchId;
 
     activeOrchId = orchId;
+    orchSelectFollowActive = true; // snap list selection to newly activated session
     // Clear unseen-changes flag and snapshot the current version
     orchHasChanges.delete(orchId);
     // Mark as seen — will be updated to latest on next refresh
@@ -2618,7 +2762,8 @@ async function summarizeSession(orchId) {
 
     const resumePrompt =
         'First line of your response MUST be: HEADING: <3-5 word summary of this session>\n' +
-        'Then give me a brief summary of what you\'ve been doing, what the last message you sent me was, and then resume what you were doing.';
+        'Then give me a brief summary of what you\'ve been doing and what the last message you sent me was.\n' +
+        'After that, resume exactly what you were doing before. If you were in the middle of a task, continue it.';
 
     // Get current version before sending
     let baseVersion = 0;

@@ -45,6 +45,8 @@ export function* durableSessionOrchestration(
     let affinityKey = input.affinityKey ?? input.sessionId;
     let iteration = input.iteration ?? 0;
     let config = { ...input.config };
+    let retryCount = input.retryCount ?? 0;
+    const MAX_RETRIES = 3;
 
     // ─── Title summarization timer ───────────────────────────
     // First summarize at iteration 0 + 60s, then every 300s.
@@ -55,6 +57,21 @@ export function* durableSessionOrchestration(
     // ─── Create proxies ──────────────────────────────────────
     const manager = createSessionManagerProxy(ctx);
     let session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
+
+    // ─── Helper: wrap prompt with resume context after dehydration ──
+    function wrapWithResumeContext(userPrompt: string, extra?: string): string {
+        const parts = [
+            `[SYSTEM: The session was dehydrated and has been rehydrated on a new worker. ` +
+            `The LLM conversation history is preserved, but you should acknowledge the context switch. ` +
+            `After responding to the user's message below, resume exactly what you were doing before. ` +
+            `If you were in the middle of a recurring task, continue it.`,
+        ];
+        if (extra) parts.push(extra);
+        parts.push(`]`);
+        parts.push(``);
+        parts.push(userPrompt);
+        return parts.join('\n');
+    }
 
     // ─── Shared continueAsNew input builder ──────────────────
     function continueInput(overrides: Partial<OrchestrationInput> = {}): OrchestrationInput {
@@ -69,6 +86,7 @@ export function* durableSessionOrchestration(
             idleTimeout,
             inputGracePeriod,
             nextSummarizeAt,
+            retryCount: 0, // reset by default; overrides can set it
             ...overrides,
         };
     }
@@ -86,7 +104,7 @@ export function* durableSessionOrchestration(
     const FIRST_SUMMARIZE_DELAY = 60_000;    // 1 minute
     const REPEAT_SUMMARIZE_DELAY = 300_000;  // 5 minutes
     function* maybeSummarize(): Generator<any, void, any> {
-        const now = Date.now();
+        const now: number = yield ctx.utcNow();
         // Schedule first summarize 60s after session start
         if (nextSummarizeAt === 0) {
             nextSummarizeAt = now + FIRST_SUMMARIZE_DELAY;
@@ -208,14 +226,46 @@ export function* durableSessionOrchestration(
             }
         }
 
+        // If the session needs hydration, the LLM lost in-memory context.
+        // Wrap the user's prompt with resume instructions so the LLM picks up where it left off.
+        if (needsHydration && blobEnabled && prompt) {
+            prompt = wrapWithResumeContext(prompt);
+        }
+
         ctx.traceInfo(`[turn ${iteration}] session=${input.sessionId} prompt="${prompt.slice(0, 80)}"`);
 
-        // ② HYDRATE if session was dehydrated
+        // ② HYDRATE if session was dehydrated (with retry)
         if (needsHydration && blobEnabled) {
-            affinityKey = yield ctx.newGuid();
-            session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
-            yield session.hydrate();
-            needsHydration = false;
+            let hydrateAttempts = 0;
+            while (true) {
+                try {
+                    affinityKey = yield ctx.newGuid();
+                    session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
+                    yield session.hydrate();
+                    needsHydration = false;
+                    break;
+                } catch (hydrateErr: any) {
+                    hydrateAttempts++;
+                    const hMsg = hydrateErr.message || String(hydrateErr);
+                    ctx.traceInfo(`[orch] hydrate FAILED (attempt ${hydrateAttempts}/${MAX_RETRIES}): ${hMsg}`);
+                    if (hydrateAttempts >= MAX_RETRIES) {
+                        setStatus(ctx, "error", {
+                            iteration,
+                            error: `Hydrate failed after ${MAX_RETRIES} attempts: ${hMsg}`,
+                            retriesExhausted: true,
+                        });
+                        // Can't proceed without hydration — wait for next user message to retry
+                        break;
+                    }
+                    const hydrateDelay = 10 * Math.pow(2, hydrateAttempts - 1);
+                    setStatus(ctx, "error", {
+                        iteration,
+                        error: `Hydrate failed: ${hMsg} (retry ${hydrateAttempts}/${MAX_RETRIES} in ${hydrateDelay}s)`,
+                    });
+                    yield ctx.scheduleTimer(hydrateDelay * 1000);
+                }
+            }
+            if (needsHydration) continue; // hydrate exhausted retries — go back to dequeue
         }
 
         // ③ RUN TURN via SessionProxy (with retry on failure)
@@ -225,14 +275,32 @@ export function* durableSessionOrchestration(
             turnResult = yield session.runTurn(prompt);
         } catch (err: any) {
             // Activity failed (e.g. Copilot timeout, network error).
-            // Don't let it kill the orchestration — dehydrate and retry after a delay.
             const errorMsg = err.message || String(err);
-            ctx.traceInfo(`[orch] runTurn FAILED: ${errorMsg}`);
-            setStatus(ctx, "error", { iteration, error: errorMsg });
+            retryCount++;
+            ctx.traceInfo(`[orch] runTurn FAILED (attempt ${retryCount}/${MAX_RETRIES}): ${errorMsg}`);
 
-            // Wait 30s before retrying to avoid hammering a failing service
-            const retryDelay = 30;
-            ctx.traceInfo(`[orch] retrying in ${retryDelay}s after failure`);
+            if (retryCount >= MAX_RETRIES) {
+                // Exhausted retries — park in error state but don't crash.
+                // The orchestration stays alive and will retry on the next user message.
+                ctx.traceInfo(`[orch] max retries exhausted, waiting for user input`);
+                setStatus(ctx, "error", {
+                    iteration,
+                    error: `Failed after ${MAX_RETRIES} attempts: ${errorMsg}`,
+                    retriesExhausted: true,
+                });
+                // Reset retry count and wait for next user message
+                retryCount = 0;
+                continue;
+            }
+
+            setStatus(ctx, "error", {
+                iteration,
+                error: `${errorMsg} (retry ${retryCount}/${MAX_RETRIES} in 15s)`,
+            });
+
+            // Exponential backoff: 15s, 30s, 60s
+            const retryDelay = 15 * Math.pow(2, retryCount - 1);
+            ctx.traceInfo(`[orch] retrying in ${retryDelay}s`);
 
             if (blobEnabled) {
                 yield* dehydrateAndReset("error");
@@ -241,10 +309,13 @@ export function* durableSessionOrchestration(
             yield ctx.scheduleTimer(retryDelay * 1000);
             yield ctx.continueAsNew(continueInput({
                 prompt,
+                retryCount,
                 needsHydration: blobEnabled ? true : needsHydration,
             }));
             return "";
         }
+        // Successful activity — reset retry counter
+        retryCount = 0;
 
         const result: TurnResult = typeof turnResult === "string"
             ? JSON.parse(turnResult) : turnResult;
@@ -286,8 +357,11 @@ export function* durableSessionOrchestration(
                         return "";
                     }
 
+                    // Idle timeout → dehydrate. Next message will need resume context.
                     ctx.traceInfo("[session] idle timeout, dehydrating");
                     yield* dehydrateAndReset("idle");
+                    // Don't continueAsNew with a prompt — wait for the next user message,
+                    // which will be wrapped with resume context because needsHydration=true.
                     yield ctx.continueAsNew(continueInput());
                     return "";
                 }
@@ -305,10 +379,13 @@ export function* durableSessionOrchestration(
                         yield* dehydrateAndReset("timer");
                     }
 
+                    const waitStartedAt: number = yield ctx.utcNow();
+
                     setStatus(ctx, "waiting", {
                         iteration,
                         waitSeconds: result.seconds,
                         waitReason: result.reason,
+                        waitStartedAt,
                         ...(result.content ? { turnResult: { type: "completed", content: result.content } } : {}),
                     });
 
@@ -320,8 +397,33 @@ export function* durableSessionOrchestration(
                         const interruptData = typeof timerRace.value === "string"
                             ? JSON.parse(timerRace.value) : (timerRace.value ?? {});
                         ctx.traceInfo(`[session] wait interrupted: "${(interruptData.prompt || "").slice(0, 60)}"`);
+
+                        // Calculate remaining time for resume context
+                        const interruptedAt: number = yield ctx.utcNow();
+                        const elapsedSec = Math.round((interruptedAt - waitStartedAt) / 1000);
+                        const remainingSec = Math.max(0, result.seconds - elapsedSec);
+                        const userPrompt = interruptData.prompt || "";
+
+                        let finalPrompt: string;
+                        if (shouldDehydrate && userPrompt) {
+                            finalPrompt = wrapWithResumeContext(
+                                userPrompt,
+                                `You were waiting on a ${result.seconds}s timer (reason: "${result.reason}"). ` +
+                                `${elapsedSec}s have elapsed, ${remainingSec}s remain. ` +
+                                `After handling the user's message, restart the wait using the wait tool for the remaining ${remainingSec} seconds only.`,
+                            );
+                        } else if (userPrompt) {
+                            // Not dehydrated but still interrupted — give timing context
+                            finalPrompt = `${userPrompt}\n\n` +
+                                `[SYSTEM: You were waiting on a ${result.seconds}s timer (reason: "${result.reason}"). ` +
+                                `${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
+                                `After handling this message, restart the wait using the wait tool for the remaining ${remainingSec} seconds only.]`;
+                        } else {
+                            finalPrompt = userPrompt;
+                        }
+
                         yield ctx.continueAsNew(continueInput({
-                            prompt: interruptData.prompt,
+                            prompt: finalPrompt,
                             needsHydration: shouldDehydrate ? true : needsHydration,
                         }));
                         return "";
@@ -409,8 +511,42 @@ export function* durableSessionOrchestration(
                 ctx.traceInfo("[session] turn cancelled");
                 continue;
 
-            case "error":
-                throw new Error(result.message);
+            case "error": {
+                // Treat like an activity failure — retry with backoff.
+                retryCount++;
+                ctx.traceInfo(`[orch] turn returned error (attempt ${retryCount}/${MAX_RETRIES}): ${result.message}`);
+
+                if (retryCount >= MAX_RETRIES) {
+                    ctx.traceInfo(`[orch] max retries exhausted for turn error, waiting for user input`);
+                    setStatus(ctx, "error", {
+                        iteration,
+                        error: `Failed after ${MAX_RETRIES} attempts: ${result.message}`,
+                        retriesExhausted: true,
+                    });
+                    retryCount = 0;
+                    continue;
+                }
+
+                setStatus(ctx, "error", {
+                    iteration,
+                    error: `${result.message} (retry ${retryCount}/${MAX_RETRIES})`,
+                });
+
+                const errorRetryDelay = 15 * Math.pow(2, retryCount - 1);
+                ctx.traceInfo(`[orch] retrying in ${errorRetryDelay}s after turn error`);
+
+                if (blobEnabled) {
+                    yield* dehydrateAndReset("error");
+                }
+
+                yield ctx.scheduleTimer(errorRetryDelay * 1000);
+                yield ctx.continueAsNew(continueInput({
+                    prompt,
+                    retryCount,
+                    needsHydration: blobEnabled ? true : needsHydration,
+                }));
+                return "";
+            }
         }
     }
 }

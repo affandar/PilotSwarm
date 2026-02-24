@@ -59,6 +59,31 @@ examples/
 - Orchestration functions are generator functions (`function*`) that yield duroxide primitives.
 - `ManagedSession.runTurn()` uses `send()` + `on()` internally, never `sendAndWait()`.
 
+## Orchestration Determinism Rules
+
+Orchestration generator functions are **replayed from the beginning** on every new event. The generator must produce the exact same sequence of yielded actions during replay as during original execution. Violating this causes `nondeterministic: custom status mismatch` errors.
+
+### NEVER use in orchestration code:
+- **`Date.now()`** — returns different values during replay. Use `yield ctx.utcNow()` instead.
+- **`Math.random()`** — non-deterministic. Use `yield ctx.newGuid()` for unique IDs.
+- **`crypto.randomUUID()`** — same issue, use `yield ctx.newGuid()`.
+- **`setTimeout` / `setInterval`** — use `yield ctx.scheduleTimer(ms)` instead.
+- **Any I/O or network call** — wrap in an activity.
+- **Conditional yields based on wall-clock time** — the branch may differ during replay.
+
+### ALWAYS use:
+- `yield ctx.utcNow()` — deterministic timestamp (replay-safe)
+- `yield ctx.newGuid()` — deterministic GUID
+- `yield ctx.scheduleTimer(ms)` — durable timer
+- `yield session.someActivity()` — durable activity
+- `ctx.setCustomStatus(json)` — fire-and-forget (no yield), but order relative to yields matters
+
+### Key principle:
+Anything that **changes the sequence of `yield` statements** must itself be deterministic. Branching on non-deterministic values (like `Date.now()`) before a yield is the most common bug. `setCustomStatus()` is recorded in history — if the orchestration yields an activity where replay expects a `CustomStatusUpdated` (or vice versa), duroxide throws a nondeterminism error.
+
+### Deployment note:
+Changing the orchestration code (adding/removing/reordering yields) creates a new version. Existing in-flight orchestrations were recorded with the old yield sequence and will fail on replay. **Always reset the database before redeploying** with orchestration changes — use `./scripts/deploy-aks.sh` which handles this automatically.
+
 ## Duroxide Bugs
 
 When a bug is identified as originating in **duroxide** (the Rust-based durable orchestration runtime), do NOT attempt to work around it in the SDK or TUI layer. Instead:
@@ -85,6 +110,21 @@ Tests use a `withClient()` helper that spins up a co-located worker + client pai
 1. Define the activity function in `session-proxy.ts` → `registerActivities()`
 2. Create a proxy function in `createSessionProxy()` or `createSessionManagerProxy()`
 3. Call it from the orchestration generator in `orchestration.ts`
+
+### Updating duroxide-node (npm) Dependency
+
+When a new version of `duroxide` is published to npm (after the Node.js SDK is updated and published):
+
+1. **Update package.json**: Run `npm update duroxide` or manually bump the version in `package.json`
+2. **Check for API changes**: If the duroxide SDK added new `OrchestrationContext` methods, `Runtime` options, or `Client` APIs, update usage in:
+   - `src/orchestration.ts` — orchestration generator function
+   - `src/session-proxy.ts` — activity definitions
+   - `src/worker.ts` — runtime initialization
+3. **Build**: `npm run build` (TypeScript compilation)
+4. **Test**: `npm test`
+5. **Verify examples**: Run `node examples/chat.js` to smoke test
+
+> ⚠️ **Never push without explicit user permission**
 
 ### Adding a new command
 1. Add the command case in the orchestration's cmd dispatch (`orchestration.ts`)
