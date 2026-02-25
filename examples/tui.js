@@ -72,7 +72,8 @@ const screen = blessed.screen({
 // ─── Layout calculations ─────────────────────────────────────────
 // Left column: sessions (top) + chat (bottom). Right column: full-height logs.
 
-function leftW() { return Math.floor(screen.width * 0.45); }
+let rightPaneAdjust = Math.floor(screen.width * 0.55 * 0.25); // start right pane at 3/4 of default
+function leftW() { return Math.floor(screen.width * 0.45) + rightPaneAdjust; }
 function rightW() { return screen.width - leftW(); }
 function bodyH() { return screen.height - 3; } // total body (minus input bar)
 function sessH() { return Math.max(5, Math.floor(bodyH() * 0.25)); }
@@ -107,7 +108,7 @@ const orchList = blessed.list({
 
 // Show contextual help when the orch list gains focus
 orchList.on("focus", () => {
-    setStatus("{yellow-fg}j/k navigate · Enter switch · n new · t title · c cancel · d delete · r refresh{/yellow-fg}");
+    setStatus("{yellow-fg}j/k navigate · Enter switch · n new · t title · c cancel · d delete · r refresh · q quit{/yellow-fg}");
 });
 orchList.on("blur", () => {
     setStatus("Ready — type a message");
@@ -1105,6 +1106,25 @@ const inputBar = blessed.textbox({
     mouse: true,
 });
 
+// Alt+Backspace: delete word backwards in input bar
+inputBar.on("keypress", (ch, key) => {
+    if (!key) return;
+    // Alt+Backspace shows up as meta+backspace or as \x1B (escape char) + backspace
+    const isAltBackspace = (key.meta && key.name === "backspace") ||
+        (key.name === "backspace" && key.sequence === "\x1b\x7f");
+    if (!isAltBackspace) return;
+
+    const val = inputBar.getValue();
+    // Find cursor position — neo-blessed textbox doesn't expose cursor,
+    // so we assume cursor is at end (most common case)
+    const before = val;
+    // Delete backwards: strip trailing spaces, then strip non-space chars
+    const trimmed = before.replace(/\s+$/, "");
+    const wordRemoved = trimmed.replace(/\S+$/, "");
+    inputBar.setValue(wordRemoved);
+    screen.render();
+});
+
 // ─── Status bar (bottom of chat column, above input) ─────────────
 
 const statusBar = blessed.box({
@@ -1671,6 +1691,10 @@ let orchPollTimer = setInterval(() => {
 }, 3000);
 
 // Orchestrations panel key handlers
+orchList.key(["q"], () => {
+    cleanup().then(() => process.exit(0));
+});
+
 orchList.key(["c"], async () => {
     const dc = getDc();
     if (!dc) return;
@@ -2391,7 +2415,7 @@ async function handleInput(text) {
         return;
     }
 
-    if (trimmed.toLowerCase() === "exit" || trimmed.toLowerCase() === "quit") {
+    if (trimmed.toLowerCase() === "exit") {
         await cleanup();
         process.exit(0);
     }
@@ -2614,6 +2638,9 @@ screen.key(["C-c"], async () => {
     process.exit(0);
 });
 
+// ESC + q quit sequence: press Escape, then q within 1s to quit
+let escPressedAt = 0;
+
 // ─── Pane navigation ─────────────────────────────────────────────
 // Esc: exit prompt, enter navigation mode (sessions pane focused)
 // p:   from anywhere, jump back into the prompt
@@ -2638,15 +2665,35 @@ screen.on("keypress", (ch, key) => {
         relayoutAll();
         if (logViewMode === "sequence") refreshSeqPane();
         if (logViewMode === "nodemap") refreshNodeMap();
+
+    // [ / ]: resize right pane by 8 chars
+    } else if ((ch === "[" || ch === "]") && screen.focused !== inputBar) {
+        if (ch === "[") rightPaneAdjust += 8;  // shrink right (grow left)
+        else rightPaneAdjust = Math.max(0, rightPaneAdjust - 8); // grow right (shrink left)
+        // Clamp: right pane min 20 chars, left pane min 30 chars
+        const maxAdj = screen.width - 20 - Math.floor(screen.width * 0.45);
+        rightPaneAdjust = Math.max(-(Math.floor(screen.width * 0.45) - 30), Math.min(rightPaneAdjust, maxAdj));
+        relayoutAll();
+        redrawActiveViews();
         return;
     }
 
-    // Esc from any pane (except input, handled above) → sessions pane
+    // Esc from any pane (except input, handled above) → sessions pane + start quit sequence
     if (key.name === "escape" && screen.focused !== inputBar) {
+        escPressedAt = Date.now();
         orchList.focus();
+        setStatus("{yellow-fg}Press q to quit, or continue navigating{/yellow-fg}");
         screen.render();
         return;
     }
+
+    // q after Esc within 1s → quit
+    if (ch === "q" && screen.focused !== inputBar && (Date.now() - escPressedAt) < 1000) {
+        cleanup().then(() => process.exit(0));
+        return;
+    }
+    // Any other key resets the quit sequence
+    if (key.name !== "escape") escPressedAt = 0;
 
     // p from any non-input pane → jump to prompt
     if (ch === "p" && screen.focused !== inputBar) {
