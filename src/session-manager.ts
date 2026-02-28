@@ -92,7 +92,7 @@ export class SessionManager {
             ...systemTools,
         ];
 
-        const sessionConfig = {
+        const sessionConfig: any = {
             sessionId,
             tools: allTools,
             model: config.model,
@@ -103,6 +103,11 @@ export class SessionManager {
             workingDirectory: config.workingDirectory,
             hooks: config.hooks,
             infiniteSessions: { enabled: false },
+            // Pass through agent/skill/MCP config to Copilot SDK
+            ...(config.customAgents?.length && { customAgents: config.customAgents }),
+            ...(config.mcpServers && { mcpServers: config.mcpServers }),
+            ...(config.skillDirectories?.length && { skillDirectories: config.skillDirectories }),
+            ...(config.disabledSkills?.length && { disabledSkills: config.disabledSkills }),
         };
 
         let copilotSession: CopilotSession;

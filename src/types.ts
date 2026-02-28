@@ -40,6 +40,31 @@ export interface SerializableSessionConfig {
      * names to actual Tool objects from its registry at activity execution time.
      */
     toolNames?: string[];
+    /**
+     * Custom agents — named sub-personas with focused prompts and tool subsets.
+     * Passed through to the Copilot SDK's `customAgents` session config.
+     */
+    customAgents?: Array<{
+        name: string;
+        description: string;
+        prompt: string;
+        tools?: string[];
+    }>;
+    /**
+     * MCP server configurations — external tool providers over stdio or HTTP.
+     * Passed through to the Copilot SDK's `mcpServers` session config.
+     */
+    mcpServers?: Record<string, any>;
+    /**
+     * Directories containing skill definitions.
+     * Passed through to the Copilot SDK's `skillDirectories` config.
+     */
+    skillDirectories?: string[];
+    /**
+     * Skill names to disable.
+     * Passed through to the Copilot SDK's `disabledSkills` config.
+     */
+    disabledSkills?: string[];
 }
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */

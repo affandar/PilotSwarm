@@ -41,5 +41,9 @@ export type {
     OrchestrationInput,
 } from "./types.js";
 
+// Skills loader
+export { loadSkills } from "./skills.js";
+export type { Skill } from "./skills.js";
+
 // Re-export defineTool from Copilot SDK for convenience
 export { defineTool } from "@github/copilot-sdk";
