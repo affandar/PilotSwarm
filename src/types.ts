@@ -96,6 +96,10 @@ export interface OrchestrationInput {
     nextSummarizeAt?: number;
     /** How many consecutive retries have been attempted for the current prompt. */
     retryCount?: number;
+    /** The user's original task-defining prompt, preserved to survive LLM truncation. */
+    taskContext?: string;
+    /** Original system message before task context injection (avoids double-appending). */
+    baseSystemMessage?: string | { mode: "append" | "replace"; content: string };
 }
 
 // ─── Client Options ──────────────────────────────────────────────

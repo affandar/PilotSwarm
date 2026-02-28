@@ -139,15 +139,84 @@ export class SessionManager {
 
     /**
      * Dehydrate a session: destroy in memory → tar → upload to blob.
+     *
+     * If destroy() fails (e.g., Copilot connection already disposed), we retry
+     * by re-creating the session from local files and destroying again. The
+     * session files on disk are the source of truth — they were written during
+     * runTurn. We need destroy() to succeed (or at least not leave the session
+     * in a broken state) before we can upload to blob.
+     *
+     * After MAX_RETRIES, we still attempt the blob upload (session files on
+     * disk are likely valid) but throw a clear error if that also fails.
      */
     async dehydrate(sessionId: string, reason: string): Promise<void> {
-        const session = this.sessions.get(sessionId);
-        if (session) {
-            await session.destroy();
-            this.sessions.delete(sessionId);
+        const MAX_RETRIES = 3;
+        let lastError: Error | undefined;
+
+        // Phase 1: Destroy the in-memory session (with retries)
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            const session = this.sessions.get(sessionId);
+            if (!session) break; // No in-memory session — nothing to destroy
+
+            try {
+                await session.destroy();
+                this.sessions.delete(sessionId);
+                break; // Success
+            } catch (err: any) {
+                lastError = err;
+                this.sessions.delete(sessionId); // Remove broken session from map
+
+                if (attempt < MAX_RETRIES) {
+                    // Re-create the session from local files so we can try destroy again.
+                    // The session directory should exist — runTurn wrote to it.
+                    const sessionDir = path.join(SESSION_STATE_DIR, sessionId);
+                    if (fs.existsSync(sessionDir)) {
+                        try {
+                            const client = await this.ensureClient();
+                            const copilotSession = await client.resumeSession(sessionId, {
+                                tools: ManagedSession.systemToolDefs(),
+                            });
+                            const config = this.sessionConfigs.get(sessionId) ?? {};
+                            const managed = new ManagedSession(sessionId, copilotSession, config);
+                            this.sessions.set(sessionId, managed);
+                            // Brief pause before retry
+                            await new Promise(r => setTimeout(r, 500 * attempt));
+                        } catch {
+                            // Can't resume — session files may be corrupt. Fall through.
+                            break;
+                        }
+                    } else {
+                        break; // No local files — can't retry
+                    }
+                }
+            }
         }
+
+        // Phase 2: Upload to blob storage (always attempt, even if destroy failed)
         if (this.blobStore) {
-            await this.blobStore.dehydrate(sessionId, { reason });
+            try {
+                await this.blobStore.dehydrate(sessionId, { reason });
+            } catch (blobErr: any) {
+                // If destroy AND blob both failed, throw a combined error
+                if (lastError) {
+                    throw new Error(
+                        `Session ${sessionId} is not dehydratable: ` +
+                        `destroy failed (${lastError.message}), ` +
+                        `blob upload also failed (${blobErr.message}). ` +
+                        `Session state may be lost on pod recycle.`
+                    );
+                }
+                throw blobErr;
+            }
+        }
+
+        // If destroy failed but blob succeeded, the session is safe in blob.
+        // Log but don't throw — the session can be recovered.
+        if (lastError) {
+            console.warn(
+                `[SessionManager] destroy() failed for ${sessionId} after ${MAX_RETRIES} attempts ` +
+                `(${lastError.message}), but blob upload succeeded. Session state is preserved.`
+            );
         }
     }
 

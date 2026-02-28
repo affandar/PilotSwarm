@@ -33,7 +33,8 @@ function setStatus(ctx: any, status: DurableSessionStatus, extra?: Record<string
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_1(
+/** @frozen v1.0.0 — DO NOT MODIFY. In-flight instances replay through this code. */
+export function* durableSessionOrchestration_1_0_0(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -46,21 +47,7 @@ export function* durableSessionOrchestration_1_0_1(
     let iteration = input.iteration ?? 0;
     let config = { ...input.config };
     let retryCount = input.retryCount ?? 0;
-    let taskContext = input.taskContext;
-    const baseSystemMessage = input.baseSystemMessage ?? config.systemMessage;
     const MAX_RETRIES = 3;
-
-    // If we have a captured task context, inject it into the system message
-    // so it survives LLM conversation truncation (BasicTruncator never drops system messages).
-    if (taskContext) {
-        const base = typeof baseSystemMessage === 'string'
-            ? baseSystemMessage ?? ''
-            : (baseSystemMessage as any)?.content ?? '';
-        config.systemMessage = base + (base ? '\n\n' : '') +
-            '[RECURRING TASK]\n' +
-            'Original user request (always remember, even if conversation history is truncated):\n"' +
-            taskContext + '"';
-    }
 
     // ─── Title summarization timer ───────────────────────────
     // First summarize at iteration 0 + 60s, then every 300s.
@@ -100,8 +87,6 @@ export function* durableSessionOrchestration_1_0_1(
             idleTimeout,
             inputGracePeriod,
             nextSummarizeAt,
-            taskContext,
-            baseSystemMessage,
             retryCount: 0, // reset by default; overrides can set it
             ...overrides,
         };
@@ -383,19 +368,6 @@ export function* durableSessionOrchestration_1_0_1(
                 }
 
             case "wait":
-                // Capture original user prompt as task context for recurring tasks.
-                // This ensures the LLM remembers its task even after conversation truncation.
-                if (!taskContext) {
-                    taskContext = prompt.slice(0, 2000);
-                    const base = typeof baseSystemMessage === 'string'
-                        ? baseSystemMessage ?? ''
-                        : (baseSystemMessage as any)?.content ?? '';
-                    config.systemMessage = base + (base ? '\n\n' : '') +
-                        '[RECURRING TASK]\n' +
-                        'Original user request (always remember, even if conversation history is truncated):\n"' +
-                        taskContext + '"';
-                }
-
                 if (result.content) {
                     setStatus(ctx, "running", { iteration, intermediateContent: result.content });
                     ctx.traceInfo(`[orch] intermediate: ${result.content.slice(0, 80)}`);

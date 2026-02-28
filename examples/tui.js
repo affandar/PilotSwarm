@@ -2102,6 +2102,24 @@ function startObserver(orchId) {
         try {
             const currentStatus = await dc.getStatus(orchId);
             if (ac.signal.aborted) return;
+
+            // Check for terminal states FIRST — before inspecting customStatus
+            if (currentStatus.status === "Failed" || currentStatus.status === "Completed" || currentStatus.status === "Terminated") {
+                if (currentStatus.status === "Failed") {
+                    const reason = currentStatus.failureDetails?.errorMessage?.split("\n")[0]
+                        || currentStatus.output?.split("\n")[0]
+                        || "Unknown error";
+                    appendChatRaw(`{red-fg}❌ Orchestration failed: ${reason}{/red-fg}`, orchId);
+                    updateLiveStatus("error");
+                } else {
+                    appendChatRaw(`{gray-fg}Orchestration ${currentStatus.status}{/gray-fg}`, orchId);
+                }
+                setTurnInProgressIfActive(false);
+                setStatusIfActive(`${currentStatus.status} — session is dead`);
+                sessionObservers.delete(orchId);
+                return; // Don't enter the polling loop
+            }
+
             if (currentStatus?.customStatus) {
                 let cs;
                 try {
@@ -2577,6 +2595,27 @@ async function handleInput(text) {
     screen.render();
 
     try {
+        // Check if the orchestration is in a terminal state before sending
+        const dc = getDc();
+        if (dc && activeOrchId) {
+            try {
+                const orchStatus = await dc.getStatus(activeOrchId);
+                if (orchStatus.status === "Failed" || orchStatus.status === "Completed" || orchStatus.status === "Terminated") {
+                    const reason = orchStatus.status === "Failed"
+                        ? (orchStatus.failureDetails?.errorMessage?.split("\n")[0]
+                            || orchStatus.output?.split("\n")[0]
+                            || "Unknown error")
+                        : orchStatus.status;
+                    appendChatRaw(`{red-fg}❌ Cannot send — orchestration ${orchStatus.status}: ${reason}{/red-fg}`);
+                    appendChatRaw(`{gray-fg}Create a new session with 'n' to continue.{/gray-fg}`);
+                    turnInProgress = false;
+                    setStatus(`${orchStatus.status} — session is dead`);
+                    screen.render();
+                    return;
+                }
+            } catch {}
+        }
+
         // Use the DurableSession to send — it handles starting the orchestration
         // on first message. The observer picks up results via waitForStatusChange.
         const sess = getActiveSession();

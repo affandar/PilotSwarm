@@ -18,6 +18,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
+const ORCHESTRATION_VERSION = "1.0.1";
 const DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -182,10 +183,11 @@ export class DurableCopilotClient {
                 idleTimeout: this.config.dehydrateOnIdle ?? 30,
                 inputGracePeriod: this.config.dehydrateOnInputRequired ?? 30,
             };
-            await this.duroxideClient.startOrchestration(
+            await this.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,
                 ORCHESTRATION_NAME,
                 input,
+                ORCHESTRATION_VERSION,
             );
             this.activeOrchestrations.set(sessionId, orchestrationId);
         }

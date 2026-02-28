@@ -1,7 +1,8 @@
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
 import { registerActivities } from "./session-proxy.js";
-import { durableSessionOrchestration } from "./orchestration.js";
+import { durableSessionOrchestration_1_0_1 } from "./orchestration.js";
+import { durableSessionOrchestration_1_0_0 } from "./orchestration_1_0_0.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import type { Tool } from "@github/copilot-sdk";
@@ -140,7 +141,8 @@ export class DurableCopilotWorker {
             this._catalog,
         );
 
-        this.runtime.registerOrchestration(ORCHESTRATION_NAME, durableSessionOrchestration);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.0", durableSessionOrchestration_1_0_0);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.1", durableSessionOrchestration_1_0_1);
 
         this.runtime.start().catch((err: any) => {
             console.error("[DurableCopilotWorker] Runtime error:", err);
