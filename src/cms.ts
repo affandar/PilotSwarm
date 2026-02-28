@@ -293,9 +293,12 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
                      ORDER BY seq ASC LIMIT $3`;
             params = [sessionId, afterSeq, effectiveLimit];
         } else {
-            query = `SELECT * FROM ${EVENTS_TABLE}
-                     WHERE session_id = $1
-                     ORDER BY seq ASC LIMIT $2`;
+            // Return the most recent events (last N), in chronological order
+            query = `SELECT * FROM (
+                         SELECT * FROM ${EVENTS_TABLE}
+                         WHERE session_id = $1
+                         ORDER BY seq DESC LIMIT $2
+                     ) t ORDER BY seq ASC`;
             params = [sessionId, effectiveLimit];
         }
 
