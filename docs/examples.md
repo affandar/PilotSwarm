@@ -67,7 +67,7 @@ const response = await session.sendAndWait(input, 300_000);
 
 ---
 
-## TUI (`examples/tui.js`)
+## TUI (`cli/tui.js`)
 
 A full-featured terminal UI for managing multiple concurrent durable sessions, with real-time log visualization and a sequence diagram view.
 

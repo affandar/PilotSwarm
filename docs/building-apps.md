@@ -6,7 +6,8 @@ and MCP server configs. Workers load plugin contents at startup and pass them th
 to the Copilot SDK via proven session config fields (`skillDirectories`, `customAgents`,
 `mcpServers`). Clients are thin proxies that send prompts and render events.
 
-For the off-the-shelf TUI framework, see [tui-apps.md](./tui-apps.md).
+The SDK ships a full TUI as a CLI (`durable-copilot-tui`) — see
+[Putting It All Together](#putting-it-all-together) for usage.
 
 ## Architecture: Plugins + Tools + Runtime
 
@@ -254,29 +255,30 @@ Your PostgreSQL user needs `CREATE SCHEMA` permission on first run.
 **Local Development** — embedded workers in TUI (default):
 ```
 ┌─ Your Machine ──────────────────────────────────┐
-│  ./run.sh  (or: node examples/tui.js)            │
+│  npx durable-copilot-tui --env .env              │
+│  (or: ./run.sh)                                  │
 │                                                  │
 │    ├─ DurableCopilotWorker × 4 (poll DB)         │
 │    └─ DurableCopilotClient (sends messages)      │
 │                                                  │
-│  .env.remote:                                    │
-│    DATABASE_URL=postgresql://...  (remote PG)    │
+│  .env:                                           │
+│    DATABASE_URL=postgresql://...                  │
 │    GITHUB_TOKEN=ghu_...                          │
 └──────────────────────────────────────────────────┘
          │
          ▼
-    PostgreSQL (remote)
+    PostgreSQL
 ```
 
-The TUI embeds 4 worker runtimes by default (`WORKERS=4`). Use `./run.sh local --db`
-for a local PostgreSQL instance instead. For the simplest possible setup (no TUI),
-`examples/chat.js` runs one worker + one client in a single process.
+The TUI embeds 4 worker runtimes by default (`WORKERS=4`). For the simplest possible
+setup (no TUI), `examples/chat.js` runs one worker + one client in a single process.
 
 **Production** — TUI client-only + AKS workers:
 ```
 ┌─ Your Machine (TUI) ─────────────────────────┐
-│  ./run.sh remote                              │
-│  (WORKERS=0 node examples/tui.js)             │
+│  npx durable-copilot-tui remote               │
+│    --store postgresql://...                   │
+│    --namespace my-app                         │
 │    └─ DurableCopilotClient                    │
 │    Needs: DATABASE_URL                        │
 └────────────────┬──────────────────────────────┘
@@ -375,39 +377,101 @@ You configure it, you don't code it:
 
 ## Putting It All Together
 
-A complete app: a plugin for domain knowledge, a worker with tools, and a thin client.
+The SDK ships a full TUI client as a CLI: `durable-copilot-tui`. You provide a plugin
+directory and optionally a worker module with custom tools — the TUI handles everything
+else (sessions, events, log streaming, chat rendering).
 
-### Project Layout
+### The Simplest App: Plugin-Only (No Code)
+
+If you only need agents, skills, and MCP servers — no custom tools — you don't write
+any JavaScript at all:
 
 ```
 my-app/
 ├── plugin/
 │   ├── agents/
-│   │   └── deployer.agent.md        # Deployment specialist agent
+│   │   └── deployer.agent.md
 │   ├── skills/
-│   │   └── kubernetes/SKILL.md      # K8s domain knowledge
-│   └── .mcp.json                    # External tool providers
+│   │   └── kubernetes/SKILL.md
+│   ├── .mcp.json
+│   └── system.md                    # System message (optional)
+├── .env                             # DATABASE_URL + GITHUB_TOKEN
+└── package.json
+```
+
+```bash
+npm install durable-copilot-sdk
+npx durable-copilot-tui --env .env --plugin ./plugin
+```
+
+The CLI embeds 4 workers, loads your plugin, and launches the TUI. Done.
+
+### Adding Custom Tools
+
+For apps that need tool handlers (code that runs on the worker), create a worker module:
+
+```javascript
+// tools.js — exports tools + config for the TUI to load
+import { defineTool } from "@github/copilot-sdk";
+
+const deployService = defineTool("deploy_service", {
+  description: "Deploy a service to the specified environment",
+  parameters: {
+    type: "object",
+    properties: {
+      service: { type: "string" },
+      env: { type: "string", enum: ["staging", "production"] },
+    },
+    required: ["service", "env"],
+  },
+  handler: async ({ service, env }) => {
+    const result = await exec(`kubectl apply -f manifests/${service}.yaml -n ${env}`);
+    return { status: "deployed", output: result.stdout };
+  },
+});
+
+export default {
+  tools: [deployService],
+  systemMessage: "You are a release manager for production deployments.",
+};
+```
+
+```bash
+npx durable-copilot-tui --env .env --plugin ./plugin --worker ./tools.js
+```
+
+### Production: Separate Worker + Remote TUI
+
+For production, run the worker as its own process (or K8s deployment) and connect
+the TUI in client-only mode:
+
+```
+my-app/
+├── plugin/
+│   ├── agents/
+│   │   └── deployer.agent.md
+│   ├── skills/
+│   │   └── kubernetes/SKILL.md
+│   └── .mcp.json
 ├── src/
-│   └── tools.js                     # Tool definitions (handlers run on worker)
-├── worker.js                        # Worker entry point
+│   └── tools.js
+├── worker.js                        # Standalone worker entry point
 ├── Dockerfile                       # Bakes plugin + tools into image
 └── package.json
 ```
 
-### Worker (owns plugins + tools)
+**Worker** (owns plugins + tools — runs on K8s or a VM):
 
 ```javascript
 // worker.js
 import { DurableCopilotWorker } from "durable-copilot-sdk";
 import { deployService, checkHealth, rollback } from "./src/tools.js";
-import path from "path";
 
 const worker = new DurableCopilotWorker({
   store: process.env.DATABASE_URL,
   githubToken: process.env.GITHUB_TOKEN,
   blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
-  // Plugin contents are loaded at startup and passed to every SDK session
-  pluginDirs: [path.resolve("./plugin")],
+  pluginDirs: ["./plugin"],
   systemMessage: "You are a release manager for production deployments.",
 });
 
@@ -415,41 +479,53 @@ worker.registerTools([deployService, checkHealth, rollback]);
 await worker.start();
 ```
 
-### Client (thin — just sends prompts and renders events)
+**TUI** (thin client — needs only the database URL):
 
-```javascript
-// client.js
-import { DurableCopilotClient } from "durable-copilot-sdk";
-
-const client = new DurableCopilotClient({
-  store: process.env.DATABASE_URL,
-  blobEnabled: true,
-});
-await client.start();
-
-// Create or resume a session — all config comes from the worker's plugins
-const session = await client.createSession({ model: "claude-sonnet-4" });
-
-await session.send("Deploy auth-service to staging");
-session.on("assistant.message", (evt) => console.log(evt.data?.content));
+```bash
+npx durable-copilot-tui remote \
+  --store postgresql://... \
+  --namespace my-app-workers
 ```
 
-### Dockerfile
+The TUI connects to the same database, streams worker logs via `kubectl logs`,
+and renders events. No `GITHUB_TOKEN` needed on the client side.
+
+### Dockerfile (for the worker)
 
 ```dockerfile
 FROM node:24-slim
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
-COPY plugin/ ./plugin/          # Plugin ships with the image
+COPY plugin/ ./plugin/
 COPY src/ ./src/
 COPY worker.js ./
 CMD ["node", "worker.js"]
 ```
 
+### CLI Reference
+
+```
+durable-copilot-tui [local|remote] [flags]
+
+FLAG                     ENV VAR EQUIVALENT
+--store <url>            DATABASE_URL
+--env <file>             (default: .env / .env.remote)
+--plugin <dir>           PLUGIN_DIRS              (default: ./plugin)
+--worker <module>        WORKER_MODULE
+--workers <n>            WORKERS                  (default: 4)
+--model <name>           COPILOT_MODEL
+--system <msg|file>      SYSTEM_MESSAGE           (or plugin/system.md)
+--namespace <ns>         K8S_NAMESPACE            (default: copilot-sdk)
+--label <selector>       K8S_POD_LABEL
+--log-level <level>      LOG_LEVEL
+
+All flags can be set via the corresponding env var.
+CLI flags take precedence over env vars.
+```
+
 ## Further Reading
 
-- [TUI Apps](./tui-apps.md) — Off-the-shelf terminal UI with the AppAdapter framework
 - [Architecture](./architecture.md) — SDK internals: orchestration flow, session lifecycle
 - [Configuration](./configuration.md) — All environment variables and options
 - [Deploying to AKS](./deploying-to-aks.md) — Production deployment guide
