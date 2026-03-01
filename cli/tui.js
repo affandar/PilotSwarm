@@ -9,8 +9,8 @@
  *   Bottom: Input bar
  *
  * Usage:
- *   node --env-file=.env.remote examples/tui.js         # 4 embedded workers
- *   WORKERS=0 node --env-file=.env.remote examples/tui.js # client-only (AKS)
+ *   npx durable-copilot-tui --env .env.remote             # 4 embedded workers
+ *   npx durable-copilot-tui remote --env .env.remote       # client-only (AKS)
  */
 
 import { DurableCopilotClient, DurableCopilotWorker } from "../dist/index.js";
@@ -25,7 +25,43 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const require = createRequire(import.meta.url);
+
+// Suppress stderr during neo-blessed load — it dumps xterm-256color
+// terminfo compilation errors (SetUlc) that are harmless but ugly.
+const _origStderr = process.stderr.write.bind(process.stderr);
+process.stderr.write = () => true;
 const blessed = require("neo-blessed");
+process.stderr.write = _origStderr;
+
+// ─── Monkey-patch neo-blessed emoji width ────────────────────────
+// neo-blessed's unicode.charWidth() doesn't know emoji are 2 cells wide.
+// Its East Asian Width tables only cover CJK — emoji codepoints (U+1F300+)
+// return 1 instead of 2, which misaligns every character after an emoji.
+// Patch charWidth to add the missing ranges.
+{
+    const unicode = require("neo-blessed/lib/unicode");
+    const origCharWidth = unicode.charWidth;
+    unicode.charWidth = function (str, i) {
+        const point = typeof str !== "number"
+            ? unicode.codePointAt(str, i || 0)
+            : str;
+        // Emoji blocks that render as 2 cells in modern terminals
+        if (
+            (point >= 0x1F100 && point <= 0x1F1FF) || // Enclosed Alphanumeric Supplement (🆕 etc.)
+            (point >= 0x1F200 && point <= 0x1F2FF) || // Enclosed Ideographic Supplement
+            (point >= 0x1F300 && point <= 0x1F9FF) || // Misc Symbols, Emoticons, Transport, etc.
+            (point >= 0x1FA00 && point <= 0x1FAFF) || // Symbols & Pictographs Extended-A
+            (point >= 0x2600 && point <= 0x27BF)   || // Misc Symbols + Dingbats (☀⚡✅ etc.)
+            (point >= 0x2300 && point <= 0x23FF)   || // Misc Technical (⌚ etc.)
+            (point >= 0x2B05 && point <= 0x2B55)   || // Arrows, stars, circles
+            point === 0x2705 || point === 0x2714   || // Check marks
+            point === 0x274C || point === 0x274E       // Cross marks
+        ) {
+            return 2;
+        }
+        return origCharWidth(str, i);
+    };
+}
 
 // ─── Markdown renderer ──────────────────────────────────────────
 
@@ -49,11 +85,6 @@ function renderMarkdown(md) {
         // marked-terminal uses ANSI codes for styling, not blessed tags.
         // Strip curly braces so blessed doesn't misinterpret them as tags.
         rendered = rendered.replace(/\{/g, "(").replace(/\}/g, ")");
-        // Strip emoji — blessed miscounts their display width (treats 2-cell
-        // glyphs as 1), which shifts all subsequent characters on the line and
-        // cascades into the right pane layout.
-        // eslint-disable-next-line no-control-regex
-        rendered = rendered.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, "");
         return rendered;
     } catch {
         return md;
@@ -66,12 +97,16 @@ function ts() {
 
 // ─── Create blessed screen ───────────────────────────────────────
 
+// Suppress stderr during screen creation — same SetUlc issue.
+process.stderr.write = () => true;
 const screen = blessed.screen({
     smartCSR: true,
     title: "Durable Copilot Chat",
     fullUnicode: true,
+    forceUnicode: true,
     mouse: true,
 });
+process.stderr.write = _origStderr;
 
 // ─── Layout calculations ─────────────────────────────────────────
 // Left column: sessions (top) + chat (bottom). Right column: full-height logs.
@@ -250,6 +285,7 @@ const nodeMapPane = blessed.log({
  */
 function refreshNodeMap() {
     nodeMapPane.setContent("");
+    screen.realloc();
 
     // Gather all known nodes from seqNodes (worker pane names)
     // Filter out synthetic nodes like "cms" that aren't real workers.
@@ -835,6 +871,7 @@ function updateSeqHeader() {
  */
 function refreshSeqPane() {
     seqPane.setContent("");
+    screen.realloc();
     const shortId = activeOrchId.startsWith("session-")
         ? activeOrchId.slice(8, 16) : activeOrchId.slice(0, 8);
     seqPane.setLabel(` Sequence: ${shortId} `);
@@ -901,10 +938,13 @@ function switchLogMode() {
         for (const pane of workerPanes.values()) pane.show();
     }
     relayoutAll();
+    // Force full repaint on next tick (same as pressing 'r')
+    setTimeout(() => { screen.realloc(); screen.render(); }, 0);
 }
 
 function refreshOrchLogPane() {
     orchLogPane.setContent("");
+    screen.realloc();
     const shortId = activeOrchId.startsWith("session-") ? activeOrchId.slice(8, 16) : activeOrchId.slice(0, 8);
     orchLogPane.setLabel(` Logs: ${shortId} `);
     const buf = orchLogBuffers.get(activeOrchId);
@@ -926,8 +966,8 @@ function backfillOrchLogs(orchId) {
     try {
         const proc = spawn("kubectl", [
             "logs",
-            "-n", "copilot-sdk",
-            "-l", "app.kubernetes.io/component=worker",
+            "-n", process.env.K8S_NAMESPACE || "copilot-sdk",
+            "-l", process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker",
             "--prefix",
             "--tail=200",
             "--max-log-requests=20",
@@ -1087,6 +1127,9 @@ function redrawActiveViews() {
         recolorWorkerPanes();
     }
     relayoutAll();
+    // Force blessed to flush stale internal buffers after a full redraw
+    screen.realloc();
+    screen.render();
 }
 
 // ─── Input bar ───────────────────────────────────────────────────
@@ -1206,6 +1249,12 @@ function recolorWorkerPanes() {
         const buf = workerLogBuffers.get(podName);
         if (!buf || buf.length === 0) continue;
         pane.setContent("");
+    }
+    // Flush stale screen buffers after clearing all panes, before repopulating
+    screen.realloc();
+    for (const [podName, pane] of workerPanes) {
+        const buf = workerLogBuffers.get(podName);
+        if (!buf || buf.length === 0) continue;
         for (const entry of buf) {
             if (entry.orchId && entry.orchId === activeOrchId) {
                 pane.log(`{bold}${entry.text}{/bold}`);
@@ -1392,7 +1441,7 @@ if (!isRemote) {
     process.stdout.write = () => true;
     process.stderr.write = () => true;
 
-    const WORKER_SYSTEM_MESSAGE = "You are a helpful assistant running in a durable execution environment. Be concise.\n\nCRITICAL RULES:\n1. You have a 'wait' tool. You MUST use it whenever you need to wait, pause, sleep, delay, poll, check back later, schedule a future action, or implement any recurring/periodic task.\n2. NEVER say you cannot wait or set timers. You CAN — use the 'wait' tool.\n3. NEVER use bash sleep, setTimeout, setInterval, cron, or any other timing mechanism.\n4. The 'wait' tool enables durable timers that survive process restarts and node migrations.\n5. For recurring tasks: use the 'wait' tool in a loop — complete the action, then call wait(seconds), then repeat.";
+    const WORKER_SYSTEM_MESSAGE = process.env._TUI_SYSTEM_MESSAGE || "You are a helpful assistant running in a durable execution environment. Be concise.\n\nCRITICAL RULES:\n1. You have a 'wait' tool. You MUST use it whenever you need to wait, pause, sleep, delay, poll, check back later, schedule a future action, or implement any recurring/periodic task.\n2. NEVER say you cannot wait or set timers. You CAN — use the 'wait' tool.\n3. NEVER use bash sleep, setTimeout, setInterval, cron, or any other timing mechanism.\n4. The 'wait' tool enables durable timers that survive process restarts and node migrations.\n5. For recurring tasks: use the 'wait' tool in a loop — complete the action, then call wait(seconds), then repeat.";
 
     // Plugin directories: env override or default to bundled plugin/
     const defaultPluginDir = path.resolve(__dirname, "..", "plugin");
@@ -1400,18 +1449,40 @@ if (!isRemote) {
         ? process.env.PLUGIN_DIRS.split(",").map(d => d.trim()).filter(Boolean)
         : (fs.existsSync(defaultPluginDir) ? [defaultPluginDir] : []);
 
+    // Load custom worker module (tools, config overrides)
+    let workerModuleConfig = {};
+    if (process.env._TUI_WORKER_MODULE) {
+        try {
+            const mod = await import(process.env._TUI_WORKER_MODULE);
+            workerModuleConfig = mod.default || mod;
+            if (workerModuleConfig.systemMessage) {
+                // Worker module system message overrides default
+            }
+            appendLog(`Custom worker module loaded ✓`);
+        } catch (err) {
+            appendLog(`{red-fg}Failed to load worker module: ${err.message}{/red-fg}`);
+        }
+    }
+
     setStatus(`Starting ${numWorkers} workers...`);
     for (let i = 0; i < numWorkers; i++) {
         const w = new DurableCopilotWorker({
             store,
             githubToken: process.env.GITHUB_TOKEN,
             logLevel: process.env.LOG_LEVEL || "error",
-            blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
+            blobConnectionString: workerModuleConfig.blobConnectionString || process.env.AZURE_STORAGE_CONNECTION_STRING,
             blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
             workerNodeId: `local-rt-${i}`,
-            systemMessage: WORKER_SYSTEM_MESSAGE,
+            systemMessage: workerModuleConfig.systemMessage || WORKER_SYSTEM_MESSAGE,
             pluginDirs,
+            ...(workerModuleConfig.skillDirectories && { skillDirectories: workerModuleConfig.skillDirectories }),
+            ...(workerModuleConfig.customAgents && { customAgents: workerModuleConfig.customAgents }),
+            ...(workerModuleConfig.mcpServers && { mcpServers: workerModuleConfig.mcpServers }),
         });
+        // Register custom tools from worker module
+        if (workerModuleConfig.tools?.length) {
+            w.registerTools(workerModuleConfig.tools);
+        }
         await w.start();
         workers.push(w);
         appendLog(`Worker local-rt-${i} started ✓`);
@@ -1897,10 +1968,12 @@ function startLogStream() {
     }
 
     try {
+        const k8sNamespace = process.env.K8S_NAMESPACE || "copilot-sdk";
+        const k8sPodLabel = process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker";
         kubectlProc = spawn("kubectl", [
             "logs", "-f",
-            "-n", "copilot-sdk",
-            "-l", "app.kubernetes.io/component=worker",
+            "-n", k8sNamespace,
+            "-l", k8sPodLabel,
             "--prefix",
             "--tail=50",
             "--max-log-requests=20",
@@ -1998,8 +2071,8 @@ if (isRemote) {
         try {
             const result = await new Promise((resolve, reject) => {
                 const proc = spawn("kubectl", [
-                    "get", "pods", "-n", "copilot-sdk",
-                    "-l", "app.kubernetes.io/component=worker",
+                    "get", "pods", "-n", process.env.K8S_NAMESPACE || "copilot-sdk",
+                    "-l", process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker",
                     "--field-selector=status.phase=Running",
                     "-o", "jsonpath={.items[*].metadata.name}",
                 ], { stdio: ["ignore", "pipe", "pipe"] });
@@ -2376,17 +2449,21 @@ async function switchToOrchestration(orchId) {
         // Always rebuild from DB so switching sessions shows full persisted history.
         await loadCmsHistory(orchId);
 
-        // Force blessed to recalculate its internal buffer after content change
-        screen.realloc();
-        screen.render();
-
         // Ensure an observer is running for this session
         startObserver(orchId);
 
-        // Refresh list to update ▸ marker
-        refreshOrchestrations();
-
+        // Do exactly what the 'r' key does: full refresh + redraw.
+        // This is the only reliable way to get blessed to fully repaint
+        // after a session switch — partial realloc/render isn't enough.
+        await refreshOrchestrations();
         redrawActiveViews();
+
+        // Schedule a second repaint on next tick so blessed flushes
+        // any deferred internal state (same effect as pressing 'r').
+        setTimeout(() => {
+            screen.realloc();
+            screen.render();
+        }, 0);
     } else {
         redrawActiveViews();
     }
@@ -2677,9 +2754,15 @@ async function cleanup() {
     for (const [, ac] of sessionObservers) { ac.abort(); }
     sessionObservers.clear();
     if (kubectlProc) { try { kubectlProc.kill(); } catch {} }
-    setStatus("Shutting down workers...");
+    // Suppress ALL output before destroying — neo-blessed dumps terminfo
+    // compilation junk (SetUlc) synchronously during destroy().
+    process.stdout.write = () => true;
+    process.stderr.write = () => true;
+    try { screen.destroy(); } catch {}
+    // Write terminal reset directly to fd to bypass our suppression
+    const buf = Buffer.from("\x1b[?1049l\x1b[?25h"); // exit alt-screen, show cursor
+    try { fs.writeSync(1, buf); } catch {}
     await Promise.allSettled(workers.map(w => w.stop()));
-    setStatus("Disconnecting client...");
     await client.stop();
 }
 
@@ -2704,6 +2787,11 @@ screen.on("keypress", (ch, key) => {
     // m: toggle log viewing mode (only from non-input panes)
     if (ch === "m" && screen.focused !== inputBar) {
         switchLogMode();
+        // Force the same full repaint that 'r' does
+        screen.realloc();
+        relayoutAll();
+        if (logViewMode === "sequence") refreshSeqPane();
+        if (logViewMode === "nodemap") refreshNodeMap();
         const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" };
         appendLog(`{cyan-fg}Log mode: ${modeNames[logViewMode]}{/cyan-fg}`);
         return;
