@@ -43,6 +43,8 @@ export type {
 
 // Skills loader
 export { loadSkills } from "./skills.js";
+export { loadAgentFiles } from "./agent-loader.js";
+export { loadMcpConfig } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 
 // Re-export defineTool from Copilot SDK for convenience

@@ -10,9 +10,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm install --omit=dev --force
 
-# Copy built dist and worker script
+# Copy built dist, worker script, and plugin
 COPY dist/ ./dist/
 COPY examples/worker.js ./examples/
+COPY plugin/ ./plugin/
 
 # Run as the built-in node user (non-root)
 USER node

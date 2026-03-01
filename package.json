@@ -35,7 +35,8 @@
   "license": "MIT",
   "dependencies": {
     "@azure/storage-blob": "^12.31.0",
-    "@github/copilot-sdk": "^0.1.8",
+    "@github/copilot": "^0.0.420",
+    "@github/copilot-sdk": "^0.1.29",
     "duroxide": "^0.1.7",
     "duroxide-darwin-arm64": "^0.1.5",
     "pg": "^8.18.0"

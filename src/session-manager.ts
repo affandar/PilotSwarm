@@ -8,6 +8,17 @@ import os from "node:os";
 
 const SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
 
+/** Worker-level defaults — applied to every session. */
+export interface WorkerDefaults {
+    systemMessage?: string;
+    /** Skill directories to pass to the Copilot SDK. */
+    skillDirectories?: string[];
+    /** Custom agents to pass to the Copilot SDK. */
+    customAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null }>;
+    /** MCP server configs to pass to the Copilot SDK. */
+    mcpServers?: Record<string, any>;
+}
+
 /**
  * SessionManager — singleton per worker node.
  * Owns session lifecycle, wraps CopilotClient.
@@ -27,12 +38,16 @@ export class SessionManager {
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
     /** Worker-level tool registry — shared reference from DurableCopilotWorker. */
     private toolRegistry = new Map<string, Tool<any>>();
+    /** Worker-level defaults for building blocks. */
+    private workerDefaults: WorkerDefaults;
 
     constructor(
         private githubToken?: string,
         blobStore?: SessionBlobStore | null,
+        workerDefaults?: WorkerDefaults,
     ) {
         this.blobStore = blobStore ?? null;
+        this.workerDefaults = workerDefaults ?? {};
     }
 
     /** Store full config (with tools/hooks) for a session. Called by DurableCopilotClient. */
@@ -58,7 +73,7 @@ export class SessionManager {
 
     /**
      * Get existing session or create/resume one.
-     * Merges serializable config (from duroxide) with in-memory config (tools/hooks).
+     * Merges: worker defaults → serializable config (from client) → in-memory config (tools/hooks).
      */
     async getOrCreate(sessionId: string, serializableConfig: SerializableSessionConfig): Promise<ManagedSession> {
         // Resolve tools: merge per-session (setConfig) + registry (toolNames)
@@ -92,22 +107,24 @@ export class SessionManager {
             ...systemTools,
         ];
 
+        // Build system message: worker base + client override
+        const systemMessage = this._buildSystemMessage(config.systemMessage);
+
         const sessionConfig: any = {
             sessionId,
             tools: allTools,
             model: config.model,
-            systemMessage:
-                typeof config.systemMessage === "string"
-                    ? { content: config.systemMessage }
-                    : config.systemMessage,
+            systemMessage: systemMessage
+                ? (typeof systemMessage === "string" ? { content: systemMessage } : systemMessage)
+                : undefined,
             workingDirectory: config.workingDirectory,
             hooks: config.hooks,
+            onPermissionRequest: (config as any).onPermissionRequest ?? (async () => ({ kind: "approved" as const })),
             infiniteSessions: { enabled: false },
-            // Pass through agent/skill/MCP config to Copilot SDK
-            ...(config.customAgents?.length && { customAgents: config.customAgents }),
-            ...(config.mcpServers && { mcpServers: config.mcpServers }),
-            ...(config.skillDirectories?.length && { skillDirectories: config.skillDirectories }),
-            ...(config.disabledSkills?.length && { disabledSkills: config.disabledSkills }),
+            // Pass loaded skills, agents, and MCP from worker defaults
+            ...(this.workerDefaults.skillDirectories?.length && { skillDirectories: this.workerDefaults.skillDirectories }),
+            ...(this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
+            ...(this.workerDefaults.mcpServers && Object.keys(this.workerDefaults.mcpServers).length > 0 && { mcpServers: this.workerDefaults.mcpServers }),
         };
 
         let copilotSession: CopilotSession;
@@ -180,6 +197,7 @@ export class SessionManager {
                             const client = await this.ensureClient();
                             const copilotSession = await client.resumeSession(sessionId, {
                                 tools: ManagedSession.systemToolDefs(),
+                                onPermissionRequest: async () => ({ kind: "approved" as const }),
                             });
                             const config = this.sessionConfigs.get(sessionId) ?? {};
                             const managed = new ManagedSession(sessionId, copilotSession, config);
@@ -295,5 +313,30 @@ export class SessionManager {
             }
         }
         return deduped;
+    }
+
+    /**
+     * Build the final system message by combining:
+     * 1. Worker base system message (from workerDefaults)
+     * 2. Client override (append or replace)
+     * Skills/agents are NOT injected here — the Copilot CLI discovers
+     * them from plugins installed in configDir.
+     */
+    private _buildSystemMessage(
+        clientMessage?: string | { mode: "append" | "replace"; content: string },
+    ): string | { mode: "append" | "replace"; content: string } | undefined {
+        const base = this.workerDefaults.systemMessage ?? "";
+
+        if (!clientMessage) {
+            return base || undefined;
+        }
+        if (typeof clientMessage === "string") {
+            return base ? `${base}\n\n${clientMessage}` : clientMessage;
+        }
+        if (clientMessage.mode === "replace") {
+            return clientMessage.content;
+        }
+        // mode === "append"
+        return base ? `${base}\n\n${clientMessage.content}` : clientMessage.content;
     }
 }

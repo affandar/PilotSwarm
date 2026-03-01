@@ -40,31 +40,6 @@ export interface SerializableSessionConfig {
      * names to actual Tool objects from its registry at activity execution time.
      */
     toolNames?: string[];
-    /**
-     * Custom agents — named sub-personas with focused prompts and tool subsets.
-     * Passed through to the Copilot SDK's `customAgents` session config.
-     */
-    customAgents?: Array<{
-        name: string;
-        description: string;
-        prompt: string;
-        tools?: string[];
-    }>;
-    /**
-     * MCP server configurations — external tool providers over stdio or HTTP.
-     * Passed through to the Copilot SDK's `mcpServers` session config.
-     */
-    mcpServers?: Record<string, any>;
-    /**
-     * Directories containing skill definitions.
-     * Passed through to the Copilot SDK's `skillDirectories` config.
-     */
-    skillDirectories?: string[];
-    /**
-     * Skill names to disable.
-     * Passed through to the Copilot SDK's `disabledSkills` config.
-     */
-    disabledSkills?: string[];
 }
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */
@@ -141,6 +116,50 @@ export interface DurableCopilotWorkerOptions {
     workerNodeId?: string;
     blobConnectionString?: string;
     blobContainer?: string;
+
+    // ─── Building Blocks ─────────────────────────────────────
+    // Workers own the building blocks. Clients are thin proxies.
+
+    /** Base system message for all sessions on this worker. */
+    systemMessage?: string;
+
+    /**
+     * Plugin directories to load at startup.
+     * Each directory can contain:
+     *   - `skills/` subdirectories with `SKILL.md` files
+     *   - `agents/` directory with `.agent.md` files
+     *   - `.mcp.json` file with MCP server configs
+     *   - `plugin.json` manifest (optional metadata)
+     *
+     * The worker reads these at startup and passes their contents
+     * through the SDK's `skillDirectories`, `customAgents`, and
+     * `mcpServers` session config fields.
+     */
+    pluginDirs?: string[];
+
+    /**
+     * Additional skill directories (beyond plugins).
+     * Each directory should contain subdirectories with `SKILL.md` files.
+     * These are passed directly to the SDK's `skillDirectories` config.
+     */
+    skillDirectories?: string[];
+
+    /**
+     * Additional custom agents (beyond plugins).
+     * Passed directly to the SDK's `customAgents` config.
+     */
+    customAgents?: Array<{
+        name: string;
+        description?: string;
+        prompt: string;
+        tools?: string[] | null;
+    }>;
+
+    /**
+     * Additional MCP server configs (beyond plugins).
+     * Passed directly to the SDK's `mcpServers` config.
+     */
+    mcpServers?: Record<string, any>;
 }
 
 // ─── Client Options ──────────────────────────────────────────────

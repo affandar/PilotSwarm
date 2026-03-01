@@ -210,7 +210,7 @@ export function registerActivities(
             const sdk = new SdkClient({ githubToken });
             try {
                 await sdk.start();
-                const tempSession = await sdk.createSession({ model: "gpt-4o-mini" });
+                const tempSession = await sdk.createSession({ model: "gpt-4o-mini", onPermissionRequest: async () => ({ kind: "approved" as const }) });
                 let title = "";
                 await new Promise<void>((resolve, reject) => {
                     tempSession.on("assistant.message", (event: any) => {
