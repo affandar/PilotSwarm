@@ -1,19 +1,17 @@
-# durable-copilot-sdk
+# durable-copilot-runtime
 
-Make [Copilot SDK](https://github.com/github/copilot-sdk) apps durable with zero orchestration code.
-
-Wraps the GitHub Copilot SDK with [duroxide](https://github.com/microsoft/duroxide) to give your AI agents **durable timers, crash recovery, and multi-node scaling** — just add a connection string.
+A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
 ## Quick Start
 
 ```bash
-npm install durable-copilot-sdk
+npm install durable-copilot-runtime
 cp .env.example .env
 # edit .env with DATABASE_URL and GITHUB_TOKEN
 ```
 
 ```typescript
-import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-sdk";
+import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-runtime";
 
 // Define tools — same API as Copilot SDK
 const getWeather = defineTool("get_weather", {
@@ -60,7 +58,7 @@ await worker.stop();
 
 ## What You Get
 
-| Feature | Copilot SDK | durable-copilot-sdk |
+| Feature | Copilot SDK | durable-copilot-runtime |
 |---------|-------------|---------------------|
 | Tool calling | ✅ | ✅ Same `defineTool()` API |
 | Wait/pause | ❌ Blocks process | ✅ Durable timer — process shuts down, resumes later |
@@ -71,7 +69,7 @@ await worker.stop();
 
 ## How It Works
 
-The SDK automatically injects a `wait` tool into every session. When the LLM needs to pause:
+The runtime automatically injects a `wait` tool into every session. When the LLM needs to pause:
 
 1. **Short waits** (< 30s) — sleep in-process
 2. **Long waits** (≥ 30s) — dehydrate session to blob storage → durable timer → any worker hydrates and continues
@@ -96,7 +94,7 @@ Client                        PostgreSQL                     Worker Pods
 | Example | Description | Command |
 |---------|-------------|---------|
 | [Chat](examples/chat.js) | Interactive console chat | `npm run chat` |
-| [TUI](cli/tui.js) | Multi-session terminal UI with logs | `npx durable-copilot-tui` |
+| [TUI](cli/tui.js) | Multi-session terminal UI with logs | `npx durable-copilot-runtime-tui` |
 | [Worker](examples/worker.js) | Headless worker for K8s | `npm run worker` |
 | [Tests](test/sdk.test.js) | Automated test suite | `npm test` |
 
@@ -104,7 +102,8 @@ Client                        PostgreSQL                     Worker Pods
 
 | Guide | Description |
 |-------|-------------|
-| [User Guide](docs/guide.md) | SDK concepts, API reference, standard vs durable comparison |
+| [Getting Started](docs/getting-started.md) | From zero to running — PostgreSQL, GitHub token, `.env`, AKS |
+| [User Guide](docs/guide.md) | Runtime concepts, API reference, standard vs durable comparison |
 | [Configuration](docs/configuration.md) | PostgreSQL, blob storage, environment variables, worker/client options |
 | [Deploying to AKS](docs/deploying-to-aks.md) | Kubernetes deployment, scaling, rolling updates |
 | [Examples](docs/examples.md) | Chat app, TUI, worker, and test suite walkthrough |

@@ -148,7 +148,7 @@ If you want to "refactor" orchestration code:
 - Registration: `OrchestrationRegistry::builder().register_versioned_typed(...)`
 - Visibility: frozen = `pub mod`, latest = `mod` (private, re-exported)
 
-### Node.js (durable-copilot-sdk, duroxide-node)
+### Node.js (durable-copilot-runtime, duroxide-node)
 - File naming: `{name}Orchestration.ts` / `{name}V{version}Orchestration.ts`
 - Registration: `registry.registerOrchestration(NAME, version, handler)`
 - Export frozen versions as named exports

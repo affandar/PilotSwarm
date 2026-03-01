@@ -1,6 +1,6 @@
 ---
 name: debug-test
-description: Diagnose and fix a failing integration test in the durable-copilot-sdk. Covers the full call chain from DurableSession.sendAndWait through duroxide orchestration to CopilotSession, common failure patterns, and how to inspect orchestration and CMS state.
+description: Diagnose and fix a failing integration test in the durable-copilot-runtime. Covers the full call chain from DurableSession.sendAndWait through duroxide orchestration to CopilotSession, common failure patterns, and how to inspect orchestration and CMS state.
 ---
 
 # Debug a Failed Test

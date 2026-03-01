@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Reset the durable-copilot-sdk database.
+ * Reset the durable-copilot-runtime database.
  *
  * Drops both schemas:
  *   - duroxide          (orchestration runtime tables)

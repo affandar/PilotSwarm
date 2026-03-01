@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Headless durable-copilot-sdk worker.
+ * Headless durable-copilot-runtime worker.
  * Runs as a K8s pod — polls PostgreSQL for orchestrations and executes them.
  *
  * Env vars:

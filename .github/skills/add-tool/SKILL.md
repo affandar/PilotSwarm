@@ -1,6 +1,6 @@
 ---
 name: add-tool
-description: Add a new tool to the durable-copilot-sdk. Covers defining the tool with defineTool(), registering it on the worker (worker-level or per-session), referencing it from the client via toolNames, and adding an integration test.
+description: Add a new tool to the durable-copilot-runtime. Covers defining the tool with defineTool(), registering it on the worker (worker-level or per-session), referencing it from the client via toolNames, and adding an integration test.
 ---
 
 # Add a New Tool
@@ -28,7 +28,7 @@ Tools are defined using `defineTool()` from `@github/copilot-sdk` and registered
 ## Example
 
 ```typescript
-import { defineTool } from "durable-copilot-sdk";
+import { defineTool } from "durable-copilot-runtime";
 
 const myTool = defineTool("lookup_price", {
     description: "Look up the current price of a product by name",

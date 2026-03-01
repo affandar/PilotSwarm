@@ -1,12 +1,12 @@
 {
-  "name": "durable-copilot-sdk",
+  "name": "durable-copilot-runtime",
   "version": "0.1.0",
-  "description": "Make Copilot SDK apps durable with zero orchestration code. Durable timers, crash recovery, multi-node scaling — just add a connection string.",
+  "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "durable-copilot-tui": "./bin/tui.js"
+    "durable-copilot-runtime-tui": "./bin/tui.js"
   },
   "exports": {
     ".": {

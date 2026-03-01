@@ -1,5 +1,7 @@
 # Configuration Guide
 
+> **New here?** See the [Getting Started](./getting-started.md) guide for a full walkthrough from zero to running.
+
 ## Prerequisites
 
 - **Node.js >= 24** (required for `--env-file` support)
@@ -47,7 +49,7 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/durable_copilot
 DATABASE_URL=postgresql://user:password@myserver.postgres.database.azure.com:5432/postgres?sslmode=require
 ```
 
-The SDK automatically handles SSL certificate validation for Azure-managed PostgreSQL (strips `sslmode` from the URL and configures `rejectUnauthorized: false`).
+The runtime automatically handles SSL certificate validation for Azure-managed PostgreSQL (strips `sslmode` from the URL and configures `rejectUnauthorized: false`).
 
 ### Schema Initialization
 
@@ -73,7 +75,7 @@ node --env-file=.env scripts/db-reset.js
 The simplest setup — client and worker in the same process:
 
 ```typescript
-import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-sdk";
+import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-runtime";
 
 const store = process.env.DATABASE_URL;
 
@@ -106,7 +108,7 @@ For production, run workers as separate processes:
 
 ```javascript
 // worker.js
-import { DurableCopilotWorker } from "durable-copilot-sdk";
+import { DurableCopilotWorker } from "durable-copilot-runtime";
 
 const worker = new DurableCopilotWorker({
     store: process.env.DATABASE_URL,
@@ -132,7 +134,7 @@ await new Promise(() => {});
 
 ```javascript
 // app.js
-import { DurableCopilotClient } from "durable-copilot-sdk";
+import { DurableCopilotClient } from "durable-copilot-runtime";
 
 const client = new DurableCopilotClient({
     store: process.env.DATABASE_URL,
@@ -165,6 +167,10 @@ new DurableCopilotWorker({
     // Blob storage for session dehydration
     blobConnectionString: string,   // Azure Storage connection string
     blobContainer: string,          // container name (default: "copilot-sessions")
+
+    // Schema isolation (for multi-tenant on same database)
+    duroxideSchema: "duroxide",         // orchestration schema (default: "duroxide")
+    cmsSchema: "copilot_sessions",       // session catalog schema (default: "copilot_sessions")
 });
 ```
 
@@ -181,6 +187,10 @@ new DurableCopilotClient({
     dehydrateThreshold: 10,   // seconds — waits above this trigger dehydration
     dehydrateOnIdle: 120,     // seconds to wait before dehydrating idle sessions
     dehydrateOnInputRequired: 60, // seconds to wait before dehydrating on user input
+
+    // Schema isolation (must match worker)
+    duroxideSchema: "duroxide",         // default: "duroxide"
+    cmsSchema: "copilot_sessions",       // default: "copilot_sessions"
 });
 ```
 

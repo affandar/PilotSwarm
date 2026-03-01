@@ -1,8 +1,8 @@
-# Durable Copilot SDK — Architecture
+# Durable Copilot Runtime — Architecture
 
 ## 1. Design Philosophy
 
-The durable-copilot-sdk is a **transparent durability layer underneath the GitHub Copilot SDK**. A developer using the Copilot SDK should be able to switch to the durable version with minimal code changes and gain:
+The durable-copilot-runtime is a **transparent durability layer underneath the GitHub Copilot SDK**. A developer using the Copilot SDK should be able to switch to the durable version with minimal code changes and gain:
 
 - **Crash resilience** — sessions survive process restarts
 - **Durable timers** — agents can wait hours/days without holding a process
@@ -29,7 +29,7 @@ The API surface mirrors the Copilot SDK exactly. Internally, each SDK call is "r
 
 ## 2. Value Propositions
 
-| Capability | Copilot SDK (vanilla) | Durable Copilot SDK |
+| Capability | Copilot SDK (vanilla) | Durable Copilot Runtime |
 |---|---|---|
 | **Crash recovery** | Session lost if process dies | Orchestration survives, session rehydrates from blob |
 | **Long waits** | `setTimeout` — process must stay alive | Durable timer — process can die, wake on any node |
@@ -455,11 +455,11 @@ Worker B: next orchestration turn (any worker, affinity key is new)
 
 ---
 
-## 5. API Mapping — Copilot SDK → Durable Copilot SDK
+## 5. API Mapping — Copilot SDK → Durable Copilot Runtime
 
 ### 5.1 Client Methods
 
-| Copilot SDK | Durable Copilot SDK | Implementation | Differences |
+| Copilot SDK | Durable Copilot Runtime | Implementation | Differences |
 |---|---|---|---|
 | `new CopilotClient(opts?)` | `new DurableCopilotClient(opts)` | Constructor. `opts.store` required. | Adds durable options (`store`, dehydration thresholds, blobEnabled). |
 | `client.start()` | `client.start()` | Creates duroxide `Client`; initializes CMS for PostgreSQL stores. | Worker runtime is separate (`DurableCopilotWorker.start()`). |
@@ -471,7 +471,7 @@ Worker B: next orchestration turn (any worker, affinity key is new)
 
 ### 5.2 Session Methods
 
-| Copilot SDK | Durable Copilot SDK | Implementation | Differences |
+| Copilot SDK | Durable Copilot Runtime | Implementation | Differences |
 |---|---|---|---|
 | `session.sessionId` | `session.sessionId` | Same — `readonly string`. | — |
 | `session.send(opts)` | `session.send(prompt)` | Enqueues a prompt to orchestration and returns immediately. | Durable async send semantics. |
@@ -539,10 +539,10 @@ await session.destroy();
 await client.stop();
 ```
 
-### 6.2 Durable Copilot SDK
+### 6.2 Durable Copilot Runtime
 
 ```typescript
-import { DurableCopilotClient, defineTool } from "durable-copilot-sdk";
+import { DurableCopilotClient, defineTool } from "durable-copilot-runtime";
 
 const getWeather = defineTool("get_weather", {
     description: "Get current weather for a city",
@@ -585,7 +585,7 @@ await client.stop();
 ```
 
 **Differences: 3 lines.**
-1. Import from `durable-copilot-sdk` instead of `@github/copilot-sdk`
+1. Import from `durable-copilot-runtime` instead of `@github/copilot-sdk`
 2. Add `store: process.env.DATABASE_URL` to constructor
 3. Add `await client.start()` (duroxide runtime needs explicit start)
 

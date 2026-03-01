@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 
 /**
- * durable-copilot-tui — CLI for the durable-copilot-sdk.
+ * durable-copilot-runtime-tui — CLI for the durable-copilot-runtime.
  *
  * Modes:
  *   local   Embedded workers + TUI in one process (default)
  *   remote  Client-only TUI, workers run elsewhere (AKS, separate process)
  *
  * Usage:
- *   npx durable-copilot-tui local --plugin ./plugin
- *   npx durable-copilot-tui remote --store postgresql://... --namespace my-ns
- *   npx durable-copilot-tui --env .env --plugin ./my-plugin --workers 4
+ *   npx durable-copilot-runtime-tui local --plugin ./plugin
+ *   npx durable-copilot-runtime-tui remote --store postgresql://... --namespace my-ns
+ *   npx durable-copilot-runtime-tui --env .env --plugin ./my-plugin --workers 4
  *
  * All flags can also be set via environment variables (CLI flags take precedence).
  */
@@ -52,10 +52,10 @@ const { values: flags, positionals } = parseArgs({
 
 if (flags.help) {
     console.log(`
-durable-copilot-tui — TUI for durable-copilot-sdk apps
+durable-copilot-runtime-tui — TUI for durable-copilot-runtime apps
 
 USAGE
-  npx durable-copilot-tui [local|remote] [flags]
+  npx durable-copilot-runtime-tui [local|remote] [flags]
 
 MODES
   local       Embed workers in the TUI process (default)
@@ -81,19 +81,19 @@ CLI flags take precedence over env vars.
 
 EXAMPLES
   # Plugin-only (no code), env from file
-  npx durable-copilot-tui --env .env --plugin ./my-plugin
+  npx durable-copilot-runtime-tui --env .env --plugin ./my-plugin
 
   # Custom tools via worker module
-  npx durable-copilot-tui --env .env --plugin ./plugin --worker ./tools.js
+  npx durable-copilot-runtime-tui --env .env --plugin ./plugin --worker ./tools.js
 
   # All config in .env (zero flags)
   echo "DATABASE_URL=postgresql://..." >> .env
   echo "GITHUB_TOKEN=ghu_..." >> .env
   echo "PLUGIN_DIRS=./plugin" >> .env
-  npx durable-copilot-tui
+  npx durable-copilot-runtime-tui
 
   # Client-only, workers on AKS
-  npx durable-copilot-tui remote --store postgresql://... --namespace my-app
+  npx durable-copilot-runtime-tui remote --store postgresql://... --namespace my-app
 `.trim());
     process.exit(0);
 }

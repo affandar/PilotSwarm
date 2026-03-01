@@ -4,7 +4,7 @@
 
 ### CLI (`bin/tui.js`)
 
-- **New CLI entry point** — `npx durable-copilot-tui` with full arg parsing via `node:util.parseArgs`.
+- **New CLI entry point** — `npx durable-copilot-runtime-tui` with full arg parsing via `node:util.parseArgs`.
   Two modes: `local` (embedded workers) and `remote` (client-only, kubectl log streaming).
 - **Env file loading** — `.env` / `.env.remote` parsed automatically; CLI flags take precedence.
 - **All flags have env var equivalents** — `--store`→`DATABASE_URL`, `--plugin`→`PLUGIN_DIRS`,
@@ -38,7 +38,7 @@
 
 ### `package.json`
 
-- Added `bin` field for `durable-copilot-tui` → `bin/tui.js`.
+- Added `bin` field for `durable-copilot-runtime-tui` → `bin/tui.js`.
 - TUI rendering deps (`neo-blessed`, `marked`, `marked-terminal`) moved from
   `devDependencies` to `dependencies`.
 - `files` includes `bin/`, `cli/tui.js`, and `plugin/`.
@@ -47,7 +47,7 @@
 ### Docs
 
 - **`building-apps.md`** — deployment topology diagrams updated to reference
-  `npx durable-copilot-tui` / `node bin/tui.js`. CLI reference shows env var
+  `npx durable-copilot-runtime-tui` / `node bin/tui.js`. CLI reference shows env var
   equivalents for all flags. Intro updated to remove stale `tui-apps.md` cross-ref.
 - **`README.md`** — TUI example row updated to reference `cli/tui.js`.
 - **`examples.md`** — TUI section header updated to `cli/tui.js`.

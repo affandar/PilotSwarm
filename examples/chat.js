@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Interactive console chat using durable-copilot-sdk.
+ * Interactive console chat using durable-copilot-runtime.
  *
  * Usage: node --env-file=.env examples/chat.js
  *

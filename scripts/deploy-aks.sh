@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy durable-copilot-sdk workers to AKS.
+# Deploy durable-copilot-runtime workers to AKS.
 #
 # Cleans up ALL existing orchestrations (duroxide + CMS) before deploying.
 # This avoids orchestration versioning issues when changing parameters.
@@ -20,8 +20,8 @@ cd "$(dirname "$0")/.."
 # ─── Configuration ────────────────────────────────────────────────
 
 ACR_NAME="${ACR_NAME:-toygresaksacr}"
-IMAGE_NAME="${IMAGE_NAME:-copilot-sdk-worker}"
-NAMESPACE="${NAMESPACE:-copilot-sdk}"
+IMAGE_NAME="${IMAGE_NAME:-copilot-runtime-worker}"
+NAMESPACE="${NAMESPACE:-copilot-runtime}"
 
 # Parse flags
 SKIP_BUILD=false
@@ -65,7 +65,7 @@ if command -v gh &>/dev/null; then
     FRESH_TOKEN=$(gh auth token 2>/dev/null || true)
     if [ -n "$FRESH_TOKEN" ]; then
         echo "🔑 Refreshing GitHub token in K8s secret..."
-        kubectl create secret generic copilot-sdk-secrets \
+        kubectl create secret generic copilot-runtime-secrets \
             -n "$NAMESPACE" \
             --from-literal=DATABASE_URL="$DATABASE_URL" \
             --from-literal=GITHUB_TOKEN="$FRESH_TOKEN" \
@@ -83,7 +83,7 @@ if [ "$SKIP_RESET" = false ]; then
 
     # Scale down workers first so nothing picks up work
     echo "   Scaling workers to 0..."
-    kubectl scale deployment copilot-sdk-worker -n "$NAMESPACE" --replicas=0 2>/dev/null || true
+    kubectl scale deployment copilot-runtime-worker -n "$NAMESPACE" --replicas=0 2>/dev/null || true
     sleep 3
 
     # Reset both duroxide and CMS schemas
@@ -129,11 +129,11 @@ kubectl apply -f deploy/k8s/namespace.yaml
 kubectl apply -f deploy/k8s/worker-deployment.yaml
 
 # Rollout restart to pick up the new image
-kubectl rollout restart deployment/copilot-sdk-worker -n "$NAMESPACE"
+kubectl rollout restart deployment/copilot-runtime-worker -n "$NAMESPACE"
 
 echo ""
 echo "⏳ Waiting for rollout..."
-kubectl rollout status deployment/copilot-sdk-worker -n "$NAMESPACE" --timeout=120s
+kubectl rollout status deployment/copilot-runtime-worker -n "$NAMESPACE" --timeout=120s
 
 echo ""
 echo "✅ Deploy complete!"

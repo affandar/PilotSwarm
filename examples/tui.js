@@ -9,8 +9,8 @@
  *   Bottom: Input bar
  *
  * Usage:
- *   npx durable-copilot-runtime-tui --env .env.remote             # 4 embedded workers
- *   npx durable-copilot-runtime-tui remote --env .env.remote       # client-only (AKS)
+ *   node --env-file=.env.remote examples/tui.js         # 4 embedded workers
+ *   WORKERS=0 node --env-file=.env.remote examples/tui.js # client-only (AKS)
  */
 
 import { DurableCopilotClient, DurableCopilotWorker } from "../dist/index.js";
@@ -25,43 +25,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const require = createRequire(import.meta.url);
-
-// Suppress stderr during neo-blessed load — it dumps xterm-256color
-// terminfo compilation errors (SetUlc) that are harmless but ugly.
-const _origStderr = process.stderr.write.bind(process.stderr);
-process.stderr.write = () => true;
 const blessed = require("neo-blessed");
-process.stderr.write = _origStderr;
-
-// ─── Monkey-patch neo-blessed emoji width ────────────────────────
-// neo-blessed's unicode.charWidth() doesn't know emoji are 2 cells wide.
-// Its East Asian Width tables only cover CJK — emoji codepoints (U+1F300+)
-// return 1 instead of 2, which misaligns every character after an emoji.
-// Patch charWidth to add the missing ranges.
-{
-    const unicode = require("neo-blessed/lib/unicode");
-    const origCharWidth = unicode.charWidth;
-    unicode.charWidth = function (str, i) {
-        const point = typeof str !== "number"
-            ? unicode.codePointAt(str, i || 0)
-            : str;
-        // Emoji blocks that render as 2 cells in modern terminals
-        if (
-            (point >= 0x1F100 && point <= 0x1F1FF) || // Enclosed Alphanumeric Supplement (🆕 etc.)
-            (point >= 0x1F200 && point <= 0x1F2FF) || // Enclosed Ideographic Supplement
-            (point >= 0x1F300 && point <= 0x1F9FF) || // Misc Symbols, Emoticons, Transport, etc.
-            (point >= 0x1FA00 && point <= 0x1FAFF) || // Symbols & Pictographs Extended-A
-            (point >= 0x2600 && point <= 0x27BF)   || // Misc Symbols + Dingbats (☀⚡✅ etc.)
-            (point >= 0x2300 && point <= 0x23FF)   || // Misc Technical (⌚ etc.)
-            (point >= 0x2B05 && point <= 0x2B55)   || // Arrows, stars, circles
-            point === 0x2705 || point === 0x2714   || // Check marks
-            point === 0x274C || point === 0x274E       // Cross marks
-        ) {
-            return 2;
-        }
-        return origCharWidth(str, i);
-    };
-}
 
 // ─── Markdown renderer ──────────────────────────────────────────
 
@@ -85,14 +49,11 @@ function renderMarkdown(md) {
         // marked-terminal uses ANSI codes for styling, not blessed tags.
         // Strip curly braces so blessed doesn't misinterpret them as tags.
         rendered = rendered.replace(/\{/g, "(").replace(/\}/g, ")");
-        // Strip OSC 8 hyperlink sequences — blessed can't render them.
-        // Format: \x1b]8;;URL\x07LABEL\x1b]8;;\x07  (or \x1b\\ as terminator)
-        // Replace with: LABEL (URL) so the link text and URL are still readable.
-        rendered = rendered.replace(/\x1b\]8;;([^\x07\x1b]*)\x07([^\x1b]*)\x1b\]8;;\x07/g, "$2 ($1)");
-        rendered = rendered.replace(/\x1b\]8;;([^\x1b]*)\x1b\\([^\x1b]*)\x1b\]8;;\x1b\\/g, "$2 ($1)");
-        // Catch any remaining OSC 8 fragments
-        rendered = rendered.replace(/\x1b\]8;;[^\x07]*\x07/g, "");
-        rendered = rendered.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "");
+        // Strip emoji — blessed miscounts their display width (treats 2-cell
+        // glyphs as 1), which shifts all subsequent characters on the line and
+        // cascades into the right pane layout.
+        // eslint-disable-next-line no-control-regex
+        rendered = rendered.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, "");
         return rendered;
     } catch {
         return md;
@@ -105,16 +66,12 @@ function ts() {
 
 // ─── Create blessed screen ───────────────────────────────────────
 
-// Suppress stderr during screen creation — same SetUlc issue.
-process.stderr.write = () => true;
 const screen = blessed.screen({
     smartCSR: true,
     title: "Durable Copilot Chat",
     fullUnicode: true,
-    forceUnicode: true,
     mouse: true,
 });
-process.stderr.write = _origStderr;
 
 // ─── Layout calculations ─────────────────────────────────────────
 // Left column: sessions (top) + chat (bottom). Right column: full-height logs.
@@ -293,7 +250,6 @@ const nodeMapPane = blessed.log({
  */
 function refreshNodeMap() {
     nodeMapPane.setContent("");
-    screen.realloc();
 
     // Gather all known nodes from seqNodes (worker pane names)
     // Filter out synthetic nodes like "cms" that aren't real workers.
@@ -879,7 +835,6 @@ function updateSeqHeader() {
  */
 function refreshSeqPane() {
     seqPane.setContent("");
-    screen.realloc();
     const shortId = activeOrchId.startsWith("session-")
         ? activeOrchId.slice(8, 16) : activeOrchId.slice(0, 8);
     seqPane.setLabel(` Sequence: ${shortId} `);
@@ -946,13 +901,10 @@ function switchLogMode() {
         for (const pane of workerPanes.values()) pane.show();
     }
     relayoutAll();
-    // Force full repaint on next tick (same as pressing 'r')
-    setTimeout(() => { screen.realloc(); screen.render(); }, 0);
 }
 
 function refreshOrchLogPane() {
     orchLogPane.setContent("");
-    screen.realloc();
     const shortId = activeOrchId.startsWith("session-") ? activeOrchId.slice(8, 16) : activeOrchId.slice(0, 8);
     orchLogPane.setLabel(` Logs: ${shortId} `);
     const buf = orchLogBuffers.get(activeOrchId);
@@ -1257,12 +1209,6 @@ function recolorWorkerPanes() {
         const buf = workerLogBuffers.get(podName);
         if (!buf || buf.length === 0) continue;
         pane.setContent("");
-    }
-    // Flush stale screen buffers after clearing all panes, before repopulating
-    screen.realloc();
-    for (const [podName, pane] of workerPanes) {
-        const buf = workerLogBuffers.get(podName);
-        if (!buf || buf.length === 0) continue;
         for (const entry of buf) {
             if (entry.orchId && entry.orchId === activeOrchId) {
                 pane.log(`{bold}${entry.text}{/bold}`);
@@ -1273,6 +1219,10 @@ function recolorWorkerPanes() {
             }
         }
     }
+    // Force blessed to recalculate internal line/content buffers after
+    // bulk setContent + log calls — without this, stale content from the
+    // previous render bleeds through on first switch.
+    screen.realloc();
     screen.render();
 }
 
@@ -2457,21 +2407,17 @@ async function switchToOrchestration(orchId) {
         // Always rebuild from DB so switching sessions shows full persisted history.
         await loadCmsHistory(orchId);
 
+        // Force blessed to recalculate its internal buffer after content change
+        screen.realloc();
+        screen.render();
+
         // Ensure an observer is running for this session
         startObserver(orchId);
 
-        // Do exactly what the 'r' key does: full refresh + redraw.
-        // This is the only reliable way to get blessed to fully repaint
-        // after a session switch — partial realloc/render isn't enough.
-        await refreshOrchestrations();
-        redrawActiveViews();
+        // Refresh list to update ▸ marker
+        refreshOrchestrations();
 
-        // Schedule a second repaint on next tick so blessed flushes
-        // any deferred internal state (same effect as pressing 'r').
-        setTimeout(() => {
-            screen.realloc();
-            screen.render();
-        }, 0);
+        redrawActiveViews();
     } else {
         redrawActiveViews();
     }
@@ -2762,15 +2708,15 @@ async function cleanup() {
     for (const [, ac] of sessionObservers) { ac.abort(); }
     sessionObservers.clear();
     if (kubectlProc) { try { kubectlProc.kill(); } catch {} }
-    // Suppress ALL output before destroying — neo-blessed dumps terminfo
-    // compilation junk (SetUlc) synchronously during destroy().
+    // Destroy the blessed screen first to cleanly restore the terminal
+    try { screen.destroy(); } catch {}
+    // Disable mouse tracking modes + exit alt-screen + show cursor
+    // (blessed enables mouse reporting but screen.destroy() doesn't always clean up)
+    const resetBuf = Buffer.from("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h");
+    try { fs.writeSync(1, resetBuf); } catch {}
+    // Suppress any further writes from neo-blessed teardown
     process.stdout.write = () => true;
     process.stderr.write = () => true;
-    try { screen.destroy(); } catch {}
-    // Write terminal reset directly to fd to bypass our suppression
-    // Disable mouse tracking modes + exit alt-screen + show cursor
-    const buf = Buffer.from("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h");
-    try { fs.writeSync(1, buf); } catch {}
     await Promise.allSettled(workers.map(w => w.stop()));
     await client.stop();
 }
@@ -2796,11 +2742,6 @@ screen.on("keypress", (ch, key) => {
     // m: toggle log viewing mode (only from non-input panes)
     if (ch === "m" && screen.focused !== inputBar) {
         switchLogMode();
-        // Force the same full repaint that 'r' does
-        screen.realloc();
-        relayoutAll();
-        if (logViewMode === "sequence") refreshSeqPane();
-        if (logViewMode === "nodemap") refreshNodeMap();
         const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" };
         appendLog(`{cyan-fg}Log mode: ${modeNames[logViewMode]}{/cyan-fg}`);
         return;

@@ -1,21 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: copilot-sdk-worker
-  namespace: copilot-sdk
+  name: copilot-runtime-worker
+  namespace: copilot-runtime
   labels:
-    app.kubernetes.io/name: durable-copilot-sdk
+    app.kubernetes.io/name: durable-copilot-runtime
     app.kubernetes.io/component: worker
 spec:
   replicas: 6
   selector:
     matchLabels:
-      app.kubernetes.io/name: durable-copilot-sdk
+      app.kubernetes.io/name: durable-copilot-runtime
       app.kubernetes.io/component: worker
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: durable-copilot-sdk
+        app.kubernetes.io/name: durable-copilot-runtime
         app.kubernetes.io/component: worker
     spec:
       tolerations:
@@ -25,7 +25,7 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: worker
-          image: toygresaksacr.azurecr.io/copilot-sdk-worker:latest
+          image: toygresaksacr.azurecr.io/copilot-runtime-worker:latest
           imagePullPolicy: Always
           env:
             - name: POD_NAME
@@ -34,7 +34,7 @@ spec:
                   fieldPath: metadata.name
           envFrom:
             - secretRef:
-                name: copilot-sdk-secrets
+                name: copilot-runtime-secrets
           resources:
             requests:
               cpu: "250m"

@@ -117,6 +117,20 @@ export interface DurableCopilotWorkerOptions {
     blobConnectionString?: string;
     blobContainer?: string;
 
+    /**
+     * PostgreSQL schema name for duroxide orchestration tables.
+     * Default: `"duroxide"`. Change this to run multiple independent
+     * deployments on the same database.
+     */
+    duroxideSchema?: string;
+
+    /**
+     * PostgreSQL schema name for the session catalog (CMS) tables.
+     * Default: `"copilot_sessions"`. Change this to isolate session
+     * data across deployments sharing the same database.
+     */
+    cmsSchema?: string;
+
     // ─── Building Blocks ─────────────────────────────────────
     // Workers own the building blocks. Clients are thin proxies.
 
@@ -172,6 +186,18 @@ export interface DurableCopilotClientOptions {
     dehydrateThreshold?: number;
     dehydrateOnInputRequired?: number;
     dehydrateOnIdle?: number;
+
+    /**
+     * PostgreSQL schema name for duroxide orchestration tables.
+     * Default: `"duroxide"`. Must match the worker's `duroxideSchema`.
+     */
+    duroxideSchema?: string;
+
+    /**
+     * PostgreSQL schema name for the session catalog (CMS) tables.
+     * Default: `"copilot_sessions"`. Must match the worker's `cmsSchema`.
+     */
+    cmsSchema?: string;
 }
 
 // ─── User Input ──────────────────────────────────────────────────

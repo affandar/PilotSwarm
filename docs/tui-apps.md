@@ -1,7 +1,7 @@
 # TUI Apps — Off-the-Shelf Terminal Interface
 
 This guide covers the **AppAdapter** framework for building rich terminal applications
-on top of the durable-copilot-sdk. The SDK provides a shared `tui-core` — your app
+on top of the durable-copilot-runtime. The runtime provides a shared `tui-core` — your app
 provides an adapter that configures the agent, UI behavior, and how to load skills/agents/tools/MCP config.
 
 **Prerequisite**: Read [building-apps.md](./building-apps.md) first for the five building
@@ -150,8 +150,8 @@ A complete TUI app in ~100 lines — a deployment assistant:
 
 ```typescript
 // deploy-app/tui.js
-import { createTui } from "durable-copilot-sdk/tui";
-import { DurableCopilotClient, DurableCopilotWorker, loadSkills } from "durable-copilot-sdk";
+import { createTui } from "durable-copilot-runtime/tui";
+import { DurableCopilotClient, DurableCopilotWorker, loadSkills } from "durable-copilot-runtime";
 import { deployService, checkHealth, rollback } from "./tools.js";
 
 await createTui({

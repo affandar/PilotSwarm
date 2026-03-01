@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Runtime } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const DUROXIDE_SCHEMA = "duroxide";
+const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
  * DurableCopilotWorker — runs activities and orchestrations.
@@ -150,7 +150,7 @@ export class DurableCopilotWorker {
         const store = this.config.store;
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
             try {
-                this._catalog = await PgSessionCatalogProvider.create(store);
+                this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
                 await this._catalog.initialize();
             } catch (err) {
                 console.error("[DurableCopilotWorker] CMS initialization failed:", err);
@@ -283,7 +283,7 @@ export class DurableCopilotWorker {
         if (store === "sqlite::memory:") return SqliteProvider.inMemory();
         if (store.startsWith("sqlite://")) return SqliteProvider.open(store);
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            return PostgresProvider.connectWithSchema(store, DUROXIDE_SCHEMA);
+            return PostgresProvider.connectWithSchema(store, this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA);
         }
         throw new Error(`Unsupported store URL: ${store}`);
     }

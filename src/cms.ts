@@ -93,13 +93,22 @@ export interface SessionCatalogProvider {
 
 // ─── PostgreSQL Implementation ───────────────────────────────────
 
-const SCHEMA = "copilot_sessions";
-const TABLE = `${SCHEMA}.sessions`;
+const DEFAULT_SCHEMA = "copilot_sessions";
 
-const CREATE_SCHEMA_SQL = `CREATE SCHEMA IF NOT EXISTS ${SCHEMA}`;
-
-const CREATE_TABLE_SQL = `
-CREATE TABLE IF NOT EXISTS ${TABLE} (
+/**
+ * Build SQL strings for a given schema name.
+ * Allows multiple deployments to coexist on the same database.
+ */
+function sqlForSchema(schema: string) {
+    const table = `${schema}.sessions`;
+    const eventsTable = `${schema}.session_events`;
+    return {
+        schema,
+        table,
+        eventsTable,
+        createSchema: `CREATE SCHEMA IF NOT EXISTS ${schema}`,
+        createTable: `
+CREATE TABLE IF NOT EXISTS ${table} (
     session_id        TEXT PRIMARY KEY,
     orchestration_id  TEXT,
     title             TEXT,
@@ -111,24 +120,22 @@ CREATE TABLE IF NOT EXISTS ${TABLE} (
     deleted_at        TIMESTAMPTZ,
     current_iteration INTEGER NOT NULL DEFAULT 0,
     last_error        TEXT
-)`;
-
-const EVENTS_TABLE = `${SCHEMA}.session_events`;
-
-const CREATE_EVENTS_TABLE_SQL = `
-CREATE TABLE IF NOT EXISTS ${EVENTS_TABLE} (
+)`,
+        createEventsTable: `
+CREATE TABLE IF NOT EXISTS ${eventsTable} (
     seq           BIGSERIAL PRIMARY KEY,
     session_id    TEXT NOT NULL,
     event_type    TEXT NOT NULL,
     data          JSONB,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-)`;
-
-const CREATE_INDEXES_SQL = [
-    `CREATE INDEX IF NOT EXISTS idx_sessions_state ON ${TABLE}(state) WHERE deleted_at IS NULL`,
-    `CREATE INDEX IF NOT EXISTS idx_sessions_updated ON ${TABLE}(updated_at DESC) WHERE deleted_at IS NULL`,
-    `CREATE INDEX IF NOT EXISTS idx_events_session_seq ON ${EVENTS_TABLE}(session_id, seq)`,
-];
+)`,
+        createIndexes: [
+            `CREATE INDEX IF NOT EXISTS idx_${schema}_sessions_state ON ${table}(state) WHERE deleted_at IS NULL`,
+            `CREATE INDEX IF NOT EXISTS idx_${schema}_sessions_updated ON ${table}(updated_at DESC) WHERE deleted_at IS NULL`,
+            `CREATE INDEX IF NOT EXISTS idx_${schema}_events_session_seq ON ${eventsTable}(session_id, seq)`,
+        ],
+    };
+}
 
 /**
  * PgSessionCatalogProvider — PostgreSQL implementation of SessionCatalogProvider.
@@ -139,13 +146,15 @@ const CREATE_INDEXES_SQL = [
 export class PgSessionCatalogProvider implements SessionCatalogProvider {
     private pool: any;
     private initialized = false;
+    private sql: ReturnType<typeof sqlForSchema>;
 
-    private constructor(pool: any) {
+    private constructor(pool: any, schema: string) {
         this.pool = pool;
+        this.sql = sqlForSchema(schema);
     }
 
     /** Factory: create and connect a PgSessionCatalogProvider. */
-    static async create(connectionString: string): Promise<PgSessionCatalogProvider> {
+    static async create(connectionString: string, schema?: string): Promise<PgSessionCatalogProvider> {
         const { default: pg } = await import("pg");
 
         // pg v8 treats sslmode=require as verify-full, which rejects Azure/self-signed
@@ -159,15 +168,15 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
             connectionString: parsed.toString(),
             ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
         });
-        return new PgSessionCatalogProvider(pool);
+        return new PgSessionCatalogProvider(pool, schema ?? DEFAULT_SCHEMA);
     }
 
     async initialize(): Promise<void> {
         if (this.initialized) return;
-        await this.pool.query(CREATE_SCHEMA_SQL);
-        await this.pool.query(CREATE_TABLE_SQL);
-        await this.pool.query(CREATE_EVENTS_TABLE_SQL);
-        for (const idx of CREATE_INDEXES_SQL) {
+        await this.pool.query(this.sql.createSchema);
+        await this.pool.query(this.sql.createTable);
+        await this.pool.query(this.sql.createEventsTable);
+        for (const idx of this.sql.createIndexes) {
             await this.pool.query(idx);
         }
         this.initialized = true;
@@ -177,7 +186,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
 
     async createSession(sessionId: string, opts?: { model?: string }): Promise<void> {
         await this.pool.query(
-            `INSERT INTO ${TABLE} (session_id, model)
+            `INSERT INTO ${this.sql.table} (session_id, model)
              VALUES ($1, $2)
              ON CONFLICT (session_id) DO NOTHING`,
             [sessionId, opts?.model ?? null],
@@ -222,14 +231,14 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
 
         values.push(sessionId);
         await this.pool.query(
-            `UPDATE ${TABLE} SET ${setClauses.join(", ")} WHERE session_id = $${idx}`,
+            `UPDATE ${this.sql.table} SET ${setClauses.join(", ")} WHERE session_id = $${idx}`,
             values,
         );
     }
 
     async softDeleteSession(sessionId: string): Promise<void> {
         await this.pool.query(
-            `UPDATE ${TABLE} SET deleted_at = now(), updated_at = now() WHERE session_id = $1`,
+            `UPDATE ${this.sql.table} SET deleted_at = now(), updated_at = now() WHERE session_id = $1`,
             [sessionId],
         );
     }
@@ -238,14 +247,14 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
 
     async listSessions(): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${TABLE} WHERE deleted_at IS NULL ORDER BY updated_at DESC`,
+            `SELECT * FROM ${this.sql.table} WHERE deleted_at IS NULL ORDER BY updated_at DESC`,
         );
         return rows.map(rowToSessionRow);
     }
 
     async getSession(sessionId: string): Promise<SessionRow | null> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${TABLE} WHERE session_id = $1 AND deleted_at IS NULL`,
+            `SELECT * FROM ${this.sql.table} WHERE session_id = $1 AND deleted_at IS NULL`,
             [sessionId],
         );
         return rows.length > 0 ? rowToSessionRow(rows[0]) : null;
@@ -253,7 +262,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
 
     async getLastSessionId(): Promise<string | null> {
         const { rows } = await this.pool.query(
-            `SELECT session_id FROM ${TABLE}
+            `SELECT session_id FROM ${this.sql.table}
              WHERE deleted_at IS NULL
              ORDER BY last_active_at DESC NULLS LAST
              LIMIT 1`,
@@ -276,7 +285,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         }
 
         await this.pool.query(
-            `INSERT INTO ${EVENTS_TABLE} (session_id, event_type, data)
+            `INSERT INTO ${this.sql.eventsTable} (session_id, event_type, data)
              VALUES ${valuePlaceholders.join(", ")}`,
             values,
         );
@@ -288,14 +297,14 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         let params: unknown[];
 
         if (afterSeq != null && afterSeq > 0) {
-            query = `SELECT * FROM ${EVENTS_TABLE}
+            query = `SELECT * FROM ${this.sql.eventsTable}
                      WHERE session_id = $1 AND seq > $2
                      ORDER BY seq ASC LIMIT $3`;
             params = [sessionId, afterSeq, effectiveLimit];
         } else {
             // Return the most recent events (last N), in chronological order
             query = `SELECT * FROM (
-                         SELECT * FROM ${EVENTS_TABLE}
+                         SELECT * FROM ${this.sql.eventsTable}
                          WHERE session_id = $1
                          ORDER BY seq DESC LIMIT $2
                      ) t ORDER BY seq ASC`;

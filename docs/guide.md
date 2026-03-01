@@ -1,10 +1,12 @@
 # User Guide
 
-## What is durable-copilot-sdk?
+> **New here?** Start with the [Getting Started](./getting-started.md) guide to set up PostgreSQL, get a GitHub token, and create your `.env` file.
 
-durable-copilot-sdk wraps the [GitHub Copilot SDK](https://github.com/github/copilot-sdk) with [duroxide](https://github.com/microsoft/duroxide) to give your AI agents **durable timers, crash recovery, and multi-node scaling** — just add a connection string.
+## What is durable-copilot-runtime?
 
-Your code stays almost identical to the standard Copilot SDK. The framework handles orchestration, session persistence, and fault tolerance internally.
+durable-copilot-runtime is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide). It gives your AI agents **crash recovery, durable timers, session dehydration, and multi-node scaling** — just add a connection string.
+
+Your code stays almost identical to the standard Copilot SDK. The runtime handles orchestration, session persistence, and fault tolerance transparently.
 
 ## Standard Copilot SDK vs Durable
 
@@ -40,10 +42,10 @@ await client.stop();
 
 This works — but if the process crashes, the session is lost. `sleep()` blocks the process. You can't scale across nodes.
 
-### Durable Copilot SDK (single-process mode)
+### Durable Copilot Runtime (single-process mode)
 
 ```typescript
-import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-sdk";
+import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-runtime";
 
 // Same tool definition — unchanged from standard Copilot SDK
 const weather = defineTool("get_weather", {
@@ -94,7 +96,7 @@ Now the agent can call `wait(3600, "Waiting 1 hour before next check")` and the 
 
 ## What You Get Automatically
 
-| Feature | Standard Copilot SDK | durable-copilot-sdk |
+| Feature | Standard Copilot SDK | durable-copilot-runtime |
 |---------|---------------------|---------------------|
 | Tool calling | ✅ | ✅ Same `defineTool()` API |
 | Wait/pause | ❌ `sleep()` blocks process | ✅ Durable timer — process shuts down, wakes up later |
@@ -107,7 +109,7 @@ Now the agent can call `wait(3600, "Waiting 1 hour before next check")` and the 
 
 ### Client and Worker
 
-The SDK separates concerns into two components:
+The runtime separates concerns into two components:
 
 - **`DurableCopilotClient`** — manages sessions, sends prompts, subscribes to events. Lightweight, no GitHub token needed. Only handles serializable data.
 - **`DurableCopilotWorker`** — runs LLM turns, executes tool handlers, manages the Copilot runtime. Requires a GitHub token. **This is where tools are registered.**
@@ -253,7 +255,7 @@ Event types include:
 
 ### Durable Timers
 
-The SDK automatically injects a `wait` tool into every session. When the LLM calls it:
+The runtime automatically injects a `wait` tool into every session. When the LLM calls it:
 
 - **Short waits** (< threshold): sleep in-process
 - **Long waits** (≥ threshold): dehydrate the session to blob storage, schedule a durable timer, and shut down. When the timer fires, any available worker picks up the session.

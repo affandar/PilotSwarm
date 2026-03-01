@@ -1,9 +1,9 @@
 /**
- * durable-copilot-sdk — Make Copilot SDK apps durable with zero orchestration code.
+ * durable-copilot-runtime — A durable execution runtime for GitHub Copilot SDK agents.
  *
  * @example
  * ```typescript
- * import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-sdk";
+ * import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-runtime";
  *
  * const worker = new DurableCopilotWorker({ store, githubToken });
  * worker.registerTools([myTool]);

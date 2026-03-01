@@ -1,17 +1,17 @@
-# Building Apps on durable-copilot-sdk
+# Building Apps on durable-copilot-runtime
 
-This guide explains how to build apps on the durable-copilot-sdk. The primary
+This guide explains how to build apps on the durable-copilot-runtime. The primary
 extension mechanism is **plugins** — a directory structure containing agents, skills,
 and MCP server configs. Workers load plugin contents at startup and pass them through
 to the Copilot SDK via proven session config fields (`skillDirectories`, `customAgents`,
 `mcpServers`). Clients are thin proxies that send prompts and render events.
 
-The SDK ships a full TUI as a CLI (`durable-copilot-tui`) — see
+The runtime ships a full TUI as a CLI (`durable-copilot-runtime-tui`) — see
 [Putting It All Together](#putting-it-all-together) for usage.
 
 ## Architecture: Plugins + Tools + Runtime
 
-Every app built on the durable-copilot-sdk has three layers:
+Every app built on the durable-copilot-runtime has three layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -189,12 +189,12 @@ Two tools are injected into every session automatically:
 - **`ask_user`** — Pause and wait for user input. The orchestration dehydrates and blocks
   until the user responds via the event queue.
 
-You never define these — they're part of the SDK.
+You never define these — they're part of the runtime.
 
 ### Registering Tools on the Worker
 
 ```typescript
-import { DurableCopilotWorker } from "durable-copilot-sdk";
+import { DurableCopilotWorker } from "durable-copilot-runtime";
 
 const worker = new DurableCopilotWorker({
   store: process.env.DATABASE_URL,
@@ -213,7 +213,7 @@ them by name via `toolNames: ["deploy_service"]` at session creation.
 ## 3. Runtime
 
 The runtime is everything the tools and worker need to function — the infrastructure
-layer beneath the SDK.
+layer beneath the runtime.
 
 ### Required Secrets
 
@@ -234,7 +234,7 @@ Optional for additional features:
 ### Tool Artifacts
 
 If a tool handler calls an external binary, that binary must exist where the worker runs.
-The SDK doesn't manage this — it's your deployment concern.
+The runtime doesn't manage this — it's your deployment concern.
 
 - **Local dev**: Install on your machine (`cargo install`, `brew install kubectl`)
 - **Docker/K8s**: Bake into the worker container image
@@ -244,7 +244,7 @@ Rule: **if a tool handler calls it, it must exist at runtime.**
 
 ### Database
 
-The SDK auto-creates its schemas on first startup:
+The runtime auto-creates its schemas on first startup:
 - `duroxide` — orchestration state (instances, executions, history)
 - `copilot_sessions` — CMS (sessions, session_events)
 
@@ -255,7 +255,7 @@ Your PostgreSQL user needs `CREATE SCHEMA` permission on first run.
 **Local Development** — embedded workers in TUI (default):
 ```
 ┌─ Your Machine ──────────────────────────────────┐
-│  npx durable-copilot-tui --env .env              │
+│  npx durable-copilot-runtime-tui --env .env              │
 │  (or: ./run.sh)                                  │
 │                                                  │
 │    ├─ DurableCopilotWorker × 4 (poll DB)         │
@@ -276,7 +276,7 @@ setup (no TUI), `examples/chat.js` runs one worker + one client in a single proc
 **Production** — TUI client-only + AKS workers:
 ```
 ┌─ Your Machine (TUI) ─────────────────────────┐
-│  npx durable-copilot-tui remote               │
+│  npx durable-copilot-runtime-tui remote               │
 │    --store postgresql://...                   │
 │    --namespace my-app                         │
 │    └─ DurableCopilotClient                    │
@@ -377,7 +377,7 @@ You configure it, you don't code it:
 
 ## Putting It All Together
 
-The SDK ships a full TUI client as a CLI: `durable-copilot-tui`. You provide a plugin
+The runtime ships a full TUI client as a CLI: `durable-copilot-runtime-tui`. You provide a plugin
 directory and optionally a worker module with custom tools — the TUI handles everything
 else (sessions, events, log streaming, chat rendering).
 
@@ -400,8 +400,8 @@ my-app/
 ```
 
 ```bash
-npm install durable-copilot-sdk
-npx durable-copilot-tui --env .env --plugin ./plugin
+npm install durable-copilot-runtime
+npx durable-copilot-runtime-tui --env .env --plugin ./plugin
 ```
 
 The CLI embeds 4 workers, loads your plugin, and launches the TUI. Done.
@@ -437,7 +437,7 @@ export default {
 ```
 
 ```bash
-npx durable-copilot-tui --env .env --plugin ./plugin --worker ./tools.js
+npx durable-copilot-runtime-tui --env .env --plugin ./plugin --worker ./tools.js
 ```
 
 ### Production: Separate Worker + Remote TUI
@@ -464,7 +464,7 @@ my-app/
 
 ```javascript
 // worker.js
-import { DurableCopilotWorker } from "durable-copilot-sdk";
+import { DurableCopilotWorker } from "durable-copilot-runtime";
 import { deployService, checkHealth, rollback } from "./src/tools.js";
 
 const worker = new DurableCopilotWorker({
@@ -482,7 +482,7 @@ await worker.start();
 **TUI** (thin client — needs only the database URL):
 
 ```bash
-npx durable-copilot-tui remote \
+npx durable-copilot-runtime-tui remote \
   --store postgresql://... \
   --namespace my-app-workers
 ```
@@ -506,7 +506,7 @@ CMD ["node", "worker.js"]
 ### CLI Reference
 
 ```
-durable-copilot-tui [local|remote] [flags]
+durable-copilot-runtime-tui [local|remote] [flags]
 
 FLAG                     ENV VAR EQUIVALENT
 --store <url>            DATABASE_URL
@@ -516,7 +516,7 @@ FLAG                     ENV VAR EQUIVALENT
 --workers <n>            WORKERS                  (default: 4)
 --model <name>           COPILOT_MODEL
 --system <msg|file>      SYSTEM_MESSAGE           (or plugin/system.md)
---namespace <ns>         K8S_NAMESPACE            (default: copilot-sdk)
+--namespace <ns>         K8S_NAMESPACE            (default: copilot-runtime)
 --label <selector>       K8S_POD_LABEL
 --log-level <level>      LOG_LEVEL
 

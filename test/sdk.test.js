@@ -1,5 +1,5 @@
 /**
- * durable-copilot-sdk — integration test suite.
+ * durable-copilot-runtime — integration test suite.
  *
  * Tests the full flow: DurableCopilotClient → orchestration → SessionProxy
  * → SessionManager → ManagedSession → CopilotSession.
@@ -846,7 +846,7 @@ const tests = [
 
 await preflightChecks();
 
-console.log("🚀 durable-copilot-sdk Integration Test\n");
+console.log("🚀 durable-copilot-runtime Integration Test\n");
 console.log(`  Store: ${STORE.startsWith("postgres") ? "postgres" : STORE}`);
 
 let passed = 0;

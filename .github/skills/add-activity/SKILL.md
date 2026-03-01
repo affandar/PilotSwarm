@@ -1,6 +1,6 @@
 ---
 name: add-activity
-description: Add a new duroxide activity to the SDK. Activities are the durable boundary between the orchestration and session management — they dispatch to ManagedSession or SessionManager methods.
+description: Add a new duroxide activity to the runtime. Activities are the durable boundary between the orchestration and session management — they dispatch to ManagedSession or SessionManager methods.
 ---
 
 # Add a New Activity

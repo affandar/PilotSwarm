@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run durable-copilot-sdk TUI
+# Run durable-copilot-runtime TUI
 #
 # Usage:
 #   ./run.sh              # local mode — 4 workers inside TUI, remote PG

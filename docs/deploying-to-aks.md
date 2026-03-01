@@ -1,6 +1,6 @@
 # Deploying to Azure Kubernetes Service (AKS)
 
-This guide walks through deploying durable-copilot-sdk workers to AKS for production multi-node operation.
+This guide walks through deploying durable-copilot-runtime workers to AKS for production multi-node operation.
 
 ## Architecture
 
@@ -51,16 +51,16 @@ This guide walks through deploying durable-copilot-sdk workers to AKS for produc
 kubectl apply -f deploy/k8s/namespace.yaml
 ```
 
-This creates the `copilot-sdk` namespace.
+This creates the `copilot-runtime` namespace.
 
 ### Secrets
 
 Store your credentials as a Kubernetes secret:
 
 ```bash
-kubectl create secret generic copilot-sdk-secrets \
-    -n copilot-sdk \
-    --from-literal=DATABASE_URL="postgresql://user:pass@myserver.postgres.database.azure.com:5432/postgres?options=-csearch_path%3Dcopilot_sdk&sslmode=require" \
+kubectl create secret generic copilot-runtime-secrets \
+    -n copilot-runtime \
+    --from-literal=DATABASE_URL="postgresql://user:pass@myserver.postgres.database.azure.com:5432/postgres?options=-csearch_path%3Dcopilot_runtime&sslmode=require" \
     --from-literal=GITHUB_TOKEN="ghp_xxxxxxxxxxxx" \
     --from-literal=AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=..." \
     --from-literal=AZURE_STORAGE_CONTAINER="copilot-sessions"
@@ -71,8 +71,8 @@ kubectl create secret generic copilot-sdk-secrets \
 The GitHub token expires periodically. To update:
 
 ```bash
-kubectl create secret generic copilot-sdk-secrets \
-    -n copilot-sdk \
+kubectl create secret generic copilot-runtime-secrets \
+    -n copilot-runtime \
     --from-literal=DATABASE_URL="..." \
     --from-literal=GITHUB_TOKEN="$(gh auth token)" \
     --from-literal=AZURE_STORAGE_CONNECTION_STRING="..." \
@@ -98,7 +98,7 @@ npm run build
 docker buildx build \
     --platform linux/amd64 \
     -f deploy/Dockerfile.worker \
-    -t <your-acr-name>.azurecr.io/copilot-sdk-worker:latest \
+    -t <your-acr-name>.azurecr.io/copilot-runtime-worker:latest \
     --push .
 ```
 
@@ -117,7 +117,7 @@ Update `deploy/k8s/worker-deployment.yaml` with your ACR URL:
 ```yaml
 containers:
   - name: worker
-    image: <your-acr-name>.azurecr.io/copilot-sdk-worker:latest
+    image: <your-acr-name>.azurecr.io/copilot-runtime-worker:latest
 ```
 
 ### Apply
@@ -129,30 +129,30 @@ kubectl apply -f deploy/k8s/worker-deployment.yaml
 ### Verify
 
 ```bash
-kubectl get pods -n copilot-sdk -l app.kubernetes.io/component=worker
+kubectl get pods -n copilot-runtime -l app.kubernetes.io/component=worker
 ```
 
 Expected output:
 
 ```
 NAME                                  READY   STATUS    RESTARTS   AGE
-copilot-sdk-worker-xxxxx-aaaaa        1/1     Running   0          30s
-copilot-sdk-worker-xxxxx-bbbbb        1/1     Running   0          30s
-copilot-sdk-worker-xxxxx-ccccc        1/1     Running   0          30s
-copilot-sdk-worker-xxxxx-ddddd        1/1     Running   0          30s
+copilot-runtime-worker-xxxxx-aaaaa        1/1     Running   0          30s
+copilot-runtime-worker-xxxxx-bbbbb        1/1     Running   0          30s
+copilot-runtime-worker-xxxxx-ccccc        1/1     Running   0          30s
+copilot-runtime-worker-xxxxx-ddddd        1/1     Running   0          30s
 ```
 
 ### Check Logs
 
 ```bash
-kubectl logs -n copilot-sdk -l app.kubernetes.io/component=worker --prefix --tail=20
+kubectl logs -n copilot-runtime -l app.kubernetes.io/component=worker --prefix --tail=20
 ```
 
 You should see:
 
 ```
-[pod/copilot-sdk-worker-xxxxx/worker] [worker] Pod: copilot-sdk-worker-xxxxx
-[pod/copilot-sdk-worker-xxxxx/worker] [worker] Started ✓ Polling for orchestrations...
+[pod/copilot-runtime-worker-xxxxx/worker] [worker] Pod: copilot-runtime-worker-xxxxx
+[pod/copilot-runtime-worker-xxxxx/worker] [worker] Started ✓ Polling for orchestrations...
 ```
 
 ## Step 4: Connect Your Client
@@ -160,7 +160,7 @@ You should see:
 From your application (anywhere with network access to the same PostgreSQL):
 
 ```typescript
-import { DurableCopilotClient } from "durable-copilot-sdk";
+import { DurableCopilotClient } from "durable-copilot-runtime";
 
 const client = new DurableCopilotClient({
     store: process.env.DATABASE_URL,
@@ -188,7 +188,7 @@ npm run tui:remote
 Adjust the replica count:
 
 ```bash
-kubectl scale deployment copilot-sdk-worker -n copilot-sdk --replicas=8
+kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=8
 ```
 
 Workers are stateless — each polls the PostgreSQL queue for available work. duroxide ensures exactly-once execution.
@@ -231,13 +231,13 @@ Spot instances are safe because sessions are durable — if a spot node is evict
 # Rebuild and push
 npm run build
 docker buildx build --platform linux/amd64 -f deploy/Dockerfile.worker \
-    -t <your-acr-name>.azurecr.io/copilot-sdk-worker:latest --push .
+    -t <your-acr-name>.azurecr.io/copilot-runtime-worker:latest --push .
 
 # Restart pods (pulls latest image)
-kubectl rollout restart deployment/copilot-sdk-worker -n copilot-sdk
+kubectl rollout restart deployment/copilot-runtime-worker -n copilot-runtime
 
 # Wait for rollout to complete
-kubectl rollout status deployment/copilot-sdk-worker -n copilot-sdk
+kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime
 ```
 
 In-flight orchestrations are safe during rollouts. If a worker is killed mid-turn, duroxide will retry the activity on another worker after the lock timeout.
@@ -258,13 +258,13 @@ This drops both the `duroxide` and `copilot_sessions` schemas. Use with caution 
 
 ```bash
 # Check pods are running
-kubectl get pods -n copilot-sdk -l app.kubernetes.io/component=worker
+kubectl get pods -n copilot-runtime -l app.kubernetes.io/component=worker
 
 # Check logs for errors
-kubectl logs -n copilot-sdk -l app.kubernetes.io/component=worker --tail=50
+kubectl logs -n copilot-runtime -l app.kubernetes.io/component=worker --tail=50
 
 # Verify database connectivity
-kubectl exec -n copilot-sdk deploy/copilot-sdk-worker -- \
+kubectl exec -n copilot-runtime deploy/copilot-runtime-worker -- \
     node -e "console.log('DB OK')" --env-file=/dev/null
 ```
 
@@ -289,10 +289,10 @@ node --env-file=.env.remote -e "
 If workers log authentication errors, refresh the secret:
 
 ```bash
-kubectl create secret generic copilot-sdk-secrets -n copilot-sdk \
+kubectl create secret generic copilot-runtime-secrets -n copilot-runtime \
     --from-literal=GITHUB_TOKEN="$(gh auth token)" \
     --dry-run=client -o yaml | kubectl apply -f -
 
 # Restart workers to pick up new secret
-kubectl rollout restart deployment/copilot-sdk-worker -n copilot-sdk
+kubectl rollout restart deployment/copilot-runtime-worker -n copilot-runtime
 ```

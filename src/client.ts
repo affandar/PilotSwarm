@@ -19,7 +19,7 @@ const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
 const ORCHESTRATION_VERSION = "1.0.1";
-const DUROXIDE_SCHEMA = "duroxide";
+const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
  * DurableCopilotClient — pure client-side session handle.
@@ -125,7 +125,7 @@ export class DurableCopilotClient {
         if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
         else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
         else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            provider = await PostgresProvider.connectWithSchema(store, DUROXIDE_SCHEMA);
+            provider = await PostgresProvider.connectWithSchema(store, this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA);
         } else {
             throw new Error(`Unsupported store URL: ${store}`);
         }
@@ -133,7 +133,7 @@ export class DurableCopilotClient {
 
         // Create CMS catalog
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            this._catalog = await PgSessionCatalogProvider.create(store);
+            this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
             await this._catalog.initialize();
         }
 

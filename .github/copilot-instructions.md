@@ -1,12 +1,12 @@
-# Copilot Instructions for durable-copilot-sdk
+# Copilot Instructions for durable-copilot-runtime
 
 ## Project Overview
 
-durable-copilot-sdk wraps the [GitHub Copilot SDK](https://github.com/github/copilot-sdk) with [duroxide](https://github.com/user/duroxide) (a Rust-based durable orchestration runtime) to give AI agents **durable timers, crash recovery, and multi-node scaling**.
+durable-copilot-runtime is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide) (a Rust-based durable orchestration engine). It provides **crash recovery, durable timers, session dehydration, and multi-node scaling**.
 
 ## Architecture
 
-The SDK separates into two runtime components:
+The runtime separates into two runtime components:
 
 - **`DurableCopilotClient`** — manages sessions, sends prompts, subscribes to events. Lightweight, no GitHub token needed. Only handles serializable data.
 - **`DurableCopilotWorker`** — runs LLM turns, executes tool handlers, manages the Copilot runtime. Requires a GitHub token. Tools are registered here.
@@ -86,7 +86,7 @@ Changing the orchestration code (adding/removing/reordering yields) creates a ne
 
 ## Duroxide Bugs
 
-When a bug is identified as originating in **duroxide** (the Rust-based durable orchestration runtime), do NOT attempt to work around it in the SDK or TUI layer. Instead:
+When a bug is identified as originating in **duroxide** (the Rust-based durable orchestration runtime), do NOT attempt to work around it in the runtime or TUI layer. Instead:
 
 1. Clearly explain the bug and its root cause in duroxide.
 2. Insist on fixing the issue in the duroxide codebase itself.
