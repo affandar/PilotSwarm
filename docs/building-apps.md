@@ -1,49 +1,157 @@
 # Building Apps on durable-copilot-sdk
 
-This is a proposal to standardize the five building blocks of any app built on the
-durable-copilot-sdk: **Skills**, **Agents**, **Tools**, **MCP Servers**, and **Runtime**. This doc covers
-the raw SDK — no UI framework, no TUI. Just the durable LLM runtime and how to configure it.
+This guide explains how to build apps on the durable-copilot-sdk. The primary
+extension mechanism is **plugins** — a directory structure containing agents, skills,
+and MCP server configs. Workers load plugin contents at startup and pass them through
+to the Copilot SDK via proven session config fields (`skillDirectories`, `customAgents`,
+`mcpServers`). Clients are thin proxies that send prompts and render events.
 
 For the off-the-shelf TUI framework, see [tui-apps.md](./tui-apps.md).
 
-## The Five Building Blocks
+## Architecture: Plugins + Tools + Runtime
 
-Every app built on the durable-copilot-sdk is composed of five layers:
+Every app built on the durable-copilot-sdk has three layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                   │
-│  Skills (packaging)                                               │
-│    Reusable knowledge + tool bundles loaded from disk             │
-│    ↓                                                              │
-│  Agents (composition)                                             │
-│    Named sub-personas assembled from one or more skills           │
+│  Plugin (packaging)                                               │
+│    A directory containing:                                       │
+│    • agents/*.agent.md  — named sub-personas                     │
+│    • skills/*/SKILL.md  — domain knowledge                       │
+│    • .mcp.json          — external tool providers                │
 │    ↓                                                              │
 │  Tools (execution)                                                │
-│    LLM-callable functions with handlers that do real work         │
-│    ↓                                                              │
-│  MCP Servers (integration)                                        │
-│    Optional external tool providers over stdio/http               │
-│    for isolation, governance, and shared integrations             │
+│    LLM-callable functions registered on the worker               │
 │    ↓                                                              │
 │  Runtime (infrastructure)                                         │
-│    Worker process, database, secrets, binaries — where it all     │
-│    runs and what the tool handlers need to function                │
+│    Worker process, database, secrets — where it all runs          │
 │                                                                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 | Layer | What | Where | Owned by |
 |-------|------|-------|----------|
-| **Skills** | Prompt section + tool manifest | Files on disk (`skills/<name>/`) | App developer or shared packages |
-| **Agents** | Name + description + composed skills + tool filter | Session config | App developer |
-| **Tools** | Name + description + parameters + handler function | Worker code (local handlers) | App developer |
-| **MCP Servers** | External tool providers (stdio/http) + tool allowlist | Session/service config | Platform + app developer |
+| **Plugin** | Agents + skills + MCP configs | `plugin/` directory | App developer |
+| **Tools** | Name + description + parameters + handler function | Worker code (`worker.registerTools()`) | App developer |
 | **Runtime** | Worker process + DB + secrets + artifacts | Deployment target (local, K8s, etc.) | Operations |
 
 ---
 
-## 1. Tools
+## 1. Plugins
+
+A plugin is a directory with agents, skills, and MCP configs. The worker reads plugin
+contents at startup and passes them to every Copilot SDK session via:
+
+- **`skillDirectories`** — paths to `skills/` subdirectories containing `SKILL.md` files
+- **`customAgents`** — agent configs parsed from `agents/*.agent.md` files
+- **`mcpServers`** — MCP server configs parsed from `.mcp.json`
+
+### Plugin Directory Structure
+
+```
+my-plugin/
+├── agents/                  ← Optional: agent definitions
+│   ├── planner.agent.md
+│   └── monitor.agent.md
+├── skills/                  ← Optional: skill directories
+│   ├── durable-timers/
+│   │   └── SKILL.md
+│   └── concise-assistant/
+│       └── SKILL.md
+└── .mcp.json                ← Optional: MCP server configs
+```
+
+### How Loading Works
+
+```
+Worker startup                              Every session creation
+──────────────                              ──────────────────────
+DurableCopilotWorker({                      SessionManager.getOrCreate():
+  pluginDirs: ["./plugin"],                   SDK.createSession({
+  systemMessage: "...",                         skillDirectories: [...plugin skill dirs],
+})                                              customAgents: [...parsed .agent.md files],
+  ↓ _loadPlugins()                              mcpServers: {...parsed .mcp.json},
+  reads plugin/skills/* → skillDirectories    })
+  reads plugin/agents/*.agent.md → agents
+  reads plugin/.mcp.json → mcpServers
+```
+
+### Agent Files (`.agent.md`)
+
+Agents are defined as markdown files with YAML frontmatter:
+
+```markdown
+---
+name: planner
+description: Creates structured plans for complex tasks
+tools:
+  - view
+  - grep
+---
+
+# Planner Agent
+
+You are a planning agent. Break down complex tasks into ordered steps.
+Do not execute — only plan.
+```
+
+### Skill Files (`SKILL.md`)
+
+Skills are domain knowledge bundles — YAML frontmatter + markdown body:
+
+```markdown
+---
+name: durable-timers
+description: Expert knowledge on durable timer patterns
+---
+
+# Durable Timer Patterns
+
+You have a `wait` tool that creates timers surviving process restarts...
+```
+
+### MCP Server Config (`.mcp.json`)
+
+External tool providers — local subprocess or remote HTTP:
+
+```json
+{
+  "kubernetes": {
+    "command": "kubectl-mcp",
+    "args": ["serve"],
+    "tools": ["*"]
+  },
+  "remote-api": {
+    "type": "http",
+    "url": "https://api.example.com/mcp",
+    "tools": ["query"],
+    "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+  }
+}
+```
+
+Environment variable references (`${VAR}`) in string values are expanded at load time.
+
+### Advanced: Direct Config (No Plugin Directory)
+
+For programmatic control, bypass the plugin directory entirely:
+
+```javascript
+const worker = new DurableCopilotWorker({
+  store: process.env.DATABASE_URL,
+  githubToken: process.env.GITHUB_TOKEN,
+  skillDirectories: ["/path/to/my-skills"],
+  customAgents: [{ name: "reviewer", prompt: "You review code.", tools: null }],
+  mcpServers: { "my-server": { command: "node", args: ["server.js"], tools: ["*"] } },
+});
+```
+
+These merge with any plugin-loaded config. Direct config takes precedence.
+
+---
+
+## 2. Tools
 
 Tools are the lowest layer — functions the LLM can call. Each tool has a schema (what the
 LLM sees) and a handler (what actually executes).
@@ -101,260 +209,7 @@ them by name via `toolNames: ["deploy_service"]` at session creation.
 
 ---
 
-## 2. Skills
-
-Skills are a **packaging layer** — a reusable bundle of domain knowledge (prompt),
-tool manifest, and optional scripts. They follow the Copilot ecosystem convention:
-each skill is a directory containing a `SKILL.md` file with YAML frontmatter.
-
-### Skill Directory Structure
-
-```
-skills/
-  build/
-    SKILL.md               ← Required: frontmatter (name, description) + domain knowledge
-    tools.json             ← Optional: tool names this skill provides
-    scripts/               ← Optional: scripts the skill's tools may invoke
-      build-rust.sh
-      build-node.sh
-  deploy/
-    SKILL.md
-    tools.json
-    scripts/
-      apply-manifests.sh
-  observe/
-    SKILL.md
-    tools.json
-```
-
-### SKILL.md Format
-
-The standard Copilot skill file — YAML frontmatter followed by markdown body:
-
-```markdown
----
-name: build
-description: Building duroxide and SDKs from source. Use when compiling Rust crates, Node native addons, or packaging container images.
----
-
-# Build Tools
-
-You can build Rust projects from source using the build tools.
-
-## Key Knowledge
-
-- Build order: core crate → providers → SDKs → container image
-- Rust builds use `cargo build --release`
-- Node native addons use napi-rs (requires Rust toolchain + Node headers)
-- Always stream build output to blob storage via `upload_log`
-- Builds take 5-15 minutes — use `wait` with appropriate intervals to poll
-
-## Common Patterns
-
-When building from a git ref:
-1. Clone the repo
-2. Checkout the ref
-3. Run the build script: `scripts/build-rust.sh`
-4. Upload logs to blob storage
-```
-
-The `name` and `description` in the frontmatter are used for:
-- **Matching**: The TUI or agent framework can select skills by name
-- **Display**: Show skill descriptions in help output or dashboards
-- **Filtering**: `disabledSkills: ["chaos"]` to disable a skill by name
-
-### tools.json (Optional)
-
-Declares which tool names belong to this skill:
-
-```json
-{
-  "tools": ["smelt_build_duroxide", "smelt_build_stress_worker", "smelt_upload_log"]
-}
-```
-
-If omitted, the skill is knowledge-only (prompt injection, no tool association).
-
-### scripts/ (Optional)
-
-Scripts that the skill's tool handlers invoke at runtime. These are baked into the
-worker image alongside the skill directory. Tool handlers reference them by path:
-
-```typescript
-const buildDuroxide = defineTool("smelt_build_duroxide", {
-  description: "Build duroxide from source",
-  parameters: { /* ... */ },
-  handler: async (args) => {
-    // Script lives in the skill directory, baked into the image
-    const result = await exec(`./skills/build/scripts/build-rust.sh ${args.ref}`);
-    return { output: result.stdout, exitCode: result.exitCode };
-  },
-});
-```
-
-Scripts keep tool handlers thin — the handler is glue code, the script has the real logic.
-This also makes scripts testable independently of the LLM.
-
-### Loading Skills
-
-```typescript
-import { loadSkills } from "durable-copilot-sdk";
-
-// Load all skill directories — reads SKILL.md frontmatter + body, tools.json
-const skills = await loadSkills("./skills");
-// Returns: [{ name: "build", description: "...", prompt: "...", toolNames: [...] }, ...]
-
-// Compose into a system message
-const systemMessage = basePrompt + "\n\n" + skills.map(s => s.prompt).join("\n\n");
-
-// Get all tool names across all skills
-const allToolNames = skills.flatMap(s => s.toolNames);
-```
-
-### Compatibility with Copilot Ecosystem
-
-The `SKILL.md` format is the same used by GitHub Copilot (`.agents/skills/` and
-`.github/skills/`). Skills written for the durable-copilot-sdk can be used by Copilot
-and vice versa — the markdown body is injected into the LLM context the same way.
-
-The additions (`tools.json`, `scripts/`) are optional extensions that the durable SDK
-uses but Copilot ignores.
-
-### Why Skills Exist
-
-Without skills, you hard-code knowledge into the system prompt and duplicate it
-across agents. Skills solve:
-
-- **Reuse across agents**: The `observe` skill (metrics, logs) is used by both the
-  tester and chaos agents.
-- **Reuse across apps**: Share a `kubectl` skill between Smelter and a deploy bot.
-- **Deployment as artifact**: Drop a skill folder into the image — no code changes.
-- **Community skills**: Publish a skill as an npm package or git repo.
-
----
-
-## 3. Agents
-
-Agents are **named sub-personas** composed from one or more skills. Each agent has a
-focused system prompt and a filtered tool set. The orchestrator LLM delegates to the
-right agent based on the task.
-
-Agents are configured by your app service/worker control plane. Thin clients should
-attach to preconfigured sessions, not compose agents directly.
-
-### Defining Agents
-
-```typescript
-const session = await serviceClient.createSession({
-  systemMessage: `You are a test coordinator. Delegate to specialized agents:
-    @builder for building, @deployer for deployment, @tester for running tests.`,
-
-  customAgents: [
-    {
-      name: "builder",
-      description: "Builds projects from source and packages container images",
-      // Prompt composed from skills
-      prompt: skills.filter(s => ["build", "docker"].includes(s.name))
-                     .map(s => s.prompt).join("\n\n"),
-      // Tools filtered to just this agent's skill set
-      tools: skills.filter(s => ["build", "docker"].includes(s.name))
-                    .flatMap(s => s.toolNames),
-    },
-    {
-      name: "deployer",
-      description: "Deploys and manages infrastructure on Kubernetes",
-      prompt: skills.find(s => s.name === "deploy").prompt,
-      tools: skills.find(s => s.name === "deploy").toolNames,
-    },
-    {
-      name: "tester",
-      description: "Runs test scenarios and analyzes results",
-      prompt: skills.filter(s => ["test", "observe"].includes(s.name))
-                     .map(s => s.prompt).join("\n\n"),
-      tools: skills.filter(s => ["test", "observe"].includes(s.name))
-                    .flatMap(s => s.toolNames),
-    },
-  ],
-});
-```
-
-### How Agents and Skills Relate
-
-```
-Skills (on disk):              Agents (runtime):
-
-  build/   ──────────────────► @builder
-  docker/  ──────────────────►   (build + docker skills)
-
-  deploy/  ──────────────────► @deployer
-                                  (deploy skill)
-
-  test/    ──────────────────► @tester
-  observe/ ──────────┬───────►   (test + observe skills)
-                     │
-  chaos/   ──────────┤────────► @chaos
-                     └────────►   (chaos + observe skills)
-```
-
-- Skills are **many-to-many** with agents — one skill can serve multiple agents
-- Agents are **focused** — each has just the knowledge and tools it needs
-- The orchestrator's system prompt stays small — it only knows about delegation
-
-### When to Use Agents vs Flat Tools
-
-| Scenario | Approach |
-|----------|----------|
-| Simple app, < 5 tools | Flat tools — no agents needed |
-| Medium app, 5-10 tools | Skills for organization, single agent or flat |
-| Complex app, 10+ tools with distinct phases | Skills + agents — decompose into specialists |
-
----
-
-## 4. MCP Servers
-
-MCP servers are the integration boundary for external tools and systems. Use them when
-you need shared integrations, stronger isolation, or central policy control.
-
-Like skills and agents, MCP server config belongs on the service/worker side, not in thin clients.
-
-### Defining MCP server config (service/worker side)
-
-```typescript
-const session = await serviceClient.createSession({
-  model: "claude-sonnet-4",
-  systemMessage: "You are a release manager. Delegate to @deployer.",
-  customAgents: agents,
-  toolNames: ["deploy_service", "check_health", "query_metrics"],
-
-  // Proposal: passed through to Copilot session config
-  mcpServers: {
-    kubernetes: {
-      command: "node",
-      args: ["./mcp/k8s-server.js"],
-      tools: ["kubectl_get", "kubectl_apply", "kubectl_logs"],
-      env: { KUBECONFIG: "/var/run/secrets/kubeconfig" },
-    },
-    observability: {
-      type: "http",
-      url: "https://mcp-observe.internal.example.com",
-      tools: ["query_metrics", "query_logs"],
-      headers: { Authorization: `Bearer ${process.env.OBS_MCP_TOKEN}` },
-    },
-  },
-});
-```
-
-### When to use MCP servers
-
-| Scenario | Recommendation |
-|----------|----------------|
-| App-specific local logic | Keep as in-process worker tools |
-| Shared integrations across many apps | Expose via MCP server |
-| Strong isolation/audit requirements | Prefer MCP boundary |
-
----
-
-## 5. Runtime
+## 3. Runtime
 
 The runtime is everything the tools and worker need to function — the infrastructure
 layer beneath the SDK.
@@ -425,7 +280,7 @@ Your PostgreSQL user needs `CREATE SCHEMA` permission on first run.
 │    Needs: DATABASE_URL, GITHUB_TOKEN          │
 │    + tool artifacts + optional blob storage   │
 │                                               │
-│  skills/  (on disk, baked into image)         │
+│  plugin/  (on disk, baked into image)         │
 └───────────────────────────────────────────────┘
          │
          ▼
@@ -509,55 +364,50 @@ You configure it, you don't code it:
 
 ## Putting It All Together
 
-A complete app split into service/worker configuration and a thin client:
+A complete app: a plugin for domain knowledge, a worker with tools, and a thin client.
 
-```typescript
-// service.js — service/worker side (owns skills, agents, MCP, tools)
-import { DurableCopilotWorker, DurableCopilotClient, loadSkills } from "durable-copilot-sdk";
-import { deployService, checkHealth, rollback, buildProject } from "./tools.js";
-import { composeAgents } from "./agents.js";
+### Project Layout
+
+```
+my-app/
+├── plugin/
+│   ├── agents/
+│   │   └── deployer.agent.md        # Deployment specialist agent
+│   ├── skills/
+│   │   └── kubernetes/SKILL.md      # K8s domain knowledge
+│   └── .mcp.json                    # External tool providers
+├── src/
+│   └── tools.js                     # Tool definitions (handlers run on worker)
+├── worker.js                        # Worker entry point
+├── Dockerfile                       # Bakes plugin + tools into image
+└── package.json
+```
+
+### Worker (owns plugins + tools)
+
+```javascript
+// worker.js
+import { DurableCopilotWorker } from "durable-copilot-sdk";
+import { deployService, checkHealth, rollback } from "./src/tools.js";
+import path from "path";
 
 const worker = new DurableCopilotWorker({
   store: process.env.DATABASE_URL,
   githubToken: process.env.GITHUB_TOKEN,
   blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
+  // Plugin contents are loaded at startup and passed to every SDK session
+  pluginDirs: [path.resolve("./plugin")],
+  systemMessage: "You are a release manager for production deployments.",
 });
 
-// Register all tools (handlers execute here on the worker)
-worker.registerTools([deployService, checkHealth, rollback, buildProject]);
+worker.registerTools([deployService, checkHealth, rollback]);
 await worker.start();
-
-const serviceClient = new DurableCopilotClient({
-  store: process.env.DATABASE_URL,
-  blobEnabled: true,
-  dehydrateThreshold: 300,
-});
-await serviceClient.start();
-
-// Service-side only: load skills and compose agents
-const skills = await loadSkills("./skills");
-const agents = composeAgents(skills);
-
-export async function createManagedSession(): Promise<string> {
-  const session = await serviceClient.createSession({
-    model: "claude-sonnet-4",
-    systemMessage: "You are a release manager. Delegate to @builder and @deployer.",
-    customAgents: agents, // service-side config
-    toolNames: [...new Set(agents.flatMap(a => a.tools))],
-    mcpServers: {
-      observability: {
-        type: "http",
-        url: "https://mcp-observe.internal.example.com",
-        tools: ["query_metrics", "query_logs"],
-      },
-    },
-  });
-  return session.sessionId;
-}
 ```
 
-```typescript
-// client.js — thin client (does not load skills/agents/MCP config)
+### Client (thin — just sends prompts and renders events)
+
+```javascript
+// client.js
 import { DurableCopilotClient } from "durable-copilot-sdk";
 
 const client = new DurableCopilotClient({
@@ -566,20 +416,24 @@ const client = new DurableCopilotClient({
 });
 await client.start();
 
-// Session is created by the service with full server-side config
-const sessionId = await fetch("https://app.example.com/sessions", { method: "POST" })
-  .then(r => r.text());
-const session = await client.resumeSession(sessionId);
+// Create or resume a session — all config comes from the worker's plugins
+const session = await client.createSession({ model: "claude-sonnet-4" });
 
-// Use the session:
-
-await session.send("Build and deploy auth-service to staging");
+await session.send("Deploy auth-service to staging");
 session.on("assistant.message", (evt) => console.log(evt.data?.content));
+```
 
-const result = await session.sendAndWait("Deploy auth-service to staging");
-console.log(result);
+### Dockerfile
 
-session.on("tool.execution_end", (evt) => console.log(`[tool] ${evt.data?.toolName}`));
+```dockerfile
+FROM node:24-slim
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY plugin/ ./plugin/          # Plugin ships with the image
+COPY src/ ./src/
+COPY worker.js ./
+CMD ["node", "worker.js"]
 ```
 
 ## Further Reading

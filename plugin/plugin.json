@@ -1,0 +1,13 @@
+{
+  "name": "durable-copilot",
+  "description": "Durable execution building blocks — skills, agents, and tools for long-running Copilot sessions with timers, dehydration, and worker migration.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Microsoft",
+    "url": "https://github.com/microsoft/durable-copilot-sdk"
+  },
+  "license": "MIT",
+  "keywords": ["durable", "copilot", "timers", "orchestration"],
+  "agents": "agents/",
+  "skills": "skills/"
+}

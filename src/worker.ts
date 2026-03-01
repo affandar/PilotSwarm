@@ -5,8 +5,12 @@ import { durableSessionOrchestration_1_0_1 } from "./orchestration.js";
 import { durableSessionOrchestration_1_0_0 } from "./orchestration_1_0_0.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
+import { loadAgentFiles } from "./agent-loader.js";
+import { loadMcpConfig } from "./mcp-loader.js";
 import type { Tool } from "@github/copilot-sdk";
 import type { DurableCopilotWorkerOptions, ManagedSessionConfig } from "./types.js";
+import fs from "node:fs";
+import path from "node:path";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -38,6 +42,12 @@ export class DurableCopilotWorker {
     private _started = false;
     /** Worker-level tool registry — name → Tool. */
     private toolRegistry = new Map<string, Tool<any>>();
+    /** Loaded skill directories from plugins + direct config. */
+    private _loadedSkillDirs: string[] = [];
+    /** Loaded agent configs from plugins + direct config. */
+    private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null }> = [];
+    /** Loaded MCP server configs from plugins + direct config. */
+    private _loadedMcpServers: Record<string, any> = {};
 
     constructor(options: DurableCopilotWorkerOptions) {
         this.config = {
@@ -52,9 +62,18 @@ export class DurableCopilotWorker {
             );
         }
 
+        // Load plugins and merge with direct config — must happen before SessionManager init
+        this._loadPlugins();
+
         this.sessionManager = new SessionManager(
             options.githubToken,
             this.blobStore,
+            {
+                systemMessage: options.systemMessage,
+                skillDirectories: this._loadedSkillDirs,
+                customAgents: this._loadedAgents,
+                mcpServers: this._loadedMcpServers,
+            },
         );
     }
 
@@ -103,6 +122,21 @@ export class DurableCopilotWorker {
     /** Session catalog (CMS) — available when store is PostgreSQL. */
     get catalog(): SessionCatalogProvider | null {
         return this._catalog;
+    }
+
+    /** Loaded skill directories. */
+    get loadedSkillDirs(): string[] {
+        return this._loadedSkillDirs;
+    }
+
+    /** Loaded agent configs. */
+    get loadedAgents(): Array<{ name: string; description?: string; prompt: string; tools?: string[] | null }> {
+        return this._loadedAgents;
+    }
+
+    /** Loaded MCP server configs. */
+    get loadedMcpServers(): Record<string, any> {
+        return this._loadedMcpServers;
     }
 
     // ─── Lifecycle ───────────────────────────────────────────
@@ -186,6 +220,63 @@ export class DurableCopilotWorker {
     }
 
     // ─── Internal ────────────────────────────────────────────
+
+    /**
+     * Load plugin contents from plugin directories + direct config.
+     * Reads skills, agents, and MCP from each plugin dir and merges
+     * with any direct config from DurableCopilotWorkerOptions.
+     */
+    private _loadPlugins(): void {
+        // 1. Load from plugin directories
+        const pluginDirs = this.config.pluginDirs ?? [];
+        for (const pluginDir of pluginDirs) {
+            const absDir = path.resolve(pluginDir);
+
+            if (!fs.existsSync(absDir)) {
+                console.warn(`[DurableCopilotWorker] Plugin dir not found: ${absDir}`);
+                continue;
+            }
+
+            // Skills: each subdirectory of skills/ containing SKILL.md
+            const skillsDir = path.join(absDir, "skills");
+            if (fs.existsSync(skillsDir)) {
+                this._loadedSkillDirs.push(skillsDir);
+            }
+
+            // Agents: parse .agent.md files
+            const agentsDir = path.join(absDir, "agents");
+            if (fs.existsSync(agentsDir)) {
+                const agents = loadAgentFiles(agentsDir);
+                this._loadedAgents.push(...agents);
+            }
+
+            // MCP: parse .mcp.json
+            const mcpConfig = loadMcpConfig(absDir);
+            Object.assign(this._loadedMcpServers, mcpConfig);
+        }
+
+        // 2. Merge direct config (takes precedence over plugins)
+        if (this.config.skillDirectories?.length) {
+            this._loadedSkillDirs.push(...this.config.skillDirectories);
+        }
+        if (this.config.customAgents?.length) {
+            this._loadedAgents.push(...this.config.customAgents);
+        }
+        if (this.config.mcpServers) {
+            Object.assign(this._loadedMcpServers, this.config.mcpServers);
+        }
+
+        // 3. Log summary
+        const parts: string[] = [];
+        if (this._loadedSkillDirs.length > 0) parts.push(`${this._loadedSkillDirs.length} skill dir(s)`);
+        if (this._loadedAgents.length > 0) parts.push(`${this._loadedAgents.length} agent(s): ${this._loadedAgents.map(a => a.name).join(", ")}`);
+        const mcpCount = Object.keys(this._loadedMcpServers).length;
+        if (mcpCount > 0) parts.push(`${mcpCount} MCP server(s): ${Object.keys(this._loadedMcpServers).join(", ")}`);
+
+        if (parts.length > 0) {
+            console.log(`[DurableCopilotWorker] Loaded: ${parts.join("; ")}`);
+        }
+    }
 
     private async _createProvider(): Promise<any> {
         const store = this.config.store;

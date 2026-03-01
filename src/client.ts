@@ -66,10 +66,6 @@ export class DurableCopilotClient {
                 hooks: config.hooks,
                 waitThreshold: config.waitThreshold ?? this.config.waitThreshold,
                 toolNames: config.toolNames,
-                customAgents: config.customAgents,
-                mcpServers: config.mcpServers,
-                skillDirectories: config.skillDirectories,
-                disabledSkills: config.disabledSkills,
             };
             this.sessionConfigs.set(sessionId, fullConfig);
         }
@@ -175,10 +171,6 @@ export class DurableCopilotClient {
             workingDirectory: fullConfig?.workingDirectory,
             waitThreshold: fullConfig?.waitThreshold ?? this.config.waitThreshold,
             toolNames: allNames.length ? allNames : undefined,
-            customAgents: fullConfig?.customAgents,
-            mcpServers: fullConfig?.mcpServers,
-            skillDirectories: fullConfig?.skillDirectories,
-            disabledSkills: fullConfig?.disabledSkills,
         };
 
         if (!this.activeOrchestrations.has(sessionId)) {

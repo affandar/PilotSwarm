@@ -18,7 +18,11 @@ import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 import fs from "node:fs";
+import path from "node:path";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const require = createRequire(import.meta.url);
 const blessed = require("neo-blessed");
@@ -1388,6 +1392,14 @@ if (!isRemote) {
     process.stdout.write = () => true;
     process.stderr.write = () => true;
 
+    const WORKER_SYSTEM_MESSAGE = "You are a helpful assistant running in a durable execution environment. Be concise.\n\nCRITICAL RULES:\n1. You have a 'wait' tool. You MUST use it whenever you need to wait, pause, sleep, delay, poll, check back later, schedule a future action, or implement any recurring/periodic task.\n2. NEVER say you cannot wait or set timers. You CAN — use the 'wait' tool.\n3. NEVER use bash sleep, setTimeout, setInterval, cron, or any other timing mechanism.\n4. The 'wait' tool enables durable timers that survive process restarts and node migrations.\n5. For recurring tasks: use the 'wait' tool in a loop — complete the action, then call wait(seconds), then repeat.";
+
+    // Plugin directories: env override or default to bundled plugin/
+    const defaultPluginDir = path.resolve(__dirname, "..", "plugin");
+    const pluginDirs = process.env.PLUGIN_DIRS
+        ? process.env.PLUGIN_DIRS.split(",").map(d => d.trim()).filter(Boolean)
+        : (fs.existsSync(defaultPluginDir) ? [defaultPluginDir] : []);
+
     setStatus(`Starting ${numWorkers} workers...`);
     for (let i = 0; i < numWorkers; i++) {
         const w = new DurableCopilotWorker({
@@ -1397,6 +1409,8 @@ if (!isRemote) {
             blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
             blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
             workerNodeId: `local-rt-${i}`,
+            systemMessage: WORKER_SYSTEM_MESSAGE,
+            pluginDirs,
         });
         await w.start();
         workers.push(w);
@@ -2007,8 +2021,6 @@ if (isRemote) {
     }
 }
 
-const SYSTEM_MESSAGE = "You are a helpful assistant running in a durable execution environment. Be concise.\n\nCRITICAL RULES:\n1. You have a 'wait' tool. You MUST use it whenever you need to wait, pause, sleep, delay, poll, check back later, schedule a future action, or implement any recurring/periodic task.\n2. NEVER say you cannot wait or set timers. You CAN — use the 'wait' tool.\n3. NEVER use bash sleep, setTimeout, setInterval, cron, or any other timing mechanism.\n4. The 'wait' tool enables durable timers that survive process restarts and node migrations.\n5. For recurring tasks: use the 'wait' tool in a loop — complete the action, then call wait(seconds), then repeat.";
-
 // Map sessionId → DurableSession object
 const sessions = new Map();
 
@@ -2034,7 +2046,6 @@ function addPendingCommand(cmdId, cmd) {
 async function createNewSession() {
     const sess = await client.createSession({
         model: currentModel,
-        systemMessage: SYSTEM_MESSAGE,
         onUserInputRequest: async (request) => {
             return new Promise((resolve) => {
                 const q = request.question || "?";
