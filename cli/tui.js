@@ -17,6 +17,7 @@ import { DurableCopilotClient, DurableCopilotWorker } from "../dist/index.js";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
+import chalk from "chalk";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -65,6 +66,28 @@ process.stderr.write = _origStderr;
 
 // ─── Markdown renderer ──────────────────────────────────────────
 
+// Bright theme for cli-highlight — standard ANSI blue/grey/red are invisible on dark backgrounds
+const cliHighlightTheme = {
+    keyword: chalk.blueBright,
+    built_in: chalk.cyanBright,
+    type: chalk.cyan,
+    literal: chalk.blueBright,
+    number: chalk.greenBright,
+    regexp: chalk.redBright,
+    string: chalk.redBright,
+    class: chalk.blueBright,
+    function: chalk.yellowBright,
+    comment: chalk.green,
+    doctag: chalk.green,
+    meta: chalk.white,
+    tag: chalk.white,
+    name: chalk.blueBright,
+    attr: chalk.cyanBright,
+    attribute: chalk.cyanBright,
+    symbol: chalk.yellowBright,
+    params: chalk.white,
+};
+
 // Configure marked once; we override width dynamically in renderMarkdown()
 marked.use(
     markedTerminal({
@@ -72,14 +95,18 @@ marked.use(
         width: 120,
         showSectionPrefix: false,
         tab: 2,
-    })
+        // Override dim defaults that are invisible on dark backgrounds
+        blockquote: chalk.whiteBright.italic,
+        html: chalk.white,
+        codespan: chalk.yellowBright,
+    }, { theme: cliHighlightTheme })
 );
 
 function renderMarkdown(md) {
     try {
         // Dynamically set width to match chat pane (minus borders/padding)
         const mdWidth = Math.max(40, leftW() - 4);
-        marked.use(markedTerminal({ reflowText: true, width: mdWidth, showSectionPrefix: false, tab: 2 }));
+        marked.use(markedTerminal({ reflowText: true, width: mdWidth, showSectionPrefix: false, tab: 2, blockquote: chalk.whiteBright.italic, html: chalk.white, codespan: chalk.yellowBright }, { theme: cliHighlightTheme }));
         const unescaped = md.replace(/\\n/g, "\n");
         let rendered = marked(unescaped).replace(/\n{3,}/g, "\n\n").trimEnd();
         // marked-terminal uses ANSI codes for styling, not blessed tags.
@@ -173,6 +200,7 @@ const chatBox = blessed.log({
     height: chatH(),
     border: { type: "line" },
     style: {
+        fg: "white",
         border: { fg: "cyan" },
         label: { fg: "cyan" },
         focus: { border: { fg: "white" } },
@@ -220,6 +248,7 @@ const orchLogPane = blessed.log({
     height: 10,
     border: { type: "line" },
     style: {
+        fg: "white",
         border: { fg: "cyan" },
         label: { fg: "cyan" },
         focus: { border: { fg: "white" } },
@@ -273,6 +302,7 @@ const nodeMapPane = blessed.log({
     height: 10,
     border: { type: "line" },
     style: {
+        fg: "white",
         border: { fg: "yellow" },
         label: { fg: "yellow" },
         focus: { border: { fg: "white" } },
@@ -301,7 +331,7 @@ function refreshNodeMap() {
     const nodes = (seqNodes.length > 0 ? [...seqNodes] : [...workerPaneOrder])
         .filter(n => !SYNTHETIC_NODES.has(n));
     if (nodes.length === 0) {
-        nodeMapPane.log("{gray-fg}No worker nodes discovered yet{/gray-fg}");
+        nodeMapPane.log("{white-fg}No worker nodes discovered yet{/white-fg}");
         screen.render();
         return;
     }
@@ -337,7 +367,7 @@ function refreshNodeMap() {
     const ncols = columns.length;
     const dividers = ncols > 1 ? ncols - 1 : 0;
     const colW = Math.max(10, Math.floor((innerW - dividers) / ncols));
-    const SEP = "{gray-fg}│{/gray-fg}";
+    const SEP = "{white-fg}│{/white-fg}";
 
     // State → color mapping
     const stateColor = (status) => {
@@ -413,7 +443,7 @@ function refreshNodeMap() {
 
     if (maxSessions === 0) {
         nodeMapPane.log("");
-        nodeMapPane.log("{gray-fg}(no sessions assigned to any node){/gray-fg}");
+        nodeMapPane.log("{white-fg}(no sessions assigned to any node){/white-fg}");
     }
 
     // Legend
@@ -421,7 +451,7 @@ function refreshNodeMap() {
     nodeMapPane.log(
         "{green-fg}* running{/green-fg}  " +
         "{yellow-fg}~ waiting{/yellow-fg}  " +
-        "{gray-fg}. idle{/gray-fg}  " +
+        "{white-fg}. idle{/white-fg}  " +
         "{cyan-fg}? input{/cyan-fg}  " +
         "{red-fg}! error{/red-fg}"
     );
@@ -439,6 +469,7 @@ const seqPane = blessed.log({
     height: 10,
     border: { type: "line" },
     style: {
+        fg: "white",
         border: { fg: "magenta" },
         label: { fg: "magenta" },
         focus: { border: { fg: "white" } },
@@ -531,7 +562,7 @@ function seqLine(time, colIdx, content, color) {
     const ncols = seqNodes.length || 1;
     const widths = seqColWidths();
     const timeStr = (time || "").padEnd(TIME_W);
-    let line = `{gray-fg}${timeStr}{/gray-fg}`;
+    let line = `{white-fg}${timeStr}{/white-fg}`;
 
     for (let i = 0; i < ncols; i++) {
         const w = widths[i];
@@ -547,7 +578,7 @@ function seqLine(time, colIdx, content, color) {
             // Empty cell — vertical bar for the swimlane (ASCII | avoids
             // ambiguous-width issues with Unicode box-drawing characters)
             const mid = Math.floor(w / 2);
-            line += " ".repeat(mid) + "{gray-fg}|{/gray-fg}" + " ".repeat(w - mid - 1);
+            line += " ".repeat(mid) + "{white-fg}|{/white-fg}" + " ".repeat(w - mid - 1);
         }
     }
     return line;
@@ -597,7 +628,9 @@ function parseSeqEvent(plain, podName) {
     const orchNode = addSeqNode(podName);
 
     // Extract worker node from activity logs
-    const wMatch = plain.match(/worker_id=work-\d+-(\S+)-rt-\d+/);
+    // Try local-mode pattern first (local-rt-N), then remote pod pattern
+    const wMatch = plain.match(/worker_id=\S*?(local-rt-\d+)/)
+              || plain.match(/worker_id=work-\d+-(\S+)-rt-\d+/);
     const actNode = wMatch ? addSeqNode(wMatch[1]) : orchNode;
 
     // ─── Orchestration events (dots) ──────────
@@ -896,8 +929,8 @@ function refreshSeqPane() {
             renderSeqEventLine(event, activeOrchId);
         }
     } else {
-        seqPane.log("{gray-fg}No events yet — interact with this session to populate{/gray-fg}");
-        seqPane.log("{gray-fg}the sequence diagram.{/gray-fg}");
+        seqPane.log("{white-fg}No events yet — interact with this session to populate{/white-fg}");
+        seqPane.log("{white-fg}the sequence diagram.{/white-fg}");
     }
     screen.render();
 }
@@ -959,7 +992,7 @@ function refreshOrchLogPane() {
     if (buf && buf.length > 0) {
         for (const line of buf) orchLogPane.log(line);
     } else {
-        orchLogPane.log("{gray-fg}Loading logs...{/gray-fg}");
+        orchLogPane.log("{white-fg}Loading logs...{/white-fg}");
         // Backfill: one-shot kubectl logs fetch filtered for this orchestration
         backfillOrchLogs(activeOrchId);
     }
@@ -1006,7 +1039,7 @@ function backfillOrchLogs(orchId) {
                 if (buf && buf.length > 0) {
                     for (const ln of buf) orchLogPane.log(ln);
                 } else {
-                    orchLogPane.log("{gray-fg}No logs found for this session{/gray-fg}");
+                    orchLogPane.log("{white-fg}No logs found for this session{/white-fg}");
                 }
                 screen.render();
             }
@@ -1034,6 +1067,7 @@ function getOrCreateWorkerPane(podName) {
         height: 10,
         border: { type: "line" },
         style: {
+            fg: "white",
             border: { fg: color },
             label: { fg: color },
             focus: { border: { fg: "white" } },
@@ -1219,12 +1253,12 @@ function appendChatRaw(text, orchId) {
 }
 
 function setStatus(text) {
-    statusBar.setContent(`{gray-fg}${text}{/gray-fg}`);
+    statusBar.setContent(`{white-fg}${text}{/white-fg}`);
     screen.render();
 }
 
 function appendLog(text) {
-    chatBox.log(`{gray-fg}${text}{/gray-fg}`);
+    chatBox.log(`{white-fg}${text}{/white-fg}`);
     screen.render();
 }
 
@@ -1241,7 +1275,7 @@ function appendWorkerLog(podName, text, orchId) {
     if (orchId && orchId === activeOrchId) {
         pane.log(`{bold}${text}{/bold}`);
     } else if (orchId) {
-        pane.log(`{gray-fg}${text}{/gray-fg}`);
+        pane.log(`{white-fg}${text}{/white-fg}`);
     } else {
         pane.log(text);
     }
@@ -1267,7 +1301,7 @@ function recolorWorkerPanes() {
             if (entry.orchId && entry.orchId === activeOrchId) {
                 pane.log(`{bold}${entry.text}{/bold}`);
             } else if (entry.orchId) {
-                pane.log(`{gray-fg}${entry.text}{/gray-fg}`);
+                pane.log(`{white-fg}${entry.text}{/white-fg}`);
             } else {
                 pane.log(entry.text);
             }
@@ -1278,7 +1312,7 @@ function recolorWorkerPanes() {
 
 function showCopilotMessage(raw, orchId) {
     const rendered = renderMarkdown(raw);
-    const prefix = `{gray-fg}[${ts()}]{/gray-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`;
+    const prefix = `{white-fg}[${ts()}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`;
     appendChatRaw(prefix, orchId);
     // Always show on separate lines for readability
     for (const line of rendered.split("\n")) {
@@ -1341,12 +1375,12 @@ async function loadCmsHistory(orchId) {
             if (type === "user.message") {
                 const content = stripHostPrefix(evt.data?.content);
                 if (content && !content.startsWith("[SYSTEM:") && !isTimerPrompt(content)) {
-                    lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {bold}You:{/bold} ${content}`);
+                    lines.push(`{white-fg}[${timeStr}]{/white-fg} {bold}You:{/bold} ${content}`);
                 }
             } else if (type === "assistant.message") {
                 const content = evt.data?.content;
                 if (content) {
-                    lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
+                    lines.push(`{white-fg}[${timeStr}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
                     const rendered = renderMarkdown(content);
                     for (const line of rendered.split("\n")) {
                         lines.push(line);
@@ -1355,16 +1389,16 @@ async function loadCmsHistory(orchId) {
                 }
             } else if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`);
+                lines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`);
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || "tool";
-                lines.push(`{gray-fg}[${timeStr}]{/gray-fg} {green-fg}[tool] done{/green-fg} ${toolName}`);
+                lines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[tool] done{/green-fg} ${toolName}`);
             } else {
-                lines.push(`{gray-fg}[${timeStr}] [${type}]{/gray-fg}`);
+                lines.push(`{white-fg}[${timeStr}] [${type}]{/white-fg}`);
             }
         }
 
-        lines.push("{gray-fg}── full history loaded from database ──{/gray-fg}");
+        lines.push("{white-fg}── full history loaded from database ──{/white-fg}");
         lines.push("");
 
         sessionChatBuffers.set(orchId, lines);
@@ -1498,7 +1532,15 @@ if (!isRemote) {
 
     // Restore stdout/stderr after all workers initialized
     process.stdout.write = origStdoutWrite;
-    process.stderr.write = origStderrWrite;
+    // Keep stderr intercepted — MCP subprocesses (filesystem server, etc.) write
+    // warnings (ExperimentalWarning: SQLite, etc.) that corrupt the TUI.
+    // Route them to the log file instead of the terminal.
+    const logFd = fs.openSync(logFile, "a");
+    process.stderr.write = (chunk, encoding, cb) => {
+        try { fs.appendFileSync(logFd, chunk); } catch {}
+        if (typeof cb === "function") cb();
+        return true;
+    };
 
     // Rust native code writes directly to fd 1/2 during init, bypassing Node
     // and corrupting blessed's alt-screen buffer. Wipe the terminal and force
@@ -1554,22 +1596,24 @@ if (!isRemote) {
 
                 // Color orchestration vs activity differently
                 let formatted;
+                // Escape curly braces so blessed doesn't misinterpret them as tags
+                const escaped = plain.replace(/\{/g, "(").replace(/\}/g, ")");
                 const isOrch = plain.includes("duroxide::orchestration");
                 const isActivity = plain.includes("duroxide::activity");
                 if (isOrch) {
-                    formatted = plain
+                    formatted = escaped
                         .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
                         .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
                         .replace(/\bINFO\b/g, "{magenta-fg}INFO{/magenta-fg}");
                     formatted = `{magenta-fg}\u25c6{/magenta-fg} ${formatted}`;
                 } else if (isActivity) {
-                    formatted = plain
+                    formatted = escaped
                         .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
                         .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
                         .replace(/\bINFO\b/g, "{blue-fg}INFO{/blue-fg}");
                     formatted = `{blue-fg}\u25cf{/blue-fg} ${formatted}`;
                 } else {
-                    formatted = plain
+                    formatted = escaped
                         .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
                         .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
                         .replace(/\bINFO\b/g, "{green-fg}INFO{/green-fg}");
@@ -1607,8 +1651,8 @@ setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
 await client.start();
 setStatus("Ready — type a message");
 appendLog(isRemote
-    ? "Client connected ✓ {gray-fg}(no local runtime){/gray-fg}"
-    : `Client connected ✓ {gray-fg}(${numWorkers} embedded workers){/gray-fg}`);
+    ? "Client connected ✓ {white-fg}(no local runtime){/white-fg}"
+    : `Client connected ✓ {white-fg}(${numWorkers} embedded workers){/white-fg}`);
 
 // ─── Orchestrations tracking ─────────────────────────────────────
 
@@ -1706,7 +1750,7 @@ async function refreshOrchestrations() {
     const prevSelected = orchList.selected || 0;
     orchList.clearItems();
     if (entries.length === 0) {
-        orchList.addItem("{gray-fg}(none){/gray-fg}");
+        orchList.addItem("{white-fg}(none){/white-fg}");
     } else {
         for (const { id, status, createdAt } of entries) {
             // 4-char UUID fragment + time started
@@ -1744,7 +1788,7 @@ async function refreshOrchestrations() {
             } else if (liveStatus === "input_required") {
                 statusIcon = "{magenta-fg}?{/magenta-fg}";
             } else if (liveStatus === "idle") {
-                statusIcon = "{gray-fg}z{/gray-fg}";
+                statusIcon = "{white-fg}z{/white-fg}";
             }
 
             const heading = sessionHeadings.get(id);
@@ -1821,13 +1865,13 @@ orchList.key(["d"], async () => {
                 appendLog(`{red-fg}Delete failed: ${err.message}{/red-fg}`);
             }
         } else {
-            appendLog("{gray-fg}deleteInstance not available{/gray-fg}");
+            appendLog("{white-fg}deleteInstance not available{/white-fg}");
         }
     }
 });
 
 orchList.key(["r"], async () => {
-    appendLog("{gray-fg}Refreshing…{/gray-fg}");
+    appendLog("{white-fg}Refreshing…{/white-fg}");
     await refreshOrchestrations();
 });
 
@@ -2050,7 +2094,7 @@ function startLogStream() {
         kubectlProc.stderr.on("data", (chunk) => {
             const text = chunk.toString().trim();
             if (text && !text.includes("proxy error") && !text.includes("Gateway Timeout") && !text.includes("NotFound") && !text.includes("not found")) {
-                appendLog(`{gray-fg}${text}{/gray-fg}`);
+                appendLog(`{white-fg}${text}{/white-fg}`);
             }
         });
 
@@ -2145,7 +2189,7 @@ async function createNewSession() {
 
 const initialSession = await createNewSession();
 const thisSessionId = initialSession.sessionId;
-appendLog(`Session created ✓ {gray-fg}(${thisSessionId.slice(0, 8)}…){/gray-fg}`);
+appendLog(`Session created ✓ {white-fg}(${thisSessionId.slice(0, 8)}…){/white-fg}`);
 
 // ─── Active orchestration tracking ───────────────────────────────
 // The chat pane shows live output from the "active" orchestration.
@@ -2156,7 +2200,7 @@ let activeSessionShort = thisSessionId.slice(0, 8);
 let orchSelectFollowActive = true; // when true, next refresh snaps selection to activeOrchId
 
 function updateChatLabel() {
-    chatBox.setLabel(` {bold}Chat{/bold} {gray-fg}[${activeSessionShort}]{/gray-fg} `);
+    chatBox.setLabel(` {bold}Chat{/bold} {white-fg}[${activeSessionShort}]{/white-fg} `);
     screen.render();
 }
 
@@ -2204,7 +2248,7 @@ function startObserver(orchId) {
                     appendChatRaw(`{red-fg}❌ Orchestration failed: ${reason}{/red-fg}`, orchId);
                     updateLiveStatus("error");
                 } else {
-                    appendChatRaw(`{gray-fg}Orchestration ${currentStatus.status}{/gray-fg}`, orchId);
+                    appendChatRaw(`{white-fg}Orchestration ${currentStatus.status}{/white-fg}`, orchId);
                 }
                 setTurnInProgressIfActive(false);
                 setStatusIfActive(`${currentStatus.status} — session is dead`);
@@ -2312,14 +2356,14 @@ function startObserver(orchId) {
                                             const marker = m.id === active ? " {green-fg}← active{/green-fg}" : "";
                                             appendChatRaw(`  {cyan-fg}${m.id}{/cyan-fg}${marker}`, orchId);
                                         }
-                                        appendChatRaw("{gray-fg}Use /model <name> to switch{/gray-fg}", orchId);
+                                        appendChatRaw("{white-fg}Use /model <name> to switch{/white-fg}", orchId);
                                         break;
                                     }
                                     case "set_model": {
                                         const r = resp.result;
                                         currentModel = r.newModel;
                                         appendChatRaw(`{green-fg}✓ Model changed: {bold}${r.oldModel}{/bold} → {bold}${r.newModel}{/bold}{/green-fg}`, orchId);
-                                        appendChatRaw("{gray-fg}Takes effect on the next turn.{/gray-fg}", orchId);
+                                        appendChatRaw("{white-fg}Takes effect on the next turn.{/white-fg}", orchId);
                                         break;
                                     }
                                     case "get_info": {
@@ -2400,7 +2444,7 @@ function startObserver(orchId) {
                                 || "Unknown error";
                             appendChatRaw(`{red-fg}❌ Session failed: ${reason}{/red-fg}`, orchId);
                         }
-                        appendChatRaw(`{gray-fg}Orchestration ${info.status}{/gray-fg}`, orchId);
+                        appendChatRaw(`{white-fg}Orchestration ${info.status}{/white-fg}`, orchId);
                         setTurnInProgressIfActive(false);
                         setStatusIfActive(`${info.status} — type a message`);
                         sessionObservers.delete(orchId);
@@ -2638,7 +2682,7 @@ async function handleInput(text) {
                 knownOrchestrationIds.add(newOrchId);
                 await refreshOrchestrations();
                 await switchToOrchestration(newOrchId);
-                appendChatRaw(`{green-fg}New session created ✓ {gray-fg}(${newSess.sessionId.slice(0, 8)}…) model=${currentModel}{/gray-fg}{/green-fg}`);
+                appendChatRaw(`{green-fg}New session created ✓ {white-fg}(${newSess.sessionId.slice(0, 8)}…) model=${currentModel}{/white-fg}{/green-fg}`);
             } catch (err) {
                 appendChatRaw(`{red-fg}Failed to create session: ${err.message}{/red-fg}`);
             }
@@ -2667,7 +2711,7 @@ async function handleInput(text) {
     }
 
     if (turnInProgress) {
-        appendChatRaw(`{gray-fg}[${ts()}]{/gray-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
+        appendChatRaw(`{white-fg}[${ts()}]{/white-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
         inputBar.clearValue();
         setStatus("Interrupting...");
         injectSeqUserEvent(activeOrchId, trimmed);
@@ -2682,7 +2726,7 @@ async function handleInput(text) {
         return;
     }
 
-    appendChatRaw(`{gray-fg}[${ts()}]{/gray-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
+    appendChatRaw(`{white-fg}[${ts()}]{/white-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
     inputBar.clearValue();
     inputBar.focus();
     turnInProgress = true;
@@ -2703,7 +2747,7 @@ async function handleInput(text) {
                             || "Unknown error")
                         : orchStatus.status;
                     appendChatRaw(`{red-fg}❌ Cannot send — orchestration ${orchStatus.status}: ${reason}{/red-fg}`);
-                    appendChatRaw(`{gray-fg}Create a new session with 'n' to continue.{/gray-fg}`);
+                    appendChatRaw(`{white-fg}Create a new session with 'n' to continue.{/white-fg}`);
                     turnInProgress = false;
                     setStatus(`${orchStatus.status} — session is dead`);
                     screen.render();
