@@ -238,8 +238,8 @@ export class ManagedSession {
             );
         });
 
-        // Set up a timeout race
-        const TURN_TIMEOUT = 60_000;
+        // Set up a timeout race — configurable via env to support long tool calls
+        const TURN_TIMEOUT = parseInt(process.env.TURN_TIMEOUT_MS ?? "300000", 10);
         const timeoutPromise = new Promise<void>((_, reject) => {
             setTimeout(() => reject(new Error("Turn timed out")), TURN_TIMEOUT);
         });
