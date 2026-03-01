@@ -1,2 +1,7 @@
 {
+    "context7": {
+        "type": "http",
+        "url": "https://context7-mcp--upstash.run.tools/mcp",
+        "tools": ["resolve-library-id", "query-docs"]
+    }
 }

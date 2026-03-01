@@ -251,41 +251,52 @@ Your PostgreSQL user needs `CREATE SCHEMA` permission on first run.
 
 ### Deployment Topologies
 
-**Single Process** — simplest, for development:
+**Local Development** — embedded workers in TUI (default):
 ```
 ┌─ Your Machine ──────────────────────────────────┐
-│  node app.js                                     │
-│    ├─ DurableCopilotWorker (polls DB)            │
+│  ./run.sh  (or: node examples/tui.js)            │
+│                                                  │
+│    ├─ DurableCopilotWorker × 4 (poll DB)         │
 │    └─ DurableCopilotClient (sends messages)      │
 │                                                  │
-│  .env:                                           │
-│    DATABASE_URL=postgresql://...                  │
+│  .env.remote:                                    │
+│    DATABASE_URL=postgresql://...  (remote PG)    │
 │    GITHUB_TOKEN=ghu_...                          │
 └──────────────────────────────────────────────────┘
          │
          ▼
-    PostgreSQL
+    PostgreSQL (remote)
 ```
 
-**Separated Client/Worker** — for production:
+The TUI embeds 4 worker runtimes by default (`WORKERS=4`). Use `./run.sh local --db`
+for a local PostgreSQL instance instead. For the simplest possible setup (no TUI),
+`examples/chat.js` runs one worker + one client in a single process.
+
+**Production** — TUI client-only + AKS workers:
 ```
-┌─ Client (user's machine or API server) ──────┐
-│  DurableCopilotClient                         │
+┌─ Your Machine (TUI) ─────────────────────────┐
+│  ./run.sh remote                              │
+│  (WORKERS=0 node examples/tui.js)             │
+│    └─ DurableCopilotClient                    │
 │    Needs: DATABASE_URL                        │
 └────────────────┬──────────────────────────────┘
                  │ PostgreSQL
                  ▼
-┌─ Worker (K8s pod, VM, etc.) ─────────────────┐
-│  DurableCopilotWorker + registered tools      │
+┌─ K8s Pods (Workers) ─────────────────────────┐
+│  node examples/worker.js                      │
+│  DurableCopilotWorker × N replicas            │
 │    Needs: DATABASE_URL, GITHUB_TOKEN          │
 │    + tool artifacts + optional blob storage   │
 │                                               │
-│  plugin/  (on disk, baked into image)         │
+│  plugin/  (baked into Docker image)           │
 └───────────────────────────────────────────────┘
          │
          ▼
     PostgreSQL + Azure Blob (optional)
 ```
+
+Deploy workers via `./scripts/deploy-aks.sh` (resets DB, builds image, pushes to ACR,
+rolls out to AKS). The TUI streams worker logs via `kubectl`.
 
 ---
 
