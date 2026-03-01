@@ -1670,6 +1670,70 @@ const sessionChatBuffers = new Map(); // orchId → string[]
 const sessionObservers = new Map(); // orchId → AbortController
 const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
 
+// ─── Live tool event polling ─────────────────────────────────────
+// Polls CMS during active turns to show [tool] start/done in real-time.
+let liveEventsEnabled = true;
+const liveEventPollers = new Map(); // orchId → { timer, lastEventIdx }
+
+function startLiveEventPoller(orchId) {
+    if (!liveEventsEnabled) return;
+    if (liveEventPollers.has(orchId)) return;
+
+    const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+    const sess = sessions.get(sid);
+    if (!sess) return;
+
+    // Snapshot current event count so we only show NEW events
+    const state = { lastEventIdx: -1, initializing: true, timer: null };
+
+    const poll = async () => {
+        try {
+            const events = await sess.getMessages();
+            if (!events || events.length === 0) return;
+
+            // On first poll, just record the baseline
+            if (state.initializing) {
+                state.lastEventIdx = events.length - 1;
+                state.initializing = false;
+                return;
+            }
+
+            // Show any new tool events since last check
+            for (let i = state.lastEventIdx + 1; i < events.length; i++) {
+                const evt = events[i];
+                const type = evt.eventType;
+                const timeStr = evt.createdAt
+                    ? new Date(evt.createdAt).toLocaleTimeString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
+                    : "--:--:--";
+
+                if (type === "tool.execution_start") {
+                    const toolName = evt.data?.toolName || "tool";
+                    appendChatRaw(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`, orchId);
+                } else if (type === "tool.execution_complete") {
+                    const toolName = evt.data?.toolName || "tool";
+                    appendChatRaw(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[tool] done{/green-fg}  ${toolName}`, orchId);
+                }
+            }
+            state.lastEventIdx = events.length - 1;
+        } catch {
+            // CMS poll failed — ignore silently
+        }
+    };
+
+    // Initial baseline, then poll every 1.5s
+    poll();
+    state.timer = setInterval(poll, 1500);
+    liveEventPollers.set(orchId, state);
+}
+
+function stopLiveEventPoller(orchId) {
+    const state = liveEventPollers.get(orchId);
+    if (state) {
+        if (state.timer) clearInterval(state.timer);
+        liveEventPollers.delete(orchId);
+    }
+}
+
 function getDc() {
     try { return client._getDuroxideClient(); } catch { return null; }
 }
@@ -2231,6 +2295,12 @@ function startObserver(orchId) {
     function updateLiveStatus(status) {
         sessionLiveStatus.set(orchId, status);
         refreshOrchestrations();
+        // Start/stop live event poller based on status
+        if (status === "running") {
+            startLiveEventPoller(orchId);
+        } else {
+            stopLiveEventPoller(orchId);
+        }
     }
 
     // First, show the current state immediately
@@ -2857,6 +2927,20 @@ screen.on("keypress", (ch, key) => {
         if (logViewMode === "sequence") refreshSeqPane();
         if (logViewMode === "nodemap") refreshNodeMap();
 
+    // e: toggle live tool events
+    } else if (ch === "e" && screen.focused !== inputBar) {
+        liveEventsEnabled = !liveEventsEnabled;
+        const label = liveEventsEnabled ? "{green-fg}ON{/green-fg}" : "{red-fg}OFF{/red-fg}";
+        appendLog(`{cyan-fg}Live tool events: ${label}{/cyan-fg}`);
+        if (!liveEventsEnabled) {
+            // Stop all active pollers
+            for (const orchId of liveEventPollers.keys()) {
+                stopLiveEventPoller(orchId);
+            }
+        }
+        screen.render();
+        return;
+
     // [ / ]: resize right pane by 8 chars
     } else if ((ch === "[" || ch === "]") && screen.focused !== inputBar) {
         if (ch === "[") rightPaneAdjust += 8;  // shrink right (grow left)
@@ -2965,6 +3049,7 @@ appendChatRaw("  {yellow-fg}p{/yellow-fg}      back to prompt from anywhere");
 appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes");
 appendChatRaw("  {yellow-fg}h/l{/yellow-fg}    move left/right between panes");
 appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence → node map)");
+appendChatRaw("  {yellow-fg}e{/yellow-fg}      toggle live tool events on/off");
 appendChatRaw("");
 appendChatRaw("{bold}Scrolling (when chat/log pane focused):{/bold}");
 appendChatRaw("  {yellow-fg}j/k{/yellow-fg} or {yellow-fg}↑/↓{/yellow-fg}   scroll line by line");
