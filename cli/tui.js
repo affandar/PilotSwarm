@@ -2939,6 +2939,16 @@ screen.key(["C-c"], async () => {
     process.exit(0);
 });
 
+// Ctrl+E / Ctrl+Y: scroll chat pane down/up by 1 line (works from prompt too)
+screen.key(["C-e"], () => {
+    chatBox.scroll(1);
+    screen.render();
+});
+screen.key(["C-y"], () => {
+    chatBox.scroll(-1);
+    screen.render();
+});
+
 // ESC + q quit sequence: press Escape, then q within 1s to quit
 let escPressedAt = 0;
 
@@ -2972,8 +2982,8 @@ screen.on("keypress", (ch, key) => {
         if (logViewMode === "sequence") refreshSeqPane();
         if (logViewMode === "nodemap") refreshNodeMap();
 
-    // e: toggle live tool events
-    } else if (ch === "e" && screen.focused !== inputBar) {
+    // \e then e (within 1s): toggle live tool events
+    } else if (ch === "e" && screen.focused !== inputBar && (Date.now() - escPressedAt) < 1000) {
         liveEventsEnabled = !liveEventsEnabled;
         const label = liveEventsEnabled ? "{green-fg}ON{/green-fg}" : "{red-fg}OFF{/red-fg}";
         appendLog(`{cyan-fg}Live tool events: ${label}{/cyan-fg}`);
@@ -3094,10 +3104,11 @@ appendChatRaw("  {yellow-fg}p{/yellow-fg}      back to prompt from anywhere");
 appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes");
 appendChatRaw("  {yellow-fg}h/l{/yellow-fg}    move left/right between panes");
 appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence → node map)");
-appendChatRaw("  {yellow-fg}e{/yellow-fg}      toggle live tool events on/off");
+appendChatRaw("  {yellow-fg}Esc e{/yellow-fg}  toggle live tool events on/off");
 appendChatRaw("");
 appendChatRaw("{bold}Scrolling (when chat/log pane focused):{/bold}");
 appendChatRaw("  {yellow-fg}j/k{/yellow-fg} or {yellow-fg}↑/↓{/yellow-fg}   scroll line by line");
+appendChatRaw("  {yellow-fg}Ctrl-e/y{/yellow-fg}      scroll chat from prompt");
 appendChatRaw("  {yellow-fg}Ctrl-d/u{/yellow-fg}      page down/up");
 appendChatRaw("  {yellow-fg}g/G{/yellow-fg}          top / bottom");
 appendChatRaw("  {yellow-fg}mouse wheel{/yellow-fg}    scroll any pane");
