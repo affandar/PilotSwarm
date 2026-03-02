@@ -1,7 +1,6 @@
 import type {
     TurnResult,
     OrchestrationInput,
-    SubAgentEntry,
     SerializableSessionConfig,
     DurableSessionStatus,
     CommandMessage,
@@ -34,7 +33,7 @@ function setStatus(ctx: any, status: DurableSessionStatus, extra?: Record<string
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_2(
+export function* durableSessionOrchestration_1_0_1(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -52,11 +51,6 @@ export function* durableSessionOrchestration_1_0_2(
     let taskContext = input.taskContext;
     const baseSystemMessage = input.baseSystemMessage ?? config.systemMessage;
     const MAX_RETRIES = 3;
-    const MAX_SUB_AGENTS = 5;
-
-    // ─── Sub-agent tracking ──────────────────────────────────
-    let subAgents: SubAgentEntry[] = input.subAgents ? [...input.subAgents] : [];
-    const parentOrchId = input.parentOrchId;
 
     // If we have a captured task context, inject it into the system message
     // so it survives LLM conversation truncation (BasicTruncator never drops system messages).
@@ -112,8 +106,6 @@ export function* durableSessionOrchestration_1_0_2(
             nextSummarizeAt,
             taskContext,
             baseSystemMessage,
-            subAgents,
-            parentOrchId,
             retryCount: 0, // reset by default; overrides can set it
             ...overrides,
         };
@@ -569,234 +561,6 @@ export function* durableSessionOrchestration_1_0_2(
             case "cancelled":
                 ctx.traceInfo("[session] turn cancelled");
                 continue;
-
-            // ─── Sub-Agent Result Handlers ───────────────────
-
-            case "spawn_agent": {
-                // Enforce max sub-agents
-                const activeCount = subAgents.filter(a => a.status === "running").length;
-                if (activeCount >= MAX_SUB_AGENTS) {
-                    ctx.traceInfo(`[orch] spawn_agent denied: ${activeCount}/${MAX_SUB_AGENTS} agents running`);
-                    // Feed error back to the LLM
-                    yield ctx.continueAsNew(continueInput({
-                        prompt: `[SYSTEM: spawn_agent failed — you already have ${activeCount} running sub-agents (max ${MAX_SUB_AGENTS}). ` +
-                            `Wait for some to complete before spawning more.]`,
-                    }));
-                    return "";
-                }
-
-                // Generate deterministic child IDs
-                const childGuid: string = yield ctx.newGuid();
-                const childSessionId = `${input.sessionId}:sub-${childGuid.slice(0, 8)}`;
-                const childOrchId = `session-${childSessionId}`;
-
-                ctx.traceInfo(`[orch] spawning sub-agent: id=${childOrchId} task="${result.task.slice(0, 80)}"`);
-
-                // Build child config — inherit parent's config with optional overrides
-                const childConfig: SerializableSessionConfig = {
-                    ...config,
-                    ...(result.systemMessage ? { systemMessage: result.systemMessage } : {}),
-                    ...(result.toolNames ? { toolNames: result.toolNames } : {}),
-                };
-
-                // Build child orchestration input
-                const childInput: OrchestrationInput = {
-                    sessionId: childSessionId,
-                    config: childConfig,
-                    blobEnabled,
-                    dehydrateThreshold,
-                    idleTimeout: -1, // sub-agents don't idle-dehydrate — they just run
-                    inputGracePeriod: -1,
-                    checkpointInterval,
-                    rehydrationMessage,
-                    parentOrchId: `session-${input.sessionId}`,
-                    prompt: result.task,
-                };
-
-                // Fire-and-forget: start the child orchestration
-                yield ctx.startOrchestrationVersioned(
-                    "durable-session-v2",
-                    "1.0.2",
-                    childOrchId,
-                    childInput,
-                );
-
-                // Track the sub-agent
-                subAgents.push({
-                    orchId: childOrchId,
-                    sessionId: childSessionId,
-                    task: result.task.slice(0, 500),
-                    status: "running",
-                });
-
-                // Feed confirmation back to the LLM
-                const spawnMsg = `[SYSTEM: Sub-agent spawned successfully.\n` +
-                    `  Agent ID: ${childOrchId}\n` +
-                    `  Task: "${result.task.slice(0, 200)}"\n` +
-                    `  The agent is now running autonomously. Use check_agents to monitor progress, ` +
-                    `message_agent to send instructions, or wait_for_agents to block until completion.]`;
-
-                yield ctx.continueAsNew(continueInput({ prompt: spawnMsg }));
-                return "";
-            }
-
-            case "message_agent": {
-                const targetOrchId = result.agentId;
-                const agentEntry = subAgents.find(a => a.orchId === targetOrchId);
-
-                if (!agentEntry) {
-                    ctx.traceInfo(`[orch] message_agent: unknown agent ${targetOrchId}`);
-                    yield ctx.continueAsNew(continueInput({
-                        prompt: `[SYSTEM: message_agent failed — agent "${targetOrchId}" not found. ` +
-                            `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
-                    }));
-                    return "";
-                }
-
-                ctx.traceInfo(`[orch] message_agent: ${targetOrchId} msg="${result.message.slice(0, 60)}"`);
-
-                try {
-                    yield manager.messageChild(targetOrchId, result.message);
-                } catch (err: any) {
-                    ctx.traceInfo(`[orch] message_agent failed: ${err.message}`);
-                    yield ctx.continueAsNew(continueInput({
-                        prompt: `[SYSTEM: message_agent failed: ${err.message}]`,
-                    }));
-                    return "";
-                }
-
-                yield ctx.continueAsNew(continueInput({
-                    prompt: `[SYSTEM: Message sent to sub-agent ${targetOrchId}: "${result.message.slice(0, 200)}"]`,
-                }));
-                return "";
-            }
-
-            case "check_agents": {
-                ctx.traceInfo(`[orch] check_agents: ${subAgents.length} agents tracked`);
-
-                if (subAgents.length === 0) {
-                    yield ctx.continueAsNew(continueInput({
-                        prompt: `[SYSTEM: No sub-agents have been spawned yet.]`,
-                    }));
-                    return "";
-                }
-
-                // Poll fresh status for each agent
-                const statusLines: string[] = [];
-                for (const agent of subAgents) {
-                    try {
-                        const rawStatus: string = yield manager.getChildStatus(agent.orchId);
-                        const parsed = JSON.parse(rawStatus);
-                        const childCustom = parsed.customStatus;
-                        const runtimeStatus = parsed.runtimeStatus ?? "unknown";
-
-                        // Update local tracking
-                        if (runtimeStatus === "Completed" || runtimeStatus === "Failed" || runtimeStatus === "Terminated") {
-                            agent.status = runtimeStatus === "Completed" ? "completed" : "failed";
-                            if (childCustom?.turnResult?.content) {
-                                agent.result = childCustom.turnResult.content.slice(0, 1000);
-                            }
-                        }
-
-                        const statusStr = childCustom?.status ?? runtimeStatus;
-                        const content = childCustom?.turnResult?.content
-                            ?? childCustom?.intermediateContent
-                            ?? "(no output yet)";
-                        statusLines.push(
-                            `  - Agent ${agent.orchId}\n` +
-                            `    Task: "${agent.task.slice(0, 120)}"\n` +
-                            `    Status: ${statusStr} (runtime: ${runtimeStatus})\n` +
-                            `    Output: ${String(content).slice(0, 500)}`
-                        );
-                    } catch (err: any) {
-                        statusLines.push(
-                            `  - Agent ${agent.orchId}\n` +
-                            `    Task: "${agent.task.slice(0, 120)}"\n` +
-                            `    Status: unknown (error: ${err.message})`
-                        );
-                    }
-                }
-
-                yield ctx.continueAsNew(continueInput({
-                    prompt: `[SYSTEM: Sub-agent status report (${subAgents.length} agents):\n${statusLines.join("\n")}]`,
-                }));
-                return "";
-            }
-
-            case "wait_for_agents": {
-                let targetIds = result.agentIds;
-
-                // If empty, wait for all running agents
-                if (!targetIds || targetIds.length === 0) {
-                    targetIds = subAgents.filter(a => a.status === "running").map(a => a.orchId);
-                }
-
-                if (targetIds.length === 0) {
-                    ctx.traceInfo(`[orch] wait_for_agents: no running agents to wait for`);
-                    yield ctx.continueAsNew(continueInput({
-                        prompt: `[SYSTEM: No running sub-agents to wait for. All agents have already completed.]`,
-                    }));
-                    return "";
-                }
-
-                ctx.traceInfo(`[orch] wait_for_agents: waiting for ${targetIds.length} agents`);
-                setStatus(ctx, "running", {
-                    iteration,
-                    waitingForAgents: targetIds,
-                });
-
-                // Poll until all target agents are done (10s intervals)
-                const MAX_POLL_ATTEMPTS = 180; // 30 minutes max
-                for (let pollAttempt = 0; pollAttempt < MAX_POLL_ATTEMPTS; pollAttempt++) {
-                    let allDone = true;
-                    for (const targetId of targetIds) {
-                        const agent = subAgents.find(a => a.orchId === targetId);
-                        if (!agent || agent.status !== "running") continue;
-
-                        try {
-                            const rawStatus: string = yield manager.getChildStatus(targetId);
-                            const parsed = JSON.parse(rawStatus);
-                            const runtimeStatus = parsed.runtimeStatus ?? "unknown";
-                            const childCustom = parsed.customStatus;
-
-                            if (runtimeStatus === "Completed" || runtimeStatus === "Failed" || runtimeStatus === "Terminated") {
-                                agent.status = runtimeStatus === "Completed" ? "completed" : "failed";
-                                if (childCustom?.turnResult?.content) {
-                                    agent.result = childCustom.turnResult.content.slice(0, 2000);
-                                }
-                                ctx.traceInfo(`[orch] agent ${targetId} finished: ${agent.status}`);
-                            } else {
-                                allDone = false;
-                            }
-                        } catch {
-                            allDone = false;
-                        }
-                    }
-
-                    if (allDone) break;
-
-                    // Wait 10 seconds before polling again
-                    yield ctx.scheduleTimer(10_000);
-                }
-
-                // Build results summary
-                const resultLines: string[] = [];
-                for (const targetId of targetIds) {
-                    const agent = subAgents.find(a => a.orchId === targetId);
-                    if (!agent) continue;
-                    resultLines.push(
-                        `  - Agent ${agent.orchId}\n` +
-                        `    Task: "${agent.task.slice(0, 120)}"\n` +
-                        `    Status: ${agent.status}\n` +
-                        `    Result: ${agent.result ?? "(no result)"}`
-                    );
-                }
-
-                yield ctx.continueAsNew(continueInput({
-                    prompt: `[SYSTEM: Sub-agents completed:\n${resultLines.join("\n")}]`,
-                }));
-                return "";
-            }
 
             case "error": {
                 // Treat like an activity failure — retry with backoff.
