@@ -1692,6 +1692,14 @@ const client = new DurableCopilotClient({
     store,
     blobEnabled: true,
     dehydrateOnIdle: -1, // infinite session pinning — only lost if worker dies
+    checkpointInterval: 1, // checkpoint on every idle transition (wait, timer, input)
+    rehydrationMessage:
+        `This session was rehydrated after a worker restart. ` +
+        `Your LLM conversation history is preserved, but the local worktree state ` +
+        `(files on disk, build artifacts, running processes) may be out of sync with ` +
+        `what you were doing before the restart. ` +
+        `Before continuing, tell the user: (1) what you were last working on, ` +
+        `(2) that the worktree may have changed, and (3) ask for instructions on how to proceed.`,
 });
 
 setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");

@@ -40,6 +40,8 @@ export function* durableSessionOrchestration_1_0_1(
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
     const inputGracePeriod = input.inputGracePeriod ?? 30;
+    const checkpointInterval = input.checkpointInterval ?? -1; // seconds, -1 = disabled
+    const rehydrationMessage = input.rehydrationMessage;
     const blobEnabled = input.blobEnabled ?? false;
     let needsHydration = input.needsHydration ?? false;
     let affinityKey = input.affinityKey ?? input.sessionId;
@@ -74,12 +76,12 @@ export function* durableSessionOrchestration_1_0_1(
 
     // ─── Helper: wrap prompt with resume context after dehydration ──
     function wrapWithResumeContext(userPrompt: string, extra?: string): string {
-        const parts = [
-            `[SYSTEM: The session was dehydrated and has been rehydrated on a new worker. ` +
+        const base = rehydrationMessage ??
+            `The session was dehydrated and has been rehydrated on a new worker. ` +
             `The LLM conversation history is preserved, but you should acknowledge the context switch. ` +
             `After responding to the user's message below, resume exactly what you were doing before. ` +
-            `If you were in the middle of a recurring task, continue it.`,
-        ];
+            `If you were in the middle of a recurring task, continue it.`;
+        const parts = [`[SYSTEM: ${base}`];
         if (extra) parts.push(extra);
         parts.push(`]`);
         parts.push(``);
@@ -99,6 +101,8 @@ export function* durableSessionOrchestration_1_0_1(
             dehydrateThreshold,
             idleTimeout,
             inputGracePeriod,
+            checkpointInterval,
+            rehydrationMessage,
             nextSummarizeAt,
             taskContext,
             baseSystemMessage,
@@ -114,6 +118,17 @@ export function* durableSessionOrchestration_1_0_1(
         needsHydration = true;
         affinityKey = yield ctx.newGuid();
         session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
+    }
+
+    // ─── Helper: checkpoint without releasing pin ────────────
+    function* maybeCheckpoint(): Generator<any, void, any> {
+        if (!blobEnabled || checkpointInterval < 0) return;
+        try {
+            ctx.traceInfo(`[orch] checkpoint (iteration=${iteration})`);
+            yield session.checkpoint();
+        } catch (err: any) {
+            ctx.traceInfo(`[orch] checkpoint failed: ${err.message ?? err}`);
+        }
     }
 
     // ─── Helper: summarize session title if due ──────────────
@@ -351,12 +366,15 @@ export function* durableSessionOrchestration_1_0_1(
                 if (!blobEnabled || idleTimeout < 0) {
                     // Store the result so the dequeue-idle setStatus includes it
                     lastTurnResult = statusResult;
+                    // Checkpoint while idle (no dehydration path)
+                    yield* maybeCheckpoint();
                     continue;
                 }
 
                 // Race: next message vs idle timeout
                 {
                     setStatus(ctx, "idle", { iteration, turnResult: statusResult });
+                    yield* maybeCheckpoint();
                     const nextMsg = ctx.dequeueEvent("messages");
                     const idleTimer = ctx.scheduleTimer(idleTimeout * 1000);
                     const raceResult: any = yield ctx.race(nextMsg, idleTimer);
@@ -418,6 +436,9 @@ export function* durableSessionOrchestration_1_0_1(
                         ...(result.content ? { turnResult: { type: "completed", content: result.content } } : {}),
                     });
 
+                    // Checkpoint before the blocking wait
+                    if (!shouldDehydrate) yield* maybeCheckpoint();
+
                     const timerTask = ctx.scheduleTimer(result.seconds * 1000);
                     const interruptMsg = ctx.dequeueEvent("messages");
                     const timerRace: any = yield ctx.race(timerTask, interruptMsg);
@@ -477,6 +498,7 @@ export function* durableSessionOrchestration_1_0_1(
                         choices: result.choices,
                         allowFreeform: result.allowFreeform,
                     });
+                    yield* maybeCheckpoint();
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;

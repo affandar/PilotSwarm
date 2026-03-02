@@ -182,6 +182,8 @@ export class DurableCopilotClient {
                 dehydrateThreshold: this.config.dehydrateThreshold ?? 30,
                 idleTimeout: this.config.dehydrateOnIdle ?? 30,
                 inputGracePeriod: this.config.dehydrateOnInputRequired ?? 30,
+                checkpointInterval: this.config.checkpointInterval ?? -1,
+                rehydrationMessage: this.config.rehydrationMessage,
             };
             await this.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,

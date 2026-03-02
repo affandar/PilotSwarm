@@ -264,6 +264,16 @@ export class SessionManager {
         }
     }
 
+    /**
+     * Checkpoint: upload session state to blob without destroying the session or
+     * releasing affinity. Used for crash resilience — session stays warm.
+     */
+    async checkpoint(sessionId: string): Promise<void> {
+        if (this.blobStore) {
+            await this.blobStore.checkpoint(sessionId);
+        }
+    }
+
     /** List all in-memory session IDs on this node. */
     activeSessionIds(): string[] {
         return [...this.sessions.keys()];

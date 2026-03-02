@@ -100,6 +100,10 @@ export interface OrchestrationInput {
     taskContext?: string;
     /** Original system message before task context injection (avoids double-appending). */
     baseSystemMessage?: string | { mode: "append" | "replace"; content: string };
+    /** Seconds between periodic checkpoints (blob upload without losing session pin). -1 = disabled. */
+    checkpointInterval?: number;
+    /** Custom message prepended to the user prompt on rehydration (after worker death). */
+    rehydrationMessage?: string;
 }
 
 // ─── Client Options ──────────────────────────────────────────────
@@ -186,6 +190,12 @@ export interface DurableCopilotClientOptions {
     dehydrateThreshold?: number;
     dehydrateOnInputRequired?: number;
     dehydrateOnIdle?: number;
+
+    /** Seconds between periodic checkpoints (blob upload without losing session pin). -1 = disabled. */
+    checkpointInterval?: number;
+
+    /** Custom message prepended to the user prompt on rehydration (after worker death). */
+    rehydrationMessage?: string;
 
     /**
      * PostgreSQL schema name for duroxide orchestration tables.

@@ -43,6 +43,13 @@ export function createSessionProxy(
                 affinityKey,
             );
         },
+        checkpoint() {
+            return ctx.scheduleActivityOnSession(
+                "checkpointSession",
+                { sessionId },
+                affinityKey,
+            );
+        },
     };
 }
 
@@ -153,6 +160,14 @@ export function registerActivities(
         input: { sessionId: string },
     ): Promise<void> => {
         await sessionManager.destroySession(input.sessionId);
+    });
+
+    // ── checkpointSession ───────────────────────────────────
+    runtime.registerActivity("checkpointSession", async (
+        _ctx: any,
+        input: { sessionId: string },
+    ): Promise<void> => {
+        await sessionManager.checkpoint(input.sessionId);
     });
 
     // ── listModels ──────────────────────────────────────────
