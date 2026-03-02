@@ -1198,6 +1198,11 @@ const inputBar = blessed.textbox({
 // Alt+Backspace: delete word backwards in input bar
 inputBar.on("keypress", (ch, key) => {
     if (!key) return;
+
+    // Ctrl+E/Y: scroll chat from prompt — intercept before textbox eats them
+    if (key.ctrl && key.name === "e") { scrollChatHalfPage(-1); return; }
+    if (key.ctrl && key.name === "y") { scrollChatHalfPage(1); return; }
+
     // Alt+Backspace shows up as meta+backspace or as \x1B (escape char) + backspace
     const isAltBackspace = (key.meta && key.name === "backspace") ||
         (key.name === "backspace" && key.sequence === "\x1b\x7f");
@@ -2939,15 +2944,15 @@ screen.key(["C-c"], async () => {
     process.exit(0);
 });
 
-// Ctrl+E / Ctrl+Y: scroll chat pane down/up by 1 line (works from prompt too)
-screen.key(["C-e"], () => {
-    chatBox.scroll(1);
+// Ctrl+E / Ctrl+Y: scroll chat half-page from anywhere (including prompt)
+// Ctrl+E = scroll up (like vim), Ctrl+Y = scroll down
+function scrollChatHalfPage(direction) {
+    const half = Math.max(1, Math.floor((chatBox.height - 2) / 2));
+    chatBox.scroll(direction * half);
     screen.render();
-});
-screen.key(["C-y"], () => {
-    chatBox.scroll(-1);
-    screen.render();
-});
+}
+screen.key(["C-e"], () => scrollChatHalfPage(-1));
+screen.key(["C-y"], () => scrollChatHalfPage(1));
 
 // ESC + q quit sequence: press Escape, then q within 1s to quit
 let escPressedAt = 0;
@@ -3108,7 +3113,7 @@ appendChatRaw("  {yellow-fg}Esc e{/yellow-fg}  toggle live tool events on/off");
 appendChatRaw("");
 appendChatRaw("{bold}Scrolling (when chat/log pane focused):{/bold}");
 appendChatRaw("  {yellow-fg}j/k{/yellow-fg} or {yellow-fg}↑/↓{/yellow-fg}   scroll line by line");
-appendChatRaw("  {yellow-fg}Ctrl-e/y{/yellow-fg}      scroll chat from prompt");
+appendChatRaw("  {yellow-fg}Ctrl-e/y{/yellow-fg}      scroll chat ½ page (up/down, works from prompt)");
 appendChatRaw("  {yellow-fg}Ctrl-d/u{/yellow-fg}      page down/up");
 appendChatRaw("  {yellow-fg}g/G{/yellow-fg}          top / bottom");
 appendChatRaw("  {yellow-fg}mouse wheel{/yellow-fg}    scroll any pane");
