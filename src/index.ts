@@ -39,6 +39,7 @@ export type {
     CommandMessage,
     CommandResponse,
     OrchestrationInput,
+    SubAgentEntry,
 } from "./types.js";
 
 // Skills loader

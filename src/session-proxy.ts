@@ -65,6 +65,14 @@ export function createSessionManagerProxy(ctx: any) {
         summarizeSession(sessionId: string) {
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
+        /** Get the custom status of a child orchestration. */
+        getChildStatus(orchId: string) {
+            return ctx.scheduleActivity("getChildStatus", { orchId });
+        },
+        /** Send a message (prompt) to a child orchestration. */
+        messageChild(orchId: string, message: string) {
+            return ctx.scheduleActivity("messageChild", { orchId, message });
+        },
     };
 }
 
@@ -78,6 +86,7 @@ export function registerActivities(
     blobStore: SessionBlobStore | null,
     githubToken?: string,
     catalog?: SessionCatalogProvider | null,
+    provider?: any,
 ) {
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
@@ -251,4 +260,47 @@ export function registerActivities(
             }
         });
     }
+
+    // ── getChildStatus ──────────────────────────────────────
+    // Reads the custom status of a child orchestration via the duroxide Client.
+    // Used by the parent orchestration to poll sub-agent progress.
+    runtime.registerActivity("getChildStatus", async (
+        activityCtx: any,
+        input: { orchId: string },
+    ): Promise<string> => {
+        activityCtx.traceInfo(`[getChildStatus] orchId=${input.orchId}`);
+        if (!provider) {
+            return JSON.stringify({ error: "No provider available" });
+        }
+        try {
+            const { Client } = (await import("node:module")).createRequire(import.meta.url)("duroxide");
+            const client = new Client(provider);
+            const status = await client.getStatus(input.orchId);
+            const info = await client.getInstanceInfo(input.orchId);
+            return JSON.stringify({
+                orchId: input.orchId,
+                customStatus: status?.customStatus ? JSON.parse(status.customStatus) : null,
+                runtimeStatus: info?.runtimeStatus ?? "unknown",
+            });
+        } catch (err: any) {
+            return JSON.stringify({ orchId: input.orchId, error: err.message });
+        }
+    });
+
+    // ── messageChild ────────────────────────────────────────
+    // Sends a prompt to a running child orchestration via enqueueEvent.
+    runtime.registerActivity("messageChild", async (
+        activityCtx: any,
+        input: { orchId: string; message: string },
+    ): Promise<void> => {
+        activityCtx.traceInfo(`[messageChild] orchId=${input.orchId} msg="${input.message.slice(0, 60)}"`);
+        if (!provider) throw new Error("No provider available");
+        const { Client } = (await import("node:module")).createRequire(import.meta.url)("duroxide");
+        const client = new Client(provider);
+        await client.enqueueEvent(
+            input.orchId,
+            "messages",
+            JSON.stringify({ prompt: input.message }),
+        );
+    });
 }

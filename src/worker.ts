@@ -1,8 +1,9 @@
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
 import { registerActivities } from "./session-proxy.js";
-import { durableSessionOrchestration_1_0_1 } from "./orchestration.js";
+import { durableSessionOrchestration_1_0_1 } from "./orchestration_1_0_1.js";
 import { durableSessionOrchestration_1_0_0 } from "./orchestration_1_0_0.js";
+import { durableSessionOrchestration_1_0_2 } from "./orchestration.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
@@ -173,10 +174,12 @@ export class DurableCopilotWorker {
             this.blobStore,
             this.config.githubToken,
             this._catalog,
+            this._provider,
         );
 
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.0", durableSessionOrchestration_1_0_0);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.1", durableSessionOrchestration_1_0_1);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.2", durableSessionOrchestration_1_0_2);
 
         this.runtime.start().catch((err: any) => {
             console.error("[DurableCopilotWorker] Runtime error:", err);

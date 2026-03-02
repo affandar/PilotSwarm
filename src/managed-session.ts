@@ -8,6 +8,10 @@ import type { TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } fro
 interface TurnState {
     pendingWait: { seconds: number; reason: string } | null;
     pendingInput: { question: string; choices?: string[]; allowFreeform?: boolean } | null;
+    pendingSpawnAgent: { task: string; systemMessage?: string; toolNames?: string[] } | null;
+    pendingMessageAgent: { agentId: string; message: string } | null;
+    pendingCheckAgents: boolean;
+    pendingWaitForAgents: { agentIds: string[] } | null;
     session: CopilotSession | null;
     waitThreshold: number;
 }
@@ -93,6 +97,87 @@ export class ManagedSession {
     }
 
     /**
+     * Sub-agent tool definitions.
+     * These are the LLM-visible tools for spawning and managing sub-agents.
+     * Like wait/ask_user, handlers are stubs — real handlers set per-turn in runTurn().
+     */
+    static subAgentToolDefs(): Tool<any>[] {
+        const spawnAgentTool = defineTool("spawn_agent", {
+            description:
+                "Spawn an autonomous sub-agent to work on a task in parallel. " +
+                "The sub-agent is a full Copilot session with its own conversation and tools. " +
+                "Returns an agent ID you can use to check status, send messages, or wait for completion. " +
+                "Use this when a task can be broken into independent subtasks.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task: {
+                        type: "string",
+                        description: "A clear description of what the sub-agent should do. This becomes the agent's first prompt.",
+                    },
+                    system_message: {
+                        type: "string",
+                        description: "Optional custom system message for the sub-agent. If omitted, inherits the parent's system message.",
+                    },
+                    tool_names: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
+                    },
+                },
+                required: ["task"],
+            },
+            handler: async () => "stub",
+        });
+
+        const messageAgentTool = defineTool("message_agent", {
+            description:
+                "Send a message to a running sub-agent. " +
+                "The message is enqueued as a prompt for the sub-agent's next turn.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+                    message: { type: "string", description: "The message to send to the sub-agent" },
+                },
+                required: ["agent_id", "message"],
+            },
+            handler: async () => "stub",
+        });
+
+        const checkAgentsTool = defineTool("check_agents", {
+            description:
+                "Check the current status and latest output of all sub-agents. " +
+                "Returns each agent's ID, task, status (running/completed/failed), and result.",
+            parameters: {
+                type: "object",
+                properties: {},
+            },
+            handler: async () => "stub",
+        });
+
+        const waitForAgentsTool = defineTool("wait_for_agents", {
+            description:
+                "Block until one or more sub-agents complete. " +
+                "Returns the final results of the completed agents. " +
+                "If no agent_ids are specified, waits for ALL active sub-agents.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_ids: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Optional list of specific agent IDs to wait for. If omitted, waits for all.",
+                    },
+                },
+            },
+            handler: async () => "stub",
+        });
+
+        return [spawnAgentTool, messageAgentTool, checkAgentsTool, waitForAgentsTool];
+    }
+
+    /**
      * Run one LLM turn.
      *
      * The wait tool is injected automatically. If the LLM calls wait()
@@ -106,6 +191,10 @@ export class ManagedSession {
         const turnState: TurnState = {
             pendingWait: null,
             pendingInput: null,
+            pendingSpawnAgent: null,
+            pendingMessageAgent: null,
+            pendingCheckAgents: false,
+            pendingWaitForAgents: null,
             session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
         };
@@ -170,15 +259,119 @@ export class ManagedSession {
             },
         });
 
+        // Build sub-agent tools
+        const spawnAgentTool = defineTool("spawn_agent", {
+            description:
+                "Spawn an autonomous sub-agent to work on a task in parallel. " +
+                "The sub-agent is a full Copilot session with its own conversation and tools. " +
+                "Returns an agent ID you can use to check status, send messages, or wait for completion. " +
+                "Use this when a task can be broken into independent subtasks.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task: {
+                        type: "string",
+                        description: "A clear description of what the sub-agent should do. This becomes the agent's first prompt.",
+                    },
+                    system_message: {
+                        type: "string",
+                        description: "Optional custom system message for the sub-agent. If omitted, inherits the parent's system message.",
+                    },
+                    tool_names: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
+                    },
+                },
+                required: ["task"],
+            },
+            handler: async (args: { task: string; system_message?: string; tool_names?: string[] }) => {
+                turnState.pendingSpawnAgent = {
+                    task: args.task,
+                    systemMessage: args.system_message,
+                    toolNames: args.tool_names,
+                };
+                if (turnState.session) turnState.session.abort();
+                return "aborted";
+            },
+        });
+
+        const messageAgentTool = defineTool("message_agent", {
+            description:
+                "Send a message to a running sub-agent. " +
+                "The message is enqueued as a prompt for the sub-agent's next turn.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+                    message: { type: "string", description: "The message to send to the sub-agent" },
+                },
+                required: ["agent_id", "message"],
+            },
+            handler: async (args: { agent_id: string; message: string }) => {
+                turnState.pendingMessageAgent = {
+                    agentId: args.agent_id,
+                    message: args.message,
+                };
+                if (turnState.session) turnState.session.abort();
+                return "aborted";
+            },
+        });
+
+        const checkAgentsTool = defineTool("check_agents", {
+            description:
+                "Check the current status and latest output of all sub-agents. " +
+                "Returns each agent's ID, task, status (running/completed/failed), and result.",
+            parameters: {
+                type: "object",
+                properties: {},
+            },
+            handler: async () => {
+                turnState.pendingCheckAgents = true;
+                if (turnState.session) turnState.session.abort();
+                return "aborted";
+            },
+        });
+
+        const waitForAgentsTool = defineTool("wait_for_agents", {
+            description:
+                "Block until one or more sub-agents complete. " +
+                "Returns the final results of the completed agents. " +
+                "If no agent_ids are specified, waits for ALL active sub-agents.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_ids: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Optional list of specific agent IDs to wait for. If omitted, waits for all.",
+                    },
+                },
+            },
+            handler: async (args: { agent_ids?: string[] }) => {
+                turnState.pendingWaitForAgents = {
+                    agentIds: args.agent_ids ?? [],
+                };
+                if (turnState.session) turnState.session.abort();
+                return "aborted";
+            },
+        });
+
+        const SYSTEM_TOOL_NAMES = new Set(["wait", "ask_user", "spawn_agent", "message_agent", "check_agents", "wait_for_agents"]);
+
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
         const allTools: Tool<any>[] = [
             ...userTools.filter(t => {
                 const name = (t as any).name;
-                return name !== "wait" && name !== "ask_user";
+                return !SYSTEM_TOOL_NAMES.has(name);
             }),
             waitTool,
             askUserTool,
+            spawnAgentTool,
+            messageAgentTool,
+            checkAgentsTool,
+            waitForAgentsTool,
         ];
 
         // Re-register tools for this turn (may have changed)
@@ -260,8 +453,10 @@ export class ManagedSession {
                     message: "Copilot was taking too long to process and was killed.",
                 };
             }
-            // Other send() errors
-            if (!turnState.pendingInput && !turnState.pendingWait) {
+            // Other send() errors — check if any handler aborted first
+            if (!turnState.pendingInput && !turnState.pendingWait
+                && !turnState.pendingSpawnAgent && !turnState.pendingMessageAgent
+                && !turnState.pendingCheckAgents && !turnState.pendingWaitForAgents) {
                 return { type: "error", message: errMsg };
             }
         } finally {
@@ -279,6 +474,34 @@ export class ManagedSession {
                 seconds: turnState.pendingWait.seconds,
                 reason: turnState.pendingWait.reason,
                 content: finalContent,
+                events: collectedEvents,
+            };
+        }
+        if (turnState.pendingSpawnAgent) {
+            return {
+                type: "spawn_agent",
+                task: turnState.pendingSpawnAgent.task,
+                systemMessage: turnState.pendingSpawnAgent.systemMessage,
+                toolNames: turnState.pendingSpawnAgent.toolNames,
+                content: finalContent,
+                events: collectedEvents,
+            };
+        }
+        if (turnState.pendingMessageAgent) {
+            return {
+                type: "message_agent",
+                agentId: turnState.pendingMessageAgent.agentId,
+                message: turnState.pendingMessageAgent.message,
+                events: collectedEvents,
+            };
+        }
+        if (turnState.pendingCheckAgents) {
+            return { type: "check_agents", events: collectedEvents };
+        }
+        if (turnState.pendingWaitForAgents) {
+            return {
+                type: "wait_for_agents",
+                agentIds: turnState.pendingWaitForAgents.agentIds,
                 events: collectedEvents,
             };
         }

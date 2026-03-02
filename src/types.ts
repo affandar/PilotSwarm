@@ -7,6 +7,10 @@ export type TurnResult =
     | { type: "completed"; content: string; events?: CapturedEvent[] }
     | { type: "wait"; seconds: number; reason: string; content?: string; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
+    | { type: "spawn_agent"; task: string; systemMessage?: string; toolNames?: string[]; content?: string; events?: CapturedEvent[] }
+    | { type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] }
+    | { type: "check_agents"; events?: CapturedEvent[] }
+    | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
     | { type: "cancelled" }
     | { type: "error"; message: string; events?: CapturedEvent[] };
 
@@ -104,6 +108,26 @@ export interface OrchestrationInput {
     checkpointInterval?: number;
     /** Custom message prepended to the user prompt on rehydration (after worker death). */
     rehydrationMessage?: string;
+
+    // ─── Sub-agent state ─────────────────────────────────────
+    /** Tracked sub-agents spawned by this orchestration. Carried across continueAsNew. */
+    subAgents?: SubAgentEntry[];
+    /** If this is a sub-agent, the parent orchestration ID (for sending updates back). */
+    parentOrchId?: string;
+}
+
+/** A sub-agent entry tracked in the parent orchestration's state. */
+export interface SubAgentEntry {
+    /** The child orchestration ID (e.g. "session-<guid>"). */
+    orchId: string;
+    /** The session ID portion. */
+    sessionId: string;
+    /** Short description of the task assigned to this sub-agent. */
+    task: string;
+    /** Last known status of the sub-agent. */
+    status: "running" | "completed" | "failed";
+    /** Final result content (set when status becomes completed). */
+    result?: string;
 }
 
 // ─── Client Options ──────────────────────────────────────────────

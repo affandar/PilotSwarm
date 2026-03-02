@@ -98,13 +98,16 @@ export class SessionManager {
         const client = await this.ensureClient();
         const sessionDir = path.join(SESSION_STATE_DIR, sessionId);
 
-        // Merge user tools with system tool definitions (wait, ask_user)
+        // Merge user tools with system tool definitions (wait, ask_user, sub-agent tools)
         // so the LLM sees them at session creation time.
         const userTools = config.tools ?? [];
         const systemTools = ManagedSession.systemToolDefs();
+        const subAgentTools = ManagedSession.subAgentToolDefs();
+        const SYSTEM_TOOL_NAMES = new Set([...systemTools, ...subAgentTools].map((t: any) => t.name));
         const allTools = [
-            ...userTools.filter((t: any) => t.name !== "wait" && t.name !== "ask_user"),
+            ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...systemTools,
+            ...subAgentTools,
         ];
 
         // Build system message: worker base + client override
@@ -196,7 +199,7 @@ export class SessionManager {
                         try {
                             const client = await this.ensureClient();
                             const copilotSession = await client.resumeSession(sessionId, {
-                                tools: ManagedSession.systemToolDefs(),
+                                tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
                                 onPermissionRequest: async () => ({ kind: "approved" as const }),
                             });
                             const config = this.sessionConfigs.get(sessionId) ?? {};
