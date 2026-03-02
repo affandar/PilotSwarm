@@ -1233,6 +1233,43 @@ screen.render();
 
 let pendingUserInput = null;
 
+// Map toolCallId → toolName so we can resolve names on completion events
+const toolCallNames = new Map();
+// Same map for the live event poller (separate to avoid cross-contamination)
+const liveToolCallNames = new Map();
+
+/**
+ * Summarize tool arguments for display.
+ * Returns a short string like: (command: "cargo build", cwd: "/app/...")
+ */
+function fmtToolArgs(toolName, args) {
+    if (!args || typeof args !== "object") return "";
+    try {
+        // Pick the most interesting args per tool type
+        const parts = [];
+        if (args.command) parts.push(`${args.command.slice(0, 60)}`);
+        else if (args.path) parts.push(args.path);
+        else if (args.intent) parts.push(args.intent);
+        else if (args.query) parts.push(args.query);
+        else if (args.pattern) parts.push(args.pattern);
+        else if (args.name) parts.push(args.name);
+        else {
+            // Fallback: first string value
+            for (const [k, v] of Object.entries(args)) {
+                if (typeof v === "string" && v.length > 0) {
+                    parts.push(v.slice(0, 50));
+                    break;
+                }
+            }
+        }
+        if (parts.length === 0) return "";
+        const summary = parts.join(", ");
+        return ` {white-fg}${summary.slice(0, 70)}{/white-fg}`;
+    } catch {
+        return "";
+    }
+}
+
 function appendChat(text, orchId) {
     for (const line of text.split("\n")) {
         appendChatRaw(line, orchId);
@@ -1389,10 +1426,14 @@ async function loadCmsHistory(orchId) {
                 }
             } else if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                lines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`);
+                if (evt.data?.toolCallId) toolCallNames.set(evt.data.toolCallId, toolName);
+                const argSummary = fmtToolArgs(toolName, evt.data?.arguments);
+                lines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}[tool]{/yellow-fg} ${toolName}${argSummary}`);
             } else if (type === "tool.execution_complete") {
-                const toolName = evt.data?.toolName || "tool";
-                lines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[tool] done{/green-fg} ${toolName}`);
+                const toolName = evt.data?.toolName || toolCallNames.get(evt.data?.toolCallId) || "tool";
+                const ok = evt.data?.success !== false;
+                const tag = ok ? "{green-fg}✓{/green-fg}" : "{red-fg}✗{/red-fg}";
+                lines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[done]{/green-fg}  ${toolName} ${tag}`);
             } else {
                 lines.push(`{white-fg}[${timeStr}] [${type}]{/white-fg}`);
             }
@@ -1708,10 +1749,14 @@ function startLiveEventPoller(orchId) {
 
                 if (type === "tool.execution_start") {
                     const toolName = evt.data?.toolName || "tool";
-                    appendChatRaw(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`, orchId);
+                    if (evt.data?.toolCallId) liveToolCallNames.set(evt.data.toolCallId, toolName);
+                    const argSummary = fmtToolArgs(toolName, evt.data?.arguments);
+                    appendChatRaw(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}[tool]{/yellow-fg} ${toolName}${argSummary}`, orchId);
                 } else if (type === "tool.execution_complete") {
-                    const toolName = evt.data?.toolName || "tool";
-                    appendChatRaw(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[tool] done{/green-fg}  ${toolName}`, orchId);
+                    const toolName = evt.data?.toolName || liveToolCallNames.get(evt.data?.toolCallId) || "tool";
+                    const ok = evt.data?.success !== false;
+                    const tag = ok ? "{green-fg}✓{/green-fg}" : "{red-fg}✗{/red-fg}";
+                    appendChatRaw(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[done]{/green-fg}  ${toolName} ${tag}`, orchId);
                 }
             }
             state.lastEventIdx = events.length - 1;
