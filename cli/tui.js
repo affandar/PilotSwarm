@@ -1691,6 +1691,7 @@ if (!isRemote) {
 const client = new DurableCopilotClient({
     store,
     blobEnabled: true,
+    dehydrateOnIdle: -1, // infinite session pinning — only lost if worker dies
 });
 
 setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
