@@ -122,11 +122,11 @@ fi
 echo ""
 echo "🚀 Deploying to AKS..."
 
-# Ensure namespace exists
-kubectl apply -f deploy/k8s/namespace.yaml
+# Ensure namespace exists (substitute NAMESPACE into the template)
+sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g; s/name: copilot-runtime$/name: $NAMESPACE/" deploy/k8s/namespace.yaml | kubectl apply -f -
 
-# Apply worker deployment (this also scales back up)
-kubectl apply -f deploy/k8s/worker-deployment.yaml
+# Apply worker deployment (substitute NAMESPACE into the template)
+sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g" deploy/k8s/worker-deployment.yaml | kubectl apply -f -
 
 # Rollout restart to pick up the new image
 kubectl rollout restart deployment/copilot-runtime-worker -n "$NAMESPACE"

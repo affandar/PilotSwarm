@@ -924,12 +924,15 @@ function backfillOrchLogs(orchId) {
     backfillInProgress.add(orchId);
 
     try {
+        const k8sCtxArgs = process.env.K8S_CONTEXT ? ["--context", process.env.K8S_CONTEXT] : [];
         const proc = spawn("kubectl", [
+            ...k8sCtxArgs,
             "logs",
             "-n", process.env.K8S_NAMESPACE || "copilot-sdk",
             "-l", process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker",
             "--prefix",
-            "--tail=200",
+            "--tail=2000",
+            "--since=48h",
             "--max-log-requests=20",
         ], { stdio: ["ignore", "pipe", "pipe"] });
 
@@ -1926,14 +1929,18 @@ function startLogStream() {
     }
 
     try {
+        const k8sContext = process.env.K8S_CONTEXT || "";
         const k8sNamespace = process.env.K8S_NAMESPACE || "copilot-sdk";
         const k8sPodLabel = process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker";
+        const k8sCtxArgs = k8sContext ? ["--context", k8sContext] : [];
         kubectlProc = spawn("kubectl", [
+            ...k8sCtxArgs,
             "logs", "-f",
             "-n", k8sNamespace,
             "-l", k8sPodLabel,
             "--prefix",
-            "--tail=50",
+            "--tail=500",
+            "--since=48h",
             "--max-log-requests=20",
         ], { stdio: ["ignore", "pipe", "pipe"] });
 
@@ -2028,7 +2035,9 @@ if (isRemote) {
     setInterval(async () => {
         try {
             const result = await new Promise((resolve, reject) => {
+                const k8sCtxArgs = process.env.K8S_CONTEXT ? ["--context", process.env.K8S_CONTEXT] : [];
                 const proc = spawn("kubectl", [
+                    ...k8sCtxArgs,
                     "get", "pods", "-n", process.env.K8S_NAMESPACE || "copilot-sdk",
                     "-l", process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker",
                     "--field-selector=status.phase=Running",

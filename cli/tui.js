@@ -1005,12 +1005,15 @@ function backfillOrchLogs(orchId) {
     backfillInProgress.add(orchId);
 
     try {
+        const k8sCtxArgs = process.env.K8S_CONTEXT ? ["--context", process.env.K8S_CONTEXT] : [];
         const proc = spawn("kubectl", [
+            ...k8sCtxArgs,
             "logs",
             "-n", process.env.K8S_NAMESPACE || "copilot-sdk",
             "-l", process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker",
             "--prefix",
-            "--tail=200",
+            "--tail=2000",
+            "--since=48h",
             "--max-log-requests=20",
         ], { stdio: ["ignore", "pipe", "pipe"] });
 
@@ -1198,11 +1201,6 @@ const inputBar = blessed.textbox({
 // Alt+Backspace: delete word backwards in input bar
 inputBar.on("keypress", (ch, key) => {
     if (!key) return;
-
-    // Ctrl+E/Y: scroll chat from prompt — intercept before textbox eats them
-    if (key.ctrl && key.name === "e") { scrollChatHalfPage(-1); return; }
-    if (key.ctrl && key.name === "y") { scrollChatHalfPage(1); return; }
-
     // Alt+Backspace shows up as meta+backspace or as \x1B (escape char) + backspace
     const isAltBackspace = (key.meta && key.name === "backspace") ||
         (key.name === "backspace" && key.sequence === "\x1b\x7f");
@@ -1237,43 +1235,6 @@ screen.render();
 // ─── Helpers ─────────────────────────────────────────────────────
 
 let pendingUserInput = null;
-
-// Map toolCallId → toolName so we can resolve names on completion events
-const toolCallNames = new Map();
-// Same map for the live event poller (separate to avoid cross-contamination)
-const liveToolCallNames = new Map();
-
-/**
- * Summarize tool arguments for display.
- * Returns a short string like: (command: "cargo build", cwd: "/app/...")
- */
-function fmtToolArgs(toolName, args) {
-    if (!args || typeof args !== "object") return "";
-    try {
-        // Pick the most interesting args per tool type
-        const parts = [];
-        if (args.command) parts.push(`${args.command.slice(0, 60)}`);
-        else if (args.path) parts.push(args.path);
-        else if (args.intent) parts.push(args.intent);
-        else if (args.query) parts.push(args.query);
-        else if (args.pattern) parts.push(args.pattern);
-        else if (args.name) parts.push(args.name);
-        else {
-            // Fallback: first string value
-            for (const [k, v] of Object.entries(args)) {
-                if (typeof v === "string" && v.length > 0) {
-                    parts.push(v.slice(0, 50));
-                    break;
-                }
-            }
-        }
-        if (parts.length === 0) return "";
-        const summary = parts.join(", ");
-        return ` {white-fg}${summary.slice(0, 70)}{/white-fg}`;
-    } catch {
-        return "";
-    }
-}
 
 function appendChat(text, orchId) {
     for (const line of text.split("\n")) {
@@ -1431,14 +1392,10 @@ async function loadCmsHistory(orchId) {
                 }
             } else if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                if (evt.data?.toolCallId) toolCallNames.set(evt.data.toolCallId, toolName);
-                const argSummary = fmtToolArgs(toolName, evt.data?.arguments);
-                lines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}[tool]{/yellow-fg} ${toolName}${argSummary}`);
+                lines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`);
             } else if (type === "tool.execution_complete") {
-                const toolName = evt.data?.toolName || toolCallNames.get(evt.data?.toolCallId) || "tool";
-                const ok = evt.data?.success !== false;
-                const tag = ok ? "{green-fg}✓{/green-fg}" : "{red-fg}✗{/red-fg}";
-                lines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[done]{/green-fg}  ${toolName} ${tag}`);
+                const toolName = evt.data?.toolName || "tool";
+                lines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[tool] done{/green-fg} ${toolName}`);
             } else {
                 lines.push(`{white-fg}[${timeStr}] [${type}]{/white-fg}`);
             }
@@ -1691,15 +1648,6 @@ if (!isRemote) {
 const client = new DurableCopilotClient({
     store,
     blobEnabled: true,
-    dehydrateOnIdle: -1, // infinite session pinning — only lost if worker dies
-    checkpointInterval: 1, // checkpoint on every idle transition (wait, timer, input)
-    rehydrationMessage:
-        `This session was rehydrated after a worker restart. ` +
-        `Your LLM conversation history is preserved, but the local worktree state ` +
-        `(files on disk, build artifacts, running processes) may be out of sync with ` +
-        `what you were doing before the restart. ` +
-        `Before continuing, tell the user: (1) what you were last working on, ` +
-        `(2) that the worktree may have changed, and (3) ask for instructions on how to proceed.`,
 });
 
 setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
@@ -1724,74 +1672,6 @@ const sessionSummarized = new Set(); // orchIds already summarized (avoid re-ask
 const sessionChatBuffers = new Map(); // orchId → string[]
 const sessionObservers = new Map(); // orchId → AbortController
 const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
-
-// ─── Live tool event polling ─────────────────────────────────────
-// Polls CMS during active turns to show [tool] start/done in real-time.
-let liveEventsEnabled = true;
-const liveEventPollers = new Map(); // orchId → { timer, lastEventIdx }
-
-function startLiveEventPoller(orchId) {
-    if (!liveEventsEnabled) return;
-    if (liveEventPollers.has(orchId)) return;
-
-    const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
-    const sess = sessions.get(sid);
-    if (!sess) return;
-
-    // Snapshot current event count so we only show NEW events
-    const state = { lastEventIdx: -1, initializing: true, timer: null };
-
-    const poll = async () => {
-        try {
-            const events = await sess.getMessages();
-            if (!events || events.length === 0) return;
-
-            // On first poll, just record the baseline
-            if (state.initializing) {
-                state.lastEventIdx = events.length - 1;
-                state.initializing = false;
-                return;
-            }
-
-            // Show any new tool events since last check
-            for (let i = state.lastEventIdx + 1; i < events.length; i++) {
-                const evt = events[i];
-                const type = evt.eventType;
-                const timeStr = evt.createdAt
-                    ? new Date(evt.createdAt).toLocaleTimeString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })
-                    : "--:--:--";
-
-                if (type === "tool.execution_start") {
-                    const toolName = evt.data?.toolName || "tool";
-                    if (evt.data?.toolCallId) liveToolCallNames.set(evt.data.toolCallId, toolName);
-                    const argSummary = fmtToolArgs(toolName, evt.data?.arguments);
-                    appendChatRaw(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}[tool]{/yellow-fg} ${toolName}${argSummary}`, orchId);
-                } else if (type === "tool.execution_complete") {
-                    const toolName = evt.data?.toolName || liveToolCallNames.get(evt.data?.toolCallId) || "tool";
-                    const ok = evt.data?.success !== false;
-                    const tag = ok ? "{green-fg}✓{/green-fg}" : "{red-fg}✗{/red-fg}";
-                    appendChatRaw(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[done]{/green-fg}  ${toolName} ${tag}`, orchId);
-                }
-            }
-            state.lastEventIdx = events.length - 1;
-        } catch {
-            // CMS poll failed — ignore silently
-        }
-    };
-
-    // Initial baseline, then poll every 1.5s
-    poll();
-    state.timer = setInterval(poll, 1500);
-    liveEventPollers.set(orchId, state);
-}
-
-function stopLiveEventPoller(orchId) {
-    const state = liveEventPollers.get(orchId);
-    if (state) {
-        if (state.timer) clearInterval(state.timer);
-        liveEventPollers.delete(orchId);
-    }
-}
 
 function getDc() {
     try { return client._getDuroxideClient(); } catch { return null; }
@@ -2143,14 +2023,18 @@ function startLogStream() {
     }
 
     try {
+        const k8sContext = process.env.K8S_CONTEXT || "";
         const k8sNamespace = process.env.K8S_NAMESPACE || "copilot-sdk";
         const k8sPodLabel = process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker";
+        const k8sCtxArgs = k8sContext ? ["--context", k8sContext] : [];
         kubectlProc = spawn("kubectl", [
+            ...k8sCtxArgs,
             "logs", "-f",
             "-n", k8sNamespace,
             "-l", k8sPodLabel,
             "--prefix",
-            "--tail=50",
+            "--tail=500",
+            "--since=48h",
             "--max-log-requests=20",
         ], { stdio: ["ignore", "pipe", "pipe"] });
 
@@ -2216,7 +2100,7 @@ function startLogStream() {
 
         kubectlProc.stderr.on("data", (chunk) => {
             const text = chunk.toString().trim();
-            if (text && !text.includes("proxy error") && !text.includes("Gateway Timeout") && !text.includes("NotFound") && !text.includes("not found")) {
+            if (text && !text.includes("proxy error") && !text.includes("Gateway Timeout") && !text.includes("NotFound") && !text.includes("not found") && !text.includes("No resources found")) {
                 appendLog(`{white-fg}${text}{/white-fg}`);
             }
         });
@@ -2245,7 +2129,9 @@ if (isRemote) {
     setInterval(async () => {
         try {
             const result = await new Promise((resolve, reject) => {
+                const k8sCtxArgs = process.env.K8S_CONTEXT ? ["--context", process.env.K8S_CONTEXT] : [];
                 const proc = spawn("kubectl", [
+                    ...k8sCtxArgs,
                     "get", "pods", "-n", process.env.K8S_NAMESPACE || "copilot-sdk",
                     "-l", process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker",
                     "--field-selector=status.phase=Running",
@@ -2354,12 +2240,6 @@ function startObserver(orchId) {
     function updateLiveStatus(status) {
         sessionLiveStatus.set(orchId, status);
         refreshOrchestrations();
-        // Start/stop live event poller based on status
-        if (status === "running") {
-            startLiveEventPoller(orchId);
-        } else {
-            stopLiveEventPoller(orchId);
-        }
     }
 
     // First, show the current state immediately
@@ -2953,16 +2833,6 @@ screen.key(["C-c"], async () => {
     process.exit(0);
 });
 
-// Ctrl+E / Ctrl+Y: scroll chat half-page from anywhere (including prompt)
-// Ctrl+E = scroll up (like vim), Ctrl+Y = scroll down
-function scrollChatHalfPage(direction) {
-    const half = Math.max(1, Math.floor((chatBox.height - 2) / 2));
-    chatBox.scroll(direction * half);
-    screen.render();
-}
-screen.key(["C-e"], () => scrollChatHalfPage(-1));
-screen.key(["C-y"], () => scrollChatHalfPage(1));
-
 // ESC + q quit sequence: press Escape, then q within 1s to quit
 let escPressedAt = 0;
 
@@ -2985,7 +2855,7 @@ screen.on("keypress", (ch, key) => {
         if (logViewMode === "sequence") refreshSeqPane();
         if (logViewMode === "nodemap") refreshNodeMap();
         const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" };
-        appendLog(`{cyan-fg}Log mode: ${modeNames[logViewMode]}{/cyan-fg}`);
+        setStatus(`Log mode: ${modeNames[logViewMode]}`);
         return;
     }
 
@@ -2995,20 +2865,6 @@ screen.on("keypress", (ch, key) => {
         relayoutAll();
         if (logViewMode === "sequence") refreshSeqPane();
         if (logViewMode === "nodemap") refreshNodeMap();
-
-    // \e then e (within 1s): toggle live tool events
-    } else if (ch === "e" && screen.focused !== inputBar && (Date.now() - escPressedAt) < 1000) {
-        liveEventsEnabled = !liveEventsEnabled;
-        const label = liveEventsEnabled ? "{green-fg}ON{/green-fg}" : "{red-fg}OFF{/red-fg}";
-        appendLog(`{cyan-fg}Live tool events: ${label}{/cyan-fg}`);
-        if (!liveEventsEnabled) {
-            // Stop all active pollers
-            for (const orchId of liveEventPollers.keys()) {
-                stopLiveEventPoller(orchId);
-            }
-        }
-        screen.render();
-        return;
 
     // [ / ]: resize right pane by 8 chars
     } else if ((ch === "[" || ch === "]") && screen.focused !== inputBar) {
@@ -3118,11 +2974,9 @@ appendChatRaw("  {yellow-fg}p{/yellow-fg}      back to prompt from anywhere");
 appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes");
 appendChatRaw("  {yellow-fg}h/l{/yellow-fg}    move left/right between panes");
 appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence → node map)");
-appendChatRaw("  {yellow-fg}Esc e{/yellow-fg}  toggle live tool events on/off");
 appendChatRaw("");
 appendChatRaw("{bold}Scrolling (when chat/log pane focused):{/bold}");
 appendChatRaw("  {yellow-fg}j/k{/yellow-fg} or {yellow-fg}↑/↓{/yellow-fg}   scroll line by line");
-appendChatRaw("  {yellow-fg}Ctrl-e/y{/yellow-fg}      scroll chat ½ page (up/down, works from prompt)");
 appendChatRaw("  {yellow-fg}Ctrl-d/u{/yellow-fg}      page down/up");
 appendChatRaw("  {yellow-fg}g/G{/yellow-fg}          top / bottom");
 appendChatRaw("  {yellow-fg}mouse wheel{/yellow-fg}    scroll any pane");
