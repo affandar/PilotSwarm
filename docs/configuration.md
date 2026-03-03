@@ -226,10 +226,8 @@ This enables true multi-node scaling — sessions can migrate between workers tr
 The `GITHUB_TOKEN` is used by the worker to authenticate with the Copilot API. You can get one via:
 
 ```bash
-# GitHub CLI
-gh auth token
-
-# Or create a personal access token at https://github.com/settings/tokens
+# Create a personal access token at https://github.com/settings/tokens
+# Or via GitHub CLI: gh auth token
 ```
 
 The token is only needed on the **worker** side. Clients don't need it.

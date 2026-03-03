@@ -227,8 +227,8 @@ All activity bodies are one-liners. All logic lives in `ManagedSession` (turn ex
            |   +- session A  |     |   +- session C  |     |   +- session E  |
            |   +- session B  |     |   +- session D  |     |                 |
            |                 |     |                 |     |                 |
-           |  Copilot CLI    |     |  Copilot CLI    |     |  Copilot CLI    |
-           |  subprocess     |     |  subprocess     |     |  subprocess     |
+           |  Copilot SDK    |     |  Copilot SDK    |     |  Copilot SDK    |
+           |  (in-process)   |     |  (in-process)   |     |  (in-process)   |
            +--------+--------+     +--------+--------+     +--------+--------+
                     |                        |                        |
                     +------------------------+------------------------+
