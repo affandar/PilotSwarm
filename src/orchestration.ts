@@ -487,6 +487,19 @@ export function* durableSessionOrchestration_1_0_4(
                 if (result.content) {
                     setStatus(ctx, "running", { iteration, intermediateContent: result.content });
                     ctx.traceInfo(`[orch] intermediate: ${result.content.slice(0, 80)}`);
+
+                    // If this is a child orchestration, notify the parent about intermediate output
+                    if (parentOrchId) {
+                        try {
+                            yield manager.notifyParent(parentOrchId, `session-${input.sessionId}`, input.sessionId, {
+                                type: "turn_completed",
+                                content: result.content.slice(0, 2000),
+                                iteration,
+                            });
+                        } catch (err: any) {
+                            ctx.traceInfo(`[orch] notifyParent (wait) failed: ${err.message} (non-fatal)`);
+                        }
+                    }
                 }
                 ctx.traceInfo(`[orch] durable timer: ${result.seconds}s (${result.reason})`);
 
@@ -648,8 +661,9 @@ export function* durableSessionOrchestration_1_0_4(
 
                 // Generate deterministic child IDs
                 // Use '_sub_' separator — Copilot SDK rejects colons in session IDs
+                // Combine newGuid with iteration count to avoid collisions across continueAsNew
                 const childGuid: string = yield ctx.newGuid();
-                const childSessionId = `${input.sessionId}_sub_${childGuid.slice(0, 8)}`;
+                const childSessionId = `${input.sessionId}_sub_${childGuid.slice(0, 4)}${iteration}`;
                 const childOrchId = `session-${childSessionId}`;
 
                 ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${result.task.slice(0, 80)}"`);
