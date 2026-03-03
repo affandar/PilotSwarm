@@ -56,7 +56,9 @@ export function* durableSessionOrchestration_1_0_4(
 
     // ─── Sub-agent tracking ──────────────────────────────────
     let subAgents: SubAgentEntry[] = input.subAgents ? [...input.subAgents] : [];
-    const parentOrchId = input.parentOrchId;
+    // parentSessionId: prefer new field, fall back to old parentOrchId for backward compat
+    const parentSessionId = input.parentSessionId
+        ?? (input.parentOrchId ? input.parentOrchId.replace(/^session-/, '') : undefined);
 
     // If we have a captured task context, inject it into the system message
     // so it survives LLM conversation truncation (BasicTruncator never drops system messages).
@@ -113,7 +115,7 @@ export function* durableSessionOrchestration_1_0_4(
             taskContext,
             baseSystemMessage,
             subAgents,
-            parentOrchId,
+            parentSessionId,
             retryCount: 0, // reset by default; overrides can set it
             ...overrides,
         };
@@ -186,57 +188,12 @@ export function* durableSessionOrchestration_1_0_4(
 
             let gotPrompt = false;
             while (!gotPrompt) {
-                // If sub-agents are running, race messages with child_updates
-                // so the parent wakes up when a child reports back
-                const hasRunningAgents = subAgents.some(a => a.status === "running");
+                // All messages (from users and child agents) arrive on the "messages" queue.
+                // Child agents communicate via the SDK (sendToSession), which enqueues
+                // to the same "messages" queue as user prompts.
                 let msgData: any;
-
-                if (hasRunningAgents) {
-                    const userMsg = ctx.dequeueEvent("messages");
-                    const childUpdate = ctx.dequeueEvent("child_updates");
-                    const raceResult: any = yield ctx.race(userMsg, childUpdate);
-
-                    if (raceResult.index === 1) {
-                        // Child update arrived — process it
-                        const childData = typeof raceResult.value === "string"
-                            ? JSON.parse(raceResult.value) : raceResult.value;
-                        ctx.traceInfo(`[orch] child_update: child=${childData.childOrchId} type=${childData.type}`);
-
-                        // Update local sub-agent tracking
-                        const agent = subAgents.find((a: SubAgentEntry) => a.orchId === childData.childOrchId);
-                        if (agent) {
-                            if (childData.type === "turn_completed") {
-                                agent.result = (childData.content ?? "").slice(0, 2000);
-                                // Check if the child orchestration actually finished
-                                // (a "turn_completed" from a child that will keep going is intermediate)
-                            }
-                            if (childData.type === "finished") {
-                                agent.status = "completed";
-                                agent.result = (childData.content ?? "").slice(0, 2000);
-                            }
-                            if (childData.type === "failed") {
-                                agent.status = "failed";
-                                agent.result = childData.error ?? "unknown error";
-                            }
-                        }
-
-                        // Feed child update to the parent LLM so it can react
-                        const childSummary = agent
-                            ? `Agent ${agent.orchId} (task: "${agent.task.slice(0, 100)}"): ${childData.type} — ${(childData.content ?? "").slice(0, 500)}`
-                            : `Unknown agent ${childData.childOrchId}: ${childData.type}`;
-                        prompt = `[SYSTEM: Sub-agent update received:\n  ${childSummary}]`;
-                        gotPrompt = true;
-                        lastTurnResult = undefined;
-                        continue;
-                    }
-
-                    // User message won the race
-                    msgData = typeof raceResult.value === "string"
-                        ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
-                } else {
-                    const msg: any = yield ctx.dequeueEvent("messages");
-                    msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
-                }
+                const msg: any = yield ctx.dequeueEvent("messages");
+                msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
 
                 // ── Command dispatch ─────────────────────────
                 if (msgData.type === "cmd") {
@@ -421,15 +378,13 @@ export function* durableSessionOrchestration_1_0_4(
                 ctx.traceInfo(`[response] ${result.content}`);
 
                 // If this is a child orchestration, notify the parent about our completion
-                if (parentOrchId) {
+                // via the SDK — sends to the parent's "messages" queue like any other message.
+                if (parentSessionId) {
                     try {
-                        yield manager.notifyParent(parentOrchId, `session-${input.sessionId}`, input.sessionId, {
-                            type: "turn_completed",
-                            content: result.content.slice(0, 2000),
-                            iteration,
-                        });
+                        yield manager.sendToSession(parentSessionId,
+                            `[CHILD_UPDATE from=${input.sessionId} type=completed iter=${iteration}]\n${result.content.slice(0, 2000)}`);
                     } catch (err: any) {
-                        ctx.traceInfo(`[orch] notifyParent failed: ${err.message} (non-fatal)`);
+                        ctx.traceInfo(`[orch] sendToSession(parent) failed: ${err.message} (non-fatal)`);
                     }
                 }
 
@@ -490,20 +445,16 @@ export function* durableSessionOrchestration_1_0_4(
                 }
 
                 // If this is a child orchestration, notify the parent on every wait cycle
-                // so the parent wakes up and processes the update.
-                // Note: result.content may be empty — the reason alone is enough signal.
-                if (parentOrchId) {
+                // via the SDK — sends a message to the parent's "messages" queue.
+                if (parentSessionId) {
                     try {
                         const notifyContent = result.content
                             ? result.content.slice(0, 2000)
                             : `[wait: ${result.reason} (${result.seconds}s)]`;
-                        yield manager.notifyParent(parentOrchId, `session-${input.sessionId}`, input.sessionId, {
-                            type: "turn_completed",
-                            content: notifyContent,
-                            iteration,
-                        });
+                        yield manager.sendToSession(parentSessionId,
+                            `[CHILD_UPDATE from=${input.sessionId} type=wait iter=${iteration}]\n${notifyContent}`);
                     } catch (err: any) {
-                        ctx.traceInfo(`[orch] notifyParent (wait) failed: ${err.message} (non-fatal)`);
+                        ctx.traceInfo(`[orch] sendToSession(parent) wait failed: ${err.message} (non-fatal)`);
                     }
                 }
 

@@ -107,7 +107,10 @@ export class ManagedSession {
                 "Spawn an autonomous sub-agent to work on a task in parallel. " +
                 "The sub-agent is a full Copilot session with its own conversation and tools. " +
                 "Returns an agent ID you can use to check status, send messages, or wait for completion. " +
-                "Use this when a task can be broken into independent subtasks.",
+                "IMPORTANT: Only spawn agents for tasks that MUST run independently and in parallel " +
+                "(e.g. separate data sources to monitor, independent work streams). " +
+                "Do NOT spawn agents for summarization, reporting, or coordination \u2014 handle those yourself. " +
+                "Each agent adds cost, so minimize the number of agents.",
             parameters: {
                 type: "object",
                 properties: {
@@ -265,7 +268,10 @@ export class ManagedSession {
                 "Spawn an autonomous sub-agent to work on a task in parallel. " +
                 "The sub-agent is a full Copilot session with its own conversation and tools. " +
                 "Returns an agent ID you can use to check status, send messages, or wait for completion. " +
-                "Use this when a task can be broken into independent subtasks.",
+                "IMPORTANT: Only spawn agents for tasks that MUST run independently and in parallel " +
+                "(e.g. separate data sources to monitor, independent work streams). " +
+                "Do NOT spawn agents for summarization, reporting, or coordination \u2014 handle those yourself. " +
+                "Each agent adds cost, so minimize the number of agents.",
             parameters: {
                 type: "object",
                 properties: {

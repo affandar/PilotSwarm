@@ -114,7 +114,9 @@ export interface OrchestrationInput {
     // ─── Sub-agent state ─────────────────────────────────────
     /** Tracked sub-agents spawned by this orchestration. Carried across continueAsNew. */
     subAgents?: SubAgentEntry[];
-    /** If this is a sub-agent, the parent orchestration ID (for sending updates back). */
+    /** If this is a sub-agent, the parent session ID (for sending updates back via SDK). */
+    parentSessionId?: string;
+    /** @deprecated Use parentSessionId. Kept for backward compat with frozen orchestration versions. */
     parentOrchId?: string;
 }
 
