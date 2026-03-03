@@ -487,20 +487,26 @@ export function* durableSessionOrchestration_1_0_4(
                 if (result.content) {
                     setStatus(ctx, "running", { iteration, intermediateContent: result.content });
                     ctx.traceInfo(`[orch] intermediate: ${result.content.slice(0, 80)}`);
+                }
 
-                    // If this is a child orchestration, notify the parent about intermediate output
-                    if (parentOrchId) {
-                        try {
-                            yield manager.notifyParent(parentOrchId, `session-${input.sessionId}`, input.sessionId, {
-                                type: "turn_completed",
-                                content: result.content.slice(0, 2000),
-                                iteration,
-                            });
-                        } catch (err: any) {
-                            ctx.traceInfo(`[orch] notifyParent (wait) failed: ${err.message} (non-fatal)`);
-                        }
+                // If this is a child orchestration, notify the parent on every wait cycle
+                // so the parent wakes up and processes the update.
+                // Note: result.content may be empty — the reason alone is enough signal.
+                if (parentOrchId) {
+                    try {
+                        const notifyContent = result.content
+                            ? result.content.slice(0, 2000)
+                            : `[wait: ${result.reason} (${result.seconds}s)]`;
+                        yield manager.notifyParent(parentOrchId, `session-${input.sessionId}`, input.sessionId, {
+                            type: "turn_completed",
+                            content: notifyContent,
+                            iteration,
+                        });
+                    } catch (err: any) {
+                        ctx.traceInfo(`[orch] notifyParent (wait) failed: ${err.message} (non-fatal)`);
                     }
                 }
+
                 ctx.traceInfo(`[orch] durable timer: ${result.seconds}s (${result.reason})`);
 
                 {
