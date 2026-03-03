@@ -34,7 +34,7 @@ function setStatus(ctx: any, status: DurableSessionStatus, extra?: Record<string
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_4(
+export function* durableSessionOrchestration_1_0_3(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

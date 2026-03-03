@@ -7,7 +7,13 @@ import type {
     CommandMessage,
     CommandResponse,
 } from "./types.js";
-import { createSessionProxy, createSessionManagerProxy } from "./session-proxy.js";
+import { createSessionProxy, createSessionManagerProxy as _createSessionManagerProxy } from "./session-proxy.js";
+
+// Cast to `any` so this frozen orchestration doesn't break when
+// the live proxy shape evolves. The old activity names (getChildStatus,
+// messageChild, registerChildSession) are still registered on the worker
+// for backward compatibility during the transition period.
+const createSessionManagerProxy = _createSessionManagerProxy as (ctx: any) => any;
 
 /**
  * Set custom status as a JSON blob of session state.
