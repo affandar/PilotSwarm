@@ -11,6 +11,7 @@ export type TurnResult =
     | { type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
+    | { type: "list_sessions"; events?: CapturedEvent[] }
     | { type: "cancelled" }
     | { type: "error"; message: string; events?: CapturedEvent[] };
 

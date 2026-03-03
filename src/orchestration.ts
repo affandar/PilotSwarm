@@ -740,6 +740,25 @@ export function* durableSessionOrchestration_1_0_4(
                 return "";
             }
 
+            case "list_sessions": {
+                ctx.traceInfo(`[orch] list_sessions`);
+
+                const rawSessions: string = yield manager.listSessions();
+                const sessions = JSON.parse(rawSessions);
+
+                const lines: string[] = sessions.map((s: any) =>
+                    `  - ${s.sessionId}${s.sessionId === input.sessionId ? " (this session)" : ""}\n` +
+                    `    Title: ${s.title ?? "(untitled)"}\n` +
+                    `    Status: ${s.status}, Iterations: ${s.iterations ?? 0}\n` +
+                    `    Parent: ${s.parentSessionId ?? "none"}`
+                );
+
+                yield ctx.continueAsNew(continueInput({
+                    prompt: `[SYSTEM: Active sessions (${sessions.length}):\n${lines.join("\n")}]`,
+                }));
+                return "";
+            }
+
             case "wait_for_agents": {
                 let targetIds = result.agentIds;
 
