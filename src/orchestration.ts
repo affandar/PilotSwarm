@@ -56,6 +56,7 @@ export function* durableSessionOrchestration_1_0_4(
 
     // ─── Sub-agent tracking ──────────────────────────────────
     let subAgents: SubAgentEntry[] = input.subAgents ? [...input.subAgents] : [];
+    let spawnCount = input.spawnCount ?? 0;
     // parentSessionId: prefer new field, fall back to old parentOrchId for backward compat
     const parentSessionId = input.parentSessionId
         ?? (input.parentOrchId ? input.parentOrchId.replace(/^session-/, '') : undefined);
@@ -115,6 +116,7 @@ export function* durableSessionOrchestration_1_0_4(
             taskContext,
             baseSystemMessage,
             subAgents,
+            spawnCount,
             parentSessionId,
             retryCount: 0, // reset by default; overrides can set it
             ...overrides,
@@ -616,11 +618,10 @@ export function* durableSessionOrchestration_1_0_4(
                     return "";
                 }
 
-                // Generate deterministic child IDs
-                // Use '_sub_' separator — Copilot SDK rejects colons in session IDs
-                // Combine newGuid with iteration count to avoid collisions across continueAsNew
-                const childGuid: string = yield ctx.newGuid();
-                const childSessionId = `${input.sessionId}_sub_${childGuid.slice(0, 4)}${iteration}`;
+                // Generate unique child IDs
+                // Use spawnCount (monotonic across all continueAsNew calls) to guarantee uniqueness
+                const childSessionId = `${input.sessionId}_sub_${String(spawnCount).padStart(5, '0')}`;
+                spawnCount++;
                 const childOrchId = `session-${childSessionId}`;
 
                 ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${result.task.slice(0, 80)}"`);
