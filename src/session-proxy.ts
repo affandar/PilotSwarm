@@ -78,7 +78,7 @@ export function createSessionManagerProxy(ctx: any) {
         getSessionStatus(sessionId: string) {
             return ctx.scheduleActivity("getSessionStatus", { sessionId });
         },
-        /** Send a child_updates event to a parent orchestration. */
+        /** @deprecated Send a child_updates event to a parent orchestration. Use sendToSession instead. */
         notifyParent(parentOrchId: string, childOrchId: string, childSessionId: string, update: any) {
             return ctx.scheduleActivity("notifyParent", { parentOrchId, childOrchId, childSessionId, update });
         },

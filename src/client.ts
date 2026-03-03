@@ -94,6 +94,9 @@ export class DurableCopilotClient {
         if (config) {
             this.sessionConfigs.set(sessionId, config);
         }
+        // Mark orchestration as active so _ensureOrchestrationAndSend skips creation.
+        // The orchestration should already be running for resumed sessions.
+        this.activeOrchestrations.set(sessionId, `session-${sessionId}`);
         return new DurableSession(sessionId, this, config?.onUserInputRequest);
     }
 
@@ -198,7 +201,7 @@ export class DurableCopilotClient {
                 inputGracePeriod: parentSessionId ? -1 : (this.config.dehydrateOnInputRequired ?? 30),
                 checkpointInterval: this.config.checkpointInterval ?? -1,
                 rehydrationMessage: this.config.rehydrationMessage,
-                ...(parentSessionId ? { parentOrchId: `session-${parentSessionId}` } : {}),
+                ...(parentSessionId ? { parentSessionId } : {}),
             };
             await this.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,
