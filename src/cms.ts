@@ -32,6 +32,8 @@ export interface SessionRow {
     deletedAt: Date | null;
     currentIteration: number;
     lastError: string | null;
+    /** If this session is a sub-agent, the parent session's ID. */
+    parentSessionId: string | null;
 }
 
 /** Fields that can be updated on a session row. */
@@ -60,7 +62,7 @@ export interface SessionCatalogProvider {
     // ── Writes (called from client, before duroxide calls) ───
 
     /** Insert a new session. No-op if session already exists. */
-    createSession(sessionId: string, opts?: { model?: string }): Promise<void>;
+    createSession(sessionId: string, opts?: { model?: string; parentSessionId?: string }): Promise<void>;
 
     /** Update one or more fields on an existing session. */
     updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void>;
@@ -119,7 +121,8 @@ CREATE TABLE IF NOT EXISTS ${table} (
     last_active_at    TIMESTAMPTZ,
     deleted_at        TIMESTAMPTZ,
     current_iteration INTEGER NOT NULL DEFAULT 0,
-    last_error        TEXT
+    last_error        TEXT,
+    parent_session_id TEXT
 )`,
         createEventsTable: `
 CREATE TABLE IF NOT EXISTS ${eventsTable} (
@@ -179,17 +182,23 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         for (const idx of this.sql.createIndexes) {
             await this.pool.query(idx);
         }
+        // Migration: add parent_session_id if missing (safe for existing DBs)
+        try {
+            await this.pool.query(
+                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS parent_session_id TEXT`
+            );
+        } catch {}
         this.initialized = true;
     }
 
     // ── Writes ───────────────────────────────────────────────
 
-    async createSession(sessionId: string, opts?: { model?: string }): Promise<void> {
+    async createSession(sessionId: string, opts?: { model?: string; parentSessionId?: string }): Promise<void> {
         await this.pool.query(
-            `INSERT INTO ${this.sql.table} (session_id, model)
-             VALUES ($1, $2)
+            `INSERT INTO ${this.sql.table} (session_id, model, parent_session_id)
+             VALUES ($1, $2, $3)
              ON CONFLICT (session_id) DO NOTHING`,
-            [sessionId, opts?.model ?? null],
+            [sessionId, opts?.model ?? null, opts?.parentSessionId ?? null],
         );
     }
 
@@ -339,6 +348,7 @@ function rowToSessionRow(row: any): SessionRow {
         deletedAt: row.deleted_at ? new Date(row.deleted_at) : null,
         currentIteration: row.current_iteration ?? 0,
         lastError: row.last_error ?? null,
+        parentSessionId: row.parent_session_id ?? null,
     };
 }
 

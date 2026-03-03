@@ -1736,18 +1736,42 @@ async function refreshOrchestrations() {
     // Sort by createdAt descending (stable — no status-based reordering)
     entries.sort((a, b) => b.createdAt - a.createdAt);
 
-    // Pull session titles from CMS
+    // Pull session titles and parent info from CMS
+    const childToParent = new Map(); // orchId → parentOrchId
     try {
         const cmsSessions = await client.listSessions();
         for (const s of cmsSessions) {
             if (s.title) {
                 sessionHeadings.set(`session-${s.sessionId}`, s.title);
             }
+            if (s.parentSessionId) {
+                childToParent.set(`session-${s.sessionId}`, `session-${s.parentSessionId}`);
+            }
         }
     } catch {}
 
+    // Build tree: group children under parents, parents first
+    const parentEntries = entries.filter(e => !childToParent.has(e.id));
+    const childEntries = entries.filter(e => childToParent.has(e.id));
+    const orderedEntries = [];
+    for (const parent of parentEntries) {
+        orderedEntries.push({ ...parent, isChild: false });
+        // Insert children of this parent right after it
+        for (const child of childEntries) {
+            if (childToParent.get(child.id) === parent.id) {
+                orderedEntries.push({ ...child, isChild: true });
+            }
+        }
+    }
+    // Orphan children (parent not in list — shouldn't happen but be safe)
+    for (const child of childEntries) {
+        if (!parentEntries.some(p => p.id === childToParent.get(child.id))) {
+            orderedEntries.push({ ...child, isChild: true });
+        }
+    }
+
     // Rebuild ordered ID list to match display order
-    orchIdOrder = entries.map(e => e.id);
+    orchIdOrder = orderedEntries.map(e => e.id);
 
     // Update the blessed list — clear and re-add items
     const prevSelected = orchList.selected || 0;
@@ -1755,7 +1779,7 @@ async function refreshOrchestrations() {
     if (entries.length === 0) {
         orchList.addItem("{white-fg}(none){/white-fg}");
     } else {
-        for (const { id, status, createdAt } of entries) {
+        for (const { id, status, createdAt, isChild } of orderedEntries) {
             // 4-char UUID fragment + time started
             const uuid4 = id.startsWith("session-") ? id.slice(8, 12) : id.slice(0, 4);
             const timeStr = createdAt > 0
@@ -1795,9 +1819,10 @@ async function refreshOrchestrations() {
             }
 
             const heading = sessionHeadings.get(id);
+            const indent = isChild ? "  └ " : "";
             const label = heading
-                ? `${heading} (${uuid4}) ${timeStr}`
-                : `(${uuid4}) ${timeStr}`;
+                ? `${indent}${heading} (${uuid4}) ${timeStr}`
+                : `${indent}(${uuid4}) ${timeStr}`;
             orchList.addItem(`${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
         }
     }

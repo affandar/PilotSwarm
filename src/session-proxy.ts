@@ -73,6 +73,14 @@ export function createSessionManagerProxy(ctx: any) {
         messageChild(orchId: string, message: string) {
             return ctx.scheduleActivity("messageChild", { orchId, message });
         },
+        /** Register a child session in CMS (same as client.createSession). */
+        registerChildSession(sessionId: string, parentSessionId: string, model?: string) {
+            return ctx.scheduleActivity("registerChildSession", { sessionId, parentSessionId, model });
+        },
+        /** Send a child_updates event to a parent orchestration. */
+        notifyParent(parentOrchId: string, childOrchId: string, childSessionId: string, update: any) {
+            return ctx.scheduleActivity("notifyParent", { parentOrchId, childOrchId, childSessionId, update });
+        },
     };
 }
 
@@ -301,6 +309,47 @@ export function registerActivities(
             input.orchId,
             "messages",
             JSON.stringify({ prompt: input.message }),
+        );
+    });
+
+    // ── registerChildSession ────────────────────────────────
+    // Creates a CMS row for a child session, linking it to its parent.
+    // This is the same path as DurableCopilotClient.createSession() but
+    // called from the orchestration via an activity.
+    runtime.registerActivity("registerChildSession", async (
+        activityCtx: any,
+        input: { sessionId: string; parentSessionId: string; model?: string },
+    ): Promise<void> => {
+        activityCtx.traceInfo(`[registerChildSession] child=${input.sessionId} parent=${input.parentSessionId}`);
+        if (!catalog) {
+            activityCtx.traceInfo(`[registerChildSession] no catalog — skipping CMS registration`);
+            return;
+        }
+        await catalog.createSession(input.sessionId, {
+            model: input.model,
+            parentSessionId: input.parentSessionId,
+        });
+    });
+
+    // ── notifyParent ────────────────────────────────────────
+    // Sends a child_updates event to the parent orchestration so it can
+    // wake up from durable sleep and process the child's result.
+    runtime.registerActivity("notifyParent", async (
+        activityCtx: any,
+        input: { parentOrchId: string; childOrchId: string; childSessionId: string; update: any },
+    ): Promise<void> => {
+        activityCtx.traceInfo(`[notifyParent] parent=${input.parentOrchId} child=${input.childOrchId} type=${input.update?.type}`);
+        if (!provider) throw new Error("No provider available");
+        const { Client } = (await import("node:module")).createRequire(import.meta.url)("duroxide");
+        const client = new Client(provider);
+        await client.enqueueEvent(
+            input.parentOrchId,
+            "child_updates",
+            JSON.stringify({
+                childOrchId: input.childOrchId,
+                childSessionId: input.childSessionId,
+                ...input.update,
+            }),
         );
     });
 }
