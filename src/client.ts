@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.3";
+const ORCHESTRATION_VERSION = "1.0.4";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -36,6 +36,8 @@ export class DurableCopilotClient {
     private _catalog!: SessionCatalogProvider;
     private duroxideClient: any = null;
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
+    /** parentSessionId for sub-agent sessions. */
+    private parentSessionIds = new Map<string, string>();
     private activeOrchestrations = new Map<string, string>();
     private lastSeenStatusVersion = new Map<string, number>();
     private lastSeenIteration = new Map<string, number>();
@@ -55,6 +57,8 @@ export class DurableCopilotClient {
         onUserInputRequest?: UserInputHandler;
         /** Names of tools registered on the worker via worker.registerTools(). */
         toolNames?: string[];
+        /** If this session is a sub-agent, the parent session ID. */
+        parentSessionId?: string;
     }): Promise<DurableSession> {
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         if (config) {
@@ -71,7 +75,15 @@ export class DurableCopilotClient {
         }
 
         // CMS: write session record (state=pending, no orchestration yet)
-        await this._catalog.createSession(sessionId, { model: config?.model });
+        await this._catalog.createSession(sessionId, {
+            model: config?.model,
+            parentSessionId: config?.parentSessionId,
+        });
+
+        // Track parentSessionId for sub-agent orchestration input
+        if (config?.parentSessionId) {
+            this.parentSessionIds.set(sessionId, config.parentSessionId);
+        }
 
         return new DurableSession(sessionId, this, config?.onUserInputRequest);
     }
@@ -175,16 +187,18 @@ export class DurableCopilotClient {
         };
 
         if (!this.activeOrchestrations.has(sessionId)) {
+            const parentSessionId = this.parentSessionIds.get(sessionId);
             const input: OrchestrationInput = {
                 sessionId,
                 config: serializableConfig,
                 iteration: 0,
                 blobEnabled: this._blobEnabled,
                 dehydrateThreshold: this.config.dehydrateThreshold ?? 30,
-                idleTimeout: this.config.dehydrateOnIdle ?? 30,
-                inputGracePeriod: this.config.dehydrateOnInputRequired ?? 30,
+                idleTimeout: parentSessionId ? -1 : (this.config.dehydrateOnIdle ?? 30),
+                inputGracePeriod: parentSessionId ? -1 : (this.config.dehydrateOnInputRequired ?? 30),
                 checkpointInterval: this.config.checkpointInterval ?? -1,
                 rehydrationMessage: this.config.rehydrationMessage,
+                ...(parentSessionId ? { parentOrchId: `session-${parentSessionId}` } : {}),
             };
             await this.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,

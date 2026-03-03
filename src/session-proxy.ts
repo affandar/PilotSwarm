@@ -2,6 +2,7 @@ import type { SessionManager } from "./session-manager.js";
 import type { SessionBlobStore } from "./blob-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import type { SerializableSessionConfig, TurnResult, OrchestrationInput } from "./types.js";
+import { DurableCopilotClient } from "./client.js";
 import os from "node:os";
 
 // ─── SessionProxy ────────────────────────────────────────────────
@@ -65,17 +66,17 @@ export function createSessionManagerProxy(ctx: any) {
         summarizeSession(sessionId: string) {
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
-        /** Get the custom status of a child orchestration. */
-        getChildStatus(orchId: string) {
-            return ctx.scheduleActivity("getChildStatus", { orchId });
+        /** Spawn a child session via the DurableCopilotClient SDK. */
+        spawnChildSession(childSessionId: string, parentSessionId: string, config: any, task: string) {
+            return ctx.scheduleActivity("spawnChildSession", { childSessionId, parentSessionId, config, task });
         },
-        /** Send a message (prompt) to a child orchestration. */
-        messageChild(orchId: string, message: string) {
-            return ctx.scheduleActivity("messageChild", { orchId, message });
+        /** Send a message to a session via the DurableCopilotClient SDK. */
+        sendToSession(sessionId: string, message: string) {
+            return ctx.scheduleActivity("sendToSession", { sessionId, message });
         },
-        /** Register a child session in CMS (same as client.createSession). */
-        registerChildSession(sessionId: string, parentSessionId: string, model?: string) {
-            return ctx.scheduleActivity("registerChildSession", { sessionId, parentSessionId, model });
+        /** Get the status of a session via the DurableCopilotClient SDK. */
+        getSessionStatus(sessionId: string) {
+            return ctx.scheduleActivity("getSessionStatus", { sessionId });
         },
         /** Send a child_updates event to a parent orchestration. */
         notifyParent(parentOrchId: string, childOrchId: string, childSessionId: string, update: any) {
@@ -95,6 +96,8 @@ export function registerActivities(
     githubToken?: string,
     catalog?: SessionCatalogProvider | null,
     provider?: any,
+    storeUrl?: string,
+    cmsSchema?: string,
 ) {
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
@@ -269,71 +272,99 @@ export function registerActivities(
         });
     }
 
-    // ── getChildStatus ──────────────────────────────────────
-    // Reads the custom status of a child orchestration via the duroxide Client.
-    // Used by the parent orchestration to poll sub-agent progress.
-    runtime.registerActivity("getChildStatus", async (
+    // ── spawnChildSession ─────────────────────────────────────
+    // Creates a child session via the DurableCopilotClient SDK.
+    // Goes through the full SDK path: CMS registration + orchestration startup.
+    runtime.registerActivity("spawnChildSession", async (
         activityCtx: any,
-        input: { orchId: string },
+        input: { childSessionId: string; parentSessionId: string; config: SerializableSessionConfig; task: string },
     ): Promise<string> => {
-        activityCtx.traceInfo(`[getChildStatus] orchId=${input.orchId}`);
-        if (!provider) {
-            return JSON.stringify({ error: "No provider available" });
-        }
-        try {
-            const { Client } = (await import("node:module")).createRequire(import.meta.url)("duroxide");
-            const client = new Client(provider);
-            const status = await client.getStatus(input.orchId);
-            const info = await client.getInstanceInfo(input.orchId);
-            return JSON.stringify({
-                orchId: input.orchId,
-                customStatus: status?.customStatus ? JSON.parse(status.customStatus) : null,
-                runtimeStatus: info?.runtimeStatus ?? "unknown",
-            });
-        } catch (err: any) {
-            return JSON.stringify({ orchId: input.orchId, error: err.message });
-        }
-    });
+        activityCtx.traceInfo(`[spawnChildSession] child=${input.childSessionId} parent=${input.parentSessionId}`);
+        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
 
-    // ── messageChild ────────────────────────────────────────
-    // Sends a prompt to a running child orchestration via enqueueEvent.
-    runtime.registerActivity("messageChild", async (
-        activityCtx: any,
-        input: { orchId: string; message: string },
-    ): Promise<void> => {
-        activityCtx.traceInfo(`[messageChild] orchId=${input.orchId} msg="${input.message.slice(0, 60)}"`);
-        if (!provider) throw new Error("No provider available");
-        const { Client } = (await import("node:module")).createRequire(import.meta.url)("duroxide");
-        const client = new Client(provider);
-        await client.enqueueEvent(
-            input.orchId,
-            "messages",
-            JSON.stringify({ prompt: input.message }),
-        );
-    });
-
-    // ── registerChildSession ────────────────────────────────
-    // Creates a CMS row for a child session, linking it to its parent.
-    // This is the same path as DurableCopilotClient.createSession() but
-    // called from the orchestration via an activity.
-    runtime.registerActivity("registerChildSession", async (
-        activityCtx: any,
-        input: { sessionId: string; parentSessionId: string; model?: string },
-    ): Promise<void> => {
-        activityCtx.traceInfo(`[registerChildSession] child=${input.sessionId} parent=${input.parentSessionId}`);
-        if (!catalog) {
-            activityCtx.traceInfo(`[registerChildSession] no catalog — skipping CMS registration`);
-            return;
-        }
-        await catalog.createSession(input.sessionId, {
-            model: input.model,
-            parentSessionId: input.parentSessionId,
+        const sdkClient = new DurableCopilotClient({
+            store: storeUrl,
+            cmsSchema,
         });
+        try {
+            await sdkClient.start();
+
+            // Create the child session via the SDK — handles CMS row + orchestration start
+            const session = await sdkClient.createSession({
+                sessionId: input.childSessionId,
+                parentSessionId: input.parentSessionId,
+                model: input.config.model,
+                systemMessage: input.config.systemMessage,
+                toolNames: input.config.toolNames,
+                waitThreshold: input.config.waitThreshold,
+            });
+
+            // Fire the initial task prompt (non-blocking: just enqueues)
+            await session.send(input.task);
+
+            activityCtx.traceInfo(`[spawnChildSession] session created and task sent: ${input.childSessionId}`);
+            return input.childSessionId;
+        } finally {
+            await sdkClient.stop();
+        }
+    });
+
+    // ── sendToSession ───────────────────────────────────────
+    // Sends a message to any session via the DurableCopilotClient SDK.
+    runtime.registerActivity("sendToSession", async (
+        activityCtx: any,
+        input: { sessionId: string; message: string },
+    ): Promise<void> => {
+        activityCtx.traceInfo(`[sendToSession] session=${input.sessionId} msg="${input.message.slice(0, 60)}"`);
+        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+
+        const sdkClient = new DurableCopilotClient({
+            store: storeUrl,
+            cmsSchema,
+        });
+        try {
+            await sdkClient.start();
+            const session = await sdkClient.resumeSession(input.sessionId);
+            await session.send(input.message);
+        } finally {
+            await sdkClient.stop();
+        }
+    });
+
+    // ── getSessionStatus ────────────────────────────────────
+    // Gets the status of a session via the DurableCopilotClient SDK.
+    runtime.registerActivity("getSessionStatus", async (
+        activityCtx: any,
+        input: { sessionId: string },
+    ): Promise<string> => {
+        activityCtx.traceInfo(`[getSessionStatus] session=${input.sessionId}`);
+        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+
+        const sdkClient = new DurableCopilotClient({
+            store: storeUrl,
+            cmsSchema,
+        });
+        try {
+            await sdkClient.start();
+            const info = await sdkClient._getSessionInfo(input.sessionId);
+            return JSON.stringify({
+                sessionId: info.sessionId,
+                status: info.status,
+                title: info.title,
+                iterations: info.iterations,
+                result: info.result,
+                error: info.error,
+            });
+        } finally {
+            await sdkClient.stop();
+        }
     });
 
     // ── notifyParent ────────────────────────────────────────
     // Sends a child_updates event to the parent orchestration so it can
     // wake up from durable sleep and process the child's result.
+    // Uses raw enqueueEvent because it targets the "child_updates" queue,
+    // not the standard "messages" queue that session.send() uses.
     runtime.registerActivity("notifyParent", async (
         activityCtx: any,
         input: { parentOrchId: string; childOrchId: string; childSessionId: string; update: any },
