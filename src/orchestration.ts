@@ -56,7 +56,6 @@ export function* durableSessionOrchestration_1_0_4(
 
     // ─── Sub-agent tracking ──────────────────────────────────
     let subAgents: SubAgentEntry[] = input.subAgents ? [...input.subAgents] : [];
-    let spawnCount = input.spawnCount ?? 0;
     // parentSessionId: prefer new field, fall back to old parentOrchId for backward compat
     const parentSessionId = input.parentSessionId
         ?? (input.parentOrchId ? input.parentOrchId.replace(/^session-/, '') : undefined);
@@ -116,7 +115,6 @@ export function* durableSessionOrchestration_1_0_4(
             taskContext,
             baseSystemMessage,
             subAgents,
-            spawnCount,
             parentSessionId,
             retryCount: 0, // reset by default; overrides can set it
             ...overrides,
@@ -618,12 +616,6 @@ export function* durableSessionOrchestration_1_0_4(
                     return "";
                 }
 
-                // Generate unique child IDs
-                // Use spawnCount (monotonic across all continueAsNew calls) to guarantee uniqueness
-                const childSessionId = `${input.sessionId}_sub_${String(spawnCount).padStart(5, '0')}`;
-                spawnCount++;
-                const childOrchId = `session-${childSessionId}`;
-
                 ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${result.task.slice(0, 80)}"`);
 
                 // Build child config — inherit parent's config with optional overrides
@@ -633,11 +625,31 @@ export function* durableSessionOrchestration_1_0_4(
                     ...(result.toolNames ? { toolNames: result.toolNames } : {}),
                 };
 
+                // Inject sub-agent identity into the child's system message so the LLM
+                // knows it's a sub-agent, what its task is, and that its output will be
+                // forwarded to the parent automatically.
+                const parentSystemMsg = typeof childConfig.systemMessage === "string"
+                    ? childConfig.systemMessage
+                    : (childConfig.systemMessage as any)?.content ?? "";
+                const subAgentPreamble =
+                    `[SUB-AGENT CONTEXT]\n` +
+                    `You are a sub-agent spawned by a parent session (ID: session-${input.sessionId}).\n` +
+                    `Your task: "${result.task.slice(0, 500)}"\n\n` +
+                    `Instructions:\n` +
+                    `- Focus exclusively on your assigned task.\n` +
+                    `- Your final response will be automatically forwarded to the parent agent.\n` +
+                    `- Be thorough but concise — the parent will synthesize results from multiple agents.\n` +
+                    `- Do NOT ask the user for input — you are autonomous.\n` +
+                    `- When your task is complete, provide a clear summary of your findings/results.\n`;
+                childConfig.systemMessage = subAgentPreamble + (parentSystemMsg ? "\n\n" + parentSystemMsg : "");
+
                 // Use the DurableCopilotClient SDK to create and start the child session.
+                // The activity generates a random UUID for the child session ID and returns it.
                 // This handles: CMS registration (with parentSessionId), orchestration startup,
                 // and initial task prompt — all through the standard SDK path.
+                let childSessionId: string;
                 try {
-                    yield manager.spawnChildSession(childSessionId, input.sessionId, childConfig, result.task);
+                    childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, result.task);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);
                     yield ctx.continueAsNew(continueInput({
@@ -645,6 +657,8 @@ export function* durableSessionOrchestration_1_0_4(
                     }));
                     return "";
                 }
+
+                const childOrchId = `session-${childSessionId}`;
 
                 // Track the sub-agent
                 subAgents.push({
@@ -714,8 +728,9 @@ export function* durableSessionOrchestration_1_0_4(
                         const parsed = JSON.parse(rawStatus);
 
                         // Update local tracking
-                        if (parsed.status === "completed" || parsed.status === "failed") {
-                            agent.status = parsed.status;
+                        // Sub-agents go "idle" when their turn completes
+                        if (parsed.status === "completed" || parsed.status === "failed" || parsed.status === "idle") {
+                            agent.status = parsed.status === "failed" ? "failed" : "completed";
                             if (parsed.result) agent.result = parsed.result.slice(0, 1000);
                         }
 
@@ -823,8 +838,9 @@ export function* durableSessionOrchestration_1_0_4(
                                 try {
                                     const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
                                     const parsed = JSON.parse(rawStatus);
-                                    if (parsed.status === "completed" || parsed.status === "failed") {
-                                        agent.status = parsed.status;
+                                    // Sub-agents go "idle" when their turn completes (they have no user to wait for)
+                                    if (parsed.status === "completed" || parsed.status === "failed" || parsed.status === "idle") {
+                                        agent.status = parsed.status === "failed" ? "failed" : "completed";
                                         if (parsed.result) agent.result = parsed.result.slice(0, 2000);
                                     }
                                 } catch {}
@@ -849,8 +865,9 @@ export function* durableSessionOrchestration_1_0_4(
                             try {
                                 const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
                                 const parsed = JSON.parse(rawStatus);
-                                if (parsed.status === "completed" || parsed.status === "failed") {
-                                    agent.status = parsed.status;
+                                // Sub-agents go "idle" when their turn completes
+                                if (parsed.status === "completed" || parsed.status === "failed" || parsed.status === "idle") {
+                                    agent.status = parsed.status === "failed" ? "failed" : "completed";
                                     if (parsed.result) agent.result = parsed.result.slice(0, 2000);
                                 }
                             } catch {}

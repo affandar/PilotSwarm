@@ -130,6 +130,12 @@ function ts() {
     return new Date().toLocaleTimeString("en-GB", { hour12: false });
 }
 
+/** Extract short display ID (last 8 chars of session UUID) from an orchId or sessionId. */
+function shortId(id) {
+    const sid = id.startsWith("session-") ? id.slice(8) : id;
+    return sid.slice(-8);
+}
+
 // ─── Create blessed screen ───────────────────────────────────────
 
 // Suppress stderr during screen creation — same SetUlc issue.
@@ -348,7 +354,7 @@ function refreshNodeMap() {
     for (const orchId of knownOrchestrationIds) {
         const node = seqLastActivityNode.get(orchId);
         const status = sessionLiveStatus.get(orchId) || "unknown";
-        const uuid4 = orchId.startsWith("session-") ? orchId.slice(8, 12) : orchId.slice(0, 4);
+        const uuid4 = shortId(orchId);
         const title = sessionHeadings.get(orchId);
         const entry = { orchId, uuid4, status, title };
         if (node && nodeSessionMap.has(node)) {
@@ -913,9 +919,8 @@ function updateSeqHeader() {
 function refreshSeqPane() {
     seqPane.setContent("");
     screen.realloc();
-    const shortId = activeOrchId.startsWith("session-")
-        ? activeOrchId.slice(8, 16) : activeOrchId.slice(0, 8);
-    seqPane.setLabel(` Sequence: ${shortId} `);
+    const seqShortId = shortId(activeOrchId);
+    seqPane.setLabel(` Sequence: ${seqShortId} `);
 
     // Update sticky header
     updateSeqHeader();
@@ -986,8 +991,8 @@ function switchLogMode() {
 function refreshOrchLogPane() {
     orchLogPane.setContent("");
     screen.realloc();
-    const shortId = activeOrchId.startsWith("session-") ? activeOrchId.slice(8, 16) : activeOrchId.slice(0, 8);
-    orchLogPane.setLabel(` Logs: ${shortId} `);
+    const shortIdVal = shortId(activeOrchId);
+    orchLogPane.setLabel(` Logs: ${shortIdVal} `);
     const buf = orchLogBuffers.get(activeOrchId);
     if (buf && buf.length > 0) {
         for (const line of buf) orchLogPane.log(line);
@@ -1341,7 +1346,7 @@ async function loadCmsHistory(orchId) {
             sess = await client.resumeSession(sid);
             sessions.set(sid, sess);
         } catch (err) {
-            appendLog(`{yellow-fg}Could not resume session ${sid.slice(0, 8)}: ${err.message}{/yellow-fg}`);
+            appendLog(`{yellow-fg}Could not resume session ${shortId(sid)}: ${err.message}{/yellow-fg}`);
             return;
         }
     }
@@ -1396,6 +1401,10 @@ async function loadCmsHistory(orchId) {
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || "tool";
                 lines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[tool] done{/green-fg} ${toolName}`);
+            } else if (type === "abort" || type === "session.info" || type === "session.idle"
+                || type === "session.usage_info" || type === "pending_messages.modified"
+                || type === "assistant.usage") {
+                // skip internal/noisy events
             } else {
                 lines.push(`{white-fg}[${timeStr}] [${type}]{/white-fg}`);
             }
@@ -1722,7 +1731,7 @@ function updateSessionListIcons() {
         }
 
         // Rebuild just this item's label
-        const uuid4 = id.startsWith("session-") ? id.slice(8, 12) : id.slice(0, 4);
+        const uuid4 = shortId(id);
         const createdAt = cached?.createdAt || 0;
         const timeStr = createdAt > 0
             ? new Date(createdAt).toLocaleString("en-GB", {
@@ -1862,7 +1871,7 @@ async function refreshOrchestrations() {
     } else {
         for (const { id, status, createdAt, isChild } of orderedEntries) {
             // 4-char UUID fragment + time started
-            const uuid4 = id.startsWith("session-") ? id.slice(8, 12) : id.slice(0, 4);
+            const uuid4 = shortId(id);
             const timeStr = createdAt > 0
                 ? new Date(createdAt).toLocaleString("en-GB", {
                     month: "short", day: "numeric",
@@ -1950,7 +1959,7 @@ orchList.key(["c"], async () => {
         const id = orchIdOrder[idx];
         try {
             await dc.cancelInstance(id);
-            appendLog(`{yellow-fg}Cancelled ${id.slice(8, 12)}{/yellow-fg}`);
+            appendLog(`{yellow-fg}Cancelled ${shortId(id)}{/yellow-fg}`);
             await refreshOrchestrations();
         } catch (err) {
             appendLog(`{red-fg}Cancel failed: ${err.message}{/red-fg}`);
@@ -1969,7 +1978,7 @@ orchList.key(["d"], async () => {
                 await dc.deleteInstance(id);
                 knownOrchestrationIds.delete(id);
                 orchStatusCache.delete(id);
-                appendLog(`{yellow-fg}Deleted ${id.slice(8, 12)}{/yellow-fg}`);
+                appendLog(`{yellow-fg}Deleted ${shortId(id)}{/yellow-fg}`);
                 await refreshOrchestrations();
             } catch (err) {
                 appendLog(`{red-fg}Delete failed: ${err.message}{/red-fg}`);
@@ -1998,7 +2007,7 @@ orchList.key(["n"], async () => {
         const sess = await createNewSession();
         const orchId = `session-${sess.sessionId}`;
         knownOrchestrationIds.add(orchId);
-        appendLog(`{green-fg}New session: ${sess.sessionId.slice(0, 8)}…{/green-fg}`);
+        appendLog(`{green-fg}New session: ${shortId(sess.sessionId)}…{/green-fg}`);
         await switchToOrchestration(orchId);
         await refreshOrchestrations();
         // Focus prompt so user can type immediately
@@ -2016,7 +2025,7 @@ orchList.key(["t"], async () => {
     if (idx < 0 || idx >= orchIdOrder.length) return;
     const orchId = orchIdOrder[idx];
     const sessionId = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
-    const uuid4 = sessionId.slice(0, 4);
+    const uuid4 = shortId(sessionId);
 
     // Show a choice list
     const choiceList = blessed.list({
@@ -2305,14 +2314,14 @@ async function createNewSession() {
 
 const initialSession = await createNewSession();
 const thisSessionId = initialSession.sessionId;
-appendLog(`Session created ✓ {white-fg}(${thisSessionId.slice(0, 8)}…){/white-fg}`);
+appendLog(`Session created ✓ {white-fg}(${shortId(thisSessionId)}…){/white-fg}`);
 
 // ─── Active orchestration tracking ───────────────────────────────
 // The chat pane shows live output from the "active" orchestration.
 // Selecting a different orchestration in the left pane switches context.
 
 let activeOrchId = `session-${thisSessionId}`;  // currently observed orchestration
-let activeSessionShort = thisSessionId.slice(0, 8);
+let activeSessionShort = shortId(thisSessionId);
 let orchSelectFollowActive = true; // when true, next refresh snaps selection to activeOrchId
 
 function updateChatLabel() {
@@ -2350,6 +2359,63 @@ function startObserver(orchId) {
         // Full refresh happens on the debounced 500ms schedule.
         updateSessionListIcons();
     }
+
+    // ── Real-time CMS event subscription ────────────────────
+    // Subscribe to session events via DurableSession.on() so tool calls,
+    // reasoning, etc. appear in real-time — not only on session switch.
+    const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+    const fmtTimeShort = () => new Date().toLocaleTimeString("en-GB", { hour12: false });
+
+    // Deduplicate: track which events we've rendered (by seq number) to avoid
+    // showing duplicates when switching sessions (loadCmsHistory shows DB events).
+    const renderedEventSeqs = new Set();
+
+    (async () => {
+        let sess = sessions.get(sid);
+        if (!sess) {
+            try {
+                sess = await client.resumeSession(sid);
+                sessions.set(sid, sess);
+            } catch { return; }
+        }
+
+        const unsub = sess.on((evt) => {
+            if (ac.signal.aborted) { unsub(); return; }
+            // Skip if already rendered (from loadCmsHistory on switch)
+            if (evt.seq && renderedEventSeqs.has(evt.seq)) return;
+            if (evt.seq) renderedEventSeqs.add(evt.seq);
+
+            const t = fmtTimeShort();
+            const type = evt.eventType;
+
+            // Don't render events that the customStatus observer already handles
+            if (type === "assistant.message") return;
+            if (type === "user.message") return;
+
+            if (type === "tool.execution_start") {
+                const toolName = evt.data?.toolName || "tool";
+                appendChatRaw(`{white-fg}[${t}]{/white-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`, orchId);
+            } else if (type === "tool.execution_complete") {
+                const toolName = evt.data?.toolName || "tool";
+                appendChatRaw(`{white-fg}[${t}]{/white-fg} {green-fg}[tool] done{/green-fg} ${toolName}`, orchId);
+            } else if (type === "assistant.reasoning") {
+                appendChatRaw(`{white-fg}[${t}]{/white-fg} {white-fg}[assistant.reasoning]{/white-fg}`, orchId);
+            } else if (type === "assistant.turn_start") {
+                appendChatRaw(`{white-fg}[${t}]{/white-fg} {white-fg}[assistant.turn_start]{/white-fg}`, orchId);
+            } else if (type === "assistant.usage") {
+                // skip noisy usage events
+            } else if (type === "session.info" || type === "session.idle" || type === "session.usage_info" || type === "pending_messages.modified") {
+                // skip internal events
+            } else if (type === "abort") {
+                // skip — internal plumbing when tool stubs abort the CopilotSession turn
+            } else {
+                appendChatRaw(`{white-fg}[${t}] [${type}]{/white-fg}`, orchId);
+            }
+        });
+
+        // Clean up when observer is aborted
+        ac.signal.addEventListener("abort", () => unsub());
+    })();
 
     // First, show the current state immediately
     (async () => {
@@ -2602,7 +2668,7 @@ async function switchToOrchestration(orchId) {
         }).catch(() => {});
     }
     // Use 4-char UUID + time for display
-    const uuid4 = orchId.startsWith("session-") ? orchId.slice(8, 12) : orchId.slice(0, 4);
+    const uuid4 = shortId(orchId);
     const cached = orchStatusCache.get(orchId);
     const timeStr = cached?.createdAt > 0
         ? new Date(cached.createdAt).toLocaleTimeString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit" })
@@ -2800,7 +2866,7 @@ async function handleInput(text) {
                 knownOrchestrationIds.add(newOrchId);
                 await refreshOrchestrations();
                 await switchToOrchestration(newOrchId);
-                appendChatRaw(`{green-fg}New session created ✓ {white-fg}(${newSess.sessionId.slice(0, 8)}…) model=${currentModel}{/white-fg}{/green-fg}`);
+                appendChatRaw(`{green-fg}New session created ✓ {white-fg}(${shortId(newSess.sessionId)}…) model=${currentModel}{/white-fg}{/green-fg}`);
             } catch (err) {
                 appendChatRaw(`{red-fg}Failed to create session: ${err.message}{/red-fg}`);
             }
@@ -3173,7 +3239,7 @@ async function summarizeSession(orchId) {
                 }
                 // Refresh list to show new heading
                 refreshOrchestrations();
-                const uuid4 = orchId.startsWith("session-") ? orchId.slice(8, 12) : orchId.slice(0, 4);
+                const uuid4 = shortId(orchId);
                 appendLog(`{green-fg}✓ Summarized ${uuid4}: ${sessionHeadings.get(orchId) || "done"}{/green-fg}`);
                 return;
             }
@@ -3182,7 +3248,7 @@ async function summarizeSession(orchId) {
         }
     }
     // Timed out — log and move on
-    const uuid4 = orchId.startsWith("session-") ? orchId.slice(8, 12) : orchId.slice(0, 4);
+    const uuid4 = shortId(orchId);
     appendLog(`{yellow-fg}⏳ Summarize ${uuid4} timed out (old session?){/yellow-fg}`);
 }
 

@@ -66,9 +66,9 @@ export function createSessionManagerProxy(ctx: any) {
         summarizeSession(sessionId: string) {
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
-        /** Spawn a child session via the DurableCopilotClient SDK. */
-        spawnChildSession(childSessionId: string, parentSessionId: string, config: any, task: string) {
-            return ctx.scheduleActivity("spawnChildSession", { childSessionId, parentSessionId, config, task });
+        /** Spawn a child session via the DurableCopilotClient SDK. Returns the generated child session ID. */
+        spawnChildSession(parentSessionId: string, config: any, task: string) {
+            return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task });
         },
         /** Send a message to a session via the DurableCopilotClient SDK. */
         sendToSession(sessionId: string, message: string) {
@@ -278,12 +278,14 @@ export function registerActivities(
 
     // ── spawnChildSession ─────────────────────────────────────
     // Creates a child session via the DurableCopilotClient SDK.
+    // Generates a random UUID for the child session ID internally.
     // Goes through the full SDK path: CMS registration + orchestration startup.
     runtime.registerActivity("spawnChildSession", async (
         activityCtx: any,
-        input: { childSessionId: string; parentSessionId: string; config: SerializableSessionConfig; task: string },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string },
     ): Promise<string> => {
-        activityCtx.traceInfo(`[spawnChildSession] child=${input.childSessionId} parent=${input.parentSessionId}`);
+        const childSessionId = crypto.randomUUID();
+        activityCtx.traceInfo(`[spawnChildSession] child=${childSessionId} parent=${input.parentSessionId}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
 
         const sdkClient = new DurableCopilotClient({
@@ -295,7 +297,7 @@ export function registerActivities(
 
             // Create the child session via the SDK — handles CMS row + orchestration start
             const session = await sdkClient.createSession({
-                sessionId: input.childSessionId,
+                sessionId: childSessionId,
                 parentSessionId: input.parentSessionId,
                 model: input.config.model,
                 systemMessage: input.config.systemMessage,
@@ -306,15 +308,17 @@ export function registerActivities(
             // Fire the initial task prompt (non-blocking: just enqueues)
             await session.send(input.task);
 
-            activityCtx.traceInfo(`[spawnChildSession] session created and task sent: ${input.childSessionId}`);
-            return input.childSessionId;
+            activityCtx.traceInfo(`[spawnChildSession] session created and task sent: ${childSessionId}`);
+            return childSessionId;
         } finally {
             await sdkClient.stop();
         }
     });
 
     // ── sendToSession ───────────────────────────────────────
-    // Sends a message to any session via the DurableCopilotClient SDK.
+    // Sends a message to any session's orchestration event queue directly.
+    // Does NOT call session.send() (which tries to start/resume the orchestration).
+    // Instead, enqueues directly to the existing orchestration's "messages" queue.
     runtime.registerActivity("sendToSession", async (
         activityCtx: any,
         input: { sessionId: string; message: string },
@@ -328,8 +332,14 @@ export function registerActivities(
         });
         try {
             await sdkClient.start();
-            const session = await sdkClient.resumeSession(input.sessionId);
-            await session.send(input.message);
+            // Enqueue directly to the orchestration's event queue
+            const orchestrationId = `session-${input.sessionId}`;
+            await (sdkClient as any).duroxideClient.enqueueEvent(
+                orchestrationId,
+                "messages",
+                JSON.stringify({ prompt: input.message }),
+            );
+            activityCtx.traceInfo(`[sendToSession] enqueued to ${orchestrationId}`);
         } finally {
             await sdkClient.stop();
         }

@@ -313,7 +313,9 @@ export class DurableCopilotClient {
                 ? new Date(Date.now() + customStatus.waitSeconds * 1000)
                 : undefined,
             waitReason: customStatus.waitReason,
-            result: orchStatus.status === "Completed" ? orchStatus.output : undefined,
+            result: orchStatus.status === "Completed"
+                ? orchStatus.output
+                : (customStatus.turnResult?.type === "completed" ? customStatus.turnResult.content : undefined),
             error: orchStatus.status === "Failed" ? orchStatus.error : (cmsRow?.lastError ?? undefined),
         };
     }
