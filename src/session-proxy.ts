@@ -78,6 +78,10 @@ export function createSessionManagerProxy(ctx: any) {
         getSessionStatus(sessionId: string) {
             return ctx.scheduleActivity("getSessionStatus", { sessionId });
         },
+        /** List all sessions via the DurableCopilotClient SDK. */
+        listSessions() {
+            return ctx.scheduleActivity("listSessions", {});
+        },
         /** @deprecated Send a child_updates event to a parent orchestration. Use sendToSession instead. */
         notifyParent(parentOrchId: string, childOrchId: string, childSessionId: string, update: any) {
             return ctx.scheduleActivity("notifyParent", { parentOrchId, childOrchId, childSessionId, update });
@@ -355,6 +359,35 @@ export function registerActivities(
                 result: info.result,
                 error: info.error,
             });
+        } finally {
+            await sdkClient.stop();
+        }
+    });
+
+    // ── listSessions ────────────────────────────────────────
+    // Lists all sessions via the DurableCopilotClient SDK.
+    runtime.registerActivity("listSessions", async (
+        activityCtx: any,
+        _input: {},
+    ): Promise<string> => {
+        activityCtx.traceInfo(`[listSessions]`);
+        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+
+        const sdkClient = new DurableCopilotClient({
+            store: storeUrl,
+            cmsSchema,
+        });
+        try {
+            await sdkClient.start();
+            const sessions = await sdkClient.listSessions();
+            return JSON.stringify(sessions.map(s => ({
+                sessionId: s.sessionId,
+                title: s.title,
+                status: s.status,
+                iterations: s.iterations,
+                parentSessionId: s.parentSessionId,
+                error: s.error,
+            })));
         } finally {
             await sdkClient.stop();
         }

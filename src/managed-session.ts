@@ -12,6 +12,7 @@ interface TurnState {
     pendingMessageAgent: { agentId: string; message: string } | null;
     pendingCheckAgents: boolean;
     pendingWaitForAgents: { agentIds: string[] } | null;
+    pendingListSessions: boolean;
     session: CopilotSession | null;
     waitThreshold: number;
 }
@@ -177,7 +178,19 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [spawnAgentTool, messageAgentTool, checkAgentsTool, waitForAgentsTool];
+        const listSessionsTool = defineTool("list_sessions", {
+            description:
+                "List all active sessions in the system. " +
+                "Returns each session's ID, title, status, parent, and iteration count. " +
+                "Use this to discover other running sessions, find sibling agents, or survey the system.",
+            parameters: {
+                type: "object",
+                properties: {},
+            },
+            handler: async () => "stub",
+        });
+
+        return [spawnAgentTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool];
     }
 
     /**
@@ -198,6 +211,7 @@ export class ManagedSession {
             pendingMessageAgent: null,
             pendingCheckAgents: false,
             pendingWaitForAgents: null,
+            pendingListSessions: false,
             session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
         };
@@ -363,7 +377,23 @@ export class ManagedSession {
             },
         });
 
-        const SYSTEM_TOOL_NAMES = new Set(["wait", "ask_user", "spawn_agent", "message_agent", "check_agents", "wait_for_agents"]);
+        const listSessionsTool = defineTool("list_sessions", {
+            description:
+                "List all active sessions in the system. " +
+                "Returns each session's ID, title, status, parent, and iteration count. " +
+                "Use this to discover other running sessions, find sibling agents, or survey the system.",
+            parameters: {
+                type: "object",
+                properties: {},
+            },
+            handler: async () => {
+                turnState.pendingListSessions = true;
+                if (turnState.session) turnState.session.abort();
+                return "aborted";
+            },
+        });
+
+        const SYSTEM_TOOL_NAMES = new Set(["wait", "ask_user", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -378,6 +408,7 @@ export class ManagedSession {
             messageAgentTool,
             checkAgentsTool,
             waitForAgentsTool,
+            listSessionsTool,
         ];
 
         // Re-register tools for this turn (may have changed)
@@ -462,7 +493,8 @@ export class ManagedSession {
             // Other send() errors — check if any handler aborted first
             if (!turnState.pendingInput && !turnState.pendingWait
                 && !turnState.pendingSpawnAgent && !turnState.pendingMessageAgent
-                && !turnState.pendingCheckAgents && !turnState.pendingWaitForAgents) {
+                && !turnState.pendingCheckAgents && !turnState.pendingWaitForAgents
+                && !turnState.pendingListSessions) {
                 return { type: "error", message: errMsg };
             }
         } finally {
@@ -510,6 +542,9 @@ export class ManagedSession {
                 agentIds: turnState.pendingWaitForAgents.agentIds,
                 events: collectedEvents,
             };
+        }
+        if (turnState.pendingListSessions) {
+            return { type: "list_sessions", events: collectedEvents };
         }
 
         return {
