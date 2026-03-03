@@ -19,7 +19,6 @@ By the end you'll have:
 |------|---------|-------|
 | Node.js | **≥ 24** | `node --version` |
 | npm | ≥ 10 | `npm --version` |
-| GitHub CLI | any | `gh --version` |
 | PostgreSQL | ≥ 14 | `psql --version` |
 
 Optional (for AKS deployment):

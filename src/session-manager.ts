@@ -332,7 +332,7 @@ export class SessionManager {
      * Build the final system message by combining:
      * 1. Worker base system message (from workerDefaults)
      * 2. Client override (append or replace)
-     * Skills/agents are NOT injected here — the Copilot CLI discovers
+     * Skills/agents are NOT injected here — the Copilot SDK discovers
      * them from plugins installed in configDir.
      */
     private _buildSystemMessage(
