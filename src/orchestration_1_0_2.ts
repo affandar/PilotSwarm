@@ -34,7 +34,7 @@ function setStatus(ctx: any, status: DurableSessionStatus, extra?: Record<string
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_3(
+export function* durableSessionOrchestration_1_0_2(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -186,57 +186,8 @@ export function* durableSessionOrchestration_1_0_3(
 
             let gotPrompt = false;
             while (!gotPrompt) {
-                // If sub-agents are running, race messages with child_updates
-                // so the parent wakes up when a child reports back
-                const hasRunningAgents = subAgents.some(a => a.status === "running");
-                let msgData: any;
-
-                if (hasRunningAgents) {
-                    const userMsg = ctx.dequeueEvent("messages");
-                    const childUpdate = ctx.dequeueEvent("child_updates");
-                    const raceResult: any = yield ctx.race(userMsg, childUpdate);
-
-                    if (raceResult.index === 1) {
-                        // Child update arrived — process it
-                        const childData = typeof raceResult.value === "string"
-                            ? JSON.parse(raceResult.value) : raceResult.value;
-                        ctx.traceInfo(`[orch] child_update: child=${childData.childOrchId} type=${childData.type}`);
-
-                        // Update local sub-agent tracking
-                        const agent = subAgents.find((a: SubAgentEntry) => a.orchId === childData.childOrchId);
-                        if (agent) {
-                            if (childData.type === "turn_completed") {
-                                agent.result = (childData.content ?? "").slice(0, 2000);
-                                // Check if the child orchestration actually finished
-                                // (a "turn_completed" from a child that will keep going is intermediate)
-                            }
-                            if (childData.type === "finished") {
-                                agent.status = "completed";
-                                agent.result = (childData.content ?? "").slice(0, 2000);
-                            }
-                            if (childData.type === "failed") {
-                                agent.status = "failed";
-                                agent.result = childData.error ?? "unknown error";
-                            }
-                        }
-
-                        // Feed child update to the parent LLM so it can react
-                        const childSummary = agent
-                            ? `Agent ${agent.orchId} (task: "${agent.task.slice(0, 100)}"): ${childData.type} — ${(childData.content ?? "").slice(0, 500)}`
-                            : `Unknown agent ${childData.childOrchId}: ${childData.type}`;
-                        prompt = `[SYSTEM: Sub-agent update received:\n  ${childSummary}]`;
-                        gotPrompt = true;
-                        lastTurnResult = undefined;
-                        continue;
-                    }
-
-                    // User message won the race
-                    msgData = typeof raceResult.value === "string"
-                        ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
-                } else {
-                    const msg: any = yield ctx.dequeueEvent("messages");
-                    msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
-                }
+                const msg: any = yield ctx.dequeueEvent("messages");
+                const msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
 
                 // ── Command dispatch ─────────────────────────
                 if (msgData.type === "cmd") {
@@ -419,19 +370,6 @@ export function* durableSessionOrchestration_1_0_3(
         switch (result.type) {
             case "completed":
                 ctx.traceInfo(`[response] ${result.content}`);
-
-                // If this is a child orchestration, notify the parent about our completion
-                if (parentOrchId) {
-                    try {
-                        yield manager.notifyParent(parentOrchId, `session-${input.sessionId}`, input.sessionId, {
-                            type: "turn_completed",
-                            content: result.content.slice(0, 2000),
-                            iteration,
-                        });
-                    } catch (err: any) {
-                        ctx.traceInfo(`[orch] notifyParent failed: ${err.message} (non-fatal)`);
-                    }
-                }
 
                 if (!blobEnabled || idleTimeout < 0) {
                     // Store the result so the dequeue-idle setStatus includes it
@@ -675,17 +613,10 @@ export function* durableSessionOrchestration_1_0_3(
                     prompt: result.task,
                 };
 
-                // Register child in CMS (same path as client.createSession)
-                try {
-                    yield manager.registerChildSession(childSessionId, input.sessionId, config.model);
-                } catch (err: any) {
-                    ctx.traceInfo(`[orch] registerChildSession failed: ${err.message} (non-fatal)`);
-                }
-
                 // Fire-and-forget: start the child orchestration
                 yield ctx.startOrchestrationVersioned(
                     "durable-session-v2",
-                    "1.0.3",
+                    "1.0.2",
                     childOrchId,
                     childInput,
                 );
@@ -814,72 +745,38 @@ export function* durableSessionOrchestration_1_0_3(
                     waitingForAgents: targetIds,
                 });
 
-                // Event-driven wait: listen for child_updates until all targets are done.
-                // Also race with user messages so the parent stays responsive.
-                const MAX_WAIT_ITERATIONS = 180;
-                for (let waitIter = 0; waitIter < MAX_WAIT_ITERATIONS; waitIter++) {
-                    // Check if all targets are done
-                    const stillRunning = targetIds.filter(id => {
-                        const agent = subAgents.find(a => a.orchId === id);
-                        return agent && agent.status === "running";
-                    });
-                    if (stillRunning.length === 0) break;
+                // Poll until all target agents are done (10s intervals)
+                const MAX_POLL_ATTEMPTS = 180; // 30 minutes max
+                for (let pollAttempt = 0; pollAttempt < MAX_POLL_ATTEMPTS; pollAttempt++) {
+                    let allDone = true;
+                    for (const targetId of targetIds) {
+                        const agent = subAgents.find(a => a.orchId === targetId);
+                        if (!agent || agent.status !== "running") continue;
 
-                    // Race: child_updates vs user message vs timeout
-                    const childUpdate = ctx.dequeueEvent("child_updates");
-                    const userMsg = ctx.dequeueEvent("messages");
-                    const timeout = ctx.scheduleTimer(30_000); // 30s fallback poll
-                    const waitRace: any = yield ctx.race(childUpdate, userMsg, timeout);
+                        try {
+                            const rawStatus: string = yield manager.getChildStatus(targetId);
+                            const parsed = JSON.parse(rawStatus);
+                            const runtimeStatus = parsed.runtimeStatus ?? "unknown";
+                            const childCustom = parsed.customStatus;
 
-                    if (waitRace.index === 0) {
-                        // Child update
-                        const childData = typeof waitRace.value === "string"
-                            ? JSON.parse(waitRace.value) : waitRace.value;
-                        ctx.traceInfo(`[orch] wait_for_agents: child_update from ${childData.childOrchId}`);
-                        const agent = subAgents.find((a: SubAgentEntry) => a.orchId === childData.childOrchId);
-                        if (agent) {
-                            if (childData.type === "turn_completed" || childData.type === "finished") {
-                                agent.result = (childData.content ?? "").slice(0, 2000);
-                            }
-                            if (childData.type === "finished") {
-                                agent.status = "completed";
-                            }
-                            if (childData.type === "failed") {
-                                agent.status = "failed";
-                                agent.result = childData.error ?? "unknown error";
-                            }
-                        }
-                    } else if (waitRace.index === 1) {
-                        // User message interrupted the wait — handle it and come back
-                        const interruptData = typeof waitRace.value === "string"
-                            ? JSON.parse(waitRace.value) : (waitRace.value ?? {});
-                        if (interruptData.prompt) {
-                            ctx.traceInfo(`[orch] wait_for_agents interrupted by user: "${interruptData.prompt.slice(0, 60)}"`);
-                            yield ctx.continueAsNew(continueInput({
-                                prompt: interruptData.prompt,
-                            }));
-                            return "";
-                        }
-                    } else {
-                        // Timeout — do a fallback status check via activities
-                        ctx.traceInfo(`[orch] wait_for_agents: timeout poll, checking ${stillRunning.length} agents`);
-                        for (const targetId of stillRunning) {
-                            const agent = subAgents.find(a => a.orchId === targetId);
-                            if (!agent || agent.status !== "running") continue;
-                            try {
-                                const rawStatus: string = yield manager.getChildStatus(targetId);
-                                const parsed = JSON.parse(rawStatus);
-                                const runtimeStatus = parsed.runtimeStatus ?? "unknown";
-                                const childCustom = parsed.customStatus;
-                                if (runtimeStatus === "Completed" || runtimeStatus === "Failed" || runtimeStatus === "Terminated") {
-                                    agent.status = runtimeStatus === "Completed" ? "completed" : "failed";
-                                    if (childCustom?.turnResult?.content) {
-                                        agent.result = childCustom.turnResult.content.slice(0, 2000);
-                                    }
+                            if (runtimeStatus === "Completed" || runtimeStatus === "Failed" || runtimeStatus === "Terminated") {
+                                agent.status = runtimeStatus === "Completed" ? "completed" : "failed";
+                                if (childCustom?.turnResult?.content) {
+                                    agent.result = childCustom.turnResult.content.slice(0, 2000);
                                 }
-                            } catch {}
+                                ctx.traceInfo(`[orch] agent ${targetId} finished: ${agent.status}`);
+                            } else {
+                                allDone = false;
+                            }
+                        } catch {
+                            allDone = false;
                         }
                     }
+
+                    if (allDone) break;
+
+                    // Wait 10 seconds before polling again
+                    yield ctx.scheduleTimer(10_000);
                 }
 
                 // Build results summary

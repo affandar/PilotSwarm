@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.2";
+const ORCHESTRATION_VERSION = "1.0.3";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -95,6 +95,7 @@ export class DurableCopilotClient {
             updatedAt: row.updatedAt,
             iterations: row.currentIteration,
             error: row.lastError ?? undefined,
+            parentSessionId: row.parentSessionId ?? undefined,
         }));
     }
 

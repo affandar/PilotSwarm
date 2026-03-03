@@ -79,6 +79,8 @@ export interface DurableSessionInfo {
     result?: string;
     error?: string;
     iterations: number;
+    /** If this is a sub-agent session, the parent session's ID. */
+    parentSessionId?: string;
 }
 
 // ─── Orchestration Input ─────────────────────────────────────────
