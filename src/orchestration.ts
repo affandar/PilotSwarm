@@ -782,10 +782,11 @@ export function* durableSessionOrchestration_1_0_4(
                     waitingForAgents: targetIds,
                 });
 
-                // Poll-based wait: check child status via SDK on a timer.
-                // Race each poll with user messages so the parent stays responsive.
-                const POLL_INTERVAL_MS = 10_000; // 10 seconds
-                const MAX_WAIT_ITERATIONS = 360; // ~1 hour max
+                // Event-driven wait: children send updates to the parent's "messages"
+                // queue via sendToSession. We race messages vs a fallback poll timer.
+                // Child updates arrive as "[CHILD_UPDATE from=... type=...]" messages.
+                const POLL_INTERVAL_MS = 30_000; // 30s fallback poll (event-driven, so rarely needed)
+                const MAX_WAIT_ITERATIONS = 360;
                 for (let waitIter = 0; waitIter < MAX_WAIT_ITERATIONS; waitIter++) {
                     // Check if all targets are done (from local tracking)
                     const stillRunning = targetIds.filter(id => {
@@ -794,37 +795,66 @@ export function* durableSessionOrchestration_1_0_4(
                     });
                     if (stillRunning.length === 0) break;
 
-                    // Race: user message vs poll timer (duroxide race supports exactly 2 tasks)
-                    const userMsg = ctx.dequeueEvent("messages");
+                    // Race: message (child update or user) vs fallback poll timer
+                    const msg = ctx.dequeueEvent("messages");
                     const pollTimer = ctx.scheduleTimer(POLL_INTERVAL_MS);
-                    const waitRace: any = yield ctx.race(userMsg, pollTimer);
+                    const waitRace: any = yield ctx.race(msg, pollTimer);
 
                     if (waitRace.index === 0) {
-                        // User message interrupted the wait — handle it
-                        const interruptData = typeof waitRace.value === "string"
+                        // Message arrived — could be a child update or a user message
+                        const msgData = typeof waitRace.value === "string"
                             ? JSON.parse(waitRace.value) : (waitRace.value ?? {});
-                        if (interruptData.prompt) {
-                            ctx.traceInfo(`[orch] wait_for_agents interrupted by user: "${interruptData.prompt.slice(0, 60)}"`);
+
+                        // Check if it's a child update (sent by sendToSession from child orch)
+                        const childUpdateMatch = typeof msgData.prompt === "string"
+                            && msgData.prompt.match(/^\[CHILD_UPDATE from=(\S+) type=(\S+)/);
+
+                        if (childUpdateMatch) {
+                            const childSessionId = childUpdateMatch[1];
+                            const updateType = childUpdateMatch[2].replace(/\]$/, "");
+                            const content = msgData.prompt.split("\n").slice(1).join("\n").trim();
+                            ctx.traceInfo(`[orch] wait_for_agents: child update from=${childSessionId} type=${updateType}`);
+
+                            const agent = subAgents.find(a => a.sessionId === childSessionId);
+                            if (agent) {
+                                if (content) agent.result = content.slice(0, 2000);
+                                // Check via SDK if done (the update type alone isn't authoritative
+                                // since "completed" means turn completed, not necessarily finished)
+                                try {
+                                    const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
+                                    const parsed = JSON.parse(rawStatus);
+                                    if (parsed.status === "completed" || parsed.status === "failed") {
+                                        agent.status = parsed.status;
+                                        if (parsed.result) agent.result = parsed.result.slice(0, 2000);
+                                    }
+                                } catch {}
+                            }
+                            continue;
+                        }
+
+                        // Not a child update — it's a user message interrupting the wait
+                        if (msgData.prompt) {
+                            ctx.traceInfo(`[orch] wait_for_agents interrupted by user: "${msgData.prompt.slice(0, 60)}"`);
                             yield ctx.continueAsNew(continueInput({
-                                prompt: interruptData.prompt,
+                                prompt: msgData.prompt,
                             }));
                             return "";
                         }
-                    }
-
-                    // Poll: check each still-running agent via SDK
-                    ctx.traceInfo(`[orch] wait_for_agents: polling ${stillRunning.length} agents (iter ${waitIter})`);
-                    for (const targetId of stillRunning) {
-                        const agent = subAgents.find(a => a.orchId === targetId);
-                        if (!agent || agent.status !== "running") continue;
-                        try {
-                            const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
-                            const parsed = JSON.parse(rawStatus);
-                            if (parsed.status === "completed" || parsed.status === "failed") {
-                                agent.status = parsed.status;
-                                if (parsed.result) agent.result = parsed.result.slice(0, 2000);
-                            }
-                        } catch {}
+                    } else {
+                        // Timer fired — fallback poll via SDK for any agents we missed
+                        ctx.traceInfo(`[orch] wait_for_agents: fallback poll, checking ${stillRunning.length} agents`);
+                        for (const targetId of stillRunning) {
+                            const agent = subAgents.find(a => a.orchId === targetId);
+                            if (!agent || agent.status !== "running") continue;
+                            try {
+                                const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
+                                const parsed = JSON.parse(rawStatus);
+                                if (parsed.status === "completed" || parsed.status === "failed") {
+                                    agent.status = parsed.status;
+                                    if (parsed.result) agent.result = parsed.result.slice(0, 2000);
+                                }
+                            } catch {}
+                        }
                     }
                 }
 
