@@ -1677,6 +1677,85 @@ function getDc() {
     try { return client._getDuroxideClient(); } catch { return null; }
 }
 
+// ─── Debounced refresh ───────────────────────────────────────────
+// Multiple observers fire updateLiveStatus rapidly — coalesce into one
+// refreshOrchestrations() call per 500ms window.
+let _refreshPending = false;
+let _refreshRunning = false;
+function scheduleRefreshOrchestrations() {
+    if (_refreshPending) return;
+    _refreshPending = true;
+    setTimeout(async () => {
+        _refreshPending = false;
+        if (_refreshRunning) return; // skip if previous call still in-flight
+        _refreshRunning = true;
+        try {
+            await refreshOrchestrations();
+        } finally {
+            _refreshRunning = false;
+        }
+    }, 500);
+}
+
+// Lightweight status update — just updates the icon in the list without
+// hitting the database. Full refresh happens on the debounced schedule.
+function updateSessionListIcons() {
+    if (orchIdOrder.length === 0) return;
+    for (let i = 0; i < orchIdOrder.length; i++) {
+        const id = orchIdOrder[i];
+        const liveStatus = sessionLiveStatus.get(id);
+        const cached = orchStatusCache.get(id);
+        const status = cached?.status || "Unknown";
+        let statusIcon = "";
+        if (status === "Completed" || status === "Failed" || status === "Terminated") {
+            statusIcon = "";
+        } else if (liveStatus === "running") {
+            statusIcon = "{green-fg}*{/green-fg}";
+        } else if (liveStatus === "error") {
+            statusIcon = "{red-fg}!{/red-fg}";
+        } else if (liveStatus === "waiting") {
+            statusIcon = "{blue-fg}~{/blue-fg}";
+        } else if (liveStatus === "input_required") {
+            statusIcon = "{magenta-fg}?{/magenta-fg}";
+        } else if (liveStatus === "idle") {
+            statusIcon = "{white-fg}z{/white-fg}";
+        }
+
+        // Rebuild just this item's label
+        const uuid4 = id.startsWith("session-") ? id.slice(8, 12) : id.slice(0, 4);
+        const createdAt = cached?.createdAt || 0;
+        const timeStr = createdAt > 0
+            ? new Date(createdAt).toLocaleString("en-GB", {
+                month: "short", day: "numeric",
+                hour: "2-digit", minute: "2-digit",
+                hour12: false,
+            })
+            : "";
+        let color = "white";
+        if (status === "Running") color = "green";
+        else if (status === "Failed") color = "red";
+        else if (status === "Completed") color = "gray";
+        else if (status === "Terminated") color = "yellow";
+
+        const hasChanges = orchHasChanges.has(id);
+        const isActive = id === activeOrchId;
+        const marker = isActive ? "{bold}▸{/bold}" : " ";
+        const changeDot = hasChanges ? "{cyan-fg}{bold}●{/bold}{/cyan-fg} " : "";
+        const heading = sessionHeadings.get(id);
+        // Detect children by checking childToParent cache (populated by last full refresh)
+        const isChild = orchChildFlags?.has(id) ?? false;
+        const indent = isChild ? "  └ " : "";
+        const label = heading
+            ? `${indent}${heading} (${uuid4}) ${timeStr}`
+            : `${indent}(${uuid4}) ${timeStr}`;
+        orchList.setItem(i, `${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
+    }
+    screen.render();
+}
+
+// Cache child flags from last full refresh so lightweight update can use them
+let orchChildFlags = new Set();
+
 async function refreshOrchestrations() {
     const dc = getDc();
     if (!dc) return;
@@ -1772,6 +1851,8 @@ async function refreshOrchestrations() {
 
     // Rebuild ordered ID list to match display order
     orchIdOrder = orderedEntries.map(e => e.id);
+    // Cache child flags for lightweight icon updates
+    orchChildFlags = new Set(orderedEntries.filter(e => e.isChild).map(e => e.id));
 
     // Update the blessed list — clear and re-add items
     const prevSelected = orchList.selected || 0;
@@ -1849,11 +1930,12 @@ async function refreshOrchestrations() {
     }
 }
 
-// Poll orchestrations every 3 seconds
+// Poll orchestrations every 10 seconds (observers handle live status updates, so
+// this only needs to catch new sessions and structural changes like title/parent).
 let orchPollTimer = setInterval(() => {
-    refreshOrchestrations();
+    scheduleRefreshOrchestrations();
     if (logViewMode === "nodemap") refreshNodeMap();
-}, 3000);
+}, 10_000);
 
 // Orchestrations panel key handlers
 orchList.key(["q"], () => {
@@ -2264,7 +2346,9 @@ function startObserver(orchId) {
     }
     function updateLiveStatus(status) {
         sessionLiveStatus.set(orchId, status);
-        refreshOrchestrations();
+        // Lightweight: just update icons in the list without DB queries.
+        // Full refresh happens on the debounced 500ms schedule.
+        updateSessionListIcons();
     }
 
     // First, show the current state immediately
@@ -2429,7 +2513,7 @@ function startObserver(orchId) {
                             if (hMatch) {
                                 sessionHeadings.set(orchId, hMatch[1].trim().slice(0, 40));
                                 displayContent = displayContent.replace(/^HEADING:.*\n?/m, "").trim();
-                                refreshOrchestrations();
+                                scheduleRefreshOrchestrations();
                             }
                             if (!cs.intermediateContent || cs.intermediateContent !== cs.turnResult.content) {
                                 showCopilotMessage(displayContent, orchId);
@@ -2463,7 +2547,7 @@ function startObserver(orchId) {
                     // Mark session as having unseen changes if not active
                     if (orchId !== activeOrchId) {
                         orchHasChanges.add(orchId);
-                        refreshOrchestrations();
+                        updateSessionListIcons();
                     }
                 }
             } catch {
