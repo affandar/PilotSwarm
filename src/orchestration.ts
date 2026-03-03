@@ -647,8 +647,9 @@ export function* durableSessionOrchestration_1_0_4(
                 }
 
                 // Generate deterministic child IDs
+                // Use '_sub_' separator — Copilot SDK rejects colons in session IDs
                 const childGuid: string = yield ctx.newGuid();
-                const childSessionId = `${input.sessionId}:sub-${childGuid.slice(0, 8)}`;
+                const childSessionId = `${input.sessionId}_sub_${childGuid.slice(0, 8)}`;
                 const childOrchId = `session-${childSessionId}`;
 
                 ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${result.task.slice(0, 80)}"`);
