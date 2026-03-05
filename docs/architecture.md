@@ -1487,7 +1487,201 @@ async start(): Promise<void> {
 
 ---
 
-## 8. Key Invariants
+## 8. Sub-Agent Architecture
+
+### 8.1 Overview
+
+The runtime supports **autonomous sub-agents** — child sessions that run as independent durable orchestrations. A parent session can spawn sub-agents to work on tasks in parallel, each with its own conversation, tools, and LLM context.
+
+Sub-agents are not sub-orchestrations in the duroxide sense. Each sub-agent is a full orchestration instance (`session-{childSessionId}`) created via the `DurableCopilotClient` SDK path. The parent orchestration tracks children in its `subAgents[]` array, which is carried across `continueAsNew` boundaries.
+
+### 8.2 Built-in Agent Tools
+
+Seven tools are injected into every session by `ManagedSession` to enable sub-agent delegation:
+
+| Tool | Parameters | TurnResult type | What it does |
+|------|-----------|-----------------|-------------|
+| `spawn_agent` | `task`, `system_message?`, `model?`, `tool_names?` | `spawn_agent` | Creates a child session + orchestration. Returns agent ID. |
+| `message_agent` | `agent_id`, `message` | `message_agent` | Sends a follow-up message to a running sub-agent. |
+| `check_agents` | — | `check_agents` | Returns status of all sub-agents (running/completed/failed). |
+| `wait_for_agents` | `agent_ids?` | `wait_for_agents` | Blocks until sub-agents finish. Returns their results. |
+| `complete_agent` | `agent_id` | `complete_agent` | Marks a sub-agent as completed and stops its orchestration. |
+| `cancel_agent` | `agent_id`, `reason?` | `cancel_agent` | Cancels a running sub-agent. |
+| `delete_agent` | `agent_id`, `reason?` | `delete_agent` | Deletes a sub-agent entirely. |
+
+These tools abort the current turn (like `wait` and `ask_user`) — the `ManagedSession` detects the tool call, captures the arguments, and returns a typed `TurnResult` to the orchestration. The orchestration then performs the durable operation.
+
+### 8.3 Orchestration-Level Handling
+
+When `runTurn()` returns a sub-agent TurnResult, the orchestration handles it:
+
+```
+spawn_agent:
+  1. Call spawnChildSession activity → creates child session via SDK
+  2. Add to subAgents[] array with status "running"
+  3. Send result back to parent LLM as next prompt
+
+message_agent:
+  1. Call sendToSession activity → enqueues message on child's event queue
+  2. Resume parent LLM with confirmation
+
+check_agents:
+  1. Call getStatus() for each sub-agent
+  2. Collect statuses + latest results
+  3. Resume parent LLM with status summary
+
+wait_for_agents:
+  1. Poll child orchestration statuses via getStatus()
+  2. Wait (with timeout) until all specified children reach terminal state
+  3. Resume parent LLM with collected results
+
+complete_agent / cancel_agent / delete_agent:
+  1. Send completion/cancellation message to child orchestration
+  2. Update subAgents[] entry status
+  3. Resume parent LLM with confirmation
+```
+
+### 8.4 Nesting and Limits
+
+- **Max concurrent sub-agents per session:** 8 (`MAX_SUB_AGENTS`)
+- **Max nesting depth:** 2 levels (root → child → grandchild, `MAX_NESTING_LEVEL`)
+- Sub-agents inherit the parent's tools and model by default (overridable via `tool_names` and `model` parameters)
+- Sub-agents are fully durable — they survive crashes, restarts, and node migrations independently
+- The `subAgents[]` array is carried across `continueAsNew` boundaries
+
+### 8.5 Parent–Child Communication
+
+Child sessions communicate with their parent via `sendToSession` — a general-purpose activity that enqueues a message on any session's event queue. Children also report completion status through their orchestration's `customStatus`, which the parent polls via `getStatus()`.
+
+The CMS tracks parent–child relationships via the `parentSessionId` column on the sessions table. The TUI uses this to render a tree view of sessions.
+
+### 8.6 Data Flow
+
+```
+Parent Orchestration                           Child Orchestration
+  │                                              │
+  │ runTurn(prompt) → spawn_agent                 │
+  │   │                                           │
+  │   └─ spawnChildSession activity ──────────────┤
+  │      (creates child via DurableCopilotClient)  │
+  │                                               │ runTurn(task)
+  │ runTurn("agent spawned: {id}")                │   │
+  │   │                                           │   └─► LLM works...
+  │   └─► LLM continues...                       │
+  │                                               │ setCustomStatus(result)
+  │ runTurn → check_agents                        │
+  │   │                                           │
+  │   └─ getStatus(childOrchId) ◄─────────────────┘
+  │      (reads child's customStatus)
+  │
+  │ runTurn("agent results: {...}")
+  │   └─► LLM synthesizes...
+```
+
+---
+
+## 9. Orchestration Versioning
+
+Orchestration code is **replayed from the beginning** on every new event. Changing the sequence of `yield` statements (adding, removing, or reordering) creates a new version that is incompatible with in-flight orchestrations recorded under the old yield sequence.
+
+### 9.1 Versioning Strategy
+
+Each version is a separate file:
+
+```
+src/orchestration_1_0_0.ts   — v1.0.0 (original)
+src/orchestration_1_0_1.ts   — v1.0.1 (added sub-agents)
+src/orchestration_1_0_2.ts   — v1.0.2 (added task context)
+src/orchestration_1_0_3.ts   — v1.0.3 (added agent management tools)
+src/orchestration.ts         — current development version (1.0.4)
+```
+
+All versions are registered in the duroxide runtime. In-flight orchestrations continue using their original version. New orchestrations use the latest.
+
+### 9.2 When to Create a New Version
+
+- Adding or removing `yield` statements
+- Changing the order of yielded actions
+- Adding or removing `setCustomStatus()` calls (these are recorded in duroxide history)
+- Changing the `continueAsNew` input shape in a way that breaks deserialization
+
+### 9.3 Safe Changes (No New Version Needed)
+
+- Changing activity implementation (activity bodies run in normal code, not replayed)
+- Changing `ManagedSession` logic
+- Adding new tools to `ManagedSession`
+- Changing CMS queries
+
+---
+
+## 10. Extensibility
+
+### 10.1 Agent Definitions (.agent.md)
+
+The runtime loads `.agent.md` files from a configurable plugin directory. Each file defines a reusable agent persona with YAML frontmatter:
+
+```yaml
+---
+name: planner
+description: Creates structured plans for complex tasks.
+tools:
+  - view
+  - grep
+---
+
+# Planner Agent
+You are a planning agent. Break tasks into steps...
+```
+
+The YAML `name` and `description` become agent metadata. The markdown body becomes the agent's system message. The `tools` list specifies which worker-registered tools the agent can use.
+
+Agents are loaded by `AgentLoader` and surfaced as spawnable sub-agents.
+
+### 10.2 Skills (SKILL.md)
+
+Skills are knowledge modules loaded from `skills/<name>/SKILL.md`. Each skill provides domain-specific instructions:
+
+```yaml
+---
+name: durable-timers
+description: Expert knowledge on durable timer patterns.
+---
+
+# Durable Timer Patterns
+You are running in a durable execution environment...
+```
+
+Skills are injected into the system message to give LLMs domain expertise. A skill directory can also include a `tools.json` file listing tools the skill requires:
+
+```json
+{ "tools": ["wait", "check_agents"] }
+```
+
+### 10.3 MCP Servers (.mcp.json)
+
+External tool servers following the Model Context Protocol can be configured via `.mcp.json` files:
+
+```json
+{
+  "my-server": {
+    "command": "node",
+    "args": ["server.js"],
+    "tools": ["*"]
+  },
+  "remote-api": {
+    "type": "http",
+    "url": "https://api.example.com/mcp",
+    "tools": ["query"],
+    "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+  }
+}
+```
+
+MCP servers support both local (stdio) and remote (HTTP/SSE) transports. Environment variable references (`${VAR}`) in string values are expanded at load time.
+
+---
+
+## 11. Key Invariants
 
 1. **CMS is the source of truth for session lifecycle.** The client writes to CMS before making duroxide calls. If the client disconnects and reconnects, it reads session state from CMS — not from duroxide. Duroxide state is eventually consistent with CMS.
 
@@ -1501,6 +1695,10 @@ async start(): Promise<void> {
 
 6. **CMS writes are idempotent.** `session_id` is the primary key, `createSession` uses `INSERT ... ON CONFLICT DO NOTHING`, `updateSession` uses `UPDATE ... WHERE session_id = $1`. Retries and duplicate calls are safe.
 
-7. **Only one orchestration per session.** The orchestration ID is `session-{sessionId}`. No fan-out, no sub-orchestrations. One long-lived loop.
+7. **One orchestration per session, sub-agents are independent orchestrations.** The orchestration ID is `session-{sessionId}`. Sub-agents spawn new orchestrations via the `DurableCopilotClient` SDK — they are not sub-orchestrations of the parent. The parent tracks children in its `subAgents[]` array. Max 8 concurrent sub-agents per parent, max 2 nesting levels.
 
 8. **CMS access is provider-based.** All reads and writes go through the `SessionCatalogProvider` interface. The initial implementation is PostgreSQL; CosmosDB or other backends can be added without changing client or orchestration code.
+
+9. **Sub-agent TurnResults abort the current turn.** Like `wait` and `ask_user`, sub-agent tools (`spawn_agent`, `message_agent`, etc.) abort the in-flight CopilotSession turn. The `ManagedSession` captures the tool arguments and returns a typed `TurnResult` to the orchestration, which performs the durable operation and resumes the LLM with the result.
+
+10. **Orchestration versions are immutable.** Once an orchestration version is deployed and has in-flight instances, its yield sequence cannot change. New versions are separate files. All versions remain registered so in-flight instances continue on their original version.

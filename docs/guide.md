@@ -292,6 +292,126 @@ if (info.status === "input_required") {
 }
 ```
 
+### Sub-Agents
+
+The runtime supports **autonomous sub-agents** — child sessions that run as independent durable orchestrations. A parent session can spawn sub-agents to work on tasks in parallel, each with its own conversation, tools, and LLM context.
+
+Seven built-in tools are injected into every session:
+
+| Tool | Description |
+|------|-------------|
+| `spawn_agent(task, system_message?, model?, tool_names?)` | Start a new sub-agent with a task. Returns an agent ID. |
+| `message_agent(agent_id, message)` | Send additional instructions to a running sub-agent. |
+| `check_agents()` | Get status of all sub-agents (running/completed/failed) with latest output. |
+| `wait_for_agents(agent_ids?)` | Block until sub-agents finish. Returns their results. |
+| `complete_agent(agent_id)` | Mark a sub-agent as completed. |
+| `cancel_agent(agent_id, reason?)` | Cancel a running sub-agent. |
+| `delete_agent(agent_id, reason?)` | Delete a sub-agent entirely. |
+
+**Usage:** Just describe the work in your prompt — the LLM decides when to delegate:
+
+```
+"Research these 3 topics in parallel: quantum computing advances, 
+ fusion energy progress, and space exploration milestones"
+```
+
+The LLM will call `spawn_agent("Research quantum computing advances")`, `spawn_agent("Research fusion energy progress")`, etc., then `wait_for_agents()` to collect results.
+
+**Key behaviors:**
+- Sub-agents inherit the parent's tools and model by default (overridable per-agent)
+- Sub-agents are fully durable — they survive crashes, restarts, and node migrations
+- Max 8 concurrent sub-agents per session, max 2 nesting levels (root → child → grandchild)
+- Sub-agents run as independent orchestrations — they can use `wait` for durable timers
+- The TUI renders sub-agents as a tree under their parent session
+
+#### Fan-Out / Fan-In Pattern
+
+```
+1. spawn_agent("Research topic A")    → agentA
+2. spawn_agent("Research topic B")    → agentB
+3. spawn_agent("Research topic C")    → agentC
+4. wait_for_agents()                  → collect all results
+5. Synthesize the combined findings
+```
+
+#### Background Worker Pattern
+
+```
+1. spawn_agent("Monitor X every 60 seconds")  → agent
+2. Continue handling user requests normally
+3. Periodically check_agents() to see updates
+```
+
+#### Specialized Delegation Pattern
+
+```
+1. spawn_agent("Analyze the data", system_message="You are a data analyst")
+2. spawn_agent("Write the report", system_message="You are a technical writer")
+3. wait_for_agents() → combine results
+```
+
+### Agent Definitions (.agent.md)
+
+Define reusable agent personas using `.agent.md` files in your plugin directory:
+
+```yaml
+---
+name: planner
+description: Creates structured plans for complex tasks.
+tools:
+  - view
+  - grep
+---
+
+# Planner Agent
+You are a planning agent. Break complex tasks into clear, 
+actionable steps with dependencies and priorities.
+```
+
+The YAML frontmatter defines the agent's `name`, `description`, and `tools`. The markdown body becomes the agent's system message. Agents are loaded from the plugin directory at startup and can be used as sub-agent templates.
+
+### Skills (SKILL.md)
+
+Skills are knowledge modules that inject domain-specific instructions into the LLM's system message. Place them in `skills/<name>/SKILL.md`:
+
+```yaml
+---
+name: durable-timers
+description: Expert knowledge on durable timer patterns.
+---
+
+# Durable Timer Patterns
+You are running in a durable execution environment with a `wait` tool...
+```
+
+A skill directory can also include a `tools.json` to declare required tools:
+
+```json
+{ "tools": ["wait", "check_agents"] }
+```
+
+### MCP Servers (.mcp.json)
+
+Connect external tool servers via the Model Context Protocol. Create a `.mcp.json` file in your plugin directory:
+
+```json
+{
+  "my-local-server": {
+    "command": "node",
+    "args": ["server.js"],
+    "tools": ["*"]
+  },
+  "remote-api": {
+    "type": "http",
+    "url": "https://api.example.com/mcp",
+    "tools": ["query"],
+    "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+  }
+}
+```
+
+Supports both local (stdio) and remote (HTTP/SSE) transports. Environment variable references (`${VAR}`) are expanded at load time.
+
 ### Session Info
 
 Get the current state of any session:
