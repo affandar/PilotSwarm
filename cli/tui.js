@@ -22,8 +22,39 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { performance } from "node:perf_hooks";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ─── Performance tracing (temporary) ────────────────────────────
+// Writes to dumps/perf-trace.jsonl as newline-delimited JSON.
+// Each entry: { ts, op, dur?, meta? }
+const _perfTracePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dumps", "perf-trace.jsonl");
+fs.mkdirSync(path.dirname(_perfTracePath), { recursive: true });
+const _perfStream = fs.createWriteStream(_perfTracePath, { flags: "a" });
+_perfStream.write(`\n--- TUI start ${new Date().toISOString()} ---\n`);
+
+let _perfRenderCount = 0;
+let _perfRenderTotalMs = 0;
+
+function perfTrace(op, meta) {
+    const entry = { ts: Date.now(), op, ...(meta || {}) };
+    _perfStream.write(JSON.stringify(entry) + "\n");
+}
+
+function perfStart(op) {
+    return { op, t0: performance.now() };
+}
+
+function perfEnd(handle, meta) {
+    const dur = +(performance.now() - handle.t0).toFixed(2);
+    const entry = { ts: Date.now(), op: handle.op, dur, ...(meta || {}) };
+    _perfStream.write(JSON.stringify(entry) + "\n");
+    return dur;
+}
+
+// Track screen.render() calls — this is often the hidden cost
+const _origScreenRender = null; // patched after screen is created below
 
 const require = createRequire(import.meta.url);
 
@@ -103,6 +134,7 @@ marked.use(
 );
 
 function renderMarkdown(md) {
+    const _ph = perfStart("renderMarkdown");
     try {
         // Dynamically set width to match chat pane (minus borders/padding)
         const mdWidth = Math.max(40, leftW() - 4);
@@ -120,8 +152,10 @@ function renderMarkdown(md) {
         // Catch any remaining OSC 8 fragments
         rendered = rendered.replace(/\x1b\]8;;[^\x07]*\x07/g, "");
         rendered = rendered.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "");
+        perfEnd(_ph, { len: md.length });
         return rendered;
     } catch {
+        perfEnd(_ph, { len: md.length, err: true });
         return md;
     }
 }
@@ -148,6 +182,64 @@ const screen = blessed.screen({
     mouse: true,
 });
 process.stderr.write = _origStderr;
+
+// ─── Coalescing render loop (Option B) ───────────────────────────
+// Instead of rendering on every screen.render() call (80+ sites),
+// screen.render() just sets a dirty flag. A 100ms frame loop does
+// the actual render — hard cap at 10fps.
+const _origRender = screen.render.bind(screen);
+let _screenDirty = false;
+let _chatDirty = false;
+
+screen.render = function coalescedRender() {
+    _screenDirty = true;
+};
+
+// Patch screen.realloc() — after a realloc (full buffer wipe), force an
+// immediate render so the screen doesn't stay blank until the next frame.
+const _origRealloc = screen.realloc.bind(screen);
+screen.realloc = function patchedRealloc() {
+    _origRealloc();
+    _origRender(); // immediate render, bypass frame loop
+};
+
+// Frame loop — 10fps max
+setInterval(() => {
+    // Sync chat buffer → chatBox before rendering (Option C)
+    if (_chatDirty) {
+        let currentActive;
+        try { currentActive = activeOrchId; } catch { currentActive = undefined; }
+        const lines = currentActive && sessionChatBuffers?.get(currentActive);
+        if (lines) {
+            // Save scroll state before setContent (which resets scroll to top)
+            const wasAtBottom = chatBox.getScrollPerc() >= 95;
+            const prevScrollTop = chatBox.childBase || 0;
+            chatBox.setContent(lines.join("\n"));
+            if (wasAtBottom) {
+                chatBox.setScrollPerc(100);
+            } else {
+                // Restore previous scroll position
+                chatBox.scrollTo(prevScrollTop);
+            }
+        }
+        _chatDirty = false;
+        _screenDirty = true;
+    }
+    if (_screenDirty) {
+        _screenDirty = false;
+        const t0 = performance.now();
+        _origRender();
+        const dur = performance.now() - t0;
+        _perfRenderCount++;
+        _perfRenderTotalMs += dur;
+        if (dur > 5 || _perfRenderCount % 50 === 0) {
+            _perfStream.write(JSON.stringify({
+                ts: Date.now(), op: "screen.render", dur: +dur.toFixed(2),
+                count: _perfRenderCount, avgMs: +(_perfRenderTotalMs / _perfRenderCount).toFixed(2)
+            }) + "\n");
+        }
+    }
+}, 100);
 
 // ─── Layout calculations ─────────────────────────────────────────
 // Left column: sessions (top) + chat (bottom). Right column: full-height logs.
@@ -1199,6 +1291,7 @@ function relayoutAll() {
 }
 
 function redrawActiveViews() {
+    const _ph = perfStart("redrawActiveViews");
     if (logViewMode === "orchestration") {
         refreshOrchLogPane();
     } else if (logViewMode === "sequence") {
@@ -1209,9 +1302,11 @@ function redrawActiveViews() {
         recolorWorkerPanes();
     }
     relayoutAll();
-    // Force blessed to flush stale internal buffers after a full redraw
-    screen.realloc();
+    // No realloc here — it's expensive (full buffer wipe + re-render)
+    // and causes a visible blank flash. Only use realloc on layout changes
+    // (e.g. resize, view mode switch), not on session switches.
     screen.render();
+    perfEnd(_ph);
 }
 
 // ─── Input bar ───────────────────────────────────────────────────
@@ -1388,28 +1483,34 @@ function appendChat(text, orchId) {
 }
 
 // ─── Coalesced screen rendering ──────────────────────────────────
-// Multiple observers and event handlers call screen.render() rapidly.
-// Coalesce into at most one render per frame (~16ms) to keep the TUI responsive.
-let _renderScheduled = false;
+// screen.render() is already coalesced by the frame loop (100ms interval).
+// scheduleRender() is kept as a convenience alias.
 function scheduleRender() {
-    if (_renderScheduled) return;
-    _renderScheduled = true;
-    setImmediate(() => {
-        _renderScheduled = false;
-        screen.render();
-    });
+    _screenDirty = true;
 }
 
-function appendChatRaw(text, orchId) {
-    // Buffer the line for this session
-    const targetOrch = orchId || activeOrchId;
-    if (!sessionChatBuffers.has(targetOrch)) sessionChatBuffers.set(targetOrch, []);
-    sessionChatBuffers.get(targetOrch).push(text);
+const MAX_CHAT_BUFFER_LINES = 500;
 
-    // Only render to screen if this is the active session
-    if (targetOrch === activeOrchId) {
-        chatBox.log(text);
-        scheduleRender();
+function appendChatRaw(text, orchId) {
+    // Guard: during startup, sessionChatBuffers and activeOrchId may not be initialized yet
+    let buffers, currentActive;
+    try { buffers = sessionChatBuffers; } catch { return; }
+    try { currentActive = activeOrchId; } catch { currentActive = undefined; }
+    const targetOrch = orchId || currentActive || "_init";
+    if (!buffers.has(targetOrch)) buffers.set(targetOrch, []);
+    const buf = buffers.get(targetOrch);
+    buf.push(text);
+
+    // Cap buffer size — drop oldest lines when it grows too large
+    if (buf.length > MAX_CHAT_BUFFER_LINES * 1.2) {
+        const dropped = buf.length - MAX_CHAT_BUFFER_LINES;
+        buf.splice(0, dropped);
+        buf[0] = `{gray-fg}── ${dropped} older lines trimmed ──{/gray-fg}`;
+    }
+
+    // Mark chat dirty so the frame loop syncs buffer → chatBox
+    if (currentActive && targetOrch === currentActive) {
+        _chatDirty = true;
     }
 }
 
@@ -1419,8 +1520,9 @@ function setStatus(text) {
 }
 
 function appendLog(text) {
-    chatBox.log(`{white-fg}${text}{/white-fg}`);
-    scheduleRender();
+    // Route through appendChatRaw so it goes into the session buffer
+    // and gets rendered by the frame loop (no direct chatBox.log)
+    appendChatRaw(`{white-fg}${text}{/white-fg}`);
 }
 
 function appendWorkerLog(podName, text, orchId) {
@@ -1472,6 +1574,7 @@ function recolorWorkerPanes() {
 }
 
 function showCopilotMessage(raw, orchId) {
+    const _ph = perfStart("showCopilotMessage");
     const rendered = renderMarkdown(raw);
     const prefix = `{white-fg}[${ts()}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`;
     appendChatRaw(prefix, orchId);
@@ -1480,6 +1583,7 @@ function showCopilotMessage(raw, orchId) {
         appendChatRaw(line, orchId);
     }
     appendChatRaw("", orchId); // blank line after each message
+    perfEnd(_ph, { len: raw?.length || 0 });
 }
 
 // Track whether sequence view has been seeded from CMS for a session.
@@ -1490,7 +1594,10 @@ const seqCmsSeededSessions = new Set();
  * Includes ALL persisted events (not truncated) so switching sessions is deterministic.
  */
 async function loadCmsHistory(orchId) {
+    const _ph = perfStart("loadCmsHistory");
     const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+    let eventCount = 0;
+    let loadFailed = false;
 
     // Skip if we already have a cached buffer and the session hasn't changed
     // (the CMS poller handles incremental updates for the active session)
@@ -1518,6 +1625,7 @@ async function loadCmsHistory(orchId) {
             sess.getMessages(),
             (!sessionModels.has(orchId)) ? sess.getInfo().catch(() => null) : Promise.resolve(null),
         ]);
+        eventCount = events?.length || 0;
 
         // Populate session model if not already known
         if (info?.model) {
@@ -1601,10 +1709,8 @@ async function loadCmsHistory(orchId) {
         sessionChatBuffers.set(orchId, lines);
 
         if (orchId === activeOrchId) {
-            // Build content as a single string to avoid incremental log() corruption
-            chatBox.setContent(lines.join("\n"));
-            chatBox.setScrollPerc(100);
-            screen.render();
+            // Let the frame loop sync this buffer to chatBox
+            _chatDirty = true;
         }
 
         // Seed sequence view from CMS when no live worker-log sequence exists yet.
@@ -1636,8 +1742,10 @@ async function loadCmsHistory(orchId) {
             seqCmsSeededSessions.add(orchId);
         }
     } catch (err) {
+        loadFailed = true;
         appendLog(`{yellow-fg}CMS history load failed: ${err.message}{/yellow-fg}`);
     }
+    perfEnd(_ph, { orchId: orchId.slice(0, 12), events: eventCount, err: loadFailed || undefined });
 }
 
 // ─── Start the durable client (embedded workers + client) ────────
@@ -1946,7 +2054,8 @@ function scheduleRefreshOrchestrations() {
 // Lightweight status update — just updates the icon in the list without
 // hitting the database. Full refresh happens on the debounced schedule.
 function updateSessionListIcons() {
-    if (orchIdOrder.length === 0) return;
+    const _ph = perfStart("updateSessionListIcons");
+    if (orchIdOrder.length === 0) { perfEnd(_ph, { n: 0 }); return; }
     for (let i = 0; i < orchIdOrder.length; i++) {
         const id = orchIdOrder[i];
         const liveStatus = sessionLiveStatus.get(id);
@@ -1992,10 +2101,11 @@ function updateSessionListIcons() {
         const depth = orchDepthMap?.get(id) ?? 0;
         const indent = depth > 0 ? "  ".repeat(depth - 1) + "└ " : "";
         const label = heading
-            ? `${indent}${heading} (${uuid4}) ${timeStr}`
-            : `${indent}(${uuid4}) ${timeStr}`;
-        orchList.setItem(i, `${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
+            ? `${heading} (${uuid4}) ${timeStr}`
+            : `(${uuid4}) ${timeStr}`;
+        orchList.setItem(i, `${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
     }
+    perfEnd(_ph, { n: orchIdOrder.length });
     scheduleRender();
 }
 
@@ -2003,6 +2113,7 @@ function updateSessionListIcons() {
 let orchDepthMap = new Map();
 
 async function refreshOrchestrations() {
+    const _ph = perfStart("refreshOrchestrations");
     const dc = getDc();
     if (!dc) return;
 
@@ -2124,6 +2235,7 @@ async function refreshOrchestrations() {
 
     // Update the blessed list — clear and re-add items
     const prevSelected = orchList.selected || 0;
+    const prevScrollTop = orchList.childBase || 0;
     orchList.clearItems();
     if (entries.length === 0) {
         orchList.addItem("{white-fg}(none){/white-fg}");
@@ -2170,9 +2282,9 @@ async function refreshOrchestrations() {
             const heading = sessionHeadings.get(id);
             const indent = depth > 0 ? "  ".repeat(depth - 1) + "└ " : "";
             const label = heading
-                ? `${indent}${heading} (${uuid4}) ${timeStr}`
-                : `${indent}(${uuid4}) ${timeStr}`;
-            orchList.addItem(`${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
+                ? `${heading} (${uuid4}) ${timeStr}`
+                : `(${uuid4}) ${timeStr}`;
+            orchList.addItem(`${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
         }
     }
     // Restore cursor position — keep the user's selection stable.
@@ -2181,12 +2293,24 @@ async function refreshOrchestrations() {
         const activeIdx = orchIdOrder.indexOf(activeOrchId);
         if (activeIdx >= 0) {
             orchList.select(activeIdx);
+            // Scroll so the active item is visible but not forced to top.
+            // Only scroll if the item is out of the visible range.
+            const visibleHeight = orchList.height - 2; // minus borders
+            if (activeIdx < prevScrollTop || activeIdx >= prevScrollTop + visibleHeight) {
+                // Center it in the viewport
+                orchList.scrollTo(Math.max(0, activeIdx - Math.floor(visibleHeight / 2)));
+            } else {
+                orchList.scrollTo(prevScrollTop);
+            }
         } else {
             orchList.select(Math.min(prevSelected, orchIdOrder.length - 1));
+            orchList.scrollTo(prevScrollTop);
         }
         orchSelectFollowActive = false;
     } else {
         orchList.select(Math.min(prevSelected, orchIdOrder.length - 1));
+        // Restore scroll offset so the list doesn't jump
+        orchList.scrollTo(prevScrollTop);
     }
     screen.render();
 
@@ -2196,6 +2320,7 @@ async function refreshOrchestrations() {
             startObserver(id);
         }
     }
+    perfEnd(_ph, { sessions: entries.length, ids: ids.length });
 }
 
 // Poll orchestrations every 10 seconds (observers handle live status updates, so
@@ -2204,6 +2329,32 @@ let orchPollTimer = setInterval(() => {
     scheduleRefreshOrchestrations();
     if (logViewMode === "nodemap") refreshNodeMap();
 }, 10_000);
+
+// Periodic perf summary — every 30s log memory + buffer sizes
+setInterval(() => {
+    const mem = process.memoryUsage();
+    let totalBufferLines = 0;
+    let totalBufferBytes = 0;
+    for (const [, lines] of sessionChatBuffers) {
+        totalBufferLines += lines.length;
+        for (const l of lines) totalBufferBytes += l.length;
+    }
+    let totalSeqEvents = 0;
+    for (const [, evts] of seqEventBuffers) totalSeqEvents += evts.length;
+    perfTrace("periodic_summary", {
+        heapUsedMB: +(mem.heapUsed / 1024 / 1024).toFixed(1),
+        heapTotalMB: +(mem.heapTotal / 1024 / 1024).toFixed(1),
+        rssMB: +(mem.rss / 1024 / 1024).toFixed(1),
+        chatBuffers: sessionChatBuffers.size,
+        chatBufferLines: totalBufferLines,
+        chatBufferKB: +(totalBufferBytes / 1024).toFixed(1),
+        seqBuffers: seqEventBuffers.size,
+        seqEvents: totalSeqEvents,
+        observers: sessionObservers.size,
+        renders: _perfRenderCount,
+        renderAvgMs: +(_perfRenderTotalMs / Math.max(1, _perfRenderCount)).toFixed(2),
+    });
+}, 30_000);
 
 // Orchestrations panel key handlers
 orchList.key(["q"], () => {
@@ -2776,9 +2927,11 @@ function startObserver(orchId) {
         }
         while (!ac.signal.aborted) {
             try {
+                const _obsPh = perfStart("observer.waitForStatusChange");
                 const statusResult = await dc.waitForStatusChange(
                     orchId, lastVersion, 200, 30_000
                 );
+                perfEnd(_obsPh, { orchId: orchId.slice(0, 12), ver: statusResult.customStatusVersion });
                 if (ac.signal.aborted) break;
 
                 if (statusResult.customStatusVersion > lastVersion) {
@@ -3016,6 +3169,8 @@ function stopCmsPoller() {
  * Sends an interrupt asking for a summary + last message, then asks it to resume.
  */
 async function switchToOrchestration(orchId) {
+    const _ph = perfStart("switchToOrchestration");
+    perfTrace("switchTo.begin", { orchId: orchId.slice(0, 12) });
     const isSameSession = orchId === activeOrchId;
 
     activeOrchId = orchId;
@@ -3070,7 +3225,7 @@ async function switchToOrchestration(orchId) {
         // Ensure an observer is running for this session
         startObserver(orchId);
 
-        // Lightweight redraw — no DB queries
+        // Update session list icons and right pane
         updateSessionListIcons();
         redrawActiveViews();
         screen.render();
@@ -3079,8 +3234,7 @@ async function switchToOrchestration(orchId) {
         loadCmsHistory(orchId).then(() => {
             // Only refresh if still the active session when the load completes
             if (orchId === activeOrchId) {
-                redrawActiveViews();
-                screen.render();
+                _chatDirty = true;
             }
         }).catch(() => {});
 
@@ -3089,6 +3243,7 @@ async function switchToOrchestration(orchId) {
     } else {
         redrawActiveViews();
     }
+    perfEnd(_ph, { orchId: orchId.slice(0, 12), same: isSameSession });
 }
 
 updateChatLabel();
