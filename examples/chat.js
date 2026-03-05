@@ -17,6 +17,10 @@ import { createInterface } from "node:readline";
 
 const STORE = process.env.DATABASE_URL || "sqlite::memory:";
 
+// ─── Model selection (--model=provider:model or bare model name) ─
+const MODEL = process.argv.find(a => a.startsWith('--model='))?.split('=')[1] || undefined;
+if (MODEL) console.log(`   Model: ${MODEL}`);
+
 // ─── Readline setup ──────────────────────────────────────────────
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -54,6 +58,7 @@ await client.start();
 
 // Create session with user input handler for ask_user tool
 const session = await client.createSession({
+    ...(MODEL ? { model: MODEL } : {}),
     onUserInputRequest: async (request) => {
         let q = `\n❓ ${request.question}`;
         if (request.choices?.length) {

@@ -7,11 +7,14 @@ export type TurnResult =
     | { type: "completed"; content: string; events?: CapturedEvent[] }
     | { type: "wait"; seconds: number; reason: string; content?: string; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
-    | { type: "spawn_agent"; task: string; systemMessage?: string; toolNames?: string[]; content?: string; events?: CapturedEvent[] }
+    | { type: "spawn_agent"; task: string; model?: string; systemMessage?: string; toolNames?: string[]; content?: string; events?: CapturedEvent[] }
     | { type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
     | { type: "list_sessions"; events?: CapturedEvent[] }
+    | { type: "complete_agent"; agentId: string; events?: CapturedEvent[] }
+    | { type: "cancel_agent"; agentId: string; reason?: string; events?: CapturedEvent[] }
+    | { type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] }
     | { type: "cancelled" }
     | { type: "error"; message: string; events?: CapturedEvent[] };
 
@@ -28,6 +31,8 @@ export interface TurnOptions {
     onToolStart?: (name: string, args: any) => void;
     /** Called for every event as it fires during the turn. */
     onEvent?: (event: CapturedEvent) => void;
+    /** Model summary text for the list_available_models tool. */
+    modelSummary?: string;
 }
 
 // ─── Session Config ──────────────────────────────────────────────
@@ -70,6 +75,8 @@ export type DurableSessionStatus =
 export interface DurableSessionInfo {
     sessionId: string;
     status: DurableSessionStatus;
+    /** LLM model used for this session. */
+    model?: string;
     /** LLM-generated 3-5 word summary of the session. */
     title?: string;
     createdAt: Date;
@@ -119,6 +126,8 @@ export interface OrchestrationInput {
     parentSessionId?: string;
     /** @deprecated Use parentSessionId. Kept for backward compat with frozen orchestration versions. */
     parentOrchId?: string;
+    /** Current nesting level (0 = root, 1 = child, 2 = grandchild). Used to enforce max depth. */
+    nestingLevel?: number;
 }
 
 /** A sub-agent entry tracked in the parent orchestration's state. */
@@ -130,7 +139,7 @@ export interface SubAgentEntry {
     /** Short description of the task assigned to this sub-agent. */
     task: string;
     /** Last known status of the sub-agent. */
-    status: "running" | "completed" | "failed";
+    status: "running" | "completed" | "failed" | "cancelled";
     /** Final result content (set when status becomes completed). */
     result?: string;
 }
@@ -141,7 +150,8 @@ export interface SubAgentEntry {
 
 export interface DurableCopilotWorkerOptions {
     store: string;
-    githubToken: string;
+    /** GitHub token. Required unless a custom `provider` is specified. */
+    githubToken?: string;
     logLevel?: "none" | "error" | "warning" | "info" | "debug" | "all";
     waitThreshold?: number;
     maxSessionsPerRuntime?: number;
@@ -149,6 +159,24 @@ export interface DurableCopilotWorkerOptions {
     workerNodeId?: string;
     blobConnectionString?: string;
     blobContainer?: string;
+
+    /**
+     * Custom LLM provider (BYOK — Bring Your Own Key).
+     * When specified, uses this API endpoint instead of the GitHub Copilot API.
+     * Eliminates the need for a GitHub token.
+     *
+     * Supports OpenAI-compatible, Azure OpenAI, and Anthropic endpoints.
+     */
+    provider?: {
+        /** Provider type. Defaults to "openai" for generic OpenAI-compatible APIs. */
+        type?: "openai" | "azure" | "anthropic";
+        /** API endpoint URL (e.g. https://my-resource.openai.azure.com/openai/deployments/gpt-4.1-mini) */
+        baseUrl: string;
+        /** API key. Optional for local providers like Ollama. */
+        apiKey?: string;
+        /** Azure-specific options. */
+        azure?: { apiVersion?: string };
+    };
 
     /**
      * PostgreSQL schema name for duroxide orchestration tables.
@@ -207,6 +235,16 @@ export interface DurableCopilotWorkerOptions {
      * Passed directly to the SDK's `mcpServers` config.
      */
     mcpServers?: Record<string, any>;
+
+    /**
+     * Path to a `model_providers.json` file.
+     * Defines multiple LLM providers (GitHub Copilot, Azure OpenAI, OpenAI, Anthropic)
+     * each with their own endpoints, API keys, and available models.
+     *
+     * If not specified, auto-discovers `model_providers.json` in cwd or /app/.
+     * Falls back to legacy env vars (LLM_ENDPOINT, GITHUB_TOKEN) if no file found.
+     */
+    modelProvidersPath?: string;
 }
 
 // ─── Client Options ──────────────────────────────────────────────

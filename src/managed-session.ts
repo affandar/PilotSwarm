@@ -8,11 +8,14 @@ import type { TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } fro
 interface TurnState {
     pendingWait: { seconds: number; reason: string } | null;
     pendingInput: { question: string; choices?: string[]; allowFreeform?: boolean } | null;
-    pendingSpawnAgent: { task: string; systemMessage?: string; toolNames?: string[] } | null;
+    pendingSpawnAgent: { task: string; model?: string; systemMessage?: string; toolNames?: string[] } | null;
     pendingMessageAgent: { agentId: string; message: string } | null;
     pendingCheckAgents: boolean;
     pendingWaitForAgents: { agentIds: string[] } | null;
     pendingListSessions: boolean;
+    pendingCompleteAgent: { agentId: string } | null;
+    pendingCancelAgent: { agentId: string; reason?: string } | null;
+    pendingDeleteAgent: { agentId: string; reason?: string } | null;
     session: CopilotSession | null;
     waitThreshold: number;
 }
@@ -94,7 +97,21 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [waitTool, askUserTool];
+        const listModelsTool = defineTool("list_available_models", {
+            description:
+                "List all available LLM models across all configured providers. " +
+                "Returns each model's qualified name (provider:model), description, and cost tier. " +
+                "Use this when choosing the best model for a sub-agent task, or when the user asks about available models. " +
+                "When choosing a model for a sub-agent, prefer lower-cost models for simple tasks " +
+                "and higher-cost models for complex reasoning tasks.",
+            parameters: {
+                type: "object",
+                properties: {},
+            },
+            handler: async () => "stub",
+        });
+
+        return [waitTool, askUserTool, listModelsTool];
     }
 
     /**
@@ -111,13 +128,19 @@ export class ManagedSession {
                 "IMPORTANT: Only spawn agents for tasks that MUST run independently and in parallel " +
                 "(e.g. separate data sources to monitor, independent work streams). " +
                 "Do NOT spawn agents for summarization, reporting, or coordination \u2014 handle those yourself. " +
-                "Each agent adds cost, so minimize the number of agents.",
+                "Each agent adds cost, so minimize the number of agents. " +
+                "By default, sub-agents inherit the parent's model. " +
+                "If the user asks to pick the right model, call list_available_models first.",
             parameters: {
                 type: "object",
                 properties: {
                     task: {
                         type: "string",
                         description: "A clear description of what the sub-agent should do. This becomes the agent's first prompt.",
+                    },
+                    model: {
+                        type: "string",
+                        description: "Optional model in provider:model format (e.g. 'azure-openai:gpt-4.1-mini'). If omitted, inherits parent's model.",
                     },
                     system_message: {
                         type: "string",
@@ -190,7 +213,63 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [spawnAgentTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool];
+        return [spawnAgentTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
+            ...ManagedSession._childManagementToolDefs()];
+    }
+
+    /**
+     * Child management tool definitions (complete, cancel, delete).
+     * Separated for clarity but included in subAgentToolDefs().
+     */
+    static _childManagementToolDefs(): Tool<any>[] {
+        const completeAgentTool = defineTool("complete_agent", {
+            description:
+                "Gracefully complete a running sub-agent. " +
+                "Sends a /done command to the sub-agent, causing it to finish and send its final result back. " +
+                "Use this when a sub-agent has accomplished its task and should stop.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+                },
+                required: ["agent_id"],
+            },
+            handler: async () => "stub",
+        });
+
+        const cancelAgentTool = defineTool("cancel_agent", {
+            description:
+                "Cancel a running sub-agent immediately. " +
+                "The sub-agent's orchestration is terminated without a graceful shutdown. " +
+                "Optionally provide a reason for the cancellation.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+                    reason: { type: "string", description: "Optional reason for cancellation" },
+                },
+                required: ["agent_id"],
+            },
+            handler: async () => "stub",
+        });
+
+        const deleteAgentTool = defineTool("delete_agent", {
+            description:
+                "Cancel and delete a sub-agent entirely. " +
+                "Terminates the orchestration and removes the session from the catalog. " +
+                "Use this to clean up sub-agents you no longer need.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+                    reason: { type: "string", description: "Optional reason for deletion" },
+                },
+                required: ["agent_id"],
+            },
+            handler: async () => "stub",
+        });
+
+        return [completeAgentTool, cancelAgentTool, deleteAgentTool];
     }
 
     /**
@@ -212,6 +291,9 @@ export class ManagedSession {
             pendingCheckAgents: false,
             pendingWaitForAgents: null,
             pendingListSessions: false,
+            pendingCompleteAgent: null,
+            pendingCancelAgent: null,
+            pendingDeleteAgent: null,
             session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
         };
@@ -276,6 +358,23 @@ export class ManagedSession {
             },
         });
 
+        // list_available_models — returns data inline (no abort/continuation needed)
+        const listModelsTool = defineTool("list_available_models", {
+            description:
+                "List all available LLM models across all configured providers. " +
+                "Returns each model's qualified name (provider:model), description, and cost tier. " +
+                "Use this when choosing the best model for a sub-agent task, or when the user asks about available models. " +
+                "When choosing a model for a sub-agent, prefer lower-cost models for simple tasks " +
+                "and higher-cost models for complex reasoning tasks.",
+            parameters: {
+                type: "object",
+                properties: {},
+            },
+            handler: async () => {
+                return opts?.modelSummary || "No model providers configured.";
+            },
+        });
+
         // Build sub-agent tools
         const spawnAgentTool = defineTool("spawn_agent", {
             description:
@@ -285,13 +384,20 @@ export class ManagedSession {
                 "IMPORTANT: Only spawn agents for tasks that MUST run independently and in parallel " +
                 "(e.g. separate data sources to monitor, independent work streams). " +
                 "Do NOT spawn agents for summarization, reporting, or coordination \u2014 handle those yourself. " +
-                "Each agent adds cost, so minimize the number of agents.",
+                "Each agent adds cost, so minimize the number of agents. " +
+                "By default, sub-agents use the same model as the parent. " +
+                "If the user asks to use the right model for the job, call list_available_models first " +
+                "and pick one based on task complexity and cost.",
             parameters: {
                 type: "object",
                 properties: {
                     task: {
                         type: "string",
                         description: "A clear description of what the sub-agent should do. This becomes the agent's first prompt.",
+                    },
+                    model: {
+                        type: "string",
+                        description: "Optional model to use for this sub-agent in provider:model format (e.g. 'azure-openai:gpt-4.1-mini'). Use list_available_models to see options. If omitted, inherits the parent's model.",
                     },
                     system_message: {
                         type: "string",
@@ -305,9 +411,10 @@ export class ManagedSession {
                 },
                 required: ["task"],
             },
-            handler: async (args: { task: string; system_message?: string; tool_names?: string[] }) => {
+            handler: async (args: { task: string; model?: string; system_message?: string; tool_names?: string[] }) => {
                 turnState.pendingSpawnAgent = {
                     task: args.task,
+                    model: args.model,
                     systemMessage: args.system_message,
                     toolNames: args.tool_names,
                 };
@@ -393,7 +500,66 @@ export class ManagedSession {
             },
         });
 
-        const SYSTEM_TOOL_NAMES = new Set(["wait", "ask_user", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions"]);
+        const completeAgentTool = defineTool("complete_agent", {
+            description:
+                "Gracefully complete a running sub-agent. " +
+                "Sends a /done command to the sub-agent, causing it to finish and send its final result back. " +
+                "Use this when a sub-agent has accomplished its task and should stop.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+                },
+                required: ["agent_id"],
+            },
+            handler: async (args: { agent_id: string }) => {
+                turnState.pendingCompleteAgent = { agentId: args.agent_id };
+                if (turnState.session) turnState.session.abort();
+                return "aborted";
+            },
+        });
+
+        const cancelAgentTool = defineTool("cancel_agent", {
+            description:
+                "Cancel a running sub-agent immediately. " +
+                "The sub-agent's orchestration is terminated without a graceful shutdown. " +
+                "Optionally provide a reason for the cancellation.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+                    reason: { type: "string", description: "Optional reason for cancellation" },
+                },
+                required: ["agent_id"],
+            },
+            handler: async (args: { agent_id: string; reason?: string }) => {
+                turnState.pendingCancelAgent = { agentId: args.agent_id, reason: args.reason };
+                if (turnState.session) turnState.session.abort();
+                return "aborted";
+            },
+        });
+
+        const deleteAgentTool = defineTool("delete_agent", {
+            description:
+                "Cancel and delete a sub-agent entirely. " +
+                "Terminates the orchestration and removes the session from the catalog. " +
+                "Use this to clean up sub-agents you no longer need.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+                    reason: { type: "string", description: "Optional reason for deletion" },
+                },
+                required: ["agent_id"],
+            },
+            handler: async (args: { agent_id: string; reason?: string }) => {
+                turnState.pendingDeleteAgent = { agentId: args.agent_id, reason: args.reason };
+                if (turnState.session) turnState.session.abort();
+                return "aborted";
+            },
+        });
+
+        const SYSTEM_TOOL_NAMES = new Set(["wait", "ask_user", "list_available_models", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -404,11 +570,15 @@ export class ManagedSession {
             }),
             waitTool,
             askUserTool,
+            listModelsTool,
             spawnAgentTool,
             messageAgentTool,
             checkAgentsTool,
             waitForAgentsTool,
             listSessionsTool,
+            completeAgentTool,
+            cancelAgentTool,
+            deleteAgentTool,
         ];
 
         // Re-register tools for this turn (may have changed)
@@ -494,7 +664,8 @@ export class ManagedSession {
             if (!turnState.pendingInput && !turnState.pendingWait
                 && !turnState.pendingSpawnAgent && !turnState.pendingMessageAgent
                 && !turnState.pendingCheckAgents && !turnState.pendingWaitForAgents
-                && !turnState.pendingListSessions) {
+                && !turnState.pendingListSessions && !turnState.pendingCompleteAgent
+                && !turnState.pendingCancelAgent && !turnState.pendingDeleteAgent) {
                 return { type: "error", message: errMsg };
             }
         } finally {
@@ -519,6 +690,7 @@ export class ManagedSession {
             return {
                 type: "spawn_agent",
                 task: turnState.pendingSpawnAgent.task,
+                model: turnState.pendingSpawnAgent.model,
                 systemMessage: turnState.pendingSpawnAgent.systemMessage,
                 toolNames: turnState.pendingSpawnAgent.toolNames,
                 content: finalContent,
@@ -545,6 +717,29 @@ export class ManagedSession {
         }
         if (turnState.pendingListSessions) {
             return { type: "list_sessions", events: collectedEvents };
+        }
+        if (turnState.pendingCompleteAgent) {
+            return {
+                type: "complete_agent",
+                agentId: turnState.pendingCompleteAgent.agentId,
+                events: collectedEvents,
+            };
+        }
+        if (turnState.pendingCancelAgent) {
+            return {
+                type: "cancel_agent",
+                agentId: turnState.pendingCancelAgent.agentId,
+                reason: turnState.pendingCancelAgent.reason,
+                events: collectedEvents,
+            };
+        }
+        if (turnState.pendingDeleteAgent) {
+            return {
+                type: "delete_agent",
+                agentId: turnState.pendingDeleteAgent.agentId,
+                reason: turnState.pendingDeleteAgent.reason,
+                events: collectedEvents,
+            };
         }
 
         return {

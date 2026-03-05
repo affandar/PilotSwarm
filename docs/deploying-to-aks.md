@@ -43,6 +43,20 @@ This guide walks through deploying durable-copilot-runtime workers to AKS for pr
 - An Azure Database for PostgreSQL (Flexible Server)
 - An Azure Storage Account (for session blob storage)
 
+## WARNING: Runaway Deployments
+
+**Before deploying**, always check for old worker pods in other namespaces that may still be connected to the same database:
+
+```bash
+kubectl get pods --all-namespaces -l app.kubernetes.io/component=worker --no-headers
+```
+
+Old workers from a previous namespace (e.g. `copilot-sdk` vs `copilot-runtime`) will process orchestrations with **stale orchestration code**, causing nondeterminism errors. Delete any old deployments before deploying:
+
+```bash
+kubectl delete deployment copilot-runtime-worker -n <old-namespace>
+```
+
 ## Step 1: Create Kubernetes Resources
 
 ### Namespace

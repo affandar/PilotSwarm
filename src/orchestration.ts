@@ -52,13 +52,15 @@ export function* durableSessionOrchestration_1_0_4(
     let taskContext = input.taskContext;
     const baseSystemMessage = input.baseSystemMessage ?? config.systemMessage;
     const MAX_RETRIES = 3;
-    const MAX_SUB_AGENTS = 5;
+    const MAX_SUB_AGENTS = 8;
+    const MAX_NESTING_LEVEL = 2; // 0=root, 1=child, 2=grandchild — no deeper
 
     // ─── Sub-agent tracking ──────────────────────────────────
     let subAgents: SubAgentEntry[] = input.subAgents ? [...input.subAgents] : [];
     // parentSessionId: prefer new field, fall back to old parentOrchId for backward compat
     const parentSessionId = input.parentSessionId
         ?? (input.parentOrchId ? input.parentOrchId.replace(/^session-/, '') : undefined);
+    const nestingLevel = input.nestingLevel ?? 0;
 
     // If we have a captured task context, inject it into the system message
     // so it survives LLM conversation truncation (BasicTruncator never drops system messages).
@@ -116,6 +118,7 @@ export function* durableSessionOrchestration_1_0_4(
             baseSystemMessage,
             subAgents,
             parentSessionId,
+            nestingLevel,
             retryCount: 0, // reset by default; overrides can set it
             ...overrides,
         };
@@ -252,6 +255,52 @@ export function* durableSessionOrchestration_1_0_4(
                             };
                             setStatus(ctx, "idle", { iteration, cmdResponse: resp });
                             continue;
+                        }
+                        case "done": {
+                            ctx.traceInfo(`[orch] /done command received — completing session`);
+
+                            // Cascade: complete all sub-agents whose orchestrations may still be alive.
+                            // Include "running" AND "completed" — a child that sent CHILD_UPDATE
+                            // may still have a live orchestration waiting in its idle loop.
+                            const liveChildren = subAgents.filter(a => a.status === "running" || a.status === "completed");
+                            if (liveChildren.length > 0) {
+                                ctx.traceInfo(`[orch] /done: completing ${liveChildren.length} sub-agent(s)`);
+                                for (const child of liveChildren) {
+                                    try {
+                                        const childCmdId = `done-cascade-${iteration}-${child.sessionId.slice(0, 8)}`;
+                                        yield manager.sendCommandToSession(child.sessionId,
+                                            { type: "cmd", cmd: "done", id: childCmdId, args: { reason: "Parent session completing" } });
+                                        child.status = "completed";
+                                        ctx.traceInfo(`[orch] /done: completed child ${child.sessionId}`);
+                                    } catch (err: any) {
+                                        ctx.traceInfo(`[orch] /done: failed to complete child ${child.sessionId}: ${err.message} (non-fatal)`);
+                                    }
+                                }
+                            }
+
+                            // If this is a child orchestration, send final result to parent
+                            if (parentSessionId) {
+                                try {
+                                    const doneReason = String(cmdMsg.args?.reason || "Session completed by user");
+                                    yield manager.sendToSession(parentSessionId,
+                                        `[CHILD_UPDATE from=${input.sessionId} type=completed iter=${iteration}]\n${doneReason}`);
+                                } catch (err: any) {
+                                    ctx.traceInfo(`[orch] sendToSession(parent) on /done failed: ${err.message} (non-fatal)`);
+                                }
+                            }
+
+                            // Destroy the in-memory session
+                            try {
+                                yield session.destroy();
+                            } catch {}
+
+                            const resp: CommandResponse = {
+                                id: cmdMsg.id,
+                                cmd: cmdMsg.cmd,
+                                result: { ok: true, message: "Session completed" },
+                            };
+                            setStatus(ctx, "completed", { iteration, cmdResponse: resp });
+                            return "done";
                         }
                         default: {
                             const resp: CommandResponse = {
@@ -605,6 +654,17 @@ export function* durableSessionOrchestration_1_0_4(
             // ─── Sub-Agent Result Handlers ───────────────────
 
             case "spawn_agent": {
+                // Enforce nesting depth limit
+                const childNestingLevel = nestingLevel + 1;
+                if (childNestingLevel > MAX_NESTING_LEVEL) {
+                    ctx.traceInfo(`[orch] spawn_agent denied: nesting level ${nestingLevel} is at max (${MAX_NESTING_LEVEL})`);
+                    yield ctx.continueAsNew(continueInput({
+                        prompt: `[SYSTEM: spawn_agent failed — you are already at nesting level ${nestingLevel} (max ${MAX_NESTING_LEVEL}). ` +
+                            `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`,
+                    }));
+                    return "";
+                }
+
                 // Enforce max sub-agents
                 const activeCount = subAgents.filter(a => a.status === "running").length;
                 if (activeCount >= MAX_SUB_AGENTS) {
@@ -616,11 +676,12 @@ export function* durableSessionOrchestration_1_0_4(
                     return "";
                 }
 
-                ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${result.task.slice(0, 80)}"`);
+                ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${result.task.slice(0, 80)}" model=${result.model || "inherit"} nestingLevel=${childNestingLevel}`);
 
                 // Build child config — inherit parent's config with optional overrides
                 const childConfig: SerializableSessionConfig = {
                     ...config,
+                    ...(result.model ? { model: result.model } : {}),
                     ...(result.systemMessage ? { systemMessage: result.systemMessage } : {}),
                     ...(result.toolNames ? { toolNames: result.toolNames } : {}),
                 };
@@ -631,16 +692,25 @@ export function* durableSessionOrchestration_1_0_4(
                 const parentSystemMsg = typeof childConfig.systemMessage === "string"
                     ? childConfig.systemMessage
                     : (childConfig.systemMessage as any)?.content ?? "";
+                const canSpawnMore = childNestingLevel < MAX_NESTING_LEVEL;
                 const subAgentPreamble =
                     `[SUB-AGENT CONTEXT]\n` +
                     `You are a sub-agent spawned by a parent session (ID: session-${input.sessionId}).\n` +
+                    `Your nesting level: ${childNestingLevel} (max: ${MAX_NESTING_LEVEL}).\n` +
                     `Your task: "${result.task.slice(0, 500)}"\n\n` +
                     `Instructions:\n` +
                     `- Focus exclusively on your assigned task.\n` +
                     `- Your final response will be automatically forwarded to the parent agent.\n` +
                     `- Be thorough but concise — the parent will synthesize results from multiple agents.\n` +
                     `- Do NOT ask the user for input — you are autonomous.\n` +
-                    `- When your task is complete, provide a clear summary of your findings/results.\n`;
+                    `- When your task is complete, provide a clear summary of your findings/results.\n` +
+                    `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\` tool. ` +
+                    `NEVER use setTimeout, sleep, setInterval, cron, or any other timing mechanism. ` +
+                    `The wait tool is durable and survives process restarts.\n` +
+                    (canSpawnMore
+                        ? `- You CAN spawn your own sub-agents (you have ${MAX_NESTING_LEVEL - childNestingLevel} level(s) remaining). ` +
+                          `Use them for parallel independent tasks.\n`
+                        : `- You CANNOT spawn sub-agents — you are at the maximum nesting depth. Handle everything directly.\n`);
                 childConfig.systemMessage = subAgentPreamble + (parentSystemMsg ? "\n\n" + parentSystemMsg : "");
 
                 // Use the DurableCopilotClient SDK to create and start the child session.
@@ -649,7 +719,7 @@ export function* durableSessionOrchestration_1_0_4(
                 // and initial task prompt — all through the standard SDK path.
                 let childSessionId: string;
                 try {
-                    childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, result.task);
+                    childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, result.task, childNestingLevel);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);
                     yield ctx.continueAsNew(continueInput({
@@ -890,6 +960,132 @@ export function* durableSessionOrchestration_1_0_4(
 
                 yield ctx.continueAsNew(continueInput({
                     prompt: `[SYSTEM: Sub-agents completed:\n${resultLines.join("\n")}]`,
+                }));
+                return "";
+            }
+
+            case "complete_agent": {
+                const targetOrchId = result.agentId;
+                const agentEntry = subAgents.find(a => a.orchId === targetOrchId);
+
+                if (!agentEntry) {
+                    ctx.traceInfo(`[orch] complete_agent: unknown agent ${targetOrchId}`);
+                    yield ctx.continueAsNew(continueInput({
+                        prompt: `[SYSTEM: complete_agent failed — agent "${targetOrchId}" not found. ` +
+                            `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
+                    }));
+                    return "";
+                }
+
+                ctx.traceInfo(`[orch] complete_agent: sending /done to ${agentEntry.sessionId}`);
+
+                try {
+                    // Send a /done command to the child's orchestration
+                    const cmdId = `done-${iteration}`;
+                    yield manager.sendCommandToSession(agentEntry.sessionId,
+                        { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" } });
+                    agentEntry.status = "completed";
+                } catch (err: any) {
+                    ctx.traceInfo(`[orch] complete_agent failed: ${err.message}`);
+                    yield ctx.continueAsNew(continueInput({
+                        prompt: `[SYSTEM: complete_agent failed: ${err.message}]`,
+                    }));
+                    return "";
+                }
+
+                yield ctx.continueAsNew(continueInput({
+                    prompt: `[SYSTEM: Sub-agent ${targetOrchId} has been completed gracefully.]`,
+                }));
+                return "";
+            }
+
+            case "cancel_agent": {
+                const targetOrchId = result.agentId;
+                const agentEntry = subAgents.find(a => a.orchId === targetOrchId);
+
+                if (!agentEntry) {
+                    ctx.traceInfo(`[orch] cancel_agent: unknown agent ${targetOrchId}`);
+                    yield ctx.continueAsNew(continueInput({
+                        prompt: `[SYSTEM: cancel_agent failed — agent "${targetOrchId}" not found. ` +
+                            `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
+                    }));
+                    return "";
+                }
+
+                const cancelReason = result.reason ?? "Cancelled by parent";
+                ctx.traceInfo(`[orch] cancel_agent: cancelling ${agentEntry.sessionId} reason="${cancelReason}"`);
+
+                try {
+                    // Cascade: cancel all descendants of the target agent first
+                    const descendants: string[] = yield manager.getDescendantSessionIds(agentEntry.sessionId);
+                    if (descendants.length > 0) {
+                        ctx.traceInfo(`[orch] cancel_agent: cascading cancel to ${descendants.length} descendant(s)`);
+                        for (const descId of descendants) {
+                            try {
+                                yield manager.cancelSession(descId, `Ancestor ${agentEntry.sessionId} cancelled: ${cancelReason}`);
+                            } catch (err: any) {
+                                ctx.traceInfo(`[orch] cancel_agent: failed to cancel descendant ${descId}: ${err.message} (non-fatal)`);
+                            }
+                        }
+                    }
+                    yield manager.cancelSession(agentEntry.sessionId, cancelReason);
+                    agentEntry.status = "cancelled";
+                } catch (err: any) {
+                    ctx.traceInfo(`[orch] cancel_agent failed: ${err.message}`);
+                    yield ctx.continueAsNew(continueInput({
+                        prompt: `[SYSTEM: cancel_agent failed: ${err.message}]`,
+                    }));
+                    return "";
+                }
+
+                yield ctx.continueAsNew(continueInput({
+                    prompt: `[SYSTEM: Sub-agent ${targetOrchId} has been cancelled.${result.reason ? ` Reason: ${result.reason}` : ""}]`,
+                }));
+                return "";
+            }
+
+            case "delete_agent": {
+                const targetOrchId = result.agentId;
+                const agentEntry = subAgents.find(a => a.orchId === targetOrchId);
+
+                if (!agentEntry) {
+                    ctx.traceInfo(`[orch] delete_agent: unknown agent ${targetOrchId}`);
+                    yield ctx.continueAsNew(continueInput({
+                        prompt: `[SYSTEM: delete_agent failed — agent "${targetOrchId}" not found. ` +
+                            `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
+                    }));
+                    return "";
+                }
+
+                const deleteReason = result.reason ?? "Deleted by parent";
+                ctx.traceInfo(`[orch] delete_agent: deleting ${agentEntry.sessionId} reason="${deleteReason}"`);
+
+                try {
+                    // Cascade: delete all descendants of the target agent first
+                    const descendants: string[] = yield manager.getDescendantSessionIds(agentEntry.sessionId);
+                    if (descendants.length > 0) {
+                        ctx.traceInfo(`[orch] delete_agent: cascading delete to ${descendants.length} descendant(s)`);
+                        for (const descId of descendants) {
+                            try {
+                                yield manager.deleteSession(descId, `Ancestor ${agentEntry.sessionId} deleted: ${deleteReason}`);
+                            } catch (err: any) {
+                                ctx.traceInfo(`[orch] delete_agent: failed to delete descendant ${descId}: ${err.message} (non-fatal)`);
+                            }
+                        }
+                    }
+                    yield manager.deleteSession(agentEntry.sessionId, deleteReason);
+                    // Remove from subAgents tracking entirely
+                    subAgents = subAgents.filter(a => a.orchId !== targetOrchId);
+                } catch (err: any) {
+                    ctx.traceInfo(`[orch] delete_agent failed: ${err.message}`);
+                    yield ctx.continueAsNew(continueInput({
+                        prompt: `[SYSTEM: delete_agent failed: ${err.message}]`,
+                    }));
+                    return "";
+                }
+
+                yield ctx.continueAsNew(continueInput({
+                    prompt: `[SYSTEM: Sub-agent ${targetOrchId} has been deleted.${result.reason ? ` Reason: ${result.reason}` : ""}]`,
                 }));
                 return "";
             }

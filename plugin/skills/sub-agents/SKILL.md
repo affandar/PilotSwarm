@@ -61,7 +61,7 @@ Block until sub-agents finish. Returns their final results.
 
 ## Rules
 
-- **Maximum 5 concurrent sub-agents** — wait for some to complete before spawning more
+- **Maximum 20 concurrent sub-agents** — wait for some to complete before spawning more
 - Sub-agents inherit your tools and model by default
 - Sub-agents are fully durable — they survive crashes and restarts
 - Sub-agents can use `wait` for durable timers but cannot spawn their own sub-agents (single level)

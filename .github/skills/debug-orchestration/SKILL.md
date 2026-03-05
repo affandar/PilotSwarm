@@ -73,6 +73,39 @@ setStatus("idle");                      // recorded as CustomStatusUpdated
 
 The fix: use `yield ctx.utcNow()` for any time-based branching.
 
+## Runaway / leaky deployments
+
+A very common cause of nondeterminism is **old workers from a previous deployment still running** in the same cluster, connected to the same database. This happens when:
+
+- A previous deployment used a different Kubernetes namespace (e.g. `copilot-sdk` vs `copilot-runtime`) and was never cleaned up.
+- A rolling update left old ReplicaSet pods running alongside new ones during the transition.
+- Manual `kubectl run` or port-forward sessions left orphaned pods polling the same database.
+
+Old workers run **old orchestration code** but process orchestrations that were started (or replayed) by the **new code**. The yield sequences differ → nondeterminism error.
+
+### Diagnosis
+
+```bash
+# Check ALL namespaces for worker pods — not just the expected one
+kubectl get pods --all-namespaces -l app.kubernetes.io/component=worker --no-headers
+```
+
+If you see pods in an unexpected namespace or from a different ReplicaSet, that's the culprit.
+
+### Fix
+
+```bash
+# Delete the old deployment and namespace
+kubectl delete deployment copilot-runtime-worker -n <old-namespace>
+kubectl delete namespace <old-namespace> --wait=false
+
+# Reset the database to clear any tainted history
+NODE_TLS_REJECT_UNAUTHORIZED=0 node --env-file=.env.remote scripts/db-reset.js --yes
+
+# Restart current workers
+kubectl rollout restart deployment/copilot-runtime-worker -n copilot-runtime
+```
+
 ## After fixing
 
 1. **Reset the database** — existing orchestrations have stale history:

@@ -6,7 +6,12 @@
  *
  * Env vars:
  *   DATABASE_URL                    — PostgreSQL connection string
- *   GITHUB_TOKEN                    — Copilot API token
+ *   GITHUB_TOKEN                    — Copilot API token (not needed with custom LLM)
+ *   LLM_ENDPOINT                    — Custom LLM endpoint URL (Azure OpenAI, etc.)
+ *   LLM_API_KEY                     — API key for the custom endpoint
+ *   LLM_PROVIDER_TYPE               — Provider type: "openai" | "azure" | "anthropic"
+ *   LLM_API_VERSION                 — Azure API version (default: "2024-10-21")
+ *   COPILOT_MODEL                   — Model name/deployment (default: auto)
  *   LOG_LEVEL                       — Tracing level (default: "info")
  *   AZURE_STORAGE_CONNECTION_STRING — Blob storage for session dehydration
  *   AZURE_STORAGE_CONTAINER         — Blob container name (default: "copilot-sessions")
@@ -37,6 +42,9 @@ console.log(`[worker] Pod: ${podName}`);
 console.log(`[worker] Store: ${process.env.DATABASE_URL?.replace(/\/\/.*@/, "//***@")}`);
 if (pluginDirs.length > 0) console.log(`[worker] Plugin dirs: ${pluginDirs.join(", ")}`);
 
+// Model providers: auto-discovered from model_providers.json or env vars.
+// The worker loads them automatically — just log what it finds after start.
+
 const SYSTEM_MESSAGE = `You are a helpful assistant running in a durable execution environment. Be concise.
 
 CRITICAL RULES:
@@ -59,6 +67,14 @@ const worker = new DurableCopilotWorker({
 
 await worker.start();
 console.log(`[worker] Started ✓ Polling for orchestrations...`);
+if (worker.modelProviders) {
+    const groups = worker.modelProviders.getModelsByProvider();
+    for (const g of groups) {
+        const names = g.models.map(m => m.qualifiedName).join(", ");
+        console.log(`[worker] ${g.providerId} (${g.type}): ${names}`);
+    }
+    console.log(`[worker] Default model: ${worker.modelProviders.defaultModel}`);
+}
 if (worker.loadedAgents.length > 0) {
     console.log(`[worker] Agents: ${worker.loadedAgents.map(a => a.name).join(", ")}`);
 }

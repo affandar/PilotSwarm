@@ -38,6 +38,8 @@ export class DurableCopilotClient {
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
     /** parentSessionId for sub-agent sessions. */
     private parentSessionIds = new Map<string, string>();
+    /** nestingLevel for sub-agent sessions. */
+    private nestingLevels = new Map<string, number>();
     private activeOrchestrations = new Map<string, string>();
     private lastSeenStatusVersion = new Map<string, number>();
     private lastSeenIteration = new Map<string, number>();
@@ -59,6 +61,8 @@ export class DurableCopilotClient {
         toolNames?: string[];
         /** If this session is a sub-agent, the parent session ID. */
         parentSessionId?: string;
+        /** Nesting level for sub-agent depth tracking. */
+        nestingLevel?: number;
     }): Promise<DurableSession> {
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         if (config) {
@@ -83,6 +87,10 @@ export class DurableCopilotClient {
         // Track parentSessionId for sub-agent orchestration input
         if (config?.parentSessionId) {
             this.parentSessionIds.set(sessionId, config.parentSessionId);
+        }
+        // Track nestingLevel for sub-agent depth enforcement
+        if (config?.nestingLevel != null) {
+            this.nestingLevels.set(sessionId, config.nestingLevel);
         }
 
         return new DurableSession(sessionId, this, config?.onUserInputRequest);
@@ -116,6 +124,8 @@ export class DurableCopilotClient {
 
     async deleteSession(sessionId: string): Promise<void> {
         this.sessionConfigs.delete(sessionId);
+        this.parentSessionIds.delete(sessionId);
+        this.nestingLevels.delete(sessionId);
 
         // CMS: soft-delete (source of truth)
         await this._catalog.softDeleteSession(sessionId);
@@ -191,6 +201,7 @@ export class DurableCopilotClient {
 
         if (!this.activeOrchestrations.has(sessionId)) {
             const parentSessionId = this.parentSessionIds.get(sessionId);
+            const nestingLevel = this.nestingLevels.get(sessionId);
             const input: OrchestrationInput = {
                 sessionId,
                 config: serializableConfig,
@@ -202,6 +213,7 @@ export class DurableCopilotClient {
                 checkpointInterval: this.config.checkpointInterval ?? -1,
                 rehydrationMessage: this.config.rehydrationMessage,
                 ...(parentSessionId ? { parentSessionId } : {}),
+                ...(nestingLevel != null ? { nestingLevel } : {}),
             };
             await this.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,
@@ -302,6 +314,7 @@ export class DurableCopilotClient {
         return {
             sessionId,
             status,
+            model: cmsRow?.model ?? undefined,
             title: cmsRow?.title ?? undefined,
             createdAt: cmsRow?.createdAt ?? new Date(),
             updatedAt: cmsRow?.updatedAt ?? new Date(),

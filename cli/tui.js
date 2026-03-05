@@ -180,11 +180,43 @@ const orchList = blessed.list({
     scrollable: true,
     alwaysScroll: true,
     scrollbar: { style: { bg: "yellow" } },
-    keys: true,
-    vi: true,
+    keys: false,
+    vi: false,
     mouse: true,
     interactive: true,
 });
+
+// ─── Vim-like scrolloff navigation for session list ──────────────
+// Cursor stays centered; the view scrolls around it. At the edges
+// (top/bottom of the list), the cursor moves without scrolling.
+{
+    const SCROLLOFF = 999; // large = always center (like vim scrolloff=999)
+    function orchListMove(delta) {
+        const total = orchList.items.length;
+        if (total === 0) return;
+        const cur = orchList.selected ?? 0;
+        const next = Math.max(0, Math.min(total - 1, cur + delta));
+        if (next === cur) return;
+        orchList.select(next);
+        // Compute visible height (subtract 2 for border)
+        const visH = (orchList.height ?? 10) - 2;
+        const half = Math.floor(visH / 2);
+        const off = Math.min(SCROLLOFF, half);
+        // Target scroll: keep `next` at least `off` rows from top/bottom edge
+        const scrollTop = orchList.childBase ?? 0;
+        const posInView = next - scrollTop;
+        if (posInView < off) {
+            // Too close to top — scroll up
+            orchList.scrollTo(Math.max(0, next - off));
+        } else if (posInView >= visH - off) {
+            // Too close to bottom — scroll down
+            orchList.scrollTo(next - visH + off + 1);
+        }
+        screen.render();
+    }
+    orchList.key(["j", "down"], () => orchListMove(1));
+    orchList.key(["k", "up"], () => orchListMove(-1));
+}
 
 // Show contextual help when the orch list gains focus
 orchList.on("focus", () => {
@@ -1014,7 +1046,7 @@ function backfillOrchLogs(orchId) {
         const proc = spawn("kubectl", [
             ...k8sCtxArgs,
             "logs",
-            "-n", process.env.K8S_NAMESPACE || "copilot-sdk",
+            "-n", process.env.K8S_NAMESPACE || "copilot-runtime",
             "-l", process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker",
             "--prefix",
             "--tail=2000",
@@ -1203,9 +1235,117 @@ const inputBar = blessed.textbox({
     mouse: true,
 });
 
+// Guard against double readInput — neo-blessed starts a new readInput on each
+// focus() call when inputOnFocus=true. If the textbox is already focused and
+// reading, calling focus() again starts a second reader that captures the same
+// keystrokes, causing double characters. Wrap all inputBar.focus() calls.
+function focusInput() {
+    if (screen.focused === inputBar) return; // already focused & reading
+    inputBar.focus();
+}
+
+// ─── Slash command picker ────────────────────────────────────────
+const slashCommands = [
+    { name: "/models",    desc: "List available models" },
+    { name: "/model",     desc: "Switch model (e.g. /model gpt-4o)" },
+    { name: "/info",      desc: "Show session info" },
+    { name: "/done",      desc: "Complete and close this session" },
+    { name: "/new",       desc: "Create a new session" },
+    { name: "/help",      desc: "Show all commands" },
+];
+
+let slashPicker = null;
+
+function showSlashPicker() {
+    if (slashPicker) { slashPicker.detach(); slashPicker = null; }
+
+    let selectedIdx = 0;
+
+    const renderItems = () => slashCommands.map((c, i) => {
+        const prefix = i === selectedIdx ? "{blue-bg}{white-fg}" : "";
+        const suffix = i === selectedIdx ? "{/white-fg}{/blue-bg}" : "";
+        return `${prefix}  {cyan-fg}${c.name}{/cyan-fg}  ${c.desc}  ${suffix}`;
+    });
+
+    slashPicker = blessed.box({
+        parent: screen,
+        bottom: 3,
+        left: 1,
+        width: 50,
+        height: slashCommands.length + 2,
+        border: { type: "line" },
+        label: " {bold}commands{/bold} ",
+        tags: true,
+        content: renderItems().join("\n"),
+        style: {
+            border: { fg: "cyan" },
+            fg: "white",
+        },
+    });
+
+    const updatePicker = () => {
+        slashPicker.setContent(renderItems().join("\n"));
+        screen.render();
+    };
+
+    // Intercept keys on the screen while the picker is visible
+    const pickerKeyHandler = (ch, key) => {
+        if (!key) return;
+        if (key.name === "up") {
+            selectedIdx = Math.max(0, selectedIdx - 1);
+            updatePicker();
+        } else if (key.name === "down") {
+            selectedIdx = Math.min(slashCommands.length - 1, selectedIdx + 1);
+            updatePicker();
+        } else if (key.name === "return" || key.name === "enter") {
+            const cmd = slashCommands[selectedIdx];
+            dismissSlashPicker();
+            inputBar.setValue(cmd.name + (cmd.name === "/model" ? " " : ""));
+            focusInput();
+            screen.render();
+            if (cmd.name !== "/model") {
+                handleInput(cmd.name);
+            }
+        } else if (key.name === "escape") {
+            dismissSlashPicker();
+            focusInput();
+            screen.render();
+        } else {
+            // Any other key dismisses the picker
+            dismissSlashPicker();
+            screen.render();
+        }
+    };
+
+    slashPicker._pickerKeyHandler = pickerKeyHandler;
+    screen.on("keypress", pickerKeyHandler);
+    screen.render();
+}
+
+function dismissSlashPicker() {
+    if (slashPicker) {
+        if (slashPicker._pickerKeyHandler) {
+            screen.removeListener("keypress", slashPicker._pickerKeyHandler);
+        }
+        slashPicker.detach();
+        slashPicker = null;
+        screen.render();
+    }
+}
+
 // Alt+Backspace: delete word backwards in input bar
 inputBar.on("keypress", (ch, key) => {
     if (!key) return;
+
+    // Show slash command picker when "/" is typed into an empty input bar
+    if (ch === "/" && inputBar.getValue() === "") {
+        // Let the "/" stay in the input bar — don't clear it
+        setImmediate(() => {
+            showSlashPicker();
+        });
+        return;
+    }
+
     // Alt+Backspace shows up as meta+backspace or as \x1B (escape char) + backspace
     const isAltBackspace = (key.meta && key.name === "backspace") ||
         (key.name === "backspace" && key.sequence === "\x1b\x7f");
@@ -1247,6 +1387,19 @@ function appendChat(text, orchId) {
     }
 }
 
+// ─── Coalesced screen rendering ──────────────────────────────────
+// Multiple observers and event handlers call screen.render() rapidly.
+// Coalesce into at most one render per frame (~16ms) to keep the TUI responsive.
+let _renderScheduled = false;
+function scheduleRender() {
+    if (_renderScheduled) return;
+    _renderScheduled = true;
+    setImmediate(() => {
+        _renderScheduled = false;
+        screen.render();
+    });
+}
+
 function appendChatRaw(text, orchId) {
     // Buffer the line for this session
     const targetOrch = orchId || activeOrchId;
@@ -1256,18 +1409,18 @@ function appendChatRaw(text, orchId) {
     // Only render to screen if this is the active session
     if (targetOrch === activeOrchId) {
         chatBox.log(text);
-        screen.render();
+        scheduleRender();
     }
 }
 
 function setStatus(text) {
     statusBar.setContent(`{white-fg}${text}{/white-fg}`);
-    screen.render();
+    scheduleRender();
 }
 
 function appendLog(text) {
     chatBox.log(`{white-fg}${text}{/white-fg}`);
-    screen.render();
+    scheduleRender();
 }
 
 function appendWorkerLog(podName, text, orchId) {
@@ -1287,7 +1440,7 @@ function appendWorkerLog(podName, text, orchId) {
     } else {
         pane.log(text);
     }
-    screen.render();
+    scheduleRender();
 }
 
 /**
@@ -1353,6 +1506,18 @@ async function loadCmsHistory(orchId) {
 
     try {
         const events = await sess.getMessages();
+
+        // Populate session model if not already known
+        if (!sessionModels.has(orchId)) {
+            try {
+                const info = await sess.getInfo();
+                if (info?.model) {
+                    sessionModels.set(orchId, info.model);
+                    if (orchId === activeOrchId) updateChatLabel();
+                }
+            } catch {}
+        }
+
         if (!events || events.length === 0) {
             sessionChatBuffers.set(orchId, []);
             if (orchId === activeOrchId) chatBox.setContent("");
@@ -1476,6 +1641,7 @@ appendLog("");
 
 // 1. Start N worker runtimes (skip if WORKERS=0 for AKS mode)
 const workers = [];
+let modelProviders = null;
 if (!isRemote) {
     // Redirect Rust tracing to a log file so it doesn't corrupt the TUI
     const logFile = "/tmp/duroxide-tui.log";
@@ -1518,6 +1684,16 @@ if (!isRemote) {
         }
     }
 
+    // Build custom LLM provider config from env vars
+    const llmProvider = process.env.LLM_ENDPOINT ? {
+        type: process.env.LLM_PROVIDER_TYPE || "openai",
+        baseUrl: process.env.LLM_ENDPOINT,
+        ...(process.env.LLM_API_KEY && { apiKey: process.env.LLM_API_KEY }),
+        ...(process.env.LLM_PROVIDER_TYPE === "azure" && {
+            azure: { apiVersion: process.env.LLM_API_VERSION || "2024-10-21" },
+        }),
+    } : undefined;
+
     setStatus(`Starting ${numWorkers} workers...`);
     for (let i = 0; i < numWorkers; i++) {
         const w = new DurableCopilotWorker({
@@ -1529,6 +1705,7 @@ if (!isRemote) {
             workerNodeId: `local-rt-${i}`,
             systemMessage: workerModuleConfig.systemMessage || WORKER_SYSTEM_MESSAGE,
             pluginDirs,
+            ...(llmProvider && { provider: llmProvider }),
             ...(workerModuleConfig.skillDirectories && { skillDirectories: workerModuleConfig.skillDirectories }),
             ...(workerModuleConfig.customAgents && { customAgents: workerModuleConfig.customAgents }),
             ...(workerModuleConfig.mcpServers && { mcpServers: workerModuleConfig.mcpServers }),
@@ -1540,6 +1717,20 @@ if (!isRemote) {
         await w.start();
         workers.push(w);
         appendLog(`Worker local-rt-${i} started ✓`);
+    }
+
+    // Capture model provider registry from the first worker
+    modelProviders = workers[0]?.modelProviders || null;
+    if (modelProviders) {
+        const byProvider = modelProviders.getModelsByProvider();
+        for (const g of byProvider) {
+            const names = g.models.map(m => m.qualifiedName).join(", ");
+            appendLog(`{bold}${g.providerId}{/bold} (${g.type}): ${names}`);
+        }
+        // Use default model from registry if no explicit override
+        if (modelProviders.defaultModel && !currentModel) {
+            currentModel = modelProviders.defaultModel;
+        }
     }
 
     // Restore stdout/stderr after all workers initialized
@@ -1653,6 +1844,32 @@ if (!isRemote) {
     }, 500);
 }
 
+// ─── Model selection ─────────────────────────────────────────────
+// Default model — prefer registry defaultModel, env override, then empty (worker picks default).
+let currentModel = process.env.COPILOT_MODEL || "";
+
+// In remote mode (no local workers), load model_providers.json directly
+// so the TUI can show model lists and the Shift+N picker.
+if (!modelProviders) {
+    try {
+        const { loadModelProviders } = await import("../dist/model-providers.js");
+        const mpPath = path.resolve(__dirname, "..", "model_providers.json");
+        if (fs.existsSync(mpPath)) {
+            modelProviders = loadModelProviders(mpPath);
+            const byProvider = modelProviders.getModelsByProvider();
+            for (const g of byProvider) {
+                const names = g.models.map(m => m.qualifiedName).join(", ");
+                appendLog(`{bold}${g.providerId}{/bold} (${g.type}): ${names}`);
+            }
+            if (modelProviders.defaultModel && !currentModel) {
+                currentModel = modelProviders.defaultModel;
+            }
+        }
+    } catch (e) {
+        appendLog(`{yellow-fg}Could not load model_providers.json: ${e.message}{/yellow-fg}`);
+    }
+}
+
 // 2. Start the thin client (for creating orchestrations / reading status)
 const client = new DurableCopilotClient({
     store,
@@ -1751,19 +1968,19 @@ function updateSessionListIcons() {
         const marker = isActive ? "{bold}▸{/bold}" : " ";
         const changeDot = hasChanges ? "{cyan-fg}{bold}●{/bold}{/cyan-fg} " : "";
         const heading = sessionHeadings.get(id);
-        // Detect children by checking childToParent cache (populated by last full refresh)
-        const isChild = orchChildFlags?.has(id) ?? false;
-        const indent = isChild ? "  └ " : "";
+        // Use cached depth from last full refresh
+        const depth = orchDepthMap?.get(id) ?? 0;
+        const indent = depth > 0 ? "  ".repeat(depth - 1) + "└ " : "";
         const label = heading
             ? `${indent}${heading} (${uuid4}) ${timeStr}`
             : `${indent}(${uuid4}) ${timeStr}`;
         orchList.setItem(i, `${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
     }
-    screen.render();
+    scheduleRender();
 }
 
-// Cache child flags from last full refresh so lightweight update can use them
-let orchChildFlags = new Set();
+// Cache depth per orchId from last full refresh so lightweight update can use them
+let orchDepthMap = new Map();
 
 async function refreshOrchestrations() {
     const dc = getDc();
@@ -1838,30 +2055,52 @@ async function refreshOrchestrations() {
         }
     } catch {}
 
-    // Build tree: group children under parents, parents first
-    const parentEntries = entries.filter(e => !childToParent.has(e.id));
-    const childEntries = entries.filter(e => childToParent.has(e.id));
-    const orderedEntries = [];
-    for (const parent of parentEntries) {
-        orderedEntries.push({ ...parent, isChild: false });
-        // Insert children of this parent right after it
-        for (const child of childEntries) {
-            if (childToParent.get(child.id) === parent.id) {
-                orderedEntries.push({ ...child, isChild: true });
-            }
+    // Build tree: compute depth for each entry via parent chain
+    // depth 0 = root, 1 = child, 2 = grandchild, etc.
+    function computeDepth(id) {
+        let depth = 0;
+        let cur = id;
+        while (childToParent.has(cur)) {
+            cur = childToParent.get(cur);
+            depth++;
+            if (depth > 10) break; // safety: avoid infinite loops
+        }
+        return depth;
+    }
+
+    // Recursive tree builder: insert node then its children (depth-first)
+    const childrenOf = new Map(); // parentId → [childEntries]
+    for (const e of entries) {
+        const parentId = childToParent.get(e.id);
+        if (parentId) {
+            if (!childrenOf.has(parentId)) childrenOf.set(parentId, []);
+            childrenOf.get(parentId).push(e);
         }
     }
-    // Orphan children (parent not in list — shouldn't happen but be safe)
-    for (const child of childEntries) {
-        if (!parentEntries.some(p => p.id === childToParent.get(child.id))) {
-            orderedEntries.push({ ...child, isChild: true });
+    const rootEntries = entries.filter(e => !childToParent.has(e.id));
+    const orderedEntries = [];
+    function insertTree(entry, depth) {
+        orderedEntries.push({ ...entry, depth });
+        const children = childrenOf.get(entry.id) || [];
+        for (const child of children) {
+            insertTree(child, depth + 1);
+        }
+    }
+    for (const root of rootEntries) {
+        insertTree(root, 0);
+    }
+    // Orphan entries whose parent is not in the list
+    const orderedIds = new Set(orderedEntries.map(e => e.id));
+    for (const e of entries) {
+        if (!orderedIds.has(e.id)) {
+            orderedEntries.push({ ...e, depth: computeDepth(e.id) });
         }
     }
 
     // Rebuild ordered ID list to match display order
     orchIdOrder = orderedEntries.map(e => e.id);
-    // Cache child flags for lightweight icon updates
-    orchChildFlags = new Set(orderedEntries.filter(e => e.isChild).map(e => e.id));
+    // Cache depth per orchId for lightweight icon updates
+    orchDepthMap = new Map(orderedEntries.map(e => [e.id, e.depth]));
 
     // Update the blessed list — clear and re-add items
     const prevSelected = orchList.selected || 0;
@@ -1869,7 +2108,7 @@ async function refreshOrchestrations() {
     if (entries.length === 0) {
         orchList.addItem("{white-fg}(none){/white-fg}");
     } else {
-        for (const { id, status, createdAt, isChild } of orderedEntries) {
+        for (const { id, status, createdAt, depth } of orderedEntries) {
             // 4-char UUID fragment + time started
             const uuid4 = shortId(id);
             const timeStr = createdAt > 0
@@ -1909,7 +2148,7 @@ async function refreshOrchestrations() {
             }
 
             const heading = sessionHeadings.get(id);
-            const indent = isChild ? "  └ " : "";
+            const indent = depth > 0 ? "  ".repeat(depth - 1) + "└ " : "";
             const label = heading
                 ? `${indent}${heading} (${uuid4}) ${timeStr}`
                 : `${indent}(${uuid4}) ${timeStr}`;
@@ -2011,11 +2250,88 @@ orchList.key(["n"], async () => {
         await switchToOrchestration(orchId);
         await refreshOrchestrations();
         // Focus prompt so user can type immediately
-        inputBar.focus();
+        focusInput();
         screen.render();
     } catch (err) {
         appendLog(`{red-fg}Create failed: ${err.message}{/red-fg}`);
     }
+});
+
+// ── New session with model picker (Shift+N) ──────────────────────
+orchList.key(["S-n"], async () => {
+    if (!modelProviders) {
+        appendLog("{yellow-fg}No model providers configured — using default.{/yellow-fg}");
+        orchList.emit("keypress", "n", { name: "n" });
+        return;
+    }
+
+    // Build items grouped by provider
+    const items = [];
+    const modelMap = new Map(); // index → qualifiedName
+    const byProvider = modelProviders.getModelsByProvider();
+    for (const group of byProvider) {
+        items.push(`{bold}{white-fg}── ${group.providerId} (${group.type}) ──{/white-fg}{/bold}`);
+        modelMap.set(items.length - 1, null); // header row
+        for (const m of group.models) {
+            const costTag = m.cost ? ` [${m.cost}]` : "";
+            const marker = m.qualifiedName === currentModel ? " ← default" : "";
+            items.push(`  ${m.modelName}${costTag}${marker}`);
+            modelMap.set(items.length - 1, m.qualifiedName);
+        }
+    }
+
+    const picker = blessed.list({
+        parent: screen,
+        label: " {bold}Select model for new session{/bold} ",
+        tags: true,
+        top: "center",
+        left: "center",
+        width: "60%",
+        height: Math.min(items.length + 4, 20),
+        border: { type: "line" },
+        style: {
+            border: { fg: "cyan" },
+            selected: { bg: "cyan", fg: "black", bold: true },
+            item: { fg: "white" },
+        },
+        items,
+        keys: true,
+        vi: true,
+        mouse: true,
+        scrollable: true,
+    });
+    picker.focus();
+    screen.render();
+
+    picker.on("select", async (item, index) => {
+        const qualified = modelMap.get(index);
+        picker.detach();
+        screen.render();
+        if (!qualified) return; // header row selected
+
+        try {
+            // Temporarily override currentModel for this session
+            const prevModel = currentModel;
+            currentModel = qualified;
+            const sess = await createNewSession();
+            currentModel = prevModel; // restore default
+            const orchId = `session-${sess.sessionId}`;
+            knownOrchestrationIds.add(orchId);
+            appendLog(`{green-fg}New session (${qualified}): ${shortId(sess.sessionId)}…{/green-fg}`);
+            await switchToOrchestration(orchId);
+            await refreshOrchestrations();
+            focusInput();
+            screen.render();
+        } catch (err) {
+            appendLog(`{red-fg}Create failed: ${err.message}{/red-fg}`);
+        }
+    });
+
+    picker.key(["escape", "q"], () => {
+        picker.detach();
+        orchList.focus();
+        screen.render();
+    });
 });
 
 // ── Title rename ─────────────────────────────────────────────────
@@ -2140,17 +2456,17 @@ function startLogStream() {
 
     try {
         const k8sContext = process.env.K8S_CONTEXT || "";
-        const k8sNamespace = process.env.K8S_NAMESPACE || "copilot-sdk";
+        const k8sNamespace = process.env.K8S_NAMESPACE || "copilot-runtime";
         const k8sPodLabel = process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker";
         const k8sCtxArgs = k8sContext ? ["--context", k8sContext] : [];
         kubectlProc = spawn("kubectl", [
             ...k8sCtxArgs,
-            "logs", "-f",
+            "logs",
+            "--follow=true",
             "-n", k8sNamespace,
             "-l", k8sPodLabel,
             "--prefix",
             "--tail=500",
-            "--since=48h",
             "--max-log-requests=20",
         ], { stdio: ["ignore", "pipe", "pipe"] });
 
@@ -2221,16 +2537,15 @@ function startLogStream() {
             }
         });
 
-        kubectlProc.on("error", () => {
-            appendLog("{yellow-fg}kubectl not available — logs not streamed{/yellow-fg}");
+        kubectlProc.on("error", (err) => {
+            appendLog(`{yellow-fg}kubectl error: ${err.message}{/yellow-fg}`);
         });
 
         // Auto-restart on exit (e.g., pods terminated during rollout)
-        kubectlProc.on("exit", (code) => {
+        kubectlProc.on("exit", (code, signal) => {
+            appendLog(`{white-fg}kubectl exited (code=${code} signal=${signal}) — restarting in 5s{/white-fg}`);
             kubectlProc = null;
-            if (code !== null) {
-                setTimeout(() => { startLogStream(); }, 5000);
-            }
+            setTimeout(() => { startLogStream(); }, 5000);
         });
     } catch {
         appendLog("{yellow-fg}Could not start log stream{/yellow-fg}");
@@ -2248,7 +2563,7 @@ if (isRemote) {
                 const k8sCtxArgs = process.env.K8S_CONTEXT ? ["--context", process.env.K8S_CONTEXT] : [];
                 const proc = spawn("kubectl", [
                     ...k8sCtxArgs,
-                    "get", "pods", "-n", process.env.K8S_NAMESPACE || "copilot-sdk",
+                    "get", "pods", "-n", process.env.K8S_NAMESPACE || "copilot-runtime",
                     "-l", process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker",
                     "--field-selector=status.phase=Running",
                     "-o", "jsonpath={.items[*].metadata.name}",
@@ -2273,29 +2588,29 @@ if (isRemote) {
 
 // Map sessionId → DurableSession object
 const sessions = new Map();
+const sessionModels = new Map(); // orchId → model name used for that session
 
-// ─── Model selection ─────────────────────────────────────────────
-let currentModel = process.env.COPILOT_MODEL || "claude-opus-4.5";
+// currentModel is declared earlier (before model providers loading)
 
 // Pending command responses — keyed by correlation ID
 // Observer matches cmdResponse.id and displays results
 const pendingCommands = new Map(); // id → { cmd, resolve, timer }
 
-// Auto-timeout pending commands after 15 seconds
-function addPendingCommand(cmdId, cmd) {
+// Auto-timeout pending commands (default 15s, overridable)
+function addPendingCommand(cmdId, cmd, timeoutMs = 15_000) {
     const timer = setTimeout(() => {
         if (pendingCommands.has(cmdId)) {
             pendingCommands.delete(cmdId);
             appendChatRaw(`{yellow-fg}⏱ Command timed out: ${cmd} — the orchestration may be restarting. Try again.{/yellow-fg}`);
             screen.render();
         }
-    }, 15_000);
+    }, timeoutMs);
     pendingCommands.set(cmdId, { cmd, resolve: null, timer });
 }
 
 async function createNewSession() {
     const sess = await client.createSession({
-        model: currentModel,
+        ...(currentModel ? { model: currentModel } : {}),
         onUserInputRequest: async (request) => {
             return new Promise((resolve) => {
                 const q = request.question || "?";
@@ -2304,11 +2619,12 @@ async function createNewSession() {
                 pendingUserInput = { resolve };
                 inputBar.setLabel(" {bold}answer:{/bold} ");
                 screen.render();
-                inputBar.focus();
+                focusInput();
             });
         },
     });
     sessions.set(sess.sessionId, sess);
+    sessionModels.set(`session-${sess.sessionId}`, currentModel || "default");
     return sess;
 }
 
@@ -2325,7 +2641,10 @@ let activeSessionShort = shortId(thisSessionId);
 let orchSelectFollowActive = true; // when true, next refresh snaps selection to activeOrchId
 
 function updateChatLabel() {
-    chatBox.setLabel(` {bold}Chat{/bold} {white-fg}[${activeSessionShort}]{/white-fg} `);
+    const model = sessionModels.get(activeOrchId) || "";
+    const shortModel = model.includes(":") ? model.split(":")[1] : model;
+    const modelTag = shortModel ? ` {cyan-fg}${shortModel}{/cyan-fg}` : "";
+    chatBox.setLabel(` {bold}Chat{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
     screen.render();
 }
 
@@ -2361,61 +2680,9 @@ function startObserver(orchId) {
     }
 
     // ── Real-time CMS event subscription ────────────────────
-    // Subscribe to session events via DurableSession.on() so tool calls,
-    // reasoning, etc. appear in real-time — not only on session switch.
-    const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
-    const fmtTimeShort = () => new Date().toLocaleTimeString("en-GB", { hour12: false });
-
-    // Deduplicate: track which events we've rendered (by seq number) to avoid
-    // showing duplicates when switching sessions (loadCmsHistory shows DB events).
-    const renderedEventSeqs = new Set();
-
-    (async () => {
-        let sess = sessions.get(sid);
-        if (!sess) {
-            try {
-                sess = await client.resumeSession(sid);
-                sessions.set(sid, sess);
-            } catch { return; }
-        }
-
-        const unsub = sess.on((evt) => {
-            if (ac.signal.aborted) { unsub(); return; }
-            // Skip if already rendered (from loadCmsHistory on switch)
-            if (evt.seq && renderedEventSeqs.has(evt.seq)) return;
-            if (evt.seq) renderedEventSeqs.add(evt.seq);
-
-            const t = fmtTimeShort();
-            const type = evt.eventType;
-
-            // Don't render events that the customStatus observer already handles
-            if (type === "assistant.message") return;
-            if (type === "user.message") return;
-
-            if (type === "tool.execution_start") {
-                const toolName = evt.data?.toolName || "tool";
-                appendChatRaw(`{white-fg}[${t}]{/white-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`, orchId);
-            } else if (type === "tool.execution_complete") {
-                const toolName = evt.data?.toolName || "tool";
-                appendChatRaw(`{white-fg}[${t}]{/white-fg} {green-fg}[tool] done{/green-fg} ${toolName}`, orchId);
-            } else if (type === "assistant.reasoning") {
-                appendChatRaw(`{white-fg}[${t}]{/white-fg} {white-fg}[assistant.reasoning]{/white-fg}`, orchId);
-            } else if (type === "assistant.turn_start") {
-                appendChatRaw(`{white-fg}[${t}]{/white-fg} {white-fg}[assistant.turn_start]{/white-fg}`, orchId);
-            } else if (type === "assistant.usage") {
-                // skip noisy usage events
-            } else if (type === "session.info" || type === "session.idle" || type === "session.usage_info" || type === "pending_messages.modified") {
-                // skip internal events
-            } else if (type === "abort") {
-                // skip — internal plumbing when tool stubs abort the CopilotSession turn
-            } else {
-                appendChatRaw(`{white-fg}[${t}] [${type}]{/white-fg}`, orchId);
-            }
-        });
-
-        // Clean up when observer is aborted
-        ac.signal.addEventListener("abort", () => unsub());
-    })();
+    // CMS event polling is managed centrally via activeCmsPoller — only
+    // the active session polls CMS. This avoids N concurrent pollers
+    // hammering the database. See startCmsPoller() / stopCmsPoller().
 
     // First, show the current state immediately
     (async () => {
@@ -2537,7 +2804,7 @@ function startObserver(orchId) {
                                         const active = resp.result?.currentModel || currentModel;
                                         appendChatRaw("{bold}Available models:{/bold}", orchId);
                                         for (const m of models) {
-                                            const marker = m.id === active ? " {green-fg}← active{/green-fg}" : "";
+                                            const marker = m.id === active ? " {green-fg}← default{/green-fg}" : "";
                                             appendChatRaw(`  {cyan-fg}${m.id}{/cyan-fg}${marker}`, orchId);
                                         }
                                         appendChatRaw("{white-fg}Use /model <name> to switch{/white-fg}", orchId);
@@ -2546,8 +2813,10 @@ function startObserver(orchId) {
                                     case "set_model": {
                                         const r = resp.result;
                                         currentModel = r.newModel;
+                                        sessionModels.set(orchId, r.newModel);
                                         appendChatRaw(`{green-fg}✓ Model changed: {bold}${r.oldModel}{/bold} → {bold}${r.newModel}{/bold}{/green-fg}`, orchId);
                                         appendChatRaw("{white-fg}Takes effect on the next turn.{/white-fg}", orchId);
+                                        if (orchId === activeOrchId) updateChatLabel();
                                         break;
                                     }
                                     case "get_info": {
@@ -2559,6 +2828,13 @@ function startObserver(orchId) {
                                         appendChatRaw(`  Affinity:    ${r.affinityKey}`, orchId);
                                         appendChatRaw(`  Hydrated:    ${r.needsHydration ? "no (dehydrated)" : "yes"}`, orchId);
                                         appendChatRaw(`  Blob:        ${r.blobEnabled ? "enabled" : "disabled"}`, orchId);
+                                        break;
+                                    }
+                                    case "done": {
+                                        appendChatRaw("{green-fg}✓ Session completed.{/green-fg}", orchId);
+                                        setStatusIfActive("Session completed");
+                                        setTurnInProgressIfActive(false);
+                                        scheduleRefreshOrchestrations();
                                         break;
                                     }
                                     default:
@@ -2647,6 +2923,74 @@ function startObserver(orchId) {
     })();
 }
 
+// ─── Central CMS event poller ────────────────────────────────────
+// Only ONE poller runs at a time — for the active session only.
+// This avoids N concurrent pollers hammering the database.
+let _activeCmsUnsub = null;
+let _activeCmsOrchId = null;
+const _cmsRenderedSeqs = new Set(); // per-session dedup across switches
+
+function startCmsPoller(orchId) {
+    // Already polling this session
+    if (_activeCmsOrchId === orchId && _activeCmsUnsub) return;
+    stopCmsPoller(); // stop any previous poller
+
+    const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+    _activeCmsOrchId = orchId;
+
+    (async () => {
+        let sess = sessions.get(sid);
+        if (!sess) {
+            try {
+                sess = await client.resumeSession(sid);
+                sessions.set(sid, sess);
+            } catch { return; }
+        }
+
+        const unsub = sess.on((evt) => {
+            // Poller was stopped while callback pending
+            if (_activeCmsOrchId !== orchId) { unsub(); return; }
+            // Skip if already rendered (from loadCmsHistory on switch)
+            if (evt.seq && _cmsRenderedSeqs.has(evt.seq)) return;
+            if (evt.seq) _cmsRenderedSeqs.add(evt.seq);
+
+            const t = new Date().toLocaleTimeString("en-GB", { hour12: false });
+            const type = evt.eventType;
+
+            // Don't render events that the customStatus observer already handles
+            if (type === "assistant.message") return;
+            if (type === "user.message") return;
+
+            if (type === "tool.execution_start") {
+                const toolName = evt.data?.toolName || "tool";
+                appendChatRaw(`{white-fg}[${t}]{/white-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`, orchId);
+            } else if (type === "tool.execution_complete") {
+                const toolName = evt.data?.toolName || "tool";
+                appendChatRaw(`{white-fg}[${t}]{/white-fg} {green-fg}[tool] done{/green-fg} ${toolName}`, orchId);
+            } else if (type === "assistant.reasoning") {
+                appendChatRaw(`{white-fg}[${t}]{/white-fg} {white-fg}[assistant.reasoning]{/white-fg}`, orchId);
+            } else if (type === "assistant.turn_start") {
+                appendChatRaw(`{white-fg}[${t}]{/white-fg} {white-fg}[assistant.turn_start]{/white-fg}`, orchId);
+            } else if (type === "assistant.usage" || type === "session.info" || type === "session.idle"
+                || type === "session.usage_info" || type === "pending_messages.modified" || type === "abort") {
+                // skip internal/noisy events
+            } else {
+                appendChatRaw(`{white-fg}[${t}] [${type}]{/white-fg}`, orchId);
+            }
+        });
+
+        _activeCmsUnsub = unsub;
+    })();
+}
+
+function stopCmsPoller() {
+    if (_activeCmsUnsub) {
+        _activeCmsUnsub();
+        _activeCmsUnsub = null;
+    }
+    _activeCmsOrchId = null;
+}
+
 /**
  * Switch the chat context to a different orchestration.
  * Sends an interrupt asking for a summary + last message, then asks it to resume.
@@ -2658,12 +3002,23 @@ async function switchToOrchestration(orchId) {
     orchSelectFollowActive = true; // snap list selection to newly activated session
     // Clear unseen-changes flag and snapshot the current version
     orchHasChanges.delete(orchId);
-    // Mark as seen — will be updated to latest on next refresh
+    // Mark as seen — will be updated to latest on next refresh (fire-and-forget)
     const dc = getDc();
     if (dc) {
         dc.getStatus(orchId).then(info => {
             if (info?.customStatusVersion) {
                 orchLastSeenVersion.set(orchId, info.customStatusVersion);
+            }
+            // Extract model from customStatus if not already known
+            if (!sessionModels.has(orchId) && info?.customStatus) {
+                try {
+                    const cs = typeof info.customStatus === "string" ? JSON.parse(info.customStatus) : info.customStatus;
+                    const turnResult = cs.turnResult || cs.lastTurnResult;
+                    if (turnResult?.model) {
+                        sessionModels.set(orchId, turnResult.model);
+                        if (orchId === activeOrchId) updateChatLabel();
+                    }
+                } catch {}
             }
         }).catch(() => {});
     }
@@ -2676,30 +3031,41 @@ async function switchToOrchestration(orchId) {
     activeSessionShort = `${uuid4}${timeStr ? " " + timeStr : ""}`;
     turnInProgress = false;
 
+    // Switch CMS event poller to new session
+    startCmsPoller(orchId);
+
     // Clear chat and show switch indicator (only when switching to a different session)
     if (!isSameSession) {
-        chatBox.setContent("");
-        chatBox.setScrollPerc(0);
         updateChatLabel();
 
-        // Always rebuild from DB so switching sessions shows full persisted history.
-        await loadCmsHistory(orchId);
+        // Show cached chat buffer instantly if available (no DB wait)
+        const cachedLines = sessionChatBuffers.get(orchId);
+        if (cachedLines && cachedLines.length > 0) {
+            chatBox.setContent(cachedLines.join("\n"));
+            chatBox.setScrollPerc(100);
+        } else {
+            chatBox.setContent("{white-fg}Loading…{/white-fg}");
+        }
 
         // Ensure an observer is running for this session
         startObserver(orchId);
 
-        // Do exactly what the 'r' key does: full refresh + redraw.
-        // This is the only reliable way to get blessed to fully repaint
-        // after a session switch — partial realloc/render isn't enough.
-        await refreshOrchestrations();
+        // Lightweight redraw — no DB queries
+        updateSessionListIcons();
         redrawActiveViews();
+        screen.render();
 
-        // Schedule a second repaint on next tick so blessed flushes
-        // any deferred internal state (same effect as pressing 'r').
-        setTimeout(() => {
-            screen.realloc();
-            screen.render();
-        }, 0);
+        // Load full history from DB in background (non-blocking)
+        loadCmsHistory(orchId).then(() => {
+            // Only refresh if still the active session when the load completes
+            if (orchId === activeOrchId) {
+                redrawActiveViews();
+                screen.render();
+            }
+        }).catch(() => {});
+
+        // Schedule list refresh in background too
+        scheduleRefreshOrchestrations();
     } else {
         redrawActiveViews();
     }
@@ -2708,6 +3074,7 @@ async function switchToOrchestration(orchId) {
 updateChatLabel();
 // Start observing the initial session
 startObserver(activeOrchId);
+startCmsPoller(activeOrchId);
 
 // Helper: get the sessionId from an orchestration ID
 function sessionIdFromOrchId(orchId) {
@@ -2752,7 +3119,7 @@ async function handleInput(text) {
     const trimmed = (text || "").trim();
     if (!trimmed) {
         inputBar.clearValue();
-        inputBar.focus();
+        focusInput();
         screen.render();
         return;
     }
@@ -2770,7 +3137,7 @@ async function handleInput(text) {
 
         if (cmd === "/models" || cmd === "/model") {
             inputBar.clearValue();
-            inputBar.focus();
+            focusInput();
 
             const dc = getDc();
             if (!dc) {
@@ -2780,32 +3147,63 @@ async function handleInput(text) {
             }
 
             if (!arg) {
-                // List models — send command through duroxide
-                const cmdId = crypto.randomUUID().slice(0, 8);
-                appendChatRaw("{yellow-fg}Fetching models...{/yellow-fg}");
-                screen.render();
-                addPendingCommand(cmdId, "list_models");
-                try {
-                    // Ensure orchestration exists before sending command
-                    await ensureOrchestrationStarted();
-                    await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({
-                        type: "cmd", cmd: "list_models", id: cmdId,
-                    }));
-                } catch (err) {
-                    pendingCommands.delete(cmdId);
-                    appendChatRaw(`{red-fg}Failed to send command: ${err.message}{/red-fg}`);
+                // List models
+                if (modelProviders) {
+                    // Use local registry — no need to go through duroxide
+                    appendChatRaw("{bold}Available models:{/bold}");
+                    const byProvider = modelProviders.getModelsByProvider();
+                    for (const group of byProvider) {
+                        appendChatRaw(`  {white-fg}${group.providerId}{/white-fg} {gray-fg}(${group.type}){/gray-fg}`);
+                        for (const m of group.models) {
+                            const marker = m.qualifiedName === currentModel ? " {green-fg}← default{/green-fg}" : "";
+                            const costTag = m.cost ? ` {gray-fg}[${m.cost}]{/gray-fg}` : "";
+                            appendChatRaw(`    {cyan-fg}${m.qualifiedName}{/cyan-fg}${costTag}${marker}`);
+                            if (m.description) {
+                                appendChatRaw(`      {gray-fg}${m.description}{/gray-fg}`);
+                            }
+                        }
+                    }
+                    appendChatRaw("{white-fg}Use /model <provider:model> to switch{/white-fg}");
+                } else {
+                    // Fall back to duroxide command (GitHub Copilot API)
+                    const cmdId = crypto.randomUUID().slice(0, 8);
+                    appendChatRaw("{yellow-fg}Fetching models...{/yellow-fg}");
+                    screen.render();
+                    addPendingCommand(cmdId, "list_models");
+                    try {
+                        await ensureOrchestrationStarted();
+                        await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({
+                            type: "cmd", cmd: "list_models", id: cmdId,
+                        }));
+                    } catch (err) {
+                        pendingCommands.delete(cmdId);
+                        appendChatRaw(`{red-fg}Failed to send command: ${err.message}{/red-fg}`);
+                    }
                 }
             } else {
-                // Set model — send command through duroxide
+                // Set model — normalize the reference
+                let normalizedModel = arg;
+                if (modelProviders) {
+                    const normalized = modelProviders.normalize(arg);
+                    if (!normalized) {
+                        appendChatRaw(`{red-fg}Unknown model: ${arg}{/red-fg}`);
+                        const all = modelProviders.allModels.map(m => m.qualifiedName).join(", ");
+                        appendChatRaw(`{white-fg}Available: ${all}{/white-fg}`);
+                        screen.render();
+                        return;
+                    }
+                    normalizedModel = normalized;
+                }
+                // Send command through duroxide
                 const cmdId = crypto.randomUUID().slice(0, 8);
-                currentModel = arg;
-                appendChatRaw(`{yellow-fg}Switching model to ${arg}...{/yellow-fg}`);
+                currentModel = normalizedModel;
+                appendChatRaw(`{yellow-fg}Switching model to ${normalizedModel}...{/yellow-fg}`);
                 screen.render();
                 addPendingCommand(cmdId, "set_model");
                 try {
                     await ensureOrchestrationStarted();
                     await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({
-                        type: "cmd", cmd: "set_model", args: { model: arg }, id: cmdId,
+                        type: "cmd", cmd: "set_model", args: { model: normalizedModel }, id: cmdId,
                     }));
                 } catch (err) {
                     pendingCommands.delete(cmdId);
@@ -2818,7 +3216,7 @@ async function handleInput(text) {
 
         if (cmd === "/info") {
             inputBar.clearValue();
-            inputBar.focus();
+            focusInput();
             const dc = getDc();
             if (!dc) {
                 appendChatRaw("{red-fg}Not connected{/red-fg}");
@@ -2844,20 +3242,47 @@ async function handleInput(text) {
 
         if (cmd === "/help") {
             inputBar.clearValue();
-            inputBar.focus();
+            focusInput();
             appendChatRaw("{bold}Commands:{/bold}");
             appendChatRaw("  {cyan-fg}/models{/cyan-fg}         — List available models (via worker)");
             appendChatRaw("  {cyan-fg}/model <name>{/cyan-fg}  — Switch model for this session");
             appendChatRaw("  {cyan-fg}/info{/cyan-fg}           — Show session info (model, iteration, etc.)");
+            appendChatRaw("  {cyan-fg}/done{/cyan-fg}           — Complete and close this session");
             appendChatRaw("  {cyan-fg}/new{/cyan-fg}            — Create a new session");
             appendChatRaw("  {cyan-fg}/help{/cyan-fg}           — Show this help");
             screen.render();
             return;
         }
 
+        if (cmd === "/done") {
+            inputBar.clearValue();
+            focusInput();
+            const dc = getDc();
+            if (!dc) {
+                appendChatRaw("{red-fg}Not connected{/red-fg}");
+                screen.render();
+                return;
+            }
+            const cmdId = crypto.randomUUID().slice(0, 8);
+            appendChatRaw("{yellow-fg}Completing session (cascading to sub-agents)...{/yellow-fg}");
+            screen.render();
+            addPendingCommand(cmdId, "done", 120_000); // 2 min — cascading /done to children can be slow
+            try {
+                await ensureOrchestrationStarted();
+                await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({
+                    type: "cmd", cmd: "done", id: cmdId, args: { reason: arg || "Completed by user" },
+                }));
+            } catch (err) {
+                pendingCommands.delete(cmdId);
+                appendChatRaw(`{red-fg}Failed to send /done: ${err.message}{/red-fg}`);
+            }
+            screen.render();
+            return;
+        }
+
         if (cmd === "/new") {
             inputBar.clearValue();
-            inputBar.focus();
+            focusInput();
             appendChatRaw("{yellow-fg}Creating new session...{/yellow-fg}");
             screen.render();
             try {
@@ -2889,7 +3314,7 @@ async function handleInput(text) {
         }
         resolve({ answer: trimmed, wasFreeform: true });
         inputBar.clearValue();
-        inputBar.focus();
+        focusInput();
         screen.render();
         return;
     }
@@ -2905,14 +3330,14 @@ async function handleInput(text) {
         } catch (err) {
             appendChatRaw(`{red-fg}Interrupt failed: ${err.message}{/red-fg}`);
         }
-        inputBar.focus();
+        focusInput();
         screen.render();
         return;
     }
 
     appendChatRaw(`{white-fg}[${ts()}]{/white-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
     inputBar.clearValue();
-    inputBar.focus();
+    focusInput();
     turnInProgress = true;
     setStatus("Thinking... (waiting for AKS worker)");
     injectSeqUserEvent(activeOrchId, trimmed);
@@ -2985,11 +3410,21 @@ inputBar.key(["escape"], () => {
 // ─── Cleanup ─────────────────────────────────────────────────────
 
 async function cleanup() {
+    // Force-exit after 3s — don't let hanging long-polls block shutdown
+    const forceExitTimer = setTimeout(() => {
+        const buf = Buffer.from("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h");
+        try { fs.writeSync(1, buf); } catch {}
+        process.exit(0);
+    }, 3000);
+    forceExitTimer.unref();
+
     clearInterval(orchPollTimer);
-    // Stop all session observers
+    // Stop CMS poller
+    stopCmsPoller();
+    // Stop all session observers — abort first so long-polls break
     for (const [, ac] of sessionObservers) { ac.abort(); }
     sessionObservers.clear();
-    if (kubectlProc) { try { kubectlProc.kill(); } catch {} }
+    if (kubectlProc) { try { kubectlProc.kill("SIGKILL"); } catch {} kubectlProc = null; }
     // Suppress ALL output before destroying — neo-blessed dumps terminfo
     // compilation junk (SetUlc) synchronously during destroy().
     process.stdout.write = () => true;
@@ -2999,8 +3434,10 @@ async function cleanup() {
     // Disable mouse tracking modes + exit alt-screen + show cursor
     const buf = Buffer.from("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h");
     try { fs.writeSync(1, buf); } catch {}
-    await Promise.allSettled(workers.map(w => w.stop()));
-    await client.stop();
+    await Promise.allSettled([
+        ...workers.map(w => w.stop()),
+        client.stop(),
+    ]);
 }
 
 screen.key(["C-c"], async () => {
@@ -3020,6 +3457,11 @@ let escPressedAt = 0;
 
 screen.on("keypress", (ch, key) => {
     if (!key) return;
+
+    // When the slash picker is open, its own keypress handler manages everything
+    if (slashPicker) {
+        return;
+    }
 
     // m: toggle log viewing mode (only from non-input panes)
     if (ch === "m" && screen.focused !== inputBar) {
@@ -3054,7 +3496,14 @@ screen.on("keypress", (ch, key) => {
     }
 
     // Esc from any pane (except input, handled above) → sessions pane + start quit sequence
+    // If the slash picker is open, dismiss it instead of starting the quit sequence
     if (key.name === "escape" && screen.focused !== inputBar) {
+        if (slashPicker) {
+            dismissSlashPicker();
+            focusInput();
+            screen.render();
+            return;
+        }
         escPressedAt = Date.now();
         orchList.focus();
         setStatus("{yellow-fg}Press q to quit, or continue navigating{/yellow-fg}");
@@ -3072,7 +3521,7 @@ screen.on("keypress", (ch, key) => {
 
     // p from any non-input pane → jump to prompt
     if (ch === "p" && screen.focused !== inputBar) {
-        inputBar.focus();
+        focusInput();
         setStatus("Ready — type a message");
         screen.render();
         return;

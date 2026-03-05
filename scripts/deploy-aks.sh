@@ -59,21 +59,32 @@ if [ -z "${DATABASE_URL:-}" ]; then
     exit 1
 fi
 
-# ─── Refresh GitHub token ────────────────────────────────────────
+# ─── Update K8s secret ────────────────────────────────────────────
 
+# Always try to get a GitHub token (needed for github-copilot provider).
+GH_TOKEN="${GITHUB_TOKEN:-}"
 if command -v gh &>/dev/null; then
     FRESH_TOKEN=$(gh auth token 2>/dev/null || true)
     if [ -n "$FRESH_TOKEN" ]; then
-        echo "🔑 Refreshing GitHub token in K8s secret..."
-        kubectl create secret generic copilot-runtime-secrets \
-            -n "$NAMESPACE" \
-            --from-literal=DATABASE_URL="$DATABASE_URL" \
-            --from-literal=GITHUB_TOKEN="$FRESH_TOKEN" \
-            ${AZURE_STORAGE_CONNECTION_STRING:+--from-literal=AZURE_STORAGE_CONNECTION_STRING="$AZURE_STORAGE_CONNECTION_STRING"} \
-            ${AZURE_STORAGE_CONTAINER:+--from-literal=AZURE_STORAGE_CONTAINER="$AZURE_STORAGE_CONTAINER"} \
-            --dry-run=client -o yaml | kubectl apply -f -
+        GH_TOKEN="$FRESH_TOKEN"
     fi
 fi
+if [ -z "$GH_TOKEN" ] && [ -z "${LLM_ENDPOINT:-}" ]; then
+    echo "⚠️  No GITHUB_TOKEN and no LLM_ENDPOINT — workers may fail to start."
+fi
+
+echo "🔑 Updating K8s secret..."
+kubectl create secret generic copilot-runtime-secrets \
+    -n "$NAMESPACE" \
+    --from-literal=DATABASE_URL="$DATABASE_URL" \
+    ${GH_TOKEN:+--from-literal=GITHUB_TOKEN="$GH_TOKEN"} \
+    ${AZURE_STORAGE_CONNECTION_STRING:+--from-literal=AZURE_STORAGE_CONNECTION_STRING="$AZURE_STORAGE_CONNECTION_STRING"} \
+    ${AZURE_STORAGE_CONTAINER:+--from-literal=AZURE_STORAGE_CONTAINER="$AZURE_STORAGE_CONTAINER"} \
+    ${LLM_ENDPOINT:+--from-literal=LLM_ENDPOINT="$LLM_ENDPOINT"} \
+    ${LLM_API_KEY:+--from-literal=LLM_API_KEY="$LLM_API_KEY"} \
+    ${LLM_PROVIDER_TYPE:+--from-literal=LLM_PROVIDER_TYPE="$LLM_PROVIDER_TYPE"} \
+    ${LLM_API_VERSION:+--from-literal=LLM_API_VERSION="$LLM_API_VERSION"} \
+    --dry-run=client -o yaml | kubectl apply -f -
 
 # ─── Step 1: Cancel + delete all orchestrations ──────────────────
 
