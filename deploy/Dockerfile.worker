@@ -15,6 +15,9 @@ COPY dist/ ./dist/
 COPY examples/worker.js ./examples/
 COPY plugin/ ./plugin/
 
+# Copy model providers config (if present)
+COPY model_providers.json* ./
+
 # Run as the built-in node user (non-root)
 USER node
 

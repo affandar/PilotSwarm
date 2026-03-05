@@ -10,6 +10,7 @@ import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
 import { loadMcpConfig } from "./mcp-loader.js";
+import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import type { Tool } from "@github/copilot-sdk";
 import type { DurableCopilotWorkerOptions, ManagedSessionConfig } from "./types.js";
 import fs from "node:fs";
@@ -51,6 +52,8 @@ export class DurableCopilotWorker {
     private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null }> = [];
     /** Loaded MCP server configs from plugins + direct config. */
     private _loadedMcpServers: Record<string, any> = {};
+    /** Model provider registry — multi-provider LLM config. */
+    private _modelProviders: ModelProviderRegistry | null = null;
 
     constructor(options: DurableCopilotWorkerOptions) {
         this.config = {
@@ -68,6 +71,9 @@ export class DurableCopilotWorker {
         // Load plugins and merge with direct config — must happen before SessionManager init
         this._loadPlugins();
 
+        // Load model providers: explicit file path > auto-discover > env vars fallback
+        this._modelProviders = loadModelProviders(options.modelProvidersPath);
+
         this.sessionManager = new SessionManager(
             options.githubToken,
             this.blobStore,
@@ -76,6 +82,8 @@ export class DurableCopilotWorker {
                 skillDirectories: this._loadedSkillDirs,
                 customAgents: this._loadedAgents,
                 mcpServers: this._loadedMcpServers,
+                provider: options.provider,
+                modelProviders: this._modelProviders ?? undefined,
             },
         );
     }
@@ -142,6 +150,11 @@ export class DurableCopilotWorker {
         return this._loadedMcpServers;
     }
 
+    /** Model provider registry (null if no providers configured). */
+    get modelProviders(): ModelProviderRegistry | null {
+        return this._modelProviders;
+    }
+
     // ─── Lifecycle ───────────────────────────────────────────
 
     async start(): Promise<void> {
@@ -179,6 +192,10 @@ export class DurableCopilotWorker {
             this._provider,
             store,
             this.config.cmsSchema,
+            {
+                blobEnabled: this.blobEnabled,
+                duroxideSchema: this.config.duroxideSchema,
+            },
         );
 
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.0", durableSessionOrchestration_1_0_0);

@@ -2,6 +2,7 @@ import { CopilotClient, type CopilotSession, type Tool } from "@github/copilot-s
 import { ManagedSession } from "./managed-session.js";
 import { SessionBlobStore } from "./blob-store.js";
 import type { ManagedSessionConfig, SerializableSessionConfig } from "./types.js";
+import type { ModelProviderRegistry } from "./model-providers.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -17,6 +18,18 @@ export interface WorkerDefaults {
     customAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null }>;
     /** MCP server configs to pass to the Copilot SDK. */
     mcpServers?: Record<string, any>;
+    /**
+     * @deprecated Use `modelProviders` instead. Kept for backwards compatibility.
+     * Custom LLM provider config (BYOK). Passed to every session.
+     */
+    provider?: {
+        type?: "openai" | "azure" | "anthropic";
+        baseUrl: string;
+        apiKey?: string;
+        azure?: { apiVersion?: string };
+    };
+    /** Multi-provider model registry. Takes precedence over `provider`. */
+    modelProviders?: ModelProviderRegistry;
 }
 
 /**
@@ -55,6 +68,11 @@ export class SessionManager {
         this.sessionConfigs.set(sessionId, config);
     }
 
+    /** Get a human-readable model summary for LLM tool consumption. */
+    getModelSummary(): string | undefined {
+        return this.workerDefaults.modelProviders?.getModelSummaryForLLM();
+    }
+
     /** Set the worker-level tool registry. Called by DurableCopilotWorker. */
     setToolRegistry(registry: Map<string, Tool<any>>): void {
         this.toolRegistry = registry;
@@ -63,8 +81,21 @@ export class SessionManager {
     /** Ensure the CopilotClient is started. */
     private async ensureClient(): Promise<CopilotClient> {
         if (!this.client) {
+            // Resolve githubToken: explicit > registry (github provider) > none
+            let token = this.githubToken;
+            if (!token && this.workerDefaults.modelProviders) {
+                // Check if any provider is type=github
+                for (const p of this.workerDefaults.modelProviders.allProviders) {
+                    if (p.type === "github" && p.models.length > 0) {
+                        const firstModel = typeof p.models[0] === "string" ? p.models[0] : p.models[0].name;
+                        const resolved = this.workerDefaults.modelProviders.resolve(`${p.id}:${firstModel}`);
+                        token = resolved?.githubToken;
+                        break;
+                    }
+                }
+            }
             this.client = new CopilotClient({
-                githubToken: this.githubToken,
+                githubToken: token,
                 logLevel: "error",
             });
         }
@@ -113,10 +144,22 @@ export class SessionManager {
         // Build system message: worker base + client override
         const systemMessage = this._buildSystemMessage(config.systemMessage);
 
+        // Resolve model: config.model may be qualified (provider:model) or bare.
+        // The SDK needs the bare model name; the provider config is separate.
+        // Fall back to registry default if no model specified.
+        const registry = this.workerDefaults.modelProviders;
+        const effectiveModel = config.model || registry?.defaultModel || "";
+        const resolvedProviderConfig = this._resolveProviderConfig(effectiveModel);
+        let sdkModelName = effectiveModel;
+        if (registry && effectiveModel) {
+            const desc = registry.getDescriptor(effectiveModel);
+            if (desc) sdkModelName = desc.modelName;
+        }
+
         const sessionConfig: any = {
             sessionId,
             tools: allTools,
-            model: config.model,
+            model: sdkModelName,
             systemMessage: systemMessage
                 ? (typeof systemMessage === "string" ? { content: systemMessage } : systemMessage)
                 : undefined,
@@ -124,6 +167,8 @@ export class SessionManager {
             hooks: config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? (async () => ({ kind: "approved" as const })),
             infiniteSessions: { enabled: false },
+            // Custom LLM provider — resolve from registry or legacy single provider
+            ...resolvedProviderConfig,
             // Pass loaded skills, agents, and MCP from worker defaults
             ...(this.workerDefaults.skillDirectories?.length && { skillDirectories: this.workerDefaults.skillDirectories }),
             ...(this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
@@ -326,6 +371,42 @@ export class SessionManager {
             }
         }
         return deduped;
+    }
+
+    /**
+     * Resolve the provider config for a given model.
+     * Prefers ModelProviderRegistry, falls back to legacy single provider.
+     */
+    private _resolveProviderConfig(model?: string): Record<string, any> {
+        // 1. Try the multi-provider registry
+        const registry = this.workerDefaults.modelProviders;
+        if (registry) {
+            const resolved = registry.resolve(model);
+            if (resolved) {
+                if (resolved.type === "github") {
+                    // GitHub provider — no SDK provider needed, uses githubToken on the client
+                    return {};
+                }
+                if (resolved.sdkProvider) {
+                    return { provider: resolved.sdkProvider };
+                }
+            }
+        }
+
+        // 2. Fall back to legacy single provider
+        const p = this.workerDefaults.provider;
+        if (!p) return {};
+
+        // For Azure, dynamically construct deployment URL
+        if (p.type === "azure" && model && !p.baseUrl.includes("/deployments/")) {
+            return {
+                provider: {
+                    ...p,
+                    baseUrl: `${p.baseUrl.replace(/\/+$/, "")}/deployments/${model}`,
+                },
+            };
+        }
+        return { provider: p };
     }
 
     /**

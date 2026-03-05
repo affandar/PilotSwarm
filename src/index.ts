@@ -48,5 +48,9 @@ export { loadAgentFiles } from "./agent-loader.js";
 export { loadMcpConfig } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 
+// Model providers
+export { loadModelProviders, ModelProviderRegistry } from "./model-providers.js";
+export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
+
 // Re-export defineTool from Copilot SDK for convenience
 export { defineTool } from "@github/copilot-sdk";

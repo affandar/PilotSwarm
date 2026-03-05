@@ -73,7 +73,7 @@ FLAGS                                    ENV VAR EQUIVALENT
       --system <msg|file>  System msg    SYSTEM_MESSAGE (or plugin/system.md)
 
   -c, --context <ctx>      K8s context   K8S_CONTEXT
-      --namespace <ns>     K8s namespace K8S_NAMESPACE (default: copilot-sdk)
+      --namespace <ns>     K8s namespace K8S_NAMESPACE (default: copilot-runtime)
       --label <selector>   Pod label     K8S_POD_LABEL
       --log-level <level>  Trace level   LOG_LEVEL
   -h, --help               Show help
@@ -204,7 +204,7 @@ process.env.LOG_LEVEL = flags["log-level"] || process.env.LOG_LEVEL || "";
 
 // Context, namespace and label for remote mode (kubectl log streaming)
 process.env.K8S_CONTEXT = flags.context || process.env.K8S_CONTEXT || "";
-process.env.K8S_NAMESPACE = flags.namespace || process.env.K8S_NAMESPACE || "copilot-sdk";
+process.env.K8S_NAMESPACE = flags.namespace || process.env.K8S_NAMESPACE || "copilot-runtime";
 process.env.K8S_POD_LABEL = flags.label || process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker";
 
 // System message

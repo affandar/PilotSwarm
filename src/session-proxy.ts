@@ -67,12 +67,16 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the DurableCopilotClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string) {
-            return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task });
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number) {
+            return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task, nestingLevel });
         },
         /** Send a message to a session via the DurableCopilotClient SDK. */
         sendToSession(sessionId: string, message: string) {
             return ctx.scheduleActivity("sendToSession", { sessionId, message });
+        },
+        /** Send a raw command (JSON) directly to a session's event queue. */
+        sendCommandToSession(sessionId: string, command: any) {
+            return ctx.scheduleActivity("sendCommandToSession", { sessionId, command });
         },
         /** Get the status of a session via the DurableCopilotClient SDK. */
         getSessionStatus(sessionId: string) {
@@ -85,6 +89,18 @@ export function createSessionManagerProxy(ctx: any) {
         /** @deprecated Send a child_updates event to a parent orchestration. Use sendToSession instead. */
         notifyParent(parentOrchId: string, childOrchId: string, childSessionId: string, update: any) {
             return ctx.scheduleActivity("notifyParent", { parentOrchId, childOrchId, childSessionId, update });
+        },
+        /** Get all descendant session IDs of a session (children, grandchildren, etc.). */
+        getDescendantSessionIds(sessionId: string) {
+            return ctx.scheduleActivity("getDescendantSessionIds", { sessionId });
+        },
+        /** Cancel a session's orchestration (terminates immediately). */
+        cancelSession(sessionId: string, reason?: string) {
+            return ctx.scheduleActivity("cancelSession", { sessionId, reason });
+        },
+        /** Cancel a session's orchestration and delete it from CMS. */
+        deleteSession(sessionId: string, reason?: string) {
+            return ctx.scheduleActivity("deleteSession", { sessionId, reason });
         },
     };
 }
@@ -102,6 +118,11 @@ export function registerActivities(
     provider?: any,
     storeUrl?: string,
     cmsSchema?: string,
+    /** Client-level config forwarded to ephemeral DurableCopilotClient instances (e.g. spawnChildSession). */
+    clientConfig?: {
+        blobEnabled?: boolean;
+        duroxideSchema?: string;
+    },
 ) {
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
@@ -131,6 +152,7 @@ export function registerActivities(
             const EPHEMERAL_TYPES = new Set([
                 "assistant.message_delta",
                 "assistant.reasoning_delta",
+                "user.message", // Already recorded explicitly above — skip the SDK's duplicate
             ]);
             const onEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
@@ -153,7 +175,10 @@ export function registerActivities(
                 });
             }
 
-            const result = await session.runTurn(enrichedPrompt, { onEvent });
+            const result = await session.runTurn(enrichedPrompt, {
+                onEvent,
+                modelSummary: sessionManager.getModelSummary(),
+            });
             if (cancelled) return { type: "cancelled" };
 
             return result;
@@ -282,15 +307,18 @@ export function registerActivities(
     // Goes through the full SDK path: CMS registration + orchestration startup.
     runtime.registerActivity("spawnChildSession", async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number },
     ): Promise<string> => {
         const childSessionId = crypto.randomUUID();
-        activityCtx.traceInfo(`[spawnChildSession] child=${childSessionId} parent=${input.parentSessionId}`);
+        activityCtx.traceInfo(`[spawnChildSession] child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
 
         const sdkClient = new DurableCopilotClient({
             store: storeUrl,
             cmsSchema,
+            // Forward blob/dehydration config so child orchestrations inherit the parent's settings
+            ...(clientConfig?.blobEnabled != null && { blobEnabled: clientConfig.blobEnabled }),
+            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
         });
         try {
             await sdkClient.start();
@@ -299,6 +327,7 @@ export function registerActivities(
             const session = await sdkClient.createSession({
                 sessionId: childSessionId,
                 parentSessionId: input.parentSessionId,
+                nestingLevel: input.nestingLevel,
                 model: input.config.model,
                 systemMessage: input.config.systemMessage,
                 toolNames: input.config.toolNames,
@@ -340,6 +369,34 @@ export function registerActivities(
                 JSON.stringify({ prompt: input.message }),
             );
             activityCtx.traceInfo(`[sendToSession] enqueued to ${orchestrationId}`);
+        } finally {
+            await sdkClient.stop();
+        }
+    });
+
+    // ── sendCommandToSession ────────────────────────────────
+    // Sends a raw JSON command directly to a session's orchestration event queue.
+    // Unlike sendToSession, this does NOT wrap the payload in { prompt: ... }.
+    runtime.registerActivity("sendCommandToSession", async (
+        activityCtx: any,
+        input: { sessionId: string; command: any },
+    ): Promise<void> => {
+        activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
+        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+
+        const sdkClient = new DurableCopilotClient({
+            store: storeUrl,
+            cmsSchema,
+        });
+        try {
+            await sdkClient.start();
+            const orchestrationId = `session-${input.sessionId}`;
+            await (sdkClient as any).duroxideClient.enqueueEvent(
+                orchestrationId,
+                "messages",
+                JSON.stringify(input.command),
+            );
+            activityCtx.traceInfo(`[sendCommandToSession] enqueued to ${orchestrationId}`);
         } finally {
             await sdkClient.stop();
         }
@@ -425,5 +482,76 @@ export function registerActivities(
                 ...input.update,
             }),
         );
+    });
+
+    // ── getDescendantSessionIds ──────────────────────────────
+    // Returns all descendant session IDs (children, grandchildren, etc.)
+    // Used by cancel/delete to cascade to grandchildren.
+    runtime.registerActivity("getDescendantSessionIds", async (
+        activityCtx: any,
+        input: { sessionId: string },
+    ): Promise<string[]> => {
+        activityCtx.traceInfo(`[getDescendantSessionIds] session=${input.sessionId}`);
+        if (!catalog) return [];
+        const descendants = await catalog.getDescendantSessionIds(input.sessionId);
+        activityCtx.traceInfo(`[getDescendantSessionIds] found ${descendants.length} descendants`);
+        return descendants;
+    });
+
+    // ── cancelSession ───────────────────────────────────────
+    // Cancels a session's orchestration (terminates immediately).
+    runtime.registerActivity("cancelSession", async (
+        activityCtx: any,
+        input: { sessionId: string; reason?: string },
+    ): Promise<void> => {
+        activityCtx.traceInfo(`[cancelSession] session=${input.sessionId} reason=${input.reason ?? "none"}`);
+        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+
+        const sdkClient = new DurableCopilotClient({
+            store: storeUrl,
+            cmsSchema,
+        });
+        try {
+            await sdkClient.start();
+            const orchestrationId = `session-${input.sessionId}`;
+            // Cancel the orchestration via duroxide
+            await (sdkClient as any).duroxideClient.cancelInstance(
+                orchestrationId,
+                input.reason ?? "Cancelled by parent",
+            );
+            // Update CMS status
+            if (catalog) {
+                await catalog.updateSession(input.sessionId, {
+                    state: "completed",
+                    lastError: input.reason ? `Cancelled: ${input.reason}` : "Cancelled",
+                });
+            }
+            activityCtx.traceInfo(`[cancelSession] cancelled ${orchestrationId}`);
+        } finally {
+            await sdkClient.stop();
+        }
+    });
+
+    // ── deleteSession ───────────────────────────────────────
+    // Cancels a session's orchestration AND removes it from CMS.
+    runtime.registerActivity("deleteSession", async (
+        activityCtx: any,
+        input: { sessionId: string; reason?: string },
+    ): Promise<void> => {
+        activityCtx.traceInfo(`[deleteSession] session=${input.sessionId} reason=${input.reason ?? "none"}`);
+        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+
+        const sdkClient = new DurableCopilotClient({
+            store: storeUrl,
+            cmsSchema,
+        });
+        try {
+            await sdkClient.start();
+            // This does both: CMS soft-delete + duroxide cancel
+            await sdkClient.deleteSession(input.sessionId);
+            activityCtx.traceInfo(`[deleteSession] deleted session-${input.sessionId}`);
+        } finally {
+            await sdkClient.stop();
+        }
     });
 }

@@ -1,0 +1,51 @@
+{
+    "providers": [
+        {
+            "id": "github-copilot",
+            "type": "github",
+            "githubToken": "env:GITHUB_TOKEN",
+            "models": [
+                {
+                    "name": "claude-opus-4.6",
+                    "description": "Claude Opus 4.6. Most capable model. Deep reasoning, complex multi-step tasks, nuanced analysis. Use for hard problems where quality matters most.",
+                    "cost": "high"
+                },
+                {
+                    "name": "claude-sonnet-4.6",
+                    "description": "Claude Sonnet 4.6. Strong all-rounder. Good balance of capability and speed. Use for general coding, analysis, and multi-step tasks.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "gpt-4.1",
+                    "description": "GPT-4.1 via GitHub Copilot. Strong reasoning, coding, and instruction following.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "gpt-5.1",
+                    "description": "GPT-5.1. Latest generation. Advanced reasoning and coding capabilities.",
+                    "cost": "high"
+                }
+            ]
+        },
+        {
+            "id": "azure-openai",
+            "type": "azure",
+            "baseUrl": "https://copilot-llm.openai.azure.com/openai",
+            "apiKey": "env:LLM_API_KEY",
+            "apiVersion": "2024-04-01-preview",
+            "models": [
+                {
+                    "name": "gpt-4.1",
+                    "description": "Latest GPT-4.1 full model. Strong reasoning, coding, and instruction following. Good for complex tasks.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "gpt-4.1-mini",
+                    "description": "Fast, cost-effective GPT-4.1 variant. Good for simple tasks, drafts, and high-throughput workloads.",
+                    "cost": "low"
+                }
+            ]
+        }
+    ],
+    "defaultModel": "github-copilot:claude-opus-4.6"
+}

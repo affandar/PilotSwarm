@@ -78,6 +78,9 @@ export interface SessionCatalogProvider {
     /** Get a single session by ID (null if not found or deleted). */
     getSession(sessionId: string): Promise<SessionRow | null>;
 
+    /** Get all descendant session IDs (children, grandchildren, etc.) of a given session. */
+    getDescendantSessionIds(sessionId: string): Promise<string[]>;
+
     /** Get the most recently active session ID. */
     getLastSessionId(): Promise<string | null>;
 
@@ -267,6 +270,23 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
             [sessionId],
         );
         return rows.length > 0 ? rowToSessionRow(rows[0]) : null;
+    }
+
+    async getDescendantSessionIds(sessionId: string): Promise<string[]> {
+        // Recursive CTE to find all descendants
+        const { rows } = await this.pool.query(
+            `WITH RECURSIVE descendants AS (
+                SELECT session_id FROM ${this.sql.table}
+                WHERE parent_session_id = $1 AND deleted_at IS NULL
+                UNION ALL
+                SELECT s.session_id FROM ${this.sql.table} s
+                INNER JOIN descendants d ON s.parent_session_id = d.session_id
+                WHERE s.deleted_at IS NULL
+            )
+            SELECT session_id FROM descendants`,
+            [sessionId],
+        );
+        return rows.map((r: any) => r.session_id);
     }
 
     async getLastSessionId(): Promise<string | null> {

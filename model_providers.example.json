@@ -1,0 +1,34 @@
+{
+    "providers": [
+        {
+            "id": "github-copilot",
+            "type": "github",
+            "githubToken": "env:GITHUB_TOKEN",
+            "models": ["claude-sonnet-4-20250514", "gpt-4o", "o3-mini"],
+            "default": true
+        },
+        {
+            "id": "azure-openai",
+            "type": "azure",
+            "baseUrl": "https://YOUR-RESOURCE.openai.azure.com/openai",
+            "apiKey": "env:AZURE_OPENAI_KEY",
+            "apiVersion": "2024-04-01-preview",
+            "models": ["gpt-4.1-mini", "gpt-4.1"]
+        },
+        {
+            "id": "openai",
+            "type": "openai",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "env:OPENAI_API_KEY",
+            "models": ["gpt-4o", "gpt-4o-mini"]
+        },
+        {
+            "id": "anthropic",
+            "type": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "apiKey": "env:ANTHROPIC_API_KEY",
+            "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"]
+        }
+    ],
+    "defaultModel": "claude-sonnet-4-20250514"
+}
