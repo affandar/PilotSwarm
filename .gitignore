@@ -5,3 +5,4 @@ dist/
 *.tgz
 vendor/
 nohup.out
+dumps/

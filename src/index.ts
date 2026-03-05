@@ -52,5 +52,8 @@ export type { Skill } from "./skills.js";
 export { loadModelProviders, ModelProviderRegistry } from "./model-providers.js";
 export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
 
+// Debug utilities
+export { SessionDumper } from "./session-dumper.js";
+
 // Re-export defineTool from Copilot SDK for convenience
 export { defineTool } from "@github/copilot-sdk";
