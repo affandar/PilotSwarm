@@ -13,7 +13,7 @@
  *   npx durable-copilot-runtime-tui remote --env .env.remote       # client-only (AKS)
  */
 
-import { DurableCopilotClient, DurableCopilotWorker } from "../dist/index.js";
+import { DurableCopilotClient, DurableCopilotWorker, SessionDumper } from "../dist/index.js";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -1492,6 +1492,14 @@ const seqCmsSeededSessions = new Set();
 async function loadCmsHistory(orchId) {
     const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
 
+    // Skip if we already have a cached buffer and the session hasn't changed
+    // (the CMS poller handles incremental updates for the active session)
+    const cached = sessionChatBuffers.get(orchId);
+    if (cached && cached.length > 1 && orchId !== activeOrchId) {
+        // Already have content and we're not switching to it — no need to reload
+        return;
+    }
+
     // Ensure we have a DurableSession handle (may not exist for sessions from previous TUI runs)
     let sess = sessions.get(sid);
     if (!sess) {
@@ -1505,17 +1513,16 @@ async function loadCmsHistory(orchId) {
     }
 
     try {
-        const events = await sess.getMessages();
+        // Fetch events and session info in parallel
+        const [events, info] = await Promise.all([
+            sess.getMessages(),
+            (!sessionModels.has(orchId)) ? sess.getInfo().catch(() => null) : Promise.resolve(null),
+        ]);
 
         // Populate session model if not already known
-        if (!sessionModels.has(orchId)) {
-            try {
-                const info = await sess.getInfo();
-                if (info?.model) {
-                    sessionModels.set(orchId, info.model);
-                    if (orchId === activeOrchId) updateChatLabel();
-                }
-            } catch {}
+        if (info?.model) {
+            sessionModels.set(orchId, info.model);
+            if (orchId === activeOrchId) updateChatLabel();
         }
 
         if (!events || events.length === 0) {
@@ -1541,8 +1548,21 @@ async function loadCmsHistory(orchId) {
             });
         };
 
-        // Build display lines from all persisted events
-        for (const evt of events) {
+        // Cap rendered events to the most recent N to keep switching fast.
+        // Full history is still fetched (for sequence view seeding) but only
+        // the tail is rendered through markdown.
+        const MAX_RENDERED_EVENTS = 200;
+        const renderEvents = events.length > MAX_RENDERED_EVENTS
+            ? events.slice(-MAX_RENDERED_EVENTS)
+            : events;
+        const truncated = events.length > MAX_RENDERED_EVENTS;
+
+        // Build display lines from persisted events
+        if (truncated) {
+            lines.push(`{gray-fg}── ${events.length - MAX_RENDERED_EVENTS} older events omitted (${events.length} total) ──{/gray-fg}`);
+            lines.push("");
+        }
+        for (const evt of renderEvents) {
             const type = evt.eventType;
             const timeStr = fmtTime(evt.createdAt);
             if (type === "user.message") {
@@ -3524,6 +3544,42 @@ screen.on("keypress", (ch, key) => {
         focusInput();
         setStatus("Ready — type a message");
         screen.render();
+        return;
+    }
+
+    // u from any non-input pane → dump active session to Markdown file
+    if (ch === "u" && screen.focused !== inputBar) {
+        (async () => {
+            const sessionId = activeOrchId?.startsWith("session-")
+                ? activeOrchId.slice(8) : activeOrchId;
+            if (!sessionId || !client) {
+                setStatus("{red-fg}No active session to dump{/red-fg}");
+                screen.render();
+                return;
+            }
+            try {
+                setStatus(`{yellow-fg}Dumping session ${shortId(sessionId)}...{/yellow-fg}`);
+                screen.render();
+                const catalog = client._getCatalog();
+                const dumper = new SessionDumper(catalog);
+                const md = await dumper.dump(sessionId);
+
+                // Write to ./dumps/<shortId>_<timestamp>.md
+                const dumpsDir = path.join(process.cwd(), "dumps");
+                if (!fs.existsSync(dumpsDir)) fs.mkdirSync(dumpsDir, { recursive: true });
+                const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+                const filename = `${shortId(sessionId)}_${ts}.md`;
+                const filePath = path.join(dumpsDir, filename);
+                fs.writeFileSync(filePath, md);
+
+                setStatus(`{green-fg}Dumped to dumps/${filename}{/green-fg}`);
+                appendLog(`{green-fg}Session dump saved: dumps/${filename} (${(md.length / 1024).toFixed(1)}KB){/green-fg}`);
+            } catch (err) {
+                setStatus(`{red-fg}Dump failed: ${err.message}{/red-fg}`);
+                appendLog(`{red-fg}Dump error: ${err.message}{/red-fg}`);
+            }
+            screen.render();
+        })();
         return;
     }
 
