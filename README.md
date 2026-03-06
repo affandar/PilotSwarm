@@ -1,4 +1,4 @@
-# pilotswarm
+# PilotSwarm
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
@@ -60,7 +60,7 @@ await worker.stop();
 
 ## What You Get
 
-| Feature | Copilot SDK | pilotswarm |
+| Feature | Copilot SDK | PilotSwarm |
 |---------|-------------|---------------------|
 | Tool calling | ✅ | ✅ Same `defineTool()` API |
 | Wait/pause | ❌ Blocks process | ✅ Durable timer — process shuts down, resumes later |

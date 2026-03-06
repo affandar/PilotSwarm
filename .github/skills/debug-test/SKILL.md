@@ -1,6 +1,6 @@
 ---
 name: debug-test
-description: Diagnose and fix a failing integration test in the pilotswarm. Covers the full call chain from PilotSwarmSession.sendAndWait through duroxide orchestration to CopilotSession, common failure patterns, and how to inspect orchestration and CMS state.
+description: Diagnose and fix a failing integration test in PilotSwarm. Covers the full call chain from PilotSwarmSession.sendAndWait through duroxide orchestration to CopilotSession, common failure patterns, and how to inspect orchestration and CMS state.
 ---
 
 # Debug a Failed Test

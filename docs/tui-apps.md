@@ -1,7 +1,7 @@
 # TUI Apps — Off-the-Shelf Terminal Interface
 
 This guide covers the **AppAdapter** framework for building rich terminal applications
-on top of the pilotswarm. The runtime provides a shared `tui-core` — your app
+on top of PilotSwarm. The runtime provides a shared `tui-core` — your app
 provides an adapter that configures the agent, UI behavior, and how to load skills/agents/tools/MCP config.
 
 **Prerequisite**: Read [building-apps.md](./building-apps.md) first for the five building

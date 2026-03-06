@@ -2,7 +2,7 @@
 
 > **New here?** Start with the [Getting Started](./getting-started.md) guide to set up PostgreSQL, get a GitHub token, and create your `.env` file.
 
-## What is pilotswarm?
+## What is PilotSwarm?
 
 pilotswarm is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide). It gives your AI agents **crash recovery, durable timers, session dehydration, and multi-node scaling** — just add a connection string.
 
@@ -96,7 +96,7 @@ Now the agent can call `wait(3600, "Waiting 1 hour before next check")` and the 
 
 ## What You Get Automatically
 
-| Feature | Standard Copilot SDK | pilotswarm |
+| Feature | Standard Copilot SDK | PilotSwarm |
 |---------|---------------------|---------------------|
 | Tool calling | ✅ | ✅ Same `defineTool()` API |
 | Wait/pause | ❌ `sleep()` blocks process | ✅ Durable timer — process shuts down, wakes up later |

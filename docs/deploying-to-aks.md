@@ -1,6 +1,6 @@
 # Deploying to Azure Kubernetes Service (AKS)
 
-This guide walks through deploying pilotswarm workers to AKS for production multi-node operation.
+This guide walks through deploying PilotSwarm workers to AKS for production multi-node operation.
 
 ## Architecture
 
