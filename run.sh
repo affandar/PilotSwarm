@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run durable-copilot-runtime TUI
+# Run pilotswarm TUI
 #
 # Usage:
 #   ./run.sh              # local mode — 4 workers inside TUI, remote PG
@@ -19,7 +19,7 @@ if [ ! -f .env ]; then
     echo "Creating .env with fresh GitHub token..."
     cat > .env <<EOF
 GITHUB_TOKEN=$(gh auth token)
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/durable_copilot
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/pilotswarm
 EOF
     echo "✅ .env created"
 fi

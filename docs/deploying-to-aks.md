@@ -1,13 +1,13 @@
 # Deploying to Azure Kubernetes Service (AKS)
 
-This guide walks through deploying durable-copilot-runtime workers to AKS for production multi-node operation.
+This guide walks through deploying pilotswarm workers to AKS for production multi-node operation.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Your App (Client)                                                   │
-│  DurableCopilotClient({ store: DATABASE_URL })                       │
+│  PilotSwarmClient({ store: DATABASE_URL })                       │
 │  → createSession, sendAndWait, on()                                  │
 └────────────────────┬─────────────────────────────────────────────────┘
                      │ PostgreSQL
@@ -174,9 +174,9 @@ You should see:
 From your application (anywhere with network access to the same PostgreSQL):
 
 ```typescript
-import { DurableCopilotClient } from "durable-copilot-runtime";
+import { PilotSwarmClient } from "pilotswarm";
 
-const client = new DurableCopilotClient({
+const client = new PilotSwarmClient({
     store: process.env.DATABASE_URL,
     blobEnabled: true,
 });
@@ -289,8 +289,8 @@ A session may be stuck if the activity timed out. Check the orchestration status
 ```bash
 # From your machine
 node --env-file=.env.remote -e "
-    import { DurableCopilotClient } from './dist/index.js';
-    const c = new DurableCopilotClient({ store: process.env.DATABASE_URL });
+    import { PilotSwarmClient } from './dist/index.js';
+    const c = new PilotSwarmClient({ store: process.env.DATABASE_URL });
     await c.start();
     const s = await c.resumeSession('SESSION_ID');
     console.log(await s.getInfo());

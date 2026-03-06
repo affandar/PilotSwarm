@@ -1,6 +1,6 @@
 # Getting Started — From Zero to Running
 
-This guide walks through setting up a fully working durable-copilot-runtime environment
+This guide walks through setting up a fully working pilotswarm environment
 from scratch — the durable execution runtime for GitHub Copilot SDK agents.
 
 By the end you'll have:
@@ -34,8 +34,8 @@ Optional (for AKS deployment):
 ## Step 1: Clone and Install
 
 ```bash
-git clone https://github.com/microsoft/durable-copilot-runtime.git
-cd durable-copilot-runtime
+git clone https://github.com/microsoft/pilotswarm.git
+cd pilotswarm
 npm install
 npm run build
 ```
@@ -48,17 +48,17 @@ If you're building your own app on top of the runtime:
 cd your-project
 
 # Option A: file reference (local development)
-npm install ../path/to/durable-copilot-runtime
+npm install ../path/to/pilotswarm
 
 # Option B: npm link (symlink — changes reflected immediately)
-cd /path/to/durable-copilot-runtime && npm link
-cd /path/to/your-project && npm link durable-copilot-runtime
+cd /path/to/pilotswarm && npm link
+cd /path/to/your-project && npm link pilotswarm
 ```
 
-Either way, import from `durable-copilot-runtime`:
+Either way, import from `pilotswarm`:
 
 ```typescript
-import { DurableCopilotClient, DurableCopilotWorker } from "durable-copilot-runtime";
+import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm";
 ```
 
 ---
@@ -76,13 +76,13 @@ brew install postgresql@16
 brew services start postgresql@16
 
 # Create the database
-createdb durable_copilot
+createdb pilotswarm
 ```
 
 Your connection string:
 
 ```
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/durable_copilot
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/pilotswarm
 ```
 
 ### Option B: Azure Database for PostgreSQL (Flexible Server)
@@ -153,7 +153,7 @@ Create `.env` in the project root:
 ```bash
 cat > .env << 'EOF'
 # Required
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/durable_copilot
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/pilotswarm
 GITHUB_TOKEN=ghu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # Optional — defaults shown
@@ -353,7 +353,7 @@ multiple independent deployments on the **same database**, set custom schema nam
 
 ```typescript
 // Worker
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,
     duroxideSchema: "team_alpha_duroxide",
@@ -361,7 +361,7 @@ const worker = new DurableCopilotWorker({
 });
 
 // Client — must match worker's schema names
-const client = new DurableCopilotClient({
+const client = new PilotSwarmClient({
     store: process.env.DATABASE_URL,
     duroxideSchema: "team_alpha_duroxide",
     cmsSchema: "team_alpha_sessions",

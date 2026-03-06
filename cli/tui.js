@@ -9,11 +9,11 @@
  *   Bottom: Input bar
  *
  * Usage:
- *   npx durable-copilot-runtime-tui --env .env.remote             # 4 embedded workers
- *   npx durable-copilot-runtime-tui remote --env .env.remote       # client-only (AKS)
+ *   npx pilotswarm-tui --env .env.remote             # 4 embedded workers
+ *   npx pilotswarm-tui remote --env .env.remote       # client-only (AKS)
  */
 
-import { DurableCopilotClient, DurableCopilotWorker, SessionDumper } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker, SessionDumper } from "../dist/index.js";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -176,7 +176,7 @@ function shortId(id) {
 process.stderr.write = () => true;
 const screen = blessed.screen({
     smartCSR: true,
-    title: "Durable Copilot Chat",
+    title: "PilotSwarm",
     fullUnicode: true,
     forceUnicode: true,
     mouse: true,
@@ -1607,7 +1607,7 @@ async function loadCmsHistory(orchId) {
         return;
     }
 
-    // Ensure we have a DurableSession handle (may not exist for sessions from previous TUI runs)
+    // Ensure we have a PilotSwarmSession handle (may not exist for sessions from previous TUI runs)
     let sess = sessions.get(sid);
     if (!sess) {
         try {
@@ -1748,19 +1748,19 @@ async function loadCmsHistory(orchId) {
     perfEnd(_ph, { orchId: orchId.slice(0, 12), events: eventCount, err: loadFailed || undefined });
 }
 
-// ─── Start the durable client (embedded workers + client) ────────
+// ─── Start the PilotSwarm client (embedded workers + client) ────────
 
 const store = process.env.DATABASE_URL || "sqlite::memory:";
 const numWorkers = parseInt(process.env.WORKERS ?? "4", 10);
 const isRemote = numWorkers === 0;
 
 if (isRemote) {
-    screen.title = "Durable Copilot Chat (Scaled — Remote Workers)";
+    screen.title = "PilotSwarm (Scaled — Remote Workers)";
     appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (AKS Workers){/magenta-fg}");
     appendLog(`{bold}Store:{/bold} {green-fg}Remote PostgreSQL{/green-fg}`);
     appendLog("{bold}Runtime:{/bold} {yellow-fg}AKS pods (remote){/yellow-fg}");
 } else {
-    screen.title = `Durable Copilot Chat (${numWorkers} Embedded Workers)`;
+    screen.title = `PilotSwarm (${numWorkers} Embedded Workers)`;
     appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (Embedded Workers){/magenta-fg}");
     appendLog(`{bold}Store:{/bold} {green-fg}${store.includes("postgres") ? "Remote PostgreSQL" : store}{/green-fg}`);
     appendLog(`{bold}Workers:{/bold} {yellow-fg}${numWorkers} local runtimes{/yellow-fg}`);
@@ -1824,7 +1824,7 @@ if (!isRemote) {
 
     setStatus(`Starting ${numWorkers} workers...`);
     for (let i = 0; i < numWorkers; i++) {
-        const w = new DurableCopilotWorker({
+        const w = new PilotSwarmWorker({
             store,
             githubToken: process.env.GITHUB_TOKEN,
             logLevel: process.env.LOG_LEVEL || "error",
@@ -1999,7 +1999,7 @@ if (!modelProviders) {
 }
 
 // 2. Start the thin client (for creating orchestrations / reading status)
-const client = new DurableCopilotClient({
+const client = new PilotSwarmClient({
     store,
     blobEnabled: true,
 });
@@ -2757,7 +2757,7 @@ if (isRemote) {
     }
 }
 
-// Map sessionId → DurableSession object
+// Map sessionId → PilotSwarmSession object
 const sessions = new Map();
 const sessionModels = new Map(); // orchId → model name used for that session
 
@@ -3256,7 +3256,7 @@ function sessionIdFromOrchId(orchId) {
     return orchId.startsWith("session-") ? orchId.slice(8) : orchId;
 }
 
-// Helper: get or create a DurableSession for the active orchestration
+// Helper: get or create a PilotSwarmSession for the active orchestration
 function getActiveSession() {
     const sid = sessionIdFromOrchId(activeOrchId);
     return sessions.get(sid) || null;
@@ -3540,7 +3540,7 @@ async function handleInput(text) {
             } catch {}
         }
 
-        // Use the DurableSession to send — it handles starting the orchestration
+        // Use the PilotSwarmSession to send — it handles starting the orchestration
         // on first message. The observer picks up results via waitForStatusChange.
         const sess = getActiveSession();
         if (sess) {
@@ -3798,10 +3798,19 @@ screen.on("resize", () => {
 
 // ─── Welcome message ─────────────────────────────────────────────
 
-appendChatRaw(
-    "{cyan-fg}{bold}Copilot:{/bold}{/cyan-fg} " +
-    "Welcome to Durable Copilot Chat!"
-);
+appendChatRaw("{bold}{cyan-fg}");
+appendChatRaw("    ____  _ __      __  _____                              ");
+appendChatRaw("   / __ \\(_) /___  / /_/ ___/      ______ __________ ___  ");
+appendChatRaw("{/cyan-fg}{magenta-fg}  / /_/ / / / __ \\/ __/\\__ \\ | /| / / __ `/ ___/ __ `__ \\");
+appendChatRaw(" / ____/ / / /_/ / /_ ___/ / |/ |/ / /_/ / /  / / / / / /{/magenta-fg}");
+appendChatRaw("{yellow-fg}/_/   /_/_/\\____/\\__//____/|__/|__/\\__,_/_/  /_/ /_/ /_/ {/yellow-fg}");
+appendChatRaw("{/bold}");
+appendChatRaw("");
+appendChatRaw("  {bold}{white-fg}Durable AI Agent Orchestration{/white-fg}{/bold}");
+appendChatRaw("  {cyan-fg}Crash recovery{/cyan-fg} · {magenta-fg}Durable timers{/magenta-fg} · {yellow-fg}Sub-agents{/yellow-fg} · {green-fg}Multi-node scaling{/green-fg}");
+appendChatRaw("  {gray-fg}Powered by duroxide + GitHub Copilot SDK{/gray-fg}");
+appendChatRaw("");
+appendChatRaw("  {cyan-fg}─────────────────────────────────────────────────────────{/cyan-fg}");
 appendChatRaw("");
 appendChatRaw("{bold}Controls:{/bold}");
 appendChatRaw("  {yellow-fg}Esc{/yellow-fg}    exit prompt → navigate TUI");

@@ -49,7 +49,7 @@ export class SessionManager {
     private blobStore: SessionBlobStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
-    /** Worker-level tool registry — shared reference from DurableCopilotWorker. */
+    /** Worker-level tool registry — shared reference from PilotSwarmWorker. */
     private toolRegistry = new Map<string, Tool<any>>();
     /** Worker-level defaults for building blocks. */
     private workerDefaults: WorkerDefaults;
@@ -63,7 +63,7 @@ export class SessionManager {
         this.workerDefaults = workerDefaults ?? {};
     }
 
-    /** Store full config (with tools/hooks) for a session. Called by DurableCopilotClient. */
+    /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
         this.sessionConfigs.set(sessionId, config);
     }
@@ -73,7 +73,7 @@ export class SessionManager {
         return this.workerDefaults.modelProviders?.getModelSummaryForLLM();
     }
 
-    /** Set the worker-level tool registry. Called by DurableCopilotWorker. */
+    /** Set the worker-level tool registry. Called by PilotSwarmWorker. */
     setToolRegistry(registry: Map<string, Tool<any>>): void {
         this.toolRegistry = registry;
     }

@@ -14,7 +14,7 @@ node --env-file=.env examples/chat.js
 
 ### What It Demonstrates
 
-- **Single-process setup** — `DurableCopilotWorker` + `DurableCopilotClient` in one process
+- **Single-process setup** — `PilotSwarmWorker` + `PilotSwarmClient` in one process
 - **Interactive conversation** — readline-based chat loop
 - **Live event streaming** — `session.on()` prints events as they fire
 - **Durable timers** — ask the agent to wait and it uses the durable timer infrastructure
@@ -23,7 +23,7 @@ node --env-file=.env examples/chat.js
 ### Example Session
 
 ```
-🤖 Durable Copilot Chat
+🤖 PilotSwarm
    Store: PostgreSQL
 
    Type a message, press Enter. Type 'exit' to quit.
@@ -48,9 +48,9 @@ Why don't scientists trust atoms? Because they make up everything!
 
 ```javascript
 // Worker + Client in same process
-const worker = new DurableCopilotWorker({ store, githubToken });
+const worker = new PilotSwarmWorker({ store, githubToken });
 await worker.start();
-const client = new DurableCopilotClient({ store, blobEnabled: true });
+const client = new PilotSwarmClient({ store, blobEnabled: true });
 await client.start();
 
 // Create session with user input handler

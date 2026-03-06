@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy durable-copilot-runtime workers to AKS.
+# Deploy pilotswarm workers to AKS.
 #
 # Cleans up ALL existing orchestrations (duroxide + CMS) before deploying.
 # This avoids orchestration versioning issues when changing parameters.

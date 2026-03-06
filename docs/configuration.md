@@ -23,7 +23,7 @@ Then edit `.env`:
 
 ```bash
 # Required
-DATABASE_URL=postgresql://user:password@localhost:5432/durable_copilot
+DATABASE_URL=postgresql://user:password@localhost:5432/pilotswarm
 GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 
 # Optional — session dehydration to blob storage
@@ -37,10 +37,10 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 
 ```bash
 # Create database
-createdb durable_copilot
+createdb pilotswarm
 
 # Connection string
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/durable_copilot
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/pilotswarm
 ```
 
 ### Azure Database for PostgreSQL
@@ -75,17 +75,17 @@ node --env-file=.env scripts/db-reset.js
 The simplest setup — client and worker in the same process:
 
 ```typescript
-import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-runtime";
+import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm";
 
 const store = process.env.DATABASE_URL;
 
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
     store,
     githubToken: process.env.GITHUB_TOKEN,
 });
 await worker.start();
 
-const client = new DurableCopilotClient({ store });
+const client = new PilotSwarmClient({ store });
 await client.start();
 
 const session = await client.createSession({
@@ -108,9 +108,9 @@ For production, run workers as separate processes:
 
 ```javascript
 // worker.js
-import { DurableCopilotWorker } from "durable-copilot-runtime";
+import { PilotSwarmWorker } from "pilotswarm";
 
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,
     blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
@@ -134,9 +134,9 @@ await new Promise(() => {});
 
 ```javascript
 // app.js
-import { DurableCopilotClient } from "durable-copilot-runtime";
+import { PilotSwarmClient } from "pilotswarm";
 
-const client = new DurableCopilotClient({
+const client = new PilotSwarmClient({
     store: process.env.DATABASE_URL,
     blobEnabled: true,  // enable session dehydration
 });
@@ -154,7 +154,7 @@ The client and worker share the same PostgreSQL database. The client enqueues wo
 ## Worker Options
 
 ```typescript
-new DurableCopilotWorker({
+new PilotSwarmWorker({
     // Required
     store: string,           // PostgreSQL connection string
     githubToken: string,     // GitHub Copilot token
@@ -177,7 +177,7 @@ new DurableCopilotWorker({
 ## Client Options
 
 ```typescript
-new DurableCopilotClient({
+new PilotSwarmClient({
     // Required
     store: string,            // PostgreSQL connection string
 

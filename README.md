@@ -1,17 +1,19 @@
-# durable-copilot-runtime
+# pilotswarm
+
+> **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
 ## Quick Start
 
 ```bash
-npm install durable-copilot-runtime
+npm install pilotswarm
 cp .env.example .env
 # edit .env with DATABASE_URL and GITHUB_TOKEN
 ```
 
 ```typescript
-import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-runtime";
+import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm";
 
 // Define tools — same API as Copilot SDK
 const getWeather = defineTool("get_weather", {
@@ -28,7 +30,7 @@ const getWeather = defineTool("get_weather", {
 });
 
 // Start a worker (runs LLM turns, executes tools)
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,          // PostgreSQL connection string
     githubToken: process.env.GITHUB_TOKEN,
 });
@@ -36,7 +38,7 @@ worker.registerTools([getWeather]);           // register tools at the worker le
 await worker.start();
 
 // Start a client (manages sessions — can run on a different machine)
-const client = new DurableCopilotClient({
+const client = new PilotSwarmClient({
     store: process.env.DATABASE_URL,
 });
 await client.start();
@@ -58,7 +60,7 @@ await worker.stop();
 
 ## What You Get
 
-| Feature | Copilot SDK | durable-copilot-runtime |
+| Feature | Copilot SDK | pilotswarm |
 |---------|-------------|---------------------|
 | Tool calling | ✅ | ✅ Same `defineTool()` API |
 | Wait/pause | ❌ Blocks process | ✅ Durable timer — process shuts down, resumes later |
@@ -94,7 +96,7 @@ Client                        PostgreSQL                     Worker Pods
 | Example | Description | Command |
 |---------|-------------|---------|
 | [Chat](examples/chat.js) | Interactive console chat | `npm run chat` |
-| [TUI](cli/tui.js) | Multi-session terminal UI with logs | `npx durable-copilot-runtime-tui` |
+| [TUI](cli/tui.js) | Multi-session terminal UI with logs | `npx pilotswarm-tui` |
 | [Worker](examples/worker.js) | Headless worker for K8s | `npm run worker` |
 | [Tests](test/sdk.test.js) | Automated test suite | `npm test` |
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Headless durable-copilot-runtime worker.
+ * Headless pilotswarm worker.
  * Runs as a K8s pod — polls PostgreSQL for orchestrations and executes them.
  *
  * Env vars:
@@ -25,7 +25,7 @@
 
 import os from "node:os";
 import fs from "node:fs";
-import { DurableCopilotWorker } from "../dist/index.js";
+import { PilotSwarmWorker } from "../dist/index.js";
 
 const logLevel = process.env.LOG_LEVEL || "info";
 const podName = process.env.POD_NAME || os.hostname();
@@ -54,7 +54,7 @@ CRITICAL RULES:
 4. The 'wait' tool enables durable timers that survive process restarts and node migrations.
 5. For recurring tasks: use the 'wait' tool in a loop — complete the action, then call wait(seconds), then repeat.`;
 
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,
     logLevel,

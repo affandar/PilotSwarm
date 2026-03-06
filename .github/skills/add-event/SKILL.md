@@ -1,6 +1,6 @@
 ---
 name: add-event
-description: Add a new event type that flows from the LLM session through to client subscribers. Covers firing the event from ManagedSession, persisting to CMS, and filtering in DurableSession.on().
+description: Add a new event type that flows from the LLM session through to client subscribers. Covers firing the event from ManagedSession, persisting to CMS, and filtering in PilotSwarmSession.on().
 ---
 
 # Add a New Event Type
@@ -23,7 +23,7 @@ Events flow from the Copilot SDK through ManagedSession, get persisted to CMS, a
 
 2. **Persist to CMS** — events are automatically persisted by the activity in `src/session-proxy.ts` via the `onEvent` callback, which calls `catalog.recordEvents()`. No changes needed unless you want special handling.
 
-3. **Filter in `DurableSession.on()`** — if the event needs special client-side filtering (e.g., excluding ephemeral events from persistence), add logic in `src/client.ts`:
+3. **Filter in `PilotSwarmSession.on()`** — if the event needs special client-side filtering (e.g., excluding ephemeral events from persistence), add logic in `src/client.ts`:
    ```typescript
    session.on("my.event_type", (event) => { ... });
    ```
@@ -44,11 +44,11 @@ ManagedSession captures as CapturedEvent
   ↓
 onEvent callback → session-proxy.ts → catalog.recordEvents()   ← persisted to CMS
   ↓
-DurableSession.on() polls CMS → delivers to client subscribers
+PilotSwarmSession.on() polls CMS → delivers to client subscribers
 ```
 
 ## Key files
 - [src/managed-session.ts](../../../src/managed-session.ts) — event capture during `runTurn()`
 - [src/session-proxy.ts](../../../src/session-proxy.ts) — event persistence to CMS
 - [src/cms.ts](../../../src/cms.ts) — `recordEvents()` and `getSessionEvents()`
-- [src/client.ts](../../../src/client.ts) — `DurableSession.on()` polling and dispatch
+- [src/client.ts](../../../src/client.ts) — `PilotSwarmSession.on()` polling and dispatch

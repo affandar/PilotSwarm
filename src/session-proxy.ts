@@ -2,7 +2,7 @@ import type { SessionManager } from "./session-manager.js";
 import type { SessionBlobStore } from "./blob-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import type { SerializableSessionConfig, TurnResult, OrchestrationInput } from "./types.js";
-import { DurableCopilotClient } from "./client.js";
+import { PilotSwarmClient } from "./client.js";
 import os from "node:os";
 
 // ─── SessionProxy ────────────────────────────────────────────────
@@ -66,11 +66,11 @@ export function createSessionManagerProxy(ctx: any) {
         summarizeSession(sessionId: string) {
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
-        /** Spawn a child session via the DurableCopilotClient SDK. Returns the generated child session ID. */
+        /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
         spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number) {
             return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task, nestingLevel });
         },
-        /** Send a message to a session via the DurableCopilotClient SDK. */
+        /** Send a message to a session via the PilotSwarmClient SDK. */
         sendToSession(sessionId: string, message: string) {
             return ctx.scheduleActivity("sendToSession", { sessionId, message });
         },
@@ -78,11 +78,11 @@ export function createSessionManagerProxy(ctx: any) {
         sendCommandToSession(sessionId: string, command: any) {
             return ctx.scheduleActivity("sendCommandToSession", { sessionId, command });
         },
-        /** Get the status of a session via the DurableCopilotClient SDK. */
+        /** Get the status of a session via the PilotSwarmClient SDK. */
         getSessionStatus(sessionId: string) {
             return ctx.scheduleActivity("getSessionStatus", { sessionId });
         },
-        /** List all sessions via the DurableCopilotClient SDK. */
+        /** List all sessions via the PilotSwarmClient SDK. */
         listSessions() {
             return ctx.scheduleActivity("listSessions", {});
         },
@@ -118,7 +118,7 @@ export function registerActivities(
     provider?: any,
     storeUrl?: string,
     cmsSchema?: string,
-    /** Client-level config forwarded to ephemeral DurableCopilotClient instances (e.g. spawnChildSession). */
+    /** Client-level config forwarded to ephemeral PilotSwarmClient instances (e.g. spawnChildSession). */
     clientConfig?: {
         blobEnabled?: boolean;
         duroxideSchema?: string;
@@ -302,7 +302,7 @@ export function registerActivities(
     }
 
     // ── spawnChildSession ─────────────────────────────────────
-    // Creates a child session via the DurableCopilotClient SDK.
+    // Creates a child session via the PilotSwarmClient SDK.
     // Generates a random UUID for the child session ID internally.
     // Goes through the full SDK path: CMS registration + orchestration startup.
     runtime.registerActivity("spawnChildSession", async (
@@ -311,9 +311,9 @@ export function registerActivities(
     ): Promise<string> => {
         const childSessionId = crypto.randomUUID();
         activityCtx.traceInfo(`[spawnChildSession] child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0}`);
-        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new DurableCopilotClient({
+        const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
             // Forward blob/dehydration config so child orchestrations inherit the parent's settings
@@ -353,9 +353,9 @@ export function registerActivities(
         input: { sessionId: string; message: string },
     ): Promise<void> => {
         activityCtx.traceInfo(`[sendToSession] session=${input.sessionId} msg="${input.message.slice(0, 60)}"`);
-        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new DurableCopilotClient({
+        const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
         });
@@ -382,9 +382,9 @@ export function registerActivities(
         input: { sessionId: string; command: any },
     ): Promise<void> => {
         activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
-        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new DurableCopilotClient({
+        const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
         });
@@ -403,15 +403,15 @@ export function registerActivities(
     });
 
     // ── getSessionStatus ────────────────────────────────────
-    // Gets the status of a session via the DurableCopilotClient SDK.
+    // Gets the status of a session via the PilotSwarmClient SDK.
     runtime.registerActivity("getSessionStatus", async (
         activityCtx: any,
         input: { sessionId: string },
     ): Promise<string> => {
         activityCtx.traceInfo(`[getSessionStatus] session=${input.sessionId}`);
-        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new DurableCopilotClient({
+        const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
         });
@@ -432,15 +432,15 @@ export function registerActivities(
     });
 
     // ── listSessions ────────────────────────────────────────
-    // Lists all sessions via the DurableCopilotClient SDK.
+    // Lists all sessions via the PilotSwarmClient SDK.
     runtime.registerActivity("listSessions", async (
         activityCtx: any,
         _input: {},
     ): Promise<string> => {
         activityCtx.traceInfo(`[listSessions]`);
-        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new DurableCopilotClient({
+        const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
         });
@@ -505,9 +505,9 @@ export function registerActivities(
         input: { sessionId: string; reason?: string },
     ): Promise<void> => {
         activityCtx.traceInfo(`[cancelSession] session=${input.sessionId} reason=${input.reason ?? "none"}`);
-        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new DurableCopilotClient({
+        const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
         });
@@ -539,9 +539,9 @@ export function registerActivities(
         input: { sessionId: string; reason?: string },
     ): Promise<void> => {
         activityCtx.traceInfo(`[deleteSession] session=${input.sessionId} reason=${input.reason ?? "none"}`);
-        if (!storeUrl) throw new Error("No storeUrl — cannot create DurableCopilotClient");
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new DurableCopilotClient({
+        const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
         });

@@ -13,7 +13,7 @@
  *   WORKERS=0 node --env-file=.env.remote examples/tui.js # client-only (AKS)
  */
 
-import { DurableCopilotClient, DurableCopilotWorker } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker } from "../dist/index.js";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -68,7 +68,7 @@ function ts() {
 
 const screen = blessed.screen({
     smartCSR: true,
-    title: "Durable Copilot Chat",
+    title: "PilotSwarm",
     fullUnicode: true,
     mouse: true,
 });
@@ -1250,7 +1250,7 @@ const seqCmsSeededSessions = new Set();
 async function loadCmsHistory(orchId) {
     const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
 
-    // Ensure we have a DurableSession handle (may not exist for sessions from previous TUI runs)
+    // Ensure we have a PilotSwarmSession handle (may not exist for sessions from previous TUI runs)
     let sess = sessions.get(sid);
     if (!sess) {
         try {
@@ -1362,19 +1362,19 @@ async function loadCmsHistory(orchId) {
     }
 }
 
-// ─── Start the durable client (embedded workers + client) ────────
+// ─── Start the PilotSwarm client (embedded workers + client) ────────
 
 const store = process.env.DATABASE_URL || "sqlite::memory:";
 const numWorkers = parseInt(process.env.WORKERS ?? "4", 10);
 const isRemote = numWorkers === 0;
 
 if (isRemote) {
-    screen.title = "Durable Copilot Chat (Scaled — Remote Workers)";
+    screen.title = "PilotSwarm (Scaled — Remote Workers)";
     appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (AKS Workers){/magenta-fg}");
     appendLog(`{bold}Store:{/bold} {green-fg}Remote PostgreSQL{/green-fg}`);
     appendLog("{bold}Runtime:{/bold} {yellow-fg}AKS pods (remote){/yellow-fg}");
 } else {
-    screen.title = `Durable Copilot Chat (${numWorkers} Embedded Workers)`;
+    screen.title = `PilotSwarm (${numWorkers} Embedded Workers)`;
     appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (Embedded Workers){/magenta-fg}");
     appendLog(`{bold}Store:{/bold} {green-fg}${store.includes("postgres") ? "Remote PostgreSQL" : store}{/green-fg}`);
     appendLog(`{bold}Workers:{/bold} {yellow-fg}${numWorkers} local runtimes{/yellow-fg}`);
@@ -1427,7 +1427,7 @@ if (!isRemote) {
 
     setStatus(`Starting ${numWorkers} workers...`);
     for (let i = 0; i < numWorkers; i++) {
-        const w = new DurableCopilotWorker({
+        const w = new PilotSwarmWorker({
             store,
             githubToken: process.env.GITHUB_TOKEN,
             logLevel: process.env.LOG_LEVEL || "error",
@@ -1551,7 +1551,7 @@ if (!isRemote) {
 }
 
 // 2. Start the thin client (for creating orchestrations / reading status)
-const client = new DurableCopilotClient({
+const client = new PilotSwarmClient({
     store,
     blobEnabled: true,
 });
@@ -2061,7 +2061,7 @@ if (isRemote) {
     }
 }
 
-// Map sessionId → DurableSession object
+// Map sessionId → PilotSwarmSession object
 const sessions = new Map();
 
 // ─── Model selection ─────────────────────────────────────────────
@@ -2441,7 +2441,7 @@ function sessionIdFromOrchId(orchId) {
     return orchId.startsWith("session-") ? orchId.slice(8) : orchId;
 }
 
-// Helper: get or create a DurableSession for the active orchestration
+// Helper: get or create a PilotSwarmSession for the active orchestration
 function getActiveSession() {
     const sid = sessionIdFromOrchId(activeOrchId);
     return sessions.get(sid) || null;
@@ -2667,7 +2667,7 @@ async function handleInput(text) {
             } catch {}
         }
 
-        // Use the DurableSession to send — it handles starting the orchestration
+        // Use the PilotSwarmSession to send — it handles starting the orchestration
         // on first message. The observer picks up results via waitForStatusChange.
         const sess = getActiveSession();
         if (sess) {
@@ -2862,7 +2862,7 @@ screen.on("resize", () => {
 
 appendChatRaw(
     "{cyan-fg}{bold}Copilot:{/bold}{/cyan-fg} " +
-    "Welcome to Durable Copilot Chat!"
+    "Welcome to PilotSwarm!"
 );
 appendChatRaw("");
 appendChatRaw("{bold}Controls:{/bold}");

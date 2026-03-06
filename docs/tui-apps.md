@@ -1,7 +1,7 @@
 # TUI Apps — Off-the-Shelf Terminal Interface
 
 This guide covers the **AppAdapter** framework for building rich terminal applications
-on top of the durable-copilot-runtime. The runtime provides a shared `tui-core` — your app
+on top of the pilotswarm. The runtime provides a shared `tui-core` — your app
 provides an adapter that configures the agent, UI behavior, and how to load skills/agents/tools/MCP config.
 
 **Prerequisite**: Read [building-apps.md](./building-apps.md) first for the five building
@@ -80,14 +80,14 @@ interface AppAdapter {
   };
 
   // ─── Runtime ──────────────────────────────────────────
-  createClient(): Promise<DurableCopilotClient>;
-  createWorkers?(client: DurableCopilotClient): Promise<Worker[]>;
+  createClient(): Promise<PilotSwarmClient>;
+  createWorkers?(client: PilotSwarmClient): Promise<Worker[]>;
   getInstancePrefix(): string;                // e.g., "session-", "smelter-"
 
   // ─── Session Management ───────────────────────────────
-  createSession(client: DurableCopilotClient, agents: CustomAgent[]): Promise<DurableSession>;
+  createSession(client: PilotSwarmClient, agents: CustomAgent[]): Promise<PilotSwarmSession>;
   formatSessionLabel(orchId: string, info: InstanceInfo, heading?: string): string;
-  loadHistory?(orchId: string, client: DurableCopilotClient): Promise<ChatLine[]>;
+  loadHistory?(orchId: string, client: PilotSwarmClient): Promise<ChatLine[]>;
 
   // ─── UI Customization ─────────────────────────────────
   slashCommands: Map<string, SlashCommandDef>;
@@ -150,8 +150,8 @@ A complete TUI app in ~100 lines — a deployment assistant:
 
 ```typescript
 // deploy-app/tui.js
-import { createTui } from "durable-copilot-runtime/tui";
-import { DurableCopilotClient, DurableCopilotWorker, loadSkills } from "durable-copilot-runtime";
+import { createTui } from "pilotswarm/tui";
+import { PilotSwarmClient, PilotSwarmWorker, loadSkills } from "pilotswarm";
 import { deployService, checkHealth, rollback } from "./tools.js";
 
 await createTui({
@@ -195,7 +195,7 @@ await createTui({
 
   // ─── Runtime ────────────────────────────────────────
   async createClient() {
-    const client = new DurableCopilotClient({
+    const client = new PilotSwarmClient({
       store: process.env.DATABASE_URL,
       blobEnabled: true,
     });
@@ -204,7 +204,7 @@ await createTui({
   },
 
   async createWorkers(client) {
-    const w = new DurableCopilotWorker({
+    const w = new PilotSwarmWorker({
       store: process.env.DATABASE_URL,
       githubToken: process.env.GITHUB_TOKEN,
     });

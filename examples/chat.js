@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Interactive console chat using durable-copilot-runtime.
+ * Interactive console chat using pilotswarm.
  *
  * Usage: node --env-file=.env examples/chat.js
  *
@@ -12,7 +12,7 @@
  *   - Durable wait tool + ask_user tool
  */
 
-import { DurableCopilotClient, DurableCopilotWorker } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker } from "../dist/index.js";
 import { createInterface } from "node:readline";
 
 const STORE = process.env.DATABASE_URL || "sqlite::memory:";
@@ -39,10 +39,10 @@ function stripMarkdown(text) {
 
 // ─── Start worker + client ───────────────────────────────────────
 
-console.log("🤖 Durable Copilot Chat");
+console.log("🤖 PilotSwarm");
 console.log(`   Store: ${STORE.startsWith("postgres") ? "PostgreSQL" : STORE}\n`);
 
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
     store: STORE,
     githubToken: process.env.GITHUB_TOKEN,
     blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
@@ -50,7 +50,7 @@ const worker = new DurableCopilotWorker({
 });
 await worker.start();
 
-const client = new DurableCopilotClient({
+const client = new PilotSwarmClient({
     store: STORE,
     blobEnabled: true,
 });

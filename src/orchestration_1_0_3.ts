@@ -3,7 +3,7 @@ import type {
     OrchestrationInput,
     SubAgentEntry,
     SerializableSessionConfig,
-    DurableSessionStatus,
+    PilotSwarmSessionStatus,
     CommandMessage,
     CommandResponse,
 } from "./types.js";
@@ -14,7 +14,7 @@ import { createSessionProxy, createSessionManagerProxy } from "./session-proxy.j
  * Clients read this via waitForStatusChange() or getStatus().
  * @internal
  */
-function setStatus(ctx: any, status: DurableSessionStatus, extra?: Record<string, unknown>) {
+function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<string, unknown>) {
     ctx.setCustomStatus(JSON.stringify({ status, ...extra }));
 }
 
@@ -658,7 +658,7 @@ export function* durableSessionOrchestration_1_0_3(
                     ...(result.toolNames ? { toolNames: result.toolNames } : {}),
                 };
 
-                // Use the DurableCopilotClient SDK to create and start the child session.
+                // Use the PilotSwarmClient SDK to create and start the child session.
                 // This handles: CMS registration (with parentSessionId), orchestration startup,
                 // and initial task prompt — all through the standard SDK path.
                 try {

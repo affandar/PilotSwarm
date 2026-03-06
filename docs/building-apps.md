@@ -1,17 +1,17 @@
-# Building Apps on durable-copilot-runtime
+# Building Apps on pilotswarm
 
-This guide explains how to build apps on the durable-copilot-runtime. The primary
+This guide explains how to build apps on the pilotswarm. The primary
 extension mechanism is **plugins** — a directory structure containing agents, skills,
 and MCP server configs. Workers load plugin contents at startup and pass them through
 to the Copilot SDK via proven session config fields (`skillDirectories`, `customAgents`,
 `mcpServers`). Clients are thin proxies that send prompts and render events.
 
-The runtime ships a full TUI as a CLI (`durable-copilot-runtime-tui`) — see
+The runtime ships a full TUI as a CLI (`pilotswarm-tui`) — see
 [Putting It All Together](#putting-it-all-together) for usage.
 
 ## Architecture: Plugins + Tools + Runtime
 
-Every app built on the durable-copilot-runtime has three layers:
+Every app built on the pilotswarm has three layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -68,7 +68,7 @@ my-plugin/
 ```
 Worker startup                              Every session creation
 ──────────────                              ──────────────────────
-DurableCopilotWorker({                      SessionManager.getOrCreate():
+PilotSwarmWorker({                      SessionManager.getOrCreate():
   pluginDirs: ["./plugin"],                   SDK.createSession({
   systemMessage: "...",                         skillDirectories: [...plugin skill dirs],
 })                                              customAgents: [...parsed .agent.md files],
@@ -139,7 +139,7 @@ Environment variable references (`${VAR}`) in string values are expanded at load
 For programmatic control, bypass the plugin directory entirely:
 
 ```javascript
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
   store: process.env.DATABASE_URL,
   githubToken: process.env.GITHUB_TOKEN,
   skillDirectories: ["/path/to/my-skills"],
@@ -194,9 +194,9 @@ You never define these — they're part of the runtime.
 ### Registering Tools on the Worker
 
 ```typescript
-import { DurableCopilotWorker } from "durable-copilot-runtime";
+import { PilotSwarmWorker } from "pilotswarm";
 
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
   store: process.env.DATABASE_URL,
   githubToken: process.env.GITHUB_TOKEN,
 });
@@ -255,11 +255,11 @@ Your PostgreSQL user needs `CREATE SCHEMA` permission on first run.
 **Local Development** — embedded workers in TUI (default):
 ```
 ┌─ Your Machine ──────────────────────────────────┐
-│  npx durable-copilot-runtime-tui --env .env              │
+│  npx pilotswarm-tui --env .env              │
 │  (or: ./run.sh)                                  │
 │                                                  │
-│    ├─ DurableCopilotWorker × 4 (poll DB)         │
-│    └─ DurableCopilotClient (sends messages)      │
+│    ├─ PilotSwarmWorker × 4 (poll DB)         │
+│    └─ PilotSwarmClient (sends messages)      │
 │                                                  │
 │  .env:                                           │
 │    DATABASE_URL=postgresql://...                  │
@@ -276,17 +276,17 @@ setup (no TUI), `examples/chat.js` runs one worker + one client in a single proc
 **Production** — TUI client-only + AKS workers:
 ```
 ┌─ Your Machine (TUI) ─────────────────────────┐
-│  npx durable-copilot-runtime-tui remote               │
+│  npx pilotswarm-tui remote               │
 │    --store postgresql://...                   │
 │    --namespace my-app                         │
-│    └─ DurableCopilotClient                    │
+│    └─ PilotSwarmClient                    │
 │    Needs: DATABASE_URL                        │
 └────────────────┬──────────────────────────────┘
                  │ PostgreSQL
                  ▼
 ┌─ K8s Pods (Workers) ─────────────────────────┐
 │  node examples/worker.js                      │
-│  DurableCopilotWorker × N replicas            │
+│  PilotSwarmWorker × N replicas            │
 │    Needs: DATABASE_URL, GITHUB_TOKEN          │
 │    + tool artifacts + optional blob storage   │
 │                                               │
@@ -377,7 +377,7 @@ You configure it, you don't code it:
 
 ## Putting It All Together
 
-The runtime ships a full TUI client as a CLI: `durable-copilot-runtime-tui`. You provide a plugin
+The runtime ships a full TUI client as a CLI: `pilotswarm-tui`. You provide a plugin
 directory and optionally a worker module with custom tools — the TUI handles everything
 else (sessions, events, log streaming, chat rendering).
 
@@ -400,8 +400,8 @@ my-app/
 ```
 
 ```bash
-npm install durable-copilot-runtime
-npx durable-copilot-runtime-tui --env .env --plugin ./plugin
+npm install pilotswarm
+npx pilotswarm-tui --env .env --plugin ./plugin
 ```
 
 The CLI embeds 4 workers, loads your plugin, and launches the TUI. Done.
@@ -437,7 +437,7 @@ export default {
 ```
 
 ```bash
-npx durable-copilot-runtime-tui --env .env --plugin ./plugin --worker ./tools.js
+npx pilotswarm-tui --env .env --plugin ./plugin --worker ./tools.js
 ```
 
 ### Production: Separate Worker + Remote TUI
@@ -464,10 +464,10 @@ my-app/
 
 ```javascript
 // worker.js
-import { DurableCopilotWorker } from "durable-copilot-runtime";
+import { PilotSwarmWorker } from "pilotswarm";
 import { deployService, checkHealth, rollback } from "./src/tools.js";
 
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
   store: process.env.DATABASE_URL,
   githubToken: process.env.GITHUB_TOKEN,
   blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
@@ -482,7 +482,7 @@ await worker.start();
 **TUI** (thin client — needs only the database URL):
 
 ```bash
-npx durable-copilot-runtime-tui remote \
+npx pilotswarm-tui remote \
   --store postgresql://... \
   --namespace my-app-workers
 ```
@@ -506,7 +506,7 @@ CMD ["node", "worker.js"]
 ### CLI Reference
 
 ```
-durable-copilot-runtime-tui [local|remote] [flags]
+pilotswarm-tui [local|remote] [flags]
 
 FLAG                     ENV VAR EQUIVALENT
 --store <url>            DATABASE_URL

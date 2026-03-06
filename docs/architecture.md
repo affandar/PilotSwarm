@@ -1,8 +1,8 @@
-# Durable Copilot Runtime — Architecture
+# PilotSwarm — Architecture
 
 ## 1. Design Philosophy
 
-The durable-copilot-runtime is a **transparent durability layer underneath the GitHub Copilot SDK**. A developer using the Copilot SDK should be able to switch to the durable version with minimal code changes and gain:
+The pilotswarm is a **transparent durability layer underneath the GitHub Copilot SDK**. A developer using the Copilot SDK should be able to switch to the durable version with minimal code changes and gain:
 
 - **Crash resilience** — sessions survive process restarts
 - **Durable timers** — agents can wait hours/days without holding a process
@@ -29,7 +29,7 @@ The API surface mirrors the Copilot SDK exactly. Internally, each SDK call is "r
 
 ## 2. Value Propositions
 
-| Capability | Copilot SDK (vanilla) | Durable Copilot Runtime |
+| Capability | Copilot SDK (vanilla) | PilotSwarm |
 |---|---|---|
 | **Crash recovery** | Session lost if process dies | Orchestration survives, session rehydrates from blob |
 | **Long waits** | `setTimeout` — process must stay alive | Durable timer — process can die, wake on any node |
@@ -207,7 +207,7 @@ All activity bodies are one-liners. All logic lives in `ManagedSession` (turn ex
 |  Laptop / CI         |           |  PostgreSQL                  |
 |                      |           |                              |
 |  TUI / API client    |<-------->|  duroxide_copilot schema      |
-|  (DurableSession)    |   SQL    |    (orchestration history,    |
+|  (PilotSwarmSession)    |   SQL    |    (orchestration history,    |
 |                      |          |     work items, timers)       |
 |  Reads CMS ----------+--------->|                               |
 |                      |          |  copilot_sessions schema      |
@@ -455,23 +455,23 @@ Worker B: next orchestration turn (any worker, affinity key is new)
 
 ---
 
-## 5. API Mapping — Copilot SDK → Durable Copilot Runtime
+## 5. API Mapping — Copilot SDK → PilotSwarm
 
 ### 5.1 Client Methods
 
-| Copilot SDK | Durable Copilot Runtime | Implementation | Differences |
+| Copilot SDK | PilotSwarm | Implementation | Differences |
 |---|---|---|---|
-| `new CopilotClient(opts?)` | `new DurableCopilotClient(opts)` | Constructor. `opts.store` required. | Adds durable options (`store`, dehydration thresholds, blobEnabled). |
-| `client.start()` | `client.start()` | Creates duroxide `Client`; initializes CMS for PostgreSQL stores. | Worker runtime is separate (`DurableCopilotWorker.start()`). |
+| `new CopilotClient(opts?)` | `new PilotSwarmClient(opts)` | Constructor. `opts.store` required. | Adds durable options (`store`, dehydration thresholds, blobEnabled). |
+| `client.start()` | `client.start()` | Creates duroxide `Client`; initializes CMS for PostgreSQL stores. | Worker runtime is separate (`PilotSwarmWorker.start()`). |
 | `client.stop()` | `client.stop()` | Disposes client handle; leaves worker/runtime independent. | Lightweight client stop. |
 | `client.createSession(config?)` | `client.createSession(config?)` | Creates CMS session row; orchestration starts lazily on first send. | Supports serializable config + in-memory tool references. |
-| `client.resumeSession(id, config?)` | `client.resumeSession(id, config?)` | Returns `DurableSession` handle for existing session ID. | No immediate worker call. |
-| `client.listSessions()` | `client.listSessions()` | Reads from CMS `sessions` table. | Returns `DurableSessionInfo[]`. |
+| `client.resumeSession(id, config?)` | `client.resumeSession(id, config?)` | Returns `PilotSwarmSession` handle for existing session ID. | No immediate worker call. |
+| `client.listSessions()` | `client.listSessions()` | Reads from CMS `sessions` table. | Returns `PilotSwarmSessionInfo[]`. |
 | `client.deleteSession(id)` | `client.deleteSession(id)` | Soft-delete in CMS + best-effort orchestration cancel. | Durable delete behavior (not SDK disk semantics). |
 
 ### 5.2 Session Methods
 
-| Copilot SDK | Durable Copilot Runtime | Implementation | Differences |
+| Copilot SDK | PilotSwarm | Implementation | Differences |
 |---|---|---|---|
 | `session.sessionId` | `session.sessionId` | Same — `readonly string`. | — |
 | `session.send(opts)` | `session.send(prompt)` | Enqueues a prompt to orchestration and returns immediately. | Durable async send semantics. |
@@ -484,7 +484,7 @@ Worker B: next orchestration turn (any worker, affinity key is new)
 
 ### 5.3 Prompt API Shape
 
-`DurableSession` currently uses string-based prompt methods:
+`PilotSwarmSession` currently uses string-based prompt methods:
 
 ```typescript
 await session.send("hello");
@@ -539,10 +539,10 @@ await session.destroy();
 await client.stop();
 ```
 
-### 6.2 Durable Copilot Runtime
+### 6.2 PilotSwarm
 
 ```typescript
-import { DurableCopilotClient, defineTool } from "durable-copilot-runtime";
+import { PilotSwarmClient, defineTool } from "pilotswarm";
 
 const getWeather = defineTool("get_weather", {
     description: "Get current weather for a city",
@@ -556,7 +556,7 @@ const getWeather = defineTool("get_weather", {
     },
 });
 
-const client = new DurableCopilotClient({
+const client = new PilotSwarmClient({
     githubToken: process.env.GITHUB_TOKEN,
     store: process.env.DATABASE_URL,        // ← the only new required option
 });
@@ -585,7 +585,7 @@ await client.stop();
 ```
 
 **Differences: 3 lines.**
-1. Import from `durable-copilot-runtime` instead of `@github/copilot-sdk`
+1. Import from `pilotswarm` instead of `@github/copilot-sdk`
 2. Add `store: process.env.DATABASE_URL` to constructor
 3. Add `await client.start()` (duroxide runtime needs explicit start)
 
@@ -614,7 +614,7 @@ const sessions = await client.listSessions();
 // → [{sessionId: "abc", name: "Weather Bot", state: "waiting", ...}]
 
 // Scale to multiple workers
-const client = new DurableCopilotClient({
+const client = new PilotSwarmClient({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,
     blobConnectionString: process.env.BLOB_CONN,  // enables relocation
@@ -1207,7 +1207,7 @@ CREATE TABLE copilot_sessions.sessions (
     name                    TEXT,                         -- user-friendly name (nullable)
     summary                 TEXT,                         -- LLM-generated or user-set summary
 
-    -- State (mirrors DurableSessionStatus)
+    -- State (mirrors PilotSwarmSessionStatus)
     state                   TEXT NOT NULL DEFAULT 'pending',
         -- pending | running | idle | waiting | input_required | completed | failed | dehydrated
 
@@ -1304,7 +1304,7 @@ CREATE INDEX idx_models_fetched
     ON copilot_sessions.models_cache(fetched_at DESC);
 ```
 
-### 7.5 CMS Client (for `DurableCopilotClient` reads)
+### 7.5 CMS Client (for `PilotSwarmClient` reads)
 
 ```typescript
 import { Pool } from "pg";
@@ -1436,7 +1436,7 @@ class CMSClient {
 }
 ```
 
-### 7.6 Registration (in `DurableCopilotClient.start()`)
+### 7.6 Registration (in `PilotSwarmClient.start()`)
 
 ```typescript
 async start(): Promise<void> {
@@ -1493,7 +1493,7 @@ async start(): Promise<void> {
 
 The runtime supports **autonomous sub-agents** — child sessions that run as independent durable orchestrations. A parent session can spawn sub-agents to work on tasks in parallel, each with its own conversation, tools, and LLM context.
 
-Sub-agents are not sub-orchestrations in the duroxide sense. Each sub-agent is a full orchestration instance (`session-{childSessionId}`) created via the `DurableCopilotClient` SDK path. The parent orchestration tracks children in its `subAgents[]` array, which is carried across `continueAsNew` boundaries.
+Sub-agents are not sub-orchestrations in the duroxide sense. Each sub-agent is a full orchestration instance (`session-{childSessionId}`) created via the `PilotSwarmClient` SDK path. The parent orchestration tracks children in its `subAgents[]` array, which is carried across `continueAsNew` boundaries.
 
 ### 8.2 Built-in Agent Tools
 
@@ -1563,7 +1563,7 @@ Parent Orchestration                           Child Orchestration
   │ runTurn(prompt) → spawn_agent                 │
   │   │                                           │
   │   └─ spawnChildSession activity ──────────────┤
-  │      (creates child via DurableCopilotClient)  │
+  │      (creates child via PilotSwarmClient)  │
   │                                               │ runTurn(task)
   │ runTurn("agent spawned: {id}")                │   │
   │   │                                           │   └─► LLM works...
@@ -1695,7 +1695,7 @@ MCP servers support both local (stdio) and remote (HTTP/SSE) transports. Environ
 
 6. **CMS writes are idempotent.** `session_id` is the primary key, `createSession` uses `INSERT ... ON CONFLICT DO NOTHING`, `updateSession` uses `UPDATE ... WHERE session_id = $1`. Retries and duplicate calls are safe.
 
-7. **One orchestration per session, sub-agents are independent orchestrations.** The orchestration ID is `session-{sessionId}`. Sub-agents spawn new orchestrations via the `DurableCopilotClient` SDK — they are not sub-orchestrations of the parent. The parent tracks children in its `subAgents[]` array. Max 8 concurrent sub-agents per parent, max 2 nesting levels.
+7. **One orchestration per session, sub-agents are independent orchestrations.** The orchestration ID is `session-{sessionId}`. Sub-agents spawn new orchestrations via the `PilotSwarmClient` SDK — they are not sub-orchestrations of the parent. The parent tracks children in its `subAgents[]` array. Max 8 concurrent sub-agents per parent, max 2 nesting levels.
 
 8. **CMS access is provider-based.** All reads and writes go through the `SessionCatalogProvider` interface. The initial implementation is PostgreSQL; CosmosDB or other backends can be added without changing client or orchestration code.
 

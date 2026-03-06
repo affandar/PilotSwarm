@@ -7,7 +7,7 @@
  * If no models specified, tests all models from model_providers.json.
  */
 
-import { DurableCopilotClient, DurableCopilotWorker } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker } from "../dist/index.js";
 import { loadModelProviders } from "../dist/model-providers.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,13 +53,13 @@ console.log("🧪 Model Identity Verification");
 console.log(`   Store: ${STORE.startsWith("postgres") ? "PostgreSQL" : STORE}`);
 console.log(`   Models: ${MODELS.join(", ")}\n`);
 
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
     store: STORE,
     githubToken: process.env.GITHUB_TOKEN,
 });
 await worker.start();
 
-const client = new DurableCopilotClient({ store: STORE });
+const client = new PilotSwarmClient({ store: STORE });
 await client.start();
 
 const results = [];

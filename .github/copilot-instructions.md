@@ -1,15 +1,15 @@
-# Copilot Instructions for durable-copilot-runtime
+# Copilot Instructions for pilotswarm
 
 ## Project Overview
 
-durable-copilot-runtime is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide) (a Rust-based durable orchestration engine). It provides **crash recovery, durable timers, session dehydration, and multi-node scaling**.
+pilotswarm is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide) (a Rust-based durable orchestration engine). It provides **crash recovery, durable timers, session dehydration, and multi-node scaling**.
 
 ## Architecture
 
 The runtime separates into two runtime components:
 
-- **`DurableCopilotClient`** — manages sessions, sends prompts, subscribes to events. Lightweight, no GitHub token needed. Only handles serializable data.
-- **`DurableCopilotWorker`** — runs LLM turns, executes tool handlers, manages the Copilot runtime. Requires a GitHub token. Tools are registered here.
+- **`PilotSwarmClient`** — manages sessions, sends prompts, subscribes to events. Lightweight, no GitHub token needed. Only handles serializable data.
+- **`PilotSwarmWorker`** — runs LLM turns, executes tool handlers, manages the Copilot runtime. Requires a GitHub token. Tools are registered here.
 
 Both connect to the same PostgreSQL (or SQLite) database. The orchestration layer (duroxide) coordinates between them.
 
@@ -33,8 +33,8 @@ Tools are re-registered on the `CopilotSession` via `registerTools()` at every `
 ```
 src/
   index.ts           — Public API exports
-  client.ts          — DurableCopilotClient + DurableSession
-  worker.ts          — DurableCopilotWorker (runtime, tool registry)
+  client.ts          — PilotSwarmClient + PilotSwarmSession
+  worker.ts          — PilotSwarmWorker (runtime, tool registry)
   orchestration.ts   — Duroxide orchestration generator function
   session-proxy.ts   — Activity definitions (runTurn, hydrate, dehydrate)
   session-manager.ts — SessionManager (CopilotSession lifecycle, tool resolution)
@@ -133,4 +133,4 @@ When a new version of `duroxide` is published to npm (after the Node.js SDK is u
 ### Adding a new event type
 1. Fire it from `ManagedSession` via the `onEvent` callback
 2. Persist it in CMS via `session-proxy.ts` event capture
-3. Filter it in `DurableSession.on()` if it needs special handling
+3. Filter it in `PilotSwarmSession.on()` if it needs special handling

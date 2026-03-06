@@ -60,7 +60,7 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
 
 // ─── Session Status ──────────────────────────────────────────────
 
-export type DurableSessionStatus =
+export type PilotSwarmSessionStatus =
     | "pending"
     | "running"
     | "idle"
@@ -72,9 +72,9 @@ export type DurableSessionStatus =
 
 // ─── Session Info ────────────────────────────────────────────────
 
-export interface DurableSessionInfo {
+export interface PilotSwarmSessionInfo {
     sessionId: string;
-    status: DurableSessionStatus;
+    status: PilotSwarmSessionStatus;
     /** LLM model used for this session. */
     model?: string;
     /** LLM-generated 3-5 word summary of the session. */
@@ -148,7 +148,7 @@ export interface SubAgentEntry {
 
 // ─── Worker Options ──────────────────────────────────────────────
 
-export interface DurableCopilotWorkerOptions {
+export interface PilotSwarmWorkerOptions {
     store: string;
     /** GitHub token. Required unless a custom `provider` is specified. */
     githubToken?: string;
@@ -249,7 +249,7 @@ export interface DurableCopilotWorkerOptions {
 
 // ─── Client Options ──────────────────────────────────────────────
 
-export interface DurableCopilotClientOptions {
+export interface PilotSwarmClientOptions {
     /** Store URL (postgres:// or sqlite://). */
     store: string;
     blobEnabled?: boolean;

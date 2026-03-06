@@ -1,12 +1,12 @@
 {
-  "name": "durable-copilot-runtime",
+  "name": "pilotswarm",
   "version": "0.1.0",
   "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "durable-copilot-runtime-tui": "./bin/tui.js"
+    "pilotswarm-tui": "./bin/tui.js"
   },
   "exports": {
     ".": {

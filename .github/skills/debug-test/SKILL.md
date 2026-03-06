@@ -1,6 +1,6 @@
 ---
 name: debug-test
-description: Diagnose and fix a failing integration test in the durable-copilot-runtime. Covers the full call chain from DurableSession.sendAndWait through duroxide orchestration to CopilotSession, common failure patterns, and how to inspect orchestration and CMS state.
+description: Diagnose and fix a failing integration test in the pilotswarm. Covers the full call chain from PilotSwarmSession.sendAndWait through duroxide orchestration to CopilotSession, common failure patterns, and how to inspect orchestration and CMS state.
 ---
 
 # Debug a Failed Test
@@ -14,8 +14,8 @@ description: Diagnose and fix a failing integration test in the durable-copilot-
 
 2. **Identify the failure layer** — the call chain is:
    ```
-   test → DurableSession.sendAndWait()
-        → DurableCopilotClient._startAndWait()
+   test → PilotSwarmSession.sendAndWait()
+        → PilotSwarmClient._startAndWait()
         → duroxide orchestration
         → SessionProxy activity (runTurn)
         → SessionManager.getOrCreate()

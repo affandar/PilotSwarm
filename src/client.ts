@@ -1,9 +1,9 @@
 import type {
-    DurableCopilotClientOptions,
+    PilotSwarmClientOptions,
     ManagedSessionConfig,
     SerializableSessionConfig,
-    DurableSessionStatus,
-    DurableSessionInfo,
+    PilotSwarmSessionStatus,
+    PilotSwarmSessionInfo,
     OrchestrationInput,
     UserInputHandler,
     CommandMessage,
@@ -22,17 +22,17 @@ const ORCHESTRATION_VERSION = "1.0.4";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
- * DurableCopilotClient — pure client-side session handle.
+ * PilotSwarmClient — pure client-side session handle.
  *
  * Talks to duroxide only through the Client API (startOrchestration,
  * enqueueEvent, waitForStatusChange, getStatus). Does NOT own
  * SessionManager, Runtime, or CopilotSession.
  *
  * Creates its own duroxide Client and CMS catalog from the store URL.
- * Completely independent of DurableCopilotWorker.
+ * Completely independent of PilotSwarmWorker.
  */
-export class DurableCopilotClient {
-    private config: DurableCopilotClientOptions & { waitThreshold: number };
+export class PilotSwarmClient {
+    private config: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalogProvider;
     private duroxideClient: any = null;
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
@@ -45,7 +45,7 @@ export class DurableCopilotClient {
     private lastSeenIteration = new Map<string, number>();
     private started = false;
 
-    constructor(options: DurableCopilotClientOptions) {
+    constructor(options: PilotSwarmClientOptions) {
         this.config = {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
@@ -63,7 +63,7 @@ export class DurableCopilotClient {
         parentSessionId?: string;
         /** Nesting level for sub-agent depth tracking. */
         nestingLevel?: number;
-    }): Promise<DurableSession> {
+    }): Promise<PilotSwarmSession> {
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         if (config) {
             const fullConfig: ManagedSessionConfig = {
@@ -93,26 +93,26 @@ export class DurableCopilotClient {
             this.nestingLevels.set(sessionId, config.nestingLevel);
         }
 
-        return new DurableSession(sessionId, this, config?.onUserInputRequest);
+        return new PilotSwarmSession(sessionId, this, config?.onUserInputRequest);
     }
 
     async resumeSession(sessionId: string, config?: ManagedSessionConfig & {
         onUserInputRequest?: UserInputHandler;
-    }): Promise<DurableSession> {
+    }): Promise<PilotSwarmSession> {
         if (config) {
             this.sessionConfigs.set(sessionId, config);
         }
         // Mark orchestration as active so _ensureOrchestrationAndSend skips creation.
         // The orchestration should already be running for resumed sessions.
         this.activeOrchestrations.set(sessionId, `session-${sessionId}`);
-        return new DurableSession(sessionId, this, config?.onUserInputRequest);
+        return new PilotSwarmSession(sessionId, this, config?.onUserInputRequest);
     }
 
-    async listSessions(): Promise<DurableSessionInfo[]> {
+    async listSessions(): Promise<PilotSwarmSessionInfo[]> {
         const rows = await this._catalog.listSessions();
         return rows.map(row => ({
             sessionId: row.sessionId,
-            status: (row.state as DurableSessionStatus) ?? "pending",
+            status: (row.state as PilotSwarmSessionStatus) ?? "pending",
             title: row.title ?? undefined,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
@@ -274,7 +274,7 @@ export class DurableCopilotClient {
         return this._catalog;
     }
 
-    /** @internal — exposed for DurableSession.wait() */
+    /** @internal — exposed for PilotSwarmSession.wait() */
     async _waitForTurnResult_external(
         orchestrationId: string,
         sessionId: string,
@@ -285,7 +285,7 @@ export class DurableCopilotClient {
     }
 
     /** @internal */
-    async _getSessionInfo(sessionId: string): Promise<DurableSessionInfo> {
+    async _getSessionInfo(sessionId: string): Promise<PilotSwarmSessionInfo> {
         const cmsRow = await this._catalog.getSession(sessionId);
 
         // Merge with live customStatus for real-time fields
@@ -305,8 +305,8 @@ export class DurableCopilotClient {
             } catch {}
         }
 
-        let status: DurableSessionStatus = customStatus.status
-            ?? (cmsRow?.state as DurableSessionStatus)
+        let status: PilotSwarmSessionStatus = customStatus.status
+            ?? (cmsRow?.state as PilotSwarmSessionStatus)
             ?? "pending";
         if (orchStatus.status === "Completed") status = "completed";
         if (orchStatus.status === "Failed") status = "failed";
@@ -431,7 +431,7 @@ export class DurableCopilotClient {
 }
 
 /**
- * DurableSession — session handle.
+ * PilotSwarmSession — session handle.
  * Mirrors CopilotSession API, routes through duroxide orchestration.
  *
  * Event delivery:
@@ -441,9 +441,9 @@ export class DurableCopilotClient {
  */
 export type SessionEventHandler = (event: SessionEvent) => void;
 
-export class DurableSession {
+export class PilotSwarmSession {
     readonly sessionId: string;
-    private client: DurableCopilotClient;
+    private client: PilotSwarmClient;
     private onUserInput?: UserInputHandler;
     lastOrchestrationId?: string;
 
@@ -455,7 +455,7 @@ export class DurableSession {
     private static POLL_INTERVAL = 500; // ms
 
     /** @internal */
-    constructor(sessionId: string, client: DurableCopilotClient, onUserInput?: UserInputHandler) {
+    constructor(sessionId: string, client: PilotSwarmClient, onUserInput?: UserInputHandler) {
         this.sessionId = sessionId;
         this.client = client;
         this.onUserInput = onUserInput;
@@ -564,7 +564,7 @@ export class DurableSession {
         return catalog.getSessionEvents(this.sessionId);
     }
 
-    async getInfo(): Promise<DurableSessionInfo> {
+    async getInfo(): Promise<PilotSwarmSessionInfo> {
         return this.client._getSessionInfo(this.sessionId);
     }
 
@@ -572,7 +572,7 @@ export class DurableSession {
 
     private _startPolling(): void {
         if (this.pollTimer) return;
-        this.pollTimer = setInterval(() => this._poll(), DurableSession.POLL_INTERVAL);
+        this.pollTimer = setInterval(() => this._poll(), PilotSwarmSession.POLL_INTERVAL);
         // Fire immediately too
         this._poll();
     }

@@ -12,7 +12,7 @@ import { loadAgentFiles } from "./agent-loader.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import type { Tool } from "@github/copilot-sdk";
-import type { DurableCopilotWorkerOptions, ManagedSessionConfig } from "./types.js";
+import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -25,19 +25,19 @@ const ORCHESTRATION_NAME = "durable-session-v2";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
- * DurableCopilotWorker — runs activities and orchestrations.
+ * PilotSwarmWorker — runs activities and orchestrations.
  *
  * Owns:
  *   - SessionManager (creates/resumes CopilotSessions, holds tools/hooks)
  *   - duroxide Runtime (dispatches activities + orchestrations)
  *   - BlobStore (optional, for session dehydration/hydration)
  *
- * In single-process mode, pass this worker to DurableCopilotClient's
+ * In single-process mode, pass this worker to PilotSwarmClient's
  * constructor so they share the database provider and the client can
  * forward tool/hook registrations.
  */
-export class DurableCopilotWorker {
-    private config: DurableCopilotWorkerOptions & { waitThreshold: number };
+export class PilotSwarmWorker {
+    private config: PilotSwarmWorkerOptions & { waitThreshold: number };
     private sessionManager: SessionManager;
     private blobStore: SessionBlobStore | null = null;
     private runtime: any = null;
@@ -55,7 +55,7 @@ export class DurableCopilotWorker {
     /** Model provider registry — multi-provider LLM config. */
     private _modelProviders: ModelProviderRegistry | null = null;
 
-    constructor(options: DurableCopilotWorkerOptions) {
+    constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
@@ -125,7 +125,7 @@ export class DurableCopilotWorker {
         return this._started;
     }
 
-    /** @internal — shared with co-located DurableCopilotClient. */
+    /** @internal — shared with co-located PilotSwarmClient. */
     get provider(): any {
         return this._provider;
     }
@@ -169,7 +169,7 @@ export class DurableCopilotWorker {
                 this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
                 await this._catalog.initialize();
             } catch (err) {
-                console.error("[DurableCopilotWorker] CMS initialization failed:", err);
+                console.error("[PilotSwarmWorker] CMS initialization failed:", err);
                 this._catalog = null;
             }
         }
@@ -205,7 +205,7 @@ export class DurableCopilotWorker {
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.4", durableSessionOrchestration_1_0_4);
 
         this.runtime.start().catch((err: any) => {
-            console.error("[DurableCopilotWorker] Runtime error:", err);
+            console.error("[PilotSwarmWorker] Runtime error:", err);
         });
         this._started = true;
 
@@ -231,7 +231,7 @@ export class DurableCopilotWorker {
         if (this.blobStore) {
             const ids = this.sessionManager.activeSessionIds();
             if (ids.length > 0) {
-                console.error(`[DurableCopilotWorker] Dehydrating ${ids.length} sessions...`);
+                console.error(`[PilotSwarmWorker] Dehydrating ${ids.length} sessions...`);
                 await Promise.allSettled(
                     ids.map(id => this.sessionManager.dehydrate(id, "shutdown").catch(() => {})),
                 );
@@ -250,7 +250,7 @@ export class DurableCopilotWorker {
     /**
      * Load plugin contents from plugin directories + direct config.
      * Reads skills, agents, and MCP from each plugin dir and merges
-     * with any direct config from DurableCopilotWorkerOptions.
+     * with any direct config from PilotSwarmWorkerOptions.
      */
     private _loadPlugins(): void {
         // 1. Load from plugin directories
@@ -259,7 +259,7 @@ export class DurableCopilotWorker {
             const absDir = path.resolve(pluginDir);
 
             if (!fs.existsSync(absDir)) {
-                console.warn(`[DurableCopilotWorker] Plugin dir not found: ${absDir}`);
+                console.warn(`[PilotSwarmWorker] Plugin dir not found: ${absDir}`);
                 continue;
             }
 
@@ -300,7 +300,7 @@ export class DurableCopilotWorker {
         if (mcpCount > 0) parts.push(`${mcpCount} MCP server(s): ${Object.keys(this._loadedMcpServers).join(", ")}`);
 
         if (parts.length > 0) {
-            console.log(`[DurableCopilotWorker] Loaded: ${parts.join("; ")}`);
+            console.log(`[PilotSwarmWorker] Loaded: ${parts.join("; ")}`);
         }
     }
 

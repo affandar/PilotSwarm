@@ -3,4 +3,4 @@ kind: Namespace
 metadata:
   name: copilot-runtime
   labels:
-    app.kubernetes.io/name: durable-copilot-runtime
+    app.kubernetes.io/name: pilotswarm

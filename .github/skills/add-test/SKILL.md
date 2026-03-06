@@ -1,6 +1,6 @@
 ---
 name: add-test
-description: Add a new integration test to the durable-copilot-runtime test suite. Tests verify end-to-end flows through DurableCopilotClient, duroxide orchestration, and the Copilot SDK.
+description: Add a new integration test to the pilotswarm test suite. Tests verify end-to-end flows through PilotSwarmClient, duroxide orchestration, and the Copilot SDK.
 ---
 
 # Add a New Test

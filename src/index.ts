@@ -1,15 +1,15 @@
 /**
- * durable-copilot-runtime — A durable execution runtime for GitHub Copilot SDK agents.
+ * pilotswarm — A durable execution runtime for GitHub Copilot SDK agents.
  *
  * @example
  * ```typescript
- * import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-runtime";
+ * import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm";
  *
- * const worker = new DurableCopilotWorker({ store, githubToken });
+ * const worker = new PilotSwarmWorker({ store, githubToken });
  * worker.registerTools([myTool]);
  * await worker.start();
  *
- * const client = new DurableCopilotClient({ store });
+ * const client = new PilotSwarmClient({ store });
  * await client.start();
  *
  * const session = await client.createSession({ toolNames: ["myTool"] });
@@ -17,20 +17,20 @@
  * ```
  */
 
-export { DurableCopilotClient, DurableSession } from "./client.js";
+export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
-export { DurableCopilotWorker } from "./worker.js";
+export { PilotSwarmWorker } from "./worker.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore } from "./blob-store.js";
 export { PgSessionCatalogProvider } from "./cms.js";
 export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent } from "./cms.js";
 export type {
-    DurableCopilotClientOptions,
-    DurableCopilotWorkerOptions,
+    PilotSwarmClientOptions,
+    PilotSwarmWorkerOptions,
     ManagedSessionConfig,
-    DurableSessionStatus,
-    DurableSessionInfo,
+    PilotSwarmSessionStatus,
+    PilotSwarmSessionInfo,
     TurnResult,
     CapturedEvent,
     UserInputRequest,

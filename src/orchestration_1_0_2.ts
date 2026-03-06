@@ -3,7 +3,7 @@ import type {
     OrchestrationInput,
     SubAgentEntry,
     SerializableSessionConfig,
-    DurableSessionStatus,
+    PilotSwarmSessionStatus,
     CommandMessage,
     CommandResponse,
 } from "./types.js";
@@ -20,7 +20,7 @@ const createSessionManagerProxy = _createSessionManagerProxy as (ctx: any) => an
  * Clients read this via waitForStatusChange() or getStatus().
  * @internal
  */
-function setStatus(ctx: any, status: DurableSessionStatus, extra?: Record<string, unknown>) {
+function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<string, unknown>) {
     ctx.setCustomStatus(JSON.stringify({ status, ...extra }));
 }
 

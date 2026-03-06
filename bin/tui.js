@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 
 /**
- * durable-copilot-runtime-tui — CLI for the durable-copilot-runtime.
+ * pilotswarm-tui — CLI for the pilotswarm.
  *
  * Modes:
  *   local   Embedded workers + TUI in one process (default)
  *   remote  Client-only TUI, workers run elsewhere (AKS, separate process)
  *
  * Usage:
- *   npx durable-copilot-runtime-tui local --plugin ./plugin
- *   npx durable-copilot-runtime-tui remote --store postgresql://... --context toygres-aks
- *   npx durable-copilot-runtime-tui --env .env --plugin ./my-plugin --workers 4
+ *   npx pilotswarm-tui local --plugin ./plugin
+ *   npx pilotswarm-tui remote --store postgresql://... --context toygres-aks
+ *   npx pilotswarm-tui --env .env --plugin ./my-plugin --workers 4
  *
  * All flags can also be set via environment variables (CLI flags take precedence).
  */
@@ -53,10 +53,10 @@ const { values: flags, positionals } = parseArgs({
 
 if (flags.help) {
     console.log(`
-durable-copilot-runtime-tui — TUI for durable-copilot-runtime apps
+pilotswarm-tui — TUI for pilotswarm apps
 
 USAGE
-  npx durable-copilot-runtime-tui [local|remote] [flags]
+  npx pilotswarm-tui [local|remote] [flags]
 
 MODES
   local       Embed workers in the TUI process (default)
@@ -83,19 +83,19 @@ CLI flags take precedence over env vars.
 
 EXAMPLES
   # Plugin-only (no code), env from file
-  npx durable-copilot-runtime-tui --env .env --plugin ./my-plugin
+  npx pilotswarm-tui --env .env --plugin ./my-plugin
 
   # Custom tools via worker module
-  npx durable-copilot-runtime-tui --env .env --plugin ./plugin --worker ./tools.js
+  npx pilotswarm-tui --env .env --plugin ./plugin --worker ./tools.js
 
   # All config in .env (zero flags)
   echo "DATABASE_URL=postgresql://..." >> .env
   echo "GITHUB_TOKEN=ghu_..." >> .env
   echo "PLUGIN_DIRS=./plugin" >> .env
-  npx durable-copilot-runtime-tui
+  npx pilotswarm-tui
 
   # Client-only, workers on AKS
-  npx durable-copilot-runtime-tui remote --store postgresql://... --namespace my-app
+  npx pilotswarm-tui remote --store postgresql://... --namespace my-app
 `.trim());
     process.exit(0);
 }

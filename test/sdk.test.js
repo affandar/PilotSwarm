@@ -1,13 +1,13 @@
 /**
- * durable-copilot-runtime — integration test suite.
+ * pilotswarm — integration test suite.
  *
- * Tests the full flow: DurableCopilotClient → orchestration → SessionProxy
+ * Tests the full flow: PilotSwarmClient → orchestration → SessionProxy
  * → SessionManager → ManagedSession → CopilotSession.
  *
  * Run: node --env-file=.env test/sdk.test.js
  */
 
-import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "../dist/index.js";
 
 const TIMEOUT = 120_000;
 const STORE = process.env.DATABASE_URL || "sqlite::memory:";
@@ -42,13 +42,13 @@ async function preflightChecks() {
 // ─── Helpers ─────────────────────────────────────────────────────
 
 async function withClient(opts, fn) {
-    const worker = new DurableCopilotWorker({
+    const worker = new PilotSwarmWorker({
         store: STORE,
         githubToken: process.env.GITHUB_TOKEN,
     });
     await worker.start();
 
-    const client = new DurableCopilotClient({
+    const client = new PilotSwarmClient({
         store: STORE,
         ...opts,
     });
@@ -318,7 +318,7 @@ async function testEventPersistence() {
     });
 }
 
-// ─── Test 9: DurableSession.on() event subscription ─────────────
+// ─── Test 9: PilotSwarmSession.on() event subscription ─────────────
 
 async function testSessionOn() {
     console.log("\n═══ Test 9: session.on() Events ═══");
@@ -390,13 +390,13 @@ async function testToolOnWorker() {
     });
 
     // Explicitly test the correct pattern: tools on worker, not client
-    const worker = new DurableCopilotWorker({
+    const worker = new PilotSwarmWorker({
         store: STORE,
         githubToken: process.env.GITHUB_TOKEN,
     });
     await worker.start();
 
-    const client = new DurableCopilotClient({ store: STORE });
+    const client = new PilotSwarmClient({ store: STORE });
     await client.start();
 
     try {
@@ -623,7 +623,7 @@ async function testWorkerRegisteredTools() {
 
     // Simulate remote mode: worker and client are independent processes.
     // Worker registers tools at startup time.
-    const worker = new DurableCopilotWorker({
+    const worker = new PilotSwarmWorker({
         store: STORE,
         githubToken: process.env.GITHUB_TOKEN,
     });
@@ -632,7 +632,7 @@ async function testWorkerRegisteredTools() {
     worker.registerTools([calculator]);
     await worker.start();
 
-    const client = new DurableCopilotClient({ store: STORE });
+    const client = new PilotSwarmClient({ store: STORE });
     await client.start();
 
     try {
@@ -700,14 +700,14 @@ async function testRegistryPlusSessionTools() {
         },
     });
 
-    const worker = new DurableCopilotWorker({
+    const worker = new PilotSwarmWorker({
         store: STORE,
         githubToken: process.env.GITHUB_TOKEN,
     });
     worker.registerTools([registryTool]);
     await worker.start();
 
-    const client = new DurableCopilotClient({ store: STORE });
+    const client = new PilotSwarmClient({ store: STORE });
     await client.start();
 
     try {
@@ -751,13 +751,13 @@ async function testWarmSessionToolUpdate() {
     console.log("\n═══ Test 18: Warm Session Picks Up New Tools ═══");
     let multiplyToolCalled = false;
 
-    const worker = new DurableCopilotWorker({
+    const worker = new PilotSwarmWorker({
         store: STORE,
         githubToken: process.env.GITHUB_TOKEN,
     });
     await worker.start();
 
-    const client = new DurableCopilotClient({ store: STORE });
+    const client = new PilotSwarmClient({ store: STORE });
     await client.start();
 
     // Wrap createSession to forward config to co-located worker
@@ -846,7 +846,7 @@ const tests = [
 
 await preflightChecks();
 
-console.log("🚀 durable-copilot-runtime Integration Test\n");
+console.log("🚀 pilotswarm Integration Test\n");
 console.log(`  Store: ${STORE.startsWith("postgres") ? "postgres" : STORE}`);
 
 let passed = 0;

@@ -2,9 +2,9 @@
 
 > **New here?** Start with the [Getting Started](./getting-started.md) guide to set up PostgreSQL, get a GitHub token, and create your `.env` file.
 
-## What is durable-copilot-runtime?
+## What is pilotswarm?
 
-durable-copilot-runtime is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide). It gives your AI agents **crash recovery, durable timers, session dehydration, and multi-node scaling** — just add a connection string.
+pilotswarm is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide). It gives your AI agents **crash recovery, durable timers, session dehydration, and multi-node scaling** — just add a connection string.
 
 Your code stays almost identical to the standard Copilot SDK. The runtime handles orchestration, session persistence, and fault tolerance transparently.
 
@@ -42,10 +42,10 @@ await client.stop();
 
 This works — but if the process crashes, the session is lost. `sleep()` blocks the process. You can't scale across nodes.
 
-### Durable Copilot Runtime (single-process mode)
+### PilotSwarm (single-process mode)
 
 ```typescript
-import { DurableCopilotClient, DurableCopilotWorker, defineTool } from "durable-copilot-runtime";
+import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm";
 
 // Same tool definition — unchanged from standard Copilot SDK
 const weather = defineTool("get_weather", {
@@ -62,14 +62,14 @@ const weather = defineTool("get_weather", {
 });
 
 // Worker runs LLM turns and executes tools
-const worker = new DurableCopilotWorker({
+const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,
 });
 await worker.start();
 
 // Client manages sessions and sends prompts
-const client = new DurableCopilotClient({
+const client = new PilotSwarmClient({
     store: process.env.DATABASE_URL,
 });
 await client.start();
@@ -90,13 +90,13 @@ await client.stop();
 await worker.stop();
 ```
 
-**Key difference:** Tools are registered on the `DurableCopilotWorker`, not on the client. Tool handlers are functions — they can't be serialized over the wire. The client only sends serializable config (model, system message) through the database.
+**Key difference:** Tools are registered on the `PilotSwarmWorker`, not on the client. Tool handlers are functions — they can't be serialized over the wire. The client only sends serializable config (model, system message) through the database.
 
 Now the agent can call `wait(3600, "Waiting 1 hour before next check")` and the process shuts down entirely. A durable timer fires an hour later and the agent picks up exactly where it left off — on any available node.
 
 ## What You Get Automatically
 
-| Feature | Standard Copilot SDK | durable-copilot-runtime |
+| Feature | Standard Copilot SDK | pilotswarm |
 |---------|---------------------|---------------------|
 | Tool calling | ✅ | ✅ Same `defineTool()` API |
 | Wait/pause | ❌ `sleep()` blocks process | ✅ Durable timer — process shuts down, wakes up later |
@@ -111,8 +111,8 @@ Now the agent can call `wait(3600, "Waiting 1 hour before next check")` and the 
 
 The runtime separates concerns into two components:
 
-- **`DurableCopilotClient`** — manages sessions, sends prompts, subscribes to events. Lightweight, no GitHub token needed. Only handles serializable data.
-- **`DurableCopilotWorker`** — runs LLM turns, executes tool handlers, manages the Copilot runtime. Requires a GitHub token. **This is where tools are registered.**
+- **`PilotSwarmClient`** — manages sessions, sends prompts, subscribes to events. Lightweight, no GitHub token needed. Only handles serializable data.
+- **`PilotSwarmWorker`** — runs LLM turns, executes tool handlers, manages the Copilot runtime. Requires a GitHub token. **This is where tools are registered.**
 
 Both connect to the same PostgreSQL database via a connection string.
 
@@ -150,12 +150,12 @@ const weather = defineTool("get_weather", {
     },
 });
 
-const worker = new DurableCopilotWorker({ store, githubToken });
+const worker = new PilotSwarmWorker({ store, githubToken });
 worker.registerTools([weather]);   // ← register before or after start()
 await worker.start();
 
 // app.js — runs on any machine (just needs the database URL)
-const client = new DurableCopilotClient({ store });
+const client = new PilotSwarmClient({ store });
 await client.start();
 
 const session = await client.createSession({
@@ -172,8 +172,8 @@ The tool names travel through duroxide as plain strings. The worker resolves the
 When client and worker run in the same process, you can pass Tool objects directly via `worker.setSessionConfig()`:
 
 ```typescript
-const worker = new DurableCopilotWorker({ store, githubToken });
-const client = new DurableCopilotClient({ store });
+const worker = new PilotSwarmWorker({ store, githubToken });
+const client = new PilotSwarmClient({ store });
 await worker.start();
 await client.start();
 
@@ -425,11 +425,11 @@ console.log(info.title);       // LLM-generated session summary
 
 ## API Reference
 
-### `DurableCopilotClient`
+### `PilotSwarmClient`
 
 | Method | Description |
 |--------|-------------|
-| `new DurableCopilotClient(options)` | Create a client |
+| `new PilotSwarmClient(options)` | Create a client |
 | `client.start()` | Initialize (connect to store) |
 | `client.stop()` | Clean up |
 | `client.createSession(config?)` | Create a new session (serializable config + optional local handlers/tools in same-process mode) |
@@ -437,17 +437,17 @@ console.log(info.title);       // LLM-generated session summary
 | `client.listSessions()` | List all active sessions |
 | `client.deleteSession(id)` | Soft-delete a session |
 
-### `DurableCopilotWorker`
+### `PilotSwarmWorker`
 
 | Method | Description |
 |--------|-------------|
-| `new DurableCopilotWorker(options)` | Create a worker |
+| `new PilotSwarmWorker(options)` | Create a worker |
 | `worker.start()` | Start polling for orchestrations |
 | `worker.stop()` | Graceful shutdown |
 | `worker.registerTools(tools)` | **Register tools for all sessions** (worker-level registry) |
 | `worker.setSessionConfig(id, config)` | Register tools and hooks for a specific session |
 
-### `DurableSession`
+### `PilotSwarmSession`
 
 | Method | Description |
 |--------|-------------|

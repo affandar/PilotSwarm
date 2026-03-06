@@ -2,7 +2,7 @@ import type {
     TurnResult,
     OrchestrationInput,
     SerializableSessionConfig,
-    DurableSessionStatus,
+    PilotSwarmSessionStatus,
     CommandMessage,
     CommandResponse,
 } from "./types.js";
@@ -13,7 +13,7 @@ import { createSessionProxy, createSessionManagerProxy } from "./session-proxy.j
  * Clients read this via waitForStatusChange() or getStatus().
  * @internal
  */
-function setStatus(ctx: any, status: DurableSessionStatus, extra?: Record<string, unknown>) {
+function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<string, unknown>) {
     ctx.setCustomStatus(JSON.stringify({ status, ...extra }));
 }
 
