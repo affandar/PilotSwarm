@@ -26,6 +26,20 @@ import { performance } from "node:perf_hooks";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ─── Global error handlers ──────────────────────────────────────
+// Prevent the TUI from crashing on transient network errors
+// (e.g. EADDRNOTAVAIL from stale PostgreSQL connections).
+process.on('uncaughtException', (err) => {
+    // Write to perf trace if available, otherwise stderr
+    const msg = `[uncaughtException] ${err.message}`;
+    try { _perfStream?.write(JSON.stringify({ ts: Date.now(), op: 'uncaughtException', err: err.message }) + '\n'); } catch {}
+    process.stderr.write(msg + '\n');
+});
+process.on('unhandledRejection', (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    try { _perfStream?.write(JSON.stringify({ ts: Date.now(), op: 'unhandledRejection', err: msg }) + '\n'); } catch {}
+});
+
 // ─── Performance tracing (temporary) ────────────────────────────
 // Writes to dumps/perf-trace.jsonl as newline-delimited JSON.
 // Each entry: { ts, op, dur?, meta? }
@@ -1550,6 +1564,7 @@ const statusBar = blessed.box({
     style: { fg: "gray" },
 });
 
+relayoutAll();
 screen.render();
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -2279,15 +2294,17 @@ async function refreshOrchestrations() {
     try {
         const cmsSessions = await client.listSessions();
         for (const s of cmsSessions) {
+            const orchId = `session-${s.sessionId}`;
             if (s.title) {
-                sessionHeadings.set(`session-${s.sessionId}`, s.title);
+                sessionHeadings.set(orchId, s.title);
             }
             if (s.parentSessionId) {
-                childToParent.set(`session-${s.sessionId}`, `session-${s.parentSessionId}`);
+                childToParent.set(orchId, `session-${s.parentSessionId}`);
             }
-            // Track system sessions
+            // Track system sessions — lock their title
             if (s.isSystem) {
-                systemSessionIds.add(`session-${s.sessionId}`);
+                systemSessionIds.add(orchId);
+                if (s.title) sessionHeadings.set(orchId, s.title);
             }
         }
     } catch {}
@@ -3234,11 +3251,14 @@ function startObserver(orchId) {
                         if (cs.turnResult.type === "completed") {
                             let displayContent = cs.turnResult.content;
                             // Extract HEADING if present (from summary requests)
+                            // Skip for system sessions — they have a fixed title
                             const hMatch = displayContent.match(/^HEADING:\s*(.+)/m);
-                            if (hMatch) {
+                            if (hMatch && !systemSessionIds.has(orchId)) {
                                 sessionHeadings.set(orchId, hMatch[1].trim().slice(0, 40));
                                 displayContent = displayContent.replace(/^HEADING:.*\n?/m, "").trim();
                                 scheduleRefreshOrchestrations();
+                            } else if (hMatch) {
+                                displayContent = displayContent.replace(/^HEADING:.*\n?/m, "").trim();
                             }
                             if (!cs.intermediateContent || cs.intermediateContent !== cs.turnResult.content) {
                                 showCopilotMessage(displayContent, orchId);
@@ -4117,7 +4137,7 @@ async function summarizeSession(orchId) {
                 const content = cs.turnResult.content;
                 // Extract heading from first line
                 const headingMatch = content.match(/^HEADING:\s*(.+)/m);
-                if (headingMatch) {
+                if (headingMatch && !systemSessionIds.has(orchId)) {
                     const heading = headingMatch[1].trim().slice(0, 40);
                     sessionHeadings.set(orchId, heading);
                     // Remove the HEADING line from the buffered content

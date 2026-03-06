@@ -176,6 +176,14 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
             connectionString: parsed.toString(),
             ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
         });
+
+        // Handle idle client errors (e.g. EADDRNOTAVAIL when the network
+        // drops). Without this, pg Pool emits an unhandled 'error' event
+        // which crashes the Node.js process.
+        pool.on('error', (err: Error) => {
+            console.error('[cms] pool idle client error (non-fatal):', err.message);
+        });
+
         return new PgSessionCatalogProvider(pool, schema ?? DEFAULT_SCHEMA);
     }
 

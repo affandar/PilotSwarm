@@ -88,14 +88,10 @@ export function* durableSessionOrchestration_1_0_5(
     function wrapWithResumeContext(userPrompt: string, extra?: string): string {
         const base = rehydrationMessage ??
             `The session was dehydrated and has been rehydrated on a new worker. ` +
-            `The LLM conversation history is preserved, but you should acknowledge the context switch. ` +
-            `After responding to the user's message below, resume exactly what you were doing before. ` +
-            `If you were in the middle of a recurring task, continue it.`;
-        const parts = [`[SYSTEM: ${base}`];
+            `The LLM conversation history is preserved.`;
+        const parts = [userPrompt, ``, `[SYSTEM: ${base}`];
         if (extra) parts.push(extra);
         parts.push(`]`);
-        parts.push(``);
-        parts.push(userPrompt);
         return parts.join('\n');
     }
 
