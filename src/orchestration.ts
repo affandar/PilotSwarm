@@ -557,16 +557,17 @@ export function* durableSessionOrchestration_1_0_5(
                         if (shouldDehydrate && userPrompt) {
                             finalPrompt = wrapWithResumeContext(
                                 userPrompt,
-                                `You were waiting on a ${result.seconds}s timer (reason: "${result.reason}"). ` +
-                                `${elapsedSec}s have elapsed, ${remainingSec}s remain. ` +
-                                `After handling the user's message, restart the wait using the wait tool for the remaining ${remainingSec} seconds only.`,
+                                `Your timer was interrupted by a USER MESSAGE. You MUST respond to the user's message below before doing anything else. ` +
+                                `Timer context: ${result.seconds}s timer (reason: "${result.reason}"), ` +
+                                `${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
+                                `After fully addressing the user's message, resume the wait for the remaining ${remainingSec} seconds.`,
                             );
                         } else if (userPrompt) {
                             // Not dehydrated but still interrupted — give timing context
                             finalPrompt = `${userPrompt}\n\n` +
-                                `[SYSTEM: You were waiting on a ${result.seconds}s timer (reason: "${result.reason}"). ` +
-                                `${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
-                                `After handling this message, restart the wait using the wait tool for the remaining ${remainingSec} seconds only.]`;
+                                `[SYSTEM: IMPORTANT — The above is a USER MESSAGE that interrupted your ${result.seconds}s timer (reason: "${result.reason}"). ` +
+                                `You MUST respond to the user's message FIRST. ${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
+                                `After fully answering the user, resume the wait for the remaining ${remainingSec} seconds.]`;
                         } else {
                             finalPrompt = userPrompt;
                         }
