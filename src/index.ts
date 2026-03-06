@@ -47,7 +47,8 @@ export { loadSkills } from "./skills.js";
 export { loadAgentFiles } from "./agent-loader.js";
 export { loadMcpConfig } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
-
+// Sweeper Agent tools
+export { createSweeperTools } from "./sweeper-tools.js";
 // Model providers
 export { loadModelProviders, ModelProviderRegistry } from "./model-providers.js";
 export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";

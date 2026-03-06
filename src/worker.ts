@@ -5,12 +5,14 @@ import { durableSessionOrchestration_1_0_1 } from "./orchestration_1_0_1.js";
 import { durableSessionOrchestration_1_0_0 } from "./orchestration_1_0_0.js";
 import { durableSessionOrchestration_1_0_2 } from "./orchestration_1_0_2.js";
 import { durableSessionOrchestration_1_0_3 } from "./orchestration_1_0_3.js";
-import { durableSessionOrchestration_1_0_4 } from "./orchestration.js";
+import { durableSessionOrchestration_1_0_4 } from "./orchestration_1_0_4.js";
+import { durableSessionOrchestration_1_0_5 } from "./orchestration.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
+import { createSweeperTools } from "./sweeper-tools.js";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
 import fs from "node:fs";
@@ -19,7 +21,7 @@ import path from "node:path";
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const { SqliteProvider, PostgresProvider, Runtime } = require("duroxide");
+const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
@@ -203,6 +205,18 @@ export class PilotSwarmWorker {
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.2", durableSessionOrchestration_1_0_2);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.3", durableSessionOrchestration_1_0_3);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.4", durableSessionOrchestration_1_0_4);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.5", durableSessionOrchestration_1_0_5);
+
+        // Auto-register sweeper tools if CMS is available
+        if (this._catalog) {
+            const sweeperClient = new Client(this._provider);
+            const sweeperTools = createSweeperTools({
+                catalog: this._catalog,
+                duroxideClient: sweeperClient,
+                duroxideSchema: this.config.duroxideSchema,
+            });
+            this.registerTools(sweeperTools);
+        }
 
         this.runtime.start().catch((err: any) => {
             console.error("[PilotSwarmWorker] Runtime error:", err);

@@ -1,0 +1,1 @@
+{ "tools": ["scan_completed_sessions", "cleanup_session", "prune_orchestrations", "get_system_stats"] }
