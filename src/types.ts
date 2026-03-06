@@ -89,6 +89,8 @@ export interface PilotSwarmSessionInfo {
     iterations: number;
     /** If this is a sub-agent session, the parent session's ID. */
     parentSessionId?: string;
+    /** Whether this is a system session (e.g. Sweeper Agent). Cannot be deleted. */
+    isSystem?: boolean;
 }
 
 // ─── Orchestration Input ─────────────────────────────────────────

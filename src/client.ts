@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.4";
+const ORCHESTRATION_VERSION = "1.0.5";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -96,6 +96,54 @@ export class PilotSwarmClient {
         return new PilotSwarmSession(sessionId, this, config?.onUserInputRequest);
     }
 
+    /**
+     * Create a system session (e.g. Sweeper Agent).
+     *
+     * System sessions are protected from deletion and appear with distinct
+     * styling in the TUI. They use the same orchestration as regular sessions.
+     * Idempotent: if a system session already exists, it is resumed.
+     */
+    async createSystemSession(config: {
+        model?: string;
+        systemMessage?: string;
+        toolNames?: string[];
+        title?: string;
+        onUserInputRequest?: UserInputHandler;
+    }): Promise<PilotSwarmSession> {
+        // Check if a system session already exists — resume it
+        const existingSessions = await this._catalog.listSessions();
+        const existing = existingSessions.find(s => s.isSystem);
+        if (existing) {
+            return this.resumeSession(existing.sessionId, {
+                model: config.model,
+                systemMessage: config.systemMessage,
+                toolNames: config.toolNames,
+                onUserInputRequest: config.onUserInputRequest,
+            });
+        }
+
+        const sessionId = crypto.randomUUID();
+        const fullConfig: ManagedSessionConfig = {
+            model: config.model,
+            systemMessage: config.systemMessage,
+            toolNames: config.toolNames,
+        };
+        this.sessionConfigs.set(sessionId, fullConfig);
+
+        // CMS: create with is_system = true
+        await this._catalog.createSession(sessionId, {
+            model: config.model,
+            isSystem: true,
+        });
+
+        // Set a fixed title immediately
+        if (config.title) {
+            await this._catalog.updateSession(sessionId, { title: config.title });
+        }
+
+        return new PilotSwarmSession(sessionId, this, config.onUserInputRequest);
+    }
+
     async resumeSession(sessionId: string, config?: ManagedSessionConfig & {
         onUserInputRequest?: UserInputHandler;
     }): Promise<PilotSwarmSession> {
@@ -119,10 +167,17 @@ export class PilotSwarmClient {
             iterations: row.currentIteration,
             error: row.lastError ?? undefined,
             parentSessionId: row.parentSessionId ?? undefined,
+            isSystem: row.isSystem || undefined,
         }));
     }
 
     async deleteSession(sessionId: string): Promise<void> {
+        // Guard: refuse to delete system sessions (CMS will also throw)
+        const session = await this._catalog.getSession(sessionId);
+        if (session?.isSystem) {
+            throw new Error("Cannot delete system session");
+        }
+
         this.sessionConfigs.delete(sessionId);
         this.parentSessionIds.delete(sessionId);
         this.nestingLevels.delete(sessionId);

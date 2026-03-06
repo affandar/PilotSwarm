@@ -42,7 +42,16 @@ if (!skipConfirm) {
     }
 }
 
-const pool = new pg.Pool({ connectionString: DATABASE_URL });
+// Parse SSL mode from URL — Azure DBs need rejectUnauthorized: false
+const parsedUrl = new URL(DATABASE_URL);
+const needsSsl = ["require", "prefer", "verify-ca", "verify-full"]
+    .includes(parsedUrl.searchParams.get("sslmode") ?? "");
+parsedUrl.searchParams.delete("sslmode");
+
+const pool = new pg.Pool({
+    connectionString: parsedUrl.toString(),
+    ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+});
 
 try {
     console.log("\n   Dropping schemas...");

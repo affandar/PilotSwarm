@@ -1754,6 +1754,13 @@ const store = process.env.DATABASE_URL || "sqlite::memory:";
 const numWorkers = parseInt(process.env.WORKERS ?? "4", 10);
 const isRemote = numWorkers === 0;
 
+// Sweeper Agent settings (all configurable via env vars)
+const SWEEPER_SCAN_INTERVAL = parseInt(process.env.SWEEPER_SCAN_INTERVAL ?? "60", 10);         // seconds between scans
+const SWEEPER_GRACE_MINUTES = parseInt(process.env.SWEEPER_GRACE_MINUTES ?? "5", 10);          // minutes before cleanup
+const SWEEPER_PRUNE_TERMINAL_MINUTES = parseInt(process.env.SWEEPER_PRUNE_TERMINAL_MINUTES ?? "5", 10); // delete terminal instances older than N minutes
+const SWEEPER_KEEP_EXECUTIONS = parseInt(process.env.SWEEPER_KEEP_EXECUTIONS ?? "3", 10);      // keep last N executions per instance
+const SWEEPER_PRUNE_INTERVAL = parseInt(process.env.SWEEPER_PRUNE_INTERVAL ?? "10", 10);       // prune every N scan iterations
+
 if (isRemote) {
     screen.title = "PilotSwarm (Scaled — Remote Workers)";
     appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (AKS Workers){/magenta-fg}");
@@ -2021,6 +2028,7 @@ const orchHasChanges = new Set(); // IDs with unseen changes
 const sessionHeadings = new Map(); // orchId → short heading from LLM
 const sessionSummaryBuffer = new Map(); // orchId → buffered summary text to show on switch
 const sessionSummarized = new Set(); // orchIds already summarized (avoid re-asking)
+const systemSessionIds = new Set(); // orchIds of system sessions (e.g. Sweeper Agent)
 
 // Per-session chat buffers — every observer writes here so content is preserved on switch
 const sessionChatBuffers = new Map(); // orchId → string[]
@@ -2100,10 +2108,19 @@ function updateSessionListIcons() {
         // Use cached depth from last full refresh
         const depth = orchDepthMap?.get(id) ?? 0;
         const indent = depth > 0 ? "  ".repeat(depth - 1) + "└ " : "";
-        const label = heading
-            ? `${heading} (${uuid4}) ${timeStr}`
-            : `(${uuid4}) ${timeStr}`;
-        orchList.setItem(i, `${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
+
+        // System sessions get special rendering: yellow, ≋ icon
+        if (systemSessionIds.has(id)) {
+            const sysLabel = heading
+                ? `${heading} (${uuid4}) ${timeStr}`
+                : `Sweeper Agent (${uuid4}) ${timeStr}`;
+            orchList.setItem(i, `${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
+        } else {
+            const label = heading
+                ? `${heading} (${uuid4}) ${timeStr}`
+                : `(${uuid4}) ${timeStr}`;
+            orchList.setItem(i, `${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
+        }
     }
     perfEnd(_ph, { n: orchIdOrder.length });
     scheduleRender();
@@ -2183,6 +2200,10 @@ async function refreshOrchestrations() {
             if (s.parentSessionId) {
                 childToParent.set(`session-${s.sessionId}`, `session-${s.parentSessionId}`);
             }
+            // Track system sessions
+            if (s.isSystem) {
+                systemSessionIds.add(`session-${s.sessionId}`);
+            }
         }
     } catch {}
 
@@ -2210,6 +2231,9 @@ async function refreshOrchestrations() {
     }
     const rootEntries = entries.filter(e => !childToParent.has(e.id));
     const orderedEntries = [];
+    // System sessions go first (sorted among themselves by createdAt)
+    const systemRoots = rootEntries.filter(e => systemSessionIds.has(e.id));
+    const normalRoots = rootEntries.filter(e => !systemSessionIds.has(e.id));
     function insertTree(entry, depth) {
         orderedEntries.push({ ...entry, depth });
         const children = childrenOf.get(entry.id) || [];
@@ -2217,7 +2241,10 @@ async function refreshOrchestrations() {
             insertTree(child, depth + 1);
         }
     }
-    for (const root of rootEntries) {
+    for (const root of systemRoots) {
+        insertTree(root, 0);
+    }
+    for (const root of normalRoots) {
         insertTree(root, 0);
     }
     // Orphan entries whose parent is not in the list
@@ -2281,10 +2308,19 @@ async function refreshOrchestrations() {
 
             const heading = sessionHeadings.get(id);
             const indent = depth > 0 ? "  ".repeat(depth - 1) + "└ " : "";
-            const label = heading
-                ? `${heading} (${uuid4}) ${timeStr}`
-                : `(${uuid4}) ${timeStr}`;
-            orchList.addItem(`${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
+
+            // System sessions get special rendering: yellow, ≋ icon
+            if (systemSessionIds.has(id)) {
+                const sysLabel = heading
+                    ? `${heading} (${uuid4}) ${timeStr}`
+                    : `Sweeper Agent (${uuid4}) ${timeStr}`;
+                orchList.addItem(`${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
+            } else {
+                const label = heading
+                    ? `${heading} (${uuid4}) ${timeStr}`
+                    : `(${uuid4}) ${timeStr}`;
+                orchList.addItem(`${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
+            }
         }
     }
     // Restore cursor position — keep the user's selection stable.
@@ -2367,6 +2403,11 @@ orchList.key(["c"], async () => {
     const idx = orchList.selected;
     if (idx >= 0 && idx < orchIdOrder.length) {
         const id = orchIdOrder[idx];
+        // Protect system sessions from cancellation
+        if (systemSessionIds.has(id)) {
+            appendLog("{yellow-fg}Cannot cancel system session{/yellow-fg}");
+            return;
+        }
         try {
             await dc.cancelInstance(id);
             appendLog(`{yellow-fg}Cancelled ${shortId(id)}{/yellow-fg}`);
@@ -2383,6 +2424,11 @@ orchList.key(["d"], async () => {
     const idx = orchList.selected;
     if (idx >= 0 && idx < orchIdOrder.length) {
         const id = orchIdOrder[idx];
+        // Protect system sessions from deletion
+        if (systemSessionIds.has(id)) {
+            appendLog("{yellow-fg}Cannot delete system session{/yellow-fg}");
+            return;
+        }
         if (typeof dc.deleteInstance === "function") {
             try {
                 await dc.deleteInstance(id);
@@ -2803,6 +2849,70 @@ const initialSession = await createNewSession();
 const thisSessionId = initialSession.sessionId;
 appendLog(`Session created ✓ {white-fg}(${shortId(thisSessionId)}…){/white-fg}`);
 
+// ─── Sweeper Agent (system session) ─────────────────────────────
+// Auto-create the system maintenance session. Idempotent — resumes if one exists.
+let sweeperSessionId = null;
+try {
+    const sweeperSession = await client.createSystemSession({
+        systemMessage: {
+            mode: "replace",
+            content: [
+                "You are the Sweeper Agent — a system maintenance agent for PilotSwarm.",
+                "",
+                "Your primary job is to keep the runtime clean by periodically scanning for",
+                "and deleting completed, failed, or orphaned sessions.",
+                "",
+                "## Default Behavior",
+                `1. Every ${SWEEPER_SCAN_INTERVAL} seconds, use scan_completed_sessions (graceMinutes=${SWEEPER_GRACE_MINUTES}) to find stale sessions.`,
+                "2. For each stale session found, use cleanup_session to delete it.",
+                "3. Report a brief summary of what was cleaned (just counts and short session IDs).",
+                `4. Every ~${SWEEPER_PRUNE_INTERVAL} iterations, call prune_orchestrations(deleteTerminalOlderThanMinutes=${SWEEPER_PRUNE_TERMINAL_MINUTES}, keepExecutions=${SWEEPER_KEEP_EXECUTIONS}) to bulk-clean duroxide state.`,
+                `5. Use the wait tool to sleep for ${SWEEPER_SCAN_INTERVAL} seconds, then repeat.`,
+                "",
+                "## Rules",
+                "- Never delete system sessions.",
+                "- Never delete sessions that are actively running with recent activity.",
+                "- Be concise — counts and 8-char IDs only for periodic logs.",
+                "- When nothing is found to clean, silently continue the loop (don't spam).",
+                "- When the user sends a message, respond helpfully. Use get_system_stats for status queries.",
+                "- For ANY waiting/sleeping, you MUST use the wait tool.",
+            ].join("\n"),
+        },
+        toolNames: ["scan_completed_sessions", "cleanup_session", "prune_orchestrations", "get_system_stats"],
+        title: "Sweeper Agent",
+    });
+    sweeperSessionId = sweeperSession.sessionId;
+    systemSessionIds.add(`session-${sweeperSessionId}`);
+    sessions.set(sweeperSessionId, sweeperSession);
+
+    // Pre-populate the sweeper's chat buffer with its ASCII banner
+    const sweeperOrchId = `session-${sweeperSessionId}`;
+    if (!sessionChatBuffers.has(sweeperOrchId)) {
+        sessionChatBuffers.set(sweeperOrchId, []);
+    }
+    const swBuf = sessionChatBuffers.get(sweeperOrchId);
+    swBuf.push("{bold}{yellow-fg}");
+    swBuf.push("   ____                                      ");
+    swBuf.push("  / ___/      _____  ___  ____  ___  _____   ");
+    swBuf.push("  \\__ \\ | /| / / _ \\/ _ \\/ __ \\/ _ \\/ ___/   ");
+    swBuf.push(" ___/ / |/ |/ /  __/  __/ /_/ /  __/ /       ");
+    swBuf.push("/____/|__/|__/\\___/\\___/ .___/\\___/_/        ");
+    swBuf.push("                       /_/            {/yellow-fg}{white-fg}Agent{/white-fg}");
+    swBuf.push("{/bold}");
+    swBuf.push("");
+    swBuf.push("  {bold}{white-fg}System Maintenance Agent{/white-fg}{/bold}");
+    swBuf.push("  {yellow-fg}Cleanup{/yellow-fg} · {green-fg}Monitoring{/green-fg} · {cyan-fg}Session lifecycle{/cyan-fg}");
+    swBuf.push("");
+    swBuf.push("  {yellow-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/yellow-fg}");
+    swBuf.push("");
+
+    // Kick off the cleanup loop
+    sweeperSession.send(`Begin your maintenance loop now. Scan every ${SWEEPER_SCAN_INTERVAL} seconds, clean up sessions completed more than ${SWEEPER_GRACE_MINUTES} minutes ago. Prune terminal orchestrations older than ${SWEEPER_PRUNE_TERMINAL_MINUTES} minutes every ${SWEEPER_PRUNE_INTERVAL} iterations.`);
+    appendLog(`Sweeper Agent created ✓ {yellow-fg}(${shortId(sweeperSessionId)}…){/yellow-fg}`);
+} catch (err) {
+    appendLog(`{yellow-fg}Sweeper Agent init: ${err.message}{/yellow-fg}`);
+}
+
 // ─── Active orchestration tracking ───────────────────────────────
 // The chat pane shows live output from the "active" orchestration.
 // Selecting a different orchestration in the left pane switches context.
@@ -2815,7 +2925,14 @@ function updateChatLabel() {
     const model = sessionModels.get(activeOrchId) || "";
     const shortModel = model.includes(":") ? model.split(":")[1] : model;
     const modelTag = shortModel ? ` {cyan-fg}${shortModel}{/cyan-fg}` : "";
-    chatBox.setLabel(` {bold}Chat{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
+    const isSweeper = systemSessionIds.has(activeOrchId);
+    if (isSweeper) {
+        chatBox.setLabel(` {bold}{yellow-fg}≋ Sweeper Agent{/yellow-fg}{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
+        chatBox.style.border.fg = "yellow";
+    } else {
+        chatBox.setLabel(` {bold}Chat{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
+        chatBox.style.border.fg = "cyan";
+    }
     screen.render();
 }
 

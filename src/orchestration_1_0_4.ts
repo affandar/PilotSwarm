@@ -34,7 +34,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_5(
+export function* durableSessionOrchestration_1_0_4(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -435,16 +435,6 @@ export function* durableSessionOrchestration_1_0_5(
                     } catch (err: any) {
                         ctx.traceInfo(`[orch] sendToSession(parent) failed: ${err.message} (non-fatal)`);
                     }
-
-                    // Sub-agents auto-terminate after completing their task and notifying
-                    // the parent. Without this, they sit in the idle loop forever (idleTimeout=-1)
-                    // and accumulate as zombie orchestrations.
-                    ctx.traceInfo(`[orch] sub-agent completed task, auto-terminating`);
-                    try {
-                        yield session.destroy();
-                    } catch {}
-                    setStatus(ctx, "completed", { iteration, turnResult: statusResult });
-                    return "done";
                 }
 
                 if (!blobEnabled || idleTimeout < 0) {
