@@ -190,6 +190,7 @@ process.stderr.write = _origStderr;
 const _origRender = screen.render.bind(screen);
 let _screenDirty = false;
 let _chatDirty = false;
+let _activityDirty = false;
 
 screen.render = function coalescedRender() {
     _screenDirty = true;
@@ -225,6 +226,24 @@ setInterval(() => {
         _chatDirty = false;
         _screenDirty = true;
     }
+    // Sync activity buffer → activityPane
+    if (_activityDirty) {
+        let currentActive;
+        try { currentActive = activeOrchId; } catch { currentActive = undefined; }
+        const aLines = currentActive && sessionActivityBuffers?.get(currentActive);
+        if (aLines) {
+            const wasAtBottom = activityPane.getScrollPerc() >= 95;
+            const prevScrollTop = activityPane.childBase || 0;
+            activityPane.setContent(aLines.join("\n"));
+            if (wasAtBottom) {
+                activityPane.setScrollPerc(100);
+            } else {
+                activityPane.scrollTo(prevScrollTop);
+            }
+        }
+        _activityDirty = false;
+        _screenDirty = true;
+    }
     if (_screenDirty) {
         _screenDirty = false;
         const t0 = performance.now();
@@ -250,6 +269,8 @@ function rightW() { return screen.width - leftW(); }
 function bodyH() { return screen.height - 3; } // total body (minus input bar)
 function sessH() { return Math.max(5, Math.floor(bodyH() * 0.25)); }
 function chatH() { return bodyH() - sessH(); }
+function activityH() { return Math.max(6, Math.floor(bodyH() * 0.28)); } // sticky Activity pane height
+function rightMainH() { return bodyH() - activityH(); } // remaining height for log panes
 
 // ─── Left pane: Orchestrations ───────────────────────────────────
 
@@ -446,6 +467,58 @@ const nodeMapPane = blessed.log({
     mouse: true,
     hidden: true,
 });
+
+// ─── Activity pane (sticky, bottom-right) ────────────────────────
+// Shows intermediate messages: tool calls, reasoning, status changes.
+// Visible in all log view modes — persists through "m" cycling.
+const activityPane = blessed.log({
+    parent: screen,
+    label: " {bold}Activity{/bold} ",
+    tags: true,
+    left: 0,
+    top: 0,
+    width: 10,
+    height: 10,
+    border: { type: "line" },
+    style: {
+        fg: "white",
+        border: { fg: "gray" },
+        label: { fg: "gray" },
+        focus: { border: { fg: "white" } },
+    },
+    scrollable: true,
+    alwaysScroll: true,
+    scrollbar: { style: { bg: "gray" } },
+    keys: true,
+    vi: true,
+    mouse: true,
+});
+
+// Per-session activity buffers
+const sessionActivityBuffers = new Map(); // orchId → string[]
+const MAX_ACTIVITY_BUFFER_LINES = 300;
+
+function appendActivity(text, orchId) {
+    let buffers, currentActive;
+    try { buffers = sessionActivityBuffers; } catch { return; }
+    try { currentActive = activeOrchId; } catch { currentActive = undefined; }
+    const targetOrch = orchId || currentActive || "_init";
+    if (!buffers.has(targetOrch)) buffers.set(targetOrch, []);
+    const buf = buffers.get(targetOrch);
+    buf.push(text);
+
+    // Cap buffer size
+    if (buf.length > MAX_ACTIVITY_BUFFER_LINES * 1.2) {
+        const dropped = buf.length - MAX_ACTIVITY_BUFFER_LINES;
+        buf.splice(0, dropped);
+        buf[0] = `{gray-fg}── ${dropped} older lines trimmed ──{/gray-fg}`;
+    }
+
+    // Mark dirty so the frame loop syncs buffer → activityPane
+    if (currentActive && targetOrch === currentActive) {
+        _activityDirty = true;
+    }
+}
 
 /**
  * Refresh the node map pane — vertical columns, one per worker node,
@@ -1248,18 +1321,25 @@ function pruneWorkerPanes(activePods) {
 
 function relayoutAll() {
     const lW = leftW(), rW = rightW(), bH = bodyH(), sH = sessH(), cH = chatH();
+    const aH = activityH(), rmH = rightMainH();
 
     // Left column: sessions on top, chat below
     orchList.left = 0; orchList.top = 0; orchList.width = lW; orchList.height = sH;
     chatBox.left = 0; chatBox.top = sH; chatBox.width = lW; chatBox.height = cH;
     statusBar.left = 1; statusBar.width = lW - 2;
 
-    // Right column: full-height log panes
+    // Activity pane: sticky bottom-right (always visible)
+    activityPane.left = lW;
+    activityPane.width = rW;
+    activityPane.top = rmH;
+    activityPane.height = aH;
+
+    // Right column: upper portion for log panes (reduced by activityH)
     if (logViewMode === "orchestration") {
         orchLogPane.left = lW;
         orchLogPane.width = rW;
         orchLogPane.top = 0;
-        orchLogPane.height = bH;
+        orchLogPane.height = rmH;
     } else if (logViewMode === "sequence") {
         const headerH = 3; // 2 lines + 1 border-like spacer
         seqHeaderBox.left = lW + 1;
@@ -1269,21 +1349,21 @@ function relayoutAll() {
         seqPane.left = lW;
         seqPane.width = rW;
         seqPane.top = headerH;
-        seqPane.height = bH - headerH;
+        seqPane.height = rmH - headerH;
     } else if (logViewMode === "nodemap") {
         nodeMapPane.left = lW;
         nodeMapPane.width = rW;
         nodeMapPane.top = 0;
-        nodeMapPane.height = bH;
+        nodeMapPane.height = rmH;
     } else {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
         if (panes.length > 0) {
-            const pH = Math.max(5, Math.floor(bH / panes.length));
+            const pH = Math.max(5, Math.floor(rmH / panes.length));
             for (let i = 0; i < panes.length; i++) {
                 panes[i].left = lW;
                 panes[i].width = rW;
                 panes[i].top = i * pH;
-                panes[i].height = i === panes.length - 1 ? bH - i * pH : pH;
+                panes[i].height = i === panes.length - 1 ? rmH - i * pH : pH;
             }
         }
     }
@@ -1666,6 +1746,9 @@ async function loadCmsHistory(orchId) {
         const truncated = events.length > MAX_RENDERED_EVENTS;
 
         // Build display lines from persisted events
+        // Chat lines = user messages + assistant responses
+        // Activity lines = tool calls, reasoning, status changes
+        const activityLines = [];
         if (truncated) {
             lines.push(`{gray-fg}── ${events.length - MAX_RENDERED_EVENTS} older events omitted (${events.length} total) ──{/gray-fg}`);
             lines.push("");
@@ -1690,16 +1773,16 @@ async function loadCmsHistory(orchId) {
                 }
             } else if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                lines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`);
+                activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}`);
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || "tool";
-                lines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}[tool] done{/green-fg} ${toolName}`);
+                activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`);
             } else if (type === "abort" || type === "session.info" || type === "session.idle"
                 || type === "session.usage_info" || type === "pending_messages.modified"
                 || type === "assistant.usage") {
                 // skip internal/noisy events
             } else {
-                lines.push(`{white-fg}[${timeStr}] [${type}]{/white-fg}`);
+                activityLines.push(`{white-fg}[${timeStr}] [${type}]{/white-fg}`);
             }
         }
 
@@ -1707,10 +1790,12 @@ async function loadCmsHistory(orchId) {
         lines.push("");
 
         sessionChatBuffers.set(orchId, lines);
+        sessionActivityBuffers.set(orchId, activityLines);
 
         if (orchId === activeOrchId) {
             // Let the frame loop sync this buffer to chatBox
             _chatDirty = true;
+            _activityDirty = true;
         }
 
         // Seed sequence view from CMS when no live worker-log sequence exists yet.
@@ -2984,10 +3069,10 @@ function startObserver(orchId) {
                     const reason = currentStatus.failureDetails?.errorMessage?.split("\n")[0]
                         || currentStatus.output?.split("\n")[0]
                         || "Unknown error";
-                    appendChatRaw(`{red-fg}❌ Orchestration failed: ${reason}{/red-fg}`, orchId);
+                    appendActivity(`{red-fg}❌ Orchestration failed: ${reason}{/red-fg}`, orchId);
                     updateLiveStatus("error");
                 } else {
-                    appendChatRaw(`{white-fg}Orchestration ${currentStatus.status}{/white-fg}`, orchId);
+                    appendActivity(`{gray-fg}Orchestration ${currentStatus.status}{/gray-fg}`, orchId);
                 }
                 setTurnInProgressIfActive(false);
                 setStatusIfActive(`${currentStatus.status} — session is dead`);
@@ -3024,7 +3109,7 @@ function startObserver(orchId) {
                         updateLiveStatus("input_required");
                     } else if (cs.status === "error") {
                         const errText = cs.error || "Unknown error";
-                        appendChatRaw(`{red-fg}⚠ ${errText}{/red-fg}`, orchId);
+                        appendActivity(`{red-fg}⚠ ${errText}{/red-fg}`, orchId);
                         if (cs.retriesExhausted) {
                             setStatusIfActive("Error — retries exhausted. Send a message to retry.");
                             setTurnInProgressIfActive(false);
@@ -3068,9 +3153,14 @@ function startObserver(orchId) {
                 }
 
                 if (cs) {
-                    // Show intermediate content
+                    // Show intermediate content in the activity pane
                     if (cs.intermediateContent) {
-                        showCopilotMessage(cs.intermediateContent, orchId);
+                        const prefix = `{white-fg}[${ts()}]{/white-fg} {gray-fg}[intermediate]{/gray-fg}`;
+                        appendActivity(prefix, orchId);
+                        const rendered = renderMarkdown(cs.intermediateContent);
+                        for (const line of rendered.split("\n")) {
+                            appendActivity(line, orchId);
+                        }
                     }
 
                     // Track live status
@@ -3162,7 +3252,7 @@ function startObserver(orchId) {
                         }
                     } else if (cs.status === "error") {
                         const errText = cs.error || "Unknown error";
-                        appendChatRaw(`{red-fg}⚠ ${errText}{/red-fg}`, orchId);
+                        appendActivity(`{red-fg}⚠ ${errText}{/red-fg}`, orchId);
                         if (cs.retriesExhausted) {
                             setStatusIfActive(`Error — retries exhausted. Send a message to retry.`);
                             setTurnInProgressIfActive(false);
@@ -3192,9 +3282,9 @@ function startObserver(orchId) {
                             const reason = info.failureDetails?.errorMessage?.split("\n")[0]
                                 || info.output?.split("\n")[0]
                                 || "Unknown error";
-                            appendChatRaw(`{red-fg}❌ Session failed: ${reason}{/red-fg}`, orchId);
+                            appendActivity(`{red-fg}❌ Session failed: ${reason}{/red-fg}`, orchId);
                         }
-                        appendChatRaw(`{white-fg}Orchestration ${info.status}{/white-fg}`, orchId);
+                        appendActivity(`{gray-fg}Orchestration ${info.status}{/gray-fg}`, orchId);
                         setTurnInProgressIfActive(false);
                         setStatusIfActive(`${info.status} — type a message`);
                         sessionObservers.delete(orchId);
@@ -3253,19 +3343,19 @@ function startCmsPoller(orchId) {
 
             if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                appendChatRaw(`{white-fg}[${t}]{/white-fg} {yellow-fg}[tool] start{/yellow-fg} ${toolName}`, orchId);
+                appendActivity(`{white-fg}[${t}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}`, orchId);
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || "tool";
-                appendChatRaw(`{white-fg}[${t}]{/white-fg} {green-fg}[tool] done{/green-fg} ${toolName}`, orchId);
+                appendActivity(`{white-fg}[${t}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`, orchId);
             } else if (type === "assistant.reasoning") {
-                appendChatRaw(`{white-fg}[${t}]{/white-fg} {white-fg}[assistant.reasoning]{/white-fg}`, orchId);
+                appendActivity(`{white-fg}[${t}]{/white-fg} {gray-fg}[reasoning]{/gray-fg}`, orchId);
             } else if (type === "assistant.turn_start") {
-                appendChatRaw(`{white-fg}[${t}]{/white-fg} {white-fg}[assistant.turn_start]{/white-fg}`, orchId);
+                appendActivity(`{white-fg}[${t}]{/white-fg} {gray-fg}[turn start]{/gray-fg}`, orchId);
             } else if (type === "assistant.usage" || type === "session.info" || type === "session.idle"
                 || type === "session.usage_info" || type === "pending_messages.modified" || type === "abort") {
                 // skip internal/noisy events
             } else {
-                appendChatRaw(`{white-fg}[${t}] [${type}]{/white-fg}`, orchId);
+                appendActivity(`{white-fg}[${t}] [${type}]{/white-fg}`, orchId);
             }
         });
 
@@ -3339,6 +3429,15 @@ async function switchToOrchestration(orchId) {
             chatBox.setContent("{white-fg}Loading…{/white-fg}");
         }
 
+        // Switch activity buffer
+        const cachedActivity = sessionActivityBuffers.get(orchId);
+        if (cachedActivity && cachedActivity.length > 0) {
+            activityPane.setContent(cachedActivity.join("\n"));
+            activityPane.setScrollPerc(100);
+        } else {
+            activityPane.setContent("");
+        }
+
         // Ensure an observer is running for this session
         startObserver(orchId);
 
@@ -3352,6 +3451,7 @@ async function switchToOrchestration(orchId) {
             // Only refresh if still the active session when the load completes
             if (orchId === activeOrchId) {
                 _chatDirty = true;
+                _activityDirty = true;
             }
         }).catch(() => {});
 
@@ -3865,7 +3965,7 @@ screen.on("keypress", (ch, key) => {
 
         if (key.name === "h" || ch === "h") {
             // Left
-            if (screen.focused === orchLogPane || screen.focused === nodeMapPane || screen.focused === seqPane || [...workerPanes.values()].includes(screen.focused)) {
+            if (screen.focused === orchLogPane || screen.focused === nodeMapPane || screen.focused === seqPane || screen.focused === activityPane || [...workerPanes.values()].includes(screen.focused)) {
                 chatBox.focus();
             } else if (screen.focused === chatBox) {
                 orchList.focus();
@@ -3886,7 +3986,7 @@ screen.on("keypress", (ch, key) => {
     }
 });
 
-// Tab: cycle sessions → chat → worker/orch panes → sessions
+// Tab: cycle sessions → chat → worker/orch panes → activity → sessions
 screen.key(["tab"], () => {
     const rightPanes = logViewMode === "orchestration"
         ? [orchLogPane]
@@ -3895,7 +3995,7 @@ screen.key(["tab"], () => {
         : logViewMode === "sequence"
         ? [seqPane]
         : workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
-    const allFocusable = [orchList, chatBox, ...rightPanes];
+    const allFocusable = [orchList, chatBox, ...rightPanes, activityPane];
     if (screen.focused === inputBar) {
         // From input, Tab goes to sessions
         orchList.focus();
