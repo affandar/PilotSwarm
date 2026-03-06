@@ -34,6 +34,8 @@ export interface SessionRow {
     lastError: string | null;
     /** If this session is a sub-agent, the parent session's ID. */
     parentSessionId: string | null;
+    /** Whether this is a system session (e.g. Sweeper Agent). */
+    isSystem: boolean;
 }
 
 /** Fields that can be updated on a session row. */
@@ -62,7 +64,7 @@ export interface SessionCatalogProvider {
     // ── Writes (called from client, before duroxide calls) ───
 
     /** Insert a new session. No-op if session already exists. */
-    createSession(sessionId: string, opts?: { model?: string; parentSessionId?: string }): Promise<void>;
+    createSession(sessionId: string, opts?: { model?: string; parentSessionId?: string; isSystem?: boolean }): Promise<void>;
 
     /** Update one or more fields on an existing session. */
     updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void>;
@@ -191,17 +193,23 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
                 `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS parent_session_id TEXT`
             );
         } catch {}
+        // Migration: add is_system column if missing
+        try {
+            await this.pool.query(
+                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT FALSE`
+            );
+        } catch {}
         this.initialized = true;
     }
 
     // ── Writes ───────────────────────────────────────────────
 
-    async createSession(sessionId: string, opts?: { model?: string; parentSessionId?: string }): Promise<void> {
+    async createSession(sessionId: string, opts?: { model?: string; parentSessionId?: string; isSystem?: boolean }): Promise<void> {
         await this.pool.query(
-            `INSERT INTO ${this.sql.table} (session_id, model, parent_session_id)
-             VALUES ($1, $2, $3)
+            `INSERT INTO ${this.sql.table} (session_id, model, parent_session_id, is_system)
+             VALUES ($1, $2, $3, $4)
              ON CONFLICT (session_id) DO NOTHING`,
-            [sessionId, opts?.model ?? null, opts?.parentSessionId ?? null],
+            [sessionId, opts?.model ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false],
         );
     }
 
@@ -249,6 +257,14 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
     }
 
     async softDeleteSession(sessionId: string): Promise<void> {
+        // Guard: refuse to delete system sessions
+        const { rows } = await this.pool.query(
+            `SELECT is_system FROM ${this.sql.table} WHERE session_id = $1`,
+            [sessionId],
+        );
+        if (rows.length > 0 && rows[0].is_system) {
+            throw new Error("Cannot delete system session");
+        }
         await this.pool.query(
             `UPDATE ${this.sql.table} SET deleted_at = now(), updated_at = now() WHERE session_id = $1`,
             [sessionId],
@@ -292,7 +308,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
     async getLastSessionId(): Promise<string | null> {
         const { rows } = await this.pool.query(
             `SELECT session_id FROM ${this.sql.table}
-             WHERE deleted_at IS NULL
+             WHERE deleted_at IS NULL AND is_system = FALSE
              ORDER BY last_active_at DESC NULLS LAST
              LIMIT 1`,
         );
@@ -369,6 +385,7 @@ function rowToSessionRow(row: any): SessionRow {
         currentIteration: row.current_iteration ?? 0,
         lastError: row.last_error ?? null,
         parentSessionId: row.parent_session_id ?? null,
+        isSystem: row.is_system ?? false,
     };
 }
 
