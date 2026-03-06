@@ -1,4 +1,4 @@
-# Copilot Instructions for pilotswarm
+# Copilot Instructions for PilotSwarm
 
 ## Project Overview
 

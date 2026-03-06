@@ -2,7 +2,7 @@
 
 ## 1. Design Philosophy
 
-The pilotswarm is a **transparent durability layer underneath the GitHub Copilot SDK**. A developer using the Copilot SDK should be able to switch to the durable version with minimal code changes and gain:
+PilotSwarm is a **transparent durability layer underneath the GitHub Copilot SDK**. A developer using the Copilot SDK should be able to switch to the durable version with minimal code changes and gain:
 
 - **Crash resilience** — sessions survive process restarts
 - **Durable timers** — agents can wait hours/days without holding a process

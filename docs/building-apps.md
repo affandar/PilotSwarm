@@ -1,6 +1,6 @@
-# Building Apps on pilotswarm
+# Building Apps on PilotSwarm
 
-This guide explains how to build apps on the pilotswarm. The primary
+This guide explains how to build apps on PilotSwarm. The primary
 extension mechanism is **plugins** — a directory structure containing agents, skills,
 and MCP server configs. Workers load plugin contents at startup and pass them through
 to the Copilot SDK via proven session config fields (`skillDirectories`, `customAgents`,
@@ -11,7 +11,7 @@ The runtime ships a full TUI as a CLI (`pilotswarm-tui`) — see
 
 ## Architecture: Plugins + Tools + Runtime
 
-Every app built on the pilotswarm has three layers:
+Every app built on PilotSwarm has three layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

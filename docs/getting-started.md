@@ -1,6 +1,6 @@
 # Getting Started — From Zero to Running
 
-This guide walks through setting up a fully working pilotswarm environment
+This guide walks through setting up a fully working PilotSwarm environment
 from scratch — the durable execution runtime for GitHub Copilot SDK agents.
 
 By the end you'll have:
