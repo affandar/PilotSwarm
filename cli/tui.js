@@ -479,8 +479,11 @@ const workerLogBuffers = new Map(); // podName → [{orchId, text}] — raw entr
 const paneColors = ["yellow", "magenta", "green", "blue"];
 let nextColorIdx = 0;
 
-// Log viewing mode: "workers" | "orchestration" | "sequence" | "nodemap" | "markdown"
+// Log viewing mode: "workers" | "orchestration" | "sequence" | "nodemap"
 let logViewMode = "workers";
+// Markdown viewer overlay — toggled independently via 'v' key.
+// When active, replaces the entire right side (log panes + activity pane).
+let mdViewActive = false;
 
 // Per-orchestration log buffer — every log line tagged with an instance_id is stored here
 const orchLogBuffers = new Map(); // orchId → { lines: string[], podColors: Map<podName, color> }
@@ -1436,14 +1439,15 @@ function appendOrchLog(orchId, podName, text) {
 }
 
 function switchLogMode() {
+    // If markdown view is active, 'm' has no effect
+    if (mdViewActive) return;
+
     // Hide all right-pane views first
     for (const pane of workerPanes.values()) pane.hide();
     orchLogPane.hide();
     seqPane.hide();
     seqHeaderBox.hide();
     nodeMapPane.hide();
-    mdFileListPane.hide();
-    mdPreviewPane.hide();
 
     if (logViewMode === "workers") {
         logViewMode = "orchestration";
@@ -1458,11 +1462,6 @@ function switchLogMode() {
         logViewMode = "nodemap";
         nodeMapPane.show();
         refreshNodeMap();
-    } else if (logViewMode === "nodemap") {
-        logViewMode = "markdown";
-        mdFileListPane.show();
-        mdPreviewPane.show();
-        refreshMarkdownViewer();
     } else {
         logViewMode = "workers";
         for (const pane of workerPanes.values()) pane.show();
@@ -1635,6 +1634,38 @@ function relayoutAll() {
     activityPane.top = rmH;
     activityPane.height = aH;
 
+    // ── Markdown viewer overlay: replaces entire right side ──
+    if (mdViewActive) {
+        // Hide normal right-side panes
+        for (const pane of workerPanes.values()) pane.hide();
+        orchLogPane.hide();
+        seqPane.hide();
+        seqHeaderBox.hide();
+        nodeMapPane.hide();
+        activityPane.hide();
+
+        // File list on top (~25%), preview on bottom (~75%)
+        const mdListH = Math.max(5, Math.floor(bH * 0.25));
+        const mdPreviewH = bH - mdListH;
+        mdFileListPane.left = lW;
+        mdFileListPane.width = rW;
+        mdFileListPane.top = 0;
+        mdFileListPane.height = mdListH;
+        mdFileListPane.show();
+        mdPreviewPane.left = lW;
+        mdPreviewPane.width = rW;
+        mdPreviewPane.top = mdListH;
+        mdPreviewPane.height = mdPreviewH;
+        mdPreviewPane.show();
+        screen.render();
+        return;
+    }
+
+    // Normal mode: activity pane visible
+    activityPane.show();
+    mdFileListPane.hide();
+    mdPreviewPane.hide();
+
     // Right column: upper portion for log panes (reduced by activityH)
     if (logViewMode === "orchestration") {
         orchLogPane.left = lW;
@@ -1656,16 +1687,6 @@ function relayoutAll() {
         nodeMapPane.width = rW;
         nodeMapPane.top = 0;
         nodeMapPane.height = rmH;
-    } else if (logViewMode === "markdown") {
-        const listW = Math.min(28, Math.max(20, Math.floor(rW * 0.3)));
-        mdFileListPane.left = lW;
-        mdFileListPane.width = listW;
-        mdFileListPane.top = 0;
-        mdFileListPane.height = rmH;
-        mdPreviewPane.left = lW + listW;
-        mdPreviewPane.width = rW - listW;
-        mdPreviewPane.top = 0;
-        mdPreviewPane.height = rmH;
     } else {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
         if (panes.length > 0) {
@@ -1689,8 +1710,6 @@ function redrawActiveViews() {
         refreshSeqPane();
     } else if (logViewMode === "nodemap") {
         refreshNodeMap();
-    } else if (logViewMode === "markdown") {
-        refreshMarkdownViewer();
     } else {
         recolorWorkerPanes();
     }
@@ -4417,7 +4436,17 @@ screen.on("keypress", (ch, key) => {
         return;
     }
 
-    // m: toggle log viewing mode (only from non-input panes)
+    // v: toggle markdown viewer overlay (replaces entire right side)
+    if (ch === "v" && screen.focused !== inputBar) {
+        mdViewActive = !mdViewActive;
+        if (mdViewActive) refreshMarkdownViewer();
+        screen.realloc();
+        relayoutAll();
+        setStatus(mdViewActive ? "Markdown Viewer (v to exit)" : `Log mode: ${({ workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" })[logViewMode]}`);
+        return;
+    }
+
+    // m: cycle log viewing mode (only from non-input panes, disabled during md view)
     if (ch === "m" && screen.focused !== inputBar) {
         switchLogMode();
         // Force the same full repaint that 'r' does
@@ -4425,7 +4454,7 @@ screen.on("keypress", (ch, key) => {
         relayoutAll();
         if (logViewMode === "sequence") refreshSeqPane();
         if (logViewMode === "nodemap") refreshNodeMap();
-        const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map", markdown: "Markdown Viewer" };
+        const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" };
         setStatus(`Log mode: ${modeNames[logViewMode]}`);
         return;
     }
@@ -4518,14 +4547,15 @@ screen.on("keypress", (ch, key) => {
     // h/l navigation only when NOT in the input bar
     if (screen.focused !== inputBar) {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
-        const rightPane = logViewMode === "orchestration" ? orchLogPane
+        const rightPane = mdViewActive ? mdFileListPane
+            : logViewMode === "orchestration" ? orchLogPane
             : logViewMode === "nodemap" ? nodeMapPane
             : logViewMode === "sequence" ? seqPane
             : (panes.length > 0 ? panes[0] : null);
 
         if (key.name === "h" || ch === "h") {
             // Left
-            if (screen.focused === orchLogPane || screen.focused === nodeMapPane || screen.focused === seqPane || screen.focused === activityPane || [...workerPanes.values()].includes(screen.focused)) {
+            if (screen.focused === mdFileListPane || screen.focused === mdPreviewPane || screen.focused === orchLogPane || screen.focused === nodeMapPane || screen.focused === seqPane || screen.focused === activityPane || [...workerPanes.values()].includes(screen.focused)) {
                 chatBox.focus();
             } else if (screen.focused === chatBox) {
                 orchList.focus();
@@ -4546,23 +4576,102 @@ screen.on("keypress", (ch, key) => {
     }
 });
 
-// Tab: cycle sessions → chat → worker/orch panes → activity → sessions
+// Tab: cycle sessions → chat → right panes
 screen.key(["tab"], () => {
-    const rightPanes = logViewMode === "orchestration"
-        ? [orchLogPane]
-        : logViewMode === "nodemap"
-        ? [nodeMapPane]
-        : logViewMode === "sequence"
-        ? [seqPane]
-        : workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
-    const allFocusable = [orchList, chatBox, ...rightPanes, activityPane];
+    let rightPanes;
+    if (mdViewActive) {
+        rightPanes = [mdFileListPane, mdPreviewPane];
+    } else {
+        rightPanes = logViewMode === "orchestration"
+            ? [orchLogPane]
+            : logViewMode === "nodemap"
+            ? [nodeMapPane]
+            : logViewMode === "sequence"
+            ? [seqPane]
+            : workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
+        rightPanes.push(activityPane);
+    }
+    const allFocusable = [orchList, chatBox, ...rightPanes];
     if (screen.focused === inputBar) {
-        // From input, Tab goes to sessions
         orchList.focus();
     } else {
         const currentIdx = allFocusable.indexOf(screen.focused);
         const nextIdx = (currentIdx + 1) % allFocusable.length;
         allFocusable[nextIdx].focus();
+    }
+    screen.render();
+});
+
+// ─── Ctrl+w hjkl: vim-style pane switching ───────────────────────
+// Press Ctrl+w, then h/j/k/l within 500ms to move focus.
+let ctrlWPending = false;
+let ctrlWTimer = null;
+
+screen.key(["C-w"], () => {
+    ctrlWPending = true;
+    if (ctrlWTimer) clearTimeout(ctrlWTimer);
+    ctrlWTimer = setTimeout(() => { ctrlWPending = false; }, 500);
+    setStatus("{yellow-fg}Ctrl+w{/yellow-fg} → press h/j/k/l");
+});
+
+screen.on("keypress", (ch, key) => {
+    if (!ctrlWPending || !key) return;
+    if (!["h", "j", "k", "l"].includes(key.name)) {
+        ctrlWPending = false;
+        return;
+    }
+    ctrlWPending = false;
+    if (ctrlWTimer) { clearTimeout(ctrlWTimer); ctrlWTimer = null; }
+
+    // Build a spatial map of focusable panes
+    // Left column: orchList (top-left), chatBox (bottom-left)
+    // Right column depends on mode
+    let rightPanes;
+    if (mdViewActive) {
+        rightPanes = [mdFileListPane, mdPreviewPane];
+    } else {
+        rightPanes = logViewMode === "orchestration" ? [orchLogPane]
+            : logViewMode === "nodemap" ? [nodeMapPane]
+            : logViewMode === "sequence" ? [seqPane]
+            : workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
+        rightPanes.push(activityPane);
+    }
+    const leftPanes = [orchList, chatBox];
+    const allPanes = [...leftPanes, ...rightPanes];
+    const cur = screen.focused;
+    const isLeft = leftPanes.includes(cur);
+    const isRight = rightPanes.includes(cur);
+
+    switch (key.name) {
+        case "h": // move left
+            if (isRight) chatBox.focus();
+            else if (cur === chatBox) orchList.focus();
+            break;
+        case "l": // move right
+            if (cur === orchList) chatBox.focus();
+            else if (isLeft && rightPanes.length) rightPanes[0].focus();
+            else if (isRight) {
+                const idx = rightPanes.indexOf(cur);
+                if (idx >= 0 && idx < rightPanes.length - 1) rightPanes[idx + 1].focus();
+            }
+            break;
+        case "j": { // move down
+            if (cur === orchList) chatBox.focus();
+            else if (isRight) {
+                const idx = rightPanes.indexOf(cur);
+                if (idx >= 0 && idx < rightPanes.length - 1) rightPanes[idx + 1].focus();
+            }
+            break;
+        }
+        case "k": { // move up
+            if (cur === chatBox) orchList.focus();
+            else if (isRight) {
+                const idx = rightPanes.indexOf(cur);
+                if (idx > 0) rightPanes[idx - 1].focus();
+                else if (idx === 0) orchList.focus();
+            }
+            break;
+        }
     }
     screen.render();
 });
@@ -4593,8 +4702,9 @@ appendChatRaw("{bold}Controls:{/bold}");
 appendChatRaw("  {yellow-fg}Esc{/yellow-fg}    exit prompt → navigate TUI");
 appendChatRaw("  {yellow-fg}p{/yellow-fg}      back to prompt from anywhere");
 appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes");
-appendChatRaw("  {yellow-fg}h/l{/yellow-fg}    move left/right between panes");
-appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence → node map → markdown)");
+appendChatRaw("  {yellow-fg}Ctrl+w{/yellow-fg} + {yellow-fg}hjkl{/yellow-fg}  vim-style pane switching");
+appendChatRaw("  {yellow-fg}v{/yellow-fg}      toggle markdown viewer (full right side)");
+appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence → node map)");
 appendChatRaw("");
 appendChatRaw("{bold}Scrolling (when chat/log pane focused):{/bold}");
 appendChatRaw("  {yellow-fg}j/k{/yellow-fg} or {yellow-fg}↑/↓{/yellow-fg}   scroll line by line");
