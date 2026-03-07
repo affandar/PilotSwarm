@@ -1753,13 +1753,30 @@ async function loadCmsHistory(orchId) {
         const MAX_RENDERED_EVENTS = 120;
         const MAX_TOTAL_RENDER_CHARS = 50_000;
         const MAX_ASSISTANT_MESSAGE_CHARS = 4_000;
+        const dc = getDc();
 
-        // Fetch events and session info in parallel
-        const [events, info] = await Promise.all([
+        // Fetch events, session info, and live status in parallel.
+        // The live custom status may contain the latest `turnResult` even when
+        // the CMS history does not yet have a persisted `assistant.message`.
+        const [events, info, liveStatus] = await Promise.all([
             sess.getMessages(CMS_HISTORY_FETCH_LIMIT),
             (!sessionModels.has(orchId)) ? sess.getInfo().catch(() => null) : Promise.resolve(null),
+            dc ? dc.getStatus(orchId).catch(() => null) : Promise.resolve(null),
         ]);
         eventCount = events?.length || 0;
+
+        let liveCustomStatus = null;
+        if (liveStatus?.customStatus) {
+            try {
+                liveCustomStatus = typeof liveStatus.customStatus === "string"
+                    ? JSON.parse(liveStatus.customStatus)
+                    : liveStatus.customStatus;
+            } catch {}
+        }
+
+        const liveTurnContent = liveCustomStatus?.turnResult?.type === "completed"
+            ? liveCustomStatus.turnResult.content
+            : "";
 
         // Populate session model if not already known
         if (info?.model) {
@@ -1767,7 +1784,7 @@ async function loadCmsHistory(orchId) {
             if (orchId === activeOrchId) updateChatLabel();
         }
 
-        if (!events || events.length === 0) {
+        if ((!events || events.length === 0) && !liveTurnContent) {
             sessionChatBuffers.set(orchId, []);
             if (orchId === activeOrchId) chatBox.setContent("");
             return;
@@ -1789,18 +1806,20 @@ async function loadCmsHistory(orchId) {
                 second: "2-digit",
             });
         };
+        const normalizeContent = (text) => (text || "").replace(/\r\n/g, "\n").trim();
 
         // Cap rendered events to the most recent N to keep switching fast.
-        const renderEvents = events.length > MAX_RENDERED_EVENTS
+        const renderEvents = (events || []).length > MAX_RENDERED_EVENTS
             ? events.slice(-MAX_RENDERED_EVENTS)
-            : events;
-        const truncated = events.length > MAX_RENDERED_EVENTS;
+            : (events || []);
+        const truncated = (events || []).length > MAX_RENDERED_EVENTS;
 
         // Build display lines from persisted events
         // Chat lines = user messages + assistant responses
         // Activity lines = tool calls, reasoning, status changes
         const activityLines = [];
         let renderedChars = 0;
+        let lastAssistantContent = "";
         if (truncated) {
             lines.push(`{gray-fg}── ${events.length - MAX_RENDERED_EVENTS} older events omitted (${events.length} total) ──{/gray-fg}`);
             lines.push("");
@@ -1816,6 +1835,7 @@ async function loadCmsHistory(orchId) {
             } else if (type === "assistant.message") {
                 const content = evt.data?.content;
                 if (content) {
+                    lastAssistantContent = content;
                     if (renderedChars >= MAX_TOTAL_RENDER_CHARS) {
                         lines.push(`{gray-fg}── additional assistant output omitted to keep session switching fast ──{/gray-fg}`);
                         lines.push("");
@@ -1848,8 +1868,34 @@ async function loadCmsHistory(orchId) {
             }
         }
 
-        lines.push(`{white-fg}── recent history loaded from database (${eventCount} events fetched) ──{/white-fg}`);
-        lines.push("");
+        const normalizedLiveTurn = normalizeContent(liveTurnContent);
+        const normalizedLastAssistant = normalizeContent(lastAssistantContent);
+        const liveTurnMissingFromHistory = normalizedLiveTurn
+            && normalizedLiveTurn !== normalizedLastAssistant;
+
+        if (liveTurnMissingFromHistory) {
+            if (lines.length > 0 && lines[lines.length - 1] !== "") {
+                lines.push("");
+            }
+            lines.push("{gray-fg}── latest turn result recovered from live status ──{/gray-fg}");
+            lines.push("");
+
+            const clippedLiveTurn = liveTurnContent.length > MAX_ASSISTANT_MESSAGE_CHARS
+                ? liveTurnContent.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + "\n\n[output truncated in TUI history view]"
+                : liveTurnContent;
+            lines.push(`{white-fg}[${fmtTime(Date.now())}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
+            const renderedLiveTurn = renderMarkdown(clippedLiveTurn);
+            renderedChars += clippedLiveTurn.length;
+            for (const line of renderedLiveTurn.split("\n")) {
+                lines.push(line);
+            }
+            lines.push("");
+        }
+
+        if (eventCount > 0) {
+            lines.push(`{white-fg}── recent history loaded from database (${eventCount} events fetched) ──{/white-fg}`);
+            lines.push("");
+        }
 
         sessionChatBuffers.set(orchId, lines);
         sessionActivityBuffers.set(orchId, activityLines);
