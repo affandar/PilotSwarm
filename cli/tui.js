@@ -736,9 +736,15 @@ function refreshMarkdownViewer() {
 }
 
 // File list navigation — select file and render preview
+// Guard against re-entrancy: refreshMarkdownViewer() calls .select() which
+// can fire "select item" again → infinite recursion.
+let _mdRefreshing = false;
 mdFileListPane.on("select item", (_el, idx) => {
+    if (_mdRefreshing) return;
     mdViewerSelectedIdx = idx;
+    _mdRefreshing = true;
     refreshMarkdownViewer();
+    _mdRefreshing = false;
 });
 
 // j/k navigation for md file list (mirrors orchList pattern)
