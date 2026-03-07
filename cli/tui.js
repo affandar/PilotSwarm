@@ -344,6 +344,9 @@ function registerFocusRing(pane, defaultFg) {
     pane.on("focus", () => {
         pane.style.border.fg = FOCUS_BORDER_FG;
         pane.style.border.bold = true;
+        // Switch to solid block border for a heavier/thicker appearance
+        pane.border.type = "bg";
+        pane.border.ch = "▓";
         // Also brighten the label to match
         if (pane.style.label) pane.style.label.fg = FOCUS_BORDER_FG;
         scheduleRender();
@@ -351,6 +354,9 @@ function registerFocusRing(pane, defaultFg) {
     pane.on("blur", () => {
         pane.style.border.fg = paneDefaultBorderFg.get(pane) || defaultFg;
         pane.style.border.bold = false;
+        // Revert to thin line border
+        pane.border.type = "line";
+        delete pane.border.ch;
         if (pane.style.label) pane.style.label.fg = paneDefaultBorderFg.get(pane) || defaultFg;
         scheduleRender();
     });
