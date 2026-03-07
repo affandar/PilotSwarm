@@ -4531,6 +4531,35 @@ screen.on("keypress", (ch, key) => {
         return;
     }
 
+    // ── Markdown file list: j/k navigation (screen-level for reliability) ──
+    if (mdViewActive && screen.focused === mdFileListPane) {
+        if (key.name === "j" || key.name === "down") {
+            const total = mdFileListPane.items.length;
+            if (total > 0) {
+                const next = Math.min(total - 1, mdViewerSelectedIdx + 1);
+                if (next !== mdViewerSelectedIdx) {
+                    mdViewerSelectedIdx = next;
+                    mdFileListPane.select(next);
+                    refreshMarkdownViewer();
+                }
+            }
+            return;
+        }
+        if (key.name === "k" || key.name === "up") {
+            if (mdViewerSelectedIdx > 0) {
+                mdViewerSelectedIdx--;
+                mdFileListPane.select(mdViewerSelectedIdx);
+                refreshMarkdownViewer();
+            }
+            return;
+        }
+        if (key.name === "enter") {
+            mdPreviewPane.focus();
+            screen.render();
+            return;
+        }
+    }
+
     // m: cycle log viewing mode (only from non-input panes, disabled during md view)
     if (ch === "m" && screen.focused !== inputBar) {
         switchLogMode();
@@ -4629,6 +4658,24 @@ screen.on("keypress", (ch, key) => {
         return;
     }
 
+    // Tab / Shift+Tab: cycle through panes (handled here for reliability)
+    if (key.name === "tab" && screen.focused !== inputBar) {
+        const allFocusable = buildFocusableList();
+        if (key.shift) {
+            // Shift+Tab: backward
+            const currentIdx = allFocusable.indexOf(screen.focused);
+            const prevIdx = (currentIdx - 1 + allFocusable.length) % allFocusable.length;
+            allFocusable[prevIdx].focus();
+        } else {
+            // Tab: forward
+            const currentIdx = allFocusable.indexOf(screen.focused);
+            const nextIdx = (currentIdx + 1) % allFocusable.length;
+            allFocusable[nextIdx].focus();
+        }
+        screen.render();
+        return;
+    }
+
     // h/l navigation only when NOT in the input bar
     if (screen.focused !== inputBar) {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
@@ -4661,8 +4708,8 @@ screen.on("keypress", (ch, key) => {
     }
 });
 
-// Tab: cycle forward through panes
-// Shift+Tab: cycle backward through panes
+// Tab/Shift+Tab pane cycling is handled in the main keypress handler above.
+// buildFocusableList() used by that handler:
 function buildFocusableList() {
     let rightPanes;
     if (mdViewActive) {
@@ -4679,45 +4726,6 @@ function buildFocusableList() {
     }
     return [orchList, chatBox, ...rightPanes];
 }
-
-screen.key(["tab"], () => {
-    const allFocusable = buildFocusableList();
-    if (screen.focused === inputBar) {
-        orchList.focus();
-    } else {
-        const currentIdx = allFocusable.indexOf(screen.focused);
-        const nextIdx = (currentIdx + 1) % allFocusable.length;
-        allFocusable[nextIdx].focus();
-    }
-    screen.render();
-});
-
-screen.key(["S-tab"], () => {
-    const allFocusable = buildFocusableList();
-    if (screen.focused === inputBar) {
-        allFocusable[allFocusable.length - 1].focus();
-    } else {
-        const currentIdx = allFocusable.indexOf(screen.focused);
-        const prevIdx = (currentIdx - 1 + allFocusable.length) % allFocusable.length;
-        allFocusable[prevIdx].focus();
-    }
-    screen.render();
-});
-
-// Also handle shift+tab via keypress for terminals that send it differently
-screen.on("keypress", (_ch, key) => {
-    if (key && key.name === "tab" && key.shift) {
-        const allFocusable = buildFocusableList();
-        if (screen.focused === inputBar) {
-            allFocusable[allFocusable.length - 1].focus();
-        } else {
-            const currentIdx = allFocusable.indexOf(screen.focused);
-            const prevIdx = (currentIdx - 1 + allFocusable.length) % allFocusable.length;
-            allFocusable[prevIdx].focus();
-        }
-        screen.render();
-    }
-});
 
 screen.on("resize", () => {
     relayoutAll();
