@@ -344,13 +344,21 @@ function registerFocusRing(pane, defaultFg) {
     pane.on("focus", () => {
         pane.style.border.fg = FOCUS_BORDER_FG;
         pane.style.border.bold = true;
-        if (pane.style.label) pane.style.label.fg = FOCUS_BORDER_FG;
+        pane.style.border.bg = "green";   // solid green background behind border chars
+        if (pane.style.label) {
+            pane.style.label.fg = FOCUS_BORDER_FG;
+            pane.style.label.bg = "green";
+        }
         scheduleRender();
     });
     pane.on("blur", () => {
         pane.style.border.fg = paneDefaultBorderFg.get(pane) || defaultFg;
         pane.style.border.bold = false;
-        if (pane.style.label) pane.style.label.fg = paneDefaultBorderFg.get(pane) || defaultFg;
+        pane.style.border.bg = undefined;  // remove background
+        if (pane.style.label) {
+            pane.style.label.fg = paneDefaultBorderFg.get(pane) || defaultFg;
+            pane.style.label.bg = undefined;
+        }
         scheduleRender();
     });
 }
