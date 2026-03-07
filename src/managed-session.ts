@@ -563,11 +563,31 @@ export class ManagedSession {
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
-        const allTools: Tool<any>[] = [
-            ...userTools.filter(t => {
+
+        // Wrap user tool handlers to augment invocation with the PilotSwarm
+        // durable session ID. The Copilot SDK's invocation.sessionId is an
+        // internal SDK session ID — we add durableSessionId so tool handlers
+        // can identify which durable session is calling without closures.
+        // Both IDs are available: invocation.sessionId (SDK) and
+        // invocation.durableSessionId (PilotSwarm).
+        const durableSessionId = this.sessionId;
+        const wrappedUserTools = userTools
+            .filter(t => {
                 const name = (t as any).name;
                 return !SYSTEM_TOOL_NAMES.has(name);
-            }),
+            })
+            .map(t => ({
+                ...t,
+                handler: (args: any, invocation: any) => {
+                    const augmented = { ...invocation, durableSessionId };
+                    // Diagnostic: log both session IDs for verification
+                    console.log(`[tool] ${(t as any).name} invoked — copilotSessionId=${invocation?.sessionId?.slice(0,8)} durableSessionId=${durableSessionId.slice(0,8)}`);
+                    return (t as any).handler(args, augmented);
+                },
+            }));
+
+        const allTools: Tool<any>[] = [
+            ...wrappedUserTools,
             waitTool,
             askUserTool,
             listModelsTool,
@@ -594,7 +614,17 @@ export class ManagedSession {
             unsubscribers.push(
                 this.copilotSession.on((event: any) => {
                     const eventType = event.type ?? event.eventType ?? "unknown";
-                    const captured: CapturedEvent = { eventType, data: event.data ?? event };
+                    const eventData = event.data ?? event;
+
+                    // Augment tool execution events with the durable session ID
+                    // so CMS consumers can correlate tool calls to durable sessions.
+                    if (eventType === "tool.execution_start" || eventType === "tool.execution_complete") {
+                        if (typeof eventData === "object" && eventData !== null) {
+                            eventData.durableSessionId = durableSessionId;
+                        }
+                    }
+
+                    const captured: CapturedEvent = { eventType, data: eventData };
                     collectedEvents.push(captured);
                     // Fire immediately so callers can write to CMS in real-time
                     if (opts?.onEvent) {
