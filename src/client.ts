@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.5";
+const ORCHESTRATION_VERSION = "1.0.6";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -40,6 +40,8 @@ export class PilotSwarmClient {
     private parentSessionIds = new Map<string, string>();
     /** nestingLevel for sub-agent sessions. */
     private nestingLevels = new Map<string, number>();
+    /** System session flag. */
+    private systemSessions = new Set<string>();
     private activeOrchestrations = new Map<string, string>();
     private lastSeenStatusVersion = new Map<string, number>();
     private lastSeenIteration = new Map<string, number>();
@@ -114,6 +116,7 @@ export class PilotSwarmClient {
         const existingSessions = await this._catalog.listSessions();
         const existing = existingSessions.find(s => s.isSystem);
         if (existing) {
+            this.systemSessions.add(existing.sessionId);
             return this.resumeSession(existing.sessionId, {
                 model: config.model,
                 systemMessage: config.systemMessage,
@@ -123,6 +126,7 @@ export class PilotSwarmClient {
         }
 
         const sessionId = crypto.randomUUID();
+        this.systemSessions.add(sessionId);
         const fullConfig: ManagedSessionConfig = {
             model: config.model,
             systemMessage: config.systemMessage,
@@ -269,6 +273,7 @@ export class PilotSwarmClient {
                 rehydrationMessage: this.config.rehydrationMessage,
                 ...(parentSessionId ? { parentSessionId } : {}),
                 ...(nestingLevel != null ? { nestingLevel } : {}),
+                ...(this.systemSessions.has(sessionId) ? { isSystem: true } : {}),
             };
             await this.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,

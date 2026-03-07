@@ -6,7 +6,8 @@ import { durableSessionOrchestration_1_0_0 } from "./orchestration_1_0_0.js";
 import { durableSessionOrchestration_1_0_2 } from "./orchestration_1_0_2.js";
 import { durableSessionOrchestration_1_0_3 } from "./orchestration_1_0_3.js";
 import { durableSessionOrchestration_1_0_4 } from "./orchestration_1_0_4.js";
-import { durableSessionOrchestration_1_0_5 } from "./orchestration.js";
+import { durableSessionOrchestration_1_0_5 } from "./orchestration_1_0_5.js";
+import { durableSessionOrchestration_1_0_6 } from "./orchestration.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
@@ -206,6 +207,7 @@ export class PilotSwarmWorker {
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.3", durableSessionOrchestration_1_0_3);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.4", durableSessionOrchestration_1_0_4);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.5", durableSessionOrchestration_1_0_5);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.6", durableSessionOrchestration_1_0_6);
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {

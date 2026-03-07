@@ -32,6 +32,8 @@ export interface SessionRow {
     deletedAt: Date | null;
     currentIteration: number;
     lastError: string | null;
+    /** Live wait reason (e.g. "waiting for build"). Synced from runTurn activity. */
+    waitReason: string | null;
     /** If this session is a sub-agent, the parent session's ID. */
     parentSessionId: string | null;
     /** Whether this is a system session (e.g. Sweeper Agent). */
@@ -47,6 +49,7 @@ export interface SessionRowUpdates {
     lastActiveAt?: Date;
     currentIteration?: number;
     lastError?: string | null;
+    waitReason?: string | null;
 }
 
 // ─── Provider Interface ──────────────────────────────────────────
@@ -127,7 +130,8 @@ CREATE TABLE IF NOT EXISTS ${table} (
     deleted_at        TIMESTAMPTZ,
     current_iteration INTEGER NOT NULL DEFAULT 0,
     last_error        TEXT,
-    parent_session_id TEXT
+    parent_session_id TEXT,
+    wait_reason       TEXT
 )`,
         createEventsTable: `
 CREATE TABLE IF NOT EXISTS ${eventsTable} (
@@ -207,6 +211,12 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
                 `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT FALSE`
             );
         } catch {}
+        // Migration: add wait_reason column if missing
+        try {
+            await this.pool.query(
+                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS wait_reason TEXT`
+            );
+        } catch {}
         this.initialized = true;
     }
 
@@ -253,6 +263,10 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         if (updates.lastError !== undefined) {
             setClauses.push(`last_error = $${idx++}`);
             values.push(updates.lastError);
+        }
+        if (updates.waitReason !== undefined) {
+            setClauses.push(`wait_reason = $${idx++}`);
+            values.push(updates.waitReason);
         }
 
         if (values.length === 0) return; // nothing to update besides updated_at
@@ -392,6 +406,7 @@ function rowToSessionRow(row: any): SessionRow {
         deletedAt: row.deleted_at ? new Date(row.deleted_at) : null,
         currentIteration: row.current_iteration ?? 0,
         lastError: row.last_error ?? null,
+        waitReason: row.wait_reason ?? null,
         parentSessionId: row.parent_session_id ?? null,
         isSystem: row.is_system ?? false,
     };

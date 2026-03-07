@@ -34,7 +34,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_6(
+export function* durableSessionOrchestration_1_0_5(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -51,7 +51,6 @@ export function* durableSessionOrchestration_1_0_6(
     let retryCount = input.retryCount ?? 0;
     let taskContext = input.taskContext;
     const baseSystemMessage = input.baseSystemMessage ?? config.systemMessage;
-    const isSystem = input.isSystem ?? false;
     const MAX_RETRIES = 3;
     const MAX_SUB_AGENTS = 8;
     const MAX_NESTING_LEVEL = 2; // 0=root, 1=child, 2=grandchild — no deeper
@@ -116,7 +115,6 @@ export function* durableSessionOrchestration_1_0_6(
             subAgents,
             parentSessionId,
             nestingLevel,
-            ...(isSystem ? { isSystem: true } : {}),
             retryCount: 0, // reset by default; overrides can set it
             ...overrides,
         };
@@ -146,8 +144,6 @@ export function* durableSessionOrchestration_1_0_6(
     const FIRST_SUMMARIZE_DELAY = 60_000;    // 1 minute
     const REPEAT_SUMMARIZE_DELAY = 300_000;  // 5 minutes
     function* maybeSummarize(): Generator<any, void, any> {
-        // System sessions have fixed titles — never summarize
-        if (isSystem) return;
         const now: number = yield ctx.utcNow();
         // Schedule first summarize 60s after session start
         if (nextSummarizeAt === 0) {

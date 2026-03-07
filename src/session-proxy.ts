@@ -175,11 +175,63 @@ export function registerActivities(
                 });
             }
 
+            // Mark session as "running" in CMS before the turn
+            if (catalog) {
+                catalog.updateSession(input.sessionId, {
+                    state: "running",
+                    lastActiveAt: new Date(),
+                }).catch((err: any) => {
+                    activityCtx.traceInfo(`[runTurn] CMS pre-turn status update failed: ${err}`);
+                });
+            }
+
             const result = await session.runTurn(enrichedPrompt, {
                 onEvent,
                 modelSummary: sessionManager.getModelSummary(),
             });
             if (cancelled) return { type: "cancelled" };
+
+            // ── Activity-level writeback: sync turn result → CMS ──
+            // This lets listSessions() read entirely from CMS without
+            // hitting duroxide for every session's customStatus.
+            if (catalog) {
+                const statusMap: Record<string, string> = {
+                    completed: "idle", // orchestration decides idle vs completed; default to idle
+                    wait: "waiting",
+                    input_required: "input_required",
+                    error: "error",
+                    cancelled: "idle",
+                    spawn_agent: "running",
+                    message_agent: "running",
+                    check_agents: "running",
+                    wait_for_agents: "waiting",
+                    list_sessions: "running",
+                    complete_agent: "running",
+                    cancel_agent: "running",
+                    delete_agent: "running",
+                };
+                const liveStatus = statusMap[result.type] ?? "idle";
+                const updates: import("./cms.js").SessionRowUpdates = {
+                    state: liveStatus,
+                    lastActiveAt: new Date(),
+                };
+                if (result.type === "error") {
+                    updates.lastError = (result as any).message ?? null;
+                    updates.waitReason = null;
+                } else if (result.type === "wait") {
+                    updates.waitReason = (result as any).reason ?? null;
+                    updates.lastError = null;
+                } else if (result.type === "input_required") {
+                    updates.waitReason = (result as any).question ?? null;
+                    updates.lastError = null;
+                } else {
+                    updates.waitReason = null;
+                    updates.lastError = null;
+                }
+                catalog.updateSession(input.sessionId, updates).catch((err: any) => {
+                    activityCtx.traceInfo(`[runTurn] CMS post-turn status writeback failed: ${err}`);
+                });
+            }
 
             return result;
         } finally {
@@ -247,6 +299,14 @@ export function registerActivities(
             input: { sessionId: string },
         ): Promise<string> => {
             activityCtx.traceInfo(`[summarizeSession] session=${input.sessionId}`);
+
+            // Never overwrite system session titles (e.g. "Sweeper Agent")
+            const session = await catalog.getSession(input.sessionId);
+            if (session?.isSystem) {
+                activityCtx.traceInfo(`[summarizeSession] skipping system session`);
+                return session.title || "";
+            }
+
             const events = await catalog.getSessionEvents(input.sessionId, undefined, 50);
             if (!events || events.length === 0) return "";
 

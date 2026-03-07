@@ -130,6 +130,8 @@ export interface OrchestrationInput {
     parentOrchId?: string;
     /** Current nesting level (0 = root, 1 = child, 2 = grandchild). Used to enforce max depth. */
     nestingLevel?: number;
+    /** Whether this is a system session (e.g. Sweeper Agent). System sessions skip title summarization. */
+    isSystem?: boolean;
 }
 
 /** A sub-agent entry tracked in the parent orchestration's state. */

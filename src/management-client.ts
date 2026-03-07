@@ -134,79 +134,38 @@ export class PilotSwarmManagementClient {
     /**
      * List all sessions with merged CMS + orchestration state.
      * Returns a ready-to-render view model.
+     *
+     * **Optimized path**: reads entirely from CMS (single SQL query).
+     * Live status is kept up-to-date by activity-level writeback in
+     * the runTurn activity (session-proxy). For real-time status of a
+     * single session, use getSession() which still hits duroxide.
      */
     async listSessions(): Promise<PilotSwarmSessionView[]> {
         this._ensureStarted();
 
-        // Fetch CMS sessions
+        // Single CMS query — no duroxide fan-out
         const cmsSessions = await this._catalog!.listSessions();
 
-        // Fetch orchestration state in parallel
-        const views: PilotSwarmSessionView[] = [];
-        const statusResults = await Promise.allSettled(
-            cmsSessions.map(async (row) => {
-                const orchId = `session-${row.sessionId}`;
-                let orchStatus = "Unknown";
-                let createdAt = row.createdAt.getTime();
-                let customStatus: any = {};
-                let statusVersion = 0;
+        return cmsSessions.map((row) => {
+            const liveStatus: PilotSwarmSessionStatus =
+                (row.state as PilotSwarmSessionStatus) || "pending";
 
-                try {
-                    const [info, status] = await Promise.all([
-                        this._duroxideClient.getInstanceInfo(orchId),
-                        this._duroxideClient.getStatus(orchId),
-                    ]);
-                    orchStatus = info?.status || "Unknown";
-                    if (info?.createdAt) createdAt = info.createdAt;
-                    statusVersion = status?.customStatusVersion || 0;
-                    if (status?.customStatus) {
-                        try {
-                            customStatus = typeof status.customStatus === "string"
-                                ? JSON.parse(status.customStatus)
-                                : status.customStatus;
-                        } catch {}
-                    }
-                } catch {}
-
-                return {
-                    row,
-                    orchStatus,
-                    createdAt,
-                    customStatus,
-                    statusVersion,
-                };
-            }),
-        );
-
-        for (const result of statusResults) {
-            if (result.status !== "fulfilled") continue;
-            const { row, orchStatus, createdAt, customStatus, statusVersion } = result.value;
-
-            // Determine live status
-            let liveStatus: PilotSwarmSessionStatus = customStatus.status
-                ?? (row.state as PilotSwarmSessionStatus)
-                ?? "pending";
-            if (orchStatus === "Completed") liveStatus = "completed";
-            if (orchStatus === "Failed") liveStatus = "failed";
-
-            views.push({
+            return {
                 sessionId: row.sessionId,
                 title: row.title ?? undefined,
                 status: liveStatus,
-                orchestrationStatus: orchStatus,
-                createdAt,
+                orchestrationStatus: undefined, // not available in CMS-only path
+                createdAt: row.createdAt.getTime(),
                 updatedAt: row.updatedAt?.getTime(),
-                iterations: customStatus.iteration ?? row.currentIteration ?? 0,
+                iterations: row.currentIteration ?? 0,
                 parentSessionId: row.parentSessionId ?? undefined,
                 isSystem: row.isSystem || undefined,
                 model: row.model ?? undefined,
-                error: customStatus.error ?? row.lastError ?? undefined,
-                waitReason: customStatus.waitReason,
-                statusVersion,
-            });
-        }
-
-        return views;
+                error: row.lastError ?? undefined,
+                waitReason: row.waitReason ?? undefined,
+                statusVersion: undefined,
+            };
+        });
     }
 
     /**
@@ -285,6 +244,12 @@ export class PilotSwarmManagementClient {
         }
         const orchId = `session-${sessionId}`;
         await this._duroxideClient.cancelInstance(orchId, reason ?? "Cancelled by management client");
+        // Sync terminal state to CMS so listSessions() (CMS-only) reflects it
+        await this._catalog!.updateSession(sessionId, {
+            state: "failed",
+            lastError: reason ?? "Cancelled by management client",
+            waitReason: null,
+        });
     }
 
     /**
@@ -297,6 +262,13 @@ export class PilotSwarmManagementClient {
         if (session?.isSystem) {
             throw new Error("Cannot delete system session");
         }
+
+        // Set terminal state in CMS before soft-delete so any last read picks it up
+        await this._catalog!.updateSession(sessionId, {
+            state: "failed",
+            lastError: reason ?? "Deleted by management client",
+            waitReason: null,
+        });
 
         // CMS soft-delete
         await this._catalog!.softDeleteSession(sessionId);

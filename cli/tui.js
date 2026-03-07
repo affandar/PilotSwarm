@@ -160,9 +160,9 @@ function renderMarkdown(md) {
         rendered = rendered.replace(/\{/g, "(").replace(/\}/g, ")");
         // Strip OSC 8 hyperlink sequences — blessed can't render them.
         // Format: \x1b]8;;URL\x07LABEL\x1b]8;;\x07  (or \x1b\\ as terminator)
-        // Replace with: LABEL (URL) so the link text and URL are still readable.
-        rendered = rendered.replace(/\x1b\]8;;([^\x07\x1b]*)\x07([^\x1b]*)\x1b\]8;;\x07/g, "$2 ($1)");
-        rendered = rendered.replace(/\x1b\]8;;([^\x1b]*)\x1b\\([^\x1b]*)\x1b\]8;;\x1b\\/g, "$2 ($1)");
+        // Replace with: 🔗URL so the link is visible and clickable via the chatBox handler.
+        rendered = rendered.replace(/\x1b\]8;;([^\x07\x1b]*)\x07([^\x1b]*)\x1b\]8;;\x07/g, (_m, url, _label) => `🔗{underline}{cyan-fg}${url}{/cyan-fg}{/underline}`);
+        rendered = rendered.replace(/\x1b\]8;;([^\x1b]*)\x1b\\([^\x1b]*)\x1b\]8;;\x1b\\/g, (_m, url, _label) => `🔗{underline}{cyan-fg}${url}{/cyan-fg}{/underline}`);
         // Catch any remaining OSC 8 fragments
         rendered = rendered.replace(/\x1b\]8;;[^\x07]*\x07/g, "");
         rendered = rendered.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "");
@@ -229,7 +229,7 @@ setInterval(() => {
             // Save scroll state before setContent (which resets scroll to top)
             const wasAtBottom = chatBox.getScrollPerc() >= 95;
             const prevScrollTop = chatBox.childBase || 0;
-            chatBox.setContent(lines.join("\n"));
+            chatBox.setContent(lines.map(styleUrls).join("\n"));
             if (wasAtBottom) {
                 chatBox.setScrollPerc(100);
             } else {
@@ -376,6 +376,52 @@ const chatBox = blessed.log({
     keys: true,
     vi: true,
     mouse: true,
+});
+
+// ─── Clickable URLs in chat ──────────────────────────────────────
+// Style bare URLs in blessed-tagged text so they look clickable,
+// and open them in the browser on mouse click.
+const URL_RE = /https?:\/\/[^\s<>()"',;]+/g;
+
+/**
+ * Wrap bare URLs in blessed underline+cyan tags so they stand out as links.
+ * Handles lines that already contain blessed tags ({…-fg} etc.) safely.
+ */
+function styleUrls(line) {
+    // Don't re-style if the line already has our link marker
+    if (line.includes("🔗")) return line;
+    return line.replace(URL_RE, (url) => `🔗{underline}{cyan-fg}${url}{/cyan-fg}{/underline}`);
+}
+
+/**
+ * Extract the first URL from a blessed-tagged line (strips tags first).
+ */
+function extractUrlFromLine(line) {
+    if (!line) return null;
+    // Strip blessed tags for matching
+    const plain = line.replace(/\{[^}]*\}/g, "");
+    const m = plain.match(URL_RE);
+    return m ? m[0] : null;
+}
+
+// Mouse click → open URL in browser
+chatBox.on("click", function (_mouse) {
+    // Calculate which content line was clicked
+    // _mouse.y is absolute screen coordinate
+    const absTop = this.atop != null ? this.atop : this.top;
+    const borderTop = this.border ? 1 : 0;
+    const scrollOffset = this.childBase || 0;
+    const relY = _mouse.y - absTop - borderTop;
+    const lineIdx = scrollOffset + relY;
+    const content = this.getContent();
+    const lines = content.split("\n");
+    if (lineIdx < 0 || lineIdx >= lines.length) return;
+    const url = extractUrlFromLine(lines[lineIdx]);
+    if (url) {
+        // Open in default browser (macOS: open, Linux: xdg-open)
+        const cmd = process.platform === "darwin" ? "open" : "xdg-open";
+        spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
+    }
 });
 
 // ─── Right side: per-worker log panes, created dynamically ───────
@@ -1785,8 +1831,15 @@ async function loadCmsHistory(orchId) {
         }
 
         if ((!events || events.length === 0) && !liveTurnContent) {
-            sessionChatBuffers.set(orchId, []);
-            if (orchId === activeOrchId) chatBox.setContent("");
+            // Only blank the buffer if the observer hasn't already written
+            // content into it. Otherwise we'd nuke live turn output that
+            // arrived while we were fetching from CMS (race condition that
+            // causes empty chat on first switch to a session).
+            const existing = sessionChatBuffers.get(orchId);
+            if (!existing || existing.length === 0) {
+                sessionChatBuffers.set(orchId, []);
+                if (orchId === activeOrchId) chatBox.setContent("");
+            }
             return;
         }
 
@@ -1895,6 +1948,20 @@ async function loadCmsHistory(orchId) {
         if (eventCount > 0) {
             lines.push(`{white-fg}── recent history loaded from database (${eventCount} events fetched) ──{/white-fg}`);
             lines.push("");
+        }
+
+        // For system sessions, preserve the splash banner at the top
+        if (systemSessionIds.has(orchId)) {
+            const existing = sessionChatBuffers.get(orchId);
+            if (existing && existing.length > 0) {
+                // Find the splash separator (the ━━━ line) — everything up to
+                // and including the line after it is the splash
+                const splashEndIdx = existing.findIndex(l => l.includes("━━━━━━━━━"));
+                if (splashEndIdx >= 0) {
+                    const splashLines = existing.slice(0, splashEndIdx + 2); // +2 to include separator + blank
+                    lines.unshift(...splashLines);
+                }
+            }
         }
 
         sessionChatBuffers.set(orchId, lines);
@@ -2218,7 +2285,9 @@ chatBox.setContent([
 _origRender();
 
 // Start both clients in parallel — they each open their own PG pool
+const _startPh = perfStart("startup.clientConnect");
 await Promise.all([client.start(), mgmt.start()]);
+perfEnd(_startPh);
 
 // Populate model info from management client
 if (!modelProviders) {
@@ -2438,17 +2507,22 @@ async function refreshOrchestrations() {
 
     for (const sv of sessionViews) {
         const id = `session-${sv.sessionId}`;
-        const orchStatus = sv.orchestrationStatus || "Unknown";
         const createdAt = sv.createdAt || 0;
         const csvVersion = sv.statusVersion || 0;
 
-        // Map orchestration status to TUI display status
+        // Map CMS live status → display status for color coding.
+        // With the CMS-only listSessions() path, sv.orchestrationStatus
+        // is undefined. Use sv.status (the CMS-mirrored live state) instead.
+        const liveState = sv.status || "pending";
         let status = "Unknown";
-        if (orchStatus === "Running") status = "Running";
-        else if (orchStatus === "Completed") status = "Completed";
-        else if (orchStatus === "Failed") status = "Failed";
-        else if (orchStatus === "Terminated") status = "Terminated";
-        else status = orchStatus;
+        if (liveState === "running") status = "Running";
+        else if (liveState === "completed") status = "Completed";
+        else if (liveState === "failed") status = "Failed";
+        else if (liveState === "error") status = "Failed";
+        else if (liveState === "idle") status = "Running"; // idle = alive orchestration
+        else if (liveState === "waiting") status = "Running";
+        else if (liveState === "input_required") status = "Running";
+        else if (liveState === "pending") status = "Running";
 
         orchStatusCache.set(id, { status, createdAt });
         knownOrchestrationIds.add(id);
@@ -2473,6 +2547,12 @@ async function refreshOrchestrations() {
         if (sv.isSystem) {
             systemSessionIds.add(id);
             if (sv.title) sessionHeadings.set(id, sv.title);
+        }
+
+        // Seed sessionLiveStatus from CMS if no observer has set it yet.
+        // This ensures status icons show correctly on initial load.
+        if (!sessionLiveStatus.has(id) && liveState && liveState !== "pending") {
+            sessionLiveStatus.set(id, liveState);
         }
 
         entries.push({ id, status, createdAt });
@@ -3125,6 +3205,7 @@ async function createNewSession() {
 // Check for existing non-system sessions to resume, or start with sweeper
 let thisSessionId = null;
 try {
+    const _resumePh = perfStart("startup.resumeSession");
     const existingSessions = await mgmt.listSessions();
     const userSessions = existingSessions.filter(s => !s.isSystem);
     if (userSessions.length > 0) {
@@ -3135,12 +3216,14 @@ try {
         sessions.set(thisSessionId, sess);
         appendLog(`Resumed session ✓ {white-fg}(${shortId(thisSessionId)}…){/white-fg}`);
     }
+    perfEnd(_resumePh);
 } catch {}
 
 // ─── Sweeper Agent (system session) ─────────────────────────────
 // Auto-create the system maintenance session. Idempotent — resumes if one exists.
 let sweeperSessionId = null;
 try {
+    const _sweeperPh = perfStart("startup.sweeperInit");
     const sweeperSession = await client.createSystemSession({
         systemMessage: {
             mode: "replace",
@@ -3200,6 +3283,7 @@ try {
     // Kick off the cleanup loop
     sweeperSession.send(`Begin your maintenance loop now. Scan every ${SWEEPER_SCAN_INTERVAL} seconds, clean up sessions completed more than ${SWEEPER_GRACE_MINUTES} minutes ago. Prune terminal orchestrations older than ${SWEEPER_PRUNE_TERMINAL_MINUTES} minutes every ${SWEEPER_PRUNE_INTERVAL} iterations.`);
     appendLog(`Sweeper Agent created ✓ {yellow-fg}(${shortId(sweeperSessionId)}…){/yellow-fg}`);
+    perfEnd(_sweeperPh);
 } catch (err) {
     appendLog(`{yellow-fg}Sweeper Agent init: ${err.message}{/yellow-fg}`);
 }
@@ -3639,7 +3723,7 @@ async function switchToOrchestration(orchId) {
         const _cachePh = perfStart("switch.cachedRestore");
         const cachedLines = sessionChatBuffers.get(orchId);
         if (cachedLines && cachedLines.length > 0) {
-            chatBox.setContent(cachedLines.join("\n"));
+            chatBox.setContent(cachedLines.map(styleUrls).join("\n"));
             chatBox.setScrollPerc(100);
         } else {
             chatBox.setContent("{white-fg}Loading…{/white-fg}");
