@@ -23,9 +23,13 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
+import os from "node:os";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ─── Artifact exports directory ──────────────────────────────────
+const EXPORTS_DIR = path.join(os.homedir(), "pilotswarm-exports");
+fs.mkdirSync(EXPORTS_DIR, { recursive: true });
 // ─── Global error handlers ──────────────────────────────────────
 // Prevent the TUI from crashing on transient network errors
 // (e.g. EADDRNOTAVAIL from stale PostgreSQL connections).
@@ -171,6 +175,49 @@ function renderMarkdown(md) {
     } catch {
         perfEnd(_ph, { len: md.length, err: true });
         return md;
+    }
+}
+
+// ─── Artifact download ──────────────────────────────────────────
+// Detect SAS URLs from export_artifact tool and auto-download files.
+// Pattern: https://<account>.blob.core.windows.net/<container>/artifacts/<sessionId>/<filename>?<sas>
+const ARTIFACT_SAS_RE = /https:\/\/[^/]+\.blob\.core\.windows\.net\/[^/]+\/artifacts\/([^/]+)\/([^?]+)\?[^\s"']+/g;
+
+/** Downloaded artifact files for the markdown viewer. */
+const artifactFiles = []; // [{ filename, localPath, sessionId, downloadedAt }]
+
+/**
+ * Scan text for artifact SAS URLs and download them to EXPORTS_DIR.
+ * Called from showCopilotMessage / observer when new content arrives.
+ */
+async function downloadArtifactUrls(text) {
+    const matches = [...text.matchAll(ARTIFACT_SAS_RE)];
+    for (const m of matches) {
+        const [url, sessionId, filename] = m;
+        const sessionDir = path.join(EXPORTS_DIR, sessionId.slice(0, 8));
+        fs.mkdirSync(sessionDir, { recursive: true });
+        const localPath = path.join(sessionDir, filename);
+
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) {
+                appendLog(`{red-fg}📥 Failed to download ${filename}: HTTP ${resp.status}{/red-fg}`);
+                continue;
+            }
+            const content = await resp.text();
+            fs.writeFileSync(localPath, content, "utf-8");
+            artifactFiles.push({
+                filename,
+                localPath,
+                sessionId: sessionId.slice(0, 8),
+                downloadedAt: new Date().toISOString(),
+            });
+            appendLog(`{green-fg}📥 Saved: ~/${path.relative(os.homedir(), localPath)} (${(content.length / 1024).toFixed(1)}KB){/green-fg}`);
+            // Refresh markdown viewer file list if it's currently showing
+            if (logViewMode === "markdown") refreshMarkdownViewer();
+        } catch (err) {
+            appendLog(`{red-fg}📥 Download error for ${filename}: ${err.message}{/red-fg}`);
+        }
     }
 }
 
@@ -432,7 +479,7 @@ const workerLogBuffers = new Map(); // podName → [{orchId, text}] — raw entr
 const paneColors = ["yellow", "magenta", "green", "blue"];
 let nextColorIdx = 0;
 
-// Log viewing mode: "workers" | "orchestration" | "sequence"
+// Log viewing mode: "workers" | "orchestration" | "sequence" | "nodemap" | "markdown"
 let logViewMode = "workers";
 
 // Per-orchestration log buffer — every log line tagged with an instance_id is stored here
@@ -527,6 +574,173 @@ const nodeMapPane = blessed.log({
     vi: true,
     mouse: true,
     hidden: true,
+});
+
+// ─── Markdown Viewer pane ────────────────────────────────────────
+// Two sub-panes: file list (left, narrow) + preview (right, wide).
+// Shown when logViewMode === "markdown", cycled via 'm' key.
+
+/** Currently selected file index in the file list. */
+let mdViewerSelectedIdx = 0;
+/** Search state for '/' in preview. */
+let mdViewerSearch = "";
+
+const mdFileListPane = blessed.list({
+    parent: screen,
+    label: " Files ",
+    tags: true,
+    left: 0,
+    top: 0,
+    width: 24,
+    height: 10,
+    border: { type: "line" },
+    style: {
+        fg: "white",
+        border: { fg: "green" },
+        label: { fg: "green" },
+        selected: { bg: "blue", fg: "white" },
+        focus: { border: { fg: "white" } },
+    },
+    keys: true,
+    vi: true,
+    mouse: true,
+    hidden: true,
+});
+
+const mdPreviewPane = blessed.box({
+    parent: screen,
+    label: " Preview ",
+    tags: true,
+    left: 24,
+    top: 0,
+    width: 10,
+    height: 10,
+    border: { type: "line" },
+    style: {
+        fg: "white",
+        border: { fg: "green" },
+        label: { fg: "green" },
+        focus: { border: { fg: "white" } },
+    },
+    scrollable: true,
+    alwaysScroll: true,
+    scrollbar: { style: { bg: "green" } },
+    keys: true,
+    vi: true,
+    mouse: true,
+    hidden: true,
+});
+
+/**
+ * Scan EXPORTS_DIR for .md files and merge with artifactFiles.
+ * Returns a deduplicated list sorted by modification time (newest first).
+ */
+function scanExportFiles() {
+    const files = [];
+    const seen = new Set();
+
+    // Scan EXPORTS_DIR recursively for .md files
+    function walk(dir) {
+        try {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    walk(full);
+                } else if (entry.name.endsWith(".md")) {
+                    if (!seen.has(full)) {
+                        seen.add(full);
+                        const stat = fs.statSync(full);
+                        files.push({
+                            filename: entry.name,
+                            localPath: full,
+                            displayPath: path.relative(EXPORTS_DIR, full),
+                            mtime: stat.mtimeMs,
+                        });
+                    }
+                }
+            }
+        } catch { /* ignore permission errors etc */ }
+    }
+    walk(EXPORTS_DIR);
+
+    // Also include dumps/ directory
+    const dumpsDir = path.join(process.cwd(), "dumps");
+    if (fs.existsSync(dumpsDir)) walk(dumpsDir);
+
+    // Sort by mtime descending (newest first)
+    files.sort((a, b) => b.mtime - a.mtime);
+    return files;
+}
+
+function refreshMarkdownViewer() {
+    const files = scanExportFiles();
+
+    // Update file list
+    const items = files.map((f, i) => {
+        const icon = f.localPath.includes("dumps") ? "📄" : "📥";
+        return `${icon} ${f.displayPath || f.filename}`;
+    });
+    mdFileListPane.setItems(items.length ? items : ["(no files)"]);
+    if (mdViewerSelectedIdx >= files.length) mdViewerSelectedIdx = Math.max(0, files.length - 1);
+    mdFileListPane.select(mdViewerSelectedIdx);
+
+    // Render preview for selected file
+    if (files.length > 0 && files[mdViewerSelectedIdx]) {
+        const f = files[mdViewerSelectedIdx];
+        try {
+            const raw = fs.readFileSync(f.localPath, "utf-8");
+            const rendered = renderMarkdown(raw);
+            mdPreviewPane.setLabel(` ${f.filename} `);
+            mdPreviewPane.setContent(rendered);
+            mdPreviewPane.scrollTo(0);
+        } catch (err) {
+            mdPreviewPane.setContent(`{red-fg}Error reading file: ${err.message}{/red-fg}`);
+        }
+    } else {
+        mdPreviewPane.setLabel(" Preview ");
+        mdPreviewPane.setContent("{gray-fg}No markdown files found.\n\nFiles appear here when:\n  • An agent exports an artifact\n  • You press 'D' to dump a session{/gray-fg}");
+    }
+    scheduleRender();
+}
+
+// File list navigation — select file and render preview
+mdFileListPane.on("select item", (_el, idx) => {
+    mdViewerSelectedIdx = idx;
+    refreshMarkdownViewer();
+});
+
+// ─── Vim keybindings for markdown preview ────────────────────────
+// g = top, G = bottom, Ctrl-d = page down, Ctrl-u = page up
+// o = open in $EDITOR, y = copy path
+mdPreviewPane.key(["g"], () => { mdPreviewPane.scrollTo(0); scheduleRender(); });
+mdPreviewPane.key(["S-g"], () => { mdPreviewPane.setScrollPerc(100); scheduleRender(); });
+mdPreviewPane.key(["C-d"], () => {
+    const h = mdPreviewPane.height - 2; // inner height
+    mdPreviewPane.scroll(Math.floor(h / 2));
+    scheduleRender();
+});
+mdPreviewPane.key(["C-u"], () => {
+    const h = mdPreviewPane.height - 2;
+    mdPreviewPane.scroll(-Math.floor(h / 2));
+    scheduleRender();
+});
+mdPreviewPane.key(["o"], () => {
+    const files = scanExportFiles();
+    const f = files[mdViewerSelectedIdx];
+    if (!f) return;
+    const editor = process.env.EDITOR || (process.platform === "darwin" ? "open" : "xdg-open");
+    spawn(editor, [f.localPath], { detached: true, stdio: "ignore" }).unref();
+});
+mdPreviewPane.key(["y"], () => {
+    const files = scanExportFiles();
+    const f = files[mdViewerSelectedIdx];
+    if (!f) return;
+    // Copy path to clipboard (macOS pbcopy, Linux xclip)
+    const cmd = process.platform === "darwin" ? "pbcopy" : "xclip -selection clipboard";
+    const proc = spawn(process.platform === "darwin" ? "pbcopy" : "xclip", process.platform === "darwin" ? [] : ["-selection", "clipboard"], { stdio: ["pipe", "ignore", "ignore"] });
+    proc.stdin.write(f.localPath);
+    proc.stdin.end();
+    setStatus(`{green-fg}Copied: ${f.localPath}{/green-fg}`);
 });
 
 // ─── Activity pane (sticky, bottom-right) ────────────────────────
@@ -1228,6 +1442,8 @@ function switchLogMode() {
     seqPane.hide();
     seqHeaderBox.hide();
     nodeMapPane.hide();
+    mdFileListPane.hide();
+    mdPreviewPane.hide();
 
     if (logViewMode === "workers") {
         logViewMode = "orchestration";
@@ -1242,6 +1458,11 @@ function switchLogMode() {
         logViewMode = "nodemap";
         nodeMapPane.show();
         refreshNodeMap();
+    } else if (logViewMode === "nodemap") {
+        logViewMode = "markdown";
+        mdFileListPane.show();
+        mdPreviewPane.show();
+        refreshMarkdownViewer();
     } else {
         logViewMode = "workers";
         for (const pane of workerPanes.values()) pane.show();
@@ -1435,6 +1656,16 @@ function relayoutAll() {
         nodeMapPane.width = rW;
         nodeMapPane.top = 0;
         nodeMapPane.height = rmH;
+    } else if (logViewMode === "markdown") {
+        const listW = Math.min(28, Math.max(20, Math.floor(rW * 0.3)));
+        mdFileListPane.left = lW;
+        mdFileListPane.width = listW;
+        mdFileListPane.top = 0;
+        mdFileListPane.height = rmH;
+        mdPreviewPane.left = lW + listW;
+        mdPreviewPane.width = rW - listW;
+        mdPreviewPane.top = 0;
+        mdPreviewPane.height = rmH;
     } else {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
         if (panes.length > 0) {
@@ -1458,6 +1689,8 @@ function redrawActiveViews() {
         refreshSeqPane();
     } else if (logViewMode === "nodemap") {
         refreshNodeMap();
+    } else if (logViewMode === "markdown") {
+        refreshMarkdownViewer();
     } else {
         recolorWorkerPanes();
     }
@@ -1757,6 +1990,12 @@ function showCopilotMessage(raw, orchId) {
         appendChatRaw(line, orchId);
     }
     appendChatRaw("", orchId); // blank line after each message
+
+    // Auto-download any artifact SAS URLs in the message
+    if (raw && ARTIFACT_SAS_RE.test(raw)) {
+        ARTIFACT_SAS_RE.lastIndex = 0; // reset regex state
+        downloadArtifactUrls(raw).catch(() => {});
+    }
     perfEnd(_ph, { len: raw?.length || 0 });
 }
 
@@ -4186,7 +4425,7 @@ screen.on("keypress", (ch, key) => {
         relayoutAll();
         if (logViewMode === "sequence") refreshSeqPane();
         if (logViewMode === "nodemap") refreshNodeMap();
-        const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" };
+        const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map", markdown: "Markdown Viewer" };
         setStatus(`Log mode: ${modeNames[logViewMode]}`);
         return;
     }
@@ -4355,7 +4594,7 @@ appendChatRaw("  {yellow-fg}Esc{/yellow-fg}    exit prompt → navigate TUI");
 appendChatRaw("  {yellow-fg}p{/yellow-fg}      back to prompt from anywhere");
 appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes");
 appendChatRaw("  {yellow-fg}h/l{/yellow-fg}    move left/right between panes");
-appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence → node map)");
+appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence → node map → markdown)");
 appendChatRaw("");
 appendChatRaw("{bold}Scrolling (when chat/log pane focused):{/bold}");
 appendChatRaw("  {yellow-fg}j/k{/yellow-fg} or {yellow-fg}↑/↓{/yellow-fg}   scroll line by line");

@@ -1,4 +1,10 @@
-import { BlobServiceClient } from "@azure/storage-blob";
+import {
+    BlobServiceClient,
+    StorageSharedKeyCredential,
+    generateBlobSASQueryParameters,
+    BlobSASPermissions,
+    SASProtocol,
+} from "@azure/storage-blob";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -28,10 +34,22 @@ export interface SessionMetadata {
  */
 export class SessionBlobStore {
     private containerClient;
+    private connectionString: string;
+    private containerName: string;
+    private credential: StorageSharedKeyCredential | null = null;
 
     constructor(connectionString: string, containerName = "copilot-sessions") {
+        this.connectionString = connectionString;
+        this.containerName = containerName;
         const blobService = BlobServiceClient.fromConnectionString(connectionString);
         this.containerClient = blobService.getContainerClient(containerName);
+
+        // Parse account name + key from connection string for SAS generation
+        const accountMatch = connectionString.match(/AccountName=([^;]+)/i);
+        const keyMatch = connectionString.match(/AccountKey=([^;]+)/i);
+        if (accountMatch && keyMatch) {
+            this.credential = new StorageSharedKeyCredential(accountMatch[1], keyMatch[1]);
+        }
     }
 
     /**
@@ -135,5 +153,123 @@ export class SessionBlobStore {
     async delete(sessionId: string): Promise<void> {
         await this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`).deleteIfExists();
         await this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`).deleteIfExists();
+    }
+
+    // ─── Artifact Storage ────────────────────────────────────
+
+    private artifactBlobPath(sessionId: string, filename: string): string {
+        // Sanitize filename — strip path separators
+        const safe = filename.replace(/[/\\]/g, "_");
+        return `artifacts/${sessionId}/${safe}`;
+    }
+
+    /**
+     * Upload an artifact file (e.g. .md) to blob storage.
+     * Max 1MB content.
+     */
+    async uploadArtifact(
+        sessionId: string,
+        filename: string,
+        content: string,
+        contentType = "text/markdown",
+    ): Promise<string> {
+        const MAX_SIZE = 1_048_576; // 1MB
+        if (content.length > MAX_SIZE) {
+            throw new Error(`Artifact too large: ${content.length} bytes (max ${MAX_SIZE})`);
+        }
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        await blob.upload(content, content.length, {
+            blobHTTPHeaders: { blobContentType: contentType },
+        });
+        return blobPath;
+    }
+
+    /**
+     * Download an artifact file from blob storage.
+     * Returns the file content as a string.
+     */
+    async downloadArtifact(sessionId: string, filename: string): Promise<string> {
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        const response = await blob.download(0);
+        const chunks: Buffer[] = [];
+        for await (const chunk of response.readableStreamBody!) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        return Buffer.concat(chunks).toString("utf-8");
+    }
+
+    /**
+     * List artifact files for a session.
+     * Returns filenames (not full blob paths).
+     */
+    async listArtifacts(sessionId: string): Promise<string[]> {
+        const prefix = `artifacts/${sessionId}/`;
+        const files: string[] = [];
+        for await (const blob of this.containerClient.listBlobsFlat({ prefix })) {
+            // Strip the prefix to get just the filename
+            files.push(blob.name.slice(prefix.length));
+        }
+        return files;
+    }
+
+    /**
+     * Check if an artifact exists.
+     */
+    async artifactExists(sessionId: string, filename: string): Promise<boolean> {
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        return this.containerClient.getBlockBlobClient(blobPath).exists();
+    }
+
+    /**
+     * Generate a short-lived read-only SAS URL for an artifact.
+     * The TUI uses this to download files without needing blob credentials.
+     *
+     * @param sessionId  Session that owns the artifact
+     * @param filename   Artifact filename
+     * @param expiryMinutes  How long the URL is valid (default: 1 minute)
+     * @returns Full SAS URL string
+     */
+    generateArtifactSasUrl(
+        sessionId: string,
+        filename: string,
+        expiryMinutes = 1,
+    ): string {
+        if (!this.credential) {
+            throw new Error("Cannot generate SAS URL: connection string has no AccountKey");
+        }
+
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const now = new Date();
+        const expiresOn = new Date(now.getTime() + expiryMinutes * 60_000);
+
+        const sas = generateBlobSASQueryParameters(
+            {
+                containerName: this.containerName,
+                blobName: blobPath,
+                permissions: BlobSASPermissions.parse("r"),
+                startsOn: now,
+                expiresOn,
+                protocol: SASProtocol.Https,
+            },
+            this.credential,
+        );
+
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        return `${blob.url}?${sas.toString()}`;
+    }
+
+    /**
+     * Delete all artifacts for a session.
+     */
+    async deleteArtifacts(sessionId: string): Promise<number> {
+        const prefix = `artifacts/${sessionId}/`;
+        let count = 0;
+        for await (const blob of this.containerClient.listBlobsFlat({ prefix })) {
+            await this.containerClient.getBlockBlobClient(blob.name).deleteIfExists();
+            count++;
+        }
+        return count;
     }
 }

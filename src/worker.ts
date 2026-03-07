@@ -13,6 +13,7 @@ import type { SessionCatalogProvider } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
+import { createArtifactTools } from "./artifact-tools.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
@@ -218,6 +219,12 @@ export class PilotSwarmWorker {
                 duroxideSchema: this.config.duroxideSchema,
             });
             this.registerTools(sweeperTools);
+        }
+
+        // Auto-register artifact tools if blob storage is available
+        if (this.blobStore) {
+            const artifactTools = createArtifactTools({ blobStore: this.blobStore });
+            this.registerTools(artifactTools);
         }
 
         this.runtime.start().catch((err: any) => {
