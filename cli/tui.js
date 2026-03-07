@@ -1834,7 +1834,8 @@ async function loadCmsHistory(orchId) {
                 }
             } else if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}`);
+                const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${evt.data.durableSessionId.slice(0,8)}]{/gray-fg}` : "";
+                activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}${dsid}`);
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || "tool";
                 activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`);
@@ -3464,7 +3465,8 @@ function startCmsPoller(orchId) {
 
             if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                appendActivity(`{white-fg}[${t}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}`, orchId);
+                const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${evt.data.durableSessionId.slice(0,8)}]{/gray-fg}` : "";
+                appendActivity(`{white-fg}[${t}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}${dsid}`, orchId);
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || "tool";
                 appendActivity(`{white-fg}[${t}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`, orchId);
