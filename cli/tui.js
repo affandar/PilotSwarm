@@ -336,7 +336,7 @@ function rightMainH() { return bodyH() - activityH(); } // remaining height for 
 // ─── Focus ring: highlight the active pane with a bright border ──
 // When a pane gains focus, its border turns bright green.
 // When it loses focus, it reverts to its default border color.
-const FOCUS_BORDER_FG = "green";    // bright green border when focused
+const FOCUS_BORDER_FG = "#00ff00";  // bright neon green border when focused
 const paneDefaultBorderFg = new Map(); // pane → original border fg color
 
 function registerFocusRing(pane, defaultFg) {
@@ -344,11 +344,14 @@ function registerFocusRing(pane, defaultFg) {
     pane.on("focus", () => {
         pane.style.border.fg = FOCUS_BORDER_FG;
         pane.style.border.bold = true;
+        // Also brighten the label to match
+        if (pane.style.label) pane.style.label.fg = FOCUS_BORDER_FG;
         scheduleRender();
     });
     pane.on("blur", () => {
         pane.style.border.fg = paneDefaultBorderFg.get(pane) || defaultFg;
         pane.style.border.bold = false;
+        if (pane.style.label) pane.style.label.fg = paneDefaultBorderFg.get(pane) || defaultFg;
         scheduleRender();
     });
 }
@@ -1700,11 +1703,14 @@ function relayoutAll() {
 
     // Right column: upper portion for log panes (reduced by activityH)
     if (logViewMode === "orchestration") {
+        orchLogPane.show();
         orchLogPane.left = lW;
         orchLogPane.width = rW;
         orchLogPane.top = 0;
         orchLogPane.height = rmH;
     } else if (logViewMode === "sequence") {
+        seqPane.show();
+        seqHeaderBox.show();
         const headerH = 3; // 2 lines + 1 border-like spacer
         seqHeaderBox.left = lW + 1;
         seqHeaderBox.width = rW - 2;
@@ -1715,6 +1721,7 @@ function relayoutAll() {
         seqPane.top = headerH;
         seqPane.height = rmH - headerH;
     } else if (logViewMode === "nodemap") {
+        nodeMapPane.show();
         nodeMapPane.left = lW;
         nodeMapPane.width = rW;
         nodeMapPane.top = 0;
@@ -1724,6 +1731,7 @@ function relayoutAll() {
         if (panes.length > 0) {
             const pH = Math.max(5, Math.floor(rmH / panes.length));
             for (let i = 0; i < panes.length; i++) {
+                panes[i].show();
                 panes[i].left = lW;
                 panes[i].width = rW;
                 panes[i].top = i * pH;
