@@ -614,9 +614,9 @@ export class PilotSwarmSession {
     }
 
     /** Get all persisted events for this session from CMS. */
-    async getMessages(): Promise<SessionEvent[]> {
+        async getMessages(limit?: number): Promise<SessionEvent[]> {
         const catalog = this.client._getCatalog();
-        return catalog.getSessionEvents(this.sessionId);
+            return catalog.getSessionEvents(this.sessionId, undefined, limit);
     }
 
     async getInfo(): Promise<PilotSwarmSessionInfo> {

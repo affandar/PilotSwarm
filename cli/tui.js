@@ -437,6 +437,7 @@ const TIME_W = 10; // "HH:MM:SS  " — time + trailing space
 const seqEventBuffers = new Map(); // orchId → [event]
 const seqNodes = [];               // ordered short node names
 const seqNodeSet = new Set();
+const MAX_SEQ_RENDER_EVENTS = 120;
 
 // Track per-session state for rendering
 const seqLastActivityNode = new Map(); // orchId → last node that ran activity
@@ -1129,7 +1130,6 @@ function updateSeqHeader() {
  */
 function refreshSeqPane() {
     seqPane.setContent("");
-    screen.realloc();
     const seqShortId = shortId(activeOrchId);
     seqPane.setLabel(` Sequence: ${seqShortId} `);
 
@@ -1141,7 +1141,13 @@ function refreshSeqPane() {
 
     const events = seqEventBuffers.get(activeOrchId);
     if (events && events.length > 0) {
-        for (const event of events) {
+        const renderEvents = events.length > MAX_SEQ_RENDER_EVENTS
+            ? events.slice(-MAX_SEQ_RENDER_EVENTS)
+            : events;
+        if (events.length > MAX_SEQ_RENDER_EVENTS) {
+            seqPane.log(`{gray-fg}… showing last ${MAX_SEQ_RENDER_EVENTS} of ${events.length} events …{/gray-fg}`);
+        }
+        for (const event of renderEvents) {
             renderSeqEventLine(event, activeOrchId);
         }
     } else {
@@ -1193,6 +1199,7 @@ function switchLogMode() {
     } else {
         logViewMode = "workers";
         for (const pane of workerPanes.values()) pane.show();
+        recolorWorkerPanes();
     }
     relayoutAll();
     // Force full repaint on next tick (same as pressing 'r')
@@ -1201,14 +1208,20 @@ function switchLogMode() {
 
 function refreshOrchLogPane() {
     orchLogPane.setContent("");
-    screen.realloc();
+    orchLogPane.scrollTo(0);
     const shortIdVal = shortId(activeOrchId);
     orchLogPane.setLabel(` Logs: ${shortIdVal} `);
     const buf = orchLogBuffers.get(activeOrchId);
     if (buf && buf.length > 0) {
-        for (const line of buf) orchLogPane.log(line);
+        const renderLines = buf.length > 150 ? buf.slice(-150) : buf;
+        if (buf.length > 150) {
+            orchLogPane.log(`{gray-fg}… showing last 150 of ${buf.length} log lines …{/gray-fg}`);
+        }
+        for (const line of renderLines) orchLogPane.log(line);
+        orchLogPane.setScrollPerc(100);
     } else {
         orchLogPane.log("{white-fg}Loading logs...{/white-fg}");
+        orchLogPane.scrollTo(0);
         // Backfill: one-shot kubectl logs fetch filtered for this orchestration
         backfillOrchLogs(activeOrchId);
     }
@@ -1254,11 +1267,18 @@ function backfillOrchLogs(orchId) {
             // If this is still the active session and we're in orch mode, refresh
             if (orchId === activeOrchId && logViewMode === "orchestration") {
                 orchLogPane.setContent("");
+                orchLogPane.scrollTo(0);
                 const buf = orchLogBuffers.get(orchId);
                 if (buf && buf.length > 0) {
-                    for (const ln of buf) orchLogPane.log(ln);
+                    const renderLines = buf.length > 150 ? buf.slice(-150) : buf;
+                    if (buf.length > 150) {
+                        orchLogPane.log(`{gray-fg}… showing last 150 of ${buf.length} log lines …{/gray-fg}`);
+                    }
+                    for (const ln of renderLines) orchLogPane.log(ln);
+                    orchLogPane.setScrollPerc(100);
                 } else {
                     orchLogPane.log("{white-fg}No logs found for this session{/white-fg}");
+                    orchLogPane.scrollTo(0);
                 }
                 screen.render();
             }
@@ -1645,17 +1665,28 @@ function appendWorkerLog(podName, text, orchId) {
  * Called when switching sessions.
  */
 function recolorWorkerPanes() {
+    const _ph = perfStart("recolorWorkerPanes");
+    const MAX_WORKER_RENDER_LINES = 120;
+    let paneCount = 0;
+    let totalLines = 0;
     for (const [podName, pane] of workerPanes) {
         const buf = workerLogBuffers.get(podName);
-        if (!buf || buf.length === 0) continue;
         pane.setContent("");
+        pane.scrollTo(0);
+        if (!buf || buf.length === 0) continue;
     }
-    // Flush stale screen buffers after clearing all panes, before repopulating
-    screen.realloc();
     for (const [podName, pane] of workerPanes) {
         const buf = workerLogBuffers.get(podName);
         if (!buf || buf.length === 0) continue;
-        for (const entry of buf) {
+        paneCount++;
+        const renderEntries = buf.length > MAX_WORKER_RENDER_LINES
+            ? buf.slice(-MAX_WORKER_RENDER_LINES)
+            : buf;
+        totalLines += renderEntries.length;
+        if (buf.length > MAX_WORKER_RENDER_LINES) {
+            pane.log(`{gray-fg}… showing last ${MAX_WORKER_RENDER_LINES} of ${buf.length} lines …{/gray-fg}`);
+        }
+        for (const entry of renderEntries) {
             if (entry.orchId && entry.orchId === activeOrchId) {
                 pane.log(`{bold}${entry.text}{/bold}`);
             } else if (entry.orchId) {
@@ -1664,8 +1695,10 @@ function recolorWorkerPanes() {
                 pane.log(entry.text);
             }
         }
+        pane.setScrollPerc(100);
     }
     screen.render();
+    perfEnd(_ph, { panes: paneCount, lines: totalLines });
 }
 
 function showCopilotMessage(raw, orchId) {
@@ -1694,11 +1727,12 @@ async function loadCmsHistory(orchId) {
     let eventCount = 0;
     let loadFailed = false;
 
-    // Skip if we already have a cached buffer and the session hasn't changed
-    // (the CMS poller handles incremental updates for the active session)
+    // Skip if we already have a recent cached buffer.
+    // The CMS poller handles incremental updates for the active session,
+    // so reloading on every session switch just adds latency.
     const cached = sessionChatBuffers.get(orchId);
-    if (cached && cached.length > 1 && orchId !== activeOrchId) {
-        // Already have content and we're not switching to it — no need to reload
+    const loadedAt = sessionHistoryLoadedAt.get(orchId) ?? 0;
+    if (cached && cached.length > 1 && (Date.now() - loadedAt) < 30_000) {
         return;
     }
 
@@ -1715,9 +1749,14 @@ async function loadCmsHistory(orchId) {
     }
 
     try {
+        const CMS_HISTORY_FETCH_LIMIT = 250;
+        const MAX_RENDERED_EVENTS = 120;
+        const MAX_TOTAL_RENDER_CHARS = 50_000;
+        const MAX_ASSISTANT_MESSAGE_CHARS = 4_000;
+
         // Fetch events and session info in parallel
         const [events, info] = await Promise.all([
-            sess.getMessages(),
+            sess.getMessages(CMS_HISTORY_FETCH_LIMIT),
             (!sessionModels.has(orchId)) ? sess.getInfo().catch(() => null) : Promise.resolve(null),
         ]);
         eventCount = events?.length || 0;
@@ -1752,9 +1791,6 @@ async function loadCmsHistory(orchId) {
         };
 
         // Cap rendered events to the most recent N to keep switching fast.
-        // Full history is still fetched (for sequence view seeding) but only
-        // the tail is rendered through markdown.
-        const MAX_RENDERED_EVENTS = 200;
         const renderEvents = events.length > MAX_RENDERED_EVENTS
             ? events.slice(-MAX_RENDERED_EVENTS)
             : events;
@@ -1764,6 +1800,7 @@ async function loadCmsHistory(orchId) {
         // Chat lines = user messages + assistant responses
         // Activity lines = tool calls, reasoning, status changes
         const activityLines = [];
+        let renderedChars = 0;
         if (truncated) {
             lines.push(`{gray-fg}── ${events.length - MAX_RENDERED_EVENTS} older events omitted (${events.length} total) ──{/gray-fg}`);
             lines.push("");
@@ -1779,8 +1816,17 @@ async function loadCmsHistory(orchId) {
             } else if (type === "assistant.message") {
                 const content = evt.data?.content;
                 if (content) {
+                    if (renderedChars >= MAX_TOTAL_RENDER_CHARS) {
+                        lines.push(`{gray-fg}── additional assistant output omitted to keep session switching fast ──{/gray-fg}`);
+                        lines.push("");
+                        break;
+                    }
+                    const clipped = content.length > MAX_ASSISTANT_MESSAGE_CHARS
+                        ? content.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + "\n\n[output truncated in TUI history view]"
+                        : content;
                     lines.push(`{white-fg}[${timeStr}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
-                    const rendered = renderMarkdown(content);
+                    const rendered = renderMarkdown(clipped);
+                    renderedChars += clipped.length;
                     for (const line of rendered.split("\n")) {
                         lines.push(line);
                     }
@@ -1801,11 +1847,12 @@ async function loadCmsHistory(orchId) {
             }
         }
 
-        lines.push("{white-fg}── full history loaded from database ──{/white-fg}");
+        lines.push(`{white-fg}── recent history loaded from database (${eventCount} events fetched) ──{/white-fg}`);
         lines.push("");
 
         sessionChatBuffers.set(orchId, lines);
         sessionActivityBuffers.set(orchId, activityLines);
+        sessionHistoryLoadedAt.set(orchId, Date.now());
 
         if (orchId === activeOrchId) {
             // Let the frame loop sync this buffer to chatBox
@@ -2132,6 +2179,7 @@ const systemSessionIds = new Set(); // orchIds of system sessions (e.g. Sweeper 
 
 // Per-session chat buffers — every observer writes here so content is preserved on switch
 const sessionChatBuffers = new Map(); // orchId → string[]
+const sessionHistoryLoadedAt = new Map(); // orchId → epoch ms of last CMS history load
 const sessionObservers = new Map(); // orchId → AbortController
 const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
 
@@ -2364,6 +2412,7 @@ async function refreshOrchestrations() {
 
     // Update the blessed list — clear and re-add items
     const prevSelected = orchList.selected || 0;
+    const prevSelectedId = orchIdOrder[prevSelected] || activeOrchId;
     const prevScrollTop = orchList.childBase || 0;
     orchList.clearItems();
     if (entries.length === 0) {
@@ -2446,7 +2495,12 @@ async function refreshOrchestrations() {
         }
         orchSelectFollowActive = false;
     } else {
-        orchList.select(Math.min(prevSelected, orchIdOrder.length - 1));
+        const restoreIdx = orchIdOrder.indexOf(prevSelectedId);
+        if (restoreIdx >= 0) {
+            orchList.select(restoreIdx);
+        } else {
+            orchList.select(Math.min(prevSelected, orchIdOrder.length - 1));
+        }
         // Restore scroll offset so the list doesn't jump
         orchList.scrollTo(prevScrollTop);
     }
@@ -3444,6 +3498,7 @@ async function switchToOrchestration(orchId) {
         updateChatLabel();
 
         // Show cached chat buffer instantly if available (no DB wait)
+        const _cachePh = perfStart("switch.cachedRestore");
         const cachedLines = sessionChatBuffers.get(orchId);
         if (cachedLines && cachedLines.length > 0) {
             chatBox.setContent(cachedLines.join("\n"));
@@ -3460,14 +3515,25 @@ async function switchToOrchestration(orchId) {
         } else {
             activityPane.setContent("");
         }
+        perfEnd(_cachePh, {
+            chatLines: cachedLines?.length || 0,
+            activityLines: cachedActivity?.length || 0,
+        });
 
         // Ensure an observer is running for this session
         startObserver(orchId);
 
-        // Update session list icons and right pane
+        // Update session list icons immediately
         updateSessionListIcons();
-        redrawActiveViews();
         screen.render();
+
+        // Defer heavier right-pane redraw to the next tick so session switching
+        // feels instant even when sequence/log panes have a lot of content.
+        setTimeout(() => {
+            if (orchId === activeOrchId) {
+                redrawActiveViews();
+            }
+        }, 0);
 
         // Load full history from DB in background (non-blocking)
         loadCmsHistory(orchId).then(() => {
@@ -3490,6 +3556,14 @@ updateChatLabel();
 // Start observing the initial session
 startObserver(activeOrchId);
 startCmsPoller(activeOrchId);
+
+// Initial right-pane paint. In workers mode, logs may already be buffered by
+// the stream before the first explicit redraw, so repaint once on startup.
+setTimeout(() => {
+    if (activeOrchId) {
+        redrawActiveViews();
+    }
+}, 0);
 
 // Helper: get the sessionId from an orchestration ID
 function sessionIdFromOrchId(orchId) {
