@@ -747,31 +747,10 @@ mdFileListPane.on("select item", (_el, idx) => {
     _mdRefreshing = false;
 });
 
-// j/k navigation for md file list (mirrors orchList pattern)
-mdFileListPane.key(["j", "down"], () => {
-    const total = mdFileListPane.items.length;
-    if (total === 0) return;
-    const next = Math.min(total - 1, mdViewerSelectedIdx + 1);
-    if (next !== mdViewerSelectedIdx) {
-        mdViewerSelectedIdx = next;
-        mdFileListPane.select(next);
-        refreshMarkdownViewer();
-    }
-});
-mdFileListPane.key(["k", "up"], () => {
-    if (mdViewerSelectedIdx > 0) {
-        mdViewerSelectedIdx--;
-        mdFileListPane.select(mdViewerSelectedIdx);
-        refreshMarkdownViewer();
-    }
-});
-mdFileListPane.key(["enter"], () => {
-    // Enter on file list → focus preview pane
-    mdPreviewPane.focus();
-    screen.render();
-});
+// j/k/enter/v for md file list are handled in the main screen.on("keypress")
+// handler to avoid double-firing. Do NOT add pane-level .key() handlers here.
 
-// v key on md panes → toggle back to normal view
+// v key on md preview pane → toggle back to normal view
 function toggleMdViewOff() {
     mdViewActive = false;
     orchList.focus();
@@ -779,8 +758,6 @@ function toggleMdViewOff() {
     relayoutAll();
     setStatus(`Log mode: ${({ workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" })[logViewMode]}`);
 }
-mdFileListPane.key(["v"], toggleMdViewOff);
-mdPreviewPane.key(["v"], toggleMdViewOff);
 
 // ─── Vim keybindings for markdown preview ────────────────────────
 // g = top, G = bottom, Ctrl-d = page down, Ctrl-u = page up
