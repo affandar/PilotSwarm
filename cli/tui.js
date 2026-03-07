@@ -2565,7 +2565,7 @@ async function refreshOrchestrations() {
             startObserver(id);
         }
     }
-    perfEnd(_ph, { sessions: entries.length, ids: ids.length });
+    perfEnd(_ph, { sessions: entries.length });
 }
 
 // Poll orchestrations every 10 seconds (observers handle live status updates, so
