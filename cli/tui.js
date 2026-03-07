@@ -13,7 +13,7 @@
  *   npx pilotswarm-tui remote --env .env.remote       # client-only (AKS)
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, SessionDumper } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient } from "../dist/index.js";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -2132,24 +2132,11 @@ let currentModel = process.env.COPILOT_MODEL || "";
 
 // In remote mode (no local workers), load model_providers.json directly
 // so the TUI can show model lists and the Shift+N picker.
+// In remote mode (no local workers), load model info from mgmt client after start.
+// modelProviders variable is kept for backward compat with existing rendering code,
+// but now backed by the management client instead of direct implementation import.
 if (!modelProviders) {
-    try {
-        const { loadModelProviders } = await import("../dist/model-providers.js");
-        const mpPath = path.resolve(__dirname, "..", "model_providers.json");
-        if (fs.existsSync(mpPath)) {
-            modelProviders = loadModelProviders(mpPath);
-            const byProvider = modelProviders.getModelsByProvider();
-            for (const g of byProvider) {
-                const names = g.models.map(m => m.qualifiedName).join(", ");
-                appendLog(`{bold}${g.providerId}{/bold} (${g.type}): ${names}`);
-            }
-            if (modelProviders.defaultModel && !currentModel) {
-                currentModel = modelProviders.defaultModel;
-            }
-        }
-    } catch (e) {
-        appendLog(`{yellow-fg}Could not load model_providers.json: ${e.message}{/yellow-fg}`);
-    }
+    // Will be populated from mgmt.getModelsByProvider() after mgmt.start()
 }
 
 // 2. Start the thin client (for creating orchestrations / reading status)
@@ -2158,8 +2145,36 @@ const client = new PilotSwarmClient({
     blobEnabled: true,
 });
 
+// 3. Start the management client (for session listing, admin, models)
+const mgmt = new PilotSwarmManagementClient({
+    store,
+});
+
 setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
 await client.start();
+await mgmt.start();
+
+// Populate model info from management client
+if (!modelProviders) {
+    const mgmtModels = mgmt.getModelsByProvider();
+    if (mgmtModels.length > 0) {
+        // Create a lightweight modelProviders-compatible object for existing TUI code
+        modelProviders = {
+            getModelsByProvider: () => mgmtModels,
+            get allModels() { return mgmt.listModels(); },
+            get defaultModel() { return mgmt.getDefaultModel(); },
+            normalize: (ref) => mgmt.normalizeModel(ref),
+        };
+        for (const g of mgmtModels) {
+            const names = g.models.map(m => m.qualifiedName).join(", ");
+            appendLog(`{bold}${g.providerId}{/bold} (${g.type}): ${names}`);
+        }
+        if (modelProviders.defaultModel && !currentModel) {
+            currentModel = modelProviders.defaultModel;
+        }
+    }
+}
+
 setStatus("Ready — type a message");
 appendLog(isRemote
     ? "Client connected ✓ {white-fg}(no local runtime){/white-fg}"
@@ -2183,8 +2198,64 @@ const sessionHistoryLoadedAt = new Map(); // orchId → epoch ms of last CMS his
 const sessionObservers = new Map(); // orchId → AbortController
 const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
 
+// Facade: adapts PilotSwarmManagementClient to the dc-like interface
+// that the observer and legacy code paths expect. This eliminates
+// direct private client access while keeping existing call sites working.
+let _dcFacade = null;
 function getDc() {
-    try { return client._getDuroxideClient(); } catch { return null; }
+    if (_dcFacade) return _dcFacade;
+    _dcFacade = {
+        async getStatus(orchId) {
+            const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+            const result = await mgmt.getSessionStatus(sid);
+            return {
+                status: result.orchestrationStatus,
+                customStatus: result.customStatus ? JSON.stringify(result.customStatus) : null,
+                customStatusVersion: result.customStatusVersion,
+            };
+        },
+        async getInstanceInfo(orchId) {
+            const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+            const result = await mgmt.getSessionStatus(sid);
+            return {
+                status: result.orchestrationStatus || "Unknown",
+                createdAt: 0,
+            };
+        },
+        async waitForStatusChange(orchId, afterVersion, pollMs, timeoutMs) {
+            const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+            const result = await mgmt.waitForStatusChange(sid, afterVersion, pollMs, timeoutMs);
+            return {
+                status: result.orchestrationStatus,
+                customStatus: result.customStatus ? JSON.stringify(result.customStatus) : null,
+                customStatusVersion: result.customStatusVersion,
+            };
+        },
+        async enqueueEvent(orchId, eventName, data) {
+            const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+            const parsed = JSON.parse(data);
+            if (parsed.type === "cmd") {
+                await mgmt.sendCommand(sid, { cmd: parsed.cmd, id: parsed.id, args: parsed.args });
+            } else if (parsed.answer != null) {
+                await mgmt.sendAnswer(sid, parsed.answer);
+            } else if (parsed.prompt != null) {
+                await mgmt.sendMessage(sid, parsed.prompt);
+            }
+        },
+        async cancelInstance(orchId, reason) {
+            const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+            await mgmt.cancelSession(sid, reason);
+        },
+        async deleteInstance(orchId) {
+            const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+            await mgmt.deleteSession(sid);
+        },
+        async listAllInstances() {
+            const views = await mgmt.listSessions();
+            return views.map(v => `session-${v.sessionId}`);
+        },
+    };
+    return _dcFacade;
 }
 
 // ─── Debounced refresh ───────────────────────────────────────────
@@ -2279,83 +2350,64 @@ let orchDepthMap = new Map();
 
 async function refreshOrchestrations() {
     const _ph = perfStart("refreshOrchestrations");
-    const dc = getDc();
-    if (!dc) return;
 
-    // listAllInstances returns string[] of instance IDs
+    // Fetch merged session views from the management client
+    let sessionViews;
     try {
-        const instanceIds = await dc.listAllInstances();
-        if (Array.isArray(instanceIds)) {
-            for (const id of instanceIds) {
-                if (typeof id === "string" && id.startsWith("session-")) {
-                    knownOrchestrationIds.add(id);
-                }
-            }
-        }
+        sessionViews = await mgmt.listSessions();
     } catch (err) {
-        appendLog(`{red-fg}listAllInstances failed: ${err.message}{/red-fg}`);
+        appendLog(`{red-fg}listSessions failed: ${err.message}{/red-fg}`);
+        perfEnd(_ph, { sessions: 0, err: true });
+        return;
     }
 
-    // Fetch instance info + customStatusVersion in parallel
-    const ids = [...knownOrchestrationIds];
-    const results = await Promise.allSettled(
-        ids.map(async (id) => {
-            const [info, statusInfo] = await Promise.all([
-                dc.getInstanceInfo(id),
-                dc.getStatus(id),
-            ]);
-            return {
-                id,
-                status: info?.status || "Unknown",
-                createdAt: info?.createdAt || 0,
-                csvVersion: statusInfo?.customStatusVersion || 0,
-            };
-        })
-    );
-
     const entries = [];
-    for (const r of results) {
-        if (r.status === "fulfilled") {
-            const { id, status, createdAt, csvVersion } = r.value;
-            orchStatusCache.set(id, { status, createdAt });
+    const childToParent = new Map(); // orchId → parentOrchId
 
-            // Detect changes: if version advanced since last time user viewed this session
-            const lastSeen = orchLastSeenVersion.get(id) ?? 0;
-            if (csvVersion > lastSeen && id !== activeOrchId) {
-                orchHasChanges.add(id);
-            }
-            // For the active session, keep lastSeen up to date
-            if (id === activeOrchId) {
-                orchLastSeenVersion.set(id, csvVersion);
-                orchHasChanges.delete(id);
-            }
+    for (const sv of sessionViews) {
+        const id = `session-${sv.sessionId}`;
+        const orchStatus = sv.orchestrationStatus || "Unknown";
+        const createdAt = sv.createdAt || 0;
+        const csvVersion = sv.statusVersion || 0;
 
-            entries.push({ id, status, createdAt });
+        // Map orchestration status to TUI display status
+        let status = "Unknown";
+        if (orchStatus === "Running") status = "Running";
+        else if (orchStatus === "Completed") status = "Completed";
+        else if (orchStatus === "Failed") status = "Failed";
+        else if (orchStatus === "Terminated") status = "Terminated";
+        else status = orchStatus;
+
+        orchStatusCache.set(id, { status, createdAt });
+        knownOrchestrationIds.add(id);
+
+        // Detect changes: if version advanced since last time user viewed this session
+        const lastSeen = orchLastSeenVersion.get(id) ?? 0;
+        if (csvVersion > lastSeen && id !== activeOrchId) {
+            orchHasChanges.add(id);
         }
+        if (id === activeOrchId) {
+            orchLastSeenVersion.set(id, csvVersion);
+            orchHasChanges.delete(id);
+        }
+
+        // Track titles, parents, system sessions
+        if (sv.title) {
+            sessionHeadings.set(id, sv.title);
+        }
+        if (sv.parentSessionId) {
+            childToParent.set(id, `session-${sv.parentSessionId}`);
+        }
+        if (sv.isSystem) {
+            systemSessionIds.add(id);
+            if (sv.title) sessionHeadings.set(id, sv.title);
+        }
+
+        entries.push({ id, status, createdAt });
     }
 
     // Sort by createdAt descending (stable — no status-based reordering)
     entries.sort((a, b) => b.createdAt - a.createdAt);
-
-    // Pull session titles and parent info from CMS
-    const childToParent = new Map(); // orchId → parentOrchId
-    try {
-        const cmsSessions = await client.listSessions();
-        for (const s of cmsSessions) {
-            const orchId = `session-${s.sessionId}`;
-            if (s.title) {
-                sessionHeadings.set(orchId, s.title);
-            }
-            if (s.parentSessionId) {
-                childToParent.set(orchId, `session-${s.parentSessionId}`);
-            }
-            // Track system sessions — lock their title
-            if (s.isSystem) {
-                systemSessionIds.add(orchId);
-                if (s.title) sessionHeadings.set(orchId, s.title);
-            }
-        }
-    } catch {}
 
     // Build tree: compute depth for each entry via parent chain
     // depth 0 = root, 1 = child, 2 = grandchild, etc.
@@ -2554,18 +2606,16 @@ orchList.key(["q"], () => {
 });
 
 orchList.key(["c"], async () => {
-    const dc = getDc();
-    if (!dc) return;
     const idx = orchList.selected;
     if (idx >= 0 && idx < orchIdOrder.length) {
         const id = orchIdOrder[idx];
-        // Protect system sessions from cancellation
         if (systemSessionIds.has(id)) {
             appendLog("{yellow-fg}Cannot cancel system session{/yellow-fg}");
             return;
         }
+        const sessionId = id.startsWith("session-") ? id.slice(8) : id;
         try {
-            await dc.cancelInstance(id);
+            await mgmt.cancelSession(sessionId);
             appendLog(`{yellow-fg}Cancelled ${shortId(id)}{/yellow-fg}`);
             await refreshOrchestrations();
         } catch (err) {
@@ -2575,28 +2625,22 @@ orchList.key(["c"], async () => {
 });
 
 orchList.key(["d"], async () => {
-    const dc = getDc();
-    if (!dc) return;
     const idx = orchList.selected;
     if (idx >= 0 && idx < orchIdOrder.length) {
         const id = orchIdOrder[idx];
-        // Protect system sessions from deletion
         if (systemSessionIds.has(id)) {
             appendLog("{yellow-fg}Cannot delete system session{/yellow-fg}");
             return;
         }
-        if (typeof dc.deleteInstance === "function") {
-            try {
-                await dc.deleteInstance(id);
-                knownOrchestrationIds.delete(id);
-                orchStatusCache.delete(id);
-                appendLog(`{yellow-fg}Deleted ${shortId(id)}{/yellow-fg}`);
-                await refreshOrchestrations();
-            } catch (err) {
-                appendLog(`{red-fg}Delete failed: ${err.message}{/red-fg}`);
-            }
-        } else {
-            appendLog("{white-fg}deleteInstance not available{/white-fg}");
+        const sessionId = id.startsWith("session-") ? id.slice(8) : id;
+        try {
+            await mgmt.deleteSession(sessionId);
+            knownOrchestrationIds.delete(id);
+            orchStatusCache.delete(id);
+            appendLog(`{yellow-fg}Deleted ${shortId(id)}{/yellow-fg}`);
+            await refreshOrchestrations();
+        } catch (err) {
+            appendLog(`{red-fg}Delete failed: ${err.message}{/red-fg}`);
         }
     }
 });
@@ -2798,8 +2842,7 @@ orchList.key(["t"], async () => {
                 return;
             }
             try {
-                const catalog = client._getCatalog();
-                await catalog.updateSession(sessionId, { title: newTitle.trim().slice(0, 60) });
+                await mgmt.renameSession(sessionId, newTitle.trim().slice(0, 60));
                 sessionHeadings.set(orchId, newTitle.trim().slice(0, 40));
                 appendLog(`{green-fg}✓ Renamed (${uuid4}): ${newTitle.trim()}{/green-fg}`);
                 await refreshOrchestrations();
@@ -3106,6 +3149,7 @@ function startObserver(orchId) {
 
     const dc = getDc();
     if (!dc) return;
+    const sessionId = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
 
     const ac = new AbortController();
     sessionObservers.set(orchId, ac);
@@ -4029,9 +4073,7 @@ screen.on("keypress", (ch, key) => {
             try {
                 setStatus(`{yellow-fg}Dumping session ${shortId(sessionId)}...{/yellow-fg}`);
                 screen.render();
-                const catalog = client._getCatalog();
-                const dumper = new SessionDumper(catalog);
-                const md = await dumper.dump(sessionId);
+                const md = await mgmt.dumpSession(sessionId);
 
                 // Write to ./dumps/<shortId>_<timestamp>.md
                 const dumpsDir = path.join(process.cwd(), "dumps");

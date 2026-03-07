@@ -20,6 +20,13 @@
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
+export { PilotSwarmManagementClient } from "./management-client.js";
+export type {
+    PilotSwarmSessionView,
+    ModelSummary,
+    SessionStatusChange,
+    PilotSwarmManagementClientOptions,
+} from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore } from "./blob-store.js";
