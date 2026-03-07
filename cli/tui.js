@@ -632,9 +632,10 @@ const mdFileListPane = blessed.list({
         selected: { bg: "blue", fg: "white" },
         focus: { border: { fg: "white" } },
     },
-    keys: true,
-    vi: true,
+    keys: false,
+    vi: false,
     mouse: true,
+    interactive: true,
     hidden: true,
 });
 
@@ -739,6 +740,41 @@ mdFileListPane.on("select item", (_el, idx) => {
     mdViewerSelectedIdx = idx;
     refreshMarkdownViewer();
 });
+
+// j/k navigation for md file list (mirrors orchList pattern)
+mdFileListPane.key(["j", "down"], () => {
+    const total = mdFileListPane.items.length;
+    if (total === 0) return;
+    const next = Math.min(total - 1, mdViewerSelectedIdx + 1);
+    if (next !== mdViewerSelectedIdx) {
+        mdViewerSelectedIdx = next;
+        mdFileListPane.select(next);
+        refreshMarkdownViewer();
+    }
+});
+mdFileListPane.key(["k", "up"], () => {
+    if (mdViewerSelectedIdx > 0) {
+        mdViewerSelectedIdx--;
+        mdFileListPane.select(mdViewerSelectedIdx);
+        refreshMarkdownViewer();
+    }
+});
+mdFileListPane.key(["enter"], () => {
+    // Enter on file list → focus preview pane
+    mdPreviewPane.focus();
+    screen.render();
+});
+
+// v key on md panes → toggle back to normal view
+function toggleMdViewOff() {
+    mdViewActive = false;
+    orchList.focus();
+    screen.realloc();
+    relayoutAll();
+    setStatus(`Log mode: ${({ workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" })[logViewMode]}`);
+}
+mdFileListPane.key(["v"], toggleMdViewOff);
+mdPreviewPane.key(["v"], toggleMdViewOff);
 
 // ─── Vim keybindings for markdown preview ────────────────────────
 // g = top, G = bottom, Ctrl-d = page down, Ctrl-u = page up
@@ -4659,7 +4695,6 @@ screen.key(["tab"], () => {
 screen.key(["S-tab"], () => {
     const allFocusable = buildFocusableList();
     if (screen.focused === inputBar) {
-        // Shift+Tab from input → go to last pane
         allFocusable[allFocusable.length - 1].focus();
     } else {
         const currentIdx = allFocusable.indexOf(screen.focused);
@@ -4667,6 +4702,21 @@ screen.key(["S-tab"], () => {
         allFocusable[prevIdx].focus();
     }
     screen.render();
+});
+
+// Also handle shift+tab via keypress for terminals that send it differently
+screen.on("keypress", (_ch, key) => {
+    if (key && key.name === "tab" && key.shift) {
+        const allFocusable = buildFocusableList();
+        if (screen.focused === inputBar) {
+            allFocusable[allFocusable.length - 1].focus();
+        } else {
+            const currentIdx = allFocusable.indexOf(screen.focused);
+            const prevIdx = (currentIdx - 1 + allFocusable.length) % allFocusable.length;
+            allFocusable[prevIdx].focus();
+        }
+        screen.render();
+    }
 });
 
 screen.on("resize", () => {
