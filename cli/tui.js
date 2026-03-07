@@ -1834,7 +1834,7 @@ async function loadCmsHistory(orchId) {
                 }
             } else if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${evt.data.durableSessionId.slice(0,8)}]{/gray-fg}` : "";
+                const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${shortId(evt.data.durableSessionId)}]{/gray-fg}` : "";
                 activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}${dsid}`);
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || "tool";
@@ -2152,8 +2152,27 @@ const mgmt = new PilotSwarmManagementClient({
 });
 
 setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
-await client.start();
-await mgmt.start();
+
+// Show splash immediately so the user sees something during DB connection
+chatBox.setContent([
+    "{bold}{cyan-fg}",
+    "    ____  _ __      __  _____                              ",
+    "   / __ \\(_) /___  / /_/ ___/      ______ __________ ___  ",
+    "{/cyan-fg}{magenta-fg}  / /_/ / / / __ \\/ __/\\__ \\ | /| / / __ `/ ___/ __ `__ \\",
+    " / ____/ / / /_/ / /_ ___/ / |/ |/ / /_/ / /  / / / / / /{/magenta-fg}",
+    "{yellow-fg}/_/   /_/_/\\____/\\__//____/|__/|__/\\__,_/_/  /_/ /_/ /_/ {/yellow-fg}",
+    "{/bold}",
+    "",
+    "  {bold}{white-fg}Durable AI Agent Orchestration{/white-fg}{/bold}",
+    "  {cyan-fg}Crash recovery{/cyan-fg} · {magenta-fg}Durable timers{/magenta-fg} · {yellow-fg}Sub-agents{/yellow-fg} · {green-fg}Multi-node scaling{/green-fg}",
+    "  {gray-fg}Powered by duroxide + GitHub Copilot SDK{/gray-fg}",
+    "",
+    "  {white-fg}Connecting...{/white-fg}",
+].join("\n"));
+_origRender();
+
+// Start both clients in parallel — they each open their own PG pool
+await Promise.all([client.start(), mgmt.start()]);
 
 // Populate model info from management client
 if (!modelProviders) {
@@ -2182,6 +2201,12 @@ appendLog(isRemote
     : `Client connected ✓ {white-fg}(${numWorkers} embedded workers){/white-fg}`);
 
 // ─── Orchestrations tracking ─────────────────────────────────────
+
+// Declare activeOrchId early so functions referenced during startup
+// (appendWorkerLog, recolorWorkerPanes, frame loop) can access it
+// without a temporal dead zone error. Assigned properly after session setup.
+let activeOrchId = "";
+let activeSessionShort = "";
 
 const knownOrchestrationIds = new Set();
 let orchStatusCache = new Map(); // id → { status, createdAt }
@@ -2469,7 +2494,7 @@ async function refreshOrchestrations() {
     const prevScrollTop = orchList.childBase || 0;
     orchList.clearItems();
     if (entries.length === 0) {
-        orchList.addItem("{white-fg}(none){/white-fg}");
+        orchList.addItem("{white-fg}  Press {yellow-fg}n{/yellow-fg} to start a new session{/white-fg}");
     } else {
         for (const { id, status, createdAt, depth } of orderedEntries) {
             // 4-char UUID fragment + time started
@@ -2525,6 +2550,12 @@ async function refreshOrchestrations() {
                     : `(${uuid4}) ${timeStr}`;
                 orchList.addItem(`${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
             }
+        }
+        // Show hint if there are only system sessions (no user sessions)
+        const hasUserSessions = orderedEntries.some(e => !systemSessionIds.has(e.id));
+        if (!hasUserSessions) {
+            orchList.addItem("");
+            orchList.addItem("{white-fg}  Press {yellow-fg}n{/yellow-fg} to start a new session{/white-fg}");
         }
     }
     // Restore cursor position — keep the user's selection stable.
@@ -3045,9 +3076,20 @@ async function createNewSession() {
     return sess;
 }
 
-const initialSession = await createNewSession();
-const thisSessionId = initialSession.sessionId;
-appendLog(`Session created ✓ {white-fg}(${shortId(thisSessionId)}…){/white-fg}`);
+// Check for existing non-system sessions to resume, or start with sweeper
+let thisSessionId = null;
+try {
+    const existingSessions = await mgmt.listSessions();
+    const userSessions = existingSessions.filter(s => !s.isSystem);
+    if (userSessions.length > 0) {
+        // Resume the most recent user session
+        const mostRecent = userSessions[0]; // already sorted by updatedAt desc
+        thisSessionId = mostRecent.sessionId;
+        const sess = await client.resumeSession(thisSessionId);
+        sessions.set(thisSessionId, sess);
+        appendLog(`Resumed session ✓ {white-fg}(${shortId(thisSessionId)}…){/white-fg}`);
+    }
+} catch {}
 
 // ─── Sweeper Agent (system session) ─────────────────────────────
 // Auto-create the system maintenance session. Idempotent — resumes if one exists.
@@ -3120,8 +3162,12 @@ try {
 // The chat pane shows live output from the "active" orchestration.
 // Selecting a different orchestration in the left pane switches context.
 
-let activeOrchId = `session-${thisSessionId}`;  // currently observed orchestration
-let activeSessionShort = shortId(thisSessionId);
+activeOrchId = thisSessionId
+    ? `session-${thisSessionId}`
+    : (sweeperSessionId ? `session-${sweeperSessionId}` : "");
+activeSessionShort = thisSessionId
+    ? shortId(thisSessionId)
+    : (sweeperSessionId ? shortId(sweeperSessionId) : "");
 let orchSelectFollowActive = true; // when true, next refresh snaps selection to activeOrchId
 
 function updateChatLabel() {
@@ -3465,7 +3511,7 @@ function startCmsPoller(orchId) {
 
             if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${evt.data.durableSessionId.slice(0,8)}]{/gray-fg}` : "";
+                const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${shortId(evt.data.durableSessionId)}]{/gray-fg}` : "";
                 appendActivity(`{white-fg}[${t}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}${dsid}`, orchId);
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || "tool";
@@ -3603,13 +3649,17 @@ updateChatLabel();
 startObserver(activeOrchId);
 startCmsPoller(activeOrchId);
 
-// Initial right-pane paint. In workers mode, logs may already be buffered by
-// the stream before the first explicit redraw, so repaint once on startup.
-setTimeout(() => {
-    if (activeOrchId) {
-        redrawActiveViews();
-    }
-}, 0);
+// Initial right-pane paint. In workers mode, kubectl log streaming may not
+// have created worker panes yet. Schedule repaints at increasing intervals
+// to catch late-arriving panes without a tight poll loop.
+for (const delay of [500, 2000, 5000]) {
+    setTimeout(() => {
+        if (activeOrchId && logViewMode === "workers") {
+            recolorWorkerPanes();
+            relayoutAll();
+        }
+    }, delay);
+}
 
 // Helper: get the sessionId from an orchestration ID
 function sessionIdFromOrchId(orchId) {
@@ -4154,8 +4204,8 @@ screen.on("resize", () => {
     if (logViewMode === "nodemap") refreshNodeMap();
 });
 
-// ─── Welcome message ─────────────────────────────────────────────
-
+// ─── Welcome content (already shown as splash during startup) ────
+// Populate the chat buffer so it persists across session switches
 appendChatRaw("{bold}{cyan-fg}");
 appendChatRaw("    ____  _ __      __  _____                              ");
 appendChatRaw("   / __ \\(_) /___  / /_/ ___/      ______ __________ ___  ");
