@@ -4466,72 +4466,11 @@ let escPressedAt = 0;
 // Esc: exit prompt, enter navigation mode (sessions pane focused)
 // p:   from anywhere, jump back into the prompt
 // m:   cycle log mode (workers → orchestration → sequence → node map)
-// Tab: cycle through panes
+// Tab / Shift+Tab: cycle through panes
 // h/l: left/right between sessions, chat, worker panes (when not in prompt)
-
-// Ctrl+w state — hoisted so the main keypress handler can check it
-let ctrlWPending = false;
-let ctrlWTimer = null;
 
 screen.on("keypress", (ch, key) => {
     if (!key) return;
-
-    // ── Ctrl+w follow-up: intercept h/j/k/l BEFORE any other handler ──
-    if (ctrlWPending) {
-        if (["h", "j", "k", "l"].includes(key.name)) {
-            ctrlWPending = false;
-            if (ctrlWTimer) { clearTimeout(ctrlWTimer); ctrlWTimer = null; }
-
-            let rightPanes;
-            if (mdViewActive) {
-                rightPanes = [mdFileListPane, mdPreviewPane];
-            } else {
-                rightPanes = logViewMode === "orchestration" ? [orchLogPane]
-                    : logViewMode === "nodemap" ? [nodeMapPane]
-                    : logViewMode === "sequence" ? [seqPane]
-                    : workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
-                rightPanes.push(activityPane);
-            }
-            const leftPanes = [orchList, chatBox];
-            const cur = screen.focused;
-            const isLeft = leftPanes.includes(cur);
-            const isRight = rightPanes.includes(cur);
-
-            switch (key.name) {
-                case "h":
-                    if (isRight) chatBox.focus();
-                    else if (cur === chatBox) orchList.focus();
-                    break;
-                case "l":
-                    if (cur === orchList) chatBox.focus();
-                    else if (isLeft && rightPanes.length) rightPanes[0].focus();
-                    else if (isRight) {
-                        const idx = rightPanes.indexOf(cur);
-                        if (idx >= 0 && idx < rightPanes.length - 1) rightPanes[idx + 1].focus();
-                    }
-                    break;
-                case "j":
-                    if (cur === orchList) chatBox.focus();
-                    else if (isRight) {
-                        const idx = rightPanes.indexOf(cur);
-                        if (idx >= 0 && idx < rightPanes.length - 1) rightPanes[idx + 1].focus();
-                    }
-                    break;
-                case "k":
-                    if (cur === chatBox) orchList.focus();
-                    else if (isRight) {
-                        const idx = rightPanes.indexOf(cur);
-                        if (idx > 0) rightPanes[idx - 1].focus();
-                        else if (idx === 0) orchList.focus();
-                    }
-                    break;
-            }
-            screen.render();
-            return;
-        } else {
-            ctrlWPending = false;
-        }
-    }
 
     // When the slash picker is open, its own keypress handler manages everything
     if (slashPicker) {
@@ -4646,8 +4585,8 @@ screen.on("keypress", (ch, key) => {
         return;
     }
 
-    // h/l navigation only when NOT in the input bar (and not in Ctrl+w mode)
-    if (screen.focused !== inputBar && !ctrlWPending) {
+    // h/l navigation only when NOT in the input bar
+    if (screen.focused !== inputBar) {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
         const rightPane = mdViewActive ? mdFileListPane
             : logViewMode === "orchestration" ? orchLogPane
@@ -4678,8 +4617,9 @@ screen.on("keypress", (ch, key) => {
     }
 });
 
-// Tab: cycle sessions → chat → right panes
-screen.key(["tab"], () => {
+// Tab: cycle forward through panes
+// Shift+Tab: cycle backward through panes
+function buildFocusableList() {
     let rightPanes;
     if (mdViewActive) {
         rightPanes = [mdFileListPane, mdPreviewPane];
@@ -4693,7 +4633,11 @@ screen.key(["tab"], () => {
             : workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
         rightPanes.push(activityPane);
     }
-    const allFocusable = [orchList, chatBox, ...rightPanes];
+    return [orchList, chatBox, ...rightPanes];
+}
+
+screen.key(["tab"], () => {
+    const allFocusable = buildFocusableList();
     if (screen.focused === inputBar) {
         orchList.focus();
     } else {
@@ -4704,17 +4648,17 @@ screen.key(["tab"], () => {
     screen.render();
 });
 
-// ─── Ctrl+w hjkl: vim-style pane switching ───────────────────────
-// Press Ctrl+w, then h/j/k/l within 500ms to move focus.
-// ctrlWPending and ctrlWTimer are hoisted above the main keypress handler.
-// The follow-up h/j/k/l is handled at the TOP of the main keypress handler
-// (before any other key processing), so it runs before h/l navigation.
-
-screen.key(["C-w"], () => {
-    ctrlWPending = true;
-    if (ctrlWTimer) clearTimeout(ctrlWTimer);
-    ctrlWTimer = setTimeout(() => { ctrlWPending = false; }, 500);
-    setStatus("{yellow-fg}Ctrl+w{/yellow-fg} → press h/j/k/l");
+screen.key(["S-tab"], () => {
+    const allFocusable = buildFocusableList();
+    if (screen.focused === inputBar) {
+        // Shift+Tab from input → go to last pane
+        allFocusable[allFocusable.length - 1].focus();
+    } else {
+        const currentIdx = allFocusable.indexOf(screen.focused);
+        const prevIdx = (currentIdx - 1 + allFocusable.length) % allFocusable.length;
+        allFocusable[prevIdx].focus();
+    }
+    screen.render();
 });
 
 screen.on("resize", () => {
@@ -4742,8 +4686,8 @@ appendChatRaw("");
 appendChatRaw("{bold}Controls:{/bold}");
 appendChatRaw("  {yellow-fg}Esc{/yellow-fg}    exit prompt → navigate TUI");
 appendChatRaw("  {yellow-fg}p{/yellow-fg}      back to prompt from anywhere");
-appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes");
-appendChatRaw("  {yellow-fg}Ctrl+w{/yellow-fg} + {yellow-fg}hjkl{/yellow-fg}  vim-style pane switching");
+appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes forward");
+appendChatRaw("  {yellow-fg}S-Tab{/yellow-fg}  cycle panes backward");
 appendChatRaw("  {yellow-fg}v{/yellow-fg}      toggle markdown viewer (full right side)");
 appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence → node map)");
 appendChatRaw("");
