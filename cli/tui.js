@@ -344,27 +344,12 @@ function registerFocusRing(pane, defaultFg) {
     pane.on("focus", () => {
         pane.style.border.fg = FOCUS_BORDER_FG;
         pane.style.border.bold = true;
-        // Switch to double-line border for a heavier but clean appearance
-        pane.border.type = "line";
-        pane.border.ch = undefined;
-        pane.border.top = "═";
-        pane.border.bottom = "═";
-        pane.border.left = "║";
-        pane.border.right = "║";
-        // Also brighten the label to match
         if (pane.style.label) pane.style.label.fg = FOCUS_BORDER_FG;
         scheduleRender();
     });
     pane.on("blur", () => {
         pane.style.border.fg = paneDefaultBorderFg.get(pane) || defaultFg;
         pane.style.border.bold = false;
-        // Revert to standard single-line border
-        pane.border.type = "line";
-        delete pane.border.ch;
-        delete pane.border.top;
-        delete pane.border.bottom;
-        delete pane.border.left;
-        delete pane.border.right;
         if (pane.style.label) pane.style.label.fg = paneDefaultBorderFg.get(pane) || defaultFg;
         scheduleRender();
     });
