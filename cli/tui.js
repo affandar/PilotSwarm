@@ -1508,6 +1508,8 @@ function switchLogMode() {
         recolorWorkerPanes();
     }
     relayoutAll();
+    // Reset focus to sessions list when panes change
+    orchList.focus();
     // Force full repaint on next tick (same as pressing 'r')
     setTimeout(() => { screen.realloc(); screen.render(); }, 0);
 }
@@ -4487,6 +4489,7 @@ screen.on("keypress", (ch, key) => {
     if (ch === "v" && screen.focused !== inputBar) {
         mdViewActive = !mdViewActive;
         if (mdViewActive) refreshMarkdownViewer();
+        orchList.focus();
         screen.realloc();
         relayoutAll();
         setStatus(mdViewActive ? "Markdown Viewer (v to exit)" : `Log mode: ${({ workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" })[logViewMode]}`);
