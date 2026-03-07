@@ -333,6 +333,26 @@ function chatH() { return bodyH() - sessH(); }
 function activityH() { return Math.max(6, Math.floor(bodyH() * 0.28)); } // sticky Activity pane height
 function rightMainH() { return bodyH() - activityH(); } // remaining height for log panes
 
+// ─── Focus ring: highlight the active pane with a bright border ──
+// When a pane gains focus, its border turns bright green.
+// When it loses focus, it reverts to its default border color.
+const FOCUS_BORDER_FG = "green";    // bright green border when focused
+const paneDefaultBorderFg = new Map(); // pane → original border fg color
+
+function registerFocusRing(pane, defaultFg) {
+    paneDefaultBorderFg.set(pane, defaultFg);
+    pane.on("focus", () => {
+        pane.style.border.fg = FOCUS_BORDER_FG;
+        pane.style.border.bold = true;
+        scheduleRender();
+    });
+    pane.on("blur", () => {
+        pane.style.border.fg = paneDefaultBorderFg.get(pane) || defaultFg;
+        pane.style.border.bold = false;
+        scheduleRender();
+    });
+}
+
 // ─── Left pane: Orchestrations ───────────────────────────────────
 
 const orchList = blessed.list({
@@ -965,6 +985,17 @@ const seqPane = blessed.log({
     hidden: true,
 });
 
+// ─── Register focus ring on all panes ────────────────────────────
+registerFocusRing(orchList, "yellow");
+registerFocusRing(chatBox, "cyan");
+registerFocusRing(orchLogPane, "cyan");
+registerFocusRing(nodeMapPane, "yellow");
+registerFocusRing(mdFileListPane, "green");
+registerFocusRing(mdPreviewPane, "green");
+registerFocusRing(activityPane, "gray");
+registerFocusRing(seqPane, "magenta");
+// Worker panes are created dynamically — registered in getOrCreateWorkerPane()
+
 function addSeqNode(podName) {
     const short = podName.slice(-5);
     if (seqNodeSet.has(short)) return short;
@@ -1587,6 +1618,7 @@ function getOrCreateWorkerPane(podName) {
 
     workerPanes.set(podName, pane);
     workerPaneOrder.push(podName);
+    registerFocusRing(pane, color);
 
     // Register this pod as a sequence diagram column so all nodes
     // appear regardless of whether the active session has used them.
@@ -1741,6 +1773,7 @@ const inputBar = blessed.textbox({
     keys: true,
     mouse: true,
 });
+registerFocusRing(inputBar, "green");
 
 // Guard against double readInput — neo-blessed starts a new readInput on each
 // focus() call when inputOnFocus=true. If the textbox is already focused and
@@ -4428,8 +4461,69 @@ let escPressedAt = 0;
 // Tab: cycle through panes
 // h/l: left/right between sessions, chat, worker panes (when not in prompt)
 
+// Ctrl+w state — hoisted so the main keypress handler can check it
+let ctrlWPending = false;
+let ctrlWTimer = null;
+
 screen.on("keypress", (ch, key) => {
     if (!key) return;
+
+    // ── Ctrl+w follow-up: intercept h/j/k/l BEFORE any other handler ──
+    if (ctrlWPending) {
+        if (["h", "j", "k", "l"].includes(key.name)) {
+            ctrlWPending = false;
+            if (ctrlWTimer) { clearTimeout(ctrlWTimer); ctrlWTimer = null; }
+
+            let rightPanes;
+            if (mdViewActive) {
+                rightPanes = [mdFileListPane, mdPreviewPane];
+            } else {
+                rightPanes = logViewMode === "orchestration" ? [orchLogPane]
+                    : logViewMode === "nodemap" ? [nodeMapPane]
+                    : logViewMode === "sequence" ? [seqPane]
+                    : workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
+                rightPanes.push(activityPane);
+            }
+            const leftPanes = [orchList, chatBox];
+            const cur = screen.focused;
+            const isLeft = leftPanes.includes(cur);
+            const isRight = rightPanes.includes(cur);
+
+            switch (key.name) {
+                case "h":
+                    if (isRight) chatBox.focus();
+                    else if (cur === chatBox) orchList.focus();
+                    break;
+                case "l":
+                    if (cur === orchList) chatBox.focus();
+                    else if (isLeft && rightPanes.length) rightPanes[0].focus();
+                    else if (isRight) {
+                        const idx = rightPanes.indexOf(cur);
+                        if (idx >= 0 && idx < rightPanes.length - 1) rightPanes[idx + 1].focus();
+                    }
+                    break;
+                case "j":
+                    if (cur === orchList) chatBox.focus();
+                    else if (isRight) {
+                        const idx = rightPanes.indexOf(cur);
+                        if (idx >= 0 && idx < rightPanes.length - 1) rightPanes[idx + 1].focus();
+                    }
+                    break;
+                case "k":
+                    if (cur === chatBox) orchList.focus();
+                    else if (isRight) {
+                        const idx = rightPanes.indexOf(cur);
+                        if (idx > 0) rightPanes[idx - 1].focus();
+                        else if (idx === 0) orchList.focus();
+                    }
+                    break;
+            }
+            screen.render();
+            return;
+        } else {
+            ctrlWPending = false;
+        }
+    }
 
     // When the slash picker is open, its own keypress handler manages everything
     if (slashPicker) {
@@ -4544,8 +4638,8 @@ screen.on("keypress", (ch, key) => {
         return;
     }
 
-    // h/l navigation only when NOT in the input bar
-    if (screen.focused !== inputBar) {
+    // h/l navigation only when NOT in the input bar (and not in Ctrl+w mode)
+    if (screen.focused !== inputBar && !ctrlWPending) {
         const panes = workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
         const rightPane = mdViewActive ? mdFileListPane
             : logViewMode === "orchestration" ? orchLogPane
@@ -4604,76 +4698,15 @@ screen.key(["tab"], () => {
 
 // ─── Ctrl+w hjkl: vim-style pane switching ───────────────────────
 // Press Ctrl+w, then h/j/k/l within 500ms to move focus.
-let ctrlWPending = false;
-let ctrlWTimer = null;
+// ctrlWPending and ctrlWTimer are hoisted above the main keypress handler.
+// The follow-up h/j/k/l is handled at the TOP of the main keypress handler
+// (before any other key processing), so it runs before h/l navigation.
 
 screen.key(["C-w"], () => {
     ctrlWPending = true;
     if (ctrlWTimer) clearTimeout(ctrlWTimer);
     ctrlWTimer = setTimeout(() => { ctrlWPending = false; }, 500);
     setStatus("{yellow-fg}Ctrl+w{/yellow-fg} → press h/j/k/l");
-});
-
-screen.on("keypress", (ch, key) => {
-    if (!ctrlWPending || !key) return;
-    if (!["h", "j", "k", "l"].includes(key.name)) {
-        ctrlWPending = false;
-        return;
-    }
-    ctrlWPending = false;
-    if (ctrlWTimer) { clearTimeout(ctrlWTimer); ctrlWTimer = null; }
-
-    // Build a spatial map of focusable panes
-    // Left column: orchList (top-left), chatBox (bottom-left)
-    // Right column depends on mode
-    let rightPanes;
-    if (mdViewActive) {
-        rightPanes = [mdFileListPane, mdPreviewPane];
-    } else {
-        rightPanes = logViewMode === "orchestration" ? [orchLogPane]
-            : logViewMode === "nodemap" ? [nodeMapPane]
-            : logViewMode === "sequence" ? [seqPane]
-            : workerPaneOrder.map(n => workerPanes.get(n)).filter(Boolean);
-        rightPanes.push(activityPane);
-    }
-    const leftPanes = [orchList, chatBox];
-    const allPanes = [...leftPanes, ...rightPanes];
-    const cur = screen.focused;
-    const isLeft = leftPanes.includes(cur);
-    const isRight = rightPanes.includes(cur);
-
-    switch (key.name) {
-        case "h": // move left
-            if (isRight) chatBox.focus();
-            else if (cur === chatBox) orchList.focus();
-            break;
-        case "l": // move right
-            if (cur === orchList) chatBox.focus();
-            else if (isLeft && rightPanes.length) rightPanes[0].focus();
-            else if (isRight) {
-                const idx = rightPanes.indexOf(cur);
-                if (idx >= 0 && idx < rightPanes.length - 1) rightPanes[idx + 1].focus();
-            }
-            break;
-        case "j": { // move down
-            if (cur === orchList) chatBox.focus();
-            else if (isRight) {
-                const idx = rightPanes.indexOf(cur);
-                if (idx >= 0 && idx < rightPanes.length - 1) rightPanes[idx + 1].focus();
-            }
-            break;
-        }
-        case "k": { // move up
-            if (cur === chatBox) orchList.focus();
-            else if (isRight) {
-                const idx = rightPanes.indexOf(cur);
-                if (idx > 0) rightPanes[idx - 1].focus();
-                else if (idx === 0) orchList.focus();
-            }
-            break;
-        }
-    }
-    screen.render();
 });
 
 screen.on("resize", () => {
