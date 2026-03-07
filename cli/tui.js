@@ -336,7 +336,7 @@ function rightMainH() { return bodyH() - activityH(); } // remaining height for 
 // ─── Focus ring: highlight the active pane with a bright border ──
 // When a pane gains focus, its border turns bright green.
 // When it loses focus, it reverts to its default border color.
-const FOCUS_BORDER_FG = "#00ff00";  // bright neon green border when focused
+const FOCUS_BORDER_FG = "#ff0000";  // bright red border when focused
 const paneDefaultBorderFg = new Map(); // pane → original border fg color
 
 function registerFocusRing(pane, defaultFg) {
@@ -344,20 +344,18 @@ function registerFocusRing(pane, defaultFg) {
     pane.on("focus", () => {
         pane.style.border.fg = FOCUS_BORDER_FG;
         pane.style.border.bold = true;
-        pane.style.border.bg = "green";   // solid green background behind border chars
         if (pane.style.label) {
             pane.style.label.fg = FOCUS_BORDER_FG;
-            pane.style.label.bg = "green";
+            pane.style.label.bold = true;
         }
         scheduleRender();
     });
     pane.on("blur", () => {
         pane.style.border.fg = paneDefaultBorderFg.get(pane) || defaultFg;
         pane.style.border.bold = false;
-        pane.style.border.bg = undefined;  // remove background
         if (pane.style.label) {
             pane.style.label.fg = paneDefaultBorderFg.get(pane) || defaultFg;
-            pane.style.label.bg = undefined;
+            pane.style.label.bold = false;
         }
         scheduleRender();
     });
