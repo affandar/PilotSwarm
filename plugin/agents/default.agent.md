@@ -37,3 +37,14 @@ Whenever you write a file with `write_artifact`, you MUST always follow up with 
 - Use `read_artifact(sessionId, filename)` to read files written by other agents or sessions.
 - The `sessionId` is the ID of the session that wrote the artifact.
 - Use this for cross-agent collaboration — e.g. reading a report produced by a sub-agent.
+
+## Sub-Agent Waiting
+
+When you have spawned sub-agents and need to wait for them:
+
+1. **Preferred**: Poll with `wait` + `check_agents` in a loop:
+   - Call `check_agents` to see current status.
+   - If agents are still running, use `wait(30)` (durable timer), then check again.
+   - This lets you provide progress updates and react to partial results.
+2. **Avoid**: `wait_for_agents` blocks the entire turn silently until all agents finish. The user sees no progress. Only use it if you truly have nothing else to do and don't need to report intermediate status.
+3. Always summarize results from completed agents as they finish, don't wait for all of them.
