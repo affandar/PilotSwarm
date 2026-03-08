@@ -28,5 +28,10 @@ When the user asks you to produce a document, report, summary, or any content as
 1. Write it using `write_artifact(filename, content)` — this saves it to shared storage.
 2. Then call `export_artifact(filename)` to generate a download URL for the user.
 3. Share the download URL in your response so the TUI can auto-download it.
-4. Other agents can read your artifacts using `read_artifact(sessionId, filename)`.
-5. Prefer `.md` (Markdown) format for documents unless the user specifies otherwise.
+4. Prefer `.md` (Markdown) format for documents unless the user specifies otherwise.
+
+## Reading Artifacts
+
+- Use `read_artifact(sessionId, filename)` to read files written by other agents or sessions.
+- The `sessionId` is the ID of the session that wrote the artifact.
+- Use this for cross-agent collaboration — e.g. reading a report produced by a sub-agent.
