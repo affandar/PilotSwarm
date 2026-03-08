@@ -4665,6 +4665,24 @@ screen.on("keypress", (ch, key) => {
             screen.render();
             return;
         }
+        // d: delete the selected file
+        if (ch === "d") {
+            const files = scanExportFiles();
+            const f = files[mdViewerSelectedIdx];
+            if (!f) return;
+            try {
+                fs.unlinkSync(f.localPath);
+                appendLog(`{yellow-fg}🗑 Deleted: ${f.displayPath || f.filename}{/yellow-fg}`);
+                // Adjust selection index if we deleted the last item
+                if (mdViewerSelectedIdx >= files.length - 1) {
+                    mdViewerSelectedIdx = Math.max(0, mdViewerSelectedIdx - 1);
+                }
+                refreshMarkdownViewer();
+            } catch (err) {
+                appendLog(`{red-fg}Delete failed: ${err.message}{/red-fg}`);
+            }
+            return;
+        }
     }
 
     // m: cycle log viewing mode (only from non-input panes, disabled during md view)
