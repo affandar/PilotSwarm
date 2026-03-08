@@ -15,6 +15,7 @@ import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { createSweeperTools } from "./sweeper-tools.js";
+import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig, OrchestrationInput } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
@@ -236,6 +237,19 @@ export class PilotSwarmWorker {
         if (this.blobStore) {
             const artifactTools = createArtifactTools({ blobStore: this.blobStore });
             this.registerTools(artifactTools);
+        }
+
+        // Auto-register resource manager tools
+        if (this._catalog) {
+            const rmClient = new Client(this._provider);
+            const rmTools = createResourceManagerTools({
+                catalog: this._catalog,
+                duroxideClient: rmClient,
+                blobStore: this.blobStore,
+                duroxideSchema: this.config.duroxideSchema,
+                cmsSchema: this.config.cmsSchema,
+            });
+            this.registerTools(rmTools);
         }
 
         this.runtime.start().catch((err: any) => {

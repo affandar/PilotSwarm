@@ -56,6 +56,8 @@ export { loadMcpConfig } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 // Sweeper Agent tools
 export { createSweeperTools } from "./sweeper-tools.js";
+// Resource Manager Agent tools
+export { createResourceManagerTools } from "./resourcemgr-tools.js";
 // Model providers
 export { loadModelProviders, ModelProviderRegistry } from "./model-providers.js";
 export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
