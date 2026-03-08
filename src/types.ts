@@ -7,7 +7,7 @@ export type TurnResult =
     | { type: "completed"; content: string; events?: CapturedEvent[] }
     | { type: "wait"; seconds: number; reason: string; content?: string; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
-    | { type: "spawn_agent"; task: string; model?: string; systemMessage?: string; toolNames?: string[]; content?: string; events?: CapturedEvent[] }
+    | { type: "spawn_agent"; task: string; model?: string; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; content?: string; events?: CapturedEvent[] }
     | { type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }

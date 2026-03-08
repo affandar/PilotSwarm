@@ -8,7 +8,7 @@ import type { TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } fro
 interface TurnState {
     pendingWait: { seconds: number; reason: string } | null;
     pendingInput: { question: string; choices?: string[]; allowFreeform?: boolean } | null;
-    pendingSpawnAgent: { task: string; model?: string; systemMessage?: string; toolNames?: string[] } | null;
+    pendingSpawnAgent: { task: string; model?: string; systemMessage?: string; toolNames?: string[]; agentName?: string } | null;
     pendingMessageAgent: { agentId: string; message: string } | null;
     pendingCheckAgents: boolean;
     pendingWaitForAgents: { agentIds: string[] } | null;
@@ -381,42 +381,45 @@ export class ManagedSession {
                 "Spawn an autonomous sub-agent to work on a task in parallel. " +
                 "The sub-agent is a full Copilot session with its own conversation and tools. " +
                 "Returns an agent ID you can use to check status, send messages, or wait for completion. " +
-                "IMPORTANT: Only spawn agents for tasks that MUST run independently and in parallel " +
-                "(e.g. separate data sources to monitor, independent work streams). " +
-                "Do NOT spawn agents for summarization, reporting, or coordination \u2014 handle those yourself. " +
-                "Each agent adds cost, so minimize the number of agents. " +
-                "By default, sub-agents use the same model as the parent. " +
-                "If the user asks to use the right model for the job, call list_available_models first " +
-                "and pick one based on task complexity and cost.",
+                "Use agent_name to spawn a known agent by name (its config is loaded automatically). " +
+                "Or provide task + optional system_message/tool_names to spawn a custom agent. " +
+                "Each agent adds cost, so minimize the number of agents.",
             parameters: {
                 type: "object",
                 properties: {
+                    agent_name: {
+                        type: "string",
+                        description: "Name of a known agent to spawn (from list_agents). Its system message, tools, and initial prompt are loaded automatically.",
+                    },
                     task: {
                         type: "string",
-                        description: "A clear description of what the sub-agent should do. This becomes the agent's first prompt.",
+                        description: "A clear description of what the sub-agent should do. This becomes the agent's first prompt. If agent_name is provided, this overrides the agent's default initial prompt.",
                     },
                     model: {
                         type: "string",
-                        description: "Optional model to use for this sub-agent in provider:model format (e.g. 'azure-openai:gpt-4.1-mini'). Use list_available_models to see options. If omitted, inherits the parent's model.",
+                        description: "Optional model override in provider:model format.",
                     },
                     system_message: {
                         type: "string",
-                        description: "Optional custom system message for the sub-agent. If omitted, inherits the parent's system message.",
+                        description: "Optional custom system message. If agent_name is provided, this overrides the agent's default system message.",
                     },
                     tool_names: {
                         type: "array",
                         items: { type: "string" },
-                        description: "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
+                        description: "Optional tool names list. If agent_name is provided, this overrides the agent's default tools.",
                     },
                 },
-                required: ["task"],
             },
-            handler: async (args: { task: string; model?: string; system_message?: string; tool_names?: string[] }) => {
+            handler: async (args: { agent_name?: string; task?: string; model?: string; system_message?: string; tool_names?: string[] }) => {
+                if (!args.agent_name && !args.task) {
+                    return "Error: either agent_name or task is required.";
+                }
                 turnState.pendingSpawnAgent = {
-                    task: args.task,
+                    task: args.task || "",
                     model: args.model,
                     systemMessage: args.system_message,
                     toolNames: args.tool_names,
+                    agentName: args.agent_name,
                 };
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
@@ -723,6 +726,7 @@ export class ManagedSession {
                 model: turnState.pendingSpawnAgent.model,
                 systemMessage: turnState.pendingSpawnAgent.systemMessage,
                 toolNames: turnState.pendingSpawnAgent.toolNames,
+                agentName: turnState.pendingSpawnAgent.agentName,
                 content: finalContent,
                 events: collectedEvents,
             };

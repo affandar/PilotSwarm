@@ -7,7 +7,8 @@ import { durableSessionOrchestration_1_0_2 } from "./orchestration_1_0_2.js";
 import { durableSessionOrchestration_1_0_3 } from "./orchestration_1_0_3.js";
 import { durableSessionOrchestration_1_0_4 } from "./orchestration_1_0_4.js";
 import { durableSessionOrchestration_1_0_5 } from "./orchestration_1_0_5.js";
-import { durableSessionOrchestration_1_0_6 } from "./orchestration.js";
+import { durableSessionOrchestration_1_0_6 } from "./orchestration_1_0_6.js";
+import { durableSessionOrchestration_1_0_7 } from "./orchestration.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { loadAgentFiles, systemAgentUUID } from "./agent-loader.js";
@@ -29,7 +30,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.6";
+const ORCHESTRATION_VERSION = "1.0.7";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -213,6 +214,7 @@ export class PilotSwarmWorker {
                 blobEnabled: this.blobEnabled,
                 duroxideSchema: this.config.duroxideSchema,
             },
+            this._loadedSystemAgents,
         );
 
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.0", durableSessionOrchestration_1_0_0);
@@ -222,6 +224,7 @@ export class PilotSwarmWorker {
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.4", durableSessionOrchestration_1_0_4);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.5", durableSessionOrchestration_1_0_5);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.6", durableSessionOrchestration_1_0_6);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.7", durableSessionOrchestration_1_0_7);
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {
@@ -430,23 +433,15 @@ export class PilotSwarmWorker {
 
         const duroxideClient = new Client(this._provider);
 
-        // Sort: parents first (agents without a parent field come before those with one)
-        const sorted = [...this._loadedSystemAgents].sort((a, b) => {
-            const aHasParent = a.parent ? 1 : 0;
-            const bHasParent = b.parent ? 1 : 0;
-            return aHasParent - bHasParent;
-        });
+        // Only start root agents (no parent field) — child system agents are
+        // spawned by the parent agent at runtime via spawn_agent with agent_name.
+        const rootAgents = this._loadedSystemAgents.filter(a => !a.parent);
 
-        for (const agent of sorted) {
+        for (const agent of rootAgents) {
             if (!agent.id) continue;
 
             const sessionId = systemAgentUUID(agent.id);
             const orchestrationId = `session-${sessionId}`;
-
-            // Resolve parent session ID if this agent has a parent
-            const parentSessionId = agent.parent
-                ? systemAgentUUID(agent.parent)
-                : undefined;
 
             try {
                 // Check if this system agent's session already exists in CMS
@@ -474,10 +469,9 @@ export class PilotSwarmWorker {
                     toolNames: agent.tools ?? undefined,
                 };
 
-                // Create CMS entry
+                // Create CMS entry (root agents have no parent)
                 await this._catalog.createSession(sessionId, {
                     isSystem: true,
-                    parentSessionId,
                 });
                 // Set title immediately — prefer explicit title, fallback to capitalized name + "Agent"
                 const title = agent.title ?? (agent.name.charAt(0).toUpperCase() + agent.name.slice(1) + " Agent");
