@@ -3164,31 +3164,6 @@ orchList.key(["q"], () => {
     cleanup().then(() => process.exit(0));
 });
 
-// Expand children of selected session (+/=)
-orchList.on("keypress", async (ch, key) => {
-    if (ch !== "+" && ch !== "=" && ch !== "-") return;
-    const idx = orchList.selected;
-    if (idx < 0 || idx >= orchIdOrder.length) return;
-
-    if (ch === "+" || ch === "=") {
-        const id = orchIdOrder[idx];
-        if (collapsedParents.has(id)) {
-            collapsedParents.delete(id);
-            await refreshOrchestrations();
-        }
-    } else if (ch === "-") {
-        let id = orchIdOrder[idx];
-        // If this is a child, collapse its parent instead
-        if (orchChildToParent.has(id)) {
-            id = orchChildToParent.get(id);
-        }
-        if (orchChildrenOf.has(id) && !collapsedParents.has(id)) {
-            collapsedParents.add(id);
-            await refreshOrchestrations();
-        }
-    }
-});
-
 orchList.key(["c"], async () => {
     const idx = orchList.selected;
     if (idx >= 0 && idx < orchIdOrder.length) {
@@ -4613,6 +4588,30 @@ screen.on("keypress", (ch, key) => {
         screen.realloc();
         relayoutAll();
         setStatus(mdViewActive ? "Markdown Viewer (v to exit)" : `Log mode: ${({ workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" })[logViewMode]}`);
+        return;
+    }
+
+    // +/= : expand children, - : collapse children (session list)
+    if ((ch === "+" || ch === "=" || ch === "-") && screen.focused === orchList) {
+        const idx = orchList.selected;
+        if (idx >= 0 && idx < orchIdOrder.length) {
+            if (ch === "+" || ch === "=") {
+                const id = orchIdOrder[idx];
+                if (collapsedParents.has(id)) {
+                    collapsedParents.delete(id);
+                    refreshOrchestrations();
+                }
+            } else {
+                let id = orchIdOrder[idx];
+                if (orchChildToParent.has(id)) {
+                    id = orchChildToParent.get(id);
+                }
+                if (orchChildrenOf.has(id) && !collapsedParents.has(id)) {
+                    collapsedParents.add(id);
+                    refreshOrchestrations();
+                }
+            }
+        }
         return;
     }
 
