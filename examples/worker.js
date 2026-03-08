@@ -45,20 +45,9 @@ if (pluginDirs.length > 0) console.log(`[worker] Plugin dirs: ${pluginDirs.join(
 // Model providers: auto-discovered from model_providers.json or env vars.
 // The worker loads them automatically — just log what it finds after start.
 
-const SYSTEM_MESSAGE = `You are a helpful assistant running in a durable execution environment. Be concise.
-
-CRITICAL RULES:
-1. You have a 'wait' tool. You MUST use it whenever you need to wait, pause, sleep, delay, poll, check back later, schedule a future action, or implement any recurring/periodic task.
-2. NEVER say you cannot wait or set timers. You CAN — use the 'wait' tool.
-3. NEVER use bash sleep, setTimeout, setInterval, cron, or any other timing mechanism.
-4. The 'wait' tool enables durable timers that survive process restarts and node migrations.
-5. For recurring tasks: use the 'wait' tool in a loop — complete the action, then call wait(seconds), then repeat.
-6. When the user asks you to produce a document, report, summary, or any content as a file:
-   a. Write it using write_artifact(filename, content) — this saves it to shared storage.
-   b. Then call export_artifact(filename) to generate a download URL for the user.
-   c. Share the download URL in your response so the TUI can auto-download it.
-   d. Other agents can read your artifacts using read_artifact(sessionId, filename).
-7. Prefer .md (Markdown) format for documents unless the user specifies otherwise.`;
+// System message: falls back to default.agent.md from plugin if not set here.
+// Set explicitly to override the plugin default, or leave undefined to use it.
+const SYSTEM_MESSAGE = undefined;
 
 const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,

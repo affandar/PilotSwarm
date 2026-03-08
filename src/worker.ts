@@ -58,6 +58,8 @@ export class PilotSwarmWorker {
     private _loadedMcpServers: Record<string, any> = {};
     /** Model provider registry — multi-provider LLM config. */
     private _modelProviders: ModelProviderRegistry | null = null;
+    /** Prompt from default.agent.md — used as base system message. */
+    private _defaultAgentPrompt: string | null = null;
 
     constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
@@ -82,7 +84,7 @@ export class PilotSwarmWorker {
             options.githubToken,
             this.blobStore,
             {
-                systemMessage: options.systemMessage,
+                systemMessage: options.systemMessage ?? this._defaultAgentPrompt ?? undefined,
                 skillDirectories: this._loadedSkillDirs,
                 customAgents: this._loadedAgents,
                 mcpServers: this._loadedMcpServers,
@@ -296,7 +298,15 @@ export class PilotSwarmWorker {
             const agentsDir = path.join(absDir, "agents");
             if (fs.existsSync(agentsDir)) {
                 const agents = loadAgentFiles(agentsDir);
-                this._loadedAgents.push(...agents);
+                for (const agent of agents) {
+                    if (agent.name === "default") {
+                        // default.agent.md → becomes the base system message,
+                        // not a custom @-mentionable agent.
+                        this._defaultAgentPrompt = agent.prompt;
+                    } else {
+                        this._loadedAgents.push(agent);
+                    }
+                }
             }
 
             // MCP: parse .mcp.json
@@ -315,8 +325,16 @@ export class PilotSwarmWorker {
             Object.assign(this._loadedMcpServers, this.config.mcpServers);
         }
 
-        // 3. Log summary
+        // 3. Prepend default agent prompt to all other agents so they inherit base rules
+        if (this._defaultAgentPrompt) {
+            for (const agent of this._loadedAgents) {
+                agent.prompt = `${this._defaultAgentPrompt}\n\n---\n\n${agent.prompt}`;
+            }
+        }
+
+        // 4. Log summary
         const parts: string[] = [];
+        if (this._defaultAgentPrompt) parts.push(`default agent (system message)`);
         if (this._loadedSkillDirs.length > 0) parts.push(`${this._loadedSkillDirs.length} skill dir(s)`);
         if (this._loadedAgents.length > 0) parts.push(`${this._loadedAgents.length} agent(s): ${this._loadedAgents.map(a => a.name).join(", ")}`);
         const mcpCount = Object.keys(this._loadedMcpServers).length;

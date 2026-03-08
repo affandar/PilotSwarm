@@ -2382,7 +2382,8 @@ if (!isRemote) {
     process.stdout.write = () => true;
     process.stderr.write = () => true;
 
-    const WORKER_SYSTEM_MESSAGE = process.env._TUI_SYSTEM_MESSAGE || "You are a helpful assistant running in a durable execution environment. Be concise.\n\nCRITICAL RULES:\n1. You have a 'wait' tool. You MUST use it whenever you need to wait, pause, sleep, delay, poll, check back later, schedule a future action, or implement any recurring/periodic task.\n2. NEVER say you cannot wait or set timers. You CAN — use the 'wait' tool.\n3. NEVER use bash sleep, setTimeout, setInterval, cron, or any other timing mechanism.\n4. The 'wait' tool enables durable timers that survive process restarts and node migrations.\n5. For recurring tasks: use the 'wait' tool in a loop — complete the action, then call wait(seconds), then repeat.\n6. When the user asks you to produce a document, report, summary, or any content as a file:\n   a. Write it using write_artifact(filename, content) — this saves it to shared storage.\n   b. Then call export_artifact(filename) to generate a download URL for the user.\n   c. Share the download URL in your response so the TUI can auto-download it.\n   d. Other agents can read your artifacts using read_artifact(sessionId, filename).\n7. Prefer .md (Markdown) format for documents unless the user specifies otherwise.";
+    // System message: env override > worker module > default agent (from plugin)
+    const WORKER_SYSTEM_MESSAGE = process.env._TUI_SYSTEM_MESSAGE || undefined;
 
     // Plugin directories: env override or default to bundled plugin/
     const defaultPluginDir = path.resolve(__dirname, "..", "plugin");
@@ -2424,7 +2425,7 @@ if (!isRemote) {
             blobConnectionString: workerModuleConfig.blobConnectionString || process.env.AZURE_STORAGE_CONNECTION_STRING,
             blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
             workerNodeId: `local-rt-${i}`,
-            systemMessage: workerModuleConfig.systemMessage || WORKER_SYSTEM_MESSAGE,
+            systemMessage: workerModuleConfig.systemMessage || WORKER_SYSTEM_MESSAGE || undefined,
             pluginDirs,
             ...(llmProvider && { provider: llmProvider }),
             ...(workerModuleConfig.skillDirectories && { skillDirectories: workerModuleConfig.skillDirectories }),
