@@ -772,6 +772,19 @@ export class ManagedSession {
             };
         }
 
+        // Check if the SDK emitted a session.error — if so, treat as an error
+        // even though session.idle fired (the SDK fires idle after retries exhaust).
+        const sessionError = collectedEvents.find(e => e.eventType === "session.error");
+        if (sessionError && !finalContent) {
+            const errData: any = sessionError.data ?? {};
+            const errMsg = errData.message ?? errData.stack ?? "Unknown session error";
+            return {
+                type: "error",
+                message: `Execution failed: ${errMsg}`,
+                events: collectedEvents,
+            } as any;
+        }
+
         return {
             type: "completed",
             content: finalContent ?? "(no response)",
