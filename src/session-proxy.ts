@@ -412,6 +412,11 @@ export function registerActivities(
         try {
             await sdkClient.start();
 
+            // Mark as system session BEFORE createSession so OrchestrationInput gets isSystem=true
+            if (input.isSystem) {
+                sdkClient.systemSessions.add(childSessionId);
+            }
+
             // Create the child session via the SDK — handles CMS row + orchestration start
             const session = await sdkClient.createSession({
                 sessionId: childSessionId,
