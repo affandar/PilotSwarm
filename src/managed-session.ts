@@ -378,22 +378,20 @@ export class ManagedSession {
         // Build sub-agent tools
         const spawnAgentTool = defineTool("spawn_agent", {
             description:
-                "Spawn an autonomous sub-agent to work on a task in parallel. " +
-                "The sub-agent is a full Copilot session with its own conversation and tools. " +
-                "Returns an agent ID you can use to check status, send messages, or wait for completion. " +
-                "Use agent_name to spawn a known agent by name (its config is loaded automatically). " +
-                "Or provide task + optional system_message/tool_names to spawn a custom agent. " +
-                "Each agent adds cost, so minimize the number of agents.",
+                "Spawn a sub-agent. For KNOWN agents, pass agent_name ONLY (e.g. agent_name=\"sweeper\"). " +
+                "The agent's system message, tools, and initial prompt are loaded automatically from agent_name. " +
+                "Do NOT pass task or system_message when using agent_name. " +
+                "For CUSTOM agents (ad-hoc tasks), pass task instead.",
             parameters: {
                 type: "object",
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known agent to spawn (from list_agents). Its system message, tools, and initial prompt are loaded automatically.",
+                        description: "Name of a known agent to spawn (from list_agents). Use this for pre-configured agents. Do NOT also pass task or system_message.",
                     },
                     task: {
                         type: "string",
-                        description: "A clear description of what the sub-agent should do. This becomes the agent's first prompt. If agent_name is provided, this overrides the agent's default initial prompt.",
+                        description: "For custom agents only: a clear description of what the sub-agent should do. Do NOT use this for known agents — use agent_name instead.",
                     },
                     model: {
                         type: "string",
@@ -401,12 +399,12 @@ export class ManagedSession {
                     },
                     system_message: {
                         type: "string",
-                        description: "Optional custom system message. If agent_name is provided, this overrides the agent's default system message.",
+                        description: "Optional custom system message. Only for custom agents.",
                     },
                     tool_names: {
                         type: "array",
                         items: { type: "string" },
-                        description: "Optional tool names list. If agent_name is provided, this overrides the agent's default tools.",
+                        description: "Optional tool names list. Only for custom agents.",
                     },
                 },
             },

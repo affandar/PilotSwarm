@@ -1,5 +1,7 @@
 # Copilot Instructions for PilotSwarm
 
+## **⚠️ NEVER commit, push, or deploy without explicit user permission. ALWAYS ask first.**
+
 ## Project Overview
 
 pilotswarm is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide) (a Rust-based durable orchestration engine). It provides **crash recovery, durable timers, session dehydration, and multi-node scaling**.

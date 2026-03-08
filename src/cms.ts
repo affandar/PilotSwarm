@@ -38,6 +38,10 @@ export interface SessionRow {
     parentSessionId: string | null;
     /** Whether this is a system session (e.g. Sweeper Agent). */
     isSystem: boolean;
+    /** Agent definition ID (e.g. "sweeper"). Links session to its agent config. */
+    agentId: string | null;
+    /** Splash banner (blessed markup) from the agent definition. */
+    splash: string | null;
 }
 
 /** Fields that can be updated on a session row. */
@@ -50,6 +54,9 @@ export interface SessionRowUpdates {
     currentIteration?: number;
     lastError?: string | null;
     waitReason?: string | null;
+    isSystem?: boolean;
+    agentId?: string | null;
+    splash?: string | null;
 }
 
 // ─── Provider Interface ──────────────────────────────────────────
@@ -67,7 +74,7 @@ export interface SessionCatalogProvider {
     // ── Writes (called from client, before duroxide calls) ───
 
     /** Insert a new session. No-op if session already exists. */
-    createSession(sessionId: string, opts?: { model?: string; parentSessionId?: string; isSystem?: boolean }): Promise<void>;
+    createSession(sessionId: string, opts?: { model?: string; parentSessionId?: string; isSystem?: boolean; agentId?: string; splash?: string }): Promise<void>;
 
     /** Update one or more fields on an existing session. */
     updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void>;
@@ -217,17 +224,29 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
                 `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS wait_reason TEXT`
             );
         } catch {}
+        // Migration: add agent_id column if missing
+        try {
+            await this.pool.query(
+                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS agent_id TEXT`
+            );
+        } catch {}
+        // Migration: add splash column if missing
+        try {
+            await this.pool.query(
+                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS splash TEXT`
+            );
+        } catch {}
         this.initialized = true;
     }
 
     // ── Writes ───────────────────────────────────────────────
 
-    async createSession(sessionId: string, opts?: { model?: string; parentSessionId?: string; isSystem?: boolean }): Promise<void> {
+    async createSession(sessionId: string, opts?: { model?: string; parentSessionId?: string; isSystem?: boolean; agentId?: string; splash?: string }): Promise<void> {
         await this.pool.query(
-            `INSERT INTO ${this.sql.table} (session_id, model, parent_session_id, is_system)
-             VALUES ($1, $2, $3, $4)
+            `INSERT INTO ${this.sql.table} (session_id, model, parent_session_id, is_system, agent_id, splash)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (session_id) DO NOTHING`,
-            [sessionId, opts?.model ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false],
+            [sessionId, opts?.model ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null],
         );
     }
 
@@ -267,6 +286,18 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         if (updates.waitReason !== undefined) {
             setClauses.push(`wait_reason = $${idx++}`);
             values.push(updates.waitReason);
+        }
+        if (updates.isSystem !== undefined) {
+            setClauses.push(`is_system = $${idx++}`);
+            values.push(updates.isSystem);
+        }
+        if (updates.agentId !== undefined) {
+            setClauses.push(`agent_id = $${idx++}`);
+            values.push(updates.agentId);
+        }
+        if (updates.splash !== undefined) {
+            setClauses.push(`splash = $${idx++}`);
+            values.push(updates.splash);
         }
 
         if (values.length === 0) return; // nothing to update besides updated_at
@@ -409,6 +440,8 @@ function rowToSessionRow(row: any): SessionRow {
         waitReason: row.wait_reason ?? null,
         parentSessionId: row.parent_session_id ?? null,
         isSystem: row.is_system ?? false,
+        agentId: row.agent_id ?? null,
+        splash: row.splash ?? null,
     };
 }
 
