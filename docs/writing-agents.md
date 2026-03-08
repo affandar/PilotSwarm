@@ -1,26 +1,89 @@
-# Writing Agents for PilotSwarm
+# Writing Agents, Skills, Tools & MCP Servers for PilotSwarm
 
-This guide explains how to create custom agents — specialized personas that users
-can invoke via `@agent-name` — and add them to your PilotSwarm installation.
+This guide explains how to extend PilotSwarm with custom agents, skills, tools, and MCP servers —
+and how each component flows through the client/worker architecture.
 
-## What is an Agent?
+---
 
-An agent is a markdown file (`.agent.md`) that defines a named personality with a
-specific purpose, tool access, and behavioral rules. Agents are loaded from the
-`plugin/agents/` directory at worker startup and made available to every session.
+## Architecture: Client vs Worker
 
-When a user types `@planner break this project into tasks`, the Copilot SDK
-routes the message to the `planner` agent — which has its own system prompt,
-tools, and rules.
+Understanding the split is essential before writing any extension.
 
-## Quick Start
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  PilotSwarmClient (lightweight, no GitHub token)                │
+│                                                                 │
+│  • Creates/resumes/deletes sessions                             │
+│  • Sends prompts, receives events                               │
+│  • References tools by NAME only (serializable strings)         │
+│  • Has NO tool handlers, NO LLM access, NO session state        │
+│  • Talks to duroxide via Client API (enqueueEvent, getStatus)   │
+└────────────────────┬────────────────────────────────────────────┘
+                     │  PostgreSQL (shared database)
+┌────────────────────┴────────────────────────────────────────────┐
+│  PilotSwarmWorker (requires GitHub token)                       │
+│                                                                 │
+│  • Loads agents, skills, MCP servers from plugin/ directory     │
+│  • Owns SessionManager → ManagedSession → CopilotSession (SDK) │
+│  • Runs LLM turns, executes tool handlers                       │
+│  • Registers activities + orchestrations with duroxide Runtime  │
+│  • Resolves tool NAMES → actual Tool objects with handlers      │
+│  • Auto-starts system agents on boot                            │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-Create a file at `plugin/agents/researcher.agent.md`:
+**Key rule**: The client only knows tool *names* (strings). The worker holds the actual tool *objects* (with handler functions). When a client creates a session with `toolNames: ["bash", "wait"]`, those names travel through duroxide as serializable data. The worker resolves them to real `Tool` instances at turn execution time.
+
+---
+
+## Plugin Directory Structure
+
+All extensions live under a `plugin/` directory (configurable via `pluginDirs` in worker options):
+
+```
+plugin/
+  plugin.json              ← Plugin metadata
+  .mcp.json                ← MCP server configurations
+  agents/
+    default.agent.md       ← Base system message (NOT a selectable agent)
+    planner.agent.md       ← User-invocable @planner agent
+    pilotswarm.agent.md    ← System agent (auto-started)
+    sweeper.agent.md       ← System agent (child of pilotswarm)
+    resourcemgr.agent.md   ← System agent (child of pilotswarm)
+  skills/
+    concise-assistant/
+      SKILL.md             ← Skill definition
+    durable-timers/
+      SKILL.md
+      tools.json           ← Optional: tool names this skill needs
+    sweeper/
+      SKILL.md
+      tools.json
+```
+
+### Loading Order (Worker Startup)
+
+1. Worker reads each `pluginDirs` entry
+2. **Agents**: Parses every `*.agent.md` in `agents/`
+   - `default.agent.md` → becomes the base system message for ALL sessions
+   - Files with `system: true` → stored as system agents (auto-started)
+   - Everything else → user-invocable agents (available via `@name`)
+3. **Skills**: Each subdirectory of `skills/` with a `SKILL.md` → loaded as a skill
+4. **MCP**: Reads `.mcp.json` from the plugin root → MCP server configs
+5. All loaded items are passed to `SessionManager`, which forwards them to every `CopilotSession` created by the Copilot SDK
+
+---
+
+## Agents (`.agent.md`)
+
+### File Structure
+
+Every `.agent.md` file has two sections: **YAML frontmatter** and a **markdown body**.
 
 ```markdown
 ---
 name: researcher
-description: Deep research agent. Searches the web and synthesizes findings.
+description: Deep research agent.
 tools:
   - bash
   - write_artifact
@@ -29,298 +92,546 @@ tools:
 
 # Research Agent
 
-You are a research agent. When given a topic, you perform thorough research
-and present structured findings.
-
-## Process
-1. Break the research question into sub-questions.
-2. Use bash + curl to query APIs or search.
-3. Synthesize findings into a concise report.
-4. Save the report with write_artifact + export_artifact.
+You are a research agent. When given a topic...
 
 ## Rules
 - Cite sources where possible.
-- Be objective — present multiple perspectives.
-- Prefer recent data over old data.
-- Always produce a downloadable artifact with your findings.
+- Always produce a downloadable artifact.
 ```
 
-That's it. Restart the worker, and users can invoke `@researcher` in any session.
+### What Goes Where in the Prompt
 
-## Agent File Structure
+This is the critical part — each section of the `.agent.md` maps to a specific part of the LLM's context:
 
-Every `.agent.md` file has two sections:
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  YAML Frontmatter                                                │
+│                                                                  │
+│  name          → The @mention name. Users type @researcher       │
+│  description   → Shown in agent picker UI                        │
+│  tools         → Restricts which tools this agent can use        │
+│  system        → If true, auto-started by workers (not @-able)   │
+│  id            → Deterministic session UUID slug (system agents) │
+│  title         → Display name in session list                    │
+│  parent        → Parent system agent ID (for sub-agents)         │
+│  splash        → Blessed markup banner for TUI display           │
+│  initialPrompt → First user message sent to the agent            │
+│                                                                  │
+├──────────────────────────────────────────────────────────────────┤
+│  Markdown Body                                                   │
+│                                                                  │
+│  Everything after the closing --- becomes the agent's            │
+│  SYSTEM PROMPT (AgentConfig.prompt)                              │
+│                                                                  │
+│  This is what the LLM receives as its persona/instructions       │
+│  via CopilotSession.setSystemMessage()                           │
+└──────────────────────────────────────────────────────────────────┘
+```
 
-### 1. YAML Frontmatter
+### Prompt Assembly Flow
+
+Here's exactly how each piece flows through the system:
+
+```
+1. Worker loads .agent.md
+   ├─ YAML frontmatter → AgentConfig fields (name, tools, system, etc.)
+   └─ Markdown body    → AgentConfig.prompt
+
+2. When a session uses this agent (via @mention or spawn_agent):
+   ├─ AgentConfig.prompt → { mode: "replace", content: prompt }
+   │                        ↓
+   │                   SessionManager._buildSystemMessage()
+   │                        ↓
+   │                   CopilotSession.setSystemMessage(content)
+   │                        ↓
+   │                   LLM sees this as the SYSTEM PROMPT
+   │
+   └─ AgentConfig.initialPrompt → session.send(initialPrompt)
+                                    ↓
+                               First USER MESSAGE the LLM sees
+
+3. For regular (non-agent) sessions:
+   └─ default.agent.md body → base system message for ALL sessions
+       ↓
+   SessionManager.workerDefaults.systemMessage
+       ↓
+   Prepended to any client-provided systemMessage
+```
+
+### The `default.agent.md` — Base System Message
+
+`default.agent.md` is special. It is NOT a selectable agent. Its markdown body becomes the **base system message** for every session on the worker:
+
+```markdown
+---
+name: default
+description: Base agent — always-on system instructions.
+tools:
+  - wait
+  - bash
+---
+
+# PilotSwarm Agent
+
+You are a helpful assistant running in a durable execution environment.
+
+## Critical Rules
+1. Use the `wait` tool for any delays, polling, or recurring tasks.
+2. NEVER use bash sleep, setTimeout, or setInterval.
+```
+
+The `tools` list in `default.agent.md` is ignored — it does not restrict tools. Only the markdown body matters.
+
+When a custom agent's prompt is used, it **replaces** the default prompt entirely (via `mode: "replace"`). The default prompt is also prepended to all non-system custom agent prompts during plugin loading:
+
+```
+default.agent.md body + "\n\n---\n\n" + custom_agent.agent.md body
+```
+
+System agents get their prompt directly without the default prepend.
+
+### Agent Types
+
+#### User-Invocable Agents
+
+Regular agents that users can invoke via `@name` in any session:
 
 ```yaml
 ---
-name: myagent              # Required. The @mention name. Lowercase, no spaces.
-description: What it does  # Required. Short summary shown in agent picker.
-tools:                     # Optional. Tools this agent can use (by name).
-  - bash
-  - write_artifact
----
-```
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | Yes | The `@mention` name. Must be lowercase, alphanumeric + hyphens. |
-| `description` | Yes | One-line description shown in the agent picker UI. |
-| `tools` | No | List of tool names this agent has access to. If omitted, the agent gets whatever tools the session has. |
-
-### 2. Markdown Body (System Prompt)
-
-Everything after the frontmatter closing `---` becomes the agent's system prompt.
-Write it as if you're briefing the LLM on its role, rules, and behavior.
-
-```markdown
-# Agent Title
-
-You are a [role]. Your job is to [purpose].
-
-## Rules
-- [Behavioral constraints]
-- [What to do / not do]
-```
-
-## Available Tools
-
-Your agent can reference any tool registered on the worker. Built-in tools include:
-
-| Tool | Description |
-|------|-------------|
-| `wait` | Durable timer — survives restarts. Required for any delay/sleep/polling. |
-| `bash` | Execute shell commands. |
-| `write_artifact` | Save a file to shared blob storage. |
-| `export_artifact` | Get a downloadable `artifact://` link for a saved file. |
-| `read_artifact` | Read a file from another session's artifacts. |
-| `spawn_agent` | Create a sub-agent session to handle a task autonomously. |
-| `check_agents` | Check status of spawned sub-agents. |
-| `message_agent` | Send a message to a running sub-agent. |
-
-Custom tools registered via `worker.registerTools()` are also available by name.
-
-## Design Patterns
-
-### The Focused Specialist
-
-Give the agent one job and constrain it:
-
-```markdown
----
-name: reviewer
-description: Code review agent. Reviews diffs and suggests improvements.
+name: planner
+description: Creates structured plans for complex tasks.
 tools:
   - bash
+  - view
 ---
-
-# Code Reviewer
-
-You review code changes for correctness, style, and potential bugs.
-
-## Rules
-- Focus ONLY on the diff — don't rewrite the entire file.
-- Categorize findings: bug, style, performance, security.
-- Be specific — reference line numbers and variable names.
-- Do NOT apply fixes. Only review.
 ```
 
-### The Autonomous Worker
+- Loaded by the worker, passed to every `CopilotSession` as `customAgents`
+- The Copilot SDK handles `@mention` routing
+- Their prompt replaces the default agent prompt when invoked
 
-An agent that does work over time using durable timers:
+#### System Agents
+
+Agents auto-started by the worker at boot. The LLM spawns child system agents at runtime:
+
+```yaml
+---
+name: pilotswarm
+system: true
+id: pilotswarm
+title: PilotSwarm Agent
+tools:
+  - get_system_stats
+splash: |
+  {bold}{green-fg}PilotSwarm Agent{/green-fg}{/bold}
+initialPrompt: >
+  You are now online. Spawn your sub-agents now.
+---
+```
+
+| Field | Purpose |
+|-------|---------|
+| `system: true` | Marks as system agent. Worker auto-starts root agents. |
+| `id` | Slug used to derive a deterministic UUID (`systemAgentUUID(id)`). All workers produce the same UUID. |
+| `parent` | ID of the parent system agent. Child agents are spawned by the parent via `spawn_agent(agent_name: "child_id")`. |
+| `title` | Display name in the TUI session list. |
+| `splash` | Blessed markup banner shown in the TUI chat pane. |
+| `initialPrompt` | First user message sent after session creation. |
+
+**Root vs Child system agents:**
+
+- **Root** (no `parent`): Worker calls `_startSystemAgents()` → creates CMS row + starts orchestration + sends `initialPrompt`. Idempotent across multiple workers.
+- **Child** (has `parent`): NOT auto-started. The parent agent spawns them at runtime via `spawn_agent(agent_name: "sweeper")`. The orchestration resolves the agent config, creates the child session, and sends `initialPrompt`.
+
+### Frontmatter Reference
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | The `@mention` name or agent identifier. Lowercase, alphanumeric + hyphens. |
+| `description` | string | Yes | One-line description shown in agent picker. |
+| `tools` | string[] | No | Tool names this agent can use. Omit = inherit session tools. |
+| `system` | boolean | No | Auto-started by workers. Not `@`-mentionable. |
+| `id` | string | No | Deterministic UUID slug (system agents only). |
+| `title` | string | No | Display name in session list. Falls back to `Name Agent`. |
+| `parent` | string | No | Parent system agent `id`. Makes this a child system agent. |
+| `splash` | string | No | TUI banner (blessed markup). Use YAML `|` block syntax. |
+| `initialPrompt` | string | No | First user message. Use YAML `>` folded syntax for multi-line. |
+
+---
+
+## Skills (`SKILL.md`)
+
+Skills are reusable prompt fragments that augment every session's knowledge. Unlike agents, skills don't replace the system prompt — they're injected as additional context by the Copilot SDK.
+
+### Directory Structure
+
+```
+plugin/skills/
+  my-skill/
+    SKILL.md       ← Required. Skill definition.
+    tools.json     ← Optional. Tools this skill needs.
+```
+
+### SKILL.md Format
 
 ```markdown
 ---
-name: monitor
-description: Monitors endpoints and reports status changes.
+name: durable-timers
+description: Expert knowledge on durable timer patterns.
+---
+
+# Durable Timer Patterns
+
+You are running in a durable execution environment with a `wait` tool...
+
+## Patterns
+
+### Recurring Task
+1. Do work
+2. wait(interval_seconds)
+3. Repeat
+```
+
+- **YAML frontmatter**: `name` and `description` (both optional, default to directory name).
+- **Markdown body**: Additional knowledge injected into the LLM's context. This supplements (not replaces) the system prompt.
+
+### tools.json (Optional)
+
+Declares tool names this skill requires. These are registered with the session alongside the skill:
+
+```json
+{
+    "tools": ["scan_completed_sessions", "cleanup_session"]
+}
+```
+
+### How Skills Are Loaded
+
+1. Worker scans each `skills/` subdirectory for `SKILL.md`
+2. Skill directories are passed to `SessionManager` as `skillDirectories`
+3. `SessionManager` forwards them to the Copilot SDK via `CopilotSession` config
+4. The SDK injects skill prompts as additional context for the LLM
+
+Skills are global — every session on the worker gets all loaded skills.
+
+---
+
+## Tools
+
+Tools are functions the LLM can call. They have a **name**, **description**, **JSON Schema parameters**, and a **handler function**.
+
+### Defining a Tool
+
+```javascript
+import { defineTool } from "@github/copilot-sdk";
+
+const myTool = defineTool("greet_user", {
+    description: "Greet a user by name",
+    parameters: {
+        type: "object",
+        properties: {
+            name: { type: "string", description: "The user's name" },
+        },
+        required: ["name"],
+    },
+    handler: async (args) => {
+        return `Hello, ${args.name}!`;
+    },
+});
+```
+
+### Registering Tools on the Worker
+
+Tools are registered on the **worker** because they contain handler functions (non-serializable):
+
+```javascript
+const worker = new PilotSwarmWorker({ ... });
+worker.registerTools([myTool, anotherTool]);
+```
+
+Worker-level tools are available to ALL sessions on that worker. The `SessionManager` resolves tool names to actual `Tool` objects at turn execution time.
+
+### Referencing Tools from the Client
+
+The client never sees tool handlers. It references tools by **name** only:
+
+```javascript
+const session = await client.createSession({
+    toolNames: ["greet_user", "bash", "wait"],
+});
+```
+
+These names travel through duroxide as serializable strings. When the worker executes a turn, it resolves each name to the registered `Tool` object.
+
+### Built-in Tools (Auto-Registered)
+
+These tools are automatically registered by the worker and don't need explicit registration:
+
+| Tool | Auto-registered when | Description |
+|------|---------------------|-------------|
+| `wait` | Always | Durable timer (survives restarts) |
+| `spawn_agent` | Always | Spawn a sub-agent session |
+| `check_agents` | Always | Check sub-agent status |
+| `message_agent` | Always | Send message to sub-agent |
+| `wait_for_agents` | Always | Block until sub-agents complete |
+| `complete_agent` | Always | Terminate a sub-agent |
+| `list_agents` | Always | List loaded agent definitions |
+| `list_sessions` | Always | List all sessions |
+| `scan_completed_sessions` | CMS available | Find stale sessions |
+| `cleanup_session` | CMS available | Delete a stale session |
+| `prune_orchestrations` | CMS available | Clean duroxide state |
+| `write_artifact` | Blob storage configured | Save file to shared storage |
+| `export_artifact` | Blob storage configured | Get downloadable link |
+| `read_artifact` | Blob storage configured | Read file from storage |
+| `get_system_stats` | CMS available | Cluster stats |
+| `get_infrastructure_stats` | CMS available | Compute/pod stats |
+| `get_storage_stats` | CMS + Blob available | Blob storage stats |
+| `get_database_stats` | CMS available | Database stats |
+
+### Tool Resolution Flow
+
+```
+Client: createSession({ toolNames: ["bash", "greet_user"] })
+  ↓
+duroxide orchestration receives toolNames as serializable config
+  ↓
+Worker: SessionManager.createSession()
+  ↓
+  resolves "bash" → Tool object from toolRegistry
+  resolves "greet_user" → Tool object from toolRegistry
+  ↓
+ManagedSession.runTurn()
+  ↓
+  copilotSession.registerTools([...resolved tools, ...system tools])
+  ↓
+  LLM sees all tools with descriptions and can call them
+```
+
+---
+
+## MCP Servers (`.mcp.json`)
+
+MCP (Model Context Protocol) servers provide additional tools via external processes or HTTP endpoints.
+
+### Configuration
+
+Create a `.mcp.json` file in your plugin root:
+
+```json
+{
+    "context7": {
+        "type": "http",
+        "url": "https://context7-mcp--upstash.run.tools/mcp",
+        "tools": ["resolve-library-id", "query-docs"]
+    },
+    "local-db": {
+        "command": "node",
+        "args": ["db-server.js"],
+        "tools": ["*"],
+        "env": {
+            "DATABASE_URL": "${DATABASE_URL}"
+        }
+    }
+}
+```
+
+### Server Types
+
+**HTTP/SSE (remote)**:
+```json
+{
+    "my-remote-server": {
+        "type": "http",
+        "url": "https://api.example.com/mcp",
+        "tools": ["query", "search"],
+        "headers": { "Authorization": "Bearer ${API_TOKEN}" }
+    }
+}
+```
+
+**Stdio (local process)**:
+```json
+{
+    "my-local-server": {
+        "command": "python",
+        "args": ["mcp_server.py"],
+        "tools": ["*"],
+        "cwd": "/path/to/server",
+        "env": { "PORT": "3000" }
+    }
+}
+```
+
+### Environment Variable Expansion
+
+All string values support `${VAR}` expansion from `process.env`:
+
+```json
+{
+    "url": "https://${MCP_HOST}/mcp",
+    "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+}
+```
+
+### How MCP Servers Are Loaded
+
+1. Worker reads `.mcp.json` from each plugin directory
+2. Environment variables are expanded at load time
+3. Config is passed to `SessionManager` as `mcpServers`
+4. `SessionManager` forwards to the Copilot SDK via `CopilotSession` config
+5. The SDK manages MCP server lifecycle (spawning stdio processes, connecting to HTTP endpoints)
+6. MCP tools appear alongside regular tools in the LLM's tool list
+
+---
+
+## Complete Example: Building an Agent with Tools, Skills, and MCP
+
+### 1. Define the tool (`examples/worker.js`)
+
+```javascript
+import { defineTool } from "@github/copilot-sdk";
+
+const weatherTool = defineTool("get_weather", {
+    description: "Get current weather for a city",
+    parameters: {
+        type: "object",
+        properties: {
+            city: { type: "string", description: "City name" },
+        },
+        required: ["city"],
+    },
+    handler: async (args) => {
+        const resp = await fetch(`https://wttr.in/${args.city}?format=j1`);
+        return JSON.stringify(await resp.json());
+    },
+});
+
+worker.registerTools([weatherTool]);
+```
+
+### 2. Create the skill (`plugin/skills/weather-reporting/SKILL.md`)
+
+```markdown
+---
+name: weather-reporting
+description: Knowledge on weather data interpretation and formatting.
+---
+
+# Weather Reporting
+
+When presenting weather data:
+- Lead with current temperature and conditions
+- Include humidity and wind speed
+- Use °C unless the user specifies °F
+- Flag any severe weather alerts
+```
+
+### 3. Create the agent (`plugin/agents/weather.agent.md`)
+
+```markdown
+---
+name: weather
+description: Weather monitoring and reporting agent.
 tools:
+  - get_weather
   - wait
-  - bash
   - write_artifact
   - export_artifact
 ---
 
-# Monitor Agent
+# Weather Agent
 
-You monitor services and report on status changes.
-
-## Loop Pattern
-1. Check the target endpoint/service.
-2. Compare to previous state.
-3. Report changes (or stay quiet if nothing changed).
-4. Use `wait` for the interval, then repeat.
+You are a weather monitoring agent. You check weather conditions
+and produce formatted reports.
 
 ## Rules
-- Use the `wait` tool for ALL delays. Never bash sleep.
-- Only report when something changes — don't spam.
-- If a check fails 3 times in a row, increase the interval (backoff).
+- Use get_weather for current conditions.
+- For monitoring: check → report → wait(interval) → repeat.
+- Always include an artifact link for reports.
+- Use the wait tool for ALL delays.
 ```
 
-### The Orchestrator
+### 4. Add MCP server (optional, `plugin/.mcp.json`)
 
-An agent that spawns sub-agents to parallelize work:
-
-```markdown
----
-name: researcher
-description: Orchestrates parallel research across multiple sub-agents.
-tools:
-  - spawn_agent
-  - check_agents
-  - message_agent
-  - wait
-  - write_artifact
-  - export_artifact
----
-
-# Research Orchestrator
-
-You coordinate parallel research by spawning focused sub-agents.
-
-## Process
-1. Break the research topic into independent sub-questions.
-2. Spawn one sub-agent per sub-question using `spawn_agent`.
-3. Poll with `wait` + `check_agents` in a loop until all complete.
-4. Gather results and synthesize a unified report.
-5. Save with `write_artifact` + `export_artifact`.
-
-## Rules
-- Spawn at most 6 sub-agents at once.
-- Give each sub-agent a clear, focused task description.
-- Don't use `wait_for_agents` — poll so you can provide progress updates.
-- Always produce a final synthesized artifact, not just raw sub-agent outputs.
+```json
+{
+    "weather-api": {
+        "type": "http",
+        "url": "https://weather-mcp.example.com/mcp",
+        "tools": ["forecast", "alerts"]
+    }
+}
 ```
 
-## Writing Effective Prompts
+### Usage
 
-### Do: Be Specific
+```
+User: @weather monitor Seattle every 30 minutes
+```
+
+The agent will use `get_weather`, format the report, save with `write_artifact`, then `wait(1800)` and repeat.
+
+---
+
+## Writing Effective Agent Prompts
+
+### Do: Be specific and constrained
 
 ```markdown
 ## Rules
 - Output a numbered list, not prose.
-- Each item must have: title, description, estimated effort.
-- Flag items that can run in parallel.
+- Each item: title, description, estimated effort.
+- You ONLY handle database queries. If asked about frontend, say so.
 ```
 
-### Don't: Be Vague
-
-```markdown
-## Rules
-- Be helpful.
-- Do a good job.
-- Follow best practices.
-```
-
-### Do: Constrain Scope
-
-```markdown
-## Rules
-- You ONLY handle database queries. If asked about frontend, say "I only handle database work."
-- Never modify schema — only query existing tables.
-```
-
-### Do: Specify Output Format
+### Do: Specify output format
 
 ```markdown
 ## Output Format
 | Finding | Severity | Location | Suggestion |
 |---------|----------|----------|------------|
-| ...     | ...      | ...      | ...        |
 ```
 
-### Do: Handle Edge Cases
+### Do: Handle edge cases
 
 ```markdown
 ## Edge Cases
 - If the query returns no results, say "No data found" — don't hallucinate.
-- If you can't access the API, report the error and stop. Don't retry more than 3 times.
+- If the API fails after 3 retries, report the error and stop.
 ```
 
-## Tool Access Rules
-
-- **Omit `tools` entirely**: Agent inherits whatever tools the session provides. This is the simplest option.
-- **Explicit tool list**: Agent can ONLY use the listed tools. Use this to restrict scope (e.g., a read-only reviewer shouldn't have `bash`).
-- **Tools must be registered**: If you list a tool name that isn't registered on the worker, the agent won't have access. There's no error — the tool just won't appear.
-
-## Durable Timer Rules
-
-If your agent needs to wait, sleep, poll, or run on a schedule:
-
-1. **Always** include `wait` in the tools list.
-2. **Always** instruct the agent to use the `wait` tool.
-3. **Never** let the agent use `bash sleep`, `setTimeout`, or other timing mechanisms — these don't survive process restarts.
+### Do: Enforce durable timer usage
 
 ```markdown
 ## Rules
-- For ANY waiting or delays, use the `wait` tool.
+- For ANY waiting/sleeping, use the `wait` tool.
 - NEVER use bash sleep, setTimeout, or setInterval.
+- You must ALWAYS call `wait` before ending a monitoring turn.
 ```
 
-## The `default.agent.md` File
+### Don't: Be vague
 
-There's a special agent file: `plugin/agents/default.agent.md`. It is NOT a selectable agent — instead, its prompt is prepended to **every session's** system message. Use it for rules that should apply universally (artifact handling, timer usage, sub-agent patterns).
+```markdown
+## Rules
+- Be helpful.        ← Too vague
+- Do a good job.     ← Not actionable
+- Follow best practices.  ← Meaningless to the LLM
+```
 
-Don't put agent-specific behavior in `default.agent.md`.
-
-## Testing Your Agent
-
-1. **Local test**: Start a local worker + TUI, create a session, type `@your-agent test message`.
-2. **Check tool access**: Ask the agent "what tools do you have?" — it should list only the tools in your `tools` array.
-3. **Check constraints**: Try to make the agent violate its rules. If it does, strengthen the rules wording.
-4. **Check edge cases**: Give it ambiguous input, empty input, or requests outside its scope.
+---
 
 ## Deploying
 
-Agents are loaded from the `plugin/agents/` directory at worker startup. To deploy:
+Agents, skills, and MCP configs are loaded from `plugin/` at worker startup:
 
-1. Add your `.agent.md` file to `plugin/agents/`.
-2. Rebuild and redeploy the worker (if using Docker/K8s, the plugin directory is baked into the image).
-3. No database reset needed — agents are loaded fresh on every worker start.
+1. Add your files to the appropriate `plugin/` subdirectory
+2. Rebuild and redeploy the worker
+3. No database reset needed — extensions are loaded fresh on every worker start
 
-For remote worker deployments, make sure the Docker build copies the `plugin/` directory:
+For Docker/K8s deployments, ensure the plugin directory is included:
 
 ```dockerfile
 COPY plugin/ ./plugin/
 ```
 
-## Example: Complete Agent
-
-Here's a complete, production-quality agent definition:
-
-```markdown
----
-name: summarizer
-description: Summarizes long documents, conversations, or data into concise briefings.
-tools:
-  - bash
-  - read_artifact
-  - write_artifact
-  - export_artifact
----
-
-# Summarizer Agent
-
-You produce concise, structured summaries of documents, conversations, or data.
-
-## Process
-1. Read the input (provided as text, a URL to fetch with bash+curl, or an artifact to read).
-2. Identify the key themes, decisions, and action items.
-3. Produce a structured summary.
-4. Save as a markdown artifact.
-
-## Output Structure
-Every summary must have these sections:
-- **TL;DR** — 1-2 sentence executive summary.
-- **Key Points** — Bulleted list of important items (max 10).
-- **Decisions** — Any decisions made (if applicable).
-- **Action Items** — Who needs to do what (if applicable).
-- **Open Questions** — Unresolved items (if any).
-
-## Rules
-- Maximum summary length: 500 words.
-- Preserve exact names, numbers, and dates — don't paraphrase data.
-- If the input is too short to summarize meaningfully, say so.
-- Always produce an artifact with the summary.
-- Use read_artifact to read files from other sessions when given a session ID.
-```
+For tools registered via `worker.registerTools()`, the tool code must be in the worker's JavaScript bundle.
