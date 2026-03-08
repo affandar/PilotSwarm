@@ -13,7 +13,7 @@
  *   npx pilotswarm-tui remote --env .env.remote       # client-only (AKS)
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore } from "../dist/index.js";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -178,54 +178,69 @@ function renderMarkdown(md) {
     }
 }
 
-// ─── Artifact download ──────────────────────────────────────────
-// Detect SAS URLs from export_artifact tool and auto-download files.
-// Pattern: https://<account>.blob.core.windows.net/<container>/artifacts/<sessionId>/<filename>?<sas>
-const ARTIFACT_SAS_RE = /https:\/\/[^/]+\.blob\.core\.windows\.net\/[^/]+\/artifacts\/([^/]+)\/([^?]+)\?[^\s"']+/g;
+// ─── Artifact link detection & on-demand download ────────────────
+// Detect artifact:// URIs in assistant messages. Download on-demand from blob.
+// Format: artifact://sessionId/filename.md
+const ARTIFACT_URI_RE = /artifact:\/\/([a-f0-9-]+)\/([^\s"'{}]+)/g;
 
-/** Downloaded artifact files for the markdown viewer. */
-const artifactFiles = []; // [{ filename, localPath, sessionId, downloadedAt }]
+/** Per-session artifact link registry. orchId → [{ sessionId, filename }] */
+const sessionArtifacts = new Map();
+
+/** Track already-registered artifacts to avoid duplicates. */
+const _registeredArtifacts = new Set();
+
+/** TUI-level blob store for on-demand artifact downloads. Created lazily. */
+let _tuiBlobStore = null;
+function getTuiBlobStore() {
+    if (_tuiBlobStore) return _tuiBlobStore;
+    const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING;
+    const container = process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions";
+    if (!connStr) return null;
+    _tuiBlobStore = new SessionBlobStore(connStr, container);
+    return _tuiBlobStore;
+}
 
 /**
- * Scan text for artifact SAS URLs and download them to EXPORTS_DIR.
- * Called from showCopilotMessage / observer when new content arrives.
+ * Scan text for artifact:// URIs and register them for the given session.
+ * Does NOT download — download happens on user request via 'a' key.
  */
-/** Track downloaded artifact URLs to avoid re-downloading on repeated scans. */
-const _downloadedArtifactUrls = new Set();
-
-async function downloadArtifactUrls(text) {
-    const matches = [...text.matchAll(ARTIFACT_SAS_RE)];
+function detectArtifactLinks(text, orchId) {
+    if (!text) return;
+    ARTIFACT_URI_RE.lastIndex = 0;
+    const matches = [...text.matchAll(ARTIFACT_URI_RE)];
     for (const m of matches) {
-        const [url, sessionId, filename] = m;
-        // Dedup: strip SAS query params for identity (same blob path = same file)
-        const blobKey = `${sessionId}/${filename}`;
-        if (_downloadedArtifactUrls.has(blobKey)) continue;
-        _downloadedArtifactUrls.add(blobKey);
+        const [, sessionId, filename] = m;
+        const key = `${sessionId}/${filename}`;
+        if (_registeredArtifacts.has(key)) continue;
+        _registeredArtifacts.add(key);
 
-        const sessionDir = path.join(EXPORTS_DIR, sessionId.slice(0, 8));
-        fs.mkdirSync(sessionDir, { recursive: true });
-        const localPath = path.join(sessionDir, filename);
+        if (!sessionArtifacts.has(orchId)) sessionArtifacts.set(orchId, []);
+        sessionArtifacts.get(orchId).push({ sessionId, filename, downloaded: false, localPath: null });
+    }
+}
 
-        try {
-            const resp = await fetch(url);
-            if (!resp.ok) {
-                appendLog(`{red-fg}📥 Failed to download ${filename}: HTTP ${resp.status}{/red-fg}`);
-                continue;
-            }
-            const content = await resp.text();
-            fs.writeFileSync(localPath, content, "utf-8");
-            artifactFiles.push({
-                filename,
-                localPath,
-                sessionId: sessionId.slice(0, 8),
-                downloadedAt: new Date().toISOString(),
-            });
-            appendLog(`{green-fg}📥 Saved: ~/${path.relative(os.homedir(), localPath)} (${(content.length / 1024).toFixed(1)}KB){/green-fg}`);
-            // Refresh markdown viewer file list if it's currently showing
-            if (logViewMode === "markdown") refreshMarkdownViewer();
-        } catch (err) {
-            appendLog(`{red-fg}📥 Download error for ${filename}: ${err.message}{/red-fg}`);
-        }
+/**
+ * Download an artifact from blob storage to EXPORTS_DIR.
+ * Returns the local path on success, null on failure.
+ */
+async function downloadArtifact(sessionId, filename) {
+    const bs = getTuiBlobStore();
+    if (!bs) {
+        appendLog("{red-fg}📥 No blob storage configured — cannot download artifacts.{/red-fg}");
+        return null;
+    }
+    const sessionDir = path.join(EXPORTS_DIR, sessionId.slice(0, 8));
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const localPath = path.join(sessionDir, filename);
+
+    try {
+        const content = await bs.downloadArtifact(sessionId, filename);
+        fs.writeFileSync(localPath, content, "utf-8");
+        appendLog(`{green-fg}📥 Downloaded: ~/${path.relative(os.homedir(), localPath)} (${(content.length / 1024).toFixed(1)}KB){/green-fg}`);
+        return localPath;
+    } catch (err) {
+        appendLog(`{red-fg}📥 Download error for ${filename}: ${err.message}{/red-fg}`);
+        return null;
     }
 }
 
@@ -672,7 +687,7 @@ const mdPreviewPane = blessed.box({
 });
 
 /**
- * Scan EXPORTS_DIR for .md files and merge with artifactFiles.
+ * Scan EXPORTS_DIR for .md files.
  * Returns a deduplicated list sorted by modification time (newest first).
  */
 function scanExportFiles() {
@@ -2076,7 +2091,20 @@ function recolorWorkerPanes() {
 
 function showCopilotMessage(raw, orchId) {
     const _ph = perfStart("showCopilotMessage");
-    const rendered = renderMarkdown(raw);
+
+    // Detect and register artifact links before rendering
+    detectArtifactLinks(raw, orchId);
+
+    // Replace artifact:// URIs with highlighted display before markdown rendering
+    let displayRaw = raw;
+    if (displayRaw) {
+        displayRaw = displayRaw.replace(
+            /artifact:\/\/[a-f0-9-]+\/([^\s"'{}]+)/g,
+            "📎 **$1** _(press 'a' to download)_",
+        );
+    }
+
+    const rendered = renderMarkdown(displayRaw);
     const prefix = `{white-fg}[${ts()}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`;
     appendChatRaw(prefix, orchId);
     // Always show on separate lines for readability
@@ -2084,12 +2112,6 @@ function showCopilotMessage(raw, orchId) {
         appendChatRaw(line, orchId);
     }
     appendChatRaw("", orchId); // blank line after each message
-
-    // Auto-download any artifact SAS URLs in the message
-    if (raw && ARTIFACT_SAS_RE.test(raw)) {
-        ARTIFACT_SAS_RE.lastIndex = 0; // reset regex state
-        downloadArtifactUrls(raw).catch(() => {});
-    }
     perfEnd(_ph, { len: raw?.length || 0 });
 }
 
@@ -2222,6 +2244,8 @@ async function loadCmsHistory(orchId) {
                 const content = evt.data?.content;
                 if (content) {
                     lastAssistantContent = content;
+                    // Detect artifact links in history
+                    detectArtifactLinks(content, orchId);
                     if (renderedChars >= MAX_TOTAL_RENDER_CHARS) {
                         lines.push(`{gray-fg}── additional assistant output omitted to keep session switching fast ──{/gray-fg}`);
                         lines.push("");
@@ -2230,8 +2254,13 @@ async function loadCmsHistory(orchId) {
                     const clipped = content.length > MAX_ASSISTANT_MESSAGE_CHARS
                         ? content.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + "\n\n[output truncated in TUI history view]"
                         : content;
+                    // Replace artifact:// URIs with highlighted display
+                    const displayClipped = clipped.replace(
+                        /artifact:\/\/[a-f0-9-]+\/([^\s"'{}]+)/g,
+                        "📎 **$1** _(press 'a' to download)_",
+                    );
                     lines.push(`{white-fg}[${timeStr}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
-                    const rendered = renderMarkdown(clipped);
+                    const rendered = renderMarkdown(displayClipped);
                     renderedChars += clipped.length;
                     for (const line of rendered.split("\n")) {
                         lines.push(line);
@@ -3722,14 +3751,6 @@ function startObserver(orchId) {
                         lastIteration = cs.iteration || 0;
                         showCopilotMessage(cs.turnResult.content, orchId);
                     }
-                    // Scan entire customStatus JSON for artifact SAS URLs
-                    // (catches URLs in tool results that the agent may not echo in its response)
-                    const csRaw = typeof currentStatus.customStatus === "string"
-                        ? currentStatus.customStatus : JSON.stringify(currentStatus.customStatus);
-                    if (csRaw && ARTIFACT_SAS_RE.test(csRaw)) {
-                        ARTIFACT_SAS_RE.lastIndex = 0;
-                        downloadArtifactUrls(csRaw).catch(() => {});
-                    }
                     if (cs.status === "idle") {
                         setStatusIfActive("Idle — type a message");
                         setTurnInProgressIfActive(false);
@@ -3991,13 +4012,6 @@ function startCmsPoller(orchId) {
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || sess._lastToolName || "tool";
                 appendActivity(`{white-fg}[${t}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`, orchId);
-                // Scan tool results for artifact SAS URLs (export_artifact returns downloadUrl)
-                const resultStr = typeof evt.data?.result === "string" ? evt.data.result
-                    : (evt.data?.result ? JSON.stringify(evt.data.result) : "");
-                if (resultStr && ARTIFACT_SAS_RE.test(resultStr)) {
-                    ARTIFACT_SAS_RE.lastIndex = 0;
-                    downloadArtifactUrls(resultStr).catch(() => {});
-                }
             } else if (type === "assistant.reasoning") {
                 appendActivity(`{white-fg}[${t}]{/white-fg} {gray-fg}[reasoning]{/gray-fg}`, orchId);
             } else if (type === "assistant.turn_start") {
@@ -4538,6 +4552,89 @@ screen.on("keypress", (ch, key) => {
         screen.realloc();
         relayoutAll();
         setStatus(mdViewActive ? "Markdown Viewer (v to exit)" : `Log mode: ${({ workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" })[logViewMode]}`);
+        return;
+    }
+
+    // a: open artifact picker for current session — download on selection
+    if (ch === "a" && screen.focused !== inputBar && !mdViewActive) {
+        const artifacts = sessionArtifacts.get(activeOrchId) || [];
+        if (artifacts.length === 0) {
+            setStatus("No artifacts for this session");
+            return;
+        }
+
+        const items = artifacts.map((a, i) => {
+            const icon = a.downloaded ? "✓" : "↓";
+            return ` ${icon} ${a.filename}`;
+        });
+
+        const picker = blessed.list({
+            parent: screen,
+            label: " 📎 Artifacts — Enter to download ",
+            tags: true,
+            left: "center",
+            top: "center",
+            width: Math.min(60, screen.width - 4),
+            height: Math.min(items.length + 2, 16),
+            border: { type: "line" },
+            style: {
+                fg: "white",
+                bg: "black",
+                border: { fg: "cyan" },
+                label: { fg: "cyan" },
+                selected: { bg: "blue", fg: "white" },
+            },
+            keys: true,
+            vi: true,
+            mouse: true,
+            items,
+        });
+
+        picker.focus();
+        screen.render();
+
+        const closePicker = () => {
+            picker.detach();
+            orchList.focus();
+            screen.render();
+        };
+
+        picker.key(["escape", "q", "a"], closePicker);
+
+        picker.on("select", async (_el, idx) => {
+            closePicker();
+            const art = artifacts[idx];
+            if (!art) return;
+
+            setStatus(`Downloading ${art.filename}...`);
+            screen.render();
+            const localPath = await downloadArtifact(art.sessionId, art.filename);
+            if (localPath) {
+                art.downloaded = true;
+                art.localPath = localPath;
+
+                // Open markdown viewer with this file selected
+                mdViewActive = true;
+                refreshMarkdownViewer();
+
+                // Find and select the downloaded file in the viewer
+                const files = scanExportFiles();
+                const matchIdx = files.findIndex(f => f.localPath === localPath);
+                if (matchIdx >= 0) {
+                    mdViewerSelectedIdx = matchIdx;
+                    mdFileListPane.select(matchIdx);
+                    refreshMarkdownViewer();
+                }
+
+                screen.realloc();
+                relayoutAll();
+                setStatus("Markdown Viewer (v to exit)");
+            } else {
+                setStatus("Download failed — check logs");
+            }
+            screen.render();
+        });
+
         return;
     }
 
