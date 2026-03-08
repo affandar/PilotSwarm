@@ -7,17 +7,6 @@ title: PilotSwarm Agent
 tools:
   - list_agents
   - get_system_stats
-  - get_infrastructure_stats
-  - get_storage_stats
-  - get_database_stats
-  - scan_completed_sessions
-  - cleanup_session
-  - prune_orchestrations
-  - purge_orphaned_blobs
-  - purge_old_events
-  - compact_database
-  - scale_workers
-  - force_terminate_session
   - write_artifact
   - export_artifact
 splash: |
