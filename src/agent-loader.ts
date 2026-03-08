@@ -54,6 +54,8 @@ export interface AgentConfig {
     system?: boolean;
     /** Deterministic ID slug for system agents (e.g. "sweeper"). Used to derive a fixed session UUID. */
     id?: string;
+    /** Display title for the session list (e.g. "Resource Manager Agent"). Falls back to capitalized name + " Agent". */
+    title?: string;
     /** Splash banner (blessed markup) shown in the TUI when the session is selected. */
     splash?: string;
     /** Initial prompt to send when the system agent is first created. */
@@ -67,10 +69,10 @@ export interface AgentConfig {
  * Handles simple `key: value` pairs and YAML list syntax for `tools`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; splash?: string; initialPrompt?: string };
+    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; splash?: string; initialPrompt?: string };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; splash?: string; initialPrompt?: string } = {};
+    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; splash?: string; initialPrompt?: string } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -137,6 +139,7 @@ function parseAgentFrontmatter(content: string): {
         else if (key === "description") meta.description = value;
         else if (key === "system") meta.system = value === "true";
         else if (key === "id") meta.id = value;
+        else if (key === "title") meta.title = value;
         else if (key === "tools" && value) {
             // Inline array: tools: [view, grep]
             meta.tools = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
@@ -203,6 +206,7 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 tools: meta.tools && meta.tools.length > 0 ? meta.tools : null,
                 system: meta.system,
                 id: meta.id,
+                title: meta.title,
                 splash: meta.splash,
                 initialPrompt: meta.initialPrompt,
             });
