@@ -755,7 +755,8 @@ export function* durableSessionOrchestration_1_0_6(
                     `  Agent ID: ${childOrchId}\n` +
                     `  Task: "${result.task.slice(0, 200)}"\n` +
                     `  The agent is now running autonomously. Use check_agents to monitor progress, ` +
-                    `message_agent to send instructions, or wait_for_agents to block until completion.]`;
+                    `message_agent to send instructions. To wait, poll with wait(30) + check_agents ` +
+                    `in a loop so you can report progress to the user.]`;
 
                 yield ctx.continueAsNew(continueInput({ prompt: spawnMsg }));
                 return "";
