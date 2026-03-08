@@ -3164,22 +3164,19 @@ orchList.key(["q"], () => {
     cleanup().then(() => process.exit(0));
 });
 
-// Expand children of selected session
-orchList.key(["+", "="], async () => {
+// Expand children of selected session (+/=)
+orchList.on("keypress", async (ch, key) => {
+    if (ch !== "+" && ch !== "=" && ch !== "-") return;
     const idx = orchList.selected;
-    if (idx >= 0 && idx < orchIdOrder.length) {
+    if (idx < 0 || idx >= orchIdOrder.length) return;
+
+    if (ch === "+" || ch === "=") {
         const id = orchIdOrder[idx];
         if (collapsedParents.has(id)) {
             collapsedParents.delete(id);
             await refreshOrchestrations();
         }
-    }
-});
-
-// Collapse children of selected session
-orchList.key(["-"], async () => {
-    const idx = orchList.selected;
-    if (idx >= 0 && idx < orchIdOrder.length) {
+    } else if (ch === "-") {
         let id = orchIdOrder[idx];
         // If this is a child, collapse its parent instead
         if (orchChildToParent.has(id)) {
