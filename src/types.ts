@@ -91,6 +91,10 @@ export interface PilotSwarmSessionInfo {
     parentSessionId?: string;
     /** Whether this is a system session (e.g. Sweeper Agent). Cannot be deleted. */
     isSystem?: boolean;
+    /** Agent definition ID (e.g. "sweeper"). Links session to its agent config. */
+    agentId?: string;
+    /** Splash banner (blessed markup) from the agent definition. */
+    splash?: string;
 }
 
 // ─── Orchestration Input ─────────────────────────────────────────

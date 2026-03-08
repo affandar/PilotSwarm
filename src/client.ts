@@ -172,6 +172,8 @@ export class PilotSwarmClient {
             error: row.lastError ?? undefined,
             parentSessionId: row.parentSessionId ?? undefined,
             isSystem: row.isSystem || undefined,
+            agentId: row.agentId ?? undefined,
+            splash: row.splash ?? undefined,
         }));
     }
 

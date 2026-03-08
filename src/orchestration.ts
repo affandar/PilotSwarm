@@ -694,6 +694,8 @@ export function* durableSessionOrchestration_1_0_7(
                 let agentModel = result.model;
                 let agentIsSystem = false;
                 let agentTitle: string | undefined;
+                let agentId: string | undefined;
+                let agentSplash: string | undefined;
 
                 if (result.agentName) {
                     ctx.traceInfo(`[orch] resolving agent config for: ${result.agentName}`);
@@ -710,6 +712,26 @@ export function* durableSessionOrchestration_1_0_7(
                     agentToolNames = result.toolNames ?? agentDef.tools ?? undefined;
                     agentIsSystem = agentDef.system ?? false;
                     agentTitle = agentDef.title;
+                    agentId = agentDef.id ?? result.agentName;
+                    agentSplash = agentDef.splash;
+                }
+
+                // If the parent is a system session, propagate isSystem to children
+                if (input.isSystem) {
+                    agentIsSystem = true;
+                }
+
+                // Auto-detect title for custom spawns by system sessions:
+                // If the LLM didn't use agent_name, try to extract a reasonable title
+                // from the task or system_message rather than showing "System Agent".
+                if (!agentTitle && agentIsSystem) {
+                    const text = agentTask || "";
+                    // Look for "You are the **XYZ Agent**" or "You are the XYZ Agent" patterns
+                    const titleMatch = text.match(/You are the \*{0,2}([^*\n]+?)\*{0,2}\s*[—–-]/i)
+                        || text.match(/You are the \*{0,2}([^*\n]+?Agent)\*{0,2}/i);
+                    if (titleMatch) {
+                        agentTitle = titleMatch[1].trim();
+                    }
                 }
 
                 ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${agentTask.slice(0, 80)}" model=${agentModel || "inherit"} agent=${result.agentName || "custom"} nestingLevel=${childNestingLevel}`);
@@ -756,7 +778,7 @@ export function* durableSessionOrchestration_1_0_7(
                 // and initial task prompt — all through the standard SDK path.
                 let childSessionId: string;
                 try {
-                    childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, agentTask, childNestingLevel, agentIsSystem, agentTitle);
+                    childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, agentTask, childNestingLevel, agentIsSystem, agentTitle, agentId, agentSplash);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);
                     yield ctx.continueAsNew(continueInput({

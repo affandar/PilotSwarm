@@ -13,7 +13,7 @@
  *   npx pilotswarm-tui remote --env .env.remote       # client-only (AKS)
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, loadAgentFiles, systemAgentUUID } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, systemAgentUUID } from "../dist/index.js";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -2698,6 +2698,7 @@ const sessionHeadings = new Map(); // orchId → short heading from LLM
 const sessionSummaryBuffer = new Map(); // orchId → buffered summary text to show on switch
 const sessionSummarized = new Set(); // orchIds already summarized (avoid re-asking)
 const systemSessionIds = new Set(); // orchIds of system sessions (e.g. Sweeper Agent)
+const sessionAgentIds = new Map(); // orchId → agentId string (e.g. "pilotswarm", "sweeper")
 
 // Per-session chat buffers — every observer writes here so content is preserved on switch
 const sessionChatBuffers = new Map(); // orchId → string[]
@@ -2927,6 +2928,22 @@ async function refreshOrchestrations() {
         if (sv.isSystem) {
             systemSessionIds.add(id);
             if (sv.title) sessionHeadings.set(id, sv.title);
+        }
+        if (sv.agentId) {
+            sessionAgentIds.set(id, sv.agentId);
+        }
+
+        // Splash from CMS — store and pre-populate chat buffer on first discovery
+        if (sv.splash && !systemAgentSplash.has(id)) {
+            systemAgentSplash.set(id, sv.splash);
+            if (!sessionChatBuffers.has(id) || sessionChatBuffers.get(id).length === 0) {
+                sessionChatBuffers.set(id, []);
+                const buf = sessionChatBuffers.get(id);
+                for (const line of sv.splash.split("\n")) {
+                    buf.push(line);
+                }
+                buf.push("");
+            }
         }
 
         // Seed sessionLiveStatus from CMS if no observer has set it yet.
@@ -3653,52 +3670,44 @@ try {
 } catch {}
 
 // ─── System Agent Discovery ─────────────────────────────────────
-// System agents are started by workers (embedded or remote). The TUI discovers
-// them by matching their deterministic UUIDs from plugin agent definitions.
-// Load agent files from the same plugin dirs the workers use.
-const systemAgentSplash = new Map(); // sessionId → splash string
+// System agents are discovered from the CMS (is_system flag, splash, agent_id).
+// The refresh loop populates systemSessionIds, systemAgentSplash, and chat buffers
+// from CMS data. At startup, we just need to resume the root system agent session
+// so the TUI can interact with it immediately.
+const systemAgentSplash = new Map(); // orchId → splash string
 try {
     const _saPh = perfStart("startup.systemAgentDiscovery");
-    const defaultPluginDir = path.resolve(__dirname, "..", "plugin");
-    const discoveryPluginDirs = process.env.PLUGIN_DIRS
-        ? process.env.PLUGIN_DIRS.split(",").map(d => d.trim()).filter(Boolean)
-        : (fs.existsSync(defaultPluginDir) ? [defaultPluginDir] : []);
-    for (const dir of discoveryPluginDirs) {
-        const agentsDir = path.join(dir, "agents");
-        if (!fs.existsSync(agentsDir)) continue;
-        const agents = loadAgentFiles(agentsDir);
-        for (const agent of agents) {
-            if (!agent.system || !agent.id) continue;
-            const sessionId = systemAgentUUID(agent.id);
-            const orchId = `session-${sessionId}`;
+    // Discover system sessions from CMS
+    const cmsSessions = await client.listSessions();
+    for (const sv of cmsSessions) {
+        if (!sv.isSystem) continue;
+        const orchId = `session-${sv.sessionId}`;
+        systemSessionIds.add(orchId);
+        if (sv.title) sessionHeadings.set(orchId, sv.title);
+        if (sv.agentId) sessionAgentIds.set(orchId, sv.agentId);
+        if (sv.splash) {
+            systemAgentSplash.set(orchId, sv.splash);
+        }
 
-            // Register splash banner for this system agent
-            if (agent.splash) {
-                systemAgentSplash.set(orchId, agent.splash);
-            }
+        // Resume the PilotSwarmSession handle so TUI can interact with it
+        try {
+            const sess = await client.resumeSession(sv.sessionId);
+            sessions.set(sv.sessionId, sess);
+            client.systemSessions.add(sv.sessionId);
 
-            // Mark as system session
-            systemSessionIds.add(orchId);
-
-            // Resume the PilotSwarmSession handle so TUI can interact with it
-            try {
-                const sess = await client.resumeSession(sessionId);
-                sessions.set(sessionId, sess);
-                client.systemSessions.add(sessionId);
-
-                // Pre-populate the chat buffer with its splash banner
-                if (agent.splash && !sessionChatBuffers.has(orchId)) {
-                    sessionChatBuffers.set(orchId, []);
-                    const buf = sessionChatBuffers.get(orchId);
-                    for (const line of agent.splash.split("\n")) {
-                        buf.push(line);
-                    }
-                    buf.push("");
+            // Pre-populate the chat buffer with its splash banner
+            if (sv.splash && !sessionChatBuffers.has(orchId)) {
+                sessionChatBuffers.set(orchId, []);
+                const buf = sessionChatBuffers.get(orchId);
+                for (const line of sv.splash.split("\n")) {
+                    buf.push(line);
                 }
-                appendLog(`System agent discovered: ${agent.name} ✓ {yellow-fg}(${shortId(sessionId)}…){/yellow-fg}`);
-            } catch (err) {
-                appendLog(`{yellow-fg}System agent ${agent.name} not yet available: ${err.message}{/yellow-fg}`);
+                buf.push("");
             }
+            const label = sv.title || sv.agentId || shortId(sv.sessionId);
+            appendLog(`System agent discovered: ${label} ✓ {yellow-fg}(${shortId(sv.sessionId)}…){/yellow-fg}`);
+        } catch (err) {
+            appendLog(`{yellow-fg}System agent ${sv.agentId || shortId(sv.sessionId)} not yet available: ${err.message}{/yellow-fg}`);
         }
     }
     perfEnd(_saPh);
@@ -3711,7 +3720,13 @@ try {
 // Selecting a different orchestration in the left pane switches context.
 
 // Determine preferred system session: PilotSwarm Agent if available, else first system session
+// Check agentId from CMS, fall back to deterministic UUID
 const pilotswarmOrchId = (() => {
+    // Find session with agentId "pilotswarm" from CMS discovery
+    for (const [orchId, agentId] of sessionAgentIds) {
+        if (agentId === "pilotswarm") return orchId;
+    }
+    // Fallback: deterministic UUID (root pilotswarm agent uses stable ID)
     const psId = systemAgentUUID("pilotswarm");
     const orchId = `session-${psId}`;
     return systemSessionIds.has(orchId) ? orchId : null;

@@ -472,6 +472,8 @@ export class PilotSwarmWorker {
                 // Create CMS entry (root agents have no parent)
                 await this._catalog.createSession(sessionId, {
                     isSystem: true,
+                    agentId: agent.id,
+                    splash: agent.splash ?? undefined,
                 });
                 // Set title immediately — prefer explicit title, fallback to capitalized name + "Agent"
                 const title = agent.title ?? (agent.name.charAt(0).toUpperCase() + agent.name.slice(1) + " Agent");

@@ -68,8 +68,8 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string) {
-            return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task, nestingLevel, isSystem, title });
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string) {
+            return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash });
         },
         /** Resolve a loaded agent config by name. Returns null if not found. */
         resolveAgentConfig(agentName: string) {
@@ -374,7 +374,7 @@ export function registerActivities(
     runtime.registerActivity("resolveAgentConfig", async (
         _activityCtx: any,
         input: { agentName: string },
-    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean } | null> => {
+    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; splash?: string } | null> => {
         const agents = systemAgents ?? [];
         const agent = agents.find(a => a.name === input.agentName || a.id === input.agentName);
         if (!agent) return null;
@@ -385,6 +385,8 @@ export function registerActivities(
             initialPrompt: agent.initialPrompt ?? undefined,
             title: agent.title ?? undefined,
             system: agent.system ?? undefined,
+            id: agent.id ?? undefined,
+            splash: agent.splash ?? undefined,
         };
     });
 
@@ -394,10 +396,10 @@ export function registerActivities(
     // Goes through the full SDK path: CMS registration + orchestration startup.
     runtime.registerActivity("spawnChildSession", async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string },
     ): Promise<string> => {
         const childSessionId = crypto.randomUUID();
-        activityCtx.traceInfo(`[spawnChildSession] child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0} isSystem=${input.isSystem ?? false}`);
+        activityCtx.traceInfo(`[spawnChildSession] child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0} isSystem=${input.isSystem ?? false} agent=${input.agentId ?? "custom"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
         const sdkClient = new PilotSwarmClient({
@@ -421,12 +423,14 @@ export function registerActivities(
                 waitThreshold: input.config.waitThreshold,
             });
 
-            // Mark as system session and/or set title if requested
-            if ((input.isSystem || input.title) && catalog) {
-                await catalog.updateSession(childSessionId, {
-                    ...(input.isSystem ? { isSystem: true } : {}),
-                    ...(input.title ? { title: input.title } : {}),
-                });
+            // One-time metadata write: isSystem, title, agentId, splash
+            const meta: Record<string, any> = {};
+            if (input.isSystem) meta.isSystem = true;
+            if (input.title) meta.title = input.title;
+            if (input.agentId) meta.agentId = input.agentId;
+            if (input.splash) meta.splash = input.splash;
+            if (Object.keys(meta).length > 0 && catalog) {
+                await catalog.updateSession(childSessionId, meta);
             }
 
             // Fire the initial task prompt (non-blocking: just enqueues)
