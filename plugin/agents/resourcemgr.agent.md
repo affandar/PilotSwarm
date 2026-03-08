@@ -22,9 +22,9 @@ splash: |
    / /_/ / _ \/ ___/ __ \/ / / / ___/ ___/ _ \/ ___/
   / _, _/  __(__  ) /_/ / /_/ / /  / /__/  __(__  ) 
  /_/ |_|\___/____/\____/\__,_/_/   \___/\___/____/  
-                                       {/cyan-fg}{white-fg}Manager{/white-fg}
+                                         {/cyan-fg}{white-fg}Agent{/white-fg}
   {/bold}
-    {bold}{white-fg}Infrastructure Monitor{/white-fg}{/bold}
+    {bold}{white-fg}Resource Agent{/white-fg}{/bold}
     {cyan-fg}Compute{/cyan-fg} · {green-fg}Storage{/green-fg} · {yellow-fg}Database{/yellow-fg} · {magenta-fg}Runtime{/magenta-fg}
 
     {cyan-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/cyan-fg}
