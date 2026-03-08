@@ -89,13 +89,18 @@ function parseAgentFrontmatter(content: string): {
     const lines = yamlBlock.split("\n");
     let currentKey: string | null = null;
     let multilineValue: string[] | null = null;
+    let currentBlockStyle: string | null = null;
 
     const flushMultiline = () => {
         if (multilineValue !== null && currentKey) {
             const val = multilineValue.join("\n").trimEnd();
             if (currentKey === "splash") meta.splash = val;
-            else if (currentKey === "initialPrompt") meta.initialPrompt = val;
+            else if (currentKey === "initialPrompt") {
+                // For > (folded) scalars, collapse newlines to spaces
+                meta.initialPrompt = currentBlockStyle === ">" ? val.replace(/\n/g, " ").trim() : val;
+            }
             multilineValue = null;
+            currentBlockStyle = null;
         }
     };
 
@@ -149,8 +154,9 @@ function parseAgentFrontmatter(content: string): {
         } else if (key === "tools" && !value) {
             // Will be followed by list items
             meta.tools = [];
-        } else if ((key === "splash" || key === "initialPrompt") && value === "|") {
-            // YAML block scalar
+        } else if ((key === "splash" || key === "initialPrompt") && (value === "|" || value === ">")) {
+            // YAML block scalar (| literal, > folded)
+            currentBlockStyle = value;
             multilineValue = [];
         } else if (key === "splash") {
             meta.splash = value;

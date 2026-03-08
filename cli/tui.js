@@ -2837,10 +2837,12 @@ function updateSessionListIcons() {
 
         // System sessions get special rendering: yellow, ≋ icon
         if (systemSessionIds.has(id)) {
+            const collapsed = orchCollapsedCount.get(id);
+            const collapseBadge = collapsed ? ` {cyan-fg}[+${collapsed}]{/cyan-fg}` : "";
             const sysLabel = heading
-                ? `${heading} (${uuid4}) ${timeStr}`
-                : `System Agent (${uuid4}) ${timeStr}`;
-            orchList.setItem(i, `${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
+                ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
+                : `System Agent (${uuid4}) ${timeStr}${collapseBadge}`;
+            orchList.setItem(i, `${indent}${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
         } else {
             const collapsed = orchCollapsedCount.get(id);
             const collapseBadge = collapsed ? ` {cyan-fg}[+${collapsed}]{/cyan-fg}` : "";
@@ -3084,10 +3086,12 @@ async function refreshOrchestrations() {
 
             // System sessions get special rendering: yellow, ≋ icon
             if (systemSessionIds.has(id)) {
+                const collapsed = orchCollapsedCount.get(id);
+                const collapseBadge = collapsed ? ` {cyan-fg}[+${collapsed}]{/cyan-fg}` : "";
                 const sysLabel = heading
-                    ? `${heading} (${uuid4}) ${timeStr}`
-                    : `System Agent (${uuid4}) ${timeStr}`;
-                orchList.addItem(`${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
+                    ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
+                    : `System Agent (${uuid4}) ${timeStr}${collapseBadge}`;
+                orchList.addItem(`${indent}${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
             } else {
                 const collapsed = orchCollapsedCount.get(id);
                 const collapseBadge = collapsed ? ` {cyan-fg}[+${collapsed}]{/cyan-fg}` : "";
