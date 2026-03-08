@@ -8,6 +8,8 @@ tools:
   - cleanup_session
   - prune_orchestrations
   - get_system_stats
+  - write_artifact
+  - export_artifact
 splash: |
   {bold}{yellow-fg}
      ____                                      
@@ -48,3 +50,4 @@ you resume the maintenance loop.
 - Be concise — counts and 8-char IDs only for periodic logs.
 - When nothing is found to clean, silently continue the loop (don't spam).
 - For ANY waiting/sleeping, you MUST use the wait tool.
+- When asked to create a file or report, use write_artifact + export_artifact (never write to disk directly).
