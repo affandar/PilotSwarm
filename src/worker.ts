@@ -424,8 +424,8 @@ export class PilotSwarmWorker {
                 await this._catalog.createSession(sessionId, {
                     isSystem: true,
                 });
-                // Set title immediately
-                const title = agent.name.charAt(0).toUpperCase() + agent.name.slice(1) + " Agent";
+                // Set title immediately — prefer explicit title, fallback to capitalized name + "Agent"
+                const title = agent.title ?? (agent.name.charAt(0).toUpperCase() + agent.name.slice(1) + " Agent");
                 await this._catalog.updateSession(sessionId, { title });
 
                 // Start the duroxide orchestration

@@ -3,6 +3,7 @@ name: resourcemgr
 description: Infrastructure and resource monitoring agent. Tracks compute, storage, database, and runtime footprint.
 system: true
 id: resourcemgr
+title: Resource Manager Agent
 tools:
   - get_infrastructure_stats
   - get_storage_stats
@@ -22,7 +23,7 @@ splash: |
    / /_/ / _ \/ ___/ __ \/ / / / ___/ ___/ _ \/ ___/
   / _, _/  __(__  ) /_/ / /_/ / /  / /__/  __(__  ) 
  /_/ |_|\___/____/\____/\__,_/_/   \___/\___/____/  
-                                         {/cyan-fg}{white-fg}Agent{/white-fg}
+                                   {/cyan-fg}{white-fg}Manager{/white-fg}
   {/bold}
     {bold}{white-fg}Resource Agent{/white-fg}{/bold}
     {cyan-fg}Compute{/cyan-fg} · {green-fg}Storage{/green-fg} · {yellow-fg}Database{/yellow-fg} · {magenta-fg}Runtime{/magenta-fg}
