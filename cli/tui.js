@@ -3463,17 +3463,25 @@ function startLogStream() {
         kubectlProc.stderr.on("data", (chunk) => {
             const text = chunk.toString().trim();
             if (text && !text.includes("proxy error") && !text.includes("Gateway Timeout") && !text.includes("NotFound") && !text.includes("not found") && !text.includes("No resources found")) {
-                appendLog(`{white-fg}${text}{/white-fg}`);
+                // Route to worker panes, not chat
+                for (const [podName] of workerPanes) {
+                    appendWorkerLog(podName, `{white-fg}${text}{/white-fg}`, null);
+                }
             }
         });
 
         kubectlProc.on("error", (err) => {
-            appendLog(`{yellow-fg}kubectl error: ${err.message}{/yellow-fg}`);
+            for (const [podName] of workerPanes) {
+                appendWorkerLog(podName, `{yellow-fg}kubectl error: ${err.message}{/yellow-fg}`, null);
+            }
         });
 
         // Auto-restart on exit (e.g., pods terminated during rollout)
         kubectlProc.on("exit", (code, signal) => {
-            appendLog(`{white-fg}kubectl exited (code=${code} signal=${signal}) — restarting in 5s{/white-fg}`);
+            // Don't pollute chat — just log to worker panes
+            for (const [podName] of workerPanes) {
+                appendWorkerLog(podName, `{white-fg}kubectl exited (code=${code} signal=${signal}) — restarting in 5s{/white-fg}`, null);
+            }
             kubectlProc = null;
             setTimeout(() => { startLogStream(); }, 5000);
         });
