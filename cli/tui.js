@@ -13,7 +13,7 @@
  *   npx pilotswarm-tui remote --env .env.remote       # client-only (AKS)
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, loadAgentFiles, systemAgentUUID } from "../dist/index.js";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -2377,13 +2377,6 @@ const store = process.env.DATABASE_URL || "sqlite::memory:";
 const numWorkers = parseInt(process.env.WORKERS ?? "4", 10);
 const isRemote = numWorkers === 0;
 
-// Sweeper Agent settings (all configurable via env vars)
-const SWEEPER_SCAN_INTERVAL = parseInt(process.env.SWEEPER_SCAN_INTERVAL ?? "60", 10);         // seconds between scans
-const SWEEPER_GRACE_MINUTES = parseInt(process.env.SWEEPER_GRACE_MINUTES ?? "5", 10);          // minutes before cleanup
-const SWEEPER_PRUNE_TERMINAL_MINUTES = parseInt(process.env.SWEEPER_PRUNE_TERMINAL_MINUTES ?? "5", 10); // delete terminal instances older than N minutes
-const SWEEPER_KEEP_EXECUTIONS = parseInt(process.env.SWEEPER_KEEP_EXECUTIONS ?? "3", 10);      // keep last N executions per instance
-const SWEEPER_PRUNE_INTERVAL = parseInt(process.env.SWEEPER_PRUNE_INTERVAL ?? "10", 10);       // prune every N scan iterations
-
 if (isRemote) {
     screen.title = "PilotSwarm (Scaled — Remote Workers)";
     appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (AKS Workers){/magenta-fg}");
@@ -2836,7 +2829,7 @@ function updateSessionListIcons() {
         if (systemSessionIds.has(id)) {
             const sysLabel = heading
                 ? `${heading} (${uuid4}) ${timeStr}`
-                : `Sweeper Agent (${uuid4}) ${timeStr}`;
+                : `System Agent (${uuid4}) ${timeStr}`;
             orchList.setItem(i, `${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
         } else {
             const label = heading
@@ -3031,7 +3024,7 @@ async function refreshOrchestrations() {
             if (systemSessionIds.has(id)) {
                 const sysLabel = heading
                     ? `${heading} (${uuid4}) ${timeStr}`
-                    : `Sweeper Agent (${uuid4}) ${timeStr}`;
+                    : `System Agent (${uuid4}) ${timeStr}`;
                 orchList.addItem(`${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
             } else {
                 const label = heading
@@ -3583,85 +3576,74 @@ try {
     perfEnd(_resumePh);
 } catch {}
 
-// ─── Sweeper Agent (system session) ─────────────────────────────
-// Auto-create the system maintenance session. Idempotent — resumes if one exists.
-let sweeperSessionId = null;
+// ─── System Agent Discovery ─────────────────────────────────────
+// System agents are started by workers (embedded or remote). The TUI discovers
+// them by matching their deterministic UUIDs from plugin agent definitions.
+// Load agent files from the same plugin dirs the workers use.
+const systemAgentSplash = new Map(); // sessionId → splash string
 try {
-    const _sweeperPh = perfStart("startup.sweeperInit");
-    const sweeperSession = await client.createSystemSession({
-        systemMessage: {
-            mode: "replace",
-            content: [
-                "You are the Sweeper Agent — a system maintenance agent for PilotSwarm.",
-                "",
-                "## IMPORTANT: User Messages Take Priority",
-                "When you receive a message from the user (anything that is NOT a system timer",
-                "or continuation prompt), you MUST stop your maintenance loop and respond to",
-                "the user's message directly and helpfully FIRST. Use get_system_stats if they",
-                "ask about system status. Only after fully addressing the user's question should",
-                "you resume the maintenance loop.",
-                "",
-                "## Maintenance Loop (Background Behavior)",
-                `1. Every ${SWEEPER_SCAN_INTERVAL} seconds, use scan_completed_sessions (graceMinutes=${SWEEPER_GRACE_MINUTES}) to find stale sessions.`,
-                "2. For each stale session found, use cleanup_session to delete it.",
-                "3. Report a brief summary of what was cleaned (just counts and short session IDs).",
-                `4. Every ~${SWEEPER_PRUNE_INTERVAL} iterations, call prune_orchestrations(deleteTerminalOlderThanMinutes=${SWEEPER_PRUNE_TERMINAL_MINUTES}, keepExecutions=${SWEEPER_KEEP_EXECUTIONS}) to bulk-clean duroxide state.`,
-                `5. Use the wait tool to sleep for ${SWEEPER_SCAN_INTERVAL} seconds, then repeat.`,
-                "",
-                "## Rules",
-                "- Never delete system sessions.",
-                "- Never delete sessions that are actively running with recent activity.",
-                "- Be concise — counts and 8-char IDs only for periodic logs.",
-                "- When nothing is found to clean, silently continue the loop (don't spam).",
-                "- For ANY waiting/sleeping, you MUST use the wait tool.",
-            ].join("\n"),
-        },
-        toolNames: ["scan_completed_sessions", "cleanup_session", "prune_orchestrations", "get_system_stats"],
-        title: "Sweeper Agent",
-    });
-    sweeperSessionId = sweeperSession.sessionId;
-    systemSessionIds.add(`session-${sweeperSessionId}`);
-    sessions.set(sweeperSessionId, sweeperSession);
+    const _saPh = perfStart("startup.systemAgentDiscovery");
+    const defaultPluginDir = path.resolve(__dirname, "..", "plugin");
+    const discoveryPluginDirs = process.env.PLUGIN_DIRS
+        ? process.env.PLUGIN_DIRS.split(",").map(d => d.trim()).filter(Boolean)
+        : (fs.existsSync(defaultPluginDir) ? [defaultPluginDir] : []);
+    for (const dir of discoveryPluginDirs) {
+        const agentsDir = path.join(dir, "agents");
+        if (!fs.existsSync(agentsDir)) continue;
+        const agents = loadAgentFiles(agentsDir);
+        for (const agent of agents) {
+            if (!agent.system || !agent.id) continue;
+            const sessionId = systemAgentUUID(agent.id);
+            const orchId = `session-${sessionId}`;
 
-    // Pre-populate the sweeper's chat buffer with its ASCII banner
-    const sweeperOrchId = `session-${sweeperSessionId}`;
-    if (!sessionChatBuffers.has(sweeperOrchId)) {
-        sessionChatBuffers.set(sweeperOrchId, []);
+            // Register splash banner for this system agent
+            if (agent.splash) {
+                systemAgentSplash.set(orchId, agent.splash);
+            }
+
+            // Mark as system session
+            systemSessionIds.add(orchId);
+
+            // Resume the PilotSwarmSession handle so TUI can interact with it
+            try {
+                const sess = await client.resumeSession(sessionId);
+                sessions.set(sessionId, sess);
+                client.systemSessions.add(sessionId);
+
+                // Pre-populate the chat buffer with its splash banner
+                if (agent.splash && !sessionChatBuffers.has(orchId)) {
+                    sessionChatBuffers.set(orchId, []);
+                    const buf = sessionChatBuffers.get(orchId);
+                    for (const line of agent.splash.split("\n")) {
+                        buf.push(line);
+                    }
+                    buf.push("");
+                }
+                appendLog(`System agent discovered: ${agent.name} ✓ {yellow-fg}(${shortId(sessionId)}…){/yellow-fg}`);
+            } catch (err) {
+                appendLog(`{yellow-fg}System agent ${agent.name} not yet available: ${err.message}{/yellow-fg}`);
+            }
+        }
     }
-    const swBuf = sessionChatBuffers.get(sweeperOrchId);
-    swBuf.push("{bold}{yellow-fg}");
-    swBuf.push("   ____                                      ");
-    swBuf.push("  / ___/      _____  ___  ____  ___  _____   ");
-    swBuf.push("  \\__ \\ | /| / / _ \\/ _ \\/ __ \\/ _ \\/ ___/   ");
-    swBuf.push(" ___/ / |/ |/ /  __/  __/ /_/ /  __/ /       ");
-    swBuf.push("/____/|__/|__/\\___/\\___/ .___/\\___/_/        ");
-    swBuf.push("                       /_/            {/yellow-fg}{white-fg}Agent{/white-fg}");
-    swBuf.push("{/bold}");
-    swBuf.push("");
-    swBuf.push("  {bold}{white-fg}System Maintenance Agent{/white-fg}{/bold}");
-    swBuf.push("  {yellow-fg}Cleanup{/yellow-fg} · {green-fg}Monitoring{/green-fg} · {cyan-fg}Session lifecycle{/cyan-fg}");
-    swBuf.push("");
-    swBuf.push("  {yellow-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/yellow-fg}");
-    swBuf.push("");
-
-    // Kick off the cleanup loop
-    sweeperSession.send(`Begin your maintenance loop now. Scan every ${SWEEPER_SCAN_INTERVAL} seconds, clean up sessions completed more than ${SWEEPER_GRACE_MINUTES} minutes ago. Prune terminal orchestrations older than ${SWEEPER_PRUNE_TERMINAL_MINUTES} minutes every ${SWEEPER_PRUNE_INTERVAL} iterations.`);
-    appendLog(`Sweeper Agent created ✓ {yellow-fg}(${shortId(sweeperSessionId)}…){/yellow-fg}`);
-    perfEnd(_sweeperPh);
+    perfEnd(_saPh);
 } catch (err) {
-    appendLog(`{yellow-fg}Sweeper Agent init: ${err.message}{/yellow-fg}`);
+    appendLog(`{yellow-fg}System agent discovery: ${err.message}{/yellow-fg}`);
 }
 
 // ─── Active orchestration tracking ───────────────────────────────
 // The chat pane shows live output from the "active" orchestration.
 // Selecting a different orchestration in the left pane switches context.
 
+// Determine first system session ID to use as fallback active session
+const firstSystemOrchId = [...systemSessionIds][0] ?? "";
+const firstSystemSessionId = firstSystemOrchId ? firstSystemOrchId.replace(/^session-/, "") : "";
+
 activeOrchId = thisSessionId
     ? `session-${thisSessionId}`
-    : (sweeperSessionId ? `session-${sweeperSessionId}` : "");
+    : firstSystemOrchId;
 activeSessionShort = thisSessionId
     ? shortId(thisSessionId)
-    : (sweeperSessionId ? shortId(sweeperSessionId) : "");
+    : (firstSystemSessionId ? shortId(firstSystemSessionId) : "");
 let orchSelectFollowActive = true; // when true, next refresh snaps selection to activeOrchId
 
 function updateChatLabel() {
@@ -3670,7 +3652,8 @@ function updateChatLabel() {
     const modelTag = shortModel ? ` {cyan-fg}${shortModel}{/cyan-fg}` : "";
     const isSweeper = systemSessionIds.has(activeOrchId);
     if (isSweeper) {
-        chatBox.setLabel(` {bold}{yellow-fg}≋ Sweeper Agent{/yellow-fg}{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
+        const sysTitle = sessionHeadings.get(activeOrchId) || "System Agent";
+        chatBox.setLabel(` {bold}{yellow-fg}≋ ${sysTitle}{/yellow-fg}{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
         chatBox.style.border.fg = "yellow";
     } else {
         chatBox.setLabel(` {bold}Chat{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
