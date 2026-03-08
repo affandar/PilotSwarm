@@ -1750,6 +1750,16 @@ function relayoutAll() {
     mdFileListPane.hide();
     mdPreviewPane.hide();
 
+    // Hide right-side panes that are NOT the active log mode.
+    // Worker panes use blessed.log — hide()/show() clears their visual content,
+    // so we only hide them when switching AWAY from workers mode.
+    if (logViewMode !== "workers") {
+        for (const pane of workerPanes.values()) pane.hide();
+    }
+    if (logViewMode !== "orchestration") orchLogPane.hide();
+    if (logViewMode !== "sequence") { seqPane.hide(); seqHeaderBox.hide(); }
+    if (logViewMode !== "nodemap") nodeMapPane.hide();
+
     // Right column: upper portion for log panes (reduced by activityH)
     if (logViewMode === "orchestration") {
         orchLogPane.show();
@@ -3696,16 +3706,21 @@ try {
 // The chat pane shows live output from the "active" orchestration.
 // Selecting a different orchestration in the left pane switches context.
 
-// Determine first system session ID to use as fallback active session
-const firstSystemOrchId = [...systemSessionIds][0] ?? "";
-const firstSystemSessionId = firstSystemOrchId ? firstSystemOrchId.replace(/^session-/, "") : "";
+// Determine preferred system session: PilotSwarm Agent if available, else first system session
+const pilotswarmOrchId = (() => {
+    const psId = systemAgentUUID("pilotswarm");
+    const orchId = `session-${psId}`;
+    return systemSessionIds.has(orchId) ? orchId : null;
+})();
+const preferredSystemOrchId = pilotswarmOrchId ?? ([...systemSessionIds][0] ?? "");
+const preferredSystemSessionId = preferredSystemOrchId ? preferredSystemOrchId.replace(/^session-/, "") : "";
 
 activeOrchId = thisSessionId
     ? `session-${thisSessionId}`
-    : firstSystemOrchId;
+    : preferredSystemOrchId;
 activeSessionShort = thisSessionId
     ? shortId(thisSessionId)
-    : (firstSystemSessionId ? shortId(firstSystemSessionId) : "");
+    : (preferredSystemSessionId ? shortId(preferredSystemSessionId) : "");
 let orchSelectFollowActive = true; // when true, next refresh snaps selection to activeOrchId
 
 function updateChatLabel() {

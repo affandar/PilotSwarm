@@ -3,6 +3,7 @@ name: sweeper
 description: System maintenance agent that cleans up stale sessions and prunes orchestration history.
 system: true
 id: sweeper
+parent: pilotswarm
 tools:
   - scan_completed_sessions
   - cleanup_session

@@ -3,6 +3,7 @@ name: resourcemgr
 description: Infrastructure and resource monitoring agent. Tracks compute, storage, database, and runtime footprint.
 system: true
 id: resourcemgr
+parent: pilotswarm
 title: Resource Manager Agent
 tools:
   - get_infrastructure_stats

@@ -16,6 +16,7 @@ import { loadModelProviders, type ModelProviderRegistry } from "./model-provider
 import { createArtifactTools } from "./artifact-tools.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
+import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig, OrchestrationInput } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
@@ -252,6 +253,47 @@ export class PilotSwarmWorker {
             this.registerTools(rmTools);
         }
 
+        // list_agents tool — exposes loaded agents to the PilotSwarm Agent
+        const listAgentsTool = defineTool("list_agents", {
+            description:
+                "List all loaded agents in the PilotSwarm cluster. Returns both user-invocable agents and system agents " +
+                "with their name, description, tools, system flag, and parent relationship.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    systemOnly: {
+                        type: "boolean",
+                        description: "If true, only return system agents. Default: false",
+                    },
+                },
+            },
+            handler: async (args: { systemOnly?: boolean }) => {
+                const allAgents = [
+                    ...this._loadedAgents.map(a => ({
+                        name: a.name,
+                        description: a.description || null,
+                        tools: a.tools || [],
+                        system: false,
+                        id: null,
+                        parent: null,
+                    })),
+                    ...this._loadedSystemAgents.map(a => ({
+                        name: a.name,
+                        description: a.description || null,
+                        tools: a.tools || [],
+                        system: true,
+                        id: a.id || null,
+                        parent: a.parent || null,
+                    })),
+                ];
+                const filtered = args.systemOnly
+                    ? allAgents.filter(a => a.system)
+                    : allAgents;
+                return JSON.stringify({ agents: filtered, total: filtered.length }, null, 2);
+            },
+        });
+        this.registerTools([listAgentsTool]);
+
         this.runtime.start().catch((err: any) => {
             console.error("[PilotSwarmWorker] Runtime error:", err);
         });
@@ -388,11 +430,23 @@ export class PilotSwarmWorker {
 
         const duroxideClient = new Client(this._provider);
 
-        for (const agent of this._loadedSystemAgents) {
+        // Sort: parents first (agents without a parent field come before those with one)
+        const sorted = [...this._loadedSystemAgents].sort((a, b) => {
+            const aHasParent = a.parent ? 1 : 0;
+            const bHasParent = b.parent ? 1 : 0;
+            return aHasParent - bHasParent;
+        });
+
+        for (const agent of sorted) {
             if (!agent.id) continue;
 
             const sessionId = systemAgentUUID(agent.id);
             const orchestrationId = `session-${sessionId}`;
+
+            // Resolve parent session ID if this agent has a parent
+            const parentSessionId = agent.parent
+                ? systemAgentUUID(agent.parent)
+                : undefined;
 
             try {
                 // Check if this system agent's session already exists in CMS
@@ -423,6 +477,7 @@ export class PilotSwarmWorker {
                 // Create CMS entry
                 await this._catalog.createSession(sessionId, {
                     isSystem: true,
+                    parentSessionId,
                 });
                 // Set title immediately — prefer explicit title, fallback to capitalized name + "Agent"
                 const title = agent.title ?? (agent.name.charAt(0).toUpperCase() + agent.name.slice(1) + " Agent");

@@ -56,6 +56,8 @@ export interface AgentConfig {
     id?: string;
     /** Display title for the session list (e.g. "Resource Manager Agent"). Falls back to capitalized name + " Agent". */
     title?: string;
+    /** Parent system agent ID slug (e.g. "pilotswarm"). Makes this a sub-agent of the parent. */
+    parent?: string;
     /** Splash banner (blessed markup) shown in the TUI when the session is selected. */
     splash?: string;
     /** Initial prompt to send when the system agent is first created. */
@@ -69,10 +71,10 @@ export interface AgentConfig {
  * Handles simple `key: value` pairs and YAML list syntax for `tools`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; splash?: string; initialPrompt?: string };
+    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; splash?: string; initialPrompt?: string } = {};
+    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -140,6 +142,7 @@ function parseAgentFrontmatter(content: string): {
         else if (key === "system") meta.system = value === "true";
         else if (key === "id") meta.id = value;
         else if (key === "title") meta.title = value;
+        else if (key === "parent") meta.parent = value;
         else if (key === "tools" && value) {
             // Inline array: tools: [view, grep]
             meta.tools = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
@@ -207,6 +210,7 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 system: meta.system,
                 id: meta.id,
                 title: meta.title,
+                parent: meta.parent,
                 splash: meta.splash,
                 initialPrompt: meta.initialPrompt,
             });
