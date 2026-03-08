@@ -715,6 +715,7 @@ export function* durableSessionOrchestration_1_0_6(
                     `- Be thorough but concise — the parent will synthesize results from multiple agents.\n` +
                     `- Do NOT ask the user for input — you are autonomous.\n` +
                     `- When your task is complete, provide a clear summary of your findings/results.\n` +
+                    `- If you write any files with write_artifact, you MUST also call export_artifact and include the artifact:// link in your response.\n` +
                     `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\` tool. ` +
                     `NEVER use setTimeout, sleep, setInterval, cron, or any other timing mechanism. ` +
                     `The wait tool is durable and survives process restarts.\n` +
