@@ -34,7 +34,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_7(
+export function* durableSessionOrchestration_1_0_6(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -687,39 +687,14 @@ export function* durableSessionOrchestration_1_0_7(
                     return "";
                 }
 
-                // ─── Resolve agent config if agent_name is provided ───
-                let agentTask = result.task;
-                let agentSystemMessage = result.systemMessage;
-                let agentToolNames = result.toolNames;
-                let agentModel = result.model;
-                let agentIsSystem = false;
-                let agentTitle: string | undefined;
-
-                if (result.agentName) {
-                    ctx.traceInfo(`[orch] resolving agent config for: ${result.agentName}`);
-                    const agentDef = yield manager.resolveAgentConfig(result.agentName);
-                    if (!agentDef) {
-                        yield ctx.continueAsNew(continueInput({
-                            prompt: `[SYSTEM: spawn_agent failed — agent "${result.agentName}" not found. Use list_agents to see available agents.]`,
-                        }));
-                        return "";
-                    }
-                    // Agent definition provides defaults; explicit args override
-                    agentTask = result.task || agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`;
-                    agentSystemMessage = result.systemMessage ?? { mode: "replace" as const, content: agentDef.prompt };
-                    agentToolNames = result.toolNames ?? agentDef.tools ?? undefined;
-                    agentIsSystem = agentDef.system ?? false;
-                    agentTitle = agentDef.title;
-                }
-
-                ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${agentTask.slice(0, 80)}" model=${agentModel || "inherit"} agent=${result.agentName || "custom"} nestingLevel=${childNestingLevel}`);
+                ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${result.task.slice(0, 80)}" model=${result.model || "inherit"} nestingLevel=${childNestingLevel}`);
 
                 // Build child config — inherit parent's config with optional overrides
                 const childConfig: SerializableSessionConfig = {
                     ...config,
-                    ...(agentModel ? { model: agentModel } : {}),
-                    ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
-                    ...(agentToolNames ? { toolNames: agentToolNames } : {}),
+                    ...(result.model ? { model: result.model } : {}),
+                    ...(result.systemMessage ? { systemMessage: result.systemMessage } : {}),
+                    ...(result.toolNames ? { toolNames: result.toolNames } : {}),
                 };
 
                 // Inject sub-agent identity into the child's system message so the LLM
@@ -733,7 +708,7 @@ export function* durableSessionOrchestration_1_0_7(
                     `[SUB-AGENT CONTEXT]\n` +
                     `You are a sub-agent spawned by a parent session (ID: session-${input.sessionId}).\n` +
                     `Your nesting level: ${childNestingLevel} (max: ${MAX_NESTING_LEVEL}).\n` +
-                    `Your task: "${agentTask.slice(0, 500)}"\n\n` +
+                    `Your task: "${result.task.slice(0, 500)}"\n\n` +
                     `Instructions:\n` +
                     `- Focus exclusively on your assigned task.\n` +
                     `- Your final response will be automatically forwarded to the parent agent.\n` +
@@ -756,7 +731,7 @@ export function* durableSessionOrchestration_1_0_7(
                 // and initial task prompt — all through the standard SDK path.
                 let childSessionId: string;
                 try {
-                    childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, agentTask, childNestingLevel, agentIsSystem, agentTitle);
+                    childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, result.task, childNestingLevel);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);
                     yield ctx.continueAsNew(continueInput({
@@ -771,14 +746,14 @@ export function* durableSessionOrchestration_1_0_7(
                 subAgents.push({
                     orchId: childOrchId,
                     sessionId: childSessionId,
-                    task: agentTask.slice(0, 500),
+                    task: result.task.slice(0, 500),
                     status: "running",
                 });
 
                 // Feed confirmation back to the LLM
                 const spawnMsg = `[SYSTEM: Sub-agent spawned successfully.\n` +
                     `  Agent ID: ${childOrchId}\n` +
-                    `  ${result.agentName ? `Agent: ${result.agentName}\n  ` : ``}Task: "${agentTask.slice(0, 200)}"\n` +
+                    `  Task: "${result.task.slice(0, 200)}"\n` +
                     `  The agent is now running autonomously. Use check_agents to monitor progress, ` +
                     `message_agent to send instructions. To wait for completion, use wait + check_agents ` +
                     `in a loop (choose an appropriate interval) so you can report progress to the user.]`;
