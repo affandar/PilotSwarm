@@ -3974,7 +3974,7 @@ function startCmsPoller(orchId) {
                 appendActivity(`{white-fg}[${t}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}${dsid}`, orchId);
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || sess._lastToolName || "tool";
-                appendActivity(`{white-fg}[${t}]{/white-fg} {green-fg}✓${toolName}{/green-fg}`, orchId);
+                appendActivity(`{white-fg}[${t}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`, orchId);
             } else if (type === "assistant.reasoning") {
                 appendActivity(`{white-fg}[${t}]{/white-fg} {gray-fg}[reasoning]{/gray-fg}`, orchId);
             } else if (type === "assistant.turn_start") {
