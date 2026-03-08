@@ -3967,10 +3967,12 @@ function startCmsPoller(orchId) {
             if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
                 const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${shortId(evt.data.durableSessionId)}]{/gray-fg}` : "";
+                // Track last tool name so we can show it on completion too
+                sess._lastToolName = toolName;
                 appendActivity(`{white-fg}[${t}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}${dsid}`, orchId);
             } else if (type === "tool.execution_complete") {
-                const toolName = evt.data?.toolName || "tool";
-                appendActivity(`{white-fg}[${t}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`, orchId);
+                const toolName = evt.data?.toolName || sess._lastToolName || "tool";
+                appendActivity(`{white-fg}[${t}]{/white-fg} {green-fg}✓${toolName}{/green-fg}`, orchId);
             } else if (type === "assistant.reasoning") {
                 appendActivity(`{white-fg}[${t}]{/white-fg} {gray-fg}[reasoning]{/gray-fg}`, orchId);
             } else if (type === "assistant.turn_start") {
