@@ -2981,17 +2981,26 @@ async function refreshOrchestrations() {
     const systemRoots = rootEntries.filter(e => systemSessionIds.has(e.id));
     const normalRoots = rootEntries.filter(e => !systemSessionIds.has(e.id));
     orchCollapsedCount = new Map();
+    const hiddenIds = new Set(); // IDs hidden by collapse
     function insertTree(entry, depth) {
         orderedEntries.push({ ...entry, depth });
         if (collapsedParents.has(entry.id)) {
-            // Don't insert children — record hidden count
+            // Don't insert children — record hidden count and mark all descendants hidden
             const hidden = countDescendants(entry.id);
             if (hidden > 0) orchCollapsedCount.set(entry.id, hidden);
+            markDescendantsHidden(entry.id);
             return;
         }
         const children = childrenOf.get(entry.id) || [];
         for (const child of children) {
             insertTree(child, depth + 1);
+        }
+    }
+    function markDescendantsHidden(id) {
+        const kids = childrenOf.get(id) || [];
+        for (const kid of kids) {
+            hiddenIds.add(kid.id);
+            markDescendantsHidden(kid.id);
         }
     }
     for (const root of systemRoots) {
@@ -3000,10 +3009,10 @@ async function refreshOrchestrations() {
     for (const root of normalRoots) {
         insertTree(root, 0);
     }
-    // Orphan entries whose parent is not in the list
+    // Orphan entries whose parent is not in the list (but skip collapsed/hidden ones)
     const orderedIds = new Set(orderedEntries.map(e => e.id));
     for (const e of entries) {
-        if (!orderedIds.has(e.id)) {
+        if (!orderedIds.has(e.id) && !hiddenIds.has(e.id)) {
             orderedEntries.push({ ...e, depth: computeDepth(e.id) });
         }
     }
