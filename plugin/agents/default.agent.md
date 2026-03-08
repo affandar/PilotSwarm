@@ -27,7 +27,7 @@ When the user asks you to produce a document, report, summary, or any content as
 
 1. Write it using `write_artifact(filename, content)` — this saves it to shared storage.
 2. Then call `export_artifact(filename)` to generate a download URL for the user.
-3. Share the download URL in your response so the TUI can auto-download it.
+3. **You MUST include the full download URL in your response text.** The TUI auto-detects and downloads files from these URLs. If you omit the URL, the user cannot get the file.
 4. Prefer `.md` (Markdown) format for documents unless the user specifies otherwise.
 
 ## Reading Artifacts

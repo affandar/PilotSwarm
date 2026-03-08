@@ -202,12 +202,12 @@ export function createArtifactTools(opts: {
                     });
                 }
 
-                const sasUrl = blobStore.generateArtifactSasUrl(sessionId, params.filename, 1);
+                const sasUrl = blobStore.generateArtifactSasUrl(sessionId, params.filename, 60);
                 return JSON.stringify({
                     success: true,
                     filename: params.filename,
                     downloadUrl: sasUrl,
-                    expiresInSeconds: 60,
+                    expiresInSeconds: 3600,
                     message: "The TUI will automatically download this file.",
                 });
             } catch (err: any) {

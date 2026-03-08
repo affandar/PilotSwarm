@@ -190,10 +190,18 @@ const artifactFiles = []; // [{ filename, localPath, sessionId, downloadedAt }]
  * Scan text for artifact SAS URLs and download them to EXPORTS_DIR.
  * Called from showCopilotMessage / observer when new content arrives.
  */
+/** Track downloaded artifact URLs to avoid re-downloading on repeated scans. */
+const _downloadedArtifactUrls = new Set();
+
 async function downloadArtifactUrls(text) {
     const matches = [...text.matchAll(ARTIFACT_SAS_RE)];
     for (const m of matches) {
         const [url, sessionId, filename] = m;
+        // Dedup: strip SAS query params for identity (same blob path = same file)
+        const blobKey = `${sessionId}/${filename}`;
+        if (_downloadedArtifactUrls.has(blobKey)) continue;
+        _downloadedArtifactUrls.add(blobKey);
+
         const sessionDir = path.join(EXPORTS_DIR, sessionId.slice(0, 8));
         fs.mkdirSync(sessionDir, { recursive: true });
         const localPath = path.join(sessionDir, filename);
@@ -3714,6 +3722,14 @@ function startObserver(orchId) {
                         lastIteration = cs.iteration || 0;
                         showCopilotMessage(cs.turnResult.content, orchId);
                     }
+                    // Scan entire customStatus JSON for artifact SAS URLs
+                    // (catches URLs in tool results that the agent may not echo in its response)
+                    const csRaw = typeof currentStatus.customStatus === "string"
+                        ? currentStatus.customStatus : JSON.stringify(currentStatus.customStatus);
+                    if (csRaw && ARTIFACT_SAS_RE.test(csRaw)) {
+                        ARTIFACT_SAS_RE.lastIndex = 0;
+                        downloadArtifactUrls(csRaw).catch(() => {});
+                    }
                     if (cs.status === "idle") {
                         setStatusIfActive("Idle — type a message");
                         setTurnInProgressIfActive(false);
@@ -3975,6 +3991,13 @@ function startCmsPoller(orchId) {
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || sess._lastToolName || "tool";
                 appendActivity(`{white-fg}[${t}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`, orchId);
+                // Scan tool results for artifact SAS URLs (export_artifact returns downloadUrl)
+                const resultStr = typeof evt.data?.result === "string" ? evt.data.result
+                    : (evt.data?.result ? JSON.stringify(evt.data.result) : "");
+                if (resultStr && ARTIFACT_SAS_RE.test(resultStr)) {
+                    ARTIFACT_SAS_RE.lastIndex = 0;
+                    downloadArtifactUrls(resultStr).catch(() => {});
+                }
             } else if (type === "assistant.reasoning") {
                 appendActivity(`{white-fg}[${t}]{/white-fg} {gray-fg}[reasoning]{/gray-fg}`, orchId);
             } else if (type === "assistant.turn_start") {
