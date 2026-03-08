@@ -436,7 +436,16 @@ export function* durableSessionOrchestration_1_0_7(
                         ctx.traceInfo(`[orch] sendToSession(parent) failed: ${err.message} (non-fatal)`);
                     }
 
-                    // Sub-agents auto-terminate after completing their task and notifying
+                    // System sub-agents (sweeper, resourcemgr) should keep running forever.
+                    // Non-system sub-agents auto-terminate after completing their task.
+                    if (input.isSystem) {
+                        ctx.traceInfo(`[orch] system sub-agent completed turn, continuing loop`);
+                        lastTurnResult = statusResult;
+                        yield* maybeCheckpoint();
+                        continue;
+                    }
+
+                    // Non-system sub-agents auto-terminate after completing their task and notifying
                     // the parent. Without this, they sit in the idle loop forever (idleTimeout=-1)
                     // and accumulate as zombie orchestrations.
                     ctx.traceInfo(`[orch] sub-agent completed task, auto-terminating`);

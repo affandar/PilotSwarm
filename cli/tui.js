@@ -2248,7 +2248,28 @@ async function loadCmsHistory(orchId) {
             if (type === "user.message") {
                 const content = stripHostPrefix(evt.data?.content);
                 if (content && !content.startsWith("[SYSTEM:") && !isTimerPrompt(content)) {
-                    lines.push(`{white-fg}[${timeStr}]{/white-fg} {bold}You:{/bold} ${content}`);
+                    // Format CHILD_UPDATE messages as distinct cards
+                    const childMatch = content.match(/^\[CHILD_UPDATE from=(\S+) type=(\S+)(?:\s+iter=(\d+))?\]\n?(.*)$/s);
+                    if (childMatch) {
+                        const childId = childMatch[1].slice(0, 8);
+                        const updateType = childMatch[2];
+                        const body = (childMatch[4] || "").trim();
+                        const childTitle = sessionHeadings.get(`session-${childMatch[1]}`) || `Agent ${childId}`;
+                        const typeColor = updateType === "completed" ? "green" : updateType === "error" ? "red" : "magenta";
+                        lines.push(`{white-fg}[${timeStr}]{/white-fg} {${typeColor}-fg}┌─ {bold}${childTitle}{/bold} · ${updateType} ─┐{/${typeColor}-fg}`);
+                        if (body) {
+                            const bodyLines = body.split("\n");
+                            for (const bl of bodyLines.slice(0, 8)) {
+                                lines.push(`{${typeColor}-fg}│{/${typeColor}-fg} ${bl}`);
+                            }
+                            if (bodyLines.length > 8) {
+                                lines.push(`{${typeColor}-fg}│{/${typeColor}-fg} {gray-fg}… ${bodyLines.length - 8} more lines{/gray-fg}`);
+                            }
+                        }
+                        lines.push(`{${typeColor}-fg}└${'─'.repeat(30)}┘{/${typeColor}-fg}`);
+                    } else {
+                        lines.push(`{white-fg}[${timeStr}]{/white-fg} {bold}You:{/bold} ${content}`);
+                    }
                 }
             } else if (type === "assistant.message") {
                 const content = evt.data?.content;
@@ -2322,17 +2343,24 @@ async function loadCmsHistory(orchId) {
             lines.push("");
         }
 
-        // For system sessions, preserve the splash banner at the top
+        // For system sessions, show the splash banner at the top of the chat
         if (systemSessionIds.has(orchId)) {
+            // Try to preserve existing splash from the buffer
             const existing = sessionChatBuffers.get(orchId);
+            let splashInjected = false;
             if (existing && existing.length > 0) {
-                // Find the splash separator (the ━━━ line) — everything up to
-                // and including the line after it is the splash
                 const splashEndIdx = existing.findIndex(l => l.includes("━━━━━━━━━"));
                 if (splashEndIdx >= 0) {
                     const splashLines = existing.slice(0, splashEndIdx + 2); // +2 to include separator + blank
                     lines.unshift(...splashLines);
+                    splashInjected = true;
                 }
+            }
+            // If no splash was in the buffer, inject from CMS-sourced splash map
+            if (!splashInjected && systemAgentSplash.has(orchId)) {
+                const splashText = systemAgentSplash.get(orchId);
+                const splashLines = splashText.split("\n");
+                lines.unshift(...splashLines, "");
             }
         }
 
