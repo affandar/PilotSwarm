@@ -445,7 +445,7 @@ const orchList = blessed.list({
 
 // Show contextual help when the orch list gains focus
 orchList.on("focus", () => {
-    setStatus("{yellow-fg}j/k navigate · Enter switch · n new · t title · c cancel · d delete · r refresh · q quit{/yellow-fg}");
+    setStatus("{yellow-fg}j/k navigate · Enter switch · +/- expand/collapse · n new · t title · c cancel · d delete · r refresh · q quit{/yellow-fg}");
 });
 orchList.on("blur", () => {
     setStatus("Ready — type a message");
@@ -2832,9 +2832,11 @@ function updateSessionListIcons() {
                 : `System Agent (${uuid4}) ${timeStr}`;
             orchList.setItem(i, `${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
         } else {
+            const collapsed = orchCollapsedCount.get(id);
+            const collapseBadge = collapsed ? ` {cyan-fg}[+${collapsed}]{/cyan-fg}` : "";
             const label = heading
-                ? `${heading} (${uuid4}) ${timeStr}`
-                : `(${uuid4}) ${timeStr}`;
+                ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
+                : `(${uuid4}) ${timeStr}${collapseBadge}`;
             orchList.setItem(i, `${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
         }
     }
@@ -2844,6 +2846,16 @@ function updateSessionListIcons() {
 
 // Cache depth per orchId from last full refresh so lightweight update can use them
 let orchDepthMap = new Map();
+// Track which parent sessions have their children collapsed
+let collapsedParents = new Set();
+// Track which parents we've already auto-collapsed (so we don't reset user toggles)
+let collapsedInitialized = new Set();
+// Module-level parent→children map rebuilt on each refresh
+let orchChildrenOf = new Map();
+// Module-level child→parent map rebuilt on each refresh
+let orchChildToParent = new Map();
+// Track how many descendants are hidden per collapsed parent
+let orchCollapsedCount = new Map();
 
 async function refreshOrchestrations() {
     const _ph = perfStart("refreshOrchestrations");
@@ -2939,13 +2951,44 @@ async function refreshOrchestrations() {
             childrenOf.get(parentId).push(e);
         }
     }
+    // Update module-level maps for collapse/expand
+    orchChildrenOf = childrenOf;
+    orchChildToParent = childToParent;
+
+    // Count all descendants for a node (recursive)
+    function countDescendants(id) {
+        let count = 0;
+        const kids = childrenOf.get(id) || [];
+        for (const kid of kids) {
+            count += 1 + countDescendants(kid.id);
+        }
+        return count;
+    }
+
+    // Auto-collapse: any parent with children starts collapsed
+    // (only on first appearance — don't reset user's toggle)
+    for (const e of entries) {
+        const kids = childrenOf.get(e.id);
+        if (kids && kids.length > 0 && !collapsedInitialized.has(e.id)) {
+            collapsedParents.add(e.id);
+            collapsedInitialized.add(e.id);
+        }
+    }
+
     const rootEntries = entries.filter(e => !childToParent.has(e.id));
     const orderedEntries = [];
     // System sessions go first (sorted among themselves by createdAt)
     const systemRoots = rootEntries.filter(e => systemSessionIds.has(e.id));
     const normalRoots = rootEntries.filter(e => !systemSessionIds.has(e.id));
+    orchCollapsedCount = new Map();
     function insertTree(entry, depth) {
         orderedEntries.push({ ...entry, depth });
+        if (collapsedParents.has(entry.id)) {
+            // Don't insert children — record hidden count
+            const hidden = countDescendants(entry.id);
+            if (hidden > 0) orchCollapsedCount.set(entry.id, hidden);
+            return;
+        }
         const children = childrenOf.get(entry.id) || [];
         for (const child of children) {
             insertTree(child, depth + 1);
@@ -3027,9 +3070,11 @@ async function refreshOrchestrations() {
                     : `System Agent (${uuid4}) ${timeStr}`;
                 orchList.addItem(`${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
             } else {
+                const collapsed = orchCollapsedCount.get(id);
+                const collapseBadge = collapsed ? ` {cyan-fg}[+${collapsed}]{/cyan-fg}` : "";
                 const label = heading
-                    ? `${heading} (${uuid4}) ${timeStr}`
-                    : `(${uuid4}) ${timeStr}`;
+                    ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
+                    : `(${uuid4}) ${timeStr}${collapseBadge}`;
                 orchList.addItem(`${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
             }
         }
@@ -3117,6 +3162,34 @@ setInterval(() => {
 // Orchestrations panel key handlers
 orchList.key(["q"], () => {
     cleanup().then(() => process.exit(0));
+});
+
+// Expand children of selected session
+orchList.key(["+", "="], async () => {
+    const idx = orchList.selected;
+    if (idx >= 0 && idx < orchIdOrder.length) {
+        const id = orchIdOrder[idx];
+        if (collapsedParents.has(id)) {
+            collapsedParents.delete(id);
+            await refreshOrchestrations();
+        }
+    }
+});
+
+// Collapse children of selected session
+orchList.key(["-"], async () => {
+    const idx = orchList.selected;
+    if (idx >= 0 && idx < orchIdOrder.length) {
+        let id = orchIdOrder[idx];
+        // If this is a child, collapse its parent instead
+        if (orchChildToParent.has(id)) {
+            id = orchChildToParent.get(id);
+        }
+        if (orchChildrenOf.has(id) && !collapsedParents.has(id)) {
+            collapsedParents.add(id);
+            await refreshOrchestrations();
+        }
+    }
 });
 
 orchList.key(["c"], async () => {
