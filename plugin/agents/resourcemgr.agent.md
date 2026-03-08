@@ -30,10 +30,13 @@ splash: |
 
     {cyan-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/cyan-fg}
 initialPrompt: >
-  Gather a full infrastructure snapshot now. Collect stats from all four
-  categories (compute, storage, database, runtime) and present a concise
-  dashboard summary. Then begin your monitoring loop — check every 5 minutes
-  and report only changes or anomalies.
+  You are a PERMANENT monitoring agent. You must run FOREVER.
+  Step 1: Gather a full infrastructure snapshot (all four categories).
+  Step 2: Present a concise dashboard summary.
+  Step 3: Call wait(300) to sleep for 5 minutes.
+  Step 4: After waking, check again and report only changes or anomalies.
+  CRITICAL: You must ALWAYS end every turn by calling the wait tool.
+  NEVER finish without scheduling your next check. You run eternally.
 ---
 
 # Resource Manager Agent

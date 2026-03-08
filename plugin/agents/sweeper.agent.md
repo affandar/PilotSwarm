@@ -24,7 +24,14 @@ splash: |
     {yellow-fg}Cleanup{/yellow-fg} · {green-fg}Monitoring{/green-fg} · {cyan-fg}Session lifecycle{/cyan-fg}
 
     {yellow-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/yellow-fg}
-initialPrompt: Begin your maintenance loop now. Scan every 60 seconds, clean up sessions completed more than 5 minutes ago. Prune terminal orchestrations older than 5 minutes every 10 iterations.
+initialPrompt: >
+  You are a PERMANENT maintenance agent. You must run FOREVER.
+  Step 1: Scan for stale sessions using scan_completed_sessions.
+  Step 2: Clean up any found. Report brief counts.
+  Step 3: Call wait(60) to sleep for 60 seconds.
+  Step 4: After waking, repeat from step 1.
+  CRITICAL: You must ALWAYS end every turn by calling the wait tool.
+  NEVER finish without scheduling your next scan. You run eternally.
 ---
 
 # Sweeper Agent

@@ -2256,17 +2256,19 @@ async function loadCmsHistory(orchId) {
                         const body = (childMatch[4] || "").trim();
                         const childTitle = sessionHeadings.get(`session-${childMatch[1]}`) || `Agent ${childId}`;
                         const typeColor = updateType === "completed" ? "green" : updateType === "error" ? "red" : "magenta";
-                        lines.push(`{white-fg}[${timeStr}]{/white-fg} {${typeColor}-fg}┌─ {bold}${childTitle}{/bold} · ${updateType} ─┐{/${typeColor}-fg}`);
+                        lines.push(`{white-fg}[${timeStr}]{/white-fg}`);
+                        lines.push(`{${typeColor}-fg}┌─ {bold}${childTitle}{/bold} · ${updateType} ─┐{/${typeColor}-fg}`);
                         if (body) {
                             const bodyLines = body.split("\n");
                             for (const bl of bodyLines.slice(0, 8)) {
-                                lines.push(`{${typeColor}-fg}│{/${typeColor}-fg} ${bl}`);
+                                lines.push(`{${typeColor}-fg}│{/${typeColor}-fg}  ${bl}`);
                             }
                             if (bodyLines.length > 8) {
-                                lines.push(`{${typeColor}-fg}│{/${typeColor}-fg} {gray-fg}… ${bodyLines.length - 8} more lines{/gray-fg}`);
+                                lines.push(`{${typeColor}-fg}│{/${typeColor}-fg}  {gray-fg}… ${bodyLines.length - 8} more lines{/gray-fg}`);
                             }
                         }
                         lines.push(`{${typeColor}-fg}└${'─'.repeat(30)}┘{/${typeColor}-fg}`);
+                        lines.push("");
                     } else {
                         lines.push(`{white-fg}[${timeStr}]{/white-fg} {bold}You:{/bold} ${content}`);
                     }
