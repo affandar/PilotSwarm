@@ -18,14 +18,13 @@ tools:
   - export_artifact
 splash: |
   {bold}{cyan-fg}
-     ____                                          
-    / __ \___  _________  __  _______________  _____
-   / /_/ / _ \/ ___/ __ \/ / / / ___/ ___/ _ \/ ___/
-  / _, _/  __(__  ) /_/ / /_/ / /  / /__/  __(__  ) 
- /_/ |_|\___/____/\____/\__,_/_/   \___/\___/____/  
-                                   {/cyan-fg}{white-fg}Manager{/white-fg}
+  ___                             __  __                             
+ | _ \___ ___ ___ _  _ _ _ __ ___|  \/  |__ _ _ _  __ _ __ _ ___ _ _ 
+ |   / -_|_-</ _ \ || | '_/ _/ -_) |\/| / _` | ' \/ _` / _` / -_) '_|
+ |_|_\___/__/\___/\_,_|_| \__\___|_|  |_\__,_|_||_\__,_\__, \___|_|  
+                                                       |___/{/cyan-fg} {white-fg}Agent{/white-fg}
   {/bold}
-    {bold}{white-fg}Resource Agent{/white-fg}{/bold}
+    {bold}{white-fg}Resource Manager{/white-fg}{/bold}
     {cyan-fg}Compute{/cyan-fg} · {green-fg}Storage{/green-fg} · {yellow-fg}Database{/yellow-fg} · {magenta-fg}Runtime{/magenta-fg}
 
     {cyan-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/cyan-fg}
