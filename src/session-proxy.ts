@@ -2,6 +2,7 @@ import type { SessionManager } from "./session-manager.js";
 import type { SessionBlobStore } from "./blob-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import type { SerializableSessionConfig, TurnResult, OrchestrationInput } from "./types.js";
+import type { AgentConfig } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
 import os from "node:os";
 
@@ -67,8 +68,12 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number) {
-            return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task, nestingLevel });
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string) {
+            return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task, nestingLevel, isSystem, title });
+        },
+        /** Resolve a loaded agent config by name. Returns null if not found. */
+        resolveAgentConfig(agentName: string) {
+            return ctx.scheduleActivity("resolveAgentConfig", { agentName });
         },
         /** Send a message to a session via the PilotSwarmClient SDK. */
         sendToSession(sessionId: string, message: string) {
@@ -123,6 +128,8 @@ export function registerActivities(
         blobEnabled?: boolean;
         duroxideSchema?: string;
     },
+    /** Loaded system agents — used by resolveAgentConfig activity. */
+    systemAgents?: AgentConfig[],
 ) {
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
@@ -361,16 +368,36 @@ export function registerActivities(
         });
     }
 
+    // ── resolveAgentConfig ────────────────────────────────────
+    // Resolves a loaded agent definition by name. Used by spawn_agent
+    // with agent_name to look up the agent's prompt, tools, and initial prompt.
+    runtime.registerActivity("resolveAgentConfig", async (
+        _activityCtx: any,
+        input: { agentName: string },
+    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean } | null> => {
+        const agents = systemAgents ?? [];
+        const agent = agents.find(a => a.name === input.agentName || a.id === input.agentName);
+        if (!agent) return null;
+        return {
+            name: agent.name,
+            prompt: agent.prompt,
+            tools: agent.tools ?? undefined,
+            initialPrompt: agent.initialPrompt ?? undefined,
+            title: agent.title ?? undefined,
+            system: agent.system ?? undefined,
+        };
+    });
+
     // ── spawnChildSession ─────────────────────────────────────
     // Creates a child session via the PilotSwarmClient SDK.
     // Generates a random UUID for the child session ID internally.
     // Goes through the full SDK path: CMS registration + orchestration startup.
     runtime.registerActivity("spawnChildSession", async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string },
     ): Promise<string> => {
         const childSessionId = crypto.randomUUID();
-        activityCtx.traceInfo(`[spawnChildSession] child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0}`);
+        activityCtx.traceInfo(`[spawnChildSession] child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0} isSystem=${input.isSystem ?? false}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
         const sdkClient = new PilotSwarmClient({
@@ -393,6 +420,14 @@ export function registerActivities(
                 toolNames: input.config.toolNames,
                 waitThreshold: input.config.waitThreshold,
             });
+
+            // Mark as system session and/or set title if requested
+            if ((input.isSystem || input.title) && catalog) {
+                await catalog.updateSession(childSessionId, {
+                    ...(input.isSystem ? { isSystem: true } : {}),
+                    ...(input.title ? { title: input.title } : {}),
+                });
+            }
 
             // Fire the initial task prompt (non-blocking: just enqueues)
             await session.send(input.task);
