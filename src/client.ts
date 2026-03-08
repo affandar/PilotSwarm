@@ -41,7 +41,7 @@ export class PilotSwarmClient {
     /** nestingLevel for sub-agent sessions. */
     private nestingLevels = new Map<string, number>();
     /** System session flag. */
-    private systemSessions = new Set<string>();
+    systemSessions = new Set<string>();
     private activeOrchestrations = new Map<string, string>();
     private lastSeenStatusVersion = new Map<string, number>();
     private lastSeenIteration = new Map<string, number>();

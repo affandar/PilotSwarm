@@ -51,7 +51,7 @@ export type {
 
 // Skills loader
 export { loadSkills } from "./skills.js";
-export { loadAgentFiles } from "./agent-loader.js";
+export { loadAgentFiles, systemAgentUUID } from "./agent-loader.js";
 export { loadMcpConfig } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 // Sweeper Agent tools
