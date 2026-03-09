@@ -868,6 +868,16 @@ function appendActivity(text, orchId) {
     }
 }
 
+function ensureSystemSplashBuffer(orchId) {
+    if (!systemSessionIds.has(orchId) || !systemAgentSplash.has(orchId)) return null;
+    const existing = sessionChatBuffers.get(orchId);
+    if (existing && existing.length > 0) return existing;
+
+    const splashLines = systemAgentSplash.get(orchId).split("\n");
+    sessionChatBuffers.set(orchId, [...splashLines, ""]);
+    return sessionChatBuffers.get(orchId);
+}
+
 /**
  * Refresh the node map pane — vertical columns, one per worker node,
  * with sessions stacked underneath, color-coded by live status.
@@ -2202,8 +2212,14 @@ async function loadCmsHistory(orchId) {
             // causes empty chat on first switch to a session).
             const existing = sessionChatBuffers.get(orchId);
             if (!existing || existing.length === 0) {
-                sessionChatBuffers.set(orchId, []);
-                if (orchId === activeOrchId) chatBox.setContent("");
+                const splashLines = ensureSystemSplashBuffer(orchId);
+                if (!splashLines) {
+                    sessionChatBuffers.set(orchId, []);
+                    if (orchId === activeOrchId) chatBox.setContent("");
+                }
+            }
+            if (!sessionActivityBuffers.has(orchId)) {
+                sessionActivityBuffers.set(orchId, ["{gray-fg}(no recent activity yet){/gray-fg}"]);
             }
             return;
         }
@@ -2868,15 +2884,13 @@ function updateSessionListIcons() {
 
         // System sessions get special rendering: yellow, ≋ icon
         if (systemSessionIds.has(id)) {
-            const collapsed = orchCollapsedCount.get(id);
-            const collapseBadge = collapsed ? ` {cyan-fg}[+${collapsed}]{/cyan-fg}` : "";
+            const collapseBadge = getCollapseBadge(id);
             const sysLabel = heading
                 ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
                 : `System Agent (${uuid4}) ${timeStr}${collapseBadge}`;
             orchList.setItem(i, `${indent}${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
         } else {
-            const collapsed = orchCollapsedCount.get(id);
-            const collapseBadge = collapsed ? ` {cyan-fg}[+${collapsed}]{/cyan-fg}` : "";
+            const collapseBadge = getCollapseBadge(id);
             const label = heading
                 ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
                 : `(${uuid4}) ${timeStr}${collapseBadge}`;
@@ -2899,6 +2913,17 @@ let orchChildrenOf = new Map();
 let orchChildToParent = new Map();
 // Track how many descendants are hidden per collapsed parent
 let orchCollapsedCount = new Map();
+// Track total descendant count per parent regardless of collapsed state
+let orchDescendantCount = new Map();
+
+function getCollapseBadge(orchId) {
+    const totalDescendants = orchDescendantCount.get(orchId) || 0;
+    if (collapsedParents.has(orchId) && totalDescendants > 0) {
+        return ` {cyan-fg}[+${totalDescendants}]{/cyan-fg}`;
+    }
+    const hidden = orchCollapsedCount.get(orchId);
+    return hidden ? ` {cyan-fg}[+${hidden}]{/cyan-fg}` : "";
+}
 
 async function refreshOrchestrations() {
     const _ph = perfStart("refreshOrchestrations");
@@ -3040,6 +3065,10 @@ async function refreshOrchestrations() {
     const systemRoots = rootEntries.filter(e => systemSessionIds.has(e.id));
     const normalRoots = rootEntries.filter(e => !systemSessionIds.has(e.id));
     orchCollapsedCount = new Map();
+    orchDescendantCount = new Map();
+    for (const e of entries) {
+        orchDescendantCount.set(e.id, countDescendants(e.id));
+    }
     const hiddenIds = new Set(); // IDs hidden by collapse
     function insertTree(entry, depth) {
         orderedEntries.push({ ...entry, depth });
@@ -3133,15 +3162,13 @@ async function refreshOrchestrations() {
 
             // System sessions get special rendering: yellow, ≋ icon
             if (systemSessionIds.has(id)) {
-                const collapsed = orchCollapsedCount.get(id);
-                const collapseBadge = collapsed ? ` {cyan-fg}[+${collapsed}]{/cyan-fg}` : "";
+                const collapseBadge = getCollapseBadge(id);
                 const sysLabel = heading
                     ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
                     : `System Agent (${uuid4}) ${timeStr}${collapseBadge}`;
                 orchList.addItem(`${indent}${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
             } else {
-                const collapsed = orchCollapsedCount.get(id);
-                const collapseBadge = collapsed ? ` {cyan-fg}[+${collapsed}]{/cyan-fg}` : "";
+                const collapseBadge = getCollapseBadge(id);
                 const label = heading
                     ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
                     : `(${uuid4}) ${timeStr}${collapseBadge}`;
@@ -3776,13 +3803,15 @@ function updateChatLabel() {
     const model = sessionModels.get(activeOrchId) || "";
     const shortModel = model.includes(":") ? model.split(":")[1] : model;
     const modelTag = shortModel ? ` {cyan-fg}${shortModel}{/cyan-fg}` : "";
+    const collapseBadge = getCollapseBadge(activeOrchId);
     const isSweeper = systemSessionIds.has(activeOrchId);
     if (isSweeper) {
         const sysTitle = sessionHeadings.get(activeOrchId) || "System Agent";
-        chatBox.setLabel(` {bold}{yellow-fg}≋ ${sysTitle}{/yellow-fg}{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
+        chatBox.setLabel(` {bold}{yellow-fg}≋ ${sysTitle}${collapseBadge}{/yellow-fg}{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
         chatBox.style.border.fg = "yellow";
     } else {
-        chatBox.setLabel(` {bold}Chat{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
+        const title = sessionHeadings.get(activeOrchId) || "Chat";
+        chatBox.setLabel(` {bold}${title}${collapseBadge}{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
         chatBox.style.border.fg = "cyan";
     }
     screen.render();
@@ -4196,7 +4225,7 @@ async function switchToOrchestration(orchId) {
 
         // Show cached chat buffer instantly if available (no DB wait)
         const _cachePh = perfStart("switch.cachedRestore");
-        const cachedLines = sessionChatBuffers.get(orchId);
+        const cachedLines = sessionChatBuffers.get(orchId) || ensureSystemSplashBuffer(orchId);
         if (cachedLines && cachedLines.length > 0) {
             chatBox.setContent(cachedLines.map(styleUrls).join("\n"));
             chatBox.setScrollPerc(100);
@@ -4210,7 +4239,7 @@ async function switchToOrchestration(orchId) {
             activityPane.setContent(cachedActivity.join("\n"));
             activityPane.setScrollPerc(100);
         } else {
-            activityPane.setContent("");
+            activityPane.setContent("{gray-fg}(no recent activity yet){/gray-fg}");
         }
         perfEnd(_cachePh, {
             chatLines: cachedLines?.length || 0,

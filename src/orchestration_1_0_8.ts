@@ -34,7 +34,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.9";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.8";
 
 /**
  * Long-lived durable session orchestration.
@@ -52,7 +52,7 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.9";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_9(
+export function* durableSessionOrchestration_1_0_8(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -143,42 +143,6 @@ export function* durableSessionOrchestration_1_0_9(
     /** Yield this to continueAsNew into the current (latest) orchestration version. */
     function versionedContinueAsNew(input: OrchestrationInput) {
         return ctx.continueAsNewVersioned(input, CURRENT_ORCHESTRATION_VERSION);
-    }
-
-    function parseChildUpdate(promptText?: string): { sessionId: string; updateType: string; content: string } | null {
-        if (typeof promptText !== "string") return null;
-        const match = promptText.match(/^\[CHILD_UPDATE from=(\S+) type=(\S+)/);
-        if (!match) return null;
-        return {
-            sessionId: match[1],
-            updateType: match[2].replace(/\]$/, ""),
-            content: promptText.split("\n").slice(1).join("\n").trim(),
-        };
-    }
-
-    function* applyChildUpdate(update: { sessionId: string; updateType: string; content: string }): Generator<any, void, any> {
-        ctx.traceInfo(`[orch] child update from=${update.sessionId} type=${update.updateType}`);
-        const agent = subAgents.find(a => a.sessionId === update.sessionId);
-        if (!agent) return;
-
-        if (update.content) {
-            agent.result = update.content.slice(0, 2000);
-        }
-
-        if (update.updateType === "completed") {
-            agent.status = "completed";
-        }
-
-        try {
-            const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
-            const parsed = JSON.parse(rawStatus);
-            if (parsed.status === "completed" || parsed.status === "failed" || parsed.status === "idle") {
-                agent.status = parsed.status === "failed" ? "failed" : "completed";
-            }
-            if (parsed.result && parsed.result !== "done") {
-                agent.result = parsed.result.slice(0, 2000);
-            }
-        } catch {}
     }
 
     // ─── Helper: dehydrate + reset affinity ──────────────────
@@ -373,12 +337,6 @@ export function* durableSessionOrchestration_1_0_9(
                     }
                 }
 
-                const childUpdate = parseChildUpdate(msgData.prompt);
-                if (childUpdate) {
-                    yield* applyChildUpdate(childUpdate);
-                    continue;
-                }
-
                 prompt = msgData.prompt;
                 gotPrompt = true;
                 lastTurnResult = undefined; // Clear after new prompt arrives
@@ -533,35 +491,20 @@ export function* durableSessionOrchestration_1_0_9(
                 {
                     setStatus(ctx, "idle", { iteration, turnResult: statusResult });
                     yield* maybeCheckpoint();
-                    const idleDeadline: number = (yield ctx.utcNow()) + idleTimeout * 1000;
-                    while (true) {
-                        const now: number = yield ctx.utcNow();
-                        const remainingMs = Math.max(0, idleDeadline - now);
-                        if (remainingMs === 0) break;
+                    const nextMsg = ctx.dequeueEvent("messages");
+                    const idleTimer = ctx.scheduleTimer(idleTimeout * 1000);
+                    const raceResult: any = yield ctx.race(nextMsg, idleTimer);
 
-                        const nextMsg = ctx.dequeueEvent("messages");
-                        const idleTimer = ctx.scheduleTimer(remainingMs);
-                        const raceResult: any = yield ctx.race(nextMsg, idleTimer);
-
-                        if (raceResult.index === 0) {
-                            const raceMsg = typeof raceResult.value === "string"
-                                ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
-                            const childUpdate = parseChildUpdate(raceMsg.prompt);
-                            if (childUpdate) {
-                                yield* applyChildUpdate(childUpdate);
-                                continue;
-                            }
-
-                            ctx.traceInfo("[session] user responded within idle window");
-                            if (raceMsg.prompt) {
-                                yield versionedContinueAsNew(continueInput({ prompt: raceMsg.prompt }));
-                            } else {
-                                yield versionedContinueAsNew(continueInput());
-                            }
-                            return "";
+                    if (raceResult.index === 0) {
+                        ctx.traceInfo("[session] user responded within idle window");
+                        const raceMsg = typeof raceResult.value === "string"
+                            ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
+                        if (raceMsg.prompt) {
+                            yield versionedContinueAsNew(continueInput({ prompt: raceMsg.prompt }));
+                        } else {
+                            yield versionedContinueAsNew(continueInput());
                         }
-
-                        break;
+                        return "";
                     }
 
                     // Idle timeout → dehydrate. Next message will need resume context.
@@ -634,26 +577,6 @@ export function* durableSessionOrchestration_1_0_9(
                     if (timerRace.index === 1) {
                         const interruptData = typeof timerRace.value === "string"
                             ? JSON.parse(timerRace.value) : (timerRace.value ?? {});
-                        const childUpdate = parseChildUpdate(interruptData.prompt);
-                        if (childUpdate) {
-                            yield* applyChildUpdate(childUpdate);
-                            const interruptedAt: number = yield ctx.utcNow();
-                            const elapsedSec = Math.round((interruptedAt - waitStartedAt) / 1000);
-                            const remainingSec = Math.max(0, result.seconds - elapsedSec);
-                            if (remainingSec === 0) {
-                                const timerPrompt = `The ${result.seconds} second wait is now complete. Continue with your task.`;
-                                yield versionedContinueAsNew(continueInput({
-                                    prompt: timerPrompt,
-                                    needsHydration: shouldDehydrate ? true : needsHydration,
-                                }));
-                            } else {
-                                yield versionedContinueAsNew(continueInput({
-                                    prompt: `The wait was partially completed (${elapsedSec}s elapsed, ${remainingSec}s remain). Resume the wait for the remaining ${remainingSec} seconds.`,
-                                    needsHydration: shouldDehydrate ? true : needsHydration,
-                                }));
-                            }
-                            return "";
-                        }
                         ctx.traceInfo(`[session] wait interrupted: "${(interruptData.prompt || "").slice(0, 60)}"`);
 
                         // Calculate remaining time for resume context
