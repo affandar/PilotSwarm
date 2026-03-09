@@ -8,7 +8,8 @@ import { durableSessionOrchestration_1_0_3 } from "./orchestration_1_0_3.js";
 import { durableSessionOrchestration_1_0_4 } from "./orchestration_1_0_4.js";
 import { durableSessionOrchestration_1_0_5 } from "./orchestration_1_0_5.js";
 import { durableSessionOrchestration_1_0_6 } from "./orchestration_1_0_6.js";
-import { durableSessionOrchestration_1_0_7 } from "./orchestration.js";
+import { durableSessionOrchestration_1_0_7 } from "./orchestration_1_0_7.js";
+import { durableSessionOrchestration_1_0_8 } from "./orchestration.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { loadAgentFiles, systemAgentUUID } from "./agent-loader.js";
@@ -30,7 +31,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.7";
+const ORCHESTRATION_VERSION = "1.0.8";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -225,6 +226,7 @@ export class PilotSwarmWorker {
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.5", durableSessionOrchestration_1_0_5);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.6", durableSessionOrchestration_1_0_6);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.7", durableSessionOrchestration_1_0_7);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.8", durableSessionOrchestration_1_0_8);
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {
