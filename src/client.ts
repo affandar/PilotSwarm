@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.8";
+const ORCHESTRATION_VERSION = "1.0.9";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -388,9 +388,9 @@ export class PilotSwarmClient {
                 ? new Date(Date.now() + customStatus.waitSeconds * 1000)
                 : undefined,
             waitReason: customStatus.waitReason,
-            result: orchStatus.status === "Completed"
-                ? orchStatus.output
-                : (customStatus.turnResult?.type === "completed" ? customStatus.turnResult.content : undefined),
+            result: customStatus.turnResult?.type === "completed"
+                ? customStatus.turnResult.content
+                : (orchStatus.status === "Completed" ? orchStatus.output : undefined),
             error: orchStatus.status === "Failed" ? orchStatus.error : (cmsRow?.lastError ?? undefined),
         };
     }

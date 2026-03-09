@@ -6,16 +6,7 @@ import type { TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } fro
  * @internal
  */
 interface TurnState {
-    pendingWait: { seconds: number; reason: string } | null;
-    pendingInput: { question: string; choices?: string[]; allowFreeform?: boolean } | null;
-    pendingSpawnAgent: { task: string; model?: string; systemMessage?: string; toolNames?: string[]; agentName?: string } | null;
-    pendingMessageAgent: { agentId: string; message: string } | null;
-    pendingCheckAgents: boolean;
-    pendingWaitForAgents: { agentIds: string[] } | null;
-    pendingListSessions: boolean;
-    pendingCompleteAgent: { agentId: string } | null;
-    pendingCancelAgent: { agentId: string; reason?: string } | null;
-    pendingDeleteAgent: { agentId: string; reason?: string } | null;
+    pendingActions: TurnResult[];
     session: CopilotSession | null;
     waitThreshold: number;
 }
@@ -38,6 +29,7 @@ export class ManagedSession {
     readonly sessionId: string;
     private copilotSession: CopilotSession;
     private config: ManagedSessionConfig;
+    private deferredToolActions: TurnResult[] = [];
 
     constructor(
         sessionId: string,
@@ -283,17 +275,12 @@ export class ManagedSession {
      * "input_required" so the orchestration can wait for the user's answer.
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
+        if (this.deferredToolActions.length > 0) {
+            return this.deferredToolActions.shift()!;
+        }
+
         const turnState: TurnState = {
-            pendingWait: null,
-            pendingInput: null,
-            pendingSpawnAgent: null,
-            pendingMessageAgent: null,
-            pendingCheckAgents: false,
-            pendingWaitForAgents: null,
-            pendingListSessions: false,
-            pendingCompleteAgent: null,
-            pendingCancelAgent: null,
-            pendingDeleteAgent: null,
+            pendingActions: [],
             session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
         };
@@ -321,7 +308,7 @@ export class ManagedSession {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
                     return `Waited for ${args.seconds} seconds. The wait is complete, you may continue.`;
                 }
-                turnState.pendingWait = { seconds: args.seconds, reason };
+                turnState.pendingActions.push({ type: "wait", seconds: args.seconds, reason });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -348,11 +335,12 @@ export class ManagedSession {
                 required: ["question"],
             },
             handler: async (args: { question: string; choices?: string[]; allowFreeform?: boolean }) => {
-                turnState.pendingInput = {
+                turnState.pendingActions.push({
+                    type: "input_required",
                     question: args.question,
                     choices: args.choices,
                     allowFreeform: args.allowFreeform ?? true,
-                };
+                });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -412,13 +400,14 @@ export class ManagedSession {
                 if (!args.agent_name && !args.task) {
                     return "Error: either agent_name or task is required.";
                 }
-                turnState.pendingSpawnAgent = {
+                turnState.pendingActions.push({
+                    type: "spawn_agent",
                     task: args.task || "",
                     model: args.model,
                     systemMessage: args.system_message,
                     toolNames: args.tool_names,
                     agentName: args.agent_name,
-                };
+                });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -437,10 +426,11 @@ export class ManagedSession {
                 required: ["agent_id", "message"],
             },
             handler: async (args: { agent_id: string; message: string }) => {
-                turnState.pendingMessageAgent = {
+                turnState.pendingActions.push({
+                    type: "message_agent",
                     agentId: args.agent_id,
                     message: args.message,
-                };
+                });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -455,7 +445,7 @@ export class ManagedSession {
                 properties: {},
             },
             handler: async () => {
-                turnState.pendingCheckAgents = true;
+                turnState.pendingActions.push({ type: "check_agents" });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -477,9 +467,10 @@ export class ManagedSession {
                 },
             },
             handler: async (args: { agent_ids?: string[] }) => {
-                turnState.pendingWaitForAgents = {
+                turnState.pendingActions.push({
+                    type: "wait_for_agents",
                     agentIds: args.agent_ids ?? [],
-                };
+                });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -495,7 +486,7 @@ export class ManagedSession {
                 properties: {},
             },
             handler: async () => {
-                turnState.pendingListSessions = true;
+                turnState.pendingActions.push({ type: "list_sessions" });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -514,7 +505,7 @@ export class ManagedSession {
                 required: ["agent_id"],
             },
             handler: async (args: { agent_id: string }) => {
-                turnState.pendingCompleteAgent = { agentId: args.agent_id };
+                turnState.pendingActions.push({ type: "complete_agent", agentId: args.agent_id });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -534,7 +525,7 @@ export class ManagedSession {
                 required: ["agent_id"],
             },
             handler: async (args: { agent_id: string; reason?: string }) => {
-                turnState.pendingCancelAgent = { agentId: args.agent_id, reason: args.reason };
+                turnState.pendingActions.push({ type: "cancel_agent", agentId: args.agent_id, reason: args.reason });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -554,7 +545,7 @@ export class ManagedSession {
                 required: ["agent_id"],
             },
             handler: async (args: { agent_id: string; reason?: string }) => {
-                turnState.pendingDeleteAgent = { agentId: args.agent_id, reason: args.reason };
+                turnState.pendingActions.push({ type: "delete_agent", agentId: args.agent_id, reason: args.reason });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -693,11 +684,7 @@ export class ManagedSession {
                 };
             }
             // Other send() errors — check if any handler aborted first
-            if (!turnState.pendingInput && !turnState.pendingWait
-                && !turnState.pendingSpawnAgent && !turnState.pendingMessageAgent
-                && !turnState.pendingCheckAgents && !turnState.pendingWaitForAgents
-                && !turnState.pendingListSessions && !turnState.pendingCompleteAgent
-                && !turnState.pendingCancelAgent && !turnState.pendingDeleteAgent) {
+            if (turnState.pendingActions.length === 0) {
                 return { type: "error", message: errMsg };
             }
         } finally {
@@ -706,73 +693,28 @@ export class ManagedSession {
         }
 
         // Check what ended the turn
-        if (turnState.pendingInput) {
-            return { type: "input_required", ...turnState.pendingInput, events: collectedEvents };
-        }
-        if (turnState.pendingWait) {
-            return {
-                type: "wait",
-                seconds: turnState.pendingWait.seconds,
-                reason: turnState.pendingWait.reason,
-                content: finalContent,
-                events: collectedEvents,
-            };
-        }
-        if (turnState.pendingSpawnAgent) {
-            return {
-                type: "spawn_agent",
-                task: turnState.pendingSpawnAgent.task,
-                model: turnState.pendingSpawnAgent.model,
-                systemMessage: turnState.pendingSpawnAgent.systemMessage,
-                toolNames: turnState.pendingSpawnAgent.toolNames,
-                agentName: turnState.pendingSpawnAgent.agentName,
-                content: finalContent,
-                events: collectedEvents,
-            };
-        }
-        if (turnState.pendingMessageAgent) {
-            return {
-                type: "message_agent",
-                agentId: turnState.pendingMessageAgent.agentId,
-                message: turnState.pendingMessageAgent.message,
-                events: collectedEvents,
-            };
-        }
-        if (turnState.pendingCheckAgents) {
-            return { type: "check_agents", events: collectedEvents };
-        }
-        if (turnState.pendingWaitForAgents) {
-            return {
-                type: "wait_for_agents",
-                agentIds: turnState.pendingWaitForAgents.agentIds,
-                events: collectedEvents,
-            };
-        }
-        if (turnState.pendingListSessions) {
-            return { type: "list_sessions", events: collectedEvents };
-        }
-        if (turnState.pendingCompleteAgent) {
-            return {
-                type: "complete_agent",
-                agentId: turnState.pendingCompleteAgent.agentId,
-                events: collectedEvents,
-            };
-        }
-        if (turnState.pendingCancelAgent) {
-            return {
-                type: "cancel_agent",
-                agentId: turnState.pendingCancelAgent.agentId,
-                reason: turnState.pendingCancelAgent.reason,
-                events: collectedEvents,
-            };
-        }
-        if (turnState.pendingDeleteAgent) {
-            return {
-                type: "delete_agent",
-                agentId: turnState.pendingDeleteAgent.agentId,
-                reason: turnState.pendingDeleteAgent.reason,
-                events: collectedEvents,
-            };
+        if (turnState.pendingActions.length > 0) {
+            const [firstAction, ...remainingActions] = turnState.pendingActions;
+            this.deferredToolActions.push(...remainingActions);
+
+            switch (firstAction.type) {
+                case "input_required":
+                    return { ...firstAction, events: collectedEvents };
+                case "wait":
+                    return { ...firstAction, content: finalContent, events: collectedEvents };
+                case "spawn_agent":
+                    return { ...firstAction, content: finalContent, events: collectedEvents };
+                case "message_agent":
+                case "check_agents":
+                case "wait_for_agents":
+                case "list_sessions":
+                case "complete_agent":
+                case "cancel_agent":
+                case "delete_agent":
+                    return { ...firstAction, events: collectedEvents };
+                default:
+                    break;
+            }
         }
 
         // Check if the SDK emitted a session.error — if so, treat as an error
