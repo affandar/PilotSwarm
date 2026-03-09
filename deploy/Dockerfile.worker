@@ -6,8 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 WORKDIR /app
 
-# Copy package manifests and install
+# Copy package manifests and postinstall script, then install
 COPY package.json package-lock.json ./
+COPY scripts/postinstall.js ./scripts/
 RUN npm install --omit=dev --force
 
 # Copy built dist, worker script, and plugin

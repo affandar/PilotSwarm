@@ -2,6 +2,7 @@
 * update copilot sdk and the duroxide-node sdks
 * splashscreen not showing
 * pilotswarm agent stuck on a single node, not deh/hyd
+* build a user TUI guide
 * squad samples
 * for diagnostics and reporting, put all sessions in a markdown file in blob. do it on a key press. 
 * agent to agent messaging

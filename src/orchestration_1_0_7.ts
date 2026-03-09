@@ -34,25 +34,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.8";
-
-/**
- * Long-lived durable session orchestration.
- *
- * One orchestration per copilot session. Uses:
- *   - SessionProxy for session-scoped operations (runTurn, dehydrate, hydrate, destroy)
- *   - SessionManagerProxy for global operations (listModels)
- *   - A single FIFO event queue ("messages") for all client→orchestration communication
- *
- * Main loop:
- *   1. Dequeue message from "messages" queue
- *   2. session.hydrate() if needed
- *   3. session.runTurn(prompt) — returns TurnResult
- *   4. Handle result: completed → idle wait, wait → timer, input → wait for answer
- *
- * @internal
- */
-export function* durableSessionOrchestration_1_0_8(
+export function* durableSessionOrchestration_1_0_7(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -138,11 +120,6 @@ export function* durableSessionOrchestration_1_0_8(
             retryCount: 0, // reset by default; overrides can set it
             ...overrides,
         };
-    }
-
-    /** Yield this to continueAsNew into the current (latest) orchestration version. */
-    function versionedContinueAsNew(input: OrchestrationInput) {
-        return ctx.continueAsNewVersioned(input, CURRENT_ORCHESTRATION_VERSION);
     }
 
     // ─── Helper: dehydrate + reset affinity ──────────────────
@@ -237,7 +214,7 @@ export function* durableSessionOrchestration_1_0_8(
                                 result: { ok: true, oldModel, newModel },
                             };
                             setStatus(ctx, "idle", { iteration, cmdResponse: resp });
-                            yield versionedContinueAsNew(continueInput());
+                            yield ctx.continueAsNew(continueInput());
                             return "";
                         }
                         case "list_models": {
@@ -424,7 +401,7 @@ export function* durableSessionOrchestration_1_0_8(
             }
 
             yield ctx.scheduleTimer(retryDelay * 1000);
-            yield versionedContinueAsNew(continueInput({
+            yield ctx.continueAsNew(continueInput({
                 prompt,
                 retryCount,
                 needsHydration: blobEnabled ? true : needsHydration,
@@ -500,9 +477,9 @@ export function* durableSessionOrchestration_1_0_8(
                         const raceMsg = typeof raceResult.value === "string"
                             ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
                         if (raceMsg.prompt) {
-                            yield versionedContinueAsNew(continueInput({ prompt: raceMsg.prompt }));
+                            yield ctx.continueAsNew(continueInput({ prompt: raceMsg.prompt }));
                         } else {
-                            yield versionedContinueAsNew(continueInput());
+                            yield ctx.continueAsNew(continueInput());
                         }
                         return "";
                     }
@@ -512,7 +489,7 @@ export function* durableSessionOrchestration_1_0_8(
                     yield* dehydrateAndReset("idle");
                     // Don't continueAsNew with a prompt — wait for the next user message,
                     // which will be wrapped with resume context because needsHydration=true.
-                    yield versionedContinueAsNew(continueInput());
+                    yield ctx.continueAsNew(continueInput());
                     return "";
                 }
 
@@ -604,7 +581,7 @@ export function* durableSessionOrchestration_1_0_8(
                             finalPrompt = userPrompt;
                         }
 
-                        yield versionedContinueAsNew(continueInput({
+                        yield ctx.continueAsNew(continueInput({
                             prompt: finalPrompt,
                             needsHydration: shouldDehydrate ? true : needsHydration,
                         }));
@@ -612,7 +589,7 @@ export function* durableSessionOrchestration_1_0_8(
                     }
 
                     const timerPrompt = `The ${result.seconds} second wait is now complete. Continue with your task.`;
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: timerPrompt,
                         needsHydration: shouldDehydrate ? true : needsHydration,
                     }));
@@ -634,7 +611,7 @@ export function* durableSessionOrchestration_1_0_8(
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
                         needsHydration: false,
                     }));
@@ -651,7 +628,7 @@ export function* durableSessionOrchestration_1_0_8(
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
                     }));
                     return "";
@@ -673,7 +650,7 @@ export function* durableSessionOrchestration_1_0_8(
                     if (raceResult.index === 0) {
                         const answerData = typeof raceResult.value === "string"
                             ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
-                        yield versionedContinueAsNew(continueInput({
+                        yield ctx.continueAsNew(continueInput({
                             prompt: `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
                             needsHydration: false,
                         }));
@@ -684,7 +661,7 @@ export function* durableSessionOrchestration_1_0_8(
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
                     }));
                     return "";
@@ -701,7 +678,7 @@ export function* durableSessionOrchestration_1_0_8(
                 const childNestingLevel = nestingLevel + 1;
                 if (childNestingLevel > MAX_NESTING_LEVEL) {
                     ctx.traceInfo(`[orch] spawn_agent denied: nesting level ${nestingLevel} is at max (${MAX_NESTING_LEVEL})`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: spawn_agent failed — you are already at nesting level ${nestingLevel} (max ${MAX_NESTING_LEVEL}). ` +
                             `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`,
                     }));
@@ -712,7 +689,7 @@ export function* durableSessionOrchestration_1_0_8(
                 const activeCount = subAgents.filter(a => a.status === "running").length;
                 if (activeCount >= MAX_SUB_AGENTS) {
                     ctx.traceInfo(`[orch] spawn_agent denied: ${activeCount}/${MAX_SUB_AGENTS} agents running`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: spawn_agent failed — you already have ${activeCount} running sub-agents (max ${MAX_SUB_AGENTS}). ` +
                             `Wait for some to complete before spawning more.]`,
                     }));
@@ -733,7 +710,7 @@ export function* durableSessionOrchestration_1_0_8(
                     ctx.traceInfo(`[orch] resolving agent config for: ${result.agentName}`);
                     const agentDef = yield manager.resolveAgentConfig(result.agentName);
                     if (!agentDef) {
-                        yield versionedContinueAsNew(continueInput({
+                        yield ctx.continueAsNew(continueInput({
                             prompt: `[SYSTEM: spawn_agent failed — agent "${result.agentName}" not found. Use list_agents to see available agents.]`,
                         }));
                         return "";
@@ -813,7 +790,7 @@ export function* durableSessionOrchestration_1_0_8(
                     childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, agentTask, childNestingLevel, agentIsSystem, agentTitle, agentId, agentSplash);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: spawn_agent failed: ${err.message}]`,
                     }));
                     return "";
@@ -837,7 +814,7 @@ export function* durableSessionOrchestration_1_0_8(
                     `message_agent to send instructions. To wait for completion, use wait + check_agents ` +
                     `in a loop (choose an appropriate interval) so you can report progress to the user.]`;
 
-                yield versionedContinueAsNew(continueInput({ prompt: spawnMsg }));
+                yield ctx.continueAsNew(continueInput({ prompt: spawnMsg }));
                 return "";
             }
 
@@ -847,7 +824,7 @@ export function* durableSessionOrchestration_1_0_8(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] message_agent: unknown agent ${targetOrchId}`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: message_agent failed — agent "${targetOrchId}" not found. ` +
                             `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
                     }));
@@ -860,13 +837,13 @@ export function* durableSessionOrchestration_1_0_8(
                     yield manager.sendToSession(agentEntry.sessionId, result.message);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] message_agent failed: ${err.message}`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: message_agent failed: ${err.message}]`,
                     }));
                     return "";
                 }
 
-                yield versionedContinueAsNew(continueInput({
+                yield ctx.continueAsNew(continueInput({
                     prompt: `[SYSTEM: Message sent to sub-agent ${targetOrchId}: "${result.message.slice(0, 200)}"]`,
                 }));
                 return "";
@@ -876,7 +853,7 @@ export function* durableSessionOrchestration_1_0_8(
                 ctx.traceInfo(`[orch] check_agents: ${subAgents.length} agents tracked`);
 
                 if (subAgents.length === 0) {
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: No sub-agents have been spawned yet.]`,
                     }));
                     return "";
@@ -912,7 +889,7 @@ export function* durableSessionOrchestration_1_0_8(
                     }
                 }
 
-                yield versionedContinueAsNew(continueInput({
+                yield ctx.continueAsNew(continueInput({
                     prompt: `[SYSTEM: Sub-agent status report (${subAgents.length} agents):\n${statusLines.join("\n")}]`,
                 }));
                 return "";
@@ -931,7 +908,7 @@ export function* durableSessionOrchestration_1_0_8(
                     `    Parent: ${s.parentSessionId ?? "none"}`
                 );
 
-                yield versionedContinueAsNew(continueInput({
+                yield ctx.continueAsNew(continueInput({
                     prompt: `[SYSTEM: Active sessions (${sessions.length}):\n${lines.join("\n")}]`,
                 }));
                 return "";
@@ -947,7 +924,7 @@ export function* durableSessionOrchestration_1_0_8(
 
                 if (targetIds.length === 0) {
                     ctx.traceInfo(`[orch] wait_for_agents: no running agents to wait for`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: No running sub-agents to wait for. All agents have already completed.]`,
                     }));
                     return "";
@@ -1013,7 +990,7 @@ export function* durableSessionOrchestration_1_0_8(
                         // Not a child update — it's a user message interrupting the wait
                         if (msgData.prompt) {
                             ctx.traceInfo(`[orch] wait_for_agents interrupted by user: "${msgData.prompt.slice(0, 60)}"`);
-                            yield versionedContinueAsNew(continueInput({
+                            yield ctx.continueAsNew(continueInput({
                                 prompt: msgData.prompt,
                             }));
                             return "";
@@ -1050,7 +1027,7 @@ export function* durableSessionOrchestration_1_0_8(
                     );
                 }
 
-                yield versionedContinueAsNew(continueInput({
+                yield ctx.continueAsNew(continueInput({
                     prompt: `[SYSTEM: Sub-agents completed:\n${resultLines.join("\n")}]`,
                 }));
                 return "";
@@ -1062,7 +1039,7 @@ export function* durableSessionOrchestration_1_0_8(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] complete_agent: unknown agent ${targetOrchId}`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: complete_agent failed — agent "${targetOrchId}" not found. ` +
                             `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
                     }));
@@ -1079,13 +1056,13 @@ export function* durableSessionOrchestration_1_0_8(
                     agentEntry.status = "completed";
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] complete_agent failed: ${err.message}`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: complete_agent failed: ${err.message}]`,
                     }));
                     return "";
                 }
 
-                yield versionedContinueAsNew(continueInput({
+                yield ctx.continueAsNew(continueInput({
                     prompt: `[SYSTEM: Sub-agent ${targetOrchId} has been completed gracefully.]`,
                 }));
                 return "";
@@ -1097,7 +1074,7 @@ export function* durableSessionOrchestration_1_0_8(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] cancel_agent: unknown agent ${targetOrchId}`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: cancel_agent failed — agent "${targetOrchId}" not found. ` +
                             `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
                     }));
@@ -1124,13 +1101,13 @@ export function* durableSessionOrchestration_1_0_8(
                     agentEntry.status = "cancelled";
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] cancel_agent failed: ${err.message}`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: cancel_agent failed: ${err.message}]`,
                     }));
                     return "";
                 }
 
-                yield versionedContinueAsNew(continueInput({
+                yield ctx.continueAsNew(continueInput({
                     prompt: `[SYSTEM: Sub-agent ${targetOrchId} has been cancelled.${result.reason ? ` Reason: ${result.reason}` : ""}]`,
                 }));
                 return "";
@@ -1142,7 +1119,7 @@ export function* durableSessionOrchestration_1_0_8(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] delete_agent: unknown agent ${targetOrchId}`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: delete_agent failed — agent "${targetOrchId}" not found. ` +
                             `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
                     }));
@@ -1170,13 +1147,13 @@ export function* durableSessionOrchestration_1_0_8(
                     subAgents = subAgents.filter(a => a.orchId !== targetOrchId);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] delete_agent failed: ${err.message}`);
-                    yield versionedContinueAsNew(continueInput({
+                    yield ctx.continueAsNew(continueInput({
                         prompt: `[SYSTEM: delete_agent failed: ${err.message}]`,
                     }));
                     return "";
                 }
 
-                yield versionedContinueAsNew(continueInput({
+                yield ctx.continueAsNew(continueInput({
                     prompt: `[SYSTEM: Sub-agent ${targetOrchId} has been deleted.${result.reason ? ` Reason: ${result.reason}` : ""}]`,
                 }));
                 return "";
@@ -1211,7 +1188,7 @@ export function* durableSessionOrchestration_1_0_8(
                 }
 
                 yield ctx.scheduleTimer(errorRetryDelay * 1000);
-                yield versionedContinueAsNew(continueInput({
+                yield ctx.continueAsNew(continueInput({
                     prompt,
                     retryCount,
                     needsHydration: blobEnabled ? true : needsHydration,

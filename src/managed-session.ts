@@ -603,6 +603,7 @@ export class ManagedSession {
         ];
 
         // Re-register tools for this turn (may have changed)
+        console.log(`[runTurn] session=${this.sessionId.slice(0,8)} registering ${allTools.length} tools: ${allTools.map((t: any) => t.name).join(", ")}`);
         this.copilotSession.registerTools(allTools);
 
         // Collect the final assistant content and all events via on()
@@ -806,7 +807,7 @@ export class ManagedSession {
      * Destroy the session — release resources, flush to disk.
      */
     async destroy(): Promise<void> {
-        await this.copilotSession.destroy();
+        await this.copilotSession.disconnect();
     }
 
     /**

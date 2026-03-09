@@ -24,7 +24,8 @@
     "tui": "node bin/tui.js local --env .env.remote",
     "tui:remote": "node bin/tui.js remote --env .env.remote",
     "worker": "node --env-file=.env.remote examples/worker.js",
-    "db:reset": "node --env-file=.env scripts/db-reset.js"
+    "db:reset": "node --env-file=.env scripts/db-reset.js",
+    "postinstall": "node scripts/postinstall.js"
   },
   "keywords": [
     "copilot",
@@ -38,11 +39,11 @@
   "license": "MIT",
   "dependencies": {
     "@azure/storage-blob": "^12.31.0",
-    "@github/copilot": "^0.0.420",
-    "@github/copilot-sdk": "^0.1.29",
+    "@github/copilot": "^1.0.2",
+    "@github/copilot-sdk": "^0.1.32",
     "chalk": "^5.6.2",
-    "duroxide": "^0.1.7",
-    "duroxide-darwin-arm64": "^0.1.5",
+    "duroxide": "^0.1.13",
+    "duroxide-darwin-arm64": "^0.1.13",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
     "neo-blessed": "^0.1.81",

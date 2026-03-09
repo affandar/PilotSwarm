@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.6";
+const ORCHESTRATION_VERSION = "1.0.8";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
