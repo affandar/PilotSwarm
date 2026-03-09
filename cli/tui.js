@@ -605,7 +605,7 @@ const seqHeaderBox = blessed.box({
 
 // ─── Node Map view ───────────────────────────────────────────────
 
-const nodeMapPane = blessed.log({
+const nodeMapPane = blessed.box({
     parent: screen,
     label: " Node Map ",
     tags: true,
@@ -622,7 +622,6 @@ const nodeMapPane = blessed.log({
     },
     wrap: false,
     scrollable: true,
-    alwaysScroll: true,
     scrollbar: { style: { bg: "yellow" } },
     keys: true,
     vi: true,
@@ -883,6 +882,7 @@ function ensureSystemSplashBuffer(orchId) {
  * with sessions stacked underneath, color-coded by live status.
  */
 function refreshNodeMap() {
+    const lines = [];
     nodeMapPane.setContent("");
     screen.realloc();
 
@@ -892,7 +892,8 @@ function refreshNodeMap() {
     const nodes = (seqNodes.length > 0 ? [...seqNodes] : [...workerPaneOrder])
         .filter(n => !SYNTHETIC_NODES.has(n));
     if (nodes.length === 0) {
-        nodeMapPane.log("{white-fg}No worker nodes discovered yet{/white-fg}");
+        nodeMapPane.setContent("{white-fg}No worker nodes discovered yet{/white-fg}");
+        nodeMapPane.scrollTo(0);
         screen.render();
         return;
     }
@@ -954,7 +955,7 @@ function refreshNodeMap() {
         if (i > 0) headerLine += SEP;
         headerLine += "{bold}" + fitCol(columns[i], colW) + "{/bold}";
     }
-    nodeMapPane.log(headerLine);
+    lines.push(headerLine);
 
     // Divider
     let divLine = "";
@@ -962,7 +963,7 @@ function refreshNodeMap() {
         if (i > 0) divLine += "┼";
         divLine += "─".repeat(colW);
     }
-    nodeMapPane.log(divLine);
+    lines.push(divLine);
 
     // Find max sessions on any node to know how many rows we need
     let maxSessions = 0;
@@ -997,25 +998,28 @@ function refreshNodeMap() {
                 titleLine += " ".repeat(colW);
             }
         }
-        nodeMapPane.log(idLine);
-        nodeMapPane.log(titleLine);
-        if (row < maxSessions - 1) nodeMapPane.log(""); // spacer between sessions
+        lines.push(idLine);
+        lines.push(titleLine);
+        if (row < maxSessions - 1) lines.push(""); // spacer between sessions
     }
 
     if (maxSessions === 0) {
-        nodeMapPane.log("");
-        nodeMapPane.log("{white-fg}(no sessions assigned to any node){/white-fg}");
+        lines.push("");
+        lines.push("{white-fg}(no sessions assigned to any node){/white-fg}");
     }
 
     // Legend
-    nodeMapPane.log("");
-    nodeMapPane.log(
+    lines.push("");
+    lines.push(
         "{green-fg}* running{/green-fg}  " +
         "{yellow-fg}~ waiting{/yellow-fg}  " +
         "{white-fg}. idle{/white-fg}  " +
         "{cyan-fg}? input{/cyan-fg}  " +
         "{red-fg}! error{/red-fg}"
     );
+
+    nodeMapPane.setContent(lines.join("\n"));
+    nodeMapPane.scrollTo(0);
 
     screen.render();
 }
@@ -2676,6 +2680,13 @@ const mgmt = new PilotSwarmManagementClient({
     store,
 });
 
+const STARTUP_DB_RETRY_MS = 30_000;
+
+function isStartupTransientDbError(err) {
+    const msg = String(err?.message || err || "");
+    return /ENOTFOUND|ETIMEDOUT|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|socket hang up|getaddrinfo|timeout|network|pool timed out while waiting for an open connection/i.test(msg);
+}
+
 setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
 
 // Show splash immediately so the user sees something during DB connection
@@ -2696,10 +2707,51 @@ chatBox.setContent([
 ].join("\n"));
 _origRender();
 
-// Start both clients in parallel — they each open their own PG pool
-const _startPh = perfStart("startup.clientConnect");
-await Promise.all([client.start(), mgmt.start()]);
-perfEnd(_startPh);
+// Start both clients with retry — they each open their own PG pool.
+// During remote DB outages, keep the TUI alive and retry every 30s.
+while (true) {
+    const _startPh = perfStart("startup.clientConnect");
+    const results = await Promise.allSettled([client.start(), mgmt.start()]);
+    const failure = results.find(r => r.status === "rejected");
+
+    if (!failure) {
+        perfEnd(_startPh);
+        break;
+    }
+
+    const err = failure.reason;
+    perfEnd(_startPh, { err: true });
+
+    try { await client.stop(); } catch {}
+    try { await mgmt.stop(); } catch {}
+
+    if (!isStartupTransientDbError(err)) {
+        throw err;
+    }
+
+    const msg = String(err?.message || err || "Unknown database error");
+    setStatus(`Database unavailable — retrying in 30s (${msg.slice(0, 80)})`);
+    chatBox.setContent([
+        "{bold}{cyan-fg}",
+        "    ____  _ __      __  _____                              ",
+        "   / __ \\(_) /___  / /_/ ___/      ______ __________ ___  ",
+        "{/cyan-fg}{magenta-fg}  / /_/ / / / __ \\/ __/\\__ \\ | /| / / __ `/ ___/ __ `__ \\",
+        " / ____/ / / /_/ / /_ ___/ / |/ |/ / /_/ / /  / / / / / /{/magenta-fg}",
+        "{yellow-fg}/_/   /_/_/\\____/\\__//____/|__/|__/\\__,_/_/  /_/ /_/ /_/ {/yellow-fg}",
+        "{/bold}",
+        "",
+        "  {bold}{white-fg}Durable AI Agent Orchestration{/white-fg}{/bold}",
+        "  {cyan-fg}Crash recovery{/cyan-fg} · {magenta-fg}Durable timers{/magenta-fg} · {yellow-fg}Sub-agents{/yellow-fg} · {green-fg}Multi-node scaling{/green-fg}",
+        "  {gray-fg}Powered by duroxide + GitHub Copilot SDK{/gray-fg}",
+        "",
+        "  {yellow-fg}Database unavailable.{/yellow-fg}",
+        `  {white-fg}${msg}{/white-fg}`,
+        "",
+        "  {gray-fg}Retrying connection in 30 seconds...{/gray-fg}",
+    ].join("\n"));
+    _origRender();
+    await new Promise(r => setTimeout(r, STARTUP_DB_RETRY_MS));
+}
 
 // Populate model info from management client
 if (!modelProviders) {
@@ -2817,7 +2869,41 @@ function getDc() {
 // refreshOrchestrations() call per 500ms window.
 let _refreshPending = false;
 let _refreshRunning = false;
-function scheduleRefreshOrchestrations() {
+const DB_RETRY_INTERVAL_MS = 30_000;
+let _dbOffline = false;
+let _dbNextRetryAt = 0;
+let _dbLastError = "";
+
+function isTransientDbError(err) {
+    const msg = String(err?.message || err || "");
+    return /ENOTFOUND|ETIMEDOUT|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|socket hang up|getaddrinfo|timeout|network/i.test(msg);
+}
+
+function handleDbUnavailable(err) {
+    const msg = String(err?.message || err || "Unknown database error");
+    const wasOffline = _dbOffline;
+    const prevError = _dbLastError;
+    _dbOffline = true;
+    _dbNextRetryAt = Date.now() + DB_RETRY_INTERVAL_MS;
+    _dbLastError = msg;
+
+    if (!wasOffline || prevError !== msg) {
+        appendLog(`{yellow-fg}Database unavailable — retrying in 30s.{/yellow-fg}`);
+    }
+    setStatus(`Database unavailable — retrying in 30s (${msg.slice(0, 80)})`);
+}
+
+function handleDbRecovered() {
+    if (_dbOffline) {
+        appendLog(`{green-fg}Database connection restored.{/green-fg}`);
+        setStatus("Database connection restored.");
+    }
+    _dbOffline = false;
+    _dbNextRetryAt = 0;
+    _dbLastError = "";
+}
+
+function scheduleRefreshOrchestrations(force = false) {
     if (_refreshPending) return;
     _refreshPending = true;
     setTimeout(async () => {
@@ -2825,7 +2911,7 @@ function scheduleRefreshOrchestrations() {
         if (_refreshRunning) return; // skip if previous call still in-flight
         _refreshRunning = true;
         try {
-            await refreshOrchestrations();
+            await refreshOrchestrations(force);
         } finally {
             _refreshRunning = false;
         }
@@ -2925,15 +3011,25 @@ function getCollapseBadge(orchId) {
     return hidden ? ` {cyan-fg}[+${hidden}]{/cyan-fg}` : "";
 }
 
-async function refreshOrchestrations() {
+async function refreshOrchestrations(force = false) {
     const _ph = perfStart("refreshOrchestrations");
+
+    if (!force && _dbOffline && Date.now() < _dbNextRetryAt) {
+        perfEnd(_ph, { sessions: 0, skipped: true, dbOffline: true });
+        return;
+    }
 
     // Fetch merged session views from the management client
     let sessionViews;
     try {
         sessionViews = await mgmt.listSessions();
+        handleDbRecovered();
     } catch (err) {
-        appendLog(`{red-fg}listSessions failed: ${err.message}{/red-fg}`);
+        if (isTransientDbError(err)) {
+            handleDbUnavailable(err);
+        } else {
+            appendLog(`{red-fg}listSessions failed: ${err.message}{/red-fg}`);
+        }
         perfEnd(_ph, { sessions: 0, err: true });
         return;
     }

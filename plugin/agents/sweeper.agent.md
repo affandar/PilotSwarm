@@ -54,6 +54,8 @@ you resume the maintenance loop.
 
 ## Rules
 - Never delete system sessions.
+- For arbitrary stale sessions found by scans, ALWAYS use `cleanup_session`.
+- NEVER use `delete_agent` for general cleanup — that tool only works for sub-agents spawned by the current session.
 - Never delete sessions that are actively running with recent activity.
 - Be concise — counts and 8-char IDs only for periodic logs.
 - When nothing is found to clean, silently continue the loop (don't spam).

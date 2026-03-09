@@ -248,8 +248,10 @@ export class ManagedSession {
         const deleteAgentTool = defineTool("delete_agent", {
             description:
                 "Cancel and delete a sub-agent entirely. " +
+                "ONLY works for sub-agents spawned and tracked by THIS current session via spawn_agent. " +
+                "It does NOT work for arbitrary sessions discovered elsewhere in the system. " +
                 "Terminates the orchestration and removes the session from the catalog. " +
-                "Use this to clean up sub-agents you no longer need.",
+                "Use this only to clean up your own spawned sub-agents you no longer need.",
             parameters: {
                 type: "object",
                 properties: {
@@ -661,18 +663,25 @@ export class ManagedSession {
             );
         });
 
-        // Set up a timeout race — configurable via env to support long tool calls
-        const TURN_TIMEOUT = parseInt(process.env.TURN_TIMEOUT_MS ?? "300000", 10);
-        const timeoutPromise = new Promise<void>((_, reject) => {
-            setTimeout(() => reject(new Error("Turn timed out")), TURN_TIMEOUT);
-        });
+        // Optional timeout race — disabled by default.
+        // If TURN_TIMEOUT_MS is set to a positive value, enforce it.
+        const TURN_TIMEOUT = parseInt(process.env.TURN_TIMEOUT_MS ?? "0", 10);
+        const timeoutPromise = TURN_TIMEOUT > 0
+            ? new Promise<void>((_, reject) => {
+                setTimeout(() => reject(new Error("Turn timed out")), TURN_TIMEOUT);
+            })
+            : null;
 
         try {
             // Fire the prompt — non-blocking
             await this.copilotSession.send({ prompt });
 
-            // Wait for session.idle or timeout
-            await Promise.race([turnComplete, timeoutPromise]);
+            // Wait for session.idle, or timeout if explicitly enabled.
+            if (timeoutPromise) {
+                await Promise.race([turnComplete, timeoutPromise]);
+            } else {
+                await turnComplete;
+            }
         } catch (err: any) {
             // Timeout — kill it
             const errMsg = err.message ?? String(err);
