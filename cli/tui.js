@@ -218,6 +218,7 @@ const sessionArtifacts = new Map();
 
 /** Track already-registered artifacts to avoid duplicates. */
 const _registeredArtifacts = new Set();
+const MAX_ARTIFACT_REGISTRY = 500;
 
 /** TUI-level blob store for on-demand artifact downloads. Created lazily. */
 let _tuiBlobStore = null;
@@ -243,6 +244,12 @@ function detectArtifactLinks(text, orchId) {
         const key = `${sessionId}/${filename}`;
         if (_registeredArtifacts.has(key)) continue;
         _registeredArtifacts.add(key);
+
+        // Evict oldest entries when registry grows too large
+        if (_registeredArtifacts.size > MAX_ARTIFACT_REGISTRY) {
+            const it = _registeredArtifacts.values();
+            _registeredArtifacts.delete(it.next().value);
+        }
 
         if (!sessionArtifacts.has(orchId)) sessionArtifacts.set(orchId, []);
         sessionArtifacts.get(orchId).push({ sessionId, filename, downloaded: false, localPath: null });
@@ -887,17 +894,18 @@ const sessionActivityBuffers = new Map(); // orchId → string[]
 const MAX_ACTIVITY_BUFFER_LINES = 300;
 
 function appendActivity(text, orchId) {
-    let buffers, currentActive;
+    let buffers;
     try { buffers = sessionActivityBuffers; } catch { return; }
-    try { currentActive = activeOrchId; } catch { currentActive = undefined; }
+    // Snapshot activeOrchId once to avoid race during session switch
+    const currentActive = orchId ? undefined : (activeOrchId || undefined);
     const targetOrch = orchId || currentActive || "_init";
     if (!buffers.has(targetOrch)) buffers.set(targetOrch, []);
     const buf = buffers.get(targetOrch);
     buf.push(text);
 
     // Cap buffer size
-    if (buf.length > MAX_ACTIVITY_BUFFER_LINES * 1.2) {
-        const dropped = buf.length - MAX_ACTIVITY_BUFFER_LINES;
+    if (buf.length > MAX_ACTIVITY_BUFFER_LINES) {
+        const dropped = buf.length - MAX_ACTIVITY_BUFFER_LINES + 1;
         buf.splice(0, dropped);
         buf[0] = `{gray-fg}── ${dropped} older lines trimmed ──{/gray-fg}`;
     }
@@ -2068,17 +2076,18 @@ const MAX_CHAT_BUFFER_LINES = 500;
 
 function appendChatRaw(text, orchId) {
     // Guard: during startup, sessionChatBuffers and activeOrchId may not be initialized yet
-    let buffers, currentActive;
+    let buffers;
     try { buffers = sessionChatBuffers; } catch { return; }
-    try { currentActive = activeOrchId; } catch { currentActive = undefined; }
+    // Snapshot activeOrchId once to avoid race during session switch
+    const currentActive = orchId ? undefined : (activeOrchId || undefined);
     const targetOrch = orchId || currentActive || "_init";
     if (!buffers.has(targetOrch)) buffers.set(targetOrch, []);
     const buf = buffers.get(targetOrch);
     buf.push(text);
 
     // Cap buffer size — drop oldest lines when it grows too large
-    if (buf.length > MAX_CHAT_BUFFER_LINES * 1.2) {
-        const dropped = buf.length - MAX_CHAT_BUFFER_LINES;
+    if (buf.length > MAX_CHAT_BUFFER_LINES) {
+        const dropped = buf.length - MAX_CHAT_BUFFER_LINES + 1;
         buf.splice(0, dropped);
         buf[0] = `{gray-fg}── ${dropped} older lines trimmed ──{/gray-fg}`;
     }
@@ -2500,6 +2509,7 @@ appendLog("");
 // 1. Start N worker runtimes (skip if WORKERS=0 for AKS mode)
 const workers = [];
 let modelProviders = null;
+let logTailInterval = null;
 if (!isRemote) {
     // Redirect Rust tracing to a log file so it doesn't corrupt the TUI
     const logFile = "/tmp/duroxide-tui.log";
@@ -2615,7 +2625,7 @@ if (!isRemote) {
     let tailPos = 0;
     const instanceToWorker = new Map(); // instance_id → last known worker pane name
     let tailReads = 0;
-    setInterval(() => {
+    logTailInterval = setInterval(() => {
         try {
             const stat = fs.statSync(logFile);
             if (stat.size <= tailPos) return;
@@ -3361,7 +3371,7 @@ let orchPollTimer = setInterval(() => {
 }, 10_000);
 
 // Periodic perf summary — every 30s log memory + buffer sizes
-setInterval(() => {
+const perfSummaryInterval = setInterval(() => {
     const mem = process.memoryUsage();
     let totalBufferLines = 0;
     let totalBufferBytes = 0;
@@ -3762,12 +3772,14 @@ function startLogStream() {
     }
 }
 
+let workerPruneInterval = null;
+
 if (isRemote) {
     startLogStream();
     appendLog("{green-fg}Streaming AKS worker logs ↓{/green-fg}");
 
     // Periodically prune stale worker panes (every 30s)
-    setInterval(async () => {
+    workerPruneInterval = setInterval(async () => {
         try {
             const result = await new Promise((resolve, reject) => {
                 const k8sCtxArgs = process.env.K8S_CONTEXT ? ["--context", process.env.K8S_CONTEXT] : [];
@@ -4774,6 +4786,9 @@ async function cleanup() {
     forceExitTimer.unref();
 
     clearInterval(orchPollTimer);
+    if (logTailInterval) clearInterval(logTailInterval);
+    if (typeof perfSummaryInterval !== "undefined") clearInterval(perfSummaryInterval);
+    if (workerPruneInterval) clearInterval(workerPruneInterval);
     // Stop CMS poller
     stopCmsPoller();
     // Stop all session observers — abort first so long-polls break

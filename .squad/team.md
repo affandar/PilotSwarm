@@ -17,6 +17,7 @@
 | Lambert | TUI Expert | [charter](.squad/agents/lambert/charter.md) | 🖥️ Active |
 | Ash | Duroxide Expert | [charter](.squad/agents/ash/charter.md) | ⚙️ Active |
 | Kane | Tester | [charter](.squad/agents/kane/charter.md) | 🧪 Active |
+| Dallas | DevOps / Ops | [charter](.squad/agents/dallas/charter.md) | ⚙️ Active |
 | Scribe | Session Logger | [charter](.squad/agents/scribe/charter.md) | 📋 Active |
 | Ralph | Work Monitor | — | 🔄 Monitor |
 

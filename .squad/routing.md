@@ -20,6 +20,11 @@ How to decide who handles what.
 | Integration tests, test infra | Kane | test/sdk.test.js, new test cases, test helpers |
 | Stress testing, hardening | Kane | Edge cases, crash recovery tests, concurrent session tests |
 | Bug verification | Kane | Reproduce reported bugs, confirm fixes |
+| AKS deployment, rollouts, scaling | Dallas | deploy-aks.sh, kubectl, pod management |
+| Database operations, migrations | Dallas | db-reset.js, db-check-hydration.js, schema changes |
+| Kubernetes manifests, Dockerfiles | Dallas | deploy/ directory, k8s configs |
+| CI/CD pipelines, workflows | Dallas | GitHub Actions, build pipelines |
+| Infrastructure monitoring, health | Dallas | Cluster health, pod logs, resource usage |
 | Session logging | Scribe | Automatic — never needs routing |
 
 ## Issue Routing
