@@ -245,7 +245,21 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         await this.pool.query(
             `INSERT INTO ${this.sql.table} (session_id, model, parent_session_id, is_system, agent_id, splash)
              VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (session_id) DO NOTHING`,
+             ON CONFLICT (session_id) DO UPDATE
+             SET model = EXCLUDED.model,
+                 parent_session_id = EXCLUDED.parent_session_id,
+                 is_system = EXCLUDED.is_system,
+                 agent_id = EXCLUDED.agent_id,
+                 splash = EXCLUDED.splash,
+                 deleted_at = NULL,
+                 updated_at = now(),
+                 state = 'pending',
+                 orchestration_id = NULL,
+                 last_error = NULL,
+                 last_active_at = NULL,
+                 current_iteration = 0,
+                 wait_reason = NULL
+             WHERE ${this.sql.table}.deleted_at IS NOT NULL`,
             [sessionId, opts?.model ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null],
         );
     }

@@ -43,6 +43,27 @@ export function systemAgentUUID(slug: string): string {
     ].join("-");
 }
 
+/**
+ * Derive a deterministic UUID for a system child agent from its parent session
+ * and child slug. This keeps system children like sweeper/resource manager
+ * stable across restarts while avoiding collisions between different parents.
+ */
+export function systemChildAgentUUID(parentSessionId: string, slug: string): string {
+    const hash = crypto.createHash("sha256")
+        .update("pilotswarm-system-child-agent:")
+        .update(parentSessionId)
+        .update(":")
+        .update(slug)
+        .digest("hex");
+    return [
+        hash.slice(0, 8),
+        hash.slice(8, 12),
+        hash.slice(12, 16),
+        hash.slice(16, 20),
+        hash.slice(20, 32),
+    ].join("-");
+}
+
 // ─── Types ───────────────────────────────────────────────────────
 
 export interface AgentConfig {

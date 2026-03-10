@@ -30,6 +30,36 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ─── Artifact exports directory ──────────────────────────────────
 const EXPORTS_DIR = path.join(os.homedir(), "pilotswarm-exports");
 fs.mkdirSync(EXPORTS_DIR, { recursive: true });
+const DISPLAY_TIME_ZONE = "America/Los_Angeles";
+
+function formatDisplayTime(value = Date.now(), opts = {}) {
+    return new Date(value).toLocaleTimeString("en-GB", {
+        timeZone: DISPLAY_TIME_ZONE,
+        hour12: false,
+        ...opts,
+    });
+}
+
+function formatDisplayDateTime(value, opts = {}) {
+    return new Date(value).toLocaleString("en-GB", {
+        timeZone: DISPLAY_TIME_ZONE,
+        ...opts,
+    });
+}
+
+const STARTUP_SPLASH_CONTENT = [
+    "{bold}{cyan-fg}",
+    "    ____  _ __      __  _____                              ",
+    "   / __ \\(_) /___  / /_/ ___/      ______ __________ ___  ",
+    "{/cyan-fg}{magenta-fg}  / /_/ / / / __ \\/ __/\\__ \\ | /| / / __ `/ ___/ __ `__ \\",
+    " / ____/ / / /_/ / /_ ___/ / |/ |/ / /_/ / /  / / / / / /{/magenta-fg}",
+    "{yellow-fg}/_/   /_/_/\\____/\\__//____/|__/|__/\\__,_/_/  /_/ /_/ /_/ {/yellow-fg}",
+    "{/bold}",
+    "",
+    "  {bold}{white-fg}Durable AI Agent Orchestration{/white-fg}{/bold}",
+    "  {cyan-fg}Crash recovery{/cyan-fg} · {magenta-fg}Durable timers{/magenta-fg} · {yellow-fg}Sub-agents{/yellow-fg} · {green-fg}Multi-node scaling{/green-fg}",
+    "  {gray-fg}Powered by duroxide + GitHub Copilot SDK{/gray-fg}",
+].join("\n");
 // ─── Global error handlers ──────────────────────────────────────
 // Prevent the TUI from crashing on transient network errors
 // (e.g. EADDRNOTAVAIL from stale PostgreSQL connections).
@@ -245,7 +275,7 @@ async function downloadArtifact(sessionId, filename) {
 }
 
 function ts() {
-    return new Date().toLocaleTimeString("en-GB", { hour12: false });
+    return formatDisplayTime(Date.now());
 }
 
 /** Extract short display ID (last 8 chars of session UUID) from an orchId or sessionId. */
@@ -275,6 +305,7 @@ const _origRender = screen.render.bind(screen);
 let _screenDirty = false;
 let _chatDirty = false;
 let _activityDirty = false;
+let startupLandingVisible = false;
 
 screen.render = function coalescedRender() {
     _screenDirty = true;
@@ -292,19 +323,21 @@ screen.realloc = function patchedRealloc() {
 setInterval(() => {
     // Sync chat buffer → chatBox before rendering (Option C)
     if (_chatDirty) {
-        let currentActive;
-        try { currentActive = activeOrchId; } catch { currentActive = undefined; }
-        const lines = currentActive && sessionChatBuffers?.get(currentActive);
-        if (lines) {
-            // Save scroll state before setContent (which resets scroll to top)
-            const wasAtBottom = chatBox.getScrollPerc() >= 95;
-            const prevScrollTop = chatBox.childBase || 0;
-            chatBox.setContent(lines.map(styleUrls).join("\n"));
-            if (wasAtBottom) {
-                chatBox.setScrollPerc(100);
-            } else {
-                // Restore previous scroll position
-                chatBox.scrollTo(prevScrollTop);
+        if (!startupLandingVisible) {
+            let currentActive;
+            try { currentActive = activeOrchId; } catch { currentActive = undefined; }
+            const lines = currentActive && sessionChatBuffers?.get(currentActive);
+            if (lines) {
+                // Save scroll state before setContent (which resets scroll to top)
+                const wasAtBottom = chatBox.getScrollPerc() >= 95;
+                const prevScrollTop = chatBox.childBase || 0;
+                chatBox.setContent(lines.map(styleUrls).join("\n"));
+                if (wasAtBottom) {
+                    chatBox.setScrollPerc(100);
+                } else {
+                    // Restore previous scroll position
+                    chatBox.scrollTo(prevScrollTop);
+                }
             }
         }
         _chatDirty = false;
@@ -417,7 +450,8 @@ const orchList = blessed.list({
 {
     const SCROLLOFF = 999; // large = always center (like vim scrolloff=999)
     function orchListMove(delta) {
-        const total = orchList.items.length;
+        // Clamp to real orchestration entries — hint/decoration rows beyond orchIdOrder are not selectable
+        const total = Math.min(orchList.items.length, orchIdOrder.length);
         if (total === 0) return;
         const cur = orchList.selected ?? 0;
         const next = Math.max(0, Math.min(total - 1, cur + delta));
@@ -442,6 +476,13 @@ const orchList = blessed.list({
     orchList.key(["j", "down"], () => orchListMove(1));
     orchList.key(["k", "up"], () => orchListMove(-1));
 }
+
+// Clamp mouse-driven selections so hint/decoration rows can't be selected
+orchList.on("select item", () => {
+    if (orchIdOrder.length > 0 && orchList.selected >= orchIdOrder.length) {
+        orchList.select(orchIdOrder.length - 1);
+    }
+});
 
 // Show contextual help when the orch list gains focus
 orchList.on("focus", () => {
@@ -868,12 +909,19 @@ function appendActivity(text, orchId) {
 }
 
 function ensureSystemSplashBuffer(orchId) {
-    if (!systemSessionIds.has(orchId) || !systemAgentSplash.has(orchId)) return null;
-    const existing = sessionChatBuffers.get(orchId);
-    if (existing && existing.length > 0) return existing;
+    const existing = sessionChatBuffers.get(orchId) || [];
+    const splashText = systemAgentSplash.get(orchId);
+    if (!systemSessionIds.has(orchId) || !splashText) return existing.length > 0 ? existing : null;
 
-    const splashLines = systemAgentSplash.get(orchId).split("\n");
-    sessionChatBuffers.set(orchId, [...splashLines, ""]);
+    const splashLines = splashText.split("\n");
+    const hasSplashPrefix = existing.length >= splashLines.length
+        && splashLines.every((line, idx) => existing[idx] === line);
+    if (!hasSplashPrefix) {
+        const merged = [...splashLines, "", ...existing];
+        sessionChatBuffers.set(orchId, merged);
+        return merged;
+    }
+    sessionChatBuffers.set(orchId, existing);
     return sessionChatBuffers.get(orchId);
 }
 
@@ -1312,7 +1360,7 @@ function parseSeqEvent(plain, podName) {
  * without waiting for kubectl logs to stream back.
  */
 function injectSeqUserEvent(orchId, label) {
-    const now = new Date().toLocaleTimeString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const now = formatDisplayTime(Date.now(), { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     // Find the last node that ran an activity for this session, or fall back to first node
     const lastAct = seqLastActivityNode.get(orchId) || seqNodes[0];
     if (!lastAct) return; // no nodes yet
@@ -2237,8 +2285,7 @@ async function loadCmsHistory(orchId) {
         const lines = [];
         const fmtTime = (value) => {
             if (!value) return "--:--:--";
-            return new Date(value).toLocaleTimeString("en-GB", {
-                hour12: false,
+            return formatDisplayTime(value, {
                 hour: "2-digit",
                 minute: "2-digit",
                 second: "2-digit",
@@ -2690,21 +2737,7 @@ function isStartupTransientDbError(err) {
 setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
 
 // Show splash immediately so the user sees something during DB connection
-chatBox.setContent([
-    "{bold}{cyan-fg}",
-    "    ____  _ __      __  _____                              ",
-    "   / __ \\(_) /___  / /_/ ___/      ______ __________ ___  ",
-    "{/cyan-fg}{magenta-fg}  / /_/ / / / __ \\/ __/\\__ \\ | /| / / __ `/ ___/ __ `__ \\",
-    " / ____/ / / /_/ / /_ ___/ / |/ |/ / /_/ / /  / / / / / /{/magenta-fg}",
-    "{yellow-fg}/_/   /_/_/\\____/\\__//____/|__/|__/\\__,_/_/  /_/ /_/ /_/ {/yellow-fg}",
-    "{/bold}",
-    "",
-    "  {bold}{white-fg}Durable AI Agent Orchestration{/white-fg}{/bold}",
-    "  {cyan-fg}Crash recovery{/cyan-fg} · {magenta-fg}Durable timers{/magenta-fg} · {yellow-fg}Sub-agents{/yellow-fg} · {green-fg}Multi-node scaling{/green-fg}",
-    "  {gray-fg}Powered by duroxide + GitHub Copilot SDK{/gray-fg}",
-    "",
-    "  {white-fg}Connecting...{/white-fg}",
-].join("\n"));
+chatBox.setContent(`${STARTUP_SPLASH_CONTENT}\n\n  {white-fg}Connecting...{/white-fg}`);
 _origRender();
 
 // Start both clients with retry — they each open their own PG pool.
@@ -2731,24 +2764,7 @@ while (true) {
 
     const msg = String(err?.message || err || "Unknown database error");
     setStatus(`Database unavailable — retrying in 30s (${msg.slice(0, 80)})`);
-    chatBox.setContent([
-        "{bold}{cyan-fg}",
-        "    ____  _ __      __  _____                              ",
-        "   / __ \\(_) /___  / /_/ ___/      ______ __________ ___  ",
-        "{/cyan-fg}{magenta-fg}  / /_/ / / / __ \\/ __/\\__ \\ | /| / / __ `/ ___/ __ `__ \\",
-        " / ____/ / / /_/ / /_ ___/ / |/ |/ / /_/ / /  / / / / / /{/magenta-fg}",
-        "{yellow-fg}/_/   /_/_/\\____/\\__//____/|__/|__/\\__,_/_/  /_/ /_/ /_/ {/yellow-fg}",
-        "{/bold}",
-        "",
-        "  {bold}{white-fg}Durable AI Agent Orchestration{/white-fg}{/bold}",
-        "  {cyan-fg}Crash recovery{/cyan-fg} · {magenta-fg}Durable timers{/magenta-fg} · {yellow-fg}Sub-agents{/yellow-fg} · {green-fg}Multi-node scaling{/green-fg}",
-        "  {gray-fg}Powered by duroxide + GitHub Copilot SDK{/gray-fg}",
-        "",
-        "  {yellow-fg}Database unavailable.{/yellow-fg}",
-        `  {white-fg}${msg}{/white-fg}`,
-        "",
-        "  {gray-fg}Retrying connection in 30 seconds...{/gray-fg}",
-    ].join("\n"));
+    chatBox.setContent(`${STARTUP_SPLASH_CONTENT}\n\n  {yellow-fg}Database unavailable.{/yellow-fg}\n  {white-fg}${msg}{/white-fg}\n\n  {gray-fg}Retrying connection in 30 seconds...{/gray-fg}`);
     _origRender();
     await new Promise(r => setTimeout(r, STARTUP_DB_RETRY_MS));
 }
@@ -2947,7 +2963,7 @@ function updateSessionListIcons() {
         const uuid4 = shortId(id);
         const createdAt = cached?.createdAt || 0;
         const timeStr = createdAt > 0
-            ? new Date(createdAt).toLocaleString("en-GB", {
+            ? formatDisplayDateTime(createdAt, {
                 month: "short", day: "numeric",
                 hour: "2-digit", minute: "2-digit",
                 hour12: false,
@@ -3009,6 +3025,19 @@ function getCollapseBadge(orchId) {
     }
     const hidden = orchCollapsedCount.get(orchId);
     return hidden ? ` {cyan-fg}[+${hidden}]{/cyan-fg}` : "";
+}
+
+function canonicalSystemTitleFromSessionView(sv, orchId) {
+    const agentId = sv?.agentId || sessionAgentIds.get(orchId) || "";
+    if (agentId === "pilotswarm") return "PilotSwarm Agent";
+    if (agentId === "sweeper") return "Sweeper Agent";
+    if (agentId === "resourcemgr") return "Resource Manager Agent";
+
+    const rawTitle = sv?.title || sessionHeadings.get(orchId) || "";
+    if (/^pilotswarm agent$/i.test(rawTitle)) return "PilotSwarm Agent";
+    if (/^sweeper agent$/i.test(rawTitle) || /^sweeper$/i.test(rawTitle)) return "Sweeper Agent";
+    if (/^resource manager agent$/i.test(rawTitle) || /^resourcemgr$/i.test(rawTitle)) return "Resource Manager Agent";
+    return rawTitle;
 }
 
 async function refreshOrchestrations(force = false) {
@@ -3078,7 +3107,8 @@ async function refreshOrchestrations(force = false) {
         }
         if (sv.isSystem) {
             systemSessionIds.add(id);
-            if (sv.title) sessionHeadings.set(id, sv.title);
+            const canonicalTitle = canonicalSystemTitleFromSessionView(sv, id);
+            if (canonicalTitle) sessionHeadings.set(id, canonicalTitle);
         }
         if (sv.agentId) {
             sessionAgentIds.set(id, sv.agentId);
@@ -3155,7 +3185,11 @@ async function refreshOrchestrations(force = false) {
         }
     }
 
-    const rootEntries = entries.filter(e => !childToParent.has(e.id));
+    const presentIds = new Set(entries.map(e => e.id));
+    const rootEntries = entries.filter(e => {
+        const parentId = childToParent.get(e.id);
+        return !parentId || !presentIds.has(parentId);
+    });
     const orderedEntries = [];
     // System sessions go first (sorted among themselves by createdAt)
     const systemRoots = rootEntries.filter(e => systemSessionIds.has(e.id));
@@ -3218,7 +3252,7 @@ async function refreshOrchestrations(force = false) {
             // 4-char UUID fragment + time started
             const uuid4 = shortId(id);
             const timeStr = createdAt > 0
-                ? new Date(createdAt).toLocaleString("en-GB", {
+                ? formatDisplayDateTime(createdAt, {
                     month: "short", day: "numeric",
                     hour: "2-digit", minute: "2-digit",
                     hour12: false,
@@ -4230,7 +4264,7 @@ function startCmsPoller(orchId) {
             if (evt.seq && _cmsRenderedSeqs.has(evt.seq)) return;
             if (evt.seq) _cmsRenderedSeqs.add(evt.seq);
 
-            const t = new Date().toLocaleTimeString("en-GB", { hour12: false });
+            const t = formatDisplayTime(Date.now());
             const type = evt.eventType;
 
             // Don't render events that the customStatus observer already handles
@@ -4307,7 +4341,7 @@ async function switchToOrchestration(orchId) {
     const uuid4 = shortId(orchId);
     const cached = orchStatusCache.get(orchId);
     const timeStr = cached?.createdAt > 0
-        ? new Date(cached.createdAt).toLocaleTimeString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit" })
+        ? formatDisplayTime(cached.createdAt, { hour: "2-digit", minute: "2-digit" })
         : "";
     activeSessionShort = `${uuid4}${timeStr ? " " + timeStr : ""}`;
     turnInProgress = false;
@@ -4375,6 +4409,12 @@ async function switchToOrchestration(orchId) {
 }
 
 updateChatLabel();
+const initialChatLines = ensureSystemSplashBuffer(activeOrchId) || sessionChatBuffers.get(activeOrchId) || [];
+if (initialChatLines.length > 0) {
+    chatBox.setContent(initialChatLines.map(styleUrls).join("\n"));
+    chatBox.setScrollPerc(0);
+}
+startupLandingVisible = true;
 // Start observing the initial session
 startObserver(activeOrchId);
 startCmsPoller(activeOrchId);
@@ -4772,6 +4812,14 @@ let escPressedAt = 0;
 
 screen.on("keypress", (ch, key) => {
     if (!key) return;
+
+    if (startupLandingVisible) {
+        startupLandingVisible = false;
+        orchList.focus();
+        switchToOrchestration(activeOrchId).catch(() => {});
+        scheduleRender();
+        return;
+    }
 
     // When the slash picker is open, its own keypress handler manages everything
     if (slashPicker) {

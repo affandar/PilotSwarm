@@ -3,6 +3,7 @@ import type { SessionBlobStore } from "./blob-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import type { SerializableSessionConfig, TurnResult, OrchestrationInput } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
+import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
 import os from "node:os";
 
@@ -374,9 +375,17 @@ export function registerActivities(
     runtime.registerActivity("resolveAgentConfig", async (
         _activityCtx: any,
         input: { agentName: string },
-    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; splash?: string } | null> => {
+    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; parent?: string; splash?: string } | null> => {
         const agents = systemAgents ?? [];
-        const agent = agents.find(a => a.name === input.agentName || a.id === input.agentName);
+        const normalize = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+        const lookup = normalize(input.agentName);
+        // Also try without trailing "agent" suffix for fuzzy matching
+        // (LLM often says "Sweeper agent" which normalizes to "sweeperagent", but id is "sweeper")
+        const lookupBase = lookup.replace(/agent$/, "");
+        const agent = agents.find(a => {
+            const candidates = [a.name, a.id, a.title].map(normalize).filter(Boolean);
+            return candidates.includes(lookup) || (lookupBase && candidates.includes(lookupBase));
+        });
         if (!agent) return null;
         return {
             name: agent.name,
@@ -386,19 +395,24 @@ export function registerActivities(
             title: agent.title ?? undefined,
             system: agent.system ?? undefined,
             id: agent.id ?? undefined,
+            parent: agent.parent ?? undefined,
             splash: agent.splash ?? undefined,
         };
     });
 
     // ── spawnChildSession ─────────────────────────────────────
     // Creates a child session via the PilotSwarmClient SDK.
-    // Generates a random UUID for the child session ID internally.
+    // System child agents with a stable agentId use a deterministic UUID.
+    // Other child sessions use a random UUID.
     // Goes through the full SDK path: CMS registration + orchestration startup.
     runtime.registerActivity("spawnChildSession", async (
         activityCtx: any,
         input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string },
     ): Promise<string> => {
-        const childSessionId = crypto.randomUUID();
+        const isDeterministicSystemChild = Boolean(input.isSystem && input.agentId);
+        const childSessionId = isDeterministicSystemChild
+            ? systemChildAgentUUID(input.parentSessionId, input.agentId!)
+            : crypto.randomUUID();
         activityCtx.traceInfo(`[spawnChildSession] child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0} isSystem=${input.isSystem ?? false} agent=${input.agentId ?? "custom"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
@@ -411,6 +425,14 @@ export function registerActivities(
         });
         try {
             await sdkClient.start();
+
+            if (isDeterministicSystemChild && catalog) {
+                const existing = await catalog.getSession(childSessionId);
+                if (existing && !["completed", "failed", "terminated"].includes(existing.state)) {
+                    activityCtx.traceInfo(`[spawnChildSession] reusing existing live system child: ${childSessionId}`);
+                    return childSessionId;
+                }
+            }
 
             // Mark as system session BEFORE createSession so OrchestrationInput gets isSystem=true
             if (input.isSystem) {
