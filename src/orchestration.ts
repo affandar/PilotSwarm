@@ -71,7 +71,7 @@ export function* durableSessionOrchestration_1_0_9(
     const baseSystemMessage = input.baseSystemMessage ?? config.systemMessage;
     const isSystem = input.isSystem ?? false;
     const MAX_RETRIES = 3;
-    const MAX_SUB_AGENTS = 8;
+    const MAX_SUB_AGENTS = 20;
     const MAX_NESTING_LEVEL = 2; // 0=root, 1=child, 2=grandchild — no deeper
 
     // ─── Sub-agent tracking ──────────────────────────────────
@@ -805,24 +805,47 @@ export function* durableSessionOrchestration_1_0_9(
                 let agentTitle: string | undefined;
                 let agentId: string | undefined;
                 let agentSplash: string | undefined;
+                let resolvedAgentName = result.agentName;
 
-                if (result.agentName) {
-                    ctx.traceInfo(`[orch] resolving agent config for: ${result.agentName}`);
-                    const agentDef = yield manager.resolveAgentConfig(result.agentName);
+                const applyAgentDef = (agentDef: any, useDefinitionDefaults = false) => {
+                    agentTask = useDefinitionDefaults
+                        ? (agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`)
+                        : (result.task || agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`);
+                    agentSystemMessage = useDefinitionDefaults
+                        ? ({ mode: "replace" as const, content: agentDef.prompt })
+                        : (result.systemMessage ?? { mode: "replace" as const, content: agentDef.prompt });
+                    agentToolNames = useDefinitionDefaults
+                        ? (agentDef.tools ?? undefined)
+                        : (result.toolNames ?? agentDef.tools ?? undefined);
+                    agentIsSystem = agentDef.system ?? false;
+                    agentTitle = agentDef.title;
+                    agentId = agentDef.id ?? resolvedAgentName;
+                    agentSplash = agentDef.splash;
+                };
+
+                if (!resolvedAgentName && input.isSystem && agentTask) {
+                    const titleMatch = agentTask.match(/You are the \*{0,2}([^*\n]+?Agent)\*{0,2}/i);
+                    const inferredLookup = titleMatch?.[1]?.trim();
+                    if (inferredLookup) {
+                        const inferredDef = yield manager.resolveAgentConfig(inferredLookup);
+                        if (inferredDef?.system && inferredDef?.parent) {
+                            resolvedAgentName = inferredDef.id ?? inferredDef.name;
+                            ctx.traceInfo(`[orch] normalized custom system spawn to named agent: ${resolvedAgentName}`);
+                            applyAgentDef(inferredDef, true);
+                        }
+                    }
+                }
+
+                if (resolvedAgentName) {
+                    ctx.traceInfo(`[orch] resolving agent config for: ${resolvedAgentName}`);
+                    const agentDef = yield manager.resolveAgentConfig(resolvedAgentName);
                     if (!agentDef) {
                         yield versionedContinueAsNew(continueInput({
-                            prompt: `[SYSTEM: spawn_agent failed — agent "${result.agentName}" not found. Use list_agents to see available agents.]`,
+                            prompt: `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use list_agents to see available agents.]`,
                         }));
                         return "";
                     }
-                    // Agent definition provides defaults; explicit args override
-                    agentTask = result.task || agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`;
-                    agentSystemMessage = result.systemMessage ?? { mode: "replace" as const, content: agentDef.prompt };
-                    agentToolNames = result.toolNames ?? agentDef.tools ?? undefined;
-                    agentIsSystem = agentDef.system ?? false;
-                    agentTitle = agentDef.title;
-                    agentId = agentDef.id ?? result.agentName;
-                    agentSplash = agentDef.splash;
+                    applyAgentDef(agentDef, resolvedAgentName !== result.agentName);
                 }
 
                 // If the parent is a system session, propagate isSystem to children
@@ -843,7 +866,7 @@ export function* durableSessionOrchestration_1_0_9(
                     }
                 }
 
-                ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${agentTask.slice(0, 80)}" model=${agentModel || "inherit"} agent=${result.agentName || "custom"} nestingLevel=${childNestingLevel}`);
+                ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${agentTask.slice(0, 80)}" model=${agentModel || "inherit"} agent=${resolvedAgentName || "custom"} nestingLevel=${childNestingLevel}`);
 
                 // Build child config — inherit parent's config with optional overrides
                 const childConfig: SerializableSessionConfig = {
@@ -909,7 +932,7 @@ export function* durableSessionOrchestration_1_0_9(
                 // Feed confirmation back to the LLM
                 const spawnMsg = `[SYSTEM: Sub-agent spawned successfully.\n` +
                     `  Agent ID: ${childOrchId}\n` +
-                    `  ${result.agentName ? `Agent: ${result.agentName}\n  ` : ``}Task: "${agentTask.slice(0, 200)}"\n` +
+                    `  ${resolvedAgentName ? `Agent: ${resolvedAgentName}\n  ` : ``}Task: "${agentTask.slice(0, 200)}"\n` +
                     `  The agent is now running autonomously. Use check_agents to monitor progress, ` +
                     `message_agent to send instructions. To wait for completion, use wait + check_agents ` +
                     `in a loop (choose an appropriate interval) so you can report progress to the user.]`;

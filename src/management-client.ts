@@ -30,6 +30,8 @@ const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 export interface PilotSwarmSessionView {
     sessionId: string;
     title?: string;
+    agentId?: string;
+    splash?: string;
     /** Live status from orchestration customStatus (idle, running, waiting, etc.) */
     status: PilotSwarmSessionStatus;
     /** Duroxide orchestration runtime status (Running, Completed, Failed, Terminated). */
@@ -153,6 +155,8 @@ export class PilotSwarmManagementClient {
             return {
                 sessionId: row.sessionId,
                 title: row.title ?? undefined,
+                agentId: row.agentId ?? undefined,
+                splash: row.splash ?? undefined,
                 status: liveStatus,
                 orchestrationStatus: undefined, // not available in CMS-only path
                 createdAt: row.createdAt.getTime(),
@@ -208,6 +212,8 @@ export class PilotSwarmManagementClient {
         return {
             sessionId: row.sessionId,
             title: row.title ?? undefined,
+            agentId: row.agentId ?? undefined,
+            splash: row.splash ?? undefined,
             status: liveStatus,
             orchestrationStatus: orchStatus,
             createdAt,

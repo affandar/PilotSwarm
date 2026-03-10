@@ -1,0 +1,9 @@
+[
+  {
+    "assignment_id": "alien-pilotswarm-2026-03-10",
+    "universe": "alien",
+    "agents": ["Ripley", "Parker", "Lambert", "Ash", "Kane"],
+    "created_at": "2026-03-10T01:11:00Z",
+    "context": "pilotswarm — durable execution runtime for Copilot SDK agents"
+  }
+]
