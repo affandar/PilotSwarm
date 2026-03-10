@@ -897,7 +897,7 @@ function appendActivity(text, orchId) {
     let buffers;
     try { buffers = sessionActivityBuffers; } catch { return; }
     // Snapshot activeOrchId once to avoid race during session switch
-    const currentActive = orchId ? undefined : (activeOrchId || undefined);
+    const currentActive = activeOrchId || undefined;
     const targetOrch = orchId || currentActive || "_init";
     if (!buffers.has(targetOrch)) buffers.set(targetOrch, []);
     const buf = buffers.get(targetOrch);
@@ -911,7 +911,7 @@ function appendActivity(text, orchId) {
     }
 
     // Mark dirty so the frame loop syncs buffer → activityPane
-    if (currentActive && targetOrch === currentActive) {
+    if (targetOrch === currentActive) {
         _activityDirty = true;
     }
 }
@@ -921,14 +921,22 @@ function ensureSystemSplashBuffer(orchId) {
     const splashText = systemAgentSplash.get(orchId);
     if (!systemSessionIds.has(orchId) || !splashText) return existing.length > 0 ? existing : null;
 
+    // Idempotency: if splash was already applied for this session, don't re-check or double-inject
+    if (sessionSplashApplied.has(orchId)) {
+        sessionChatBuffers.set(orchId, existing);
+        return existing;
+    }
+
     const splashLines = splashText.split("\n");
     const hasSplashPrefix = existing.length >= splashLines.length
         && splashLines.every((line, idx) => existing[idx] === line);
     if (!hasSplashPrefix) {
         const merged = [...splashLines, "", ...existing];
         sessionChatBuffers.set(orchId, merged);
+        sessionSplashApplied.add(orchId);
         return merged;
     }
+    sessionSplashApplied.add(orchId);
     sessionChatBuffers.set(orchId, existing);
     return sessionChatBuffers.get(orchId);
 }
@@ -1625,6 +1633,24 @@ function switchLogMode() {
     setTimeout(() => { screen.realloc(); screen.render(); }, 0);
 }
 
+/**
+ * Render the last `maxLines` of a buffer into a blessed pane with truncation message.
+ * @param {Array} buffer - Array of items (strings or objects)
+ * @param {object} pane - blessed log/box element
+ * @param {number} maxLines - Maximum lines to render
+ * @param {function} [formatter] - Optional (item) => string transformer. If omitted, items are logged as-is.
+ */
+function renderBufferToPane(buffer, pane, maxLines, formatter) {
+    const renderItems = buffer.length > maxLines ? buffer.slice(-maxLines) : buffer;
+    if (buffer.length > maxLines) {
+        pane.log(`{gray-fg}… showing last ${maxLines} of ${buffer.length} lines …{/gray-fg}`);
+    }
+    for (const item of renderItems) {
+        pane.log(formatter ? formatter(item) : item);
+    }
+    pane.setScrollPerc(100);
+}
+
 function refreshOrchLogPane() {
     orchLogPane.setContent("");
     orchLogPane.scrollTo(0);
@@ -1632,12 +1658,7 @@ function refreshOrchLogPane() {
     orchLogPane.setLabel(` Logs: ${shortIdVal} `);
     const buf = orchLogBuffers.get(activeOrchId);
     if (buf && buf.length > 0) {
-        const renderLines = buf.length > 150 ? buf.slice(-150) : buf;
-        if (buf.length > 150) {
-            orchLogPane.log(`{gray-fg}… showing last 150 of ${buf.length} log lines …{/gray-fg}`);
-        }
-        for (const line of renderLines) orchLogPane.log(line);
-        orchLogPane.setScrollPerc(100);
+        renderBufferToPane(buf, orchLogPane, 150);
     } else {
         orchLogPane.log("{white-fg}Loading logs...{/white-fg}");
         orchLogPane.scrollTo(0);
@@ -2078,8 +2099,7 @@ function appendChatRaw(text, orchId) {
     // Guard: during startup, sessionChatBuffers and activeOrchId may not be initialized yet
     let buffers;
     try { buffers = sessionChatBuffers; } catch { return; }
-    // Snapshot activeOrchId once to avoid race during session switch
-    const currentActive = orchId ? undefined : (activeOrchId || undefined);
+    const currentActive = activeOrchId || undefined;
     const targetOrch = orchId || currentActive || "_init";
     if (!buffers.has(targetOrch)) buffers.set(targetOrch, []);
     const buf = buffers.get(targetOrch);
@@ -2093,7 +2113,7 @@ function appendChatRaw(text, orchId) {
     }
 
     // Mark chat dirty so the frame loop syncs buffer → chatBox
-    if (currentActive && targetOrch === currentActive) {
+    if (targetOrch === currentActive) {
         _chatDirty = true;
     }
 }
@@ -2148,23 +2168,15 @@ function recolorWorkerPanes() {
         const buf = workerLogBuffers.get(podName);
         if (!buf || buf.length === 0) continue;
         paneCount++;
-        const renderEntries = buf.length > MAX_WORKER_RENDER_LINES
-            ? buf.slice(-MAX_WORKER_RENDER_LINES)
-            : buf;
-        totalLines += renderEntries.length;
-        if (buf.length > MAX_WORKER_RENDER_LINES) {
-            pane.log(`{gray-fg}… showing last ${MAX_WORKER_RENDER_LINES} of ${buf.length} lines …{/gray-fg}`);
-        }
-        for (const entry of renderEntries) {
+        renderBufferToPane(buf, pane, MAX_WORKER_RENDER_LINES, (entry) => {
             if (entry.orchId && entry.orchId === activeOrchId) {
-                pane.log(`{bold}${entry.text}{/bold}`);
+                return `{bold}${entry.text}{/bold}`;
             } else if (entry.orchId) {
-                pane.log(`{white-fg}${entry.text}{/white-fg}`);
-            } else {
-                pane.log(entry.text);
+                return `{white-fg}${entry.text}{/white-fg}`;
             }
-        }
-        pane.setScrollPerc(100);
+            return entry.text;
+        });
+        totalLines += Math.min(buf.length, MAX_WORKER_RENDER_LINES);
     }
     screen.render();
     perfEnd(_ph, { panes: paneCount, lines: totalLines });
@@ -2172,6 +2184,8 @@ function recolorWorkerPanes() {
 
 function showCopilotMessage(raw, orchId) {
     const _ph = perfStart("showCopilotMessage");
+
+    appendActivity(`{green-fg}[obs] showCopilotMessage called for ${orchId === activeOrchId ? "ACTIVE" : "background"} session, len=${raw?.length || 0}{/green-fg}`, orchId);
 
     // Detect and register artifact links before rendering
     detectArtifactLinks(raw, orchId);
@@ -2196,6 +2210,26 @@ function showCopilotMessage(raw, orchId) {
     perfEnd(_ph, { len: raw?.length || 0 });
 }
 
+function normalizeObserverChatText(text) {
+    if (typeof text !== "string") return "";
+    return text.replace(/\r\n/g, "\n").trim();
+}
+
+function promoteIntermediateContent(raw, orchId) {
+    const normalized = normalizeObserverChatText(raw);
+    if (!normalized) return;
+    if (sessionPromotedIntermediate.get(orchId) === normalized) return;
+    showCopilotMessage(raw, orchId);
+    sessionPromotedIntermediate.set(orchId, normalized);
+}
+
+function shouldSkipCompletedTurnResult(raw, orchId) {
+    const normalized = normalizeObserverChatText(raw);
+    const promoted = sessionPromotedIntermediate.get(orchId);
+    sessionPromotedIntermediate.delete(orchId);
+    return Boolean(normalized && promoted && normalized === promoted);
+}
+
 // Track whether sequence view has been seeded from CMS for a session.
 const seqCmsSeededSessions = new Set();
 
@@ -2214,7 +2248,7 @@ async function loadCmsHistory(orchId) {
     // so reloading on every session switch just adds latency.
     const cached = sessionChatBuffers.get(orchId);
     const loadedAt = sessionHistoryLoadedAt.get(orchId) ?? 0;
-    if (cached && cached.length > 1 && (Date.now() - loadedAt) < 30_000) {
+    if (cached && cached.length > 1 && (Date.now() - loadedAt) < 30_000 && !orchHasChanges.has(orchId)) {
         return;
     }
 
@@ -2231,10 +2265,11 @@ async function loadCmsHistory(orchId) {
     }
 
     try {
-        const CMS_HISTORY_FETCH_LIMIT = 250;
-        const MAX_RENDERED_EVENTS = 120;
-        const MAX_TOTAL_RENDER_CHARS = 50_000;
-        const MAX_ASSISTANT_MESSAGE_CHARS = 4_000;
+        const expand = sessionExpandLevel.get(orchId) || 0;
+        const CMS_HISTORY_FETCH_LIMIT = expand >= 2 ? 2000 : expand >= 1 ? 500 : 250;
+        const MAX_RENDERED_EVENTS = expand >= 2 ? 2000 : expand >= 1 ? 500 : 120;
+        const MAX_TOTAL_RENDER_CHARS = expand >= 2 ? 500_000 : expand >= 1 ? 200_000 : 50_000;
+        const MAX_ASSISTANT_MESSAGE_CHARS = expand >= 1 ? 20_000 : 4_000;
         const dc = getDc();
 
         // Fetch events, session info, and live status in parallel.
@@ -2315,7 +2350,7 @@ async function loadCmsHistory(orchId) {
         let renderedChars = 0;
         let lastAssistantContent = "";
         if (truncated) {
-            lines.push(`{gray-fg}── ${events.length - MAX_RENDERED_EVENTS} older events omitted (${events.length} total) ──{/gray-fg}`);
+            lines.push(`{gray-fg}── ${events.length - MAX_RENDERED_EVENTS} older events omitted (${events.length} total) · press {bold}e{/bold} to expand ──{/gray-fg}`);
             lines.push("");
         }
         for (const evt of renderEvents) {
@@ -2422,7 +2457,7 @@ async function loadCmsHistory(orchId) {
         }
 
         // For system sessions, show the splash banner at the top of the chat
-        if (systemSessionIds.has(orchId)) {
+        if (systemSessionIds.has(orchId) && !sessionSplashApplied.has(orchId)) {
             // Try to preserve existing splash from the buffer
             const existing = sessionChatBuffers.get(orchId);
             let splashInjected = false;
@@ -2440,11 +2475,31 @@ async function loadCmsHistory(orchId) {
                 const splashLines = splashText.split("\n");
                 lines.unshift(...splashLines, "");
             }
+            sessionSplashApplied.add(orchId);
         }
 
+        // Preserve observer-appended lines that arrived after the last CMS load.
+        // The watermark tracks buffer length right after each CMS load; any lines
+        // beyond that were appended by the live observer and must be carried forward
+        // — but only if CMS hasn't caught up (same event count = no new CMS data).
+        const prevBuffer = sessionChatBuffers.get(orchId);
+        const watermark = sessionCmsWatermark.get(orchId) ?? 0;
+        const prevEventCount = sessionCmsEventCount.get(orchId) ?? 0;
+        if (prevBuffer && prevBuffer.length > watermark && watermark > 0) {
+            // Only carry forward if CMS event count is unchanged — if new events
+            // arrived in CMS, the observer content is now represented in CMS data.
+            if (eventCount <= prevEventCount) {
+                const observerLines = prevBuffer.slice(watermark);
+                lines.push(...observerLines);
+            }
+        }
+
+        const cmsLineCount = lines.length; // before any future observer appends
         sessionChatBuffers.set(orchId, lines);
         sessionActivityBuffers.set(orchId, activityLines);
         sessionHistoryLoadedAt.set(orchId, Date.now());
+        sessionCmsWatermark.set(orchId, cmsLineCount);
+        sessionCmsEventCount.set(orchId, eventCount);
 
         if (orchId === activeOrchId) {
             // Let the frame loop sync this buffer to chatBox
@@ -2827,6 +2882,11 @@ const sessionAgentIds = new Map(); // orchId → agentId string (e.g. "pilotswar
 // Per-session chat buffers — every observer writes here so content is preserved on switch
 const sessionChatBuffers = new Map(); // orchId → string[]
 const sessionHistoryLoadedAt = new Map(); // orchId → epoch ms of last CMS history load
+const sessionCmsWatermark = new Map(); // orchId → buffer length after last CMS load (for preserving observer lines)
+const sessionCmsEventCount = new Map(); // orchId → total CMS event count at last load (for carry-forward dedup)
+const sessionExpandLevel = new Map(); // orchId → 0 (default) | 1 | 2 (how many times user expanded history)
+const sessionSplashApplied = new Set(); // orchIds that have had splash prepended (idempotency guard)
+const sessionPromotedIntermediate = new Map(); // orchId → normalized intermediate content already promoted to Chat
 const sessionObservers = new Map(); // orchId → AbortController
 const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
 
@@ -4027,9 +4087,20 @@ function startObserver(orchId) {
                 } catch {}
                 if (cs) {
                     lastVersion = currentStatus.customStatusVersion || 0;
+                    if (cs.intermediateContent) {
+                        const prefix = `{white-fg}[${ts()}]{/white-fg} {gray-fg}[intermediate]{/gray-fg}`;
+                        appendActivity(prefix, orchId);
+                        const rendered = renderMarkdown(cs.intermediateContent);
+                        for (const line of rendered.split("\n")) {
+                            appendActivity(line, orchId);
+                        }
+                        promoteIntermediateContent(cs.intermediateContent, orchId);
+                    }
                     if (cs.turnResult && cs.turnResult.type === "completed") {
                         lastIteration = cs.iteration || 0;
-                        showCopilotMessage(cs.turnResult.content, orchId);
+                        if (!shouldSkipCompletedTurnResult(cs.turnResult.content, orchId)) {
+                            showCopilotMessage(cs.turnResult.content, orchId);
+                        }
                     }
                     if (cs.status === "idle") {
                         setStatusIfActive("Idle — type a message");
@@ -4062,25 +4133,36 @@ function startObserver(orchId) {
                 // No custom status yet — orchestration hasn't started or is fresh
                 setStatusIfActive("Ready — type a message");
             }
-        } catch {
+        } catch (err) {
             // Orchestration may not exist yet (new session)
+            if (err?.message && !err.message.includes("not found")) {
+                appendActivity(`{yellow-fg}⚠ Initial status fetch failed: ${err.message}{/yellow-fg}`, orchId);
+            }
             setStatusIfActive("Ready — type a message");
         }
         while (!ac.signal.aborted) {
             try {
                 const _obsPh = perfStart("observer.waitForStatusChange");
+                const _waitStart = Date.now();
                 const statusResult = await dc.waitForStatusChange(
                     orchId, lastVersion, 200, 30_000
                 );
+                const _waitMs = Date.now() - _waitStart;
                 perfEnd(_obsPh, { orchId: orchId.slice(0, 12), ver: statusResult.customStatusVersion });
                 if (ac.signal.aborted) break;
 
+                const prevVersion = lastVersion;
+                const prevIteration = lastIteration;
                 if (statusResult.customStatusVersion > lastVersion) {
                     lastVersion = statusResult.customStatusVersion;
                 } else if (statusResult.customStatusVersion < lastVersion) {
                     // continueAsNew happened — version reset. Reset watermarks.
+                    appendActivity(`{yellow-fg}🔄 [obs] continueAsNew detected in try: v${lastVersion}→v${statusResult.customStatusVersion}, resetting lastIter=${lastIteration}→-1 (${_waitMs}ms){/yellow-fg}`, orchId);
                     lastVersion = statusResult.customStatusVersion;
                     lastIteration = -1;
+                } else {
+                    // Same version — poll returned without change (shouldn't happen normally)
+                    appendActivity(`{gray-fg}[obs] poll returned same version v${lastVersion} (${_waitMs}ms){/gray-fg}`, orchId);
                 }
 
                 let cs = null;
@@ -4092,6 +4174,10 @@ function startObserver(orchId) {
                 }
 
                 if (cs) {
+                    // Log every status change with key fields
+                    const hasTR = cs.turnResult ? `turnResult=${cs.turnResult.type}` : "no-turnResult";
+                    const iterInfo = `iter=${cs.iteration}`;
+                    appendActivity(`{gray-fg}[obs] v${prevVersion}→v${statusResult.customStatusVersion} status=${cs.status} ${iterInfo} ${hasTR} lastIter=${prevIteration}→${lastIteration} (${_waitMs}ms){/gray-fg}`, orchId);
                     // Show intermediate content in the activity pane
                     if (cs.intermediateContent) {
                         const prefix = `{white-fg}[${ts()}]{/white-fg} {gray-fg}[intermediate]{/gray-fg}`;
@@ -4100,6 +4186,7 @@ function startObserver(orchId) {
                         for (const line of rendered.split("\n")) {
                             appendActivity(line, orchId);
                         }
+                        promoteIntermediateContent(cs.intermediateContent, orchId);
                     }
 
                     // Track live status
@@ -4166,6 +4253,7 @@ function startObserver(orchId) {
 
                     // Show turn results
                     if (cs.turnResult && cs.iteration > lastIteration) {
+                        appendActivity(`{green-fg}[obs] ✓ SHOWING turnResult: iter=${cs.iteration} > lastIter=${lastIteration}, type=${cs.turnResult.type}, content=${(cs.turnResult.content || "").slice(0, 80)}{/green-fg}`, orchId);
                         lastIteration = cs.iteration;
                         if (cs.turnResult.type === "completed") {
                             let displayContent = cs.turnResult.content;
@@ -4179,7 +4267,7 @@ function startObserver(orchId) {
                             } else if (hMatch) {
                                 displayContent = displayContent.replace(/^HEADING:.*\n?/m, "").trim();
                             }
-                            if (!cs.intermediateContent || cs.intermediateContent !== cs.turnResult.content) {
+                            if (!shouldSkipCompletedTurnResult(displayContent, orchId)) {
                                 showCopilotMessage(displayContent, orchId);
                             }
                             if (cs.status === "idle") {
@@ -4191,6 +4279,11 @@ function startObserver(orchId) {
                         } else if (cs.turnResult.type === "input_required") {
                             appendChatRaw(`{magenta-fg}[?] ${cs.turnResult.question}{/magenta-fg}`, orchId);
                             setStatusIfActive("Waiting for your answer...");
+                        }
+                    } else if (cs.turnResult && cs.iteration <= lastIteration) {
+                        appendActivity(`{yellow-fg}[obs] ⚠ SKIPPED turnResult: iter=${cs.iteration} <= lastIter=${lastIteration} (already shown){/yellow-fg}`, orchId);
+                        if (cs.status === "waiting") {
+                            setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
                         }
                     } else if (cs.status === "error") {
                         const errText = cs.error || "Unknown error";
@@ -4214,9 +4307,10 @@ function startObserver(orchId) {
                         updateSessionListIcons();
                     }
                 }
-            } catch {
-                // waitForStatusChange timed out — check terminal state or continueAsNew
+            } catch (err) {
+                // waitForStatusChange timed out or failed — check terminal state or continueAsNew
                 if (ac.signal.aborted) break;
+                appendActivity(`{yellow-fg}[obs] catch: ${err.message || "timeout"} lastVersion=${lastVersion} lastIteration=${lastIteration}{/yellow-fg}`, orchId);
                 try {
                     const info = await dc.getStatus(orchId);
                     if (info.status === "Completed" || info.status === "Failed" || info.status === "Terminated") {
@@ -4235,8 +4329,11 @@ function startObserver(orchId) {
                     // Detect continueAsNew: customStatusVersion went backwards
                     const currentVersion = info.customStatusVersion || 0;
                     if (currentVersion < lastVersion) {
+                        appendActivity(`{yellow-fg}🔄 [obs] continueAsNew in catch: v${lastVersion}→v${currentVersion}{/yellow-fg}`, orchId);
                         lastVersion = 0;
                         lastIteration = -1;
+                    } else {
+                        appendActivity(`{gray-fg}[obs] catch: no version reset (v${currentVersion} >= v${lastVersion}){/gray-fg}`, orchId);
                     }
                 } catch {}
                 await new Promise(r => setTimeout(r, 500));
@@ -4688,12 +4785,14 @@ async function handleInput(text) {
 
     if (turnInProgress) {
         appendChatRaw(`{white-fg}[${ts()}]{/white-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
+        appendActivity(`{cyan-fg}[send] interrupt: turnInProgress=true, enqueuing to ${activeOrchId?.slice(0,20)}{/cyan-fg}`, activeOrchId);
         inputBar.clearValue();
         setStatus("Interrupting...");
         injectSeqUserEvent(activeOrchId, trimmed);
         try {
             const dc = getDc();
             if (dc) await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({ prompt: trimmed }));
+            appendActivity(`{cyan-fg}[send] interrupt enqueued OK{/cyan-fg}`, activeOrchId);
         } catch (err) {
             appendChatRaw(`{red-fg}Interrupt failed: ${err.message}{/red-fg}`);
         }
@@ -4738,7 +4837,9 @@ async function handleInput(text) {
         if (sess) {
             // Fire-and-forget: just send the message, don't wait for result.
             // The observer is what updates the chat.
+            appendActivity(`{cyan-fg}[send] normal: turnInProgress=false→true, sending via sess.send() to ${activeOrchId?.slice(0,20)}{/cyan-fg}`, activeOrchId);
             sess.send(trimmed).then(() => {
+                appendActivity(`{cyan-fg}[send] normal send OK, observer started{/cyan-fg}`, activeOrchId);
                 knownOrchestrationIds.add(activeOrchId);
                 startObserver(activeOrchId);
                 refreshOrchestrations();
@@ -4773,6 +4874,86 @@ inputBar.key(["escape"], () => {
     orchList.focus();
     screen.render();
 });
+
+// ─── Help Overlay ────────────────────────────────────────────────
+
+function showHelpOverlay() {
+    const helpContent = [
+        "{bold}{cyan-fg}PilotSwarm TUI — Keybindings{/cyan-fg}{/bold}",
+        "",
+        "{bold}Global{/bold}",
+        "  {yellow-fg}?{/yellow-fg}           Show this help",
+        "  {yellow-fg}Esc → q{/yellow-fg}     Quit (press Esc then q within 1s)",
+        "  {yellow-fg}Ctrl+C{/yellow-fg}      Quit immediately",
+        "  {yellow-fg}p{/yellow-fg}           Jump to input/prompt bar",
+        "  {yellow-fg}m{/yellow-fg}           Cycle log mode: Workers → Orch → Sequence → Node Map",
+        "  {yellow-fg}v{/yellow-fg}           Toggle markdown viewer",
+        "  {yellow-fg}Tab{/yellow-fg}         Cycle focus between panes",
+        "  {yellow-fg}h / l{/yellow-fg}       Move focus left / right",
+        "  {yellow-fg}[ / ]{/yellow-fg}       Resize right column",
+        "  {yellow-fg}r{/yellow-fg}           Force full screen redraw",
+        "  {yellow-fg}u{/yellow-fg}           Dump active session to Markdown file",
+        "  {yellow-fg}a{/yellow-fg}           Show artifact picker (download files)",
+        "",
+        "{bold}Sessions Pane{/bold}",
+        "  {yellow-fg}j / k{/yellow-fg}       Navigate up / down",
+        "  {yellow-fg}Enter{/yellow-fg}       Switch to selected session",
+        "  {yellow-fg}n{/yellow-fg}           New session (default model)",
+        "  {yellow-fg}Shift+N{/yellow-fg}     New session (model picker)",
+        "  {yellow-fg}t{/yellow-fg}           Rename session (custom title or LLM summary)",
+        "  {yellow-fg}+ / -{/yellow-fg}       Expand / collapse sub-agent tree",
+        "  {yellow-fg}c{/yellow-fg}           Cancel session",
+        "  {yellow-fg}d{/yellow-fg}           Delete session",
+        "",
+        "{bold}Chat / Activity / Log Panes{/bold}",
+        "  {yellow-fg}j / k{/yellow-fg}       Scroll down / up",
+        "  {yellow-fg}Ctrl+D/U{/yellow-fg}    Page down / up",
+        "  {yellow-fg}g / G{/yellow-fg}       Scroll to top / bottom",
+        "  {yellow-fg}e{/yellow-fg}           Expand history (load older messages, press again for full)",
+        "",
+        "{bold}Slash Commands{/bold} (type in input bar)",
+        "  {cyan-fg}/models{/cyan-fg}         List available models",
+        "  {cyan-fg}/model <name>{/cyan-fg}  Switch model for this session",
+        "  {cyan-fg}/info{/cyan-fg}           Show session info",
+        "  {cyan-fg}/done{/cyan-fg}           Complete and close session",
+        "  {cyan-fg}/new{/cyan-fg}            Create new session",
+        "  {cyan-fg}/help{/cyan-fg}           Show command list in chat",
+        "",
+        "{gray-fg}Press Esc or ? to close{/gray-fg}",
+    ].join("\n");
+
+    const helpBox = blessed.box({
+        parent: screen,
+        tags: true,
+        left: "center",
+        top: "center",
+        width: Math.min(70, screen.width - 4),
+        height: Math.min(42, screen.height - 4),
+        border: { type: "line" },
+        style: {
+            fg: "white",
+            bg: "black",
+            border: { fg: "cyan" },
+        },
+        scrollable: true,
+        keys: true,
+        vi: true,
+        mouse: true,
+        content: helpContent,
+        label: " {bold}Help{/bold} ",
+    });
+
+    helpBox.focus();
+    screen.render();
+
+    const closeHelp = () => {
+        helpBox.detach();
+        orchList.focus();
+        screen.render();
+    };
+
+    helpBox.key(["escape", "q", "?"], closeHelp);
+}
 
 // ─── Cleanup ─────────────────────────────────────────────────────
 
@@ -4849,6 +5030,12 @@ screen.on("keypress", (ch, key) => {
         screen.realloc();
         relayoutAll();
         setStatus(mdViewActive ? "Markdown Viewer (v to exit)" : `Log mode: ${({ workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" })[logViewMode]}`);
+        return;
+    }
+
+    // ?: show global help overlay
+    if (ch === "?" && screen.focused !== inputBar) {
+        showHelpOverlay();
         return;
     }
 
@@ -5070,6 +5257,31 @@ screen.on("keypress", (ch, key) => {
         return;
     }
 
+    // e from any non-input pane → expand chat history (load more older messages)
+    if (ch === "e" && screen.focused !== inputBar) {
+        if (!activeOrchId) return;
+        const currentLevel = sessionExpandLevel.get(activeOrchId) || 0;
+        if (currentLevel >= 2) {
+            setStatus("Already at full history");
+            screen.render();
+            return;
+        }
+        sessionExpandLevel.set(activeOrchId, currentLevel + 1);
+        // Force reload by clearing the cache TTL
+        sessionHistoryLoadedAt.delete(activeOrchId);
+        const levelNames = ["", "expanded (500)", "full history"];
+        setStatus(`Loading ${levelNames[currentLevel + 1]}...`);
+        screen.render();
+        loadCmsHistory(activeOrchId).then(() => {
+            if (activeOrchId) {
+                _chatDirty = true;
+                chatBox.setScrollPerc(0); // scroll to top to see older messages
+                setStatus(`History ${levelNames[currentLevel + 1]} · scroll up to see older messages`);
+            }
+        }).catch(() => {});
+        return;
+    }
+
     // u from any non-input pane → dump active session to Markdown file
     if (ch === "u" && screen.focused !== inputBar) {
         (async () => {
@@ -5207,6 +5419,7 @@ appendChatRaw("{bold}Scrolling (when chat/log pane focused):{/bold}");
 appendChatRaw("  {yellow-fg}j/k{/yellow-fg} or {yellow-fg}↑/↓{/yellow-fg}   scroll line by line");
 appendChatRaw("  {yellow-fg}Ctrl-d/u{/yellow-fg}      page down/up");
 appendChatRaw("  {yellow-fg}g/G{/yellow-fg}          top / bottom");
+appendChatRaw("  {yellow-fg}e{/yellow-fg}            expand history (load older messages, press again for full)");
 appendChatRaw("  {yellow-fg}mouse wheel{/yellow-fg}    scroll any pane");
 appendChatRaw("");
 appendChatRaw("{bold}Sessions (left pane):{/bold}");

@@ -8,3 +8,4 @@
 - **Joined:** 2026-03-10
 
 ## Learnings
+- 2026-03-10: Added `docs/proposals/tui-design-spec.md` to define a maintainable target architecture for the TUI; it matters because the current monolith mixes canonical state, live stream updates, and direct rendering in ways that make session switching and dedup fragile.
