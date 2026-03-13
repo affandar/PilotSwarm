@@ -306,8 +306,8 @@ process.stderr.write = _origStderr;
 
 // ─── Coalescing render loop (Option B) ───────────────────────────
 // Instead of rendering on every screen.render() call (80+ sites),
-// screen.render() just sets a dirty flag. A 100ms frame loop does
-// the actual render — hard cap at 10fps.
+// screen.render() just sets a dirty flag. A short frame loop does
+// the actual render — capped high enough to keep typing/navigation responsive.
 const _origRender = screen.render.bind(screen);
 let _screenDirty = false;
 let _chatDirty = false;
@@ -326,7 +326,7 @@ screen.realloc = function patchedRealloc() {
     _origRender(); // immediate render, bypass frame loop
 };
 
-// Frame loop — 10fps max
+// Frame loop — ~30fps max
 setInterval(() => {
     // Sync chat buffer → chatBox before rendering (Option C)
     if (_chatDirty) {
@@ -382,7 +382,7 @@ setInterval(() => {
             }) + "\n");
         }
     }
-}, 100);
+}, 33);
 
 // ─── Layout calculations ─────────────────────────────────────────
 // Left column: sessions (top) + chat (bottom). Right column: full-height logs.
@@ -3049,10 +3049,11 @@ function updateSessionListIcons() {
         const isActive = id === activeOrchId;
         const marker = isActive ? "{bold}▸{/bold}" : " ";
         const changeDot = hasChanges ? "{cyan-fg}{bold}●{/bold}{/cyan-fg} " : "";
+        const statusIconSlot = statusIcon ? statusIcon + " " : "  ";
         const heading = sessionHeadings.get(id);
         // Use cached depth from last full refresh
         const depth = orchDepthMap?.get(id) ?? 0;
-        const indent = depth > 0 ? "  ".repeat(depth - 1) + "└ " : "";
+        const indent = depth > 0 ? "   ".repeat(depth - 1) + "  └ " : "";
 
         // System sessions get special rendering: yellow, ≋ icon
         if (systemSessionIds.has(id)) {
@@ -3066,7 +3067,7 @@ function updateSessionListIcons() {
             const label = heading
                 ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
                 : `(${uuid4}) ${timeStr}${collapseBadge}`;
-            orchList.setItem(i, `${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
+            orchList.setItem(i, `${indent}${marker}${changeDot}${statusIconSlot}{${color}-fg}${label}{/${color}-fg}`);
         }
     }
     perfEnd(_ph, { n: orchIdOrder.length });
@@ -3357,8 +3358,9 @@ async function refreshOrchestrations(force = false) {
                 statusIcon = "{white-fg}z{/white-fg}";
             }
 
+            const statusIconSlot = statusIcon ? statusIcon + " " : "  ";
             const heading = sessionHeadings.get(id);
-            const indent = depth > 0 ? "  ".repeat(depth - 1) + "└ " : "";
+            const indent = depth > 0 ? "   ".repeat(depth - 1) + "  └ " : "";
 
             // System sessions get special rendering: yellow, ≋ icon
             if (systemSessionIds.has(id)) {
@@ -3372,7 +3374,7 @@ async function refreshOrchestrations(force = false) {
                 const label = heading
                     ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
                     : `(${uuid4}) ${timeStr}${collapseBadge}`;
-                orchList.addItem(`${indent}${marker}${changeDot}${statusIcon ? statusIcon + " " : ""}{${color}-fg}${label}{/${color}-fg}`);
+                orchList.addItem(`${indent}${marker}${changeDot}${statusIconSlot}{${color}-fg}${label}{/${color}-fg}`);
             }
         }
         // Show hint if there are only system sessions (no user sessions)
@@ -5043,19 +5045,18 @@ screen.on("keypress", (ch, key) => {
     if ((ch === "+" || ch === "=" || ch === "-") && screen.focused === orchList) {
         const idx = orchList.selected;
         if (idx >= 0 && idx < orchIdOrder.length) {
+            const id = orchIdOrder[idx];
+            const hasChildren = (orchChildrenOf.get(id) || []).length > 0;
             if (ch === "+" || ch === "=") {
-                const id = orchIdOrder[idx];
-                if (collapsedParents.has(id)) {
+                if (hasChildren && collapsedParents.has(id)) {
                     collapsedParents.delete(id);
+                    orchSelectFollowActive = false;
                     refreshOrchestrations();
                 }
             } else {
-                let id = orchIdOrder[idx];
-                if (orchChildToParent.has(id)) {
-                    id = orchChildToParent.get(id);
-                }
-                if (orchChildrenOf.has(id) && !collapsedParents.has(id)) {
+                if (hasChildren && !collapsedParents.has(id)) {
                     collapsedParents.add(id);
+                    orchSelectFollowActive = false;
                     refreshOrchestrations();
                 }
             }
