@@ -27,9 +27,60 @@ npm install pilotswarm pilotswarm-cli
 Create an `.env` file in your project root with your connection details:
 
 ```bash
-GITHUB_TOKEN=your_github_token_here
+# Required
 DATABASE_URL=postgres://localhost:5432/pilotswarm
+GITHUB_TOKEN=your_github_token_here
+
+# Optional — for remote mode with session dehydration
+AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
+
+# Optional — worker tuning
+WORKERS=4
+LOG_LEVEL=info
 ```
+
+### Configuring Model Providers
+
+By default, PilotSwarm uses the GitHub Copilot API with your `GITHUB_TOKEN`. For more control — multiple providers, specific models, Azure OpenAI — create a `model_providers.json` in your project root:
+
+```json
+{
+  "providers": [
+    {
+      "id": "github-copilot",
+      "type": "github",
+      "githubToken": "env:GITHUB_TOKEN",
+      "models": [
+        {
+          "name": "claude-sonnet-4.6",
+          "description": "Fast and capable for code analysis",
+          "cost": "medium"
+        },
+        "gpt-4.1"
+      ]
+    },
+    {
+      "id": "azure-openai",
+      "type": "azure",
+      "baseUrl": "https://your-resource.openai.azure.com/openai",
+      "apiKey": "env:AZURE_OPENAI_KEY",
+      "apiVersion": "2024-10-21",
+      "models": ["gpt-4.1-mini"]
+    }
+  ],
+  "defaultModel": "github-copilot:claude-sonnet-4.6"
+}
+```
+
+The `env:VAR_NAME` syntax pulls secrets from environment variables at load time — no hardcoded keys. The worker discovers this file automatically from the working directory.
+
+Use `--model` on the CLI to override the default for a session:
+
+```bash
+npx pilotswarm-tui --env .env --plugin ./test-swarm-plugin --model azure-openai:gpt-4.1-mini
+```
+
+See [Plugin Architecture Guide](plugin-architecture-guide.md) for the full provider type reference.
 
 Verify the CLI is available:
 
@@ -290,6 +341,32 @@ npx pilotswarm-tui \
 | `--store <url>` | `-s` | Database connection URL (overrides env) |
 
 For larger codebases, increase the worker count with `-n 4` so multiple agents can execute LLM turns concurrently.
+
+### Worker Configuration
+
+The CLI manages workers for you, but understanding the configuration helps when scaling up:
+
+| Setting | CLI Flag | Env Var | Default | Description |
+|---------|----------|---------|---------|-------------|
+| Workers | `--workers` / `-n` | `WORKERS` | 4 | Concurrent LLM execution threads |
+| Model | `--model` / `-m` | `COPILOT_MODEL` | From `model_providers.json` | LLM model for new sessions |
+| Plugin dir | `--plugin` / `-p` | `PLUGIN_DIRS` | none | Plugin directory to load |
+| Database | `--store` / `-s` | `DATABASE_URL` | from env | PostgreSQL connection URL |
+| Log level | `--log-level` | `LOG_LEVEL` | `error` | Trace verbosity (`error`, `warn`, `info`, `debug`) |
+| System prompt | `--system` | `SYSTEM_MESSAGE` | from plugin default | Base system message (path or inline) |
+
+In **local mode**, these configure the embedded workers. In **remote mode** (`npx pilotswarm-tui remote`), the TUI is a lightweight client — workers run separately and are configured via their own environment:
+
+```bash
+# Remote worker environment (.env on the worker machine)
+DATABASE_URL=postgres://your-shared-db:5432/pilotswarm
+GITHUB_TOKEN=ghp_...
+AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;...
+PLUGIN_DIRS=./test-swarm-plugin
+LOG_LEVEL=info
+```
+
+Blob storage (`AZURE_STORAGE_CONNECTION_STRING`) is required for remote mode — it enables session dehydration so sessions can migrate between workers. Without it, sessions are pinned to the worker that created them.
 
 ## Watching It Work in the TUI
 

@@ -2,6 +2,11 @@
 
 ## **⚠️ NEVER commit, push, or deploy without explicit user permission. ALWAYS ask first.**
 
+> **MANDATORY:** Do NOT run `git commit`, `git push`, `git tag`, deploy scripts, or any
+> operation that modifies the repository history or remote state without the user
+> explicitly saying "commit", "push", or "deploy". Stage files and describe what
+> you'd commit, then ask. This applies to ALL agents including Squad members.
+
 ## Project Overview
 
 pilotswarm is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide) (a Rust-based durable orchestration engine). It provides **crash recovery, durable timers, session dehydration, and multi-node scaling**.
