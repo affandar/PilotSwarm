@@ -56,6 +56,8 @@ export interface SerializableSessionConfig {
 export interface ManagedSessionConfig extends SerializableSessionConfig {
     tools?: Tool<any>[];
     hooks?: SessionConfig["hooks"];
+    /** Turn timeout in milliseconds. 0 or undefined = no timeout. */
+    turnTimeoutMs?: number;
 }
 
 // ─── Session Status ──────────────────────────────────────────────
@@ -169,6 +171,24 @@ export interface PilotSwarmWorkerOptions {
     blobContainer?: string;
 
     /**
+     * Turn timeout in milliseconds. If a single LLM turn takes longer than this,
+     * it is aborted. 0 or undefined = no timeout (default).
+     */
+    turnTimeoutMs?: number;
+
+    /**
+     * Base directory for local session state files.
+     * Default: `~/.copilot/session-state`.
+     */
+    sessionStateDir?: string;
+
+    /**
+     * Optional trace callback for startup diagnostics.
+     * If not provided, trace messages are discarded.
+     */
+    traceWriter?: (msg: string) => void;
+
+    /**
      * Custom LLM provider (BYOK — Bring Your Own Key).
      * When specified, uses this API endpoint instead of the GitHub Copilot API.
      * Eliminates the need for a GitHub token.
@@ -249,10 +269,16 @@ export interface PilotSwarmWorkerOptions {
      * Defines multiple LLM providers (GitHub Copilot, Azure OpenAI, OpenAI, Anthropic)
      * each with their own endpoints, API keys, and available models.
      *
-     * If not specified, auto-discovers `model_providers.json` in cwd or /app/.
+     * If not specified, auto-discovers `.model_providers.json` in cwd or /app/.
      * Falls back to legacy env vars (LLM_ENDPOINT, GITHUB_TOKEN) if no file found.
      */
     modelProvidersPath?: string;
+
+    /**
+     * Disable SDK-bundled management agents (pilotswarm, resourcemgr, sweeper).
+     * Default: false. Set to true for headless/minimal deployments.
+     */
+    disableManagementAgents?: boolean;
 }
 
 // ─── Client Options ──────────────────────────────────────────────
@@ -265,6 +291,12 @@ export interface PilotSwarmClientOptions {
     dehydrateThreshold?: number;
     dehydrateOnInputRequired?: number;
     dehydrateOnIdle?: number;
+
+    /**
+     * Optional trace callback for startup diagnostics.
+     * If not provided, trace messages are discarded.
+     */
+    traceWriter?: (msg: string) => void;
 
     /** Seconds between periodic checkpoints (blob upload without losing session pin). -1 = disabled. */
     checkpointInterval?: number;

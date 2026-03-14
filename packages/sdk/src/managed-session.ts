@@ -664,8 +664,8 @@ export class ManagedSession {
         });
 
         // Optional timeout race — disabled by default.
-        // If TURN_TIMEOUT_MS is set to a positive value, enforce it.
-        const TURN_TIMEOUT = parseInt(process.env.TURN_TIMEOUT_MS ?? "0", 10);
+        // Uses turnTimeoutMs from session config if set.
+        const TURN_TIMEOUT = this.config.turnTimeoutMs ?? 0;
         const timeoutPromise = TURN_TIMEOUT > 0
             ? new Promise<void>((_, reject) => {
                 setTimeout(() => reject(new Error("Turn timed out")), TURN_TIMEOUT);

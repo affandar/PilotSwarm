@@ -206,8 +206,7 @@ export class PilotSwarmClient {
     async start(): Promise<void> {
         if (this.started) return;
         const store = this.config.store;
-        const fs = await import("node:fs");
-        const _trace = (msg: string) => fs.appendFileSync("/tmp/pilotswarm-trace.log", `${new Date().toISOString()} ${msg}\n`);
+        const _trace = this.config.traceWriter ?? (() => {});
 
         // Create duroxide client
         let provider: any;

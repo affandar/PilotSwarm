@@ -270,6 +270,10 @@ export function loadModelProviders(filePath?: string): ModelProviderRegistry | n
     }
 
     const searchPaths = [
+        ".model_providers.json",
+        path.join(process.cwd(), ".model_providers.json"),
+        "/app/.model_providers.json",
+        // Legacy fallback
         "model_providers.json",
         path.join(process.cwd(), "model_providers.json"),
         "/app/model_providers.json",

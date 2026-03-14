@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-const SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
+const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
 
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
@@ -30,6 +30,8 @@ export interface WorkerDefaults {
     };
     /** Multi-provider model registry. Takes precedence over `provider`. */
     modelProviders?: ModelProviderRegistry;
+    /** Turn timeout in milliseconds. 0 or undefined = no timeout. */
+    turnTimeoutMs?: number;
 }
 
 /**
@@ -53,14 +55,18 @@ export class SessionManager {
     private toolRegistry = new Map<string, Tool<any>>();
     /** Worker-level defaults for building blocks. */
     private workerDefaults: WorkerDefaults;
+    /** Base directory for local session state files. */
+    private sessionStateDir: string;
 
     constructor(
         private githubToken?: string,
         blobStore?: SessionBlobStore | null,
         workerDefaults?: WorkerDefaults,
+        sessionStateDir?: string,
     ) {
         this.blobStore = blobStore ?? null;
         this.workerDefaults = workerDefaults ?? {};
+        this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
     }
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
@@ -116,6 +122,7 @@ export class SessionManager {
             ...serializableConfig,
             tools: resolvedTools.length > 0 ? resolvedTools : undefined,
             hooks: storedConfig?.hooks,
+            turnTimeoutMs: this.workerDefaults.turnTimeoutMs,
         };
 
         // 1. Check if already in memory (warm) — update config in case
@@ -127,7 +134,7 @@ export class SessionManager {
         }
 
         const client = await this.ensureClient();
-        const sessionDir = path.join(SESSION_STATE_DIR, sessionId);
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
 
         // Merge user tools with system tool definitions (wait, ask_user, sub-agent tools)
         // so the LLM sees them at session creation time.
@@ -239,7 +246,7 @@ export class SessionManager {
                 if (attempt < MAX_RETRIES) {
                     // Re-create the session from local files so we can try destroy again.
                     // The session directory should exist — runTurn wrote to it.
-                    const sessionDir = path.join(SESSION_STATE_DIR, sessionId);
+                    const sessionDir = path.join(this.sessionStateDir, sessionId);
                     if (fs.existsSync(sessionDir)) {
                         try {
                             const client = await this.ensureClient();

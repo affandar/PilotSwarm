@@ -2,7 +2,7 @@
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { Client, PostgresProvider } = require("duroxide");
-import { PgSessionCatalogProvider } from "../dist/cms.js";
+import { PgSessionCatalogProvider } from "../packages/sdk/dist/cms.js";
 
 (async () => {
   const provider = await PostgresProvider.connectWithSchema(process.env.DATABASE_URL, "duroxide");

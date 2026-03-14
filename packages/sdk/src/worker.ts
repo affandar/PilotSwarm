@@ -25,9 +25,12 @@ import type { PilotSwarmWorkerOptions, ManagedSessionConfig, OrchestrationInput 
 import type { AgentConfig } from "./agent-loader.js";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
+
+const __sdkDir = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
 
@@ -80,6 +83,7 @@ export class PilotSwarmWorker {
             this.blobStore = new SessionBlobStore(
                 options.blobConnectionString,
                 options.blobContainer ?? "copilot-sessions",
+                options.sessionStateDir,
             );
         }
 
@@ -99,7 +103,9 @@ export class PilotSwarmWorker {
                 mcpServers: this._loadedMcpServers,
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
+                turnTimeoutMs: options.turnTimeoutMs,
             },
+            options.sessionStateDir,
         );
     }
 
@@ -348,51 +354,42 @@ export class PilotSwarmWorker {
     // ─── Internal ────────────────────────────────────────────
 
     /**
-     * Load plugin contents from plugin directories + direct config.
-     * Reads skills, agents, and MCP from each plugin dir and merges
-     * with any direct config from PilotSwarmWorkerOptions.
+     * Load plugin contents from SDK bundled plugins + app plugin directories.
+     *
+     * Three-tier loading order:
+     *   1. system/  — SDK core (always loaded: base system prompt, durable-timers, sub-agents)
+     *   2. mgmt/    — SDK management agents (loaded unless disableManagementAgents is true)
+     *   3. app      — Consumer-provided plugin dirs (from pluginDirs option)
+     *   4. direct   — Inline config (skillDirectories, customAgents, mcpServers options)
+     *
+     * Agents merge by name (later tiers override earlier).
+     * Skills merge additively (all dirs combined).
+     * MCP servers merge by name (later tiers override earlier).
      */
     private _loadPlugins(): void {
-        // 1. Load from plugin directories
+        // ── Tier 1: SDK system plugins (always loaded) ───────────────
+        const sdkPluginsDir = path.resolve(__sdkDir, "..", "plugins");
+        const systemDir = path.join(sdkPluginsDir, "system");
+        this._loadPluginDir(systemDir);
+
+        // ── Tier 2: SDK management plugins (opt-out) ─────────────────
+        if (!(this.config as any).disableManagementAgents) {
+            const mgmtDir = path.join(sdkPluginsDir, "mgmt");
+            this._loadPluginDir(mgmtDir);
+        }
+
+        // ── Tier 3: App plugins (from pluginDirs option) ─────────────
         const pluginDirs = this.config.pluginDirs ?? [];
         for (const pluginDir of pluginDirs) {
             const absDir = path.resolve(pluginDir);
-
             if (!fs.existsSync(absDir)) {
                 console.warn(`[PilotSwarmWorker] Plugin dir not found: ${absDir}`);
                 continue;
             }
-
-            // Skills: each subdirectory of skills/ containing SKILL.md
-            const skillsDir = path.join(absDir, "skills");
-            if (fs.existsSync(skillsDir)) {
-                this._loadedSkillDirs.push(skillsDir);
-            }
-
-            // Agents: parse .agent.md files
-            const agentsDir = path.join(absDir, "agents");
-            if (fs.existsSync(agentsDir)) {
-                const agents = loadAgentFiles(agentsDir);
-                for (const agent of agents) {
-                    if (agent.name === "default") {
-                        // default.agent.md → becomes the base system message,
-                        // not a custom @-mentionable agent.
-                        this._defaultAgentPrompt = agent.prompt;
-                    } else if (agent.system) {
-                        // System agents are started automatically by the worker
-                        this._loadedSystemAgents.push(agent);
-                    } else {
-                        this._loadedAgents.push(agent);
-                    }
-                }
-            }
-
-            // MCP: parse .mcp.json
-            const mcpConfig = loadMcpConfig(absDir);
-            Object.assign(this._loadedMcpServers, mcpConfig);
+            this._loadPluginDir(absDir);
         }
 
-        // 2. Merge direct config (takes precedence over plugins)
+        // ── Tier 4: Direct config (inline options override all) ──────
         if (this.config.skillDirectories?.length) {
             this._loadedSkillDirs.push(...this.config.skillDirectories);
         }
@@ -403,14 +400,14 @@ export class PilotSwarmWorker {
             Object.assign(this._loadedMcpServers, this.config.mcpServers);
         }
 
-        // 3. Prepend default agent prompt to all other agents so they inherit base rules
+        // ── Prepend system prompt to all agents ──────────────────────
         if (this._defaultAgentPrompt) {
             for (const agent of this._loadedAgents) {
                 agent.prompt = `${this._defaultAgentPrompt}\n\n---\n\n${agent.prompt}`;
             }
         }
 
-        // 4. Log summary
+        // ── Log summary ──────────────────────────────────────────────
         const parts: string[] = [];
         if (this._defaultAgentPrompt) parts.push(`default agent (system message)`);
         if (this._loadedSkillDirs.length > 0) parts.push(`${this._loadedSkillDirs.length} skill dir(s)`);
@@ -422,6 +419,38 @@ export class PilotSwarmWorker {
         if (parts.length > 0) {
             console.log(`[PilotSwarmWorker] Loaded: ${parts.join("; ")}`);
         }
+    }
+
+    /**
+     * Load agents, skills, and MCP config from a single plugin directory.
+     */
+    private _loadPluginDir(absDir: string): void {
+        if (!fs.existsSync(absDir)) return;
+
+        // Skills
+        const skillsDir = path.join(absDir, "skills");
+        if (fs.existsSync(skillsDir)) {
+            this._loadedSkillDirs.push(skillsDir);
+        }
+
+        // Agents
+        const agentsDir = path.join(absDir, "agents");
+        if (fs.existsSync(agentsDir)) {
+            const agents = loadAgentFiles(agentsDir);
+            for (const agent of agents) {
+                if (agent.name === "default") {
+                    this._defaultAgentPrompt = agent.prompt;
+                } else if (agent.system) {
+                    this._loadedSystemAgents.push(agent);
+                } else {
+                    this._loadedAgents.push(agent);
+                }
+            }
+        }
+
+        // MCP
+        const mcpConfig = loadMcpConfig(absDir);
+        Object.assign(this._loadedMcpServers, mcpConfig);
     }
 
     /**

@@ -6,20 +6,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 WORKDIR /app
 
-# Copy package manifests and postinstall script, then install
+# Copy workspace root and package manifests
 COPY package.json package-lock.json ./
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/cli/package.json ./packages/cli/
 COPY scripts/postinstall.js ./scripts/
 RUN npm install --omit=dev --force
 
-# Copy built dist, worker script, and plugin
-COPY dist/ ./dist/
-COPY examples/worker.js ./examples/
-COPY plugin/ ./plugin/
+# Copy built SDK dist, worker script, and plugin
+COPY packages/sdk/dist/ ./packages/sdk/dist/
+COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
+COPY packages/cli/plugins/ ./packages/cli/plugins/
 
 # Copy model providers config (if present)
-COPY model_providers.json* ./
+COPY .model_providers.json* ./
 
 # Run as the built-in node user (non-root)
 USER node
 
-ENTRYPOINT ["node", "examples/worker.js"]
+ENTRYPOINT ["node", "packages/sdk/examples/worker.js"]

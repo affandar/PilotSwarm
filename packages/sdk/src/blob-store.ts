@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-const SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
+const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
 
 export interface SessionMetadata {
     sessionId: string;
@@ -37,10 +37,12 @@ export class SessionBlobStore {
     private connectionString: string;
     private containerName: string;
     private credential: StorageSharedKeyCredential | null = null;
+    private sessionStateDir: string;
 
-    constructor(connectionString: string, containerName = "copilot-sessions") {
+    constructor(connectionString: string, containerName = "copilot-sessions", sessionStateDir?: string) {
         this.connectionString = connectionString;
         this.containerName = containerName;
+        this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
         const blobService = BlobServiceClient.fromConnectionString(connectionString);
         this.containerClient = blobService.getContainerClient(containerName);
 
@@ -57,12 +59,12 @@ export class SessionBlobStore {
      * Frees the worker slot for another session.
      */
     async dehydrate(sessionId: string, meta?: Record<string, unknown>): Promise<void> {
-        const sessionDir = path.join(SESSION_STATE_DIR, sessionId);
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (!fs.existsSync(sessionDir)) return;
 
         const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
         try {
-            execSync(`tar czf "${tarPath}" -C "${SESSION_STATE_DIR}" "${sessionId}"`);
+            execSync(`tar czf "${tarPath}" -C "${this.sessionStateDir}" "${sessionId}"`);
 
             // Upload tar
             const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
@@ -93,7 +95,7 @@ export class SessionBlobStore {
      * No-op if local session files already exist.
      */
     async hydrate(sessionId: string): Promise<void> {
-        const sessionDir = path.join(SESSION_STATE_DIR, sessionId);
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
 
         // Always download from blob — overwrite any stale local files
         if (fs.existsSync(sessionDir)) {
@@ -105,8 +107,8 @@ export class SessionBlobStore {
 
         try {
             await tarBlob.downloadToFile(tarPath);
-            fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
-            execSync(`tar xzf "${tarPath}" -C "${SESSION_STATE_DIR}"`);
+            fs.mkdirSync(this.sessionStateDir, { recursive: true });
+            execSync(`tar xzf "${tarPath}" -C "${this.sessionStateDir}"`);
         } finally {
             try { fs.unlinkSync(tarPath); } catch {}
         }
@@ -117,12 +119,12 @@ export class SessionBlobStore {
      * Used for crash resilience — the session stays warm in memory.
      */
     async checkpoint(sessionId: string): Promise<void> {
-        const sessionDir = path.join(SESSION_STATE_DIR, sessionId);
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (!fs.existsSync(sessionDir)) return;
 
         const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
         try {
-            execSync(`tar czf "${tarPath}" -C "${SESSION_STATE_DIR}" "${sessionId}"`);
+            execSync(`tar czf "${tarPath}" -C "${this.sessionStateDir}" "${sessionId}"`);
 
             const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
             await tarBlob.uploadFile(tarPath);

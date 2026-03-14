@@ -40,7 +40,7 @@ if [ ! -d node_modules ] || [ package.json -nt node_modules/.package-lock.json ]
 fi
 
 # Build TypeScript if needed
-if [ ! -d dist ] || [ "$(find src -newer dist/index.js -name '*.ts' 2>/dev/null | head -1)" ]; then
+if [ ! -d packages/sdk/dist ] || [ "$(find packages/sdk/src -newer packages/sdk/dist/index.js -name '*.ts' 2>/dev/null | head -1)" ]; then
     echo "🔨 Building TypeScript..."
     npm run build
 fi
@@ -51,15 +51,15 @@ case "$MODE" in
     local)
         if [[ "${2:-}" == "--db" ]]; then
             echo "🚀 Starting TUI — 4 local workers, local PG (Ctrl+C to quit)"
-            node bin/tui.js local --env .env
+            node packages/cli/bin/tui.js local --env .env
         else
             echo "🚀 Starting TUI — 4 local workers, remote PG (Ctrl+C to quit)"
-            node bin/tui.js local --env .env.remote
+            node packages/cli/bin/tui.js local --env .env.remote
         fi
         ;;
     remote|scaled)
         echo "🚀 Starting TUI — AKS workers, client-only (Ctrl+C to quit)"
-        node bin/tui.js remote --env .env.remote
+        node packages/cli/bin/tui.js remote --env .env.remote
         ;;
     *)
         echo "Usage: $0 [local|remote] [--db]"

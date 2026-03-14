@@ -1,68 +1,27 @@
 {
-  "name": "pilotswarm",
-  "version": "0.1.0",
-  "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
+  "name": "pilotswarm-monorepo",
+  "private": true,
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "bin": {
-    "pilotswarm-tui": "./bin/tui.js"
-  },
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
-  },
+  "description": "Monorepo for pilotswarm SDK and CLI.",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "node --env-file=.env test/sdk.test.js",
-    "lint": "tsc --noEmit",
-    "clean": "rm -rf dist",
-    "chat": "node --env-file=.env examples/chat.js",
-    "tui": "node bin/tui.js local --env .env.remote",
-    "tui:remote": "node bin/tui.js remote --env .env.remote",
-    "worker": "node --env-file=.env.remote examples/worker.js",
+    "build": "npm run build --workspaces",
+    "dev": "npm run dev --workspace=packages/sdk",
+    "test": "npm test --workspace=packages/sdk",
+    "lint": "npm run lint --workspace=packages/sdk",
+    "clean": "npm run clean --workspaces",
+    "chat": "node --env-file=.env packages/sdk/examples/chat.js",
+    "tui": "npm run tui --workspace=packages/cli",
+    "tui:remote": "npm run tui:remote --workspace=packages/cli",
+    "worker": "node --env-file=.env.remote packages/sdk/examples/worker.js",
     "db:reset": "node --env-file=.env scripts/db-reset.js",
     "postinstall": "node scripts/postinstall.js"
   },
-  "keywords": [
-    "copilot",
-    "durable",
-    "duroxide",
-    "agent",
-    "orchestration",
-    "async"
-  ],
   "author": "Affan Dar",
   "license": "MIT",
-  "dependencies": {
-    "@azure/storage-blob": "^12.31.0",
-    "@bradygaster/squad-cli": "^0.8.25",
-    "@github/copilot": "^1.0.2",
-    "@github/copilot-sdk": "^0.1.32",
-    "chalk": "^5.6.2",
-    "duroxide": "^0.1.15",
-    "duroxide-darwin-arm64": "^0.1.15",
-    "marked": "^15.0.12",
-    "marked-terminal": "^7.3.0",
-    "neo-blessed": "^0.1.81",
-    "pg": "^8.18.0"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/pg": "^8.16.0",
-    "typescript": "^5.0.0"
-  },
   "engines": {
     "node": ">=24.0.0"
-  },
-  "files": [
-    "dist/**/*",
-    "bin/**/*",
-    "cli/tui.js",
-    "plugin/**/*",
-    "README.md"
-  ]
+  }
 }
