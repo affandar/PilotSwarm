@@ -660,6 +660,42 @@ Key points:
 - **`worker.registerTools()`** makes tools available to all sessions by name. The client references them with `toolNames: ["search_events", ...]` — a serializable array of strings that travels through the duroxide orchestration.
 - Tools contain handler functions (non-serializable), so they live on the worker. The client never sees the handler code.
 
+### Worker Configuration Options
+
+The `PilotSwarmWorker` constructor accepts several configuration options beyond the basics shown above:
+
+```javascript
+const worker = new PilotSwarmWorker({
+  // Required
+  store: process.env.DATABASE_URL,
+  githubToken: process.env.GITHUB_TOKEN,
+
+  // Plugins — agents, skills, MCP servers loaded from these directories
+  pluginDirs: ["./travel-plugin"],
+
+  // Blob storage — required for session dehydration across workers
+  blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
+  blobContainer: "copilot-sessions",  // default
+
+  // Model providers — path to model_providers.json (auto-discovered if omitted)
+  modelProvidersPath: "./model_providers.json",
+
+  // Performance tuning
+  maxSessionsPerRuntime: 50,         // concurrent sessions per worker (default: 50)
+  turnTimeoutMs: 120_000,            // LLM turn timeout (default: 2 minutes)
+  sessionIdleTimeoutMs: 3_600_000,   // idle session cleanup (default: 1 hour)
+
+  // Management agents — auto-started system agents for monitoring and maintenance
+  disableManagementAgents: false,    // set true in test environments
+
+  // Ops
+  workerNodeId: process.env.POD_NAME, // identifies this worker in logs and CMS
+  logLevel: "info",                   // "error" | "warn" | "info" | "debug"
+});
+```
+
+For production deployments with multiple workers, each worker connects to the same database and blob storage. They don't need to know about each other — duroxide coordinates via the database queue. See [Deploying to AKS](deploying-to-aks.md) for the full Kubernetes setup.
+
 ## Running and Testing
 
 ### Start Everything
