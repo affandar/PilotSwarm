@@ -13,7 +13,7 @@
  *   npx pilotswarm-tui remote --env .env.remote       # client-only (AKS)
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, systemAgentUUID } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, systemAgentUUID } from "pilotswarm";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -2587,8 +2587,7 @@ if (!isRemote) {
     // System message: env override > worker module > default agent (from plugin)
     const WORKER_SYSTEM_MESSAGE = process.env._TUI_SYSTEM_MESSAGE || undefined;
 
-    // Plugin directories: env override or default to bundled plugin/
-    const defaultPluginDir = path.resolve(__dirname, "..", "plugin");
+    // Plugin directories: env override or default to bundled plugins/\n    const defaultPluginDir = path.resolve(__dirname, "..", "plugins");
     const pluginDirs = process.env.PLUGIN_DIRS
         ? process.env.PLUGIN_DIRS.split(",").map(d => d.trim()).filter(Boolean)
         : (fs.existsSync(defaultPluginDir) ? [defaultPluginDir] : []);
@@ -2793,11 +2792,23 @@ const mgmt = new PilotSwarmManagementClient({
 });
 
 const STARTUP_DB_RETRY_MS = 30_000;
+const STARTUP_DB_CONNECT_TIMEOUT_MS = 10_000;
 
 function isStartupTransientDbError(err) {
     const msg = String(err?.message || err || "");
     return /ENOTFOUND|ETIMEDOUT|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|socket hang up|getaddrinfo|timeout|network|pool timed out while waiting for an open connection/i.test(msg);
 }
+
+// Register quit handler BEFORE the connection loop so the user can always exit.
+let _startupQuit = false;
+let _startupPhase = true;
+screen.key(["C-c"], () => {
+    if (_startupPhase) { _startupQuit = true; process.exit(0); }
+});
+const _startupQHandler = () => {
+    if (_startupPhase) { _startupQuit = true; process.exit(0); }
+};
+screen.key(["q"], _startupQHandler);
 
 setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
 
@@ -2807,9 +2818,18 @@ _origRender();
 
 // Start both clients with retry — they each open their own PG pool.
 // During remote DB outages, keep the TUI alive and retry every 30s.
+// The connection attempt has a hard timeout so bad hosts fail fast.
 while (true) {
     const _startPh = perfStart("startup.clientConnect");
-    const results = await Promise.allSettled([client.start(), mgmt.start()]);
+
+    // Race the connection against a timeout so unreachable hosts don't block for minutes
+    const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Connection timed out (10s deadline)")), STARTUP_DB_CONNECT_TIMEOUT_MS)
+    );
+    const results = await Promise.allSettled([
+        Promise.race([client.start(), timeoutPromise]),
+        Promise.race([mgmt.start(), timeoutPromise]),
+    ]);
     const failure = results.find(r => r.status === "rejected");
 
     if (!failure) {
@@ -2829,9 +2849,15 @@ while (true) {
 
     const msg = String(err?.message || err || "Unknown database error");
     setStatus(`Database unavailable — retrying in 30s (${msg.slice(0, 80)})`);
-    chatBox.setContent(`${STARTUP_SPLASH_CONTENT}\n\n  {yellow-fg}Database unavailable.{/yellow-fg}\n  {white-fg}${msg}{/white-fg}\n\n  {gray-fg}Retrying connection in 30 seconds...{/gray-fg}`);
+    chatBox.setContent(`${STARTUP_SPLASH_CONTENT}\n\n  {yellow-fg}Database unavailable.{/yellow-fg}\n  {white-fg}${msg}{/white-fg}\n\n  {gray-fg}Retrying connection in 30 seconds... (press q or Ctrl+C to quit){/gray-fg}`);
     _origRender();
-    await new Promise(r => setTimeout(r, STARTUP_DB_RETRY_MS));
+
+    // Interruptible sleep — check every 500ms if the user pressed quit
+    const retryEnd = Date.now() + STARTUP_DB_RETRY_MS;
+    while (Date.now() < retryEnd) {
+        if (_startupQuit) process.exit(0);
+        await new Promise(r => setTimeout(r, 500));
+    }
 }
 
 // Populate model info from management client
@@ -2856,6 +2882,8 @@ if (!modelProviders) {
 }
 
 setStatus("Ready — type a message");
+_startupPhase = false; // Disable startup quit handlers — normal key handling takes over
+screen.unkey(["q"], _startupQHandler);
 appendLog(isRemote
     ? "Client connected ✓ {white-fg}(no local runtime){/white-fg}"
     : `Client connected ✓ {white-fg}(${numWorkers} embedded workers){/white-fg}`);

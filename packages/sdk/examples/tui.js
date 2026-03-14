@@ -13,7 +13,7 @@
  *   WORKERS=0 node --env-file=.env.remote examples/tui.js # client-only (AKS)
  */
 
-import { PilotSwarmClient, PilotSwarmWorker } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";

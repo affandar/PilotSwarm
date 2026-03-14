@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { PgSessionCatalogProvider } from "../dist/cms.js";
+import { PgSessionCatalogProvider } from "../packages/sdk/dist/cms.js";
 (async () => {
   const cat = await PgSessionCatalogProvider.create(process.env.DATABASE_URL);
   await cat.initialize();

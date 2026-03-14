@@ -75,6 +75,11 @@ export interface PilotSwarmManagementClientOptions {
     cmsSchema?: string;
     /** Path to model_providers.json. Auto-discovers if not set. */
     modelProvidersPath?: string;
+    /**
+     * Optional trace callback for startup diagnostics.
+     * If not provided, trace messages are discarded.
+     */
+    traceWriter?: (msg: string) => void;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -95,8 +100,7 @@ export class PilotSwarmManagementClient {
     async start(): Promise<void> {
         if (this._started) return;
         const store = this.config.store;
-        const fs = await import("node:fs");
-        const _trace = (msg: string) => fs.appendFileSync("/tmp/pilotswarm-trace.log", `${new Date().toISOString()} ${msg}\n`);
+        const _trace = this.config.traceWriter ?? (() => {});
 
         // Create duroxide client
         let provider: any;

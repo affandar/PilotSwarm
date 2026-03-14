@@ -169,11 +169,11 @@ function resolvePluginDir() {
         const dirs = process.env.PLUGIN_DIRS.split(",").map(d => d.trim()).filter(Boolean);
         return dirs[0] || null;
     }
-    // Auto-detect: ./plugin in cwd, then bundled plugin in SDK
-    const cwdPlugin = path.resolve("plugin");
+    // Auto-detect: ./plugins in cwd, then bundled plugins in CLI package
+    const cwdPlugin = path.resolve("plugins");
     if (fs.existsSync(cwdPlugin)) return cwdPlugin;
-    const sdkPlugin = path.join(pkgRoot, "plugin");
-    if (fs.existsSync(sdkPlugin)) return sdkPlugin;
+    const bundledPlugin = path.join(pkgRoot, "plugins");
+    if (fs.existsSync(bundledPlugin)) return bundledPlugin;
     return null;
 }
 

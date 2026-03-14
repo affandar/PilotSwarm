@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { PgSessionCatalogProvider } from "../dist/cms.js";
+import { PgSessionCatalogProvider } from "../packages/sdk/dist/cms.js";
 
 const sessionId = process.argv[2] || "a5d2ba9f-0b2c-4877-866e-ddc29e8bc06b";
 

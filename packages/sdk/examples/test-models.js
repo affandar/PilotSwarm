@@ -7,8 +7,7 @@
  * If no models specified, tests all models from model_providers.json.
  */
 
-import { PilotSwarmClient, PilotSwarmWorker } from "../dist/index.js";
-import { loadModelProviders } from "../dist/model-providers.js";
+import { PilotSwarmClient, PilotSwarmWorker, loadModelProviders } from "pilotswarm";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 

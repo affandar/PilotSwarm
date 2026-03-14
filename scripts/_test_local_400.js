@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Quick local test: replicate PilotSwarm session via PilotSwarmClient/Worker API.
 // Usage: node --env-file=.env scripts/_test_local_400.js
-import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "../packages/sdk/dist/index.js";
 
 const token = process.env.GITHUB_TOKEN;
 if (!token) { console.error("GITHUB_TOKEN required"); process.exit(1); }
