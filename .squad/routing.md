@@ -25,6 +25,8 @@ How to decide who handles what.
 | Kubernetes manifests, Dockerfiles | Dallas | deploy/ directory, k8s configs |
 | CI/CD pipelines, workflows | Dallas | GitHub Actions, build pipelines |
 | Infrastructure monitoring, health | Dallas | Cluster health, pod logs, resource usage |
+| Documentation, guides, tutorials | Brett | docs/ content, README, blog posts, architecture guides |
+| API reference, changelog | Brett | API docs, CHANGELOG.md, release notes |
 | Session logging | Scribe | Automatic — never needs routing |
 
 ## Issue Routing
