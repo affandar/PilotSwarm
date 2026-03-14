@@ -243,6 +243,7 @@ export class PilotSwarmWorker {
                 catalog: this._catalog,
                 duroxideClient: sweeperClient,
                 duroxideSchema: this.config.duroxideSchema,
+                storeUrl: this.config.store,
             });
             this.registerTools(sweeperTools);
         }

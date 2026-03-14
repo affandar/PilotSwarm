@@ -26,6 +26,7 @@ export function createSweeperTools(opts: {
     catalog: SessionCatalogProvider;
     duroxideClient: any;
     duroxideSchema?: string;
+    storeUrl?: string;
 }): Tool<any>[] {
     const { catalog, duroxideClient } = opts;
 
@@ -325,7 +326,7 @@ export function createSweeperTools(opts: {
     const statsTool = defineTool("get_system_stats", {
         description:
             "Get runtime statistics: total sessions, active count, completed count, " +
-            "zombie count, memory usage, and uptime.",
+            "zombie count, memory usage, uptime, and database connection info.",
         parameters: {
             type: "object" as const,
             properties: {},
@@ -333,6 +334,22 @@ export function createSweeperTools(opts: {
         handler: async () => {
             try {
                 const allSessions = await catalog.listSessions();
+
+                // Parse database host/name from store URL (strip credentials)
+                let database: { host?: string; port?: string; name?: string; provider?: string } = {};
+                if (opts.storeUrl) {
+                    try {
+                        const url = new URL(opts.storeUrl);
+                        database.host = url.hostname;
+                        database.port = url.port || "5432";
+                        database.name = url.pathname.replace(/^\//, "") || "postgres";
+                        // Detect provider from hostname
+                        if (url.hostname.includes(".horizondb.azure.com")) database.provider = "Azure HorizonDB";
+                        else if (url.hostname.includes(".postgres.database.azure.com")) database.provider = "Azure Flexible Server";
+                        else if (url.hostname.includes(".azure.com")) database.provider = "Azure";
+                        else database.provider = "PostgreSQL";
+                    } catch {}
+                }
 
                 const stats = {
                     total: allSessions.length,
@@ -342,6 +359,7 @@ export function createSweeperTools(opts: {
                     rootSessions: 0,
                     memoryMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
                     uptimeMinutes: Math.round(process.uptime() / 60),
+                    database,
                 };
 
                 for (const s of allSessions) {
