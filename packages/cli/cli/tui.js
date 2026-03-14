@@ -1629,8 +1629,8 @@ function switchLogMode() {
     relayoutAll();
     // Reset focus to sessions list when panes change
     orchList.focus();
-    // Force full repaint on next tick (same as pressing 'r')
-    setTimeout(() => { screen.realloc(); screen.render(); }, 0);
+    // Force full repaint on next tick to clear any stale glyphs from the prior view.
+    setTimeout(() => { forceFullRepaint(); }, 0);
 }
 
 /**
@@ -2091,6 +2091,16 @@ function appendChat(text, orchId) {
 // scheduleRender() is kept as a convenience alias.
 function scheduleRender() {
     _screenDirty = true;
+}
+
+function forceFullRepaint() {
+    screen.realloc();
+    relayoutAll();
+    if (logViewMode === "sequence") refreshSeqPane();
+    else if (logViewMode === "nodemap") refreshNodeMap();
+    else if (logViewMode === "orchestration") refreshOrchLogPane();
+    else recolorWorkerPanes();
+    screen.render();
 }
 
 const MAX_CHAT_BUFFER_LINES = 500;
@@ -3050,11 +3060,11 @@ function updateSessionListIcons() {
         } else if (liveStatus === "error") {
             statusIcon = "{red-fg}!{/red-fg}";
         } else if (liveStatus === "waiting") {
-            statusIcon = "{blue-fg}~{/blue-fg}";
+            statusIcon = "{yellow-fg}~{/yellow-fg}";
         } else if (liveStatus === "input_required") {
-            statusIcon = "{magenta-fg}?{/magenta-fg}";
+            statusIcon = "{cyan-fg}?{/cyan-fg}";
         } else if (liveStatus === "idle") {
-            statusIcon = "{white-fg}z{/white-fg}";
+            statusIcon = "{gray-fg}z{/gray-fg}";
         }
 
         // Rebuild just this item's label
@@ -3067,11 +3077,17 @@ function updateSessionListIcons() {
                 hour12: false,
             })
             : "";
+        // Line color from live status (matches node map), falling back to orchestration status
         let color = "white";
-        if (status === "Running") color = "green";
+        if (status === "Completed") color = "gray";
         else if (status === "Failed") color = "red";
-        else if (status === "Completed") color = "gray";
         else if (status === "Terminated") color = "yellow";
+        else if (liveStatus === "running") color = "green";
+        else if (liveStatus === "waiting") color = "yellow";
+        else if (liveStatus === "idle") color = "gray";
+        else if (liveStatus === "input_required") color = "cyan";
+        else if (liveStatus === "error") color = "red";
+        else if (status === "Running") color = "green";
 
         const hasChanges = orchHasChanges.has(id);
         const isActive = id === activeOrchId;
@@ -3357,11 +3373,18 @@ async function refreshOrchestrations(force = false) {
                     hour12: false,
                 })
                 : "";
+            // Line color from live status (matches node map), falling back to orchestration status
+            const liveStatus = sessionLiveStatus.get(id);
             let color = "white";
-            if (status === "Running") color = "green";
+            if (status === "Completed") color = "gray";
             else if (status === "Failed") color = "red";
-            else if (status === "Completed") color = "gray";
             else if (status === "Terminated") color = "yellow";
+            else if (liveStatus === "running") color = "green";
+            else if (liveStatus === "waiting") color = "yellow";
+            else if (liveStatus === "idle") color = "gray";
+            else if (liveStatus === "input_required") color = "cyan";
+            else if (liveStatus === "error") color = "red";
+            else if (status === "Running") color = "green";
 
             // Highlight sessions with unseen changes
             const hasChanges = orchHasChanges.has(id);
@@ -3369,8 +3392,7 @@ async function refreshOrchestrations(force = false) {
             const marker = isActive ? "{bold}▸{/bold}" : " ";
             const changeDot = hasChanges ? "{cyan-fg}{bold}●{/bold}{/cyan-fg} " : "";
 
-            // Live status indicator
-            const liveStatus = sessionLiveStatus.get(id);
+            // Live status indicator (colors match node map)
             let statusIcon = "";
             if (status === "Completed" || status === "Failed" || status === "Terminated") {
                 statusIcon = ""; // no icon for terminal states
@@ -3379,11 +3401,11 @@ async function refreshOrchestrations(force = false) {
             } else if (liveStatus === "error") {
                 statusIcon = "{red-fg}!{/red-fg}";
             } else if (liveStatus === "waiting") {
-                statusIcon = "{blue-fg}~{/blue-fg}";
+                statusIcon = "{yellow-fg}~{/yellow-fg}";
             } else if (liveStatus === "input_required") {
-                statusIcon = "{magenta-fg}?{/magenta-fg}";
+                statusIcon = "{cyan-fg}?{/cyan-fg}";
             } else if (liveStatus === "idle") {
-                statusIcon = "{white-fg}z{/white-fg}";
+                statusIcon = "{gray-fg}z{/gray-fg}";
             }
 
             const statusIconSlot = statusIcon ? statusIcon + " " : "  ";
@@ -4522,11 +4544,12 @@ async function switchToOrchestration(orchId) {
         updateSessionListIcons();
         screen.render();
 
-        // Defer heavier right-pane redraw to the next tick so session switching
-        // feels instant even when sequence/log panes have a lot of content.
+        // Defer a full repaint to the next tick. Simple content swaps can leave
+        // stale characters behind in blessed when switching between sessions
+        // with different pane content, especially in log/sequence views.
         setTimeout(() => {
             if (orchId === activeOrchId) {
-                redrawActiveViews();
+                forceFullRepaint();
             }
         }, 0);
 
@@ -5225,11 +5248,6 @@ screen.on("keypress", (ch, key) => {
     // m: cycle log viewing mode (only from non-input panes, disabled during md view)
     if (ch === "m" && screen.focused !== inputBar) {
         switchLogMode();
-        // Force the same full repaint that 'r' does
-        screen.realloc();
-        relayoutAll();
-        if (logViewMode === "sequence") refreshSeqPane();
-        if (logViewMode === "nodemap") refreshNodeMap();
         const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" };
         setStatus(`Log mode: ${modeNames[logViewMode]}`);
         return;
@@ -5237,10 +5255,7 @@ screen.on("keypress", (ch, key) => {
 
     // r: force full redraw (same as resize)
     if (ch === "r" && screen.focused !== inputBar) {
-        screen.realloc();
-        relayoutAll();
-        if (logViewMode === "sequence") refreshSeqPane();
-        if (logViewMode === "nodemap") refreshNodeMap();
+        forceFullRepaint();
 
     // [ / ]: resize right pane by 8 chars
     } else if ((ch === "[" || ch === "]") && screen.focused !== inputBar) {
