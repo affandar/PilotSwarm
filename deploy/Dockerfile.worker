@@ -13,8 +13,9 @@ COPY packages/cli/package.json ./packages/cli/
 COPY scripts/postinstall.js ./scripts/
 RUN npm install --omit=dev --force
 
-# Copy built SDK dist, worker script, and plugin
+# Copy built SDK dist + bundled plugins, worker script, and app plugins
 COPY packages/sdk/dist/ ./packages/sdk/dist/
+COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
 COPY packages/cli/plugins/ ./packages/cli/plugins/
 
