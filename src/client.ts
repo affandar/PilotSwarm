@@ -206,13 +206,17 @@ export class PilotSwarmClient {
     async start(): Promise<void> {
         if (this.started) return;
         const store = this.config.store;
+        const fs = await import("node:fs");
+        const _trace = (msg: string) => fs.appendFileSync("/tmp/pilotswarm-trace.log", `${new Date().toISOString()} ${msg}\n`);
 
         // Create duroxide client
         let provider: any;
         if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
         else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
         else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+            _trace("[client] connectWithSchema start...");
             provider = await PostgresProvider.connectWithSchema(store, this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA);
+            _trace("[client] connectWithSchema done");
         } else {
             throw new Error(`Unsupported store URL: ${store}`);
         }
@@ -220,8 +224,11 @@ export class PilotSwarmClient {
 
         // Create CMS catalog
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+            _trace("[client] CMS create start...");
             this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
+            _trace("[client] CMS initialize start...");
             await this._catalog.initialize();
+            _trace("[client] CMS initialize done");
         }
 
         this.started = true;
