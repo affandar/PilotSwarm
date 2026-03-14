@@ -404,8 +404,16 @@ export function* durableSessionOrchestration_1_0_9(
                     needsHydration = false;
                     break;
                 } catch (hydrateErr: any) {
-                    hydrateAttempts++;
                     const hMsg = hydrateErr.message || String(hydrateErr);
+
+                    // Blob was deleted (e.g. after a reset) — skip hydration, start fresh
+                    if (hMsg.includes("blob does not exist") || hMsg.includes("BlobNotFound") || hMsg.includes("404")) {
+                        ctx.traceInfo(`[orch] hydrate skipped — blob not found, starting fresh session`);
+                        needsHydration = false;
+                        break;
+                    }
+
+                    hydrateAttempts++;
                     ctx.traceInfo(`[orch] hydrate FAILED (attempt ${hydrateAttempts}/${MAX_RETRIES}): ${hMsg}`);
                     if (hydrateAttempts >= MAX_RETRIES) {
                         setStatus(ctx, "error", {
