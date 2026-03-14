@@ -80,7 +80,32 @@ try {
         }
     }
 
-    console.log("\n   Done. Database is clean — schemas will be recreated on next start.\n");
+    console.log("\n   Done. Database is clean — schemas will be recreated on next start.");
+
+    // Also purge blob storage if configured
+    const blobConnStr = process.env.AZURE_STORAGE_CONNECTION_STRING;
+    if (blobConnStr) {
+        try {
+            const { BlobServiceClient } = await import("@azure/storage-blob");
+            const container = process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions";
+            const svc = BlobServiceClient.fromConnectionString(blobConnStr);
+            const ctr = svc.getContainerClient(container);
+            let count = 0;
+            for await (const blob of ctr.listBlobsFlat()) {
+                await ctr.deleteBlob(blob.name);
+                count++;
+            }
+            if (count > 0) {
+                console.log(`   ✅ Purged ${count} blob(s) from ${container}`);
+            } else {
+                console.log(`   ✅ Blob storage already empty (${container})`);
+            }
+        } catch (err) {
+            console.log(`   ⚠️  Blob purge failed: ${err.message}`);
+        }
+    }
+
+    console.log("");
 } catch (err) {
     console.error(`\n   ❌ Error: ${err.message}\n`);
     process.exit(1);
