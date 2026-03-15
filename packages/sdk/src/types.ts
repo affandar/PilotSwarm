@@ -350,3 +350,49 @@ export interface CommandResponse {
     result?: unknown;
     error?: string;
 }
+
+// ─── KV-Backed Response Channel ────────────────────────────────
+
+export const RESPONSE_VERSION_KEY = "meta.responseVersion";
+export const COMMAND_VERSION_KEY = "meta.commandVersion";
+export const RESPONSE_LATEST_KEY = "response.latest";
+
+export function commandResponseKey(cmdId: string): string {
+    return `command.response.${cmdId}`;
+}
+
+export interface SessionResponsePayload {
+    schemaVersion: 1;
+    version: number;
+    iteration: number;
+    type: "completed" | "wait" | "input_required";
+    content?: string;
+    question?: string;
+    choices?: string[];
+    allowFreeform?: boolean;
+    waitReason?: string;
+    waitSeconds?: number;
+    waitStartedAt?: number;
+    emittedAt: number;
+    model?: string;
+}
+
+export interface SessionCommandResponse extends CommandResponse {
+    schemaVersion: 1;
+    version: number;
+    emittedAt: number;
+}
+
+export interface SessionStatusSignal {
+    status: PilotSwarmSessionStatus;
+    iteration: number;
+    responseVersion?: number;
+    commandVersion?: number;
+    commandId?: string;
+    cmdProcessing?: string;
+    waitReason?: string;
+    waitSeconds?: number;
+    waitStartedAt?: number;
+    error?: string;
+    retriesExhausted?: boolean;
+}

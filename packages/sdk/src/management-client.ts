@@ -11,7 +11,16 @@
  * @module
  */
 
-import type { PilotSwarmSessionStatus } from "./types.js";
+import {
+    RESPONSE_LATEST_KEY,
+    commandResponseKey,
+} from "./types.js";
+import type {
+    PilotSwarmSessionStatus,
+    SessionResponsePayload,
+    SessionCommandResponse,
+    SessionStatusSignal,
+} from "./types.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import { SessionDumper } from "./session-dumper.js";
@@ -44,6 +53,8 @@ export interface PilotSwarmSessionView {
     model?: string;
     error?: string;
     waitReason?: string;
+    pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean };
+    result?: string;
     /** customStatusVersion for change tracking. */
     statusVersion?: number;
 }
@@ -60,7 +71,7 @@ export interface ModelSummary {
 
 /** Status change result from watchSessionStatus. */
 export interface SessionStatusChange {
-    customStatus: any;
+    customStatus: SessionStatusSignal | any;
     customStatusVersion: number;
     orchestrationStatus?: string;
 }
@@ -142,6 +153,16 @@ export class PilotSwarmManagementClient {
         this._started = false;
     }
 
+    private async _readJsonValue<T>(sessionId: string, key: string): Promise<T | null> {
+        try {
+            const raw = await this._duroxideClient.getValue(`session-${sessionId}`, key);
+            if (!raw) return null;
+            return typeof raw === "string" ? JSON.parse(raw) : raw;
+        } catch {
+            return null;
+        }
+    }
+
     // ─── Session Listing ─────────────────────────────────────
 
     /**
@@ -196,6 +217,7 @@ export class PilotSwarmManagementClient {
         let createdAt = row.createdAt.getTime();
         let customStatus: any = {};
         let statusVersion = 0;
+        let latestResponse: SessionResponsePayload | null = null;
 
         try {
             const [info, status] = await Promise.all([
@@ -211,6 +233,9 @@ export class PilotSwarmManagementClient {
                         ? JSON.parse(status.customStatus)
                         : status.customStatus;
                 } catch {}
+            }
+            if (customStatus?.responseVersion) {
+                latestResponse = await this._readJsonValue<SessionResponsePayload>(sessionId, RESPONSE_LATEST_KEY);
             }
         } catch {}
 
@@ -235,6 +260,24 @@ export class PilotSwarmManagementClient {
             model: row.model ?? undefined,
             error: customStatus.error ?? row.lastError ?? undefined,
             waitReason: customStatus.waitReason,
+            pendingQuestion: customStatus.pendingQuestion
+                ? {
+                    question: customStatus.pendingQuestion,
+                    choices: customStatus.choices,
+                    allowFreeform: customStatus.allowFreeform,
+                }
+                : latestResponse?.type === "input_required" && latestResponse.question
+                    ? {
+                        question: latestResponse.question,
+                        choices: latestResponse.choices,
+                        allowFreeform: latestResponse.allowFreeform,
+                    }
+                    : undefined,
+            result: customStatus.turnResult?.type === "completed"
+                ? customStatus.turnResult.content
+                : latestResponse?.type === "completed"
+                    ? latestResponse.content
+                    : undefined,
             statusVersion,
         };
     }
@@ -319,6 +362,22 @@ export class PilotSwarmManagementClient {
             customStatusVersion: status.customStatusVersion || 0,
             orchestrationStatus: status.status,
         };
+    }
+
+    /**
+     * Get the latest KV-backed response payload for a session.
+     */
+    async getLatestResponse(sessionId: string): Promise<SessionResponsePayload | null> {
+        this._ensureStarted();
+        return this._readJsonValue<SessionResponsePayload>(sessionId, RESPONSE_LATEST_KEY);
+    }
+
+    /**
+     * Get the KV-backed response for a command ID.
+     */
+    async getCommandResponse(sessionId: string, cmdId: string): Promise<SessionCommandResponse | null> {
+        this._ensureStarted();
+        return this._readJsonValue<SessionCommandResponse>(sessionId, commandResponseKey(cmdId));
     }
 
     /**
