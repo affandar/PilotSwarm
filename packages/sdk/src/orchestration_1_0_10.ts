@@ -44,7 +44,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.11";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.10";
 
 /**
  * Long-lived durable session orchestration.
@@ -62,13 +62,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.11";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_11(
+export function* durableSessionOrchestration_1_0_10(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.11] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.10] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -117,22 +117,25 @@ export function* durableSessionOrchestration_1_0_11(
     const manager = createSessionManagerProxy(ctx);
     let session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
 
+    function readCounter(key: string): number {
+        const raw = ctx.getValue(key);
+        if (raw == null) return 0;
+        const parsed = Number(raw);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+
     function writeJsonValue(key: string, value: unknown): void {
         ctx.setValue(key, JSON.stringify(value));
     }
 
-    function setCounter(key: string, value: number): void {
-        ctx.setValue(key, String(value));
-    }
-
-    function bumpCounter(current: number, key: string): number {
-        const next = current + 1;
+    function bumpCounter(key: string): number {
+        const next = readCounter(key) + 1;
         ctx.setValue(key, String(next));
         return next;
     }
 
-    let lastResponseVersion = input.responseVersion ?? 0;
-    let lastCommandVersion = input.commandVersion ?? 0;
+    let lastResponseVersion = readCounter(RESPONSE_VERSION_KEY);
+    let lastCommandVersion = readCounter(COMMAND_VERSION_KEY);
     let lastCommandId: string | undefined;
 
     function publishStatus(status: PilotSwarmSessionStatus, extra: Record<string, unknown> = {}): void {
@@ -149,7 +152,7 @@ export function* durableSessionOrchestration_1_0_11(
     function* writeLatestResponse(
         payload: Omit<SessionResponsePayload, "schemaVersion" | "version" | "emittedAt">,
     ): Generator<any, SessionResponsePayload, any> {
-        const version = bumpCounter(lastResponseVersion, RESPONSE_VERSION_KEY);
+        const version = bumpCounter(RESPONSE_VERSION_KEY);
         const emittedAt: number = yield ctx.utcNow();
         const responsePayload: SessionResponsePayload = {
             schemaVersion: 1,
@@ -165,7 +168,7 @@ export function* durableSessionOrchestration_1_0_11(
     function* writeCommandResponse(
         response: CommandResponse,
     ): Generator<any, SessionCommandResponse, any> {
-        const version = bumpCounter(lastCommandVersion, COMMAND_VERSION_KEY);
+        const version = bumpCounter(COMMAND_VERSION_KEY);
         const emittedAt: number = yield ctx.utcNow();
         const payload: SessionCommandResponse = {
             ...response,
@@ -178,11 +181,6 @@ export function* durableSessionOrchestration_1_0_11(
         lastCommandId = response.id;
         return payload;
     }
-
-    // Mirror the carried counters into KV so external readers can inspect them,
-    // but source them from orchestration state to keep replay deterministic.
-    setCounter(RESPONSE_VERSION_KEY, lastResponseVersion);
-    setCounter(COMMAND_VERSION_KEY, lastCommandVersion);
 
     // ─── Helper: wrap prompt with resume context after dehydration ──
     function wrapWithResumeContext(userPrompt: string, extra?: string): string {
@@ -201,8 +199,6 @@ export function* durableSessionOrchestration_1_0_11(
             sessionId: input.sessionId,
             config,
             iteration,
-            responseVersion: lastResponseVersion,
-            commandVersion: lastCommandVersion,
             affinityKey,
             needsHydration,
             blobEnabled,

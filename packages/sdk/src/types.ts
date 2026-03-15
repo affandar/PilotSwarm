@@ -106,6 +106,8 @@ export interface OrchestrationInput {
     config: SerializableSessionConfig;
     // Carried across continueAsNew
     iteration?: number;
+    responseVersion?: number;
+    commandVersion?: number;
     affinityKey?: string;
     needsHydration?: boolean;
     blobEnabled?: boolean;
