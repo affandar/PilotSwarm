@@ -1,6 +1,7 @@
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
 import { registerActivities } from "./session-proxy.js";
+import { durableSessionOrchestration_1_0_10 } from "./orchestration_1_0_10.js";
 import { durableSessionOrchestration_1_0_9 } from "./orchestration_1_0_9.js";
 import { durableSessionOrchestration_1_0_1 } from "./orchestration_1_0_1.js";
 import { durableSessionOrchestration_1_0_0 } from "./orchestration_1_0_0.js";
@@ -11,7 +12,7 @@ import { durableSessionOrchestration_1_0_5 } from "./orchestration_1_0_5.js";
 import { durableSessionOrchestration_1_0_6 } from "./orchestration_1_0_6.js";
 import { durableSessionOrchestration_1_0_7 } from "./orchestration_1_0_7.js";
 import { durableSessionOrchestration_1_0_8 } from "./orchestration_1_0_8.js";
-import { durableSessionOrchestration_1_0_10 } from "./orchestration.js";
+import { durableSessionOrchestration_1_0_11 } from "./orchestration.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { loadAgentFiles, systemAgentUUID } from "./agent-loader.js";
@@ -36,7 +37,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.10";
+const ORCHESTRATION_VERSION = "1.0.11";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -237,6 +238,7 @@ export class PilotSwarmWorker {
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.8", durableSessionOrchestration_1_0_8);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.9", durableSessionOrchestration_1_0_9);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.10", durableSessionOrchestration_1_0_10);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.11", durableSessionOrchestration_1_0_11);
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {
