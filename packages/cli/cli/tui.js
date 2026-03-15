@@ -296,7 +296,10 @@ function shortId(id) {
 // Suppress stderr during screen creation — same SetUlc issue.
 process.stderr.write = () => true;
 const screen = blessed.screen({
-    smartCSR: true,
+    // Full-screen redraws are more reliable than neo-blessed's diff-based
+    // smartCSR path here; partial repaints were leaving stale glyphs behind
+    // after session switches and pane relayouts.
+    smartCSR: false,
     title: "PilotSwarm",
     fullUnicode: true,
     forceUnicode: true,
@@ -312,6 +315,8 @@ const _origRender = screen.render.bind(screen);
 let _screenDirty = false;
 let _chatDirty = false;
 let _activityDirty = false;
+let _chatScrollIntent = null;
+let _activityScrollIntent = null;
 let startupLandingVisible = false;
 
 screen.render = function coalescedRender() {
@@ -326,6 +331,36 @@ screen.realloc = function patchedRealloc() {
     _origRender(); // immediate render, bypass frame loop
 };
 
+function refreshRightPaneForMode() {
+    if (logViewMode === "orchestration") {
+        refreshOrchLogPane();
+    } else if (logViewMode === "sequence") {
+        refreshSeqPane();
+    } else if (logViewMode === "nodemap") {
+        refreshNodeMap();
+    } else {
+        recolorWorkerPanes();
+    }
+}
+
+let _lightRefreshTimer = null;
+function scheduleLightRefresh(reason, targetOrchId = activeOrchId, delayMs = 0) {
+    if (_lightRefreshTimer) clearTimeout(_lightRefreshTimer);
+    _lightRefreshTimer = setTimeout(() => {
+        _lightRefreshTimer = null;
+        if (targetOrchId && targetOrchId !== activeOrchId) return;
+        perfTrace("screen.lightRefresh", {
+            reason,
+            mode: logViewMode,
+            active: activeOrchId ? shortId(activeOrchId) : null,
+        });
+        screen.realloc();
+        relayoutAll();
+        if (logViewMode === "sequence") refreshSeqPane();
+        if (logViewMode === "nodemap") refreshNodeMap();
+    }, delayMs);
+}
+
 // Frame loop — ~30fps max
 setInterval(() => {
     // Sync chat buffer → chatBox before rendering (Option C)
@@ -339,7 +374,11 @@ setInterval(() => {
                 const wasAtBottom = chatBox.getScrollPerc() >= 95;
                 const prevScrollTop = chatBox.childBase || 0;
                 chatBox.setContent(lines.map(styleUrls).join("\n"));
-                if (wasAtBottom) {
+                if (_chatScrollIntent === "bottom") {
+                    chatBox.setScrollPerc(100);
+                } else if (_chatScrollIntent === "top") {
+                    chatBox.scrollTo(0);
+                } else if (wasAtBottom) {
                     chatBox.setScrollPerc(100);
                 } else {
                     // Restore previous scroll position
@@ -347,6 +386,7 @@ setInterval(() => {
                 }
             }
         }
+        _chatScrollIntent = null;
         _chatDirty = false;
         _screenDirty = true;
     }
@@ -359,12 +399,17 @@ setInterval(() => {
             const wasAtBottom = activityPane.getScrollPerc() >= 95;
             const prevScrollTop = activityPane.childBase || 0;
             activityPane.setContent(aLines.join("\n"));
-            if (wasAtBottom) {
+            if (_activityScrollIntent === "bottom") {
+                activityPane.setScrollPerc(100);
+            } else if (_activityScrollIntent === "top") {
+                activityPane.scrollTo(0);
+            } else if (wasAtBottom) {
                 activityPane.setScrollPerc(100);
             } else {
                 activityPane.scrollTo(prevScrollTop);
             }
         }
+        _activityScrollIntent = null;
         _activityDirty = false;
         _screenDirty = true;
     }
@@ -912,7 +957,7 @@ function appendActivity(text, orchId) {
 
     // Mark dirty so the frame loop syncs buffer → activityPane
     if (targetOrch === currentActive) {
-        _activityDirty = true;
+        invalidateActivity();
     }
 }
 
@@ -948,7 +993,6 @@ function ensureSystemSplashBuffer(orchId) {
 function refreshNodeMap() {
     const lines = [];
     nodeMapPane.setContent("");
-    screen.realloc();
 
     // Gather all known nodes from seqNodes (worker pane names)
     // Filter out synthetic nodes like "cms" that aren't real workers.
@@ -1697,6 +1741,7 @@ function backfillOrchLogs(orchId) {
                 const prefixMatch = line.match(/^\[pod\/([^/]+)\//);
                 const podName = prefixMatch ? prefixMatch[1] : "unknown";
                 const content = line.replace(/^\[pod\/[^\]]+\]\s*/, "");
+                if (shouldSuppressWorkerLogLine(content)) continue;
                 const formatted = content
                     .replace(/\bWARN\b/g, "{yellow-fg}WARN{/yellow-fg}")
                     .replace(/\bERROR\b/g, "{red-fg}ERROR{/red-fg}")
@@ -1894,15 +1939,7 @@ function relayoutAll() {
 
 function redrawActiveViews() {
     const _ph = perfStart("redrawActiveViews");
-    if (logViewMode === "orchestration") {
-        refreshOrchLogPane();
-    } else if (logViewMode === "sequence") {
-        refreshSeqPane();
-    } else if (logViewMode === "nodemap") {
-        refreshNodeMap();
-    } else {
-        recolorWorkerPanes();
-    }
+    refreshRightPaneForMode();
     relayoutAll();
     // No realloc here — it's expensive (full buffer wipe + re-render)
     // and causes a visible blank flash. Only use realloc on layout changes
@@ -2080,6 +2117,33 @@ screen.render();
 
 let pendingUserInput = null;
 
+function syncInputBarMode() {
+    if (!inputBar) return;
+    const pendingOrchId = pendingUserInput?.orchId || activeOrchId;
+    const needsAnswer = pendingOrchId === activeOrchId && sessionPendingQuestions.has(activeOrchId);
+    inputBar.setLabel(needsAnswer ? " {bold}answer:{/bold} " : " {bold}you:{/bold} ");
+}
+
+function clearSessionPendingQuestion(orchId) {
+    if (!orchId) return;
+    sessionPendingQuestions.delete(orchId);
+    if (orchId === activeOrchId) syncInputBarMode();
+}
+
+function setSessionPendingQuestion(orchId, question) {
+    if (!orchId) return false;
+    const normalized = typeof question === "string" ? question.trim() : "";
+    if (!normalized) {
+        sessionPendingQuestions.delete(orchId);
+        if (orchId === activeOrchId) syncInputBarMode();
+        return false;
+    }
+    const previous = sessionPendingQuestions.get(orchId);
+    sessionPendingQuestions.set(orchId, normalized);
+    if (orchId === activeOrchId) syncInputBarMode();
+    return previous !== normalized;
+}
+
 function appendChat(text, orchId) {
     for (const line of text.split("\n")) {
         appendChatRaw(line, orchId);
@@ -2090,6 +2154,18 @@ function appendChat(text, orchId) {
 // screen.render() is already coalesced by the frame loop (100ms interval).
 // scheduleRender() is kept as a convenience alias.
 function scheduleRender() {
+    _screenDirty = true;
+}
+
+function invalidateChat(scrollIntent) {
+    if (scrollIntent) _chatScrollIntent = scrollIntent;
+    _chatDirty = true;
+    _screenDirty = true;
+}
+
+function invalidateActivity(scrollIntent) {
+    if (scrollIntent) _activityScrollIntent = scrollIntent;
+    _activityDirty = true;
     _screenDirty = true;
 }
 
@@ -2114,7 +2190,7 @@ function appendChatRaw(text, orchId) {
 
     // Mark chat dirty so the frame loop syncs buffer → chatBox
     if (targetOrch === currentActive) {
-        _chatDirty = true;
+        invalidateChat();
     }
 }
 
@@ -2227,6 +2303,9 @@ function shouldSkipCompletedTurnResult(raw, orchId) {
     const normalized = normalizeObserverChatText(raw);
     const promoted = sessionPromotedIntermediate.get(orchId);
     sessionPromotedIntermediate.delete(orchId);
+    const recovered = sessionRecoveredTurnResult.get(orchId);
+    sessionRecoveredTurnResult.delete(orchId);
+    if (normalized && recovered && normalized === recovered) return true;
     return Boolean(normalized && promoted && normalized === promoted);
 }
 
@@ -2240,6 +2319,8 @@ const seqCmsSeededSessions = new Set();
 async function loadCmsHistory(orchId) {
     const _ph = perfStart("loadCmsHistory");
     const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+    const generation = (sessionHistoryLoadGeneration.get(orchId) ?? 0) + 1;
+    sessionHistoryLoadGeneration.set(orchId, generation);
     let eventCount = 0;
     let loadFailed = false;
 
@@ -2302,6 +2383,9 @@ async function loadCmsHistory(orchId) {
         }
 
         if ((!events || events.length === 0) && !liveTurnContent) {
+            if (sessionHistoryLoadGeneration.get(orchId) !== generation) {
+                return;
+            }
             // Only blank the buffer if the observer hasn't already written
             // content into it. Otherwise we'd nuke live turn output that
             // arrived while we were fetching from CMS (race condition that
@@ -2311,11 +2395,17 @@ async function loadCmsHistory(orchId) {
                 const splashLines = ensureSystemSplashBuffer(orchId);
                 if (!splashLines) {
                     sessionChatBuffers.set(orchId, []);
-                    if (orchId === activeOrchId) chatBox.setContent("");
                 }
             }
             if (!sessionActivityBuffers.has(orchId)) {
                 sessionActivityBuffers.set(orchId, ["{gray-fg}(no recent activity yet){/gray-fg}"]);
+            }
+            sessionHistoryLoadedAt.set(orchId, Date.now());
+            sessionRenderedCmsSeq.set(orchId, 0);
+            sessionRecoveredTurnResult.delete(orchId);
+            if (orchId === activeOrchId) {
+                invalidateChat();
+                invalidateActivity();
             }
             return;
         }
@@ -2449,6 +2539,9 @@ async function loadCmsHistory(orchId) {
                 lines.push(line);
             }
             lines.push("");
+            sessionRecoveredTurnResult.set(orchId, normalizedLiveTurn);
+        } else {
+            sessionRecoveredTurnResult.delete(orchId);
         }
 
         if (eventCount > 0) {
@@ -2478,33 +2571,20 @@ async function loadCmsHistory(orchId) {
             sessionSplashApplied.add(orchId);
         }
 
-        // Preserve observer-appended lines that arrived after the last CMS load.
-        // The watermark tracks buffer length right after each CMS load; any lines
-        // beyond that were appended by the live observer and must be carried forward
-        // — but only if CMS hasn't caught up (same event count = no new CMS data).
-        const prevBuffer = sessionChatBuffers.get(orchId);
-        const watermark = sessionCmsWatermark.get(orchId) ?? 0;
-        const prevEventCount = sessionCmsEventCount.get(orchId) ?? 0;
-        if (prevBuffer && prevBuffer.length > watermark && watermark > 0) {
-            // Only carry forward if CMS event count is unchanged — if new events
-            // arrived in CMS, the observer content is now represented in CMS data.
-            if (eventCount <= prevEventCount) {
-                const observerLines = prevBuffer.slice(watermark);
-                lines.push(...observerLines);
-            }
+        if (sessionHistoryLoadGeneration.get(orchId) !== generation) {
+            return;
         }
 
-        const cmsLineCount = lines.length; // before any future observer appends
+        const maxRenderedSeq = (events || []).reduce((max, evt) => Math.max(max, evt.seq || 0), 0);
         sessionChatBuffers.set(orchId, lines);
         sessionActivityBuffers.set(orchId, activityLines);
         sessionHistoryLoadedAt.set(orchId, Date.now());
-        sessionCmsWatermark.set(orchId, cmsLineCount);
-        sessionCmsEventCount.set(orchId, eventCount);
+        sessionRenderedCmsSeq.set(orchId, maxRenderedSeq);
 
         if (orchId === activeOrchId) {
             // Let the frame loop sync this buffer to chatBox
-            _chatDirty = true;
-            _activityDirty = true;
+            invalidateChat();
+            invalidateActivity();
         }
 
         // Seed sequence view from CMS when no live worker-log sequence exists yet.
@@ -2910,13 +2990,28 @@ const sessionAgentIds = new Map(); // orchId → agentId string (e.g. "pilotswar
 // Per-session chat buffers — every observer writes here so content is preserved on switch
 const sessionChatBuffers = new Map(); // orchId → string[]
 const sessionHistoryLoadedAt = new Map(); // orchId → epoch ms of last CMS history load
-const sessionCmsWatermark = new Map(); // orchId → buffer length after last CMS load (for preserving observer lines)
-const sessionCmsEventCount = new Map(); // orchId → total CMS event count at last load (for carry-forward dedup)
+const sessionHistoryLoadGeneration = new Map(); // orchId → monotonically increasing async load token
+const sessionRenderedCmsSeq = new Map(); // orchId → highest CMS seq already incorporated into buffers
 const sessionExpandLevel = new Map(); // orchId → 0 (default) | 1 | 2 (how many times user expanded history)
 const sessionSplashApplied = new Set(); // orchIds that have had splash prepended (idempotency guard)
 const sessionPromotedIntermediate = new Map(); // orchId → normalized intermediate content already promoted to Chat
+const sessionRecoveredTurnResult = new Map(); // orchId → normalized completed turn recovered from live status during CMS load
 const sessionObservers = new Map(); // orchId → AbortController
 const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
+const sessionPendingTurns = new Set(); // orchIds with a locally-sent turn awaiting first live status
+const sessionPendingQuestions = new Map(); // orchId → latest input-required question awaiting a user answer
+
+function setSessionPendingTurn(orchId, pending) {
+    if (!orchId) return;
+    if (pending) sessionPendingTurns.add(orchId);
+    else sessionPendingTurns.delete(orchId);
+}
+
+function isTurnInProgressForSession(orchId) {
+    if (!orchId) return false;
+    const liveStatus = sessionLiveStatus.get(orchId);
+    return sessionPendingTurns.has(orchId) || liveStatus === "running" || liveStatus === "waiting";
+}
 
 // Facade: adapts PilotSwarmManagementClient to the dc-like interface
 // that the observer and legacy code paths expect. This eliminates
@@ -3750,6 +3845,14 @@ orchList.key(["t"], async () => {
 
 let kubectlProc = null;
 
+function shouldSuppressWorkerLogLine(plain) {
+    if (!plain) return false;
+    return (
+        /^\[tool\]\s+.*copilotSessionId=/i.test(plain) ||
+        /^\[runTurn\]\s+session=.*registering\s+\d+\s+tools:/i.test(plain)
+    );
+}
+
 function startLogStream() {
     if (kubectlProc) {
         try { kubectlProc.kill(); } catch {}
@@ -3787,6 +3890,7 @@ function startLogStream() {
                 // ANSI escapes inside key=value pairs (e.g. instance_id\x1b[0m\x1b[2m=)
                 // eslint-disable-next-line no-control-regex
                 const plain = content.replace(/\x1b\[[0-9;]*m/g, "");
+                if (shouldSuppressWorkerLogLine(plain)) continue;
                 const instanceMatch = plain.match(/instance_id=(\S+)/);
                 const orchId = instanceMatch
                     ? instanceMatch[1].replace(/,.*$/, "")
@@ -3921,23 +4025,27 @@ function addPendingCommand(cmdId, cmd, timeoutMs = 15_000) {
 }
 
 async function createNewSession() {
+    let sessionOrchId = null;
     const sess = await client.createSession({
         ...(currentModel ? { model: currentModel } : {}),
         toolNames: ["write_artifact", "export_artifact", "read_artifact"],
         onUserInputRequest: async (request) => {
             return new Promise((resolve) => {
                 const q = request.question || "?";
-                appendChatRaw(`{magenta-fg}[?] ${q}{/magenta-fg}`);
+                const targetOrchId = sessionOrchId || activeOrchId;
+                appendChatRaw(`{magenta-fg}[?] ${q}{/magenta-fg}`, targetOrchId);
+                setSessionPendingQuestion(targetOrchId, q);
                 setStatus("Waiting for your answer...");
-                pendingUserInput = { resolve };
-                inputBar.setLabel(" {bold}answer:{/bold} ");
+                pendingUserInput = { resolve, orchId: targetOrchId };
+                syncInputBarMode();
                 screen.render();
                 focusInput();
             });
         },
     });
+    sessionOrchId = `session-${sess.sessionId}`;
     sessions.set(sess.sessionId, sess);
-    sessionModels.set(`session-${sess.sessionId}`, currentModel || "default");
+    sessionModels.set(sessionOrchId, currentModel || "default");
     return sess;
 }
 
@@ -4071,11 +4179,15 @@ function startObserver(orchId) {
     function setStatusIfActive(text) {
         if (orchId === activeOrchId) setStatus(text);
     }
-    function setTurnInProgressIfActive(val) {
-        if (orchId === activeOrchId) turnInProgress = val;
+    function setTurnInProgressIfActive(_val) {
+        setSessionPendingTurn(orchId, false);
     }
     function updateLiveStatus(status) {
+        if (status !== "input_required") {
+            clearSessionPendingQuestion(orchId);
+        }
         sessionLiveStatus.set(orchId, status);
+        setSessionPendingTurn(orchId, false);
         // Lightweight: just update icons in the list without DB queries.
         // Full refresh happens on the debounced 500ms schedule.
         updateSessionListIcons();
@@ -4094,6 +4206,7 @@ function startObserver(orchId) {
 
             // Check for terminal states FIRST — before inspecting customStatus
             if (currentStatus.status === "Failed" || currentStatus.status === "Completed" || currentStatus.status === "Terminated") {
+                clearSessionPendingQuestion(orchId);
                 if (currentStatus.status === "Failed") {
                     const reason = currentStatus.failureDetails?.errorMessage?.split("\n")[0]
                         || currentStatus.output?.split("\n")[0]
@@ -4103,6 +4216,7 @@ function startObserver(orchId) {
                 } else {
                     appendActivity(`{gray-fg}Orchestration ${currentStatus.status}{/gray-fg}`, orchId);
                 }
+                setSessionPendingTurn(orchId, false);
                 setTurnInProgressIfActive(false);
                 setStatusIfActive(`${currentStatus.status} — session is dead`);
                 sessionObservers.delete(orchId);
@@ -4144,7 +4258,10 @@ function startObserver(orchId) {
                         setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
                         updateLiveStatus("waiting");
                     } else if (cs.status === "input_required") {
-                        appendChatRaw(`{magenta-fg}[?] ${cs.pendingQuestion || "?"}{/magenta-fg}`, orchId);
+                        const question = cs.pendingQuestion || cs.turnResult?.question || "?";
+                        if (setSessionPendingQuestion(orchId, question)) {
+                            appendChatRaw(`{magenta-fg}[?] ${question}{/magenta-fg}`, orchId);
+                        }
                         setStatusIfActive("Waiting for your answer...");
                         updateLiveStatus("input_required");
                     } else if (cs.status === "error") {
@@ -4161,6 +4278,7 @@ function startObserver(orchId) {
                 }
             } else {
                 // No custom status yet — orchestration hasn't started or is fresh
+                clearSessionPendingQuestion(orchId);
                 setStatusIfActive("Ready — type a message");
             }
         } catch (err) {
@@ -4168,6 +4286,7 @@ function startObserver(orchId) {
             if (err?.message && !err.message.includes("not found")) {
                 appendActivity(`{yellow-fg}⚠ Initial status fetch failed: ${err.message}{/yellow-fg}`, orchId);
             }
+            clearSessionPendingQuestion(orchId);
             setStatusIfActive("Ready — type a message");
         }
         while (!ac.signal.aborted) {
@@ -4307,8 +4426,12 @@ function startObserver(orchId) {
                                 setStatusIfActive(`Running (${cs.status})…`);
                             }
                         } else if (cs.turnResult.type === "input_required") {
-                            appendChatRaw(`{magenta-fg}[?] ${cs.turnResult.question}{/magenta-fg}`, orchId);
+                            const question = cs.turnResult.question || cs.pendingQuestion || "?";
+                            if (setSessionPendingQuestion(orchId, question)) {
+                                appendChatRaw(`{magenta-fg}[?] ${question}{/magenta-fg}`, orchId);
+                            }
                             setStatusIfActive("Waiting for your answer...");
+                            updateLiveStatus("input_required");
                         }
                     } else if (cs.turnResult && cs.iteration <= lastIteration) {
                         appendActivity(`{yellow-fg}[obs] ⚠ SKIPPED turnResult: iter=${cs.iteration} <= lastIter=${lastIteration} (already shown){/yellow-fg}`, orchId);
@@ -4344,6 +4467,7 @@ function startObserver(orchId) {
                 try {
                     const info = await dc.getStatus(orchId);
                     if (info.status === "Completed" || info.status === "Failed" || info.status === "Terminated") {
+                        clearSessionPendingQuestion(orchId);
                         if (info.status === "Failed") {
                             const reason = info.failureDetails?.errorMessage?.split("\n")[0]
                                 || info.output?.split("\n")[0]
@@ -4351,6 +4475,7 @@ function startObserver(orchId) {
                             appendActivity(`{red-fg}❌ Session failed: ${reason}{/red-fg}`, orchId);
                         }
                         appendActivity(`{gray-fg}Orchestration ${info.status}{/gray-fg}`, orchId);
+                        setSessionPendingTurn(orchId, false);
                         setTurnInProgressIfActive(false);
                         setStatusIfActive(`${info.status} — type a message`);
                         sessionObservers.delete(orchId);
@@ -4377,7 +4502,6 @@ function startObserver(orchId) {
 // This avoids N concurrent pollers hammering the database.
 let _activeCmsUnsub = null;
 let _activeCmsOrchId = null;
-const _cmsRenderedSeqs = new Set(); // per-session dedup across switches
 
 function startCmsPoller(orchId) {
     // Already polling this session
@@ -4396,12 +4520,20 @@ function startCmsPoller(orchId) {
             } catch { return; }
         }
 
+        const maxRenderedSeq = sessionRenderedCmsSeq.get(orchId) ?? 0;
+        if (maxRenderedSeq > 0 && (sess.lastSeenSeq || 0) < maxRenderedSeq) {
+            sess.lastSeenSeq = maxRenderedSeq;
+        }
+
         const unsub = sess.on((evt) => {
             // Poller was stopped while callback pending
             if (_activeCmsOrchId !== orchId) { unsub(); return; }
             // Skip if already rendered (from loadCmsHistory on switch)
-            if (evt.seq && _cmsRenderedSeqs.has(evt.seq)) return;
-            if (evt.seq) _cmsRenderedSeqs.add(evt.seq);
+            const currentMaxRenderedSeq = sessionRenderedCmsSeq.get(orchId) ?? 0;
+            if (evt.seq && evt.seq <= currentMaxRenderedSeq) return;
+            if (evt.seq) {
+                sessionRenderedCmsSeq.set(orchId, evt.seq);
+            }
 
             const t = formatDisplayTime(Date.now());
             const type = evt.eventType;
@@ -4454,6 +4586,7 @@ async function switchToOrchestration(orchId) {
 
     activeOrchId = orchId;
     orchSelectFollowActive = true; // snap list selection to newly activated session
+    syncInputBarMode();
     // Clear unseen-changes flag and snapshot the current version
     orchHasChanges.delete(orchId);
     // Mark as seen — will be updated to latest on next refresh (fire-and-forget)
@@ -4474,6 +4607,15 @@ async function switchToOrchestration(orchId) {
                     }
                 } catch {}
             }
+            if (info?.customStatus) {
+                try {
+                    const cs = typeof info.customStatus === "string" ? JSON.parse(info.customStatus) : info.customStatus;
+                    if (cs?.status) {
+                        sessionLiveStatus.set(orchId, cs.status);
+                        updateSessionListIcons();
+                    }
+                } catch {}
+            }
         }).catch(() => {});
     }
     // Use 4-char UUID + time for display
@@ -4483,10 +4625,9 @@ async function switchToOrchestration(orchId) {
         ? formatDisplayTime(cached.createdAt, { hour: "2-digit", minute: "2-digit" })
         : "";
     activeSessionShort = `${uuid4}${timeStr ? " " + timeStr : ""}`;
-    turnInProgress = false;
 
     // Switch CMS event poller to new session
-    startCmsPoller(orchId);
+    stopCmsPoller();
 
     // Clear chat and show switch indicator (only when switching to a different session)
     if (!isSameSession) {
@@ -4496,19 +4637,17 @@ async function switchToOrchestration(orchId) {
         const _cachePh = perfStart("switch.cachedRestore");
         const cachedLines = sessionChatBuffers.get(orchId) || ensureSystemSplashBuffer(orchId);
         if (cachedLines && cachedLines.length > 0) {
-            chatBox.setContent(cachedLines.map(styleUrls).join("\n"));
-            chatBox.setScrollPerc(100);
+            sessionChatBuffers.set(orchId, cachedLines);
         } else {
-            chatBox.setContent("{white-fg}Loading…{/white-fg}");
+            sessionChatBuffers.set(orchId, ["{white-fg}Loading…{/white-fg}"]);
         }
 
         // Switch activity buffer
         const cachedActivity = sessionActivityBuffers.get(orchId);
         if (cachedActivity && cachedActivity.length > 0) {
-            activityPane.setContent(cachedActivity.join("\n"));
-            activityPane.setScrollPerc(100);
+            sessionActivityBuffers.set(orchId, cachedActivity);
         } else {
-            activityPane.setContent("{gray-fg}(no recent activity yet){/gray-fg}");
+            sessionActivityBuffers.set(orchId, ["{gray-fg}(no recent activity yet){/gray-fg}"]);
         }
         perfEnd(_cachePh, {
             chatLines: cachedLines?.length || 0,
@@ -4517,6 +4656,8 @@ async function switchToOrchestration(orchId) {
 
         // Ensure an observer is running for this session
         startObserver(orchId);
+        invalidateChat("bottom");
+        invalidateActivity("bottom");
 
         // Update session list icons immediately
         updateSessionListIcons();
@@ -4527,6 +4668,7 @@ async function switchToOrchestration(orchId) {
         setTimeout(() => {
             if (orchId === activeOrchId) {
                 redrawActiveViews();
+                scheduleLightRefresh("sessionSwitch", orchId);
             }
         }, 0);
 
@@ -4534,14 +4676,32 @@ async function switchToOrchestration(orchId) {
         loadCmsHistory(orchId).then(() => {
             // Only refresh if still the active session when the load completes
             if (orchId === activeOrchId) {
-                _chatDirty = true;
-                _activityDirty = true;
+                startCmsPoller(orchId);
+                invalidateChat();
+                invalidateActivity();
+                scheduleLightRefresh("sessionHistoryLoaded", orchId);
             }
-        }).catch(() => {});
+        }).catch(() => {
+            if (orchId === activeOrchId) startCmsPoller(orchId);
+        });
 
         // Schedule list refresh in background too
         scheduleRefreshOrchestrations();
     } else {
+        if (!sessionHistoryLoadedAt.has(orchId)) {
+            loadCmsHistory(orchId).then(() => {
+                if (orchId === activeOrchId) {
+                    startCmsPoller(orchId);
+                    invalidateChat();
+                    invalidateActivity();
+                    scheduleLightRefresh("sessionHistoryLoaded", orchId);
+                }
+            }).catch(() => {
+                if (orchId === activeOrchId) startCmsPoller(orchId);
+            });
+        } else {
+            startCmsPoller(orchId);
+        }
         redrawActiveViews();
     }
     perfEnd(_ph, { orchId: orchId.slice(0, 12), same: isSameSession });
@@ -4556,7 +4716,6 @@ if (initialChatLines.length > 0) {
 startupLandingVisible = true;
 // Start observing the initial session
 startObserver(activeOrchId);
-startCmsPoller(activeOrchId);
 
 // Initial right-pane paint. In workers mode, kubectl log streaming may not
 // have created worker panes yet. Schedule repaints at increasing intervals
@@ -4575,39 +4734,41 @@ function sessionIdFromOrchId(orchId) {
     return orchId.startsWith("session-") ? orchId.slice(8) : orchId;
 }
 
+function getSessionForOrchId(orchId) {
+    const sid = sessionIdFromOrchId(orchId);
+    return sessions.get(sid) || null;
+}
+
 // Helper: get or create a PilotSwarmSession for the active orchestration
 function getActiveSession() {
-    const sid = sessionIdFromOrchId(activeOrchId);
-    return sessions.get(sid) || null;
+    return getSessionForOrchId(activeOrchId);
 }
 
 // Helper: ensure the orchestration for the active session is started.
 // Slash commands need a running orchestration to enqueue events into.
 // If no session/orchestration exists yet, create one via send("") which
 // starts the orchestration and enters the idle dequeue loop.
-async function ensureOrchestrationStarted() {
-    const sess = getActiveSession();
+async function ensureOrchestrationStarted(orchId = activeOrchId) {
+    const sess = getSessionForOrchId(orchId);
     if (!sess) return; // shouldn't happen
     // Check if orchestration exists
     const dc = getDc();
     if (!dc) return;
     try {
-        const info = await dc.getStatus(activeOrchId);
+        const info = await dc.getStatus(orchId);
         if (info && info.status !== "NotFound") return; // already running
     } catch {
         // Not found — need to start it
     }
     // Start the orchestration by sending an empty prompt
     await sess.send("");
-    knownOrchestrationIds.add(activeOrchId);
-    startObserver(activeOrchId);
+    knownOrchestrationIds.add(orchId);
+    startObserver(orchId);
     // Small delay to let the orchestration enter the idle dequeue loop
     await new Promise(r => setTimeout(r, 1000));
 }
 
 // ─── Input handling ──────────────────────────────────────────────
-
-let turnInProgress = false;
 
 async function handleInput(text) {
     const trimmed = (text || "").trim();
@@ -4794,18 +4955,29 @@ async function handleInput(text) {
         }
     }
 
+    const targetOrchId = activeOrchId;
+    const pendingQuestion = sessionPendingQuestions.get(targetOrchId);
+
     if (pendingUserInput) {
-        const { resolve } = pendingUserInput;
-        pendingUserInput = null;
-        inputBar.setLabel(" {bold}you:{/bold} ");
-        appendChatRaw(`{green-fg}↳ ${trimmed}{/green-fg}`);
-        // Send user-input event to the active orchestration
-        const dc = getDc();
-        if (dc) {
-            try {
-                await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({ answer: trimmed, wasFreeform: true }));
-            } catch {}
+        const pendingState = pendingUserInput;
+        const { resolve, orchId: pendingOrchId } = pendingState;
+        const answerOrchId = pendingOrchId || targetOrchId;
+        appendChatRaw(`{green-fg}↳ ${trimmed}{/green-fg}`, answerOrchId);
+        // Send user-input event to the originating orchestration
+        try {
+            const dc = getDc();
+            if (!dc) throw new Error("Not connected");
+            await dc.enqueueEvent(answerOrchId, "messages", JSON.stringify({ answer: trimmed, wasFreeform: true }));
+        } catch (err) {
+            pendingUserInput = pendingState;
+            appendChatRaw(`{red-fg}Answer failed: ${err.message}{/red-fg}`, answerOrchId);
+            syncInputBarMode();
+            screen.render();
+            return;
         }
+        pendingUserInput = null;
+        clearSessionPendingQuestion(answerOrchId);
+        syncInputBarMode();
         resolve({ answer: trimmed, wasFreeform: true });
         inputBar.clearValue();
         focusInput();
@@ -4813,48 +4985,66 @@ async function handleInput(text) {
         return;
     }
 
-    if (turnInProgress) {
-        appendChatRaw(`{white-fg}[${ts()}]{/white-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
-        appendActivity(`{cyan-fg}[send] interrupt: turnInProgress=true, enqueuing to ${activeOrchId?.slice(0,20)}{/cyan-fg}`, activeOrchId);
+    if (pendingQuestion) {
+        appendChatRaw(`{green-fg}↳ ${trimmed}{/green-fg}`, targetOrchId);
         inputBar.clearValue();
-        setStatus("Interrupting...");
-        injectSeqUserEvent(activeOrchId, trimmed);
+        focusInput();
+        screen.render();
         try {
             const dc = getDc();
-            if (dc) await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({ prompt: trimmed }));
-            appendActivity(`{cyan-fg}[send] interrupt enqueued OK{/cyan-fg}`, activeOrchId);
+            if (!dc) throw new Error("Not connected");
+            await dc.enqueueEvent(targetOrchId, "messages", JSON.stringify({ answer: trimmed, wasFreeform: true }));
+            clearSessionPendingQuestion(targetOrchId);
+            syncInputBarMode();
         } catch (err) {
-            appendChatRaw(`{red-fg}Interrupt failed: ${err.message}{/red-fg}`);
+            appendChatRaw(`{red-fg}Answer failed: ${err.message}{/red-fg}`, targetOrchId);
+        }
+        screen.render();
+        return;
+    }
+
+    if (isTurnInProgressForSession(targetOrchId)) {
+        appendChatRaw(`{white-fg}[${ts()}]{/white-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`, targetOrchId);
+        appendActivity(`{cyan-fg}[send] interrupt: session busy, enqueuing to ${targetOrchId?.slice(0,20)}{/cyan-fg}`, targetOrchId);
+        inputBar.clearValue();
+        if (targetOrchId === activeOrchId) setStatus("Interrupting...");
+        injectSeqUserEvent(targetOrchId, trimmed);
+        try {
+            const dc = getDc();
+            if (dc) await dc.enqueueEvent(targetOrchId, "messages", JSON.stringify({ prompt: trimmed }));
+            appendActivity(`{cyan-fg}[send] interrupt enqueued OK{/cyan-fg}`, targetOrchId);
+        } catch (err) {
+            appendChatRaw(`{red-fg}Interrupt failed: ${err.message}{/red-fg}`, targetOrchId);
         }
         focusInput();
         screen.render();
         return;
     }
 
-    appendChatRaw(`{white-fg}[${ts()}]{/white-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`);
+    appendChatRaw(`{white-fg}[${ts()}]{/white-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`, targetOrchId);
     inputBar.clearValue();
     focusInput();
-    turnInProgress = true;
-    setStatus("Thinking... (waiting for AKS worker)");
-    injectSeqUserEvent(activeOrchId, trimmed);
+    setSessionPendingTurn(targetOrchId, true);
+    if (targetOrchId === activeOrchId) setStatus("Thinking... (waiting for AKS worker)");
+    injectSeqUserEvent(targetOrchId, trimmed);
     screen.render();
 
     try {
         // Check if the orchestration is in a terminal state before sending
         const dc = getDc();
-        if (dc && activeOrchId) {
+        if (dc && targetOrchId) {
             try {
-                const orchStatus = await dc.getStatus(activeOrchId);
+                const orchStatus = await dc.getStatus(targetOrchId);
                 if (orchStatus.status === "Failed" || orchStatus.status === "Completed" || orchStatus.status === "Terminated") {
                     const reason = orchStatus.status === "Failed"
                         ? (orchStatus.failureDetails?.errorMessage?.split("\n")[0]
                             || orchStatus.output?.split("\n")[0]
                             || "Unknown error")
                         : orchStatus.status;
-                    appendChatRaw(`{red-fg}❌ Cannot send — orchestration ${orchStatus.status}: ${reason}{/red-fg}`);
-                    appendChatRaw(`{white-fg}Create a new session with 'n' to continue.{/white-fg}`);
-                    turnInProgress = false;
-                    setStatus(`${orchStatus.status} — session is dead`);
+                    appendChatRaw(`{red-fg}❌ Cannot send — orchestration ${orchStatus.status}: ${reason}{/red-fg}`, targetOrchId);
+                    appendChatRaw(`{white-fg}Create a new session with 'n' to continue.{/white-fg}`, targetOrchId);
+                    setSessionPendingTurn(targetOrchId, false);
+                    if (targetOrchId === activeOrchId) setStatus(`${orchStatus.status} — session is dead`);
                     screen.render();
                     return;
                 }
@@ -4863,35 +5053,35 @@ async function handleInput(text) {
 
         // Use the PilotSwarmSession to send — it handles starting the orchestration
         // on first message. The observer picks up results via waitForStatusChange.
-        const sess = getActiveSession();
+        const sess = getSessionForOrchId(targetOrchId);
         if (sess) {
             // Fire-and-forget: just send the message, don't wait for result.
             // The observer is what updates the chat.
-            appendActivity(`{cyan-fg}[send] normal: turnInProgress=false→true, sending via sess.send() to ${activeOrchId?.slice(0,20)}{/cyan-fg}`, activeOrchId);
+            appendActivity(`{cyan-fg}[send] normal: sending via sess.send() to ${targetOrchId?.slice(0,20)}{/cyan-fg}`, targetOrchId);
             sess.send(trimmed).then(() => {
-                appendActivity(`{cyan-fg}[send] normal send OK, observer started{/cyan-fg}`, activeOrchId);
-                knownOrchestrationIds.add(activeOrchId);
-                startObserver(activeOrchId);
+                appendActivity(`{cyan-fg}[send] normal send OK, observer started{/cyan-fg}`, targetOrchId);
+                knownOrchestrationIds.add(targetOrchId);
+                startObserver(targetOrchId);
                 refreshOrchestrations();
             }).catch(err => {
                 const msg = (err.message || String(err)).split("\n")[0];
-                appendChatRaw(`{red-fg}❌ ${msg}{/red-fg}`);
-                turnInProgress = false;
-                setStatus("Error — try again");
+                appendChatRaw(`{red-fg}❌ ${msg}{/red-fg}`, targetOrchId);
+                setSessionPendingTurn(targetOrchId, false);
+                if (targetOrchId === activeOrchId) setStatus("Error — try again");
                 screen.render();
             });
         } else {
             // No session object — send via enqueueEvent (existing orchestration)
             const dc = getDc();
             if (dc) {
-                await dc.enqueueEvent(activeOrchId, "messages", JSON.stringify({ prompt: trimmed }));
+                await dc.enqueueEvent(targetOrchId, "messages", JSON.stringify({ prompt: trimmed }));
             }
         }
     } catch (err) {
         const msg = (err.message || String(err)).split("\n")[0];
-        appendChatRaw(`{red-fg}❌ ${msg}{/red-fg}`);
-        setStatus("Error — try again");
-        turnInProgress = false;
+        appendChatRaw(`{red-fg}❌ ${msg}{/red-fg}`, targetOrchId);
+        if (targetOrchId === activeOrchId) setStatus("Error — try again");
+        setSessionPendingTurn(targetOrchId, false);
     }
 
     screen.render();
@@ -5225,11 +5415,6 @@ screen.on("keypress", (ch, key) => {
     // m: cycle log viewing mode (only from non-input panes, disabled during md view)
     if (ch === "m" && screen.focused !== inputBar) {
         switchLogMode();
-        // Force the same full repaint that 'r' does
-        screen.realloc();
-        relayoutAll();
-        if (logViewMode === "sequence") refreshSeqPane();
-        if (logViewMode === "nodemap") refreshNodeMap();
         const modeNames = { workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" };
         setStatus(`Log mode: ${modeNames[logViewMode]}`);
         return;
@@ -5237,10 +5422,7 @@ screen.on("keypress", (ch, key) => {
 
     // r: force full redraw (same as resize)
     if (ch === "r" && screen.focused !== inputBar) {
-        screen.realloc();
-        relayoutAll();
-        if (logViewMode === "sequence") refreshSeqPane();
-        if (logViewMode === "nodemap") refreshNodeMap();
+        scheduleLightRefresh("manualKey");
 
     // [ / ]: resize right pane by 8 chars
     } else if ((ch === "[" || ch === "]") && screen.focused !== inputBar) {
@@ -5289,25 +5471,29 @@ screen.on("keypress", (ch, key) => {
     // e from any non-input pane → expand chat history (load more older messages)
     if (ch === "e" && screen.focused !== inputBar) {
         if (!activeOrchId) return;
-        const currentLevel = sessionExpandLevel.get(activeOrchId) || 0;
+        const targetOrchId = activeOrchId;
+        const currentLevel = sessionExpandLevel.get(targetOrchId) || 0;
         if (currentLevel >= 2) {
             setStatus("Already at full history");
             screen.render();
             return;
         }
-        sessionExpandLevel.set(activeOrchId, currentLevel + 1);
+        sessionExpandLevel.set(targetOrchId, currentLevel + 1);
         // Force reload by clearing the cache TTL
-        sessionHistoryLoadedAt.delete(activeOrchId);
+        sessionHistoryLoadedAt.delete(targetOrchId);
+        stopCmsPoller();
         const levelNames = ["", "expanded (500)", "full history"];
         setStatus(`Loading ${levelNames[currentLevel + 1]}...`);
         screen.render();
-        loadCmsHistory(activeOrchId).then(() => {
-            if (activeOrchId) {
-                _chatDirty = true;
-                chatBox.setScrollPerc(0); // scroll to top to see older messages
+        loadCmsHistory(targetOrchId).then(() => {
+            if (targetOrchId === activeOrchId) {
+                startCmsPoller(targetOrchId);
+                invalidateChat("top");
                 setStatus(`History ${levelNames[currentLevel + 1]} · scroll up to see older messages`);
             }
-        }).catch(() => {});
+        }).catch(() => {
+            if (targetOrchId === activeOrchId) startCmsPoller(targetOrchId);
+        });
         return;
     }
 

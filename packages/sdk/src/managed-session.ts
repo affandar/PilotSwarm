@@ -574,8 +574,6 @@ export class ManagedSession {
                 ...t,
                 handler: (args: any, invocation: any) => {
                     const augmented = { ...invocation, durableSessionId };
-                    // Diagnostic: log both session IDs for verification
-                    console.log(`[tool] ${(t as any).name} invoked — copilotSessionId=${invocation?.sessionId?.slice(0,8)} durableSessionId=${durableSessionId.slice(0,8)}`);
                     return (t as any).handler(args, augmented);
                 },
             }));
@@ -596,7 +594,6 @@ export class ManagedSession {
         ];
 
         // Re-register tools for this turn (may have changed)
-        console.log(`[runTurn] session=${this.sessionId.slice(0,8)} registering ${allTools.length} tools: ${allTools.map((t: any) => t.name).join(", ")}`);
         this.copilotSession.registerTools(allTools);
 
         // Collect the final assistant content and all events via on()
