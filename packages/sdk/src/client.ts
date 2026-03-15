@@ -1,3 +1,6 @@
+import {
+    RESPONSE_LATEST_KEY,
+} from "./types.js";
 import type {
     PilotSwarmClientOptions,
     ManagedSessionConfig,
@@ -8,6 +11,7 @@ import type {
     UserInputHandler,
     CommandMessage,
     CommandResponse,
+    SessionResponsePayload,
 } from "./types.js";
 import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
@@ -18,7 +22,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.9";
+const ORCHESTRATION_VERSION = "1.0.10";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -45,6 +49,7 @@ export class PilotSwarmClient {
     private activeOrchestrations = new Map<string, string>();
     private lastSeenStatusVersion = new Map<string, number>();
     private lastSeenIteration = new Map<string, number>();
+    private lastSeenResponseVersion = new Map<string, number>();
     private started = false;
 
     constructor(options: PilotSwarmClientOptions) {
@@ -353,6 +358,19 @@ export class PilotSwarmClient {
     }
 
     /** @internal */
+    private async _getLatestResponse(orchestrationId: string): Promise<SessionResponsePayload | null> {
+        if (!this.duroxideClient) return null;
+        try {
+            const raw = await this.duroxideClient.getValue(orchestrationId, RESPONSE_LATEST_KEY);
+            if (!raw) return null;
+            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+            return parsed ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    /** @internal */
     async _getSessionInfo(sessionId: string): Promise<PilotSwarmSessionInfo> {
         const cmsRow = await this._catalog.getSession(sessionId);
 
@@ -373,6 +391,10 @@ export class PilotSwarmClient {
             } catch {}
         }
 
+        const latestResponse = customStatus?.responseVersion
+            ? await this._getLatestResponse(orchestrationId)
+            : null;
+
         let status: PilotSwarmSessionStatus = customStatus.status
             ?? (cmsRow?.state as PilotSwarmSessionStatus)
             ?? "pending";
@@ -389,6 +411,12 @@ export class PilotSwarmClient {
             iterations: customStatus.iteration ?? cmsRow?.currentIteration ?? 0,
             pendingQuestion: customStatus.pendingQuestion
                 ? { question: customStatus.pendingQuestion, choices: customStatus.choices, allowFreeform: customStatus.allowFreeform }
+                : latestResponse?.type === "input_required" && latestResponse.question
+                    ? {
+                        question: latestResponse.question,
+                        choices: latestResponse.choices,
+                        allowFreeform: latestResponse.allowFreeform,
+                    }
                 : undefined,
             waitingUntil: customStatus.waitSeconds
                 ? new Date(Date.now() + customStatus.waitSeconds * 1000)
@@ -396,6 +424,8 @@ export class PilotSwarmClient {
             waitReason: customStatus.waitReason,
             result: customStatus.turnResult?.type === "completed"
                 ? customStatus.turnResult.content
+                : latestResponse?.type === "completed"
+                    ? latestResponse.content
                 : (orchStatus.status === "Completed" ? orchStatus.output : undefined),
             error: orchStatus.status === "Failed" ? orchStatus.error : (cmsRow?.lastError ?? undefined),
         };
@@ -412,6 +442,7 @@ export class PilotSwarmClient {
         const deadline = timeout > 0 ? Date.now() + timeout : Infinity;
         let lastSeenVersion = this.lastSeenStatusVersion.get(orchestrationId) ?? 0;
         let lastSeenIteration = this.lastSeenIteration.get(orchestrationId) ?? -1;
+        let lastSeenResponseVersion = this.lastSeenResponseVersion.get(orchestrationId) ?? 0;
 
         while (Date.now() < deadline) {
             const remaining = deadline === Infinity ? 30_000 : Math.min(deadline - Date.now(), 30_000);
@@ -487,6 +518,46 @@ export class PilotSwarmClient {
                         continue;
                     }
                 }
+
+                if (customStatus.responseVersion && customStatus.responseVersion > lastSeenResponseVersion) {
+                    const response = await this._getLatestResponse(orchestrationId);
+                    lastSeenResponseVersion = Math.max(
+                        lastSeenResponseVersion,
+                        response?.version ?? customStatus.responseVersion,
+                    );
+
+                    if (response?.type === "completed" && response.content) {
+                        if (customStatus.status === "idle" || customStatus.status === "completed") {
+                            if (onIntermediateContent) onIntermediateContent(response.content);
+                            this.lastSeenStatusVersion.set(orchestrationId, lastSeenVersion);
+                            this.lastSeenIteration.set(orchestrationId, lastSeenIteration);
+                            this.lastSeenResponseVersion.set(orchestrationId, lastSeenResponseVersion);
+                            return response.content;
+                        }
+                        if (onIntermediateContent) onIntermediateContent(response.content);
+                    }
+
+                    if (response?.type === "wait" && response.content && onIntermediateContent) {
+                        onIntermediateContent(response.content);
+                    }
+
+                    if (response?.type === "input_required" && response.question && onUserInput) {
+                        const responseInput = await onUserInput(
+                            {
+                                question: response.question,
+                                choices: response.choices,
+                                allowFreeform: response.allowFreeform,
+                            },
+                            { sessionId },
+                        );
+                        await this.duroxideClient.enqueueEvent(
+                            orchestrationId,
+                            "messages",
+                            JSON.stringify(responseInput),
+                        );
+                        continue;
+                    }
+                }
             }
 
             const orchStatus = await this.duroxideClient.getStatus(orchestrationId);
@@ -494,6 +565,7 @@ export class PilotSwarmClient {
             if (orchStatus.status === "Completed") return orchStatus.output;
         }
 
+        this.lastSeenResponseVersion.set(orchestrationId, lastSeenResponseVersion);
         throw new Error(`Timeout waiting for response (${timeout}ms)`);
     }
 }

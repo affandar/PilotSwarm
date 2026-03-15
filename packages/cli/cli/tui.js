@@ -2391,6 +2391,7 @@ async function loadCmsHistory(orchId) {
         eventCount = events?.length || 0;
 
         let liveCustomStatus = null;
+        let liveResponsePayload = null;
         if (liveStatus?.customStatus) {
             try {
                 liveCustomStatus = typeof liveStatus.customStatus === "string"
@@ -2398,9 +2399,14 @@ async function loadCmsHistory(orchId) {
                     : liveStatus.customStatus;
             } catch {}
         }
+        if (liveCustomStatus?.responseVersion) {
+            liveResponsePayload = await fetchLatestResponsePayload(orchId, dc);
+        }
 
         const liveTurnContent = liveCustomStatus?.turnResult?.type === "completed"
             ? liveCustomStatus.turnResult.content
+            : liveResponsePayload?.type === "completed"
+                ? liveResponsePayload.content
             : "";
 
         // Populate session model if not already known
@@ -2567,6 +2573,7 @@ async function loadCmsHistory(orchId) {
             }
             lines.push("");
             sessionRecoveredTurnResult.set(orchId, normalizedLiveTurn);
+            noteSeenResponseVersion(orchId, liveResponsePayload?.version);
         } else {
             sessionRecoveredTurnResult.delete(orchId);
         }
@@ -3027,6 +3034,8 @@ const sessionObservers = new Map(); // orchId → AbortController
 const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
 const sessionPendingTurns = new Set(); // orchIds with a locally-sent turn awaiting first live status
 const sessionPendingQuestions = new Map(); // orchId → latest input-required question awaiting a user answer
+const sessionLastSeenResponseVersion = new Map(); // orchId → latest KV-backed response version rendered
+const sessionLastSeenCommandVersion = new Map(); // orchId → latest KV-backed command response version rendered
 
 function setSessionPendingTurn(orchId, pending) {
     if (!orchId) return;
@@ -3073,6 +3082,14 @@ function getDc() {
                 customStatusVersion: result.customStatusVersion,
             };
         },
+        async getLatestResponse(orchId) {
+            const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+            return mgmt.getLatestResponse(sid);
+        },
+        async getCommandResponse(orchId, cmdId) {
+            const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+            return mgmt.getCommandResponse(sid, cmdId);
+        },
         async enqueueEvent(orchId, eventName, data) {
             const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
             const parsed = JSON.parse(data);
@@ -3098,6 +3115,48 @@ function getDc() {
         },
     };
     return _dcFacade;
+}
+
+function noteSeenResponseVersion(orchId, version) {
+    if (!orchId || !version) return;
+    const prev = sessionLastSeenResponseVersion.get(orchId) || 0;
+    if (version > prev) sessionLastSeenResponseVersion.set(orchId, version);
+}
+
+function noteSeenCommandVersion(orchId, version) {
+    if (!orchId || !version) return;
+    const prev = sessionLastSeenCommandVersion.get(orchId) || 0;
+    if (version > prev) sessionLastSeenCommandVersion.set(orchId, version);
+}
+
+async function fetchLatestResponsePayload(orchId, dc = getDc()) {
+    if (!dc?.getLatestResponse) return null;
+    try {
+        return await dc.getLatestResponse(orchId);
+    } catch {
+        return null;
+    }
+}
+
+async function consumeLatestResponsePayload(orchId, customStatus, dc = getDc()) {
+    if (!customStatus?.responseVersion || !dc?.getLatestResponse) return null;
+    const seen = sessionLastSeenResponseVersion.get(orchId) || 0;
+    if (customStatus.responseVersion <= seen) return null;
+    const payload = await fetchLatestResponsePayload(orchId, dc);
+    noteSeenResponseVersion(orchId, payload?.version || customStatus.responseVersion);
+    return payload;
+}
+
+async function consumeCommandResponsePayload(orchId, customStatus, dc = getDc()) {
+    if (!customStatus?.commandVersion || !customStatus?.commandId || !dc?.getCommandResponse) return null;
+    const seen = sessionLastSeenCommandVersion.get(orchId) || 0;
+    if (customStatus.commandVersion <= seen) return null;
+    let payload = null;
+    try {
+        payload = await dc.getCommandResponse(orchId, customStatus.commandId);
+    } catch {}
+    noteSeenCommandVersion(orchId, payload?.version || customStatus.commandVersion);
+    return payload;
 }
 
 // ─── Debounced refresh ───────────────────────────────────────────
@@ -4230,6 +4289,121 @@ function startObserver(orchId) {
         updateSessionListIcons();
     }
 
+    function renderCompletedContent(content) {
+        let displayContent = content || "";
+        const hMatch = displayContent.match(/^HEADING:\s*(.+)/m);
+        if (hMatch && !systemSessionIds.has(orchId)) {
+            sessionHeadings.set(orchId, hMatch[1].trim().slice(0, 40));
+            displayContent = displayContent.replace(/^HEADING:.*\n?/m, "").trim();
+            scheduleRefreshOrchestrations();
+        } else if (hMatch) {
+            displayContent = displayContent.replace(/^HEADING:.*\n?/m, "").trim();
+        }
+        if (!shouldSkipCompletedTurnResult(displayContent, orchId)) {
+            showCopilotMessage(displayContent, orchId);
+        }
+    }
+
+    function renderCommandResponse(resp) {
+        const pending = pendingCommands.get(resp.id);
+        const pendingForThisSession = pending && (!pending.orchId || pending.orchId === orchId);
+        if (pending && !pendingForThisSession) {
+            appendActivity(`{yellow-fg}[obs] Ignoring command response for ${resp.cmd} routed to unexpected session{/yellow-fg}`, orchId);
+            return;
+        }
+        if (!pendingForThisSession) return;
+
+        if (pending.timer) clearTimeout(pending.timer);
+        pendingCommands.delete(resp.id);
+        if (resp.error) {
+            appendChatRaw(`{red-fg}❌ Command failed: ${resp.error}{/red-fg}`, orchId);
+        } else {
+            switch (resp.cmd) {
+                case "list_models": {
+                    const models = resp.result?.models || [];
+                    const active = resp.result?.currentModel || currentModel;
+                    appendChatRaw("{bold}Available models:{/bold}", orchId);
+                    for (const m of models) {
+                        const marker = m.id === active ? " {green-fg}← default{/green-fg}" : "";
+                        appendChatRaw(`  {cyan-fg}${m.id}{/cyan-fg}${marker}`, orchId);
+                    }
+                    appendChatRaw("{white-fg}Use /model <name> to switch{/white-fg}", orchId);
+                    break;
+                }
+                case "set_model": {
+                    const r = resp.result;
+                    currentModel = r.newModel;
+                    sessionModels.set(orchId, r.newModel);
+                    appendChatRaw(`{green-fg}✓ Model changed: {bold}${r.oldModel}{/bold} → {bold}${r.newModel}{/bold}{/green-fg}`, orchId);
+                    appendChatRaw("{white-fg}Takes effect on the next turn.{/white-fg}", orchId);
+                    if (orchId === activeOrchId) updateChatLabel();
+                    break;
+                }
+                case "get_info": {
+                    const r = resp.result;
+                    appendChatRaw("{bold}Session info:{/bold}", orchId);
+                    appendChatRaw(`  Model:       {cyan-fg}${r.model}{/cyan-fg}`, orchId);
+                    appendChatRaw(`  Iteration:   ${r.iteration}`, orchId);
+                    appendChatRaw(`  Session:     ${r.sessionId?.slice(0, 12)}…`, orchId);
+                    appendChatRaw(`  Affinity:    ${r.affinityKey}`, orchId);
+                    appendChatRaw(`  Hydrated:    ${r.needsHydration ? "no (dehydrated)" : "yes"}`, orchId);
+                    appendChatRaw(`  Blob:        ${r.blobEnabled ? "enabled" : "disabled"}`, orchId);
+                    break;
+                }
+                case "done": {
+                    appendChatRaw("{green-fg}✓ Session completed.{/green-fg}", orchId);
+                    setStatusIfActive("Session completed");
+                    setTurnInProgressIfActive(false);
+                    scheduleRefreshOrchestrations();
+                    break;
+                }
+                default:
+                    appendChatRaw(`{green-fg}✓ ${resp.cmd}: ${JSON.stringify(resp.result)}{/green-fg}`, orchId);
+            }
+        }
+        if (orchId !== activeOrchId) {
+            orchHasChanges.add(orchId);
+            updateSessionListIcons();
+        }
+        screen.render();
+    }
+
+    function renderResponsePayload(response, cs, source) {
+        if (!response) return;
+        if (response.type === "completed" && response.content) {
+            appendActivity(`{green-fg}[obs] ✓ SHOWING ${source}: version=${response.version} type=completed content=${response.content.slice(0, 80)}{/green-fg}`, orchId);
+            renderCompletedContent(response.content);
+            if (cs.status === "idle" || cs.status === "completed") {
+                setStatusIfActive(cs.status === "completed" ? "Session completed" : "Ready — type a message");
+                setTurnInProgressIfActive(false);
+            } else {
+                setStatusIfActive(`Running (${cs.status})…`);
+            }
+            return;
+        }
+        if (response.type === "wait" && response.content) {
+            appendActivity(`{green-fg}[obs] ✓ SHOWING ${source}: version=${response.version} type=wait content=${response.content.slice(0, 80)}{/green-fg}`, orchId);
+            const prefix = `{white-fg}[${ts()}]{/white-fg} {gray-fg}[intermediate]{/gray-fg}`;
+            appendActivity(prefix, orchId);
+            const rendered = renderMarkdown(response.content);
+            for (const line of rendered.split("\n")) {
+                appendActivity(line, orchId);
+            }
+            promoteIntermediateContent(response.content, orchId);
+            setStatusIfActive(`Waiting (${cs.waitReason || response.waitReason || "timer"})…`);
+            return;
+        }
+        if (response.type === "input_required") {
+            const question = response.question || "?";
+            appendActivity(`{green-fg}[obs] ✓ SHOWING ${source}: version=${response.version} type=input_required{/green-fg}`, orchId);
+            if (setSessionPendingQuestion(orchId, question)) {
+                appendChatRaw(`{magenta-fg}[?] ${question}{/magenta-fg}`, orchId);
+            }
+            setStatusIfActive("Waiting for your answer...");
+            updateLiveStatus("input_required");
+        }
+    }
+
     // ── Real-time CMS event subscription ────────────────────
     // CMS event polling is managed centrally via activeCmsPoller — only
     // the active session polls CMS. This avoids N concurrent pollers
@@ -4268,19 +4442,24 @@ function startObserver(orchId) {
                 } catch {}
                 if (cs) {
                     lastVersion = currentStatus.customStatusVersion || 0;
-                    if (cs.intermediateContent) {
-                        const prefix = `{white-fg}[${ts()}]{/white-fg} {gray-fg}[intermediate]{/gray-fg}`;
-                        appendActivity(prefix, orchId);
-                        const rendered = renderMarkdown(cs.intermediateContent);
-                        for (const line of rendered.split("\n")) {
-                            appendActivity(line, orchId);
-                        }
-                        promoteIntermediateContent(cs.intermediateContent, orchId);
-                    }
                     if (cs.turnResult && cs.turnResult.type === "completed") {
                         lastIteration = cs.iteration || 0;
                         if (!shouldSkipCompletedTurnResult(cs.turnResult.content, orchId)) {
                             showCopilotMessage(cs.turnResult.content, orchId);
+                        }
+                    }
+                    if (cs.cmdResponse) {
+                        renderCommandResponse(cs.cmdResponse);
+                    } else {
+                        const initialCommandResponse = await consumeCommandResponsePayload(orchId, cs, dc);
+                        if (initialCommandResponse) {
+                            renderCommandResponse(initialCommandResponse);
+                        }
+                    }
+                    if (!cs.turnResult) {
+                        const initialResponse = await consumeLatestResponsePayload(orchId, cs, dc);
+                        if (initialResponse) {
+                            renderResponsePayload(initialResponse, cs, "response");
                         }
                     }
                     if (cs.status === "idle") {
@@ -4295,9 +4474,11 @@ function startObserver(orchId) {
                         setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
                         updateLiveStatus("waiting");
                     } else if (cs.status === "input_required") {
-                        const question = cs.pendingQuestion || cs.turnResult?.question || "?";
-                        if (setSessionPendingQuestion(orchId, question)) {
-                            appendChatRaw(`{magenta-fg}[?] ${question}{/magenta-fg}`, orchId);
+                        if (cs.turnResult?.type === "input_required") {
+                            const question = cs.pendingQuestion || cs.turnResult?.question || "?";
+                            if (setSessionPendingQuestion(orchId, question)) {
+                                appendChatRaw(`{magenta-fg}[?] ${question}{/magenta-fg}`, orchId);
+                            }
                         }
                         setStatusIfActive("Waiting for your answer...");
                         updateLiveStatus("input_required");
@@ -4361,19 +4542,11 @@ function startObserver(orchId) {
 
                 if (cs) {
                     // Log every status change with key fields
-                    const hasTR = cs.turnResult ? `turnResult=${cs.turnResult.type}` : "no-turnResult";
+                    const responseInfo = cs.turnResult
+                        ? `turnResult=${cs.turnResult.type}`
+                        : (cs.responseVersion ? `responseVersion=${cs.responseVersion}` : "no-turnResult");
                     const iterInfo = `iter=${cs.iteration}`;
-                    appendActivity(`{gray-fg}[obs] v${prevVersion}→v${statusResult.customStatusVersion} status=${cs.status} ${iterInfo} ${hasTR} lastIter=${prevIteration}→${lastIteration} (${_waitMs}ms){/gray-fg}`, orchId);
-                    // Show intermediate content in the activity pane
-                    if (cs.intermediateContent) {
-                        const prefix = `{white-fg}[${ts()}]{/white-fg} {gray-fg}[intermediate]{/gray-fg}`;
-                        appendActivity(prefix, orchId);
-                        const rendered = renderMarkdown(cs.intermediateContent);
-                        for (const line of rendered.split("\n")) {
-                            appendActivity(line, orchId);
-                        }
-                        promoteIntermediateContent(cs.intermediateContent, orchId);
-                    }
+                    appendActivity(`{gray-fg}[obs] v${prevVersion}→v${statusResult.customStatusVersion} status=${cs.status} ${iterInfo} ${responseInfo} lastIter=${prevIteration}→${lastIteration} (${_waitMs}ms){/gray-fg}`, orchId);
 
                     // Track live status
                     if (cs.status) {
@@ -4382,66 +4555,11 @@ function startObserver(orchId) {
 
                     // ─── Command response handling ───────────────
                     if (cs.cmdResponse) {
-                        const resp = cs.cmdResponse;
-                        const pending = pendingCommands.get(resp.id);
-                        const pendingForThisSession = pending && (!pending.orchId || pending.orchId === orchId);
-                        if (pending && !pendingForThisSession) {
-                            appendActivity(`{yellow-fg}[obs] Ignoring cmdResponse for ${resp.cmd} routed to unexpected session{/yellow-fg}`, orchId);
-                        }
-                        if (pendingForThisSession) {
-                            if (pending.timer) clearTimeout(pending.timer);
-                            pendingCommands.delete(resp.id);
-                            if (resp.error) {
-                                appendChatRaw(`{red-fg}❌ Command failed: ${resp.error}{/red-fg}`, orchId);
-                            } else {
-                                switch (resp.cmd) {
-                                    case "list_models": {
-                                        const models = resp.result?.models || [];
-                                        const active = resp.result?.currentModel || currentModel;
-                                        appendChatRaw("{bold}Available models:{/bold}", orchId);
-                                        for (const m of models) {
-                                            const marker = m.id === active ? " {green-fg}← default{/green-fg}" : "";
-                                            appendChatRaw(`  {cyan-fg}${m.id}{/cyan-fg}${marker}`, orchId);
-                                        }
-                                        appendChatRaw("{white-fg}Use /model <name> to switch{/white-fg}", orchId);
-                                        break;
-                                    }
-                                    case "set_model": {
-                                        const r = resp.result;
-                                        currentModel = r.newModel;
-                                        sessionModels.set(orchId, r.newModel);
-                                        appendChatRaw(`{green-fg}✓ Model changed: {bold}${r.oldModel}{/bold} → {bold}${r.newModel}{/bold}{/green-fg}`, orchId);
-                                        appendChatRaw("{white-fg}Takes effect on the next turn.{/white-fg}", orchId);
-                                        if (orchId === activeOrchId) updateChatLabel();
-                                        break;
-                                    }
-                                    case "get_info": {
-                                        const r = resp.result;
-                                        appendChatRaw("{bold}Session info:{/bold}", orchId);
-                                        appendChatRaw(`  Model:       {cyan-fg}${r.model}{/cyan-fg}`, orchId);
-                                        appendChatRaw(`  Iteration:   ${r.iteration}`, orchId);
-                                        appendChatRaw(`  Session:     ${r.sessionId?.slice(0, 12)}…`, orchId);
-                                        appendChatRaw(`  Affinity:    ${r.affinityKey}`, orchId);
-                                        appendChatRaw(`  Hydrated:    ${r.needsHydration ? "no (dehydrated)" : "yes"}`, orchId);
-                                        appendChatRaw(`  Blob:        ${r.blobEnabled ? "enabled" : "disabled"}`, orchId);
-                                        break;
-                                    }
-                                    case "done": {
-                                        appendChatRaw("{green-fg}✓ Session completed.{/green-fg}", orchId);
-                                        setStatusIfActive("Session completed");
-                                        setTurnInProgressIfActive(false);
-                                        scheduleRefreshOrchestrations();
-                                        break;
-                                    }
-                                    default:
-                                        appendChatRaw(`{green-fg}✓ ${resp.cmd}: ${JSON.stringify(resp.result)}{/green-fg}`, orchId);
-                                }
-                            }
-                            if (orchId !== activeOrchId) {
-                                orchHasChanges.add(orchId);
-                                updateSessionListIcons();
-                            }
-                            screen.render();
+                        renderCommandResponse(cs.cmdResponse);
+                    } else {
+                        const commandResponse = await consumeCommandResponsePayload(orchId, cs, dc);
+                        if (commandResponse) {
+                            renderCommandResponse(commandResponse);
                         }
                     }
 
@@ -4482,6 +4600,29 @@ function startObserver(orchId) {
                         appendActivity(`{yellow-fg}[obs] ⚠ SKIPPED turnResult: iter=${cs.iteration} <= lastIter=${lastIteration} (already shown){/yellow-fg}`, orchId);
                         if (cs.status === "waiting") {
                             setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
+                        }
+                    } else if (cs.responseVersion) {
+                        const latestResponse = await consumeLatestResponsePayload(orchId, cs, dc);
+                        if (latestResponse) {
+                            renderResponsePayload(latestResponse, cs, "response");
+                        }
+                        if (cs.status === "error") {
+                            const errText = cs.error || "Unknown error";
+                            appendActivity(`{red-fg}⚠ ${errText}{/red-fg}`, orchId);
+                            if (cs.retriesExhausted) {
+                                setStatusIfActive(`Error — retries exhausted. Send a message to retry.`);
+                                setTurnInProgressIfActive(false);
+                            } else {
+                                setStatusIfActive(`Error — retrying…`);
+                            }
+                        } else if (cs.status === "running") {
+                            setStatusIfActive("Running…");
+                            setTurnInProgressIfActive(true);
+                        } else if (cs.status === "waiting") {
+                            setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
+                        } else if (cs.status === "input_required") {
+                            setStatusIfActive("Waiting for your answer...");
+                            updateLiveStatus("input_required");
                         }
                     } else if (cs.status === "error") {
                         const errText = cs.error || "Unknown error";
@@ -4649,6 +4790,14 @@ async function switchToOrchestration(orchId) {
                     if (turnResult?.model) {
                         sessionModels.set(orchId, turnResult.model);
                         if (orchId === activeOrchId) updateChatLabel();
+                    }
+                    if (!turnResult?.model && cs?.responseVersion) {
+                        fetchLatestResponsePayload(orchId, dc).then((payload) => {
+                            if (payload?.model) {
+                                sessionModels.set(orchId, payload.model);
+                                if (orchId === activeOrchId) updateChatLabel();
+                            }
+                        }).catch(() => {});
                     }
                 } catch {}
             }
@@ -5723,9 +5872,9 @@ async function summarizeSession(orchId) {
         await dc.enqueueEvent(orchId, "messages", JSON.stringify({ prompt: resumePrompt }));
     } catch { return; }
 
-    // Wait for the status to go through "running" → "idle" with turnResult.
+    // Wait for the status to go through "running" → "idle" with a completed result.
     // We need to see a "running" status first to confirm our message was picked up,
-    // then wait for the subsequent "idle" with a completed turnResult.
+    // then wait for the subsequent "idle" with either a legacy turnResult or a KV-backed response.
     // Short timeout — if the session doesn't respond quickly, skip it.
     const deadline = Date.now() + 20_000;
     let version = baseVersion;
@@ -5747,9 +5896,17 @@ async function summarizeSession(orchId) {
                 sawRunning = true;
                 continue; // wait for the completed result
             }
-            // Only accept a turnResult if we've seen "running" (i.e., our message was processed)
+            let content = "";
             if (sawRunning && cs?.turnResult?.type === "completed" && cs.turnResult.content) {
-                const content = cs.turnResult.content;
+                content = cs.turnResult.content;
+            } else if (sawRunning && cs?.responseVersion) {
+                const response = await fetchLatestResponsePayload(orchId, dc);
+                if (response?.type === "completed" && response.content) {
+                    content = response.content;
+                    noteSeenResponseVersion(orchId, response.version);
+                }
+            }
+            if (content) {
                 // Extract heading from first line
                 const headingMatch = content.match(/^HEADING:\s*(.+)/m);
                 if (headingMatch && !systemSessionIds.has(orchId)) {

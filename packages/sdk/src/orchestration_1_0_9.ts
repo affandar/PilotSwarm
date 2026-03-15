@@ -1,9 +1,3 @@
-import {
-    RESPONSE_VERSION_KEY,
-    COMMAND_VERSION_KEY,
-    RESPONSE_LATEST_KEY,
-    commandResponseKey,
-} from "./types.js";
 import type {
     TurnResult,
     OrchestrationInput,
@@ -12,9 +6,6 @@ import type {
     PilotSwarmSessionStatus,
     CommandMessage,
     CommandResponse,
-    SessionResponsePayload,
-    SessionCommandResponse,
-    SessionStatusSignal,
 } from "./types.js";
 import { createSessionProxy, createSessionManagerProxy } from "./session-proxy.js";
 
@@ -24,8 +15,7 @@ import { createSessionProxy, createSessionManagerProxy } from "./session-proxy.j
  * @internal
  */
 function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<string, unknown>) {
-    const signal: SessionStatusSignal = { status, ...(extra ?? {}) } as SessionStatusSignal;
-    ctx.setCustomStatus(JSON.stringify(signal));
+    ctx.setCustomStatus(JSON.stringify({ status, ...extra }));
 }
 
 /**
@@ -44,7 +34,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.10";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.9";
 
 /**
  * Long-lived durable session orchestration.
@@ -62,14 +52,10 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.10";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_10(
+export function* durableSessionOrchestration_1_0_9(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
-    const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
-    if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.10] ${message}`);
-    }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
     const inputGracePeriod = input.inputGracePeriod ?? 30;
@@ -116,71 +102,6 @@ export function* durableSessionOrchestration_1_0_10(
     // ─── Create proxies ──────────────────────────────────────
     const manager = createSessionManagerProxy(ctx);
     let session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
-
-    function readCounter(key: string): number {
-        const raw = ctx.getValue(key);
-        if (raw == null) return 0;
-        const parsed = Number(raw);
-        return Number.isFinite(parsed) ? parsed : 0;
-    }
-
-    function writeJsonValue(key: string, value: unknown): void {
-        ctx.setValue(key, JSON.stringify(value));
-    }
-
-    function bumpCounter(key: string): number {
-        const next = readCounter(key) + 1;
-        ctx.setValue(key, String(next));
-        return next;
-    }
-
-    let lastResponseVersion = readCounter(RESPONSE_VERSION_KEY);
-    let lastCommandVersion = readCounter(COMMAND_VERSION_KEY);
-    let lastCommandId: string | undefined;
-
-    function publishStatus(status: PilotSwarmSessionStatus, extra: Record<string, unknown> = {}): void {
-        const signal: Record<string, unknown> = {
-            iteration,
-            ...(lastResponseVersion > 0 ? { responseVersion: lastResponseVersion } : {}),
-            ...(lastCommandVersion > 0 ? { commandVersion: lastCommandVersion } : {}),
-            ...(lastCommandId ? { commandId: lastCommandId } : {}),
-            ...extra,
-        };
-        setStatus(ctx, status, signal);
-    }
-
-    function* writeLatestResponse(
-        payload: Omit<SessionResponsePayload, "schemaVersion" | "version" | "emittedAt">,
-    ): Generator<any, SessionResponsePayload, any> {
-        const version = bumpCounter(RESPONSE_VERSION_KEY);
-        const emittedAt: number = yield ctx.utcNow();
-        const responsePayload: SessionResponsePayload = {
-            schemaVersion: 1,
-            version,
-            emittedAt,
-            ...payload,
-        };
-        writeJsonValue(RESPONSE_LATEST_KEY, responsePayload);
-        lastResponseVersion = version;
-        return responsePayload;
-    }
-
-    function* writeCommandResponse(
-        response: CommandResponse,
-    ): Generator<any, SessionCommandResponse, any> {
-        const version = bumpCounter(COMMAND_VERSION_KEY);
-        const emittedAt: number = yield ctx.utcNow();
-        const payload: SessionCommandResponse = {
-            ...response,
-            schemaVersion: 1,
-            version,
-            emittedAt,
-        };
-        writeJsonValue(commandResponseKey(response.id), payload);
-        lastCommandVersion = version;
-        lastCommandId = response.id;
-        return payload;
-    }
 
     // ─── Helper: wrap prompt with resume context after dehydration ──
     function wrapWithResumeContext(userPrompt: string, extra?: string): string {
@@ -305,6 +226,8 @@ export function* durableSessionOrchestration_1_0_10(
 
     // ─── Prompt carried from continueAsNew ───────────────────
     let pendingPrompt: string | undefined = input.prompt;
+    /** Set by the "completed" handler so the dequeue loop doesn't overwrite it. */
+    let lastTurnResult: any = undefined;
 
     ctx.traceInfo(`[orch] start: iter=${iteration} pending=${pendingPrompt ? `"${pendingPrompt.slice(0, 40)}"` : 'NONE'} hydrate=${needsHydration} blob=${blobEnabled}`);
 
@@ -316,7 +239,14 @@ export function* durableSessionOrchestration_1_0_10(
             prompt = pendingPrompt;
             pendingPrompt = undefined;
         } else {
-            publishStatus("idle");
+            // If we have a completed turnResult, include it in the idle status
+            // so clients can read it via waitForStatusChange. Without this,
+            // a bare setStatus("idle") between yields would overwrite it.
+            if (lastTurnResult) {
+                setStatus(ctx, "idle", { iteration, turnResult: lastTurnResult });
+            } else {
+                setStatus(ctx, "idle", { iteration });
+            }
 
             let gotPrompt = false;
             while (!gotPrompt) {
@@ -342,13 +272,12 @@ export function* durableSessionOrchestration_1_0_10(
                                 cmd: cmdMsg.cmd,
                                 result: { ok: true, oldModel, newModel },
                             };
-                            yield* writeCommandResponse(resp);
-                            publishStatus("idle");
+                            setStatus(ctx, "idle", { iteration, cmdResponse: resp });
                             yield versionedContinueAsNew(continueInput());
                             return "";
                         }
                         case "list_models": {
-                            publishStatus("idle", { cmdProcessing: cmdMsg.id });
+                            setStatus(ctx, "idle", { iteration, cmdProcessing: cmdMsg.id });
                             let models: unknown;
                             try {
                                 const raw: any = yield manager.listModels();
@@ -359,8 +288,7 @@ export function* durableSessionOrchestration_1_0_10(
                                     cmd: cmdMsg.cmd,
                                     error: err.message || String(err),
                                 };
-                                yield* writeCommandResponse(resp);
-                                publishStatus("idle");
+                                setStatus(ctx, "idle", { iteration, cmdResponse: resp });
                                 continue;
                             }
                             const resp: CommandResponse = {
@@ -368,8 +296,7 @@ export function* durableSessionOrchestration_1_0_10(
                                 cmd: cmdMsg.cmd,
                                 result: { models, currentModel: config.model },
                             };
-                            yield* writeCommandResponse(resp);
-                            publishStatus("idle");
+                            setStatus(ctx, "idle", { iteration, cmdResponse: resp });
                             continue;
                         }
                         case "get_info": {
@@ -385,8 +312,7 @@ export function* durableSessionOrchestration_1_0_10(
                                     blobEnabled,
                                 },
                             };
-                            yield* writeCommandResponse(resp);
-                            publishStatus("idle");
+                            setStatus(ctx, "idle", { iteration, cmdResponse: resp });
                             continue;
                         }
                         case "done": {
@@ -432,8 +358,7 @@ export function* durableSessionOrchestration_1_0_10(
                                 cmd: cmdMsg.cmd,
                                 result: { ok: true, message: "Session completed" },
                             };
-                            yield* writeCommandResponse(resp);
-                            publishStatus("completed");
+                            setStatus(ctx, "completed", { iteration, cmdResponse: resp });
                             return "done";
                         }
                         default: {
@@ -442,8 +367,7 @@ export function* durableSessionOrchestration_1_0_10(
                                 cmd: cmdMsg.cmd,
                                 error: `Unknown command: ${cmdMsg.cmd}`,
                             };
-                            yield* writeCommandResponse(resp);
-                            publishStatus("idle");
+                            setStatus(ctx, "idle", { iteration, cmdResponse: resp });
                             continue;
                         }
                     }
@@ -457,6 +381,7 @@ export function* durableSessionOrchestration_1_0_10(
 
                 prompt = msgData.prompt;
                 gotPrompt = true;
+                lastTurnResult = undefined; // Clear after new prompt arrives
             }
         }
 
@@ -491,7 +416,8 @@ export function* durableSessionOrchestration_1_0_10(
                     hydrateAttempts++;
                     ctx.traceInfo(`[orch] hydrate FAILED (attempt ${hydrateAttempts}/${MAX_RETRIES}): ${hMsg}`);
                     if (hydrateAttempts >= MAX_RETRIES) {
-                        publishStatus("error", {
+                        setStatus(ctx, "error", {
+                            iteration,
                             error: `Hydrate failed after ${MAX_RETRIES} attempts: ${hMsg}`,
                             retriesExhausted: true,
                         });
@@ -499,7 +425,8 @@ export function* durableSessionOrchestration_1_0_10(
                         break;
                     }
                     const hydrateDelay = 10 * Math.pow(2, hydrateAttempts - 1);
-                    publishStatus("error", {
+                    setStatus(ctx, "error", {
+                        iteration,
                         error: `Hydrate failed: ${hMsg} (retry ${hydrateAttempts}/${MAX_RETRIES} in ${hydrateDelay}s)`,
                     });
                     yield ctx.scheduleTimer(hydrateDelay * 1000);
@@ -509,7 +436,7 @@ export function* durableSessionOrchestration_1_0_10(
         }
 
         // ③ RUN TURN via SessionProxy (with retry on failure)
-        publishStatus("running");
+        setStatus(ctx, "running", { iteration });
         let turnResult: any;
         try {
             turnResult = yield session.runTurn(prompt);
@@ -523,7 +450,8 @@ export function* durableSessionOrchestration_1_0_10(
                 // Exhausted retries — park in error state but don't crash.
                 // The orchestration stays alive and will retry on the next user message.
                 ctx.traceInfo(`[orch] max retries exhausted, waiting for user input`);
-                publishStatus("error", {
+                setStatus(ctx, "error", {
+                    iteration,
                     error: `Failed after ${MAX_RETRIES} attempts: ${errorMsg}`,
                     retriesExhausted: true,
                 });
@@ -532,7 +460,8 @@ export function* durableSessionOrchestration_1_0_10(
                 continue;
             }
 
-            publishStatus("error", {
+            setStatus(ctx, "error", {
+                iteration,
                 error: `${errorMsg} (retry ${retryCount}/${MAX_RETRIES} in 15s)`,
             });
 
@@ -559,6 +488,9 @@ export function* durableSessionOrchestration_1_0_10(
             ? JSON.parse(turnResult) : turnResult;
         iteration++;
 
+        // Strip events from result before putting in customStatus (events go to CMS, not status)
+        const { events: _events, ...statusResult } = result as any;
+
         // ── Summarize title if due ──────────────────────────
         yield* maybeSummarize();
 
@@ -566,12 +498,6 @@ export function* durableSessionOrchestration_1_0_10(
         switch (result.type) {
             case "completed":
                 ctx.traceInfo(`[response] ${result.content}`);
-                yield* writeLatestResponse({
-                    iteration,
-                    type: "completed",
-                    content: result.content,
-                    model: (result as any).model,
-                });
 
                 // If this is a child orchestration, notify the parent about our completion
                 // via the SDK — sends to the parent's "messages" queue like any other message.
@@ -587,6 +513,7 @@ export function* durableSessionOrchestration_1_0_10(
                     // Non-system sub-agents auto-terminate after completing their task.
                     if (input.isSystem) {
                         ctx.traceInfo(`[orch] system sub-agent completed turn, continuing loop`);
+                        lastTurnResult = statusResult;
                         yield* maybeCheckpoint();
                         continue;
                     }
@@ -598,11 +525,13 @@ export function* durableSessionOrchestration_1_0_10(
                     try {
                         yield session.destroy();
                     } catch {}
-                    publishStatus("completed");
+                    setStatus(ctx, "completed", { iteration, turnResult: statusResult });
                     return "done";
                 }
 
                 if (!blobEnabled || idleTimeout < 0) {
+                    // Store the result so the dequeue-idle setStatus includes it
+                    lastTurnResult = statusResult;
                     // Checkpoint while idle (no dehydration path)
                     yield* maybeCheckpoint();
                     continue;
@@ -610,7 +539,7 @@ export function* durableSessionOrchestration_1_0_10(
 
                 // Race: next message vs idle timeout
                 {
-                    publishStatus("idle");
+                    setStatus(ctx, "idle", { iteration, turnResult: statusResult });
                     yield* maybeCheckpoint();
                     const idleDeadline: number = (yield ctx.utcNow()) + idleTimeout * 1000;
                     while (true) {
@@ -666,6 +595,11 @@ export function* durableSessionOrchestration_1_0_10(
                         taskContext + '"';
                 }
 
+                if (result.content) {
+                    setStatus(ctx, "running", { iteration, intermediateContent: result.content });
+                    ctx.traceInfo(`[orch] intermediate: ${result.content.slice(0, 80)}`);
+                }
+
                 // If this is a child orchestration, notify the parent on every wait cycle
                 // via the SDK — sends a message to the parent's "messages" queue.
                 if (parentSessionId) {
@@ -689,23 +623,13 @@ export function* durableSessionOrchestration_1_0_10(
                     }
 
                     const waitStartedAt: number = yield ctx.utcNow();
-                    if (result.content) {
-                        yield* writeLatestResponse({
-                            iteration,
-                            type: "wait",
-                            content: result.content,
-                            waitReason: result.reason,
-                            waitSeconds: result.seconds,
-                            waitStartedAt,
-                            model: (result as any).model,
-                        });
-                        ctx.traceInfo(`[orch] intermediate: ${result.content.slice(0, 80)}`);
-                    }
 
-                    publishStatus("waiting", {
+                    setStatus(ctx, "waiting", {
+                        iteration,
                         waitSeconds: result.seconds,
                         waitReason: result.reason,
                         waitStartedAt,
+                        ...(result.content ? { turnResult: { type: "completed", content: result.content } } : {}),
                     });
 
                     // Checkpoint before the blocking wait
@@ -782,17 +706,15 @@ export function* durableSessionOrchestration_1_0_10(
 
             case "input_required":
                 ctx.traceInfo(`[orch] waiting for user input: ${result.question}`);
-                yield* writeLatestResponse({
-                    iteration,
-                    type: "input_required",
-                    question: result.question,
-                    choices: result.choices,
-                    allowFreeform: result.allowFreeform,
-                    model: (result as any).model,
-                });
 
                 if (!blobEnabled || inputGracePeriod < 0) {
-                    publishStatus("input_required");
+                    setStatus(ctx, "input_required", {
+                        iteration,
+                        turnResult: statusResult,
+                        pendingQuestion: result.question,
+                        choices: result.choices,
+                        allowFreeform: result.allowFreeform,
+                    });
                     yield* maybeCheckpoint();
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
@@ -805,7 +727,11 @@ export function* durableSessionOrchestration_1_0_10(
                 }
 
                 if (inputGracePeriod === 0) {
-                    publishStatus("input_required");
+                    setStatus(ctx, "input_required", {
+                        iteration,
+                        turnResult: statusResult,
+                        pendingQuestion: result.question,
+                    });
                     yield* dehydrateAndReset("input_required");
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
@@ -818,7 +744,13 @@ export function* durableSessionOrchestration_1_0_10(
 
                 // Race: user answer vs grace period
                 {
-                    publishStatus("input_required");
+                    setStatus(ctx, "input_required", {
+                        iteration,
+                        turnResult: statusResult,
+                        pendingQuestion: result.question,
+                        choices: result.choices,
+                        allowFreeform: result.allowFreeform,
+                    });
                     const answerEvt = ctx.dequeueEvent("messages");
                     const graceTimer = ctx.scheduleTimer(inputGracePeriod * 1000);
                     const raceResult: any = yield ctx.race(answerEvt, graceTimer);
@@ -1130,7 +1062,10 @@ export function* durableSessionOrchestration_1_0_10(
                 }
 
                 ctx.traceInfo(`[orch] wait_for_agents: waiting for ${targetIds.length} agents`);
-                publishStatus("running");
+                setStatus(ctx, "running", {
+                    iteration,
+                    waitingForAgents: targetIds,
+                });
 
                 // Event-driven wait: children send updates to the parent's "messages"
                 // queue via sendToSession. We race messages vs a fallback poll timer.
@@ -1362,7 +1297,8 @@ export function* durableSessionOrchestration_1_0_10(
 
                 if (retryCount >= MAX_RETRIES) {
                     ctx.traceInfo(`[orch] max retries exhausted for turn error, waiting for user input`);
-                    publishStatus("error", {
+                    setStatus(ctx, "error", {
+                        iteration,
                         error: `Failed after ${MAX_RETRIES} attempts: ${result.message}`,
                         retriesExhausted: true,
                     });
@@ -1370,7 +1306,8 @@ export function* durableSessionOrchestration_1_0_10(
                     continue;
                 }
 
-                publishStatus("error", {
+                setStatus(ctx, "error", {
+                    iteration,
                     error: `${result.message} (retry ${retryCount}/${MAX_RETRIES})`,
                 });
 
