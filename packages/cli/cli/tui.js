@@ -1107,7 +1107,7 @@ function refreshNodeMap() {
     // Walk all known orchestrations and assign to their last-known node
     for (const orchId of knownOrchestrationIds) {
         const node = seqLastActivityNode.get(orchId);
-        const status = sessionLiveStatus.get(orchId) || "unknown";
+        const status = getSessionVisualState(orchId);
         const uuid4 = shortId(orchId);
         const title = sessionHeadings.get(orchId);
         const entry = { orchId, uuid4, status, title };
@@ -1128,18 +1128,6 @@ function refreshNodeMap() {
     const dividers = ncols > 1 ? ncols - 1 : 0;
     const colW = Math.max(10, Math.floor((innerW - dividers) / ncols));
     const SEP = "{white-fg}│{/white-fg}";
-
-    // State → color mapping
-    const stateColor = (status) => {
-        switch (status) {
-            case "running": return "green";
-            case "waiting": return "yellow";
-            case "idle": return "gray";
-            case "input_required": return "cyan";
-            case "error": return "red";
-            default: return "white";
-        }
-    };
 
     // Pad/clip text to column width (plain text, no tags)
     const fitCol = (text, w) => {
@@ -1180,7 +1168,7 @@ function refreshNodeMap() {
             if (row < sessions.length) {
                 const s = sessions[row];
                 const isActive = s.orchId === activeOrchId;
-                const color = stateColor(s.status);
+                const color = getSessionStateColor(s.status);
                 const idText = fitCol(s.uuid4, colW);
                 const tText = fitCol((s.title || "").slice(0, colW - 1), colW);
                 if (isActive) {
@@ -3127,6 +3115,45 @@ const sessionPendingQuestions = new Map(); // orchId → latest input-required q
 const sessionLastSeenResponseVersion = new Map(); // orchId → latest KV-backed response version rendered
 const sessionLastSeenCommandVersion = new Map(); // orchId → latest KV-backed command response version rendered
 
+function getSessionVisualState(orchId, cached = orchStatusCache.get(orchId)) {
+    const liveState = sessionLiveStatus.get(orchId) || cached?.liveState;
+    if (liveState) return liveState;
+    switch (cached?.status) {
+        case "Completed": return "completed";
+        case "Failed": return "failed";
+        case "Terminated": return "terminated";
+        case "Running": return "running";
+        case "Pending": return "pending";
+        default: return "unknown";
+    }
+}
+
+function getSessionStateColor(state) {
+    switch (state) {
+        case "running": return "green";
+        case "waiting": return "yellow";
+        case "idle": return "white";
+        case "input_required": return "cyan";
+        case "completed": return "gray";
+        case "failed":
+        case "error": return "red";
+        case "terminated": return "yellow";
+        default: return "white";
+    }
+}
+
+function getSessionStateIcon(state) {
+    switch (state) {
+        case "running": return "{green-fg}*{/green-fg}";
+        case "waiting": return "{yellow-fg}~{/yellow-fg}";
+        case "idle": return "{white-fg}.{/white-fg}";
+        case "input_required": return "{cyan-fg}?{/cyan-fg}";
+        case "failed":
+        case "error": return "{red-fg}!{/red-fg}";
+        default: return "";
+    }
+}
+
 function setSessionPendingTurn(orchId, pending) {
     if (!orchId) return;
     if (pending) sessionPendingTurns.add(orchId);
@@ -3310,23 +3337,10 @@ function updateSessionListIcons() {
     if (orchIdOrder.length === 0) { perfEnd(_ph, { n: 0 }); return; }
     for (let i = 0; i < orchIdOrder.length; i++) {
         const id = orchIdOrder[i];
-        const liveStatus = sessionLiveStatus.get(id);
         const cached = orchStatusCache.get(id);
-        const status = cached?.status || "Unknown";
-        let statusIcon = "";
-        if (status === "Completed" || status === "Failed" || status === "Terminated") {
-            statusIcon = "";
-        } else if (liveStatus === "running") {
-            statusIcon = "{green-fg}*{/green-fg}";
-        } else if (liveStatus === "error") {
-            statusIcon = "{red-fg}!{/red-fg}";
-        } else if (liveStatus === "waiting") {
-            statusIcon = "{blue-fg}~{/blue-fg}";
-        } else if (liveStatus === "input_required") {
-            statusIcon = "{magenta-fg}?{/magenta-fg}";
-        } else if (liveStatus === "idle") {
-            statusIcon = "{white-fg}z{/white-fg}";
-        }
+        const visualState = getSessionVisualState(id, cached);
+        const statusIcon = getSessionStateIcon(visualState);
+        const color = getSessionStateColor(visualState);
 
         // Rebuild just this item's label
         const uuid4 = shortId(id);
@@ -3338,16 +3352,11 @@ function updateSessionListIcons() {
                 hour12: false,
             })
             : "";
-        let color = "white";
-        if (status === "Running") color = "green";
-        else if (status === "Failed") color = "red";
-        else if (status === "Completed") color = "gray";
-        else if (status === "Terminated") color = "yellow";
 
         const hasChanges = orchHasChanges.has(id);
         const isActive = id === activeOrchId;
         const marker = isActive ? "{bold}▸{/bold}" : " ";
-        const changeDot = hasChanges ? "{cyan-fg}{bold}●{/bold}{/cyan-fg} " : "";
+        const changeSuffix = hasChanges ? " {cyan-fg}{bold}●{/bold}{/cyan-fg}" : "";
         const statusIconSlot = statusIcon ? statusIcon + " " : "  ";
         const heading = sessionHeadings.get(id);
         // Use cached depth from last full refresh
@@ -3358,15 +3367,15 @@ function updateSessionListIcons() {
         if (systemSessionIds.has(id)) {
             const collapseBadge = getCollapseBadge(id);
             const sysLabel = heading
-                ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
-                : `System Agent (${uuid4}) ${timeStr}${collapseBadge}`;
-            orchList.setItem(i, `${indent}${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
+                ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`
+                : `System Agent (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`;
+            orchList.setItem(i, `${indent}${marker}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
         } else {
             const collapseBadge = getCollapseBadge(id);
             const label = heading
-                ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
-                : `(${uuid4}) ${timeStr}${collapseBadge}`;
-            orchList.setItem(i, `${indent}${marker}${changeDot}${statusIconSlot}{${color}-fg}${label}{/${color}-fg}`);
+                ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`
+                : `(${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`;
+            orchList.setItem(i, `${indent}${marker}${statusIconSlot}{${color}-fg}${label}{/${color}-fg}`);
         }
     }
     perfEnd(_ph, { n: orchIdOrder.length });
@@ -3450,12 +3459,13 @@ async function refreshOrchestrations(force = false) {
         else if (liveState === "completed") status = "Completed";
         else if (liveState === "failed") status = "Failed";
         else if (liveState === "error") status = "Failed";
+        else if (liveState === "terminated") status = "Terminated";
         else if (liveState === "idle") status = "Running"; // idle = alive orchestration
         else if (liveState === "waiting") status = "Running";
         else if (liveState === "input_required") status = "Running";
-        else if (liveState === "pending") status = "Running";
+        else if (liveState === "pending") status = "Pending";
 
-        orchStatusCache.set(id, { status, createdAt });
+        orchStatusCache.set(id, { status, createdAt, liveState });
         knownOrchestrationIds.add(id);
 
         // Detect changes: if version advanced since last time user viewed this session
@@ -3628,34 +3638,17 @@ async function refreshOrchestrations(force = false) {
                     hour12: false,
                 })
                 : "";
-            let color = "white";
-            if (status === "Running") color = "green";
-            else if (status === "Failed") color = "red";
-            else if (status === "Completed") color = "gray";
-            else if (status === "Terminated") color = "yellow";
+            const visualState = getSessionVisualState(id, orchStatusCache.get(id) || { status, createdAt });
+            const color = getSessionStateColor(visualState);
 
             // Highlight sessions with unseen changes
             const hasChanges = orchHasChanges.has(id);
             const isActive = id === activeOrchId;
             const marker = isActive ? "{bold}▸{/bold}" : " ";
-            const changeDot = hasChanges ? "{cyan-fg}{bold}●{/bold}{/cyan-fg} " : "";
+            const changeSuffix = hasChanges ? " {cyan-fg}{bold}●{/bold}{/cyan-fg}" : "";
 
             // Live status indicator
-            const liveStatus = sessionLiveStatus.get(id);
-            let statusIcon = "";
-            if (status === "Completed" || status === "Failed" || status === "Terminated") {
-                statusIcon = ""; // no icon for terminal states
-            } else if (liveStatus === "running") {
-                statusIcon = "{green-fg}*{/green-fg}";
-            } else if (liveStatus === "error") {
-                statusIcon = "{red-fg}!{/red-fg}";
-            } else if (liveStatus === "waiting") {
-                statusIcon = "{blue-fg}~{/blue-fg}";
-            } else if (liveStatus === "input_required") {
-                statusIcon = "{magenta-fg}?{/magenta-fg}";
-            } else if (liveStatus === "idle") {
-                statusIcon = "{white-fg}z{/white-fg}";
-            }
+            const statusIcon = getSessionStateIcon(visualState);
 
             const statusIconSlot = statusIcon ? statusIcon + " " : "  ";
             const heading = sessionHeadings.get(id);
@@ -3665,15 +3658,15 @@ async function refreshOrchestrations(force = false) {
             if (systemSessionIds.has(id)) {
                 const collapseBadge = getCollapseBadge(id);
                 const sysLabel = heading
-                    ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
-                    : `System Agent (${uuid4}) ${timeStr}${collapseBadge}`;
-                orchList.addItem(`${indent}${marker}${changeDot}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
+                    ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`
+                    : `System Agent (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`;
+                orchList.addItem(`${indent}${marker}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
             } else {
                 const collapseBadge = getCollapseBadge(id);
                 const label = heading
-                    ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}`
-                    : `(${uuid4}) ${timeStr}${collapseBadge}`;
-                orchList.addItem(`${indent}${marker}${changeDot}${statusIconSlot}{${color}-fg}${label}{/${color}-fg}`);
+                    ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`
+                    : `(${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`;
+                orchList.addItem(`${indent}${marker}${statusIconSlot}{${color}-fg}${label}{/${color}-fg}`);
             }
         }
         // Show hint if there are only system sessions (no user sessions)
@@ -4204,6 +4197,27 @@ function addPendingCommand(cmdId, cmd, timeoutMs = 15_000, orchId = activeOrchId
     pendingCommands.set(cmdId, { cmd, orchId, resolve: null, timer });
 }
 
+function resolvePendingDoneCommand(orchId, error) {
+    for (const [pendingId, pending] of pendingCommands) {
+        if (pending.cmd !== "done") continue;
+        if (pending.orchId && pending.orchId !== orchId) continue;
+        if (pending.timer) clearTimeout(pending.timer);
+        pendingCommands.delete(pendingId);
+        if (error) {
+            appendChatRaw(`{red-fg}❌ Command failed: ${error}{/red-fg}`, orchId);
+        } else {
+            appendChatRaw("{green-fg}✓ Session completed.{/green-fg}", orchId);
+        }
+        if (orchId !== activeOrchId) {
+            orchHasChanges.add(orchId);
+            updateSessionListIcons();
+        }
+        screen.render();
+        return true;
+    }
+    return false;
+}
+
 async function createNewSession() {
     let sessionOrchId = null;
     const sess = await client.createSession({
@@ -4494,6 +4508,48 @@ function startObserver(orchId) {
         }
     }
 
+    async function consumeTerminalArtifacts(statusSnapshot, source) {
+        let cs = null;
+        if (statusSnapshot?.customStatus) {
+            try {
+                cs = typeof statusSnapshot.customStatus === "string"
+                    ? JSON.parse(statusSnapshot.customStatus)
+                    : statusSnapshot.customStatus;
+            } catch {}
+        }
+        if (!cs) return null;
+
+        lastVersion = Math.max(lastVersion, statusSnapshot.customStatusVersion || 0);
+
+        if (cs.cmdResponse) {
+            renderCommandResponse(cs.cmdResponse);
+        } else {
+            const commandResponse = await consumeCommandResponsePayload(orchId, cs, dc);
+            if (commandResponse) {
+                renderCommandResponse(commandResponse);
+            }
+        }
+
+        if (cs.turnResult && cs.iteration > lastIteration) {
+            lastIteration = cs.iteration;
+            if (cs.turnResult.type === "completed" && cs.turnResult.content) {
+                renderCompletedContent(cs.turnResult.content);
+            } else if (cs.turnResult.type === "input_required") {
+                renderResponsePayload(cs.turnResult, cs, source);
+            }
+        } else if (!cs.turnResult) {
+            const latestResponse = await consumeLatestResponsePayload(orchId, cs, dc);
+            if (latestResponse) {
+                renderResponsePayload(latestResponse, cs, source);
+            }
+        }
+
+        if (cs.status) {
+            updateLiveStatus(cs.status);
+        }
+        return cs;
+    }
+
     // ── Real-time CMS event subscription ────────────────────
     // CMS event polling is managed centrally via activeCmsPoller — only
     // the active session polls CMS. This avoids N concurrent pollers
@@ -4507,6 +4563,7 @@ function startObserver(orchId) {
 
             // Check for terminal states FIRST — before inspecting customStatus
             if (currentStatus.status === "Failed" || currentStatus.status === "Completed" || currentStatus.status === "Terminated") {
+                const terminalCs = await consumeTerminalArtifacts(currentStatus, "terminal");
                 clearSessionPendingQuestion(orchId);
                 if (currentStatus.status === "Failed") {
                     const reason = currentStatus.failureDetails?.errorMessage?.split("\n")[0]
@@ -4514,8 +4571,12 @@ function startObserver(orchId) {
                         || "Unknown error";
                     appendActivity(`{red-fg}❌ Orchestration failed: ${reason}{/red-fg}`, orchId);
                     updateLiveStatus("error");
+                    resolvePendingDoneCommand(orchId, reason);
                 } else {
                     appendActivity(`{gray-fg}Orchestration ${currentStatus.status}{/gray-fg}`, orchId);
+                    if (currentStatus.status === "Completed" && !terminalCs?.commandId) {
+                        resolvePendingDoneCommand(orchId);
+                    }
                 }
                 setSessionPendingTurn(orchId, false);
                 setTurnInProgressIfActive(false);
@@ -4743,17 +4804,21 @@ function startObserver(orchId) {
                 try {
                     const info = await dc.getStatus(orchId);
                     if (info.status === "Completed" || info.status === "Failed" || info.status === "Terminated") {
+                        const terminalCs = await consumeTerminalArtifacts(info, "terminal");
                         clearSessionPendingQuestion(orchId);
                         if (info.status === "Failed") {
                             const reason = info.failureDetails?.errorMessage?.split("\n")[0]
                                 || info.output?.split("\n")[0]
                                 || "Unknown error";
                             appendActivity(`{red-fg}❌ Session failed: ${reason}{/red-fg}`, orchId);
+                            resolvePendingDoneCommand(orchId, reason);
+                        } else if (info.status === "Completed" && !terminalCs?.commandId) {
+                            resolvePendingDoneCommand(orchId);
                         }
                         appendActivity(`{gray-fg}Orchestration ${info.status}{/gray-fg}`, orchId);
                         setSessionPendingTurn(orchId, false);
                         setTurnInProgressIfActive(false);
-                        setStatusIfActive(`${info.status} — type a message`);
+                        setStatusIfActive(`${info.status} — session is dead`);
                         sessionObservers.delete(orchId);
                         break;
                     }
