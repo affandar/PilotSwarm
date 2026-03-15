@@ -45,7 +45,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.13";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.12";
 
 /**
  * Long-lived durable session orchestration.
@@ -63,13 +63,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.13";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_13(
+export function* durableSessionOrchestration_1_0_12(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.13] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.12] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -970,16 +970,6 @@ export function* durableSessionOrchestration_1_0_13(
                     applyAgentDef(agentDef, resolvedAgentName !== result.agentName);
                 }
 
-                if (agentModel && !agentModel.includes(":")) {
-                    ctx.traceInfo(`[orch] spawn_agent denied: unqualified model override "${agentModel}"`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: spawn_agent failed — model "${agentModel}" is not allowed. ` +
-                        `When overriding a sub-agent model, first call list_available_models and then use the exact provider:model value from that list. ` +
-                        `If you are unsure, omit model so the sub-agent inherits your current model.]`,
-                    )) return "";
-                    continue;
-                }
-
                 // If the parent is a system session, propagate isSystem to children
                 if (input.isSystem) {
                     agentIsSystem = true;
@@ -1027,8 +1017,6 @@ export function* durableSessionOrchestration_1_0_13(
                     `- Do NOT ask the user for input — you are autonomous.\n` +
                     `- When your task is complete, provide a clear summary of your findings/results.\n` +
                     `- If you write any files with write_artifact, you MUST also call export_artifact and include the artifact:// link in your response.\n` +
-                    `- If you override a sub-agent model, you MUST first call list_available_models in this session and use only an exact provider:model value returned there. ` +
-                    `NEVER invent, guess, shorten, or reuse a stale model name.\n` +
                     `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\` tool. ` +
                     `NEVER use setTimeout, sleep, setInterval, cron, or any other timing mechanism. ` +
                     `The wait tool is durable and survives process restarts.\n` +

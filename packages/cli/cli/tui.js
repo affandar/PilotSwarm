@@ -181,6 +181,95 @@ marked.use(
     }, { theme: cliHighlightTheme })
 );
 
+function isMarkdownTableLine(line) {
+    return /^\s*\|.*\|\s*$/.test(line)
+        || /^\s*\|?[:\- ]+\|[:\-| ]+\|?\s*$/.test(line);
+}
+
+function isAsciiArtCandidateLine(line) {
+    if (!line || !line.trim()) return false;
+    if (isMarkdownTableLine(line)) return false;
+    if (/^\s*[-*+]\s+[A-Za-z0-9]/.test(line)) return false;
+    if (/^\s*\d+\.\s+[A-Za-z0-9]/.test(line)) return false;
+
+    const trimmed = line.trim();
+    const leadingSpaces = line.length - line.trimStart().length;
+    const words = trimmed.match(/[A-Za-z0-9]+/g) || [];
+    const symbolCount = (trimmed.match(/[|\\/_[\]{}()<>\-=`"'*+~^:;.]/g) || []).length;
+    const hasMultiSpace = / {2,}/.test(line);
+    const hasDiagramToken = /(->|<-|=>|<=|<<|>>|~~|==|\|\|)/.test(line);
+    const hasBoxChars = /[┌┐└┘├┤┬┴┼─│]/.test(line);
+
+    if (hasBoxChars) return true;
+    if (leadingSpaces >= 2 && (hasMultiSpace || symbolCount >= 2)) return true;
+    if (hasDiagramToken && words.length <= 10) return true;
+    if (symbolCount >= 6 && words.length <= 8) return true;
+    return false;
+}
+
+function isAsciiArtLabelLine(line) {
+    if (!line || !line.trim()) return false;
+    if (isMarkdownTableLine(line)) return false;
+
+    const trimmed = line.trim();
+    const words = trimmed.match(/[A-Za-z0-9]+/g) || [];
+    const symbolCount = (trimmed.match(/[|\\/_[\]{}()<>\-=`"'*+~^:;.]/g) || []).length;
+
+    return words.length > 0
+        && words.length <= 6
+        && trimmed.length <= 36
+        && symbolCount <= 6;
+}
+
+function preserveAsciiArtBlocks(md) {
+    const lines = md.split("\n");
+    const out = [];
+    let inFence = false;
+    let pending = [];
+    let candidateCount = 0;
+
+    const flushPending = () => {
+        if (pending.length === 0) return;
+        if (candidateCount >= 3) {
+            out.push("```text", ...pending, "```");
+        } else {
+            out.push(...pending);
+        }
+        pending = [];
+        candidateCount = 0;
+    };
+
+    for (const line of lines) {
+        if (/^\s*```/.test(line)) {
+            flushPending();
+            out.push(line);
+            inFence = !inFence;
+            continue;
+        }
+
+        if (inFence) {
+            out.push(line);
+            continue;
+        }
+
+        const isCandidate = isAsciiArtCandidateLine(line);
+        const isBlank = !line.trim();
+        const isLabel = pending.length > 0 && isAsciiArtLabelLine(line);
+
+        if (isCandidate || (pending.length > 0 && (isBlank || isLabel))) {
+            pending.push(line);
+            if (isCandidate) candidateCount++;
+            continue;
+        }
+
+        flushPending();
+        out.push(line);
+    }
+
+    flushPending();
+    return out.join("\n");
+}
+
 function renderMarkdown(md) {
     const _ph = perfStart("renderMarkdown");
     try {
@@ -188,7 +277,8 @@ function renderMarkdown(md) {
         const mdWidth = Math.max(40, leftW() - 4);
         marked.use(markedTerminal({ reflowText: true, width: mdWidth, showSectionPrefix: false, tab: 2, blockquote: chalk.whiteBright.italic, html: chalk.white, codespan: chalk.yellowBright }, { theme: cliHighlightTheme }));
         const unescaped = md.replace(/\\n/g, "\n");
-        let rendered = marked(unescaped).replace(/\n{3,}/g, "\n\n").trimEnd();
+        const preprocessed = preserveAsciiArtBlocks(unescaped);
+        let rendered = marked(preprocessed).replace(/\n{3,}/g, "\n\n").trimEnd();
         // marked-terminal uses ANSI codes for styling, not blessed tags.
         // Strip curly braces so blessed doesn't misinterpret them as tags.
         rendered = rendered.replace(/\{/g, "(").replace(/\}/g, ")");

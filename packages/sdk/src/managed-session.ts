@@ -1,12 +1,12 @@
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
-import type { TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
+import type { TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
  * @internal
  */
 interface TurnState {
-    pendingActions: TurnResult[];
+    pendingActions: TurnAction[];
     session: CopilotSession | null;
     waitThreshold: number;
 }
@@ -29,7 +29,6 @@ export class ManagedSession {
     readonly sessionId: string;
     private copilotSession: CopilotSession;
     private config: ManagedSessionConfig;
-    private deferredToolActions: TurnResult[] = [];
 
     constructor(
         sessionId: string,
@@ -92,8 +91,10 @@ export class ManagedSession {
         const listModelsTool = defineTool("list_available_models", {
             description:
                 "List all available LLM models across all configured providers. " +
-                "Returns each model's qualified name (provider:model), description, and cost tier. " +
+                "Returns each model's exact qualified name (provider:model), description, and cost tier. " +
+                "This output is the authoritative source for model selection. " +
                 "Use this when choosing the best model for a sub-agent task, or when the user asks about available models. " +
+                "If you plan to pass spawn_agent(model=...), you must choose an exact provider:model value from this list and must not invent or shorten names. " +
                 "When choosing a model for a sub-agent, prefer lower-cost models for simple tasks " +
                 "and higher-cost models for complex reasoning tasks.",
             parameters: {
@@ -122,7 +123,8 @@ export class ManagedSession {
                 "Do NOT spawn agents for summarization, reporting, or coordination \u2014 handle those yourself. " +
                 "Each agent adds cost, so minimize the number of agents. " +
                 "By default, sub-agents inherit the parent's model. " +
-                "If the user asks to pick the right model, call list_available_models first.",
+                "If you want to override the model, call list_available_models first and use only an exact provider:model value returned there. " +
+                "Never invent, guess, or shorten model names.",
             parameters: {
                 type: "object",
                 properties: {
@@ -132,7 +134,7 @@ export class ManagedSession {
                     },
                     model: {
                         type: "string",
-                        description: "Optional model in provider:model format (e.g. 'azure-openai:gpt-4.1-mini'). If omitted, inherits parent's model.",
+                        description: "Optional exact provider:model override from list_available_models (e.g. 'azure-openai:gpt-4.1-mini'). Do not invent or shorten model names. If omitted, inherits parent's model.",
                     },
                     system_message: {
                         type: "string",
@@ -277,10 +279,6 @@ export class ManagedSession {
      * "input_required" so the orchestration can wait for the user's answer.
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
-        if (this.deferredToolActions.length > 0) {
-            return this.deferredToolActions.shift()!;
-        }
-
         const turnState: TurnState = {
             pendingActions: [],
             session: this.copilotSession,
@@ -352,8 +350,10 @@ export class ManagedSession {
         const listModelsTool = defineTool("list_available_models", {
             description:
                 "List all available LLM models across all configured providers. " +
-                "Returns each model's qualified name (provider:model), description, and cost tier. " +
+                "Returns each model's exact qualified name (provider:model), description, and cost tier. " +
+                "This output is the authoritative source for model selection. " +
                 "Use this when choosing the best model for a sub-agent task, or when the user asks about available models. " +
+                "If you plan to pass spawn_agent(model=...), you must choose an exact provider:model value from this list and must not invent or shorten names. " +
                 "When choosing a model for a sub-agent, prefer lower-cost models for simple tasks " +
                 "and higher-cost models for complex reasoning tasks.",
             parameters: {
@@ -371,7 +371,9 @@ export class ManagedSession {
                 "Spawn a sub-agent. For KNOWN agents, pass agent_name ONLY (e.g. agent_name=\"sweeper\"). " +
                 "The agent's system message, tools, and initial prompt are loaded automatically from agent_name. " +
                 "Do NOT pass task or system_message when using agent_name. " +
-                "For CUSTOM agents (ad-hoc tasks), pass task instead.",
+                "For CUSTOM agents (ad-hoc tasks), pass task instead. " +
+                "If you want a different model, call list_available_models first and use only an exact provider:model value from that list. " +
+                "Never invent, guess, or shorten model names.",
             parameters: {
                 type: "object",
                 properties: {
@@ -385,7 +387,7 @@ export class ManagedSession {
                     },
                     model: {
                         type: "string",
-                        description: "Optional model override in provider:model format.",
+                        description: "Optional exact provider:model override from list_available_models. Do not invent or shorten model names.",
                     },
                     system_message: {
                         type: "string",
@@ -701,15 +703,15 @@ export class ManagedSession {
         // Check what ended the turn
         if (turnState.pendingActions.length > 0) {
             const [firstAction, ...remainingActions] = turnState.pendingActions;
-            this.deferredToolActions.push(...remainingActions);
+            const queuedActions = remainingActions.length > 0 ? remainingActions : undefined;
 
             switch (firstAction.type) {
                 case "input_required":
-                    return { ...firstAction, events: collectedEvents };
+                    return { ...firstAction, events: collectedEvents, queuedActions };
                 case "wait":
-                    return { ...firstAction, content: finalContent, events: collectedEvents };
+                    return { ...firstAction, content: finalContent, events: collectedEvents, queuedActions };
                 case "spawn_agent":
-                    return { ...firstAction, content: finalContent, events: collectedEvents };
+                    return { ...firstAction, content: finalContent, events: collectedEvents, queuedActions };
                 case "message_agent":
                 case "check_agents":
                 case "wait_for_agents":
@@ -717,7 +719,7 @@ export class ManagedSession {
                 case "complete_agent":
                 case "cancel_agent":
                 case "delete_agent":
-                    return { ...firstAction, events: collectedEvents };
+                    return { ...firstAction, events: collectedEvents, queuedActions };
                 default:
                     break;
             }

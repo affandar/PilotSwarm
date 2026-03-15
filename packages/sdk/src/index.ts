@@ -38,6 +38,7 @@ export type {
     ManagedSessionConfig,
     PilotSwarmSessionStatus,
     PilotSwarmSessionInfo,
+    TurnAction,
     TurnResult,
     CapturedEvent,
     UserInputRequest,

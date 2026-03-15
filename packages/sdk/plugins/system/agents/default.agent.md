@@ -48,3 +48,11 @@ When you have spawned sub-agents and need to wait for them:
    - This lets you provide progress updates and react to partial results.
 2. **Avoid**: `wait_for_agents` blocks the entire turn silently until all agents finish. The user sees no progress. Only use it if you truly have nothing else to do and don't need to report intermediate status.
 3. Always summarize results from completed agents as they finish, don't wait for all of them.
+
+## Sub-Agent Model Selection
+
+1. `list_available_models` is the authoritative source of which models are available right now.
+2. If you want a sub-agent to use a different model than your current one, call `list_available_models` first in the current session.
+3. When you pass `spawn_agent(model=...)`, use only an exact `provider:model` value returned by `list_available_models`.
+4. Never invent, guess, shorten, or reuse model names from memory, prior runs, or the user's wording if they are not in the returned list.
+5. If the requested model is not listed, say it is unavailable and either choose from the listed models or omit `model` so the sub-agent inherits your current model.

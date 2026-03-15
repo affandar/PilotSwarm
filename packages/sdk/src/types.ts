@@ -3,8 +3,7 @@ import type { Tool, SessionConfig } from "@github/copilot-sdk";
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
 
-export type TurnResult =
-    | { type: "completed"; content: string; events?: CapturedEvent[] }
+export type TurnAction =
     | { type: "wait"; seconds: number; reason: string; content?: string; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
     | { type: "spawn_agent"; task: string; model?: string; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; content?: string; events?: CapturedEvent[] }
@@ -14,7 +13,24 @@ export type TurnResult =
     | { type: "list_sessions"; events?: CapturedEvent[] }
     | { type: "complete_agent"; agentId: string; events?: CapturedEvent[] }
     | { type: "cancel_agent"; agentId: string; reason?: string; events?: CapturedEvent[] }
-    | { type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] }
+    | { type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] };
+
+type QueuedTurnActionCarrier = {
+    queuedActions?: TurnAction[];
+};
+
+export type TurnResult =
+    | { type: "completed"; content: string; events?: CapturedEvent[] }
+    | ({ type: "wait"; seconds: number; reason: string; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "spawn_agent"; task: string; model?: string; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "check_agents"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "list_sessions"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "complete_agent"; agentId: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "cancel_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | { type: "cancelled" }
     | { type: "error"; message: string; events?: CapturedEvent[] };
 
@@ -132,6 +148,8 @@ export interface OrchestrationInput {
     // ─── Sub-agent state ─────────────────────────────────────
     /** Tracked sub-agents spawned by this orchestration. Carried across continueAsNew. */
     subAgents?: SubAgentEntry[];
+    /** Durable queue of additional tool actions emitted in the same LLM turn. */
+    pendingToolActions?: TurnAction[];
     /** If this is a sub-agent, the parent session ID (for sending updates back via SDK). */
     parentSessionId?: string;
     /** @deprecated Use parentSessionId. Kept for backward compat with frozen orchestration versions. */

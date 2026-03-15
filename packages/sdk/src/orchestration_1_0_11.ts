@@ -5,7 +5,6 @@ import {
     commandResponseKey,
 } from "./types.js";
 import type {
-    TurnAction,
     TurnResult,
     OrchestrationInput,
     SubAgentEntry,
@@ -45,7 +44,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.13";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.11";
 
 /**
  * Long-lived durable session orchestration.
@@ -63,13 +62,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.13";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_13(
+export function* durableSessionOrchestration_1_0_11(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.13] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.11] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -91,7 +90,6 @@ export function* durableSessionOrchestration_1_0_13(
 
     // ─── Sub-agent tracking ──────────────────────────────────
     let subAgents: SubAgentEntry[] = input.subAgents ? [...input.subAgents] : [];
-    let pendingToolActions: TurnAction[] = input.pendingToolActions ? [...input.pendingToolActions] : [];
     // parentSessionId: prefer new field, fall back to old parentOrchId for backward compat
     const parentSessionId = input.parentSessionId
         ?? (input.parentOrchId ? input.parentOrchId.replace(/^session-/, '') : undefined);
@@ -197,12 +195,6 @@ export function* durableSessionOrchestration_1_0_13(
         return parts.join('\n');
     }
 
-    function mergePrompt(existingPrompt?: string, nextPrompt?: string): string | undefined {
-        if (!existingPrompt) return nextPrompt;
-        if (!nextPrompt) return existingPrompt;
-        return `${existingPrompt}\n\n${nextPrompt}`;
-    }
-
     // ─── Shared continueAsNew input builder ──────────────────
     function continueInput(overrides: Partial<OrchestrationInput> = {}): OrchestrationInput {
         return {
@@ -223,30 +215,12 @@ export function* durableSessionOrchestration_1_0_13(
             taskContext,
             baseSystemMessage,
             subAgents,
-            ...(pendingToolActions.length > 0 ? { pendingToolActions } : {}),
             parentSessionId,
             nestingLevel,
             ...(isSystem ? { isSystem: true } : {}),
             retryCount: 0, // reset by default; overrides can set it
             ...overrides,
         };
-    }
-
-    function continueInputWithPrompt(nextPrompt?: string, overrides: Partial<OrchestrationInput> = {}): OrchestrationInput {
-        const mergedPrompt = mergePrompt(pendingPrompt, nextPrompt);
-        return continueInput({
-            ...(mergedPrompt ? { prompt: mergedPrompt } : {}),
-            ...overrides,
-        });
-    }
-
-    function* queueFollowupAndMaybeContinue(nextPrompt: string): Generator<any, boolean, any> {
-        pendingPrompt = mergePrompt(pendingPrompt, nextPrompt);
-        if (pendingToolActions.length > 0) {
-            return false;
-        }
-        yield versionedContinueAsNew(continueInputWithPrompt());
-        return true;
     }
 
     /** Yield this to continueAsNew into the current (latest) orchestration version. */
@@ -336,277 +310,261 @@ export function* durableSessionOrchestration_1_0_13(
     // ─── Prompt carried from continueAsNew ───────────────────
     let pendingPrompt: string | undefined = input.prompt;
 
-    ctx.traceInfo(`[orch] start: iter=${iteration} pending=${pendingPrompt ? `"${pendingPrompt.slice(0, 40)}"` : 'NONE'} queued=${pendingToolActions.length} hydrate=${needsHydration} blob=${blobEnabled}`);
+    ctx.traceInfo(`[orch] start: iter=${iteration} pending=${pendingPrompt ? `"${pendingPrompt.slice(0, 40)}"` : 'NONE'} hydrate=${needsHydration} blob=${blobEnabled}`);
 
     // ─── MAIN LOOP ──────────────────────────────────────────
     while (true) {
-        let result: TurnResult;
-        let prompt = "";
-        let replayingQueuedAction = false;
-
-        if (pendingToolActions.length > 0) {
-            result = pendingToolActions.shift()!;
-            replayingQueuedAction = true;
-            ctx.traceInfo(`[orch] replaying queued action: ${result.type} remaining=${pendingToolActions.length}`);
-        } else {
         // ① GET NEXT PROMPT
-            if (pendingPrompt) {
-                prompt = pendingPrompt;
-                pendingPrompt = undefined;
-            } else {
-                publishStatus("idle");
+        let prompt = "";
+        if (pendingPrompt) {
+            prompt = pendingPrompt;
+            pendingPrompt = undefined;
+        } else {
+            publishStatus("idle");
 
-                let gotPrompt = false;
-                while (!gotPrompt) {
-                    // All messages (from users and child agents) arrive on the "messages" queue.
-                    // Child agents communicate via the SDK (sendToSession), which enqueues
-                    // to the same "messages" queue as user prompts.
-                    let msgData: any;
-                    const msg: any = yield ctx.dequeueEvent("messages");
-                    msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
+            let gotPrompt = false;
+            while (!gotPrompt) {
+                // All messages (from users and child agents) arrive on the "messages" queue.
+                // Child agents communicate via the SDK (sendToSession), which enqueues
+                // to the same "messages" queue as user prompts.
+                let msgData: any;
+                const msg: any = yield ctx.dequeueEvent("messages");
+                msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
 
-                    // ── Command dispatch ─────────────────────────
-                    if (msgData.type === "cmd") {
-                        const cmdMsg = msgData as CommandMessage;
-                        ctx.traceInfo(`[orch-cmd] ${cmdMsg.cmd} id=${cmdMsg.id}`);
+                // ── Command dispatch ─────────────────────────
+                if (msgData.type === "cmd") {
+                    const cmdMsg = msgData as CommandMessage;
+                    ctx.traceInfo(`[orch-cmd] ${cmdMsg.cmd} id=${cmdMsg.id}`);
 
-                        switch (cmdMsg.cmd) {
-                            case "set_model": {
-                                const newModel = String(cmdMsg.args?.model || "");
-                                const oldModel = config.model || "(default)";
-                                config = { ...config, model: newModel };
+                    switch (cmdMsg.cmd) {
+                        case "set_model": {
+                            const newModel = String(cmdMsg.args?.model || "");
+                            const oldModel = config.model || "(default)";
+                            config = { ...config, model: newModel };
+                            const resp: CommandResponse = {
+                                id: cmdMsg.id,
+                                cmd: cmdMsg.cmd,
+                                result: { ok: true, oldModel, newModel },
+                            };
+                            yield* writeCommandResponse(resp);
+                            publishStatus("idle");
+                            yield versionedContinueAsNew(continueInput());
+                            return "";
+                        }
+                        case "list_models": {
+                            publishStatus("idle", { cmdProcessing: cmdMsg.id });
+                            let models: unknown;
+                            try {
+                                const raw: any = yield manager.listModels();
+                                models = typeof raw === "string" ? JSON.parse(raw) : raw;
+                            } catch (err: any) {
                                 const resp: CommandResponse = {
                                     id: cmdMsg.id,
                                     cmd: cmdMsg.cmd,
-                                    result: { ok: true, oldModel, newModel },
-                                };
-                                yield* writeCommandResponse(resp);
-                                publishStatus("idle");
-                                yield versionedContinueAsNew(continueInput());
-                                return "";
-                            }
-                            case "list_models": {
-                                publishStatus("idle", { cmdProcessing: cmdMsg.id });
-                                let models: unknown;
-                                try {
-                                    const raw: any = yield manager.listModels();
-                                    models = typeof raw === "string" ? JSON.parse(raw) : raw;
-                                } catch (err: any) {
-                                    const resp: CommandResponse = {
-                                        id: cmdMsg.id,
-                                        cmd: cmdMsg.cmd,
-                                        error: err.message || String(err),
-                                    };
-                                    yield* writeCommandResponse(resp);
-                                    publishStatus("idle");
-                                    continue;
-                                }
-                                const resp: CommandResponse = {
-                                    id: cmdMsg.id,
-                                    cmd: cmdMsg.cmd,
-                                    result: { models, currentModel: config.model },
+                                    error: err.message || String(err),
                                 };
                                 yield* writeCommandResponse(resp);
                                 publishStatus("idle");
                                 continue;
                             }
-                            case "get_info": {
-                                const resp: CommandResponse = {
-                                    id: cmdMsg.id,
-                                    cmd: cmdMsg.cmd,
-                                    result: {
-                                        model: config.model || "(default)",
-                                        iteration,
-                                        sessionId: input.sessionId,
-                                        affinityKey: affinityKey?.slice(0, 8),
-                                        needsHydration,
-                                        blobEnabled,
-                                    },
-                                };
-                                yield* writeCommandResponse(resp);
-                                publishStatus("idle");
-                                continue;
-                            }
-                            case "done": {
-                                ctx.traceInfo(`[orch] /done command received — completing session`);
+                            const resp: CommandResponse = {
+                                id: cmdMsg.id,
+                                cmd: cmdMsg.cmd,
+                                result: { models, currentModel: config.model },
+                            };
+                            yield* writeCommandResponse(resp);
+                            publishStatus("idle");
+                            continue;
+                        }
+                        case "get_info": {
+                            const resp: CommandResponse = {
+                                id: cmdMsg.id,
+                                cmd: cmdMsg.cmd,
+                                result: {
+                                    model: config.model || "(default)",
+                                    iteration,
+                                    sessionId: input.sessionId,
+                                    affinityKey: affinityKey?.slice(0, 8),
+                                    needsHydration,
+                                    blobEnabled,
+                                },
+                            };
+                            yield* writeCommandResponse(resp);
+                            publishStatus("idle");
+                            continue;
+                        }
+                        case "done": {
+                            ctx.traceInfo(`[orch] /done command received — completing session`);
 
-                                // Cascade: complete all sub-agents whose orchestrations may still be alive.
-                                // Include "running" AND "completed" — a child that sent CHILD_UPDATE
-                                // may still have a live orchestration waiting in its idle loop.
-                                const liveChildren = subAgents.filter(a => a.status === "running" || a.status === "completed");
-                                if (liveChildren.length > 0) {
-                                    ctx.traceInfo(`[orch] /done: completing ${liveChildren.length} sub-agent(s)`);
-                                    for (const child of liveChildren) {
-                                        try {
-                                            const childCmdId = `done-cascade-${iteration}-${child.sessionId.slice(0, 8)}`;
-                                            yield manager.sendCommandToSession(child.sessionId,
-                                                { type: "cmd", cmd: "done", id: childCmdId, args: { reason: "Parent session completing" } });
-                                            child.status = "completed";
-                                            ctx.traceInfo(`[orch] /done: completed child ${child.sessionId}`);
-                                        } catch (err: any) {
-                                            ctx.traceInfo(`[orch] /done: failed to complete child ${child.sessionId}: ${err.message} (non-fatal)`);
-                                        }
-                                    }
-                                }
-
-                                // If this is a child orchestration, send final result to parent
-                                if (parentSessionId) {
+                            // Cascade: complete all sub-agents whose orchestrations may still be alive.
+                            // Include "running" AND "completed" — a child that sent CHILD_UPDATE
+                            // may still have a live orchestration waiting in its idle loop.
+                            const liveChildren = subAgents.filter(a => a.status === "running" || a.status === "completed");
+                            if (liveChildren.length > 0) {
+                                ctx.traceInfo(`[orch] /done: completing ${liveChildren.length} sub-agent(s)`);
+                                for (const child of liveChildren) {
                                     try {
-                                        const doneReason = String(cmdMsg.args?.reason || "Session completed by user");
-                                        yield manager.sendToSession(parentSessionId,
-                                            `[CHILD_UPDATE from=${input.sessionId} type=completed iter=${iteration}]\n${doneReason}`);
+                                        const childCmdId = `done-cascade-${iteration}-${child.sessionId.slice(0, 8)}`;
+                                        yield manager.sendCommandToSession(child.sessionId,
+                                            { type: "cmd", cmd: "done", id: childCmdId, args: { reason: "Parent session completing" } });
+                                        child.status = "completed";
+                                        ctx.traceInfo(`[orch] /done: completed child ${child.sessionId}`);
                                     } catch (err: any) {
-                                        ctx.traceInfo(`[orch] sendToSession(parent) on /done failed: ${err.message} (non-fatal)`);
+                                        ctx.traceInfo(`[orch] /done: failed to complete child ${child.sessionId}: ${err.message} (non-fatal)`);
                                     }
                                 }
+                            }
 
-                                // Destroy the in-memory session
+                            // If this is a child orchestration, send final result to parent
+                            if (parentSessionId) {
                                 try {
-                                    yield session.destroy();
-                                } catch {}
-
-                                const resp: CommandResponse = {
-                                    id: cmdMsg.id,
-                                    cmd: cmdMsg.cmd,
-                                    result: { ok: true, message: "Session completed" },
-                                };
-                                yield* writeCommandResponse(resp);
-                                publishStatus("completed");
-                                return "done";
+                                    const doneReason = String(cmdMsg.args?.reason || "Session completed by user");
+                                    yield manager.sendToSession(parentSessionId,
+                                        `[CHILD_UPDATE from=${input.sessionId} type=completed iter=${iteration}]\n${doneReason}`);
+                                } catch (err: any) {
+                                    ctx.traceInfo(`[orch] sendToSession(parent) on /done failed: ${err.message} (non-fatal)`);
+                                }
                             }
-                            default: {
-                                const resp: CommandResponse = {
-                                    id: cmdMsg.id,
-                                    cmd: cmdMsg.cmd,
-                                    error: `Unknown command: ${cmdMsg.cmd}`,
-                                };
-                                yield* writeCommandResponse(resp);
-                                publishStatus("idle");
-                                continue;
-                            }
+
+                            // Destroy the in-memory session
+                            try {
+                                yield session.destroy();
+                            } catch {}
+
+                            const resp: CommandResponse = {
+                                id: cmdMsg.id,
+                                cmd: cmdMsg.cmd,
+                                result: { ok: true, message: "Session completed" },
+                            };
+                            yield* writeCommandResponse(resp);
+                            publishStatus("completed");
+                            return "done";
                         }
-                    }
-
-                    const childUpdate = parseChildUpdate(msgData.prompt);
-                    if (childUpdate) {
-                        yield* applyChildUpdate(childUpdate);
-                        continue;
-                    }
-
-                    prompt = msgData.prompt;
-                    gotPrompt = true;
-                }
-            }
-
-            // If the session needs hydration, the LLM lost in-memory context.
-            // Wrap the user's prompt with resume instructions so the LLM picks up where it left off.
-            if (needsHydration && blobEnabled && prompt) {
-                prompt = wrapWithResumeContext(prompt);
-            }
-
-            ctx.traceInfo(`[turn ${iteration}] session=${input.sessionId} prompt="${prompt.slice(0, 80)}"`);
-
-            // ② HYDRATE if session was dehydrated (with retry)
-            if (needsHydration && blobEnabled) {
-                let hydrateAttempts = 0;
-                while (true) {
-                    try {
-                        affinityKey = yield ctx.newGuid();
-                        session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
-                        yield session.hydrate();
-                        needsHydration = false;
-                        break;
-                    } catch (hydrateErr: any) {
-                        const hMsg = hydrateErr.message || String(hydrateErr);
-
-                        // Blob was deleted (e.g. after a reset) — skip hydration, start fresh
-                        if (hMsg.includes("blob does not exist") || hMsg.includes("BlobNotFound") || hMsg.includes("404")) {
-                            ctx.traceInfo(`[orch] hydrate skipped — blob not found, starting fresh session`);
-                            needsHydration = false;
-                            break;
+                        default: {
+                            const resp: CommandResponse = {
+                                id: cmdMsg.id,
+                                cmd: cmdMsg.cmd,
+                                error: `Unknown command: ${cmdMsg.cmd}`,
+                            };
+                            yield* writeCommandResponse(resp);
+                            publishStatus("idle");
+                            continue;
                         }
-
-                        hydrateAttempts++;
-                        ctx.traceInfo(`[orch] hydrate FAILED (attempt ${hydrateAttempts}/${MAX_RETRIES}): ${hMsg}`);
-                        if (hydrateAttempts >= MAX_RETRIES) {
-                            publishStatus("error", {
-                                error: `Hydrate failed after ${MAX_RETRIES} attempts: ${hMsg}`,
-                                retriesExhausted: true,
-                            });
-                            // Can't proceed without hydration — wait for next user message to retry
-                            break;
-                        }
-                        const hydrateDelay = 10 * Math.pow(2, hydrateAttempts - 1);
-                        publishStatus("error", {
-                            error: `Hydrate failed: ${hMsg} (retry ${hydrateAttempts}/${MAX_RETRIES} in ${hydrateDelay}s)`,
-                        });
-                        yield ctx.scheduleTimer(hydrateDelay * 1000);
                     }
                 }
-                if (needsHydration) continue; // hydrate exhausted retries — go back to dequeue
-            }
 
-            // ③ RUN TURN via SessionProxy (with retry on failure)
-            publishStatus("running");
-            let turnResult: any;
-            try {
-                turnResult = yield session.runTurn(prompt);
-            } catch (err: any) {
-                // Activity failed (e.g. Copilot timeout, network error).
-                const errorMsg = err.message || String(err);
-                retryCount++;
-                ctx.traceInfo(`[orch] runTurn FAILED (attempt ${retryCount}/${MAX_RETRIES}): ${errorMsg}`);
-
-                if (retryCount >= MAX_RETRIES) {
-                    // Exhausted retries — park in error state but don't crash.
-                    // The orchestration stays alive and will retry on the next user message.
-                    ctx.traceInfo(`[orch] max retries exhausted, waiting for user input`);
-                    publishStatus("error", {
-                        error: `Failed after ${MAX_RETRIES} attempts: ${errorMsg}`,
-                        retriesExhausted: true,
-                    });
-                    // Reset retry count and wait for next user message
-                    retryCount = 0;
+                const childUpdate = parseChildUpdate(msgData.prompt);
+                if (childUpdate) {
+                    yield* applyChildUpdate(childUpdate);
                     continue;
                 }
 
-                publishStatus("error", {
-                    error: `${errorMsg} (retry ${retryCount}/${MAX_RETRIES} in 15s)`,
-                });
-
-                // Exponential backoff: 15s, 30s, 60s
-                const retryDelay = 15 * Math.pow(2, retryCount - 1);
-                ctx.traceInfo(`[orch] retrying in ${retryDelay}s`);
-
-                if (blobEnabled) {
-                    yield* dehydrateAndReset("error");
-                }
-
-                yield ctx.scheduleTimer(retryDelay * 1000);
-                yield versionedContinueAsNew(continueInput({
-                    prompt,
-                    retryCount,
-                    needsHydration: blobEnabled ? true : needsHydration,
-                }));
-                return "";
+                prompt = msgData.prompt;
+                gotPrompt = true;
             }
-            // Successful activity — reset retry counter
-            retryCount = 0;
-
-            result = typeof turnResult === "string"
-                ? JSON.parse(turnResult) : turnResult;
-        }
-        if (!replayingQueuedAction) {
-            iteration++;
-
-            // ── Summarize title if due ──────────────────────────
-            yield* maybeSummarize();
         }
 
-        if ("queuedActions" in result && Array.isArray(result.queuedActions) && result.queuedActions.length > 0) {
-            pendingToolActions.push(...result.queuedActions);
-            ctx.traceInfo(`[orch] queued ${result.queuedActions.length} extra action(s) from turn`);
+        // If the session needs hydration, the LLM lost in-memory context.
+        // Wrap the user's prompt with resume instructions so the LLM picks up where it left off.
+        if (needsHydration && blobEnabled && prompt) {
+            prompt = wrapWithResumeContext(prompt);
         }
+
+        ctx.traceInfo(`[turn ${iteration}] session=${input.sessionId} prompt="${prompt.slice(0, 80)}"`);
+
+        // ② HYDRATE if session was dehydrated (with retry)
+        if (needsHydration && blobEnabled) {
+            let hydrateAttempts = 0;
+            while (true) {
+                try {
+                    affinityKey = yield ctx.newGuid();
+                    session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
+                    yield session.hydrate();
+                    needsHydration = false;
+                    break;
+                } catch (hydrateErr: any) {
+                    const hMsg = hydrateErr.message || String(hydrateErr);
+
+                    // Blob was deleted (e.g. after a reset) — skip hydration, start fresh
+                    if (hMsg.includes("blob does not exist") || hMsg.includes("BlobNotFound") || hMsg.includes("404")) {
+                        ctx.traceInfo(`[orch] hydrate skipped — blob not found, starting fresh session`);
+                        needsHydration = false;
+                        break;
+                    }
+
+                    hydrateAttempts++;
+                    ctx.traceInfo(`[orch] hydrate FAILED (attempt ${hydrateAttempts}/${MAX_RETRIES}): ${hMsg}`);
+                    if (hydrateAttempts >= MAX_RETRIES) {
+                        publishStatus("error", {
+                            error: `Hydrate failed after ${MAX_RETRIES} attempts: ${hMsg}`,
+                            retriesExhausted: true,
+                        });
+                        // Can't proceed without hydration — wait for next user message to retry
+                        break;
+                    }
+                    const hydrateDelay = 10 * Math.pow(2, hydrateAttempts - 1);
+                    publishStatus("error", {
+                        error: `Hydrate failed: ${hMsg} (retry ${hydrateAttempts}/${MAX_RETRIES} in ${hydrateDelay}s)`,
+                    });
+                    yield ctx.scheduleTimer(hydrateDelay * 1000);
+                }
+            }
+            if (needsHydration) continue; // hydrate exhausted retries — go back to dequeue
+        }
+
+        // ③ RUN TURN via SessionProxy (with retry on failure)
+        publishStatus("running");
+        let turnResult: any;
+        try {
+            turnResult = yield session.runTurn(prompt);
+        } catch (err: any) {
+            // Activity failed (e.g. Copilot timeout, network error).
+            const errorMsg = err.message || String(err);
+            retryCount++;
+            ctx.traceInfo(`[orch] runTurn FAILED (attempt ${retryCount}/${MAX_RETRIES}): ${errorMsg}`);
+
+            if (retryCount >= MAX_RETRIES) {
+                // Exhausted retries — park in error state but don't crash.
+                // The orchestration stays alive and will retry on the next user message.
+                ctx.traceInfo(`[orch] max retries exhausted, waiting for user input`);
+                publishStatus("error", {
+                    error: `Failed after ${MAX_RETRIES} attempts: ${errorMsg}`,
+                    retriesExhausted: true,
+                });
+                // Reset retry count and wait for next user message
+                retryCount = 0;
+                continue;
+            }
+
+            publishStatus("error", {
+                error: `${errorMsg} (retry ${retryCount}/${MAX_RETRIES} in 15s)`,
+            });
+
+            // Exponential backoff: 15s, 30s, 60s
+            const retryDelay = 15 * Math.pow(2, retryCount - 1);
+            ctx.traceInfo(`[orch] retrying in ${retryDelay}s`);
+
+            if (blobEnabled) {
+                yield* dehydrateAndReset("error");
+            }
+
+            yield ctx.scheduleTimer(retryDelay * 1000);
+            yield versionedContinueAsNew(continueInput({
+                prompt,
+                retryCount,
+                needsHydration: blobEnabled ? true : needsHydration,
+            }));
+            return "";
+        }
+        // Successful activity — reset retry counter
+        retryCount = 0;
+
+        const result: TurnResult = typeof turnResult === "string"
+            ? JSON.parse(turnResult) : turnResult;
+        iteration++;
+
+        // ── Summarize title if due ──────────────────────────
+        yield* maybeSummarize();
 
         // ④ HANDLE RESULT
         switch (result.type) {
@@ -679,7 +637,7 @@ export function* durableSessionOrchestration_1_0_13(
 
                             ctx.traceInfo("[session] user responded within idle window");
                             if (raceMsg.prompt) {
-                                yield versionedContinueAsNew(continueInputWithPrompt(raceMsg.prompt));
+                                yield versionedContinueAsNew(continueInput({ prompt: raceMsg.prompt }));
                             } else {
                                 yield versionedContinueAsNew(continueInput());
                             }
@@ -772,15 +730,15 @@ export function* durableSessionOrchestration_1_0_13(
                             const remainingSec = Math.max(0, result.seconds - elapsedSec);
                             if (remainingSec === 0) {
                                 const timerPrompt = `The ${result.seconds} second wait is now complete. Continue with your task.`;
-                                yield versionedContinueAsNew(continueInputWithPrompt(
-                                    timerPrompt,
-                                    { needsHydration: shouldDehydrate ? true : needsHydration },
-                                ));
+                                yield versionedContinueAsNew(continueInput({
+                                    prompt: timerPrompt,
+                                    needsHydration: shouldDehydrate ? true : needsHydration,
+                                }));
                             } else {
-                                yield versionedContinueAsNew(continueInputWithPrompt(
-                                    `The wait was partially completed (${elapsedSec}s elapsed, ${remainingSec}s remain). Resume the wait for the remaining ${remainingSec} seconds.`,
-                                    { needsHydration: shouldDehydrate ? true : needsHydration },
-                                ));
+                                yield versionedContinueAsNew(continueInput({
+                                    prompt: `The wait was partially completed (${elapsedSec}s elapsed, ${remainingSec}s remain). Resume the wait for the remaining ${remainingSec} seconds.`,
+                                    needsHydration: shouldDehydrate ? true : needsHydration,
+                                }));
                             }
                             return "";
                         }
@@ -811,18 +769,18 @@ export function* durableSessionOrchestration_1_0_13(
                             finalPrompt = userPrompt;
                         }
 
-                        yield versionedContinueAsNew(continueInputWithPrompt(
-                            finalPrompt,
-                            { needsHydration: shouldDehydrate ? true : needsHydration },
-                        ));
+                        yield versionedContinueAsNew(continueInput({
+                            prompt: finalPrompt,
+                            needsHydration: shouldDehydrate ? true : needsHydration,
+                        }));
                         return "";
                     }
 
                     const timerPrompt = `The ${result.seconds} second wait is now complete. Continue with your task.`;
-                    yield versionedContinueAsNew(continueInputWithPrompt(
-                        timerPrompt,
-                        { needsHydration: shouldDehydrate ? true : needsHydration },
-                    ));
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: timerPrompt,
+                        needsHydration: shouldDehydrate ? true : needsHydration,
+                    }));
                     return "";
                 }
 
@@ -843,10 +801,10 @@ export function* durableSessionOrchestration_1_0_13(
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
-                    yield versionedContinueAsNew(continueInputWithPrompt(
-                        `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
-                        { needsHydration: false },
-                    ));
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
+                        needsHydration: false,
+                    }));
                     return "";
                 }
 
@@ -856,9 +814,9 @@ export function* durableSessionOrchestration_1_0_13(
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
-                    yield versionedContinueAsNew(continueInputWithPrompt(
-                        `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
-                    ));
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
+                    }));
                     return "";
                 }
 
@@ -872,10 +830,10 @@ export function* durableSessionOrchestration_1_0_13(
                     if (raceResult.index === 0) {
                         const answerData = typeof raceResult.value === "string"
                             ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
-                        yield versionedContinueAsNew(continueInputWithPrompt(
-                            `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
-                            { needsHydration: false },
-                        ));
+                        yield versionedContinueAsNew(continueInput({
+                            prompt: `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
+                            needsHydration: false,
+                        }));
                         return "";
                     }
 
@@ -883,9 +841,9 @@ export function* durableSessionOrchestration_1_0_13(
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
-                    yield versionedContinueAsNew(continueInputWithPrompt(
-                        `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
-                    ));
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
+                    }));
                     return "";
                 }
 
@@ -900,22 +858,22 @@ export function* durableSessionOrchestration_1_0_13(
                 const childNestingLevel = nestingLevel + 1;
                 if (childNestingLevel > MAX_NESTING_LEVEL) {
                     ctx.traceInfo(`[orch] spawn_agent denied: nesting level ${nestingLevel} is at max (${MAX_NESTING_LEVEL})`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: spawn_agent failed — you are already at nesting level ${nestingLevel} (max ${MAX_NESTING_LEVEL}). ` +
-                        `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: spawn_agent failed — you are already at nesting level ${nestingLevel} (max ${MAX_NESTING_LEVEL}). ` +
+                            `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`,
+                    }));
+                    return "";
                 }
 
                 // Enforce max sub-agents
                 const activeCount = subAgents.filter(a => a.status === "running").length;
                 if (activeCount >= MAX_SUB_AGENTS) {
                     ctx.traceInfo(`[orch] spawn_agent denied: ${activeCount}/${MAX_SUB_AGENTS} agents running`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: spawn_agent failed — you already have ${activeCount} running sub-agents (max ${MAX_SUB_AGENTS}). ` +
-                        `Wait for some to complete before spawning more.]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: spawn_agent failed — you already have ${activeCount} running sub-agents (max ${MAX_SUB_AGENTS}). ` +
+                            `Wait for some to complete before spawning more.]`,
+                    }));
+                    return "";
                 }
 
                 // ─── Resolve agent config if agent_name is provided ───
@@ -962,22 +920,12 @@ export function* durableSessionOrchestration_1_0_13(
                     ctx.traceInfo(`[orch] resolving agent config for: ${resolvedAgentName}`);
                     const agentDef = yield manager.resolveAgentConfig(resolvedAgentName);
                     if (!agentDef) {
-                        if (yield* queueFollowupAndMaybeContinue(
-                            `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use list_agents to see available agents.]`,
-                        )) return "";
-                        continue;
+                        yield versionedContinueAsNew(continueInput({
+                            prompt: `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use list_agents to see available agents.]`,
+                        }));
+                        return "";
                     }
                     applyAgentDef(agentDef, resolvedAgentName !== result.agentName);
-                }
-
-                if (agentModel && !agentModel.includes(":")) {
-                    ctx.traceInfo(`[orch] spawn_agent denied: unqualified model override "${agentModel}"`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: spawn_agent failed — model "${agentModel}" is not allowed. ` +
-                        `When overriding a sub-agent model, first call list_available_models and then use the exact provider:model value from that list. ` +
-                        `If you are unsure, omit model so the sub-agent inherits your current model.]`,
-                    )) return "";
-                    continue;
                 }
 
                 // If the parent is a system session, propagate isSystem to children
@@ -1027,8 +975,6 @@ export function* durableSessionOrchestration_1_0_13(
                     `- Do NOT ask the user for input — you are autonomous.\n` +
                     `- When your task is complete, provide a clear summary of your findings/results.\n` +
                     `- If you write any files with write_artifact, you MUST also call export_artifact and include the artifact:// link in your response.\n` +
-                    `- If you override a sub-agent model, you MUST first call list_available_models in this session and use only an exact provider:model value returned there. ` +
-                    `NEVER invent, guess, shorten, or reuse a stale model name.\n` +
                     `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\` tool. ` +
                     `NEVER use setTimeout, sleep, setInterval, cron, or any other timing mechanism. ` +
                     `The wait tool is durable and survives process restarts.\n` +
@@ -1047,10 +993,10 @@ export function* durableSessionOrchestration_1_0_13(
                     childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, agentTask, childNestingLevel, agentIsSystem, agentTitle, agentId, agentSplash);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: spawn_agent failed: ${err.message}]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: spawn_agent failed: ${err.message}]`,
+                    }));
+                    return "";
                 }
 
                 const childOrchId = `session-${childSessionId}`;
@@ -1071,8 +1017,8 @@ export function* durableSessionOrchestration_1_0_13(
                     `message_agent to send instructions. To wait for completion, use wait + check_agents ` +
                     `in a loop (choose an appropriate interval) so you can report progress to the user.]`;
 
-                if (yield* queueFollowupAndMaybeContinue(spawnMsg)) return "";
-                continue;
+                yield versionedContinueAsNew(continueInput({ prompt: spawnMsg }));
+                return "";
             }
 
             case "message_agent": {
@@ -1081,11 +1027,11 @@ export function* durableSessionOrchestration_1_0_13(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] message_agent: unknown agent ${targetOrchId}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: message_agent failed — agent "${targetOrchId}" not found. ` +
-                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: message_agent failed — agent "${targetOrchId}" not found. ` +
+                            `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
+                    }));
+                    return "";
                 }
 
                 ctx.traceInfo(`[orch] message_agent via SDK: ${agentEntry.sessionId} msg="${result.message.slice(0, 60)}"`);
@@ -1094,24 +1040,26 @@ export function* durableSessionOrchestration_1_0_13(
                     yield manager.sendToSession(agentEntry.sessionId, result.message);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] message_agent failed: ${err.message}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: message_agent failed: ${err.message}]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: message_agent failed: ${err.message}]`,
+                    }));
+                    return "";
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Message sent to sub-agent ${targetOrchId}: "${result.message.slice(0, 200)}"]`,
-                )) return "";
-                continue;
+                yield versionedContinueAsNew(continueInput({
+                    prompt: `[SYSTEM: Message sent to sub-agent ${targetOrchId}: "${result.message.slice(0, 200)}"]`,
+                }));
+                return "";
             }
 
             case "check_agents": {
                 ctx.traceInfo(`[orch] check_agents: ${subAgents.length} agents tracked`);
 
                 if (subAgents.length === 0) {
-                    if (yield* queueFollowupAndMaybeContinue(`[SYSTEM: No sub-agents have been spawned yet.]`)) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: No sub-agents have been spawned yet.]`,
+                    }));
+                    return "";
                 }
 
                 // Get fresh status for each agent via the SDK
@@ -1144,10 +1092,10 @@ export function* durableSessionOrchestration_1_0_13(
                     }
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Sub-agent status report (${subAgents.length} agents):\n${statusLines.join("\n")}]`,
-                )) return "";
-                continue;
+                yield versionedContinueAsNew(continueInput({
+                    prompt: `[SYSTEM: Sub-agent status report (${subAgents.length} agents):\n${statusLines.join("\n")}]`,
+                }));
+                return "";
             }
 
             case "list_sessions": {
@@ -1163,10 +1111,10 @@ export function* durableSessionOrchestration_1_0_13(
                     `    Parent: ${s.parentSessionId ?? "none"}`
                 );
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Active sessions (${sessions.length}):\n${lines.join("\n")}]`,
-                )) return "";
-                continue;
+                yield versionedContinueAsNew(continueInput({
+                    prompt: `[SYSTEM: Active sessions (${sessions.length}):\n${lines.join("\n")}]`,
+                }));
+                return "";
             }
 
             case "wait_for_agents": {
@@ -1179,10 +1127,10 @@ export function* durableSessionOrchestration_1_0_13(
 
                 if (targetIds.length === 0) {
                     ctx.traceInfo(`[orch] wait_for_agents: no running agents to wait for`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: No running sub-agents to wait for. All agents have already completed.]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: No running sub-agents to wait for. All agents have already completed.]`,
+                    }));
+                    return "";
                 }
 
                 ctx.traceInfo(`[orch] wait_for_agents: waiting for ${targetIds.length} agents`);
@@ -1242,7 +1190,9 @@ export function* durableSessionOrchestration_1_0_13(
                         // Not a child update — it's a user message interrupting the wait
                         if (msgData.prompt) {
                             ctx.traceInfo(`[orch] wait_for_agents interrupted by user: "${msgData.prompt.slice(0, 60)}"`);
-                            yield versionedContinueAsNew(continueInputWithPrompt(msgData.prompt));
+                            yield versionedContinueAsNew(continueInput({
+                                prompt: msgData.prompt,
+                            }));
                             return "";
                         }
                     } else {
@@ -1277,10 +1227,10 @@ export function* durableSessionOrchestration_1_0_13(
                     );
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Sub-agents completed:\n${resultLines.join("\n")}]`,
-                )) return "";
-                continue;
+                yield versionedContinueAsNew(continueInput({
+                    prompt: `[SYSTEM: Sub-agents completed:\n${resultLines.join("\n")}]`,
+                }));
+                return "";
             }
 
             case "complete_agent": {
@@ -1289,11 +1239,11 @@ export function* durableSessionOrchestration_1_0_13(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] complete_agent: unknown agent ${targetOrchId}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: complete_agent failed — agent "${targetOrchId}" not found. ` +
-                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: complete_agent failed — agent "${targetOrchId}" not found. ` +
+                            `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
+                    }));
+                    return "";
                 }
 
                 ctx.traceInfo(`[orch] complete_agent: sending /done to ${agentEntry.sessionId}`);
@@ -1306,16 +1256,16 @@ export function* durableSessionOrchestration_1_0_13(
                     agentEntry.status = "completed";
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] complete_agent failed: ${err.message}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: complete_agent failed: ${err.message}]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: complete_agent failed: ${err.message}]`,
+                    }));
+                    return "";
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Sub-agent ${targetOrchId} has been completed gracefully.]`,
-                )) return "";
-                continue;
+                yield versionedContinueAsNew(continueInput({
+                    prompt: `[SYSTEM: Sub-agent ${targetOrchId} has been completed gracefully.]`,
+                }));
+                return "";
             }
 
             case "cancel_agent": {
@@ -1324,11 +1274,11 @@ export function* durableSessionOrchestration_1_0_13(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] cancel_agent: unknown agent ${targetOrchId}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: cancel_agent failed — agent "${targetOrchId}" not found. ` +
-                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: cancel_agent failed — agent "${targetOrchId}" not found. ` +
+                            `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
+                    }));
+                    return "";
                 }
 
                 const cancelReason = result.reason ?? "Cancelled by parent";
@@ -1351,16 +1301,16 @@ export function* durableSessionOrchestration_1_0_13(
                     agentEntry.status = "cancelled";
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] cancel_agent failed: ${err.message}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: cancel_agent failed: ${err.message}]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: cancel_agent failed: ${err.message}]`,
+                    }));
+                    return "";
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Sub-agent ${targetOrchId} has been cancelled.${result.reason ? ` Reason: ${result.reason}` : ""}]`,
-                )) return "";
-                continue;
+                yield versionedContinueAsNew(continueInput({
+                    prompt: `[SYSTEM: Sub-agent ${targetOrchId} has been cancelled.${result.reason ? ` Reason: ${result.reason}` : ""}]`,
+                }));
+                return "";
             }
 
             case "delete_agent": {
@@ -1369,11 +1319,11 @@ export function* durableSessionOrchestration_1_0_13(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] delete_agent: unknown agent ${targetOrchId}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: delete_agent failed — agent "${targetOrchId}" not found. ` +
-                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: delete_agent failed — agent "${targetOrchId}" not found. ` +
+                            `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
+                    }));
+                    return "";
                 }
 
                 const deleteReason = result.reason ?? "Deleted by parent";
@@ -1397,16 +1347,16 @@ export function* durableSessionOrchestration_1_0_13(
                     subAgents = subAgents.filter(a => a.orchId !== targetOrchId);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] delete_agent failed: ${err.message}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: delete_agent failed: ${err.message}]`,
-                    )) return "";
-                    continue;
+                    yield versionedContinueAsNew(continueInput({
+                        prompt: `[SYSTEM: delete_agent failed: ${err.message}]`,
+                    }));
+                    return "";
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Sub-agent ${targetOrchId} has been deleted.${result.reason ? ` Reason: ${result.reason}` : ""}]`,
-                )) return "";
-                continue;
+                yield versionedContinueAsNew(continueInput({
+                    prompt: `[SYSTEM: Sub-agent ${targetOrchId} has been deleted.${result.reason ? ` Reason: ${result.reason}` : ""}]`,
+                }));
+                return "";
             }
 
             case "error": {

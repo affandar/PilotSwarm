@@ -79,6 +79,32 @@ export class SessionManager {
         return this.workerDefaults.modelProviders?.getModelSummaryForLLM();
     }
 
+    /**
+     * Normalize a model reference against the configured registry.
+     * Throws for unknown models. When `requireQualified` is true, the caller
+     * must provide the exact `provider:model` string rather than a bare alias.
+     */
+    normalizeModelRef(model?: string, options?: { requireQualified?: boolean }): string | undefined {
+        const registry = this.workerDefaults.modelProviders;
+        if (!registry) return model;
+
+        const ref = model || registry.defaultModel;
+        if (!ref) return undefined;
+
+        const normalized = registry.normalize(ref);
+        if (!normalized) {
+            throw new Error(
+                `Unknown model "${ref}". Call list_available_models and choose an exact configured provider:model value.`,
+            );
+        }
+        if (options?.requireQualified && ref !== normalized) {
+            throw new Error(
+                `Model "${ref}" is not allowed. Use the exact provider:model value returned by list_available_models, for example "${normalized}".`,
+            );
+        }
+        return normalized;
+    }
+
     /** Set the worker-level tool registry. Called by PilotSwarmWorker. */
     setToolRegistry(registry: Map<string, Tool<any>>): void {
         this.toolRegistry = registry;
@@ -155,7 +181,7 @@ export class SessionManager {
         // The SDK needs the bare model name; the provider config is separate.
         // Fall back to registry default if no model specified.
         const registry = this.workerDefaults.modelProviders;
-        const effectiveModel = config.model || registry?.defaultModel || "";
+        const effectiveModel = this.normalizeModelRef(config.model) || "";
         const resolvedProviderConfig = this._resolveProviderConfig(effectiveModel);
         let sdkModelName = effectiveModel;
         if (registry && effectiveModel) {
@@ -419,7 +445,10 @@ export class SessionManager {
     /**
      * Build the final system message by combining:
      * 1. Worker base system message (from workerDefaults)
-     * 2. Client override (append or replace)
+     * 2. Client override
+     *
+     * The worker base prompt is always-on. Even `mode: "replace"` only
+     * replaces the caller-specific overlay, not the worker base prompt.
      * Skills/agents are NOT injected here — the Copilot SDK discovers
      * them from plugins installed in configDir.
      */
@@ -435,7 +464,7 @@ export class SessionManager {
             return base ? `${base}\n\n${clientMessage}` : clientMessage;
         }
         if (clientMessage.mode === "replace") {
-            return clientMessage.content;
+            return base ? `${base}\n\n${clientMessage.content}` : clientMessage.content;
         }
         // mode === "append"
         return base ? `${base}\n\n${clientMessage.content}` : clientMessage.content;

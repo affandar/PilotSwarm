@@ -439,6 +439,11 @@ export function registerActivities(
                 sdkClient.systemSessions.add(childSessionId);
             }
 
+            const normalizedModel = sessionManager.normalizeModelRef(input.config.model, { requireQualified: true });
+            if (normalizedModel) {
+                input.config.model = normalizedModel;
+            }
+
             // Create the child session via the SDK — handles CMS row + orchestration start
             const session = await sdkClient.createSession({
                 sessionId: childSessionId,

@@ -17,9 +17,10 @@ You can spawn autonomous sub-agents to work on tasks in parallel. Each sub-agent
 
 ## Tools
 
-### `spawn_agent(task, [system_message], [tool_names])`
+### `spawn_agent(task, [model], [system_message], [tool_names])`
 Start a new sub-agent with a task description. Returns an agent ID.
 - **task** (required): Clear description of what the agent should do — this becomes its first prompt
+- **model** (optional): Exact `provider:model` override from `list_available_models()`
 - **system_message** (optional): Custom system message for specialization
 - **tool_names** (optional): Specific tools to give the agent; defaults to your tools
 
@@ -63,6 +64,8 @@ Block until sub-agents finish. Returns their final results.
 
 - **Maximum 20 concurrent sub-agents** — wait for some to complete before spawning more
 - Sub-agents inherit your tools and model by default
+- If you want a different model, call `list_available_models()` first and use only an exact `provider:model` value from that list
+- Never invent, guess, shorten, or reuse stale model names
 - Sub-agents are fully durable — they survive crashes and restarts
 - Sub-agents can use `wait` for durable timers but cannot spawn their own sub-agents (single level)
 - Always call `check_agents` or `wait_for_agents` to collect results — don't ignore your agents
