@@ -2115,18 +2115,44 @@ screen.render();
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
-let pendingUserInput = null;
+const pendingUserInputs = new Map(); // orchId -> { resolve, reject }
 
 function syncInputBarMode() {
     if (!inputBar) return;
-    const pendingOrchId = pendingUserInput?.orchId || activeOrchId;
-    const needsAnswer = pendingOrchId === activeOrchId && sessionPendingQuestions.has(activeOrchId);
+    const needsAnswer = Boolean(activeOrchId && sessionPendingQuestions.has(activeOrchId));
     inputBar.setLabel(needsAnswer ? " {bold}answer:{/bold} " : " {bold}you:{/bold} ");
+}
+
+function setPendingUserInputRequest(orchId, handlers) {
+    if (!orchId || !handlers) return;
+    const existing = pendingUserInputs.get(orchId);
+    if (existing?.reject) {
+        try { existing.reject(new Error("Superseded by a newer user input request")); } catch {}
+    }
+    pendingUserInputs.set(orchId, handlers);
+}
+
+function takePendingUserInputRequest(orchId) {
+    if (!orchId) return null;
+    const handlers = pendingUserInputs.get(orchId) || null;
+    if (handlers) pendingUserInputs.delete(orchId);
+    return handlers;
+}
+
+function clearPendingUserInputRequest(orchId, reason) {
+    if (!orchId) return;
+    const existing = pendingUserInputs.get(orchId);
+    if (!existing) return;
+    pendingUserInputs.delete(orchId);
+    if (reason && existing.reject) {
+        try { existing.reject(new Error(reason)); } catch {}
+    }
 }
 
 function clearSessionPendingQuestion(orchId) {
     if (!orchId) return;
     sessionPendingQuestions.delete(orchId);
+    clearPendingUserInputRequest(orchId, "Question no longer pending");
     if (orchId === activeOrchId) syncInputBarMode();
 }
 
@@ -2135,6 +2161,7 @@ function setSessionPendingQuestion(orchId, question) {
     const normalized = typeof question === "string" ? question.trim() : "";
     if (!normalized) {
         sessionPendingQuestions.delete(orchId);
+        clearPendingUserInputRequest(orchId, "Question no longer pending");
         if (orchId === activeOrchId) syncInputBarMode();
         return false;
     }
@@ -4010,18 +4037,22 @@ const sessionModels = new Map(); // orchId → model name used for that session
 
 // Pending command responses — keyed by correlation ID
 // Observer matches cmdResponse.id and displays results
-const pendingCommands = new Map(); // id → { cmd, resolve, timer }
+const pendingCommands = new Map(); // id → { cmd, orchId, resolve, timer }
 
 // Auto-timeout pending commands (default 15s, overridable)
-function addPendingCommand(cmdId, cmd, timeoutMs = 15_000) {
+function addPendingCommand(cmdId, cmd, timeoutMs = 15_000, orchId = activeOrchId) {
     const timer = setTimeout(() => {
-        if (pendingCommands.has(cmdId)) {
-            pendingCommands.delete(cmdId);
-            appendChatRaw(`{yellow-fg}⏱ Command timed out: ${cmd} — the orchestration may be restarting. Try again.{/yellow-fg}`);
-            screen.render();
+        const pending = pendingCommands.get(cmdId);
+        if (!pending) return;
+        pendingCommands.delete(cmdId);
+        appendChatRaw(`{yellow-fg}⏱ Command timed out: ${cmd} — the orchestration may be restarting. Try again.{/yellow-fg}`, orchId);
+        if (orchId !== activeOrchId) {
+            orchHasChanges.add(orchId);
+            updateSessionListIcons();
         }
+        screen.render();
     }, timeoutMs);
-    pendingCommands.set(cmdId, { cmd, resolve: null, timer });
+    pendingCommands.set(cmdId, { cmd, orchId, resolve: null, timer });
 }
 
 async function createNewSession() {
@@ -4030,16 +4061,22 @@ async function createNewSession() {
         ...(currentModel ? { model: currentModel } : {}),
         toolNames: ["write_artifact", "export_artifact", "read_artifact"],
         onUserInputRequest: async (request) => {
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
                 const q = request.question || "?";
                 const targetOrchId = sessionOrchId || activeOrchId;
                 appendChatRaw(`{magenta-fg}[?] ${q}{/magenta-fg}`, targetOrchId);
                 setSessionPendingQuestion(targetOrchId, q);
-                setStatus("Waiting for your answer...");
-                pendingUserInput = { resolve, orchId: targetOrchId };
+                setPendingUserInputRequest(targetOrchId, { resolve, reject });
+                sessionLiveStatus.set(targetOrchId, "input_required");
+                if (targetOrchId !== activeOrchId) {
+                    orchHasChanges.add(targetOrchId);
+                } else {
+                    setStatus("Waiting for your answer...");
+                    focusInput();
+                }
+                updateSessionListIcons();
                 syncInputBarMode();
                 screen.render();
-                focusInput();
             });
         },
     });
@@ -4344,10 +4381,14 @@ function startObserver(orchId) {
                     }
 
                     // ─── Command response handling ───────────────
-                    if (cs.cmdResponse && orchId === activeOrchId) {
+                    if (cs.cmdResponse) {
                         const resp = cs.cmdResponse;
                         const pending = pendingCommands.get(resp.id);
-                        if (pending) {
+                        const pendingForThisSession = pending && (!pending.orchId || pending.orchId === orchId);
+                        if (pending && !pendingForThisSession) {
+                            appendActivity(`{yellow-fg}[obs] Ignoring cmdResponse for ${resp.cmd} routed to unexpected session{/yellow-fg}`, orchId);
+                        }
+                        if (pendingForThisSession) {
                             if (pending.timer) clearTimeout(pending.timer);
                             pendingCommands.delete(resp.id);
                             if (resp.error) {
@@ -4395,6 +4436,10 @@ function startObserver(orchId) {
                                     default:
                                         appendChatRaw(`{green-fg}✓ ${resp.cmd}: ${JSON.stringify(resp.result)}{/green-fg}`, orchId);
                                 }
+                            }
+                            if (orchId !== activeOrchId) {
+                                orchHasChanges.add(orchId);
+                                updateSessionListIcons();
                             }
                             screen.render();
                         }
@@ -4957,26 +5002,24 @@ async function handleInput(text) {
 
     const targetOrchId = activeOrchId;
     const pendingQuestion = sessionPendingQuestions.get(targetOrchId);
+    const pendingUserInput = takePendingUserInputRequest(targetOrchId);
 
     if (pendingUserInput) {
-        const pendingState = pendingUserInput;
-        const { resolve, orchId: pendingOrchId } = pendingState;
-        const answerOrchId = pendingOrchId || targetOrchId;
-        appendChatRaw(`{green-fg}↳ ${trimmed}{/green-fg}`, answerOrchId);
+        const { resolve } = pendingUserInput;
+        appendChatRaw(`{green-fg}↳ ${trimmed}{/green-fg}`, targetOrchId);
         // Send user-input event to the originating orchestration
         try {
             const dc = getDc();
             if (!dc) throw new Error("Not connected");
-            await dc.enqueueEvent(answerOrchId, "messages", JSON.stringify({ answer: trimmed, wasFreeform: true }));
+            await dc.enqueueEvent(targetOrchId, "messages", JSON.stringify({ answer: trimmed, wasFreeform: true }));
         } catch (err) {
-            pendingUserInput = pendingState;
-            appendChatRaw(`{red-fg}Answer failed: ${err.message}{/red-fg}`, answerOrchId);
+            setPendingUserInputRequest(targetOrchId, pendingUserInput);
+            appendChatRaw(`{red-fg}Answer failed: ${err.message}{/red-fg}`, targetOrchId);
             syncInputBarMode();
             screen.render();
             return;
         }
-        pendingUserInput = null;
-        clearSessionPendingQuestion(answerOrchId);
+        clearSessionPendingQuestion(targetOrchId);
         syncInputBarMode();
         resolve({ answer: trimmed, wasFreeform: true });
         inputBar.clearValue();

@@ -60,7 +60,24 @@ This makes it much safer to:
 sent back to the session that asked the question, not whichever session happens to
 be active by the time the user types.
 
-### 5. Session switching restores buffers first, then reloads history
+This has since been tightened further:
+
+- pending user-input requests are now tracked per session instead of in one global slot
+- inactive sessions no longer steal focus just because they asked a question
+- clearing a pending question also clears the matching local pending-input request
+
+### 5. Command responses are no longer active-session-only
+
+Pending slash-command responses now remember which orchestration they belong to.
+The observer consumes command responses even if the user has switched away from the
+session in the meantime.
+
+This reduces cases where:
+
+- `/model`, `/info`, or `/done` would time out just because the user switched tabs
+- command output was effectively hidden behind active-session checks
+- pending command state lingered longer than it should
+### 6. Session switching restores buffers first, then reloads history
 
 `switchToOrchestration()` now:
 
@@ -72,7 +89,7 @@ be active by the time the user types.
 
 This improves responsiveness and makes the switch path less destructive.
 
-### 6. Worker log noise has been reduced
+### 7. Worker log noise has been reduced
 
 Two raw SDK diagnostics were removed from `packages/sdk/src/managed-session.ts`, and
 the TUI also filters older worker log lines that match the old debug patterns.
@@ -80,7 +97,7 @@ the TUI also filters older worker log lines that match the old debug patterns.
 This reduces terminal corruption from unexpected stdout/stderr-style noise while
 the alt-screen UI is active.
 
-### 7. Chat/activity pane updates are more buffer-driven
+### 8. Chat/activity pane updates are more buffer-driven
 
 The TUI now leans more on per-session buffers plus invalidate helpers instead of
 direct widget mutation during every async path. This does not fully solve the
