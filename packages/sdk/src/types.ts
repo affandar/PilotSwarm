@@ -1,4 +1,5 @@
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
+import type { SessionStateStore } from "./session-store.js";
 
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
@@ -189,8 +190,12 @@ export interface PilotSwarmWorkerOptions {
     maxSessionsPerRuntime?: number;
     sessionIdleTimeoutMs?: number;
     workerNodeId?: string;
+    /** Azure Blob Storage connection string for the built-in blob-backed session store. */
     blobConnectionString?: string;
+    /** Blob container name for the built-in blob-backed session store. */
     blobContainer?: string;
+    /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
+    sessionStore?: SessionStateStore;
 
     /**
      * Turn timeout in milliseconds. If a single LLM turn takes longer than this,
@@ -308,6 +313,7 @@ export interface PilotSwarmWorkerOptions {
 export interface PilotSwarmClientOptions {
     /** Store URL (postgres:// or sqlite://). */
     store: string;
+    /** Enables durable session-store paths in the orchestration. Works with Azure blob or any custom session store configured on workers. */
     blobEnabled?: boolean;
     waitThreshold?: number;
     dehydrateThreshold?: number;

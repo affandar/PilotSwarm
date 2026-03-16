@@ -163,7 +163,31 @@ export class PilotSwarmClient {
         }
         // Mark orchestration as active so _ensureOrchestrationAndSend skips creation.
         // The orchestration should already be running for resumed sessions.
-        this.activeOrchestrations.set(sessionId, `session-${sessionId}`);
+        const orchestrationId = `session-${sessionId}`;
+        this.activeOrchestrations.set(sessionId, orchestrationId);
+
+        // Sync tracking state from the live orchestration so the client
+        // doesn't mistake pre-existing KV data (from prior turns) as new.
+        // Without this, sendAndWait returns stale responses after worker restarts.
+        try {
+            const orchStatus = await this.duroxideClient!.getStatus(orchestrationId);
+            if (orchStatus.customStatusVersion) {
+                this.lastSeenStatusVersion.set(orchestrationId, orchStatus.customStatusVersion);
+            }
+            if (orchStatus.customStatus) {
+                const cs = typeof orchStatus.customStatus === "string"
+                    ? JSON.parse(orchStatus.customStatus) : orchStatus.customStatus;
+                if (cs.iteration != null) {
+                    this.lastSeenIteration.set(orchestrationId, cs.iteration);
+                }
+                if (cs.responseVersion != null) {
+                    this.lastSeenResponseVersion.set(orchestrationId, cs.responseVersion);
+                }
+            }
+        } catch {
+            // Best-effort — if getStatus fails, we'll still work (may see a stale response on first poll)
+        }
+
         return new PilotSwarmSession(sessionId, this, config?.onUserInputRequest);
     }
 

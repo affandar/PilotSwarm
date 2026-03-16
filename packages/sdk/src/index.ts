@@ -30,8 +30,10 @@ export type {
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore } from "./blob-store.js";
+export { FilesystemSessionStore } from "./session-store.js";
 export { PgSessionCatalogProvider } from "./cms.js";
 export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent } from "./cms.js";
+export type { SessionStateStore, SessionMetadata } from "./session-store.js";
 export type {
     PilotSwarmClientOptions,
     PilotSwarmWorkerOptions,

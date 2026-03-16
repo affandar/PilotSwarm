@@ -5,22 +5,17 @@ import {
     BlobSASPermissions,
     SASProtocol,
 } from "@azure/storage-blob";
-import { execSync } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
 import os from "node:os";
-
-const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
-
-export interface SessionMetadata {
-    sessionId: string;
-    dehydratedAt: string;
-    worker: string;
-    sizeBytes: number;
-    reason?: string;
-    iteration?: number;
-    [key: string]: unknown;
-}
+import path from "node:path";
+import {
+    DEFAULT_SESSION_STATE_DIR,
+    type SessionMetadata,
+    type SessionStateStore,
+    archiveSessionDir,
+    buildMetadata,
+    extractSessionArchive,
+} from "./session-store.js";
 
 /**
  * Manages session state in Azure Blob Storage.
@@ -32,7 +27,7 @@ export interface SessionMetadata {
  *
  * @internal
  */
-export class SessionBlobStore {
+export class SessionBlobStore implements SessionStateStore {
     private containerClient;
     private connectionString: string;
     private containerName: string;
@@ -64,20 +59,14 @@ export class SessionBlobStore {
 
         const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
         try {
-            execSync(`tar czf "${tarPath}" -C "${this.sessionStateDir}" "${sessionId}"`);
+            archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
 
             // Upload tar
             const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
             await tarBlob.uploadFile(tarPath);
 
             // Upload metadata
-            const metadata: SessionMetadata = {
-                sessionId,
-                dehydratedAt: new Date().toISOString(),
-                worker: os.hostname(),
-                sizeBytes: fs.statSync(tarPath).size,
-                ...meta,
-            };
+            const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, meta);
             const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
             const metaJson = JSON.stringify(metadata);
             await metaBlob.upload(metaJson, metaJson.length);
@@ -107,8 +96,7 @@ export class SessionBlobStore {
 
         try {
             await tarBlob.downloadToFile(tarPath);
-            fs.mkdirSync(this.sessionStateDir, { recursive: true });
-            execSync(`tar xzf "${tarPath}" -C "${this.sessionStateDir}"`);
+            extractSessionArchive(this.sessionStateDir, tarPath);
         } finally {
             try { fs.unlinkSync(tarPath); } catch {}
         }
@@ -124,19 +112,13 @@ export class SessionBlobStore {
 
         const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
         try {
-            execSync(`tar czf "${tarPath}" -C "${this.sessionStateDir}" "${sessionId}"`);
+            archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
 
             const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
             await tarBlob.uploadFile(tarPath);
 
             // Update metadata to reflect checkpoint (not full dehydration)
-            const metadata: SessionMetadata = {
-                sessionId,
-                dehydratedAt: new Date().toISOString(),
-                worker: os.hostname(),
-                sizeBytes: fs.statSync(tarPath).size,
-                reason: "checkpoint",
-            };
+            const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, { reason: "checkpoint" });
             const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
             const metaJson = JSON.stringify(metadata);
             await metaBlob.upload(metaJson, metaJson.length);

@@ -122,15 +122,22 @@ export class ManagedSession {
                 "(e.g. separate data sources to monitor, independent work streams). " +
                 "Do NOT spawn agents for summarization, reporting, or coordination \u2014 handle those yourself. " +
                 "Each agent adds cost, so minimize the number of agents. " +
+                "For KNOWN agents, pass agent_name (e.g. agent_name=\"sweeper\"). The agent's prompt, tools, and task load automatically. " +
+                "For CUSTOM agents (ad-hoc tasks), pass task instead. " +
+                "Call list_agents to see all available named agents. " +
                 "By default, sub-agents inherit the parent's model. " +
                 "If you want to override the model, call list_available_models first and use only an exact provider:model value returned there. " +
                 "Never invent, guess, or shorten model names.",
             parameters: {
                 type: "object",
                 properties: {
+                    agent_name: {
+                        type: "string",
+                        description: "Name of a known agent to spawn (from list_agents). The agent's system message, tools, and initial prompt are loaded automatically. Do NOT also pass task or system_message.",
+                    },
                     task: {
                         type: "string",
-                        description: "A clear description of what the sub-agent should do. This becomes the agent's first prompt.",
+                        description: "For custom agents only: a clear description of what the sub-agent should do. This becomes the agent's first prompt. Do NOT use this for known agents — use agent_name instead.",
                     },
                     model: {
                         type: "string",
@@ -146,7 +153,6 @@ export class ManagedSession {
                         description: "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
                     },
                 },
-                required: ["task"],
             },
             handler: async () => "stub",
         });
@@ -371,8 +377,9 @@ export class ManagedSession {
                 "Spawn a sub-agent. For KNOWN agents, pass agent_name ONLY (e.g. agent_name=\"sweeper\"). " +
                 "The agent's system message, tools, and initial prompt are loaded automatically from agent_name. " +
                 "Do NOT pass task or system_message when using agent_name. " +
-                "Passing task=\"sweeper\" or task=\"resourcemgr\" is WRONG — use agent_name for those. " +
-                "For CUSTOM agents (ad-hoc tasks), pass task instead. " +
+                "Call list_agents to see all available named agents. " +
+                "For CUSTOM agents (ad-hoc tasks), pass task instead — no agent_name is needed. " +
+                "Any task you can describe can be spawned as a custom agent; you do not need a skill or pre-configured definition. " +
                 "If you want a different model, call list_available_models first and use only an exact provider:model value from that list. " +
                 "Never invent, guess, or shorten model names.",
             parameters: {
@@ -380,11 +387,11 @@ export class ManagedSession {
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known agent to spawn (from list_agents). Use this for pre-configured agents like sweeper or resourcemgr. Do NOT also pass task or system_message.",
+                        description: "Name of a known agent to spawn (from list_agents). The agent's prompt, tools, and task load automatically. Do NOT also pass task or system_message.",
                     },
                     task: {
                         type: "string",
-                        description: "For custom agents only: a clear description of what the sub-agent should do. Do NOT use this for known agents like sweeper or resourcemgr — use agent_name instead.",
+                        description: "For custom agents only: a clear description of what the sub-agent should do. Any task can be spawned — no pre-configured agent or skill is required.",
                     },
                     model: {
                         type: "string",

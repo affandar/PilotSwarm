@@ -2737,6 +2737,8 @@ async function loadCmsHistory(orchId) {
 // ─── Start the PilotSwarm client (embedded workers + client) ────────
 
 const store = process.env.DATABASE_URL || "sqlite::memory:";
+const cmsSchema = process.env.CMS_SCHEMA || undefined;
+const duroxideSchema = process.env.DUROXIDE_SCHEMA || undefined;
 const numWorkers = parseInt(process.env.WORKERS ?? "4", 10);
 const isRemote = numWorkers === 0;
 
@@ -2757,6 +2759,8 @@ appendLog("");
 const workers = [];
 let modelProviders = null;
 let logTailInterval = null;
+// Default model — prefer registry defaultModel, env override, then empty (worker picks default).
+let currentModel = process.env.COPILOT_MODEL || "";
 if (!isRemote) {
     // Redirect Rust tracing to a log file so it doesn't corrupt the TUI
     const logFile = "/tmp/duroxide-tui.log";
@@ -2813,6 +2817,8 @@ if (!isRemote) {
     for (let i = 0; i < numWorkers; i++) {
         const w = new PilotSwarmWorker({
             store,
+            ...(duroxideSchema ? { duroxideSchema } : {}),
+            ...(cmsSchema ? { cmsSchema } : {}),
             githubToken: process.env.GITHUB_TOKEN,
             logLevel: process.env.LOG_LEVEL || "error",
             blobConnectionString: workerModuleConfig.blobConnectionString || process.env.AZURE_STORAGE_CONNECTION_STRING,
@@ -2959,10 +2965,6 @@ if (!isRemote) {
     }, 500);
 }
 
-// ─── Model selection ─────────────────────────────────────────────
-// Default model — prefer registry defaultModel, env override, then empty (worker picks default).
-let currentModel = process.env.COPILOT_MODEL || "";
-
 // In remote mode (no local workers), load model_providers.json directly
 // so the TUI can show model lists and the Shift+N picker.
 // In remote mode (no local workers), load model info from mgmt client after start.
@@ -2976,11 +2978,15 @@ if (!modelProviders) {
 const client = new PilotSwarmClient({
     store,
     blobEnabled: true,
+    ...(duroxideSchema ? { duroxideSchema } : {}),
+    ...(cmsSchema ? { cmsSchema } : {}),
 });
 
 // 3. Start the management client (for session listing, admin, models)
 const mgmt = new PilotSwarmManagementClient({
     store,
+    ...(duroxideSchema ? { duroxideSchema } : {}),
+    ...(cmsSchema ? { cmsSchema } : {}),
 });
 
 const STARTUP_DB_RETRY_MS = 30_000;

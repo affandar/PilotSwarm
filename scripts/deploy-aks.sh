@@ -5,9 +5,10 @@
 # This avoids orchestration versioning issues when changing parameters.
 #
 # Usage:
-#   ./scripts/deploy-aks.sh                     # full deploy (reset + build + push + apply)
+#   ./scripts/deploy-aks.sh                     # full deploy (test + reset + build + push + apply)
 #   ./scripts/deploy-aks.sh --skip-build        # skip Docker build (re-use existing image)
 #   ./scripts/deploy-aks.sh --skip-reset        # skip DB reset (keep existing sessions)
+#   ./scripts/deploy-aks.sh --skip-tests        # skip local integration tests
 #
 # Prerequisites:
 #   - .env.remote with DATABASE_URL
@@ -26,10 +27,12 @@ NAMESPACE="${NAMESPACE:-copilot-runtime}"
 # Parse flags
 SKIP_BUILD=false
 SKIP_RESET=false
+SKIP_TESTS=false
 for arg in "$@"; do
     case "$arg" in
         --skip-build) SKIP_BUILD=true ;;
         --skip-reset) SKIP_RESET=true ;;
+        --skip-tests) SKIP_TESTS=true ;;
     esac
 done
 
@@ -85,6 +88,23 @@ kubectl create secret generic copilot-runtime-secrets \
     ${LLM_PROVIDER_TYPE:+--from-literal=LLM_PROVIDER_TYPE="$LLM_PROVIDER_TYPE"} \
     ${LLM_API_VERSION:+--from-literal=LLM_API_VERSION="$LLM_API_VERSION"} \
     --dry-run=client -o yaml | kubectl apply -f -
+
+# ─── Step 0: Run local integration tests ─────────────────────────
+
+if [ "$SKIP_TESTS" = false ]; then
+    echo ""
+    echo "🧪 Running local integration tests (gate)..."
+    if ! ./scripts/test-local.sh --parallel; then
+        echo ""
+        echo "❌ Tests failed — aborting deploy."
+        echo "   Fix failing tests before deploying to AKS."
+        echo "   To skip: ./scripts/deploy-aks.sh --skip-tests"
+        exit 1
+    fi
+    echo ""
+else
+    echo "⏭️  Skipping tests (--skip-tests)"
+fi
 
 # ─── Step 1: Cancel + delete all orchestrations ──────────────────
 

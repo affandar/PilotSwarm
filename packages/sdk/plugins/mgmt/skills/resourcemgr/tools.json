@@ -1,0 +1,1 @@
+{ "tools": ["get_infrastructure_stats", "get_storage_stats", "get_database_stats", "get_system_stats", "purge_orphaned_blobs", "purge_old_events", "compact_database", "scale_workers", "force_terminate_session"] }
