@@ -15,9 +15,10 @@
  * Run: node --env-file=../../.env test/local/durability.test.js
  */
 
-import { runSuite } from "../helpers/runner.js";
+import { describe, it, beforeAll, afterAll } from "vitest";
+import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
-import { assert, assertIncludes, assertIncludesAny, assertGreaterOrEqual, pass } from "../helpers/assertions.js";
+import { assert, assertIncludes, assertIncludesAny, assertGreaterOrEqual } from "../helpers/assertions.js";
 import { createCatalog, waitForSessionState, waitForEventCount, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { WAIT_CONFIG, ONEWORD_CONFIG } from "../helpers/fixtures.js";
 
@@ -40,7 +41,7 @@ async function testShortWait(env) {
 
         const v = await validateSessionAfterTurn(env, session.sessionId);
         console.log(`  [CMS] state=${v.cmsRow.state}, events=${v.events.length}, iter=${v.orchStatus.customStatus?.iteration}`);
-        pass("Short Wait (in-process)");
+        ("Short Wait (in-process)");
     });
 }
 
@@ -62,7 +63,7 @@ async function testDurableTimer(env) {
 
         const v = await validateSessionAfterTurn(env, session.sessionId);
         console.log(`  [CMS] state=${v.cmsRow.state}, iter=${v.orchStatus.customStatus?.iteration}`);
-        pass("Durable Timer");
+        ("Durable Timer");
     });
 }
 
@@ -94,7 +95,7 @@ async function testDurableTimerCmsState(env) {
             // After completion, should be idle
             const finalRow = await waitForSessionState(catalog, session.sessionId, ["idle", "completed"], 30_000);
             console.log(`  CMS state after completion: ${finalRow.state}`);
-            pass("Durable Timer CMS States");
+            ("Durable Timer CMS States");
         });
     } finally {
         await catalog.close();
@@ -133,7 +134,7 @@ async function testUserInput(env) {
 
         const v = await validateSessionAfterTurn(env, session.sessionId);
         console.log(`  [CMS] state=${v.cmsRow.state}, events=${v.events.length}`);
-        pass("User Input (input_required)");
+        ("User Input (input_required)");
     });
 }
 
@@ -163,7 +164,7 @@ async function testContinueAsNewAfterIdle(env) {
 
         const v = await validateSessionAfterTurn(env, session.sessionId, { minIteration: 3 });
         console.log(`  [CMS] state=${v.cmsRow.state}, iter=${v.orchStatus.customStatus?.iteration}`);
-        pass("Continue-as-new After Idle");
+        ("Continue-as-new After Idle");
     });
 }
 
@@ -188,17 +189,37 @@ async function testMultipleIterations(env) {
 
         const v = await validateSessionAfterTurn(env, session.sessionId, { minIteration: 3 });
         console.log(`  [CMS] state=${v.cmsRow.state}, iter=${v.orchStatus.customStatus?.iteration}, response.v=${v.latestResponse?.version}`);
-        pass("Multiple Iterations");
+        ("Multiple Iterations");
     });
 }
 
 // ─── Runner ──────────────────────────────────────────────────────
 
-await runSuite("Level 2: Durability Tests", [
-    ["Short Wait (in-process)", testShortWait],
-    ["Durable Timer (abort + resume)", testDurableTimer],
-    ["Durable Timer CMS States", testDurableTimerCmsState],
-    ["User Input (input_required)", testUserInput],
-    ["Continue-as-new After Idle", testContinueAsNewAfterIdle],
-    ["Multiple Iterations", testMultipleIterations],
-]);
+describe.concurrent("Level 2: Durability Tests", () => {
+    beforeAll(async () => { await preflightChecks(); });
+
+    it("Short Wait (in-process)", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("durability");
+        try { await testShortWait(env); } finally { await env.cleanup(); }
+    });
+    it("Durable Timer (abort + resume)", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("durability");
+        try { await testDurableTimer(env); } finally { await env.cleanup(); }
+    });
+    it("Durable Timer CMS States", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("durability");
+        try { await testDurableTimerCmsState(env); } finally { await env.cleanup(); }
+    });
+    it("User Input (input_required)", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("durability");
+        try { await testUserInput(env); } finally { await env.cleanup(); }
+    });
+    it("Continue-as-new After Idle", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("durability");
+        try { await testContinueAsNewAfterIdle(env); } finally { await env.cleanup(); }
+    });
+    it("Multiple Iterations", { timeout: TIMEOUT * 2 }, async () => {
+        const env = createTestEnv("durability");
+        try { await testMultipleIterations(env); } finally { await env.cleanup(); }
+    });
+});

@@ -185,6 +185,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
 
         const pool = new pg.Pool({
             connectionString: parsed.toString(),
+            max: 3,
             ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
         });
 

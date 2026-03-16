@@ -83,6 +83,8 @@ export interface AgentConfig {
     splash?: string;
     /** Initial prompt to send when the system agent is first created. */
     initialPrompt?: string;
+    /** Source plugin namespace (e.g. "pilotswarm", "smelter"). Set by the worker during plugin loading. */
+    namespace?: string;
 }
 
 // ─── Frontmatter Parser ─────────────────────────────────────────

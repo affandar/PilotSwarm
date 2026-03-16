@@ -336,6 +336,31 @@ export function* durableSessionOrchestration_1_0_17(
 
     ctx.traceInfo(`[orch] start: iter=${iteration} pending=${pendingPrompt ? `"${pendingPrompt.slice(0, 40)}"` : 'NONE'} queued=${pendingToolActions.length} hydrate=${needsHydration} blob=${blobEnabled}`);
 
+    // ─── Policy enforcement (orchestration-side) ─────────────
+    // Only check on the very first start (iteration 0, no parentSessionId — top-level only).
+    // Sub-agent spawns are internal and not subject to top-level policy.
+    if (iteration === 0 && !parentSessionId && !isSystem) {
+        // Fetch the WORKER's authoritative policy (not the client's — can't trust client input).
+        const workerPolicy: { policy: any; allowedAgentNames: string[] } = yield manager.getWorkerSessionPolicy();
+        const policy = workerPolicy.policy;
+        if (policy && policy.creation?.mode === "allowlist") {
+            const agentId = input.agentId;
+            const allowedNames = workerPolicy.allowedAgentNames;
+            if (!agentId && !policy.creation.allowGeneric) {
+                ctx.traceInfo(`[orch] policy rejection: generic session not allowed`);
+                publishStatus("failed", { policyRejected: true });
+                yield manager.updateCmsState(input.sessionId, "rejected");
+                return "[POLICY] Session rejected: generic sessions are not allowed by session creation policy.";
+            }
+            if (agentId && allowedNames.length > 0 && !allowedNames.includes(agentId)) {
+                ctx.traceInfo(`[orch] policy rejection: agent "${agentId}" not in allowed list`);
+                publishStatus("failed", { policyRejected: true });
+                yield manager.updateCmsState(input.sessionId, "rejected");
+                return `[POLICY] Session rejected: agent "${agentId}" is not in the allowed agent list.`;
+            }
+        }
+    }
+
     // ─── MAIN LOOP ──────────────────────────────────────────
     while (true) {
         let result: TurnResult;

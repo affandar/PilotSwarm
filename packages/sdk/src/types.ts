@@ -161,6 +161,12 @@ export interface OrchestrationInput {
     nestingLevel?: number;
     /** Whether this is a system session (e.g. Sweeper Agent). System sessions skip title summarization. */
     isSystem?: boolean;
+    /** Agent definition ID bound to this session (e.g. "supervisor"). Used for policy validation. */
+    agentId?: string;
+    /** Session creation policy (loaded from session-policy.json). */
+    sessionPolicy?: SessionPolicy;
+    /** Names of all loaded non-system agents. Used by orchestration to validate policy. */
+    allowedAgentNames?: string[];
 }
 
 /** A sub-agent entry tracked in the parent orchestration's state. */
@@ -175,6 +181,28 @@ export interface SubAgentEntry {
     status: "running" | "completed" | "failed" | "cancelled";
     /** Final result content (set when status becomes completed). */
     result?: string;
+}
+
+// ─── Session Policy ──────────────────────────────────────────────
+
+/**
+ * App-level session creation policy. Loaded from `session-policy.json`
+ * in a plugin directory. Controls which sessions can be created and deleted.
+ */
+export interface SessionPolicy {
+    version: 1;
+    creation?: {
+        /** "allowlist" = only loaded non-system agents; "open" = current behavior. Default: "open". */
+        mode?: "allowlist" | "open";
+        /** Whether generic (blank, no agent) sessions are allowed. Default: true. */
+        allowGeneric?: boolean;
+        /** Default agent name for TUI single-step creation. */
+        defaultAgent?: string;
+    };
+    deletion?: {
+        /** Whether system sessions are protected from deletion. Default: true. */
+        protectSystem?: boolean;
+    };
 }
 
 // ─── Client Options ──────────────────────────────────────────────
@@ -343,6 +371,18 @@ export interface PilotSwarmClientOptions {
      * Default: `"copilot_sessions"`. Must match the worker's `cmsSchema`.
      */
     cmsSchema?: string;
+
+    /**
+     * Session creation policy. Typically set by the worker and forwarded
+     * to co-located clients. Controls which sessions can be created.
+     */
+    sessionPolicy?: SessionPolicy;
+
+    /**
+     * Names of loaded non-system agents. Set by the worker and forwarded
+     * to co-located clients for client-side policy validation.
+     */
+    allowedAgentNames?: string[];
 }
 
 // ─── User Input ──────────────────────────────────────────────────

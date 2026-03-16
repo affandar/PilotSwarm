@@ -108,6 +108,14 @@ export function createSessionManagerProxy(ctx: any) {
         deleteSession(sessionId: string, reason?: string) {
             return ctx.scheduleActivity("deleteSession", { sessionId, reason });
         },
+        /** Update a session's CMS state (e.g. "rejected" for policy violations). */
+        updateCmsState(sessionId: string, state: string) {
+            return ctx.scheduleActivity("updateCmsState", { sessionId, state });
+        },
+        /** Get the worker's authoritative session policy + allowed agent names. */
+        getWorkerSessionPolicy() {
+            return ctx.scheduleActivity("getWorkerSessionPolicy", {});
+        },
     };
 }
 
@@ -131,6 +139,10 @@ export function registerActivities(
     },
     /** Loaded system agents — used by resolveAgentConfig activity. */
     systemAgents?: AgentConfig[],
+    /** Worker-level session policy — used by getWorkerSessionPolicy activity. */
+    workerSessionPolicy?: import("./types.js").SessionPolicy | null,
+    /** Names of loaded non-system agents — used by getWorkerSessionPolicy activity. */
+    workerAllowedAgentNames?: string[],
 ) {
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
@@ -383,14 +395,24 @@ export function registerActivities(
     runtime.registerActivity("resolveAgentConfig", async (
         _activityCtx: any,
         input: { agentName: string },
-    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; parent?: string; splash?: string } | null> => {
+    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; parent?: string; splash?: string; namespace?: string } | null> => {
         const agents = systemAgents ?? [];
         const normalize = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-        const lookup = normalize(input.agentName);
+        // Support qualified names: "smelter:supervisor" → namespace="smelter", name="supervisor"
+        let lookupNamespace: string | undefined;
+        let rawName = input.agentName;
+        if (input.agentName.includes(":")) {
+            const parts = input.agentName.split(":");
+            lookupNamespace = parts[0];
+            rawName = parts.slice(1).join(":");
+        }
+        const lookup = normalize(rawName);
         // Also try without trailing "agent" suffix for fuzzy matching
         // (LLM often says "Sweeper agent" which normalizes to "sweeperagent", but id is "sweeper")
         const lookupBase = lookup.replace(/agent$/, "");
         const agent = agents.find(a => {
+            // If namespace qualifier provided, check it matches
+            if (lookupNamespace && normalize(a.namespace) !== normalize(lookupNamespace)) return false;
             const candidates = [a.name, a.id, a.title].map(normalize).filter(Boolean);
             return candidates.includes(lookup) || (lookupBase && candidates.includes(lookupBase));
         });
@@ -405,6 +427,7 @@ export function registerActivities(
             id: agent.id ?? undefined,
             parent: agent.parent ?? undefined,
             splash: agent.splash ?? undefined,
+            namespace: agent.namespace ?? undefined,
         };
     });
 
@@ -698,5 +721,31 @@ export function registerActivities(
         } finally {
             await sdkClient.stop();
         }
+    });
+
+    // ── updateCmsState ─────────────────────────────────────
+    // Updates a session's state in CMS (e.g. "rejected" for policy violations).
+    if (catalog) {
+        runtime.registerActivity("updateCmsState", async (
+            activityCtx: any,
+            input: { sessionId: string; state: string },
+        ): Promise<void> => {
+            activityCtx.traceInfo(`[updateCmsState] session=${input.sessionId} state=${input.state}`);
+            await catalog.updateSession(input.sessionId, { state: input.state });
+        });
+    }
+
+    // ── getWorkerSessionPolicy ──────────────────────────────
+    // Returns the worker's session policy and allowed agent names.
+    // This is the authoritative source — even if a rogue client omits policy
+    // from the OrchestrationInput, the orchestration can fetch it from the worker.
+    runtime.registerActivity("getWorkerSessionPolicy", async (
+        _activityCtx: any,
+        _input: {},
+    ): Promise<{ policy: import("./types.js").SessionPolicy | null; allowedAgentNames: string[] }> => {
+        return {
+            policy: workerSessionPolicy ?? null,
+            allowedAgentNames: workerAllowedAgentNames ?? [],
+        };
     });
 }

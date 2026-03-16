@@ -16,9 +16,10 @@
  * Run: node --env-file=../../.env test/local/kv-transport.test.js
  */
 
-import { runSuite } from "../helpers/runner.js";
+import { describe, it, beforeAll, afterAll } from "vitest";
+import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
 import { withClient, createManagementClient } from "../helpers/local-workers.js";
-import { assert, assertNotNull, assertGreaterOrEqual, pass } from "../helpers/assertions.js";
+import { assert, assertNotNull, assertGreaterOrEqual } from "../helpers/assertions.js";
 import { validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG, BRIEF_CONFIG } from "../helpers/fixtures.js";
 import { randomUUID } from "node:crypto";
@@ -48,7 +49,7 @@ async function testResponseLatest(env) {
             );
 
             await validateSessionAfterTurn(env, session.sessionId);
-            pass("Response Written to response.latest");
+            ("Response Written to response.latest");
         });
     } finally {
         await mgmt.stop();
@@ -77,7 +78,7 @@ async function testCustomStatus(env) {
             );
 
             await validateSessionAfterTurn(env, session.sessionId);
-            pass("CustomStatus Available");
+            ("CustomStatus Available");
         });
     } finally {
         await mgmt.stop();
@@ -120,7 +121,7 @@ async function testCommandResponseKV(env) {
             assert(cmdResponse.result != null, "get_info should return result");
 
             await validateSessionAfterTurn(env, session.sessionId);
-            pass("Command Response via KV");
+            ("Command Response via KV");
         });
     } finally {
         await mgmt.stop();
@@ -155,7 +156,7 @@ async function testResponseVersionsMonotonic(env) {
             assert(v2 > v1, `Response version should increase: v1=${v1} v2=${v2}`);
 
             await validateSessionAfterTurn(env, session.sessionId, { minIteration: 2 });
-            pass("Response Versions Monotonic");
+            ("Response Versions Monotonic");
         });
     } finally {
         await mgmt.stop();
@@ -189,7 +190,7 @@ async function testWaitForStatusChange(env) {
             await sendPromise;
 
             await validateSessionAfterTurn(env, session.sessionId);
-            pass("waitForStatusChange Detects Updates");
+            ("waitForStatusChange Detects Updates");
         });
     } finally {
         await mgmt.stop();
@@ -198,10 +199,27 @@ async function testWaitForStatusChange(env) {
 
 // ─── Runner ──────────────────────────────────────────────────────
 
-await runSuite("Level 6: KV Transport Tests", [
-    ["Response Written to response.latest", testResponseLatest],
-    ["CustomStatus Available", testCustomStatus],
-    ["Command Response via KV", testCommandResponseKV],
-    ["Response Versions Monotonic", testResponseVersionsMonotonic],
-    ["waitForStatusChange Detects Updates", testWaitForStatusChange],
-]);
+describe.concurrent("Level 6: KV Transport Tests", () => {
+    beforeAll(async () => { await preflightChecks(); });
+
+    it("Response Written to response.latest", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("kv-transport");
+        try { await testResponseLatest(env); } finally { await env.cleanup(); }
+    });
+    it("CustomStatus Available", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("kv-transport");
+        try { await testCustomStatus(env); } finally { await env.cleanup(); }
+    });
+    it("Command Response via KV", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("kv-transport");
+        try { await testCommandResponseKV(env); } finally { await env.cleanup(); }
+    });
+    it("Response Versions Monotonic", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("kv-transport");
+        try { await testResponseVersionsMonotonic(env); } finally { await env.cleanup(); }
+    });
+    it("waitForStatusChange Detects Updates", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("kv-transport");
+        try { await testWaitForStatusChange(env); } finally { await env.cleanup(); }
+    });
+});

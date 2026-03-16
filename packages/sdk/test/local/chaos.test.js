@@ -16,9 +16,10 @@
  * Run: node --env-file=../../.env test/local/chaos.test.js
  */
 
-import { runSuite } from "../helpers/runner.js";
+import { describe, it, beforeAll, afterAll } from "vitest";
+import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
 import { PilotSwarmClient, PilotSwarmWorker } from "../helpers/local-workers.js";
-import { assert, assertIncludes, assertIncludesAny, assertGreaterOrEqual, assertNotNull, pass } from "../helpers/assertions.js";
+import { assert, assertIncludes, assertIncludesAny, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
 import { createCatalog, waitForSessionState, validateSessionAfterTurn, validateSessionDeleted } from "../helpers/cms-helpers.js";
 import { MEMORY_CONFIG, ONEWORD_CONFIG } from "../helpers/fixtures.js";
 
@@ -92,7 +93,7 @@ async function testWorkerRestartDuringWait(env) {
         const v = await validateSessionAfterTurn(env, sessionId, { minIteration: 2 });
         console.log(`  [CMS] state=${v.cmsRow.state}, iter=${v.orchStatus.customStatus?.iteration}`);
 
-        pass("Worker Restart During Long Wait");
+        ("Worker Restart During Long Wait");
     } finally {
         await client2.stop();
         await workerB.stop();
@@ -149,7 +150,7 @@ async function testStopBothRestart(env) {
 
         const v = await validateSessionAfterTurn(env, sessionId, { minIteration: 2 });
         console.log(`  [CMS] state=${v.cmsRow.state}, iter=${v.orchStatus.customStatus?.iteration}`);
-        pass("Stop Both Workers Then Restart");
+        ("Stop Both Workers Then Restart");
     } finally {
         await client2.stop();
         await workerB.stop();
@@ -183,7 +184,7 @@ async function testDeleteDuringCompletion(env) {
 
         await validateSessionDeleted(env, id);
         console.log("  [CMS] soft-delete confirmed ✓");
-        pass("Session Delete During Completion");
+        ("Session Delete During Completion");
     } finally {
         await client.stop();
         await worker.stop();
@@ -238,7 +239,7 @@ async function testRapidWorkerStopStart(env) {
 
         const v = await validateSessionAfterTurn(env, sessionId, { minIteration: 2 });
         console.log(`  [CMS] state=${v.cmsRow.state}, iter=${v.orchStatus.customStatus?.iteration}`);
-        pass("Rapid Worker Stop/Start");
+        ("Rapid Worker Stop/Start");
     } finally {
         await client.stop();
         await worker3.stop();
@@ -284,7 +285,7 @@ async function testConcurrentSessionsRestart(env) {
             assert(listed.some(s => s.sessionId === id), `Session ${id.slice(0, 8)} missing after restart`);
         }
         console.log(`  All ${ids.length} sessions still listed after restart`);
-        pass("Concurrent Sessions Under Worker Restart");
+        ("Concurrent Sessions Under Worker Restart");
     } finally {
         await client2.stop();
         await worker2.stop();
@@ -293,10 +294,27 @@ async function testConcurrentSessionsRestart(env) {
 
 // ─── Runner ──────────────────────────────────────────────────────
 
-await runSuite("Level 9: Chaos Tests", [
-    ["Worker Restart During Long Wait", testWorkerRestartDuringWait],
-    ["Stop Both Workers Then Restart", testStopBothRestart],
-    ["Session Delete During Completion", testDeleteDuringCompletion],
-    ["Rapid Worker Stop/Start", testRapidWorkerStopStart],
-    ["Concurrent Sessions Under Restart", testConcurrentSessionsRestart],
-]);
+describe.concurrent("Level 9: Chaos Tests", () => {
+    beforeAll(async () => { await preflightChecks(); });
+
+    it("Worker Restart During Long Wait", { timeout: TIMEOUT * 2 }, async () => {
+        const env = createTestEnv("chaos");
+        try { await testWorkerRestartDuringWait(env); } finally { await env.cleanup(); }
+    });
+    it("Stop Both Workers Then Restart", { timeout: TIMEOUT * 2 }, async () => {
+        const env = createTestEnv("chaos");
+        try { await testStopBothRestart(env); } finally { await env.cleanup(); }
+    });
+    it("Session Delete During Completion", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("chaos");
+        try { await testDeleteDuringCompletion(env); } finally { await env.cleanup(); }
+    });
+    it("Rapid Worker Stop/Start", { timeout: TIMEOUT * 2 }, async () => {
+        const env = createTestEnv("chaos");
+        try { await testRapidWorkerStopStart(env); } finally { await env.cleanup(); }
+    });
+    it("Concurrent Sessions Under Restart", { timeout: TIMEOUT * 2 }, async () => {
+        const env = createTestEnv("chaos");
+        try { await testConcurrentSessionsRestart(env); } finally { await env.cleanup(); }
+    });
+});

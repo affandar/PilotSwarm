@@ -94,7 +94,7 @@ kubectl create secret generic copilot-runtime-secrets \
 if [ "$SKIP_TESTS" = false ]; then
     echo ""
     echo "🧪 Running local integration tests (gate)..."
-    if ! ./scripts/test-local.sh --parallel; then
+    if ! ./scripts/run-tests.sh; then
         echo ""
         echo "❌ Tests failed — aborting deploy."
         echo "   Fix failing tests before deploying to AKS."

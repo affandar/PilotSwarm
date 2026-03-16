@@ -19,7 +19,8 @@
  * Run: node --env-file=../../.env test/local/system-agents.test.js
  */
 
-import { runSuite } from "../helpers/runner.js";
+import { describe, it, beforeAll, afterAll } from "vitest";
+import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
 import { PilotSwarmWorker, PilotSwarmClient } from "../helpers/local-workers.js";
 import {
     assert,
@@ -27,7 +28,6 @@ import {
     assertNotNull,
     assertGreaterOrEqual,
     assertIncludes,
-    pass,
 } from "../helpers/assertions.js";
 import {
     createCatalog,
@@ -78,7 +78,7 @@ async function testPilotswarmRootCreated(env) {
         assertNotNull(row.splash, "pilotswarm should have a splash banner");
         assertIncludes(row.splash, "Cluster Orchestrator", "splash should contain 'Cluster Orchestrator'");
 
-        pass("Pilotswarm Root Agent Created");
+        ("Pilotswarm Root Agent Created");
     } finally {
         await worker.stop();
         await catalog.close();
@@ -126,7 +126,7 @@ async function testChildAgentsSpawned(env) {
         assert(agentIds.includes("sweeper"), "Missing sweeper child agent");
         assert(agentIds.includes("resourcemgr"), "Missing resourcemgr child agent");
 
-        pass("Child System Agents Spawned");
+        ("Child System Agents Spawned");
     } finally {
         await worker.stop();
         await catalog.close();
@@ -171,7 +171,7 @@ async function testChildAgentTitles(env) {
         console.log(`  ✓ Sweeper title: "${sweeper.title}"`);
         console.log(`  ✓ Resource Manager title: "${resourcemgr.title}"`);
 
-        pass("Child Agent Titles");
+        ("Child Agent Titles");
     } finally {
         await worker.stop();
         await catalog.close();
@@ -219,7 +219,7 @@ async function testChildAgentSplash(env) {
         console.log(`  ✓ Sweeper splash: ${sweeper.splash.split("\n").length} lines`);
         console.log(`  ✓ ResourceManager splash: ${resourcemgr.splash.split("\n").length} lines`);
 
-        pass("Child Agent Splash Screens");
+        ("Child Agent Splash Screens");
     } finally {
         await worker.stop();
         await catalog.close();
@@ -279,7 +279,7 @@ async function testChildAgentCmsMetadata(env) {
             expectResponse: false,
         });
 
-        pass("Child Agent CMS Metadata");
+        ("Child Agent CMS Metadata");
     } finally {
         await worker.stop();
         await catalog.close();
@@ -322,7 +322,7 @@ async function testDescendantLinks(env) {
             );
         }
 
-        pass("Parent-Child Descendant Links");
+        ("Parent-Child Descendant Links");
     } finally {
         await worker.stop();
         await catalog.close();
@@ -331,11 +331,30 @@ async function testDescendantLinks(env) {
 
 // ─── Runner ──────────────────────────────────────────────────────
 
-await runSuite("System Agent Lifecycle Tests", [
-    ["Pilotswarm Root Agent Created", testPilotswarmRootCreated],
-    ["Child System Agents Spawned", testChildAgentsSpawned],
-    ["Child Agent Titles", testChildAgentTitles],
-    ["Child Agent Splash Screens", testChildAgentSplash],
-    ["Child Agent CMS Metadata", testChildAgentCmsMetadata],
-    ["Parent-Child Descendant Links", testDescendantLinks],
-], { sharedEnv: true });
+describe("System Agent Lifecycle Tests", () => {
+    let env;
+    beforeAll(async () => {
+        await preflightChecks();
+        env = createTestEnv("system-agents");
+    });
+    afterAll(async () => { await env?.cleanup(); });
+
+    it("Pilotswarm Root Agent Created", { timeout: TIMEOUT }, async () => {
+        await testPilotswarmRootCreated(env);
+    });
+    it("Child System Agents Spawned", { timeout: TIMEOUT }, async () => {
+        await testChildAgentsSpawned(env);
+    });
+    it("Child Agent Titles", { timeout: TIMEOUT }, async () => {
+        await testChildAgentTitles(env);
+    });
+    it("Child Agent Splash Screens", { timeout: TIMEOUT }, async () => {
+        await testChildAgentSplash(env);
+    });
+    it("Child Agent CMS Metadata", { timeout: TIMEOUT }, async () => {
+        await testChildAgentCmsMetadata(env);
+    });
+    it("Parent-Child Descendant Links", { timeout: TIMEOUT }, async () => {
+        await testDescendantLinks(env);
+    });
+});

@@ -30,6 +30,7 @@ export async function withClient(env, opts, fn) {
         sessionStateDir: env.sessionStateDir,
         workerNodeId: opts.workerNodeId || "test-worker-a",
         disableManagementAgents: true,
+        logLevel: process.env.DUROXIDE_LOG_LEVEL || "error",
         ...(opts.worker || {}),
     });
 
@@ -40,6 +41,9 @@ export async function withClient(env, opts, fn) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        // Auto-forward policy + agent names from co-located worker
+        ...(worker.sessionPolicy ? { sessionPolicy: worker.sessionPolicy } : {}),
+        ...(worker.allowedAgentNames?.length ? { allowedAgentNames: worker.allowedAgentNames } : {}),
         ...(opts.client || {}),
     });
     await client.start();

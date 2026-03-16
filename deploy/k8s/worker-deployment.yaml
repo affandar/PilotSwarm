@@ -32,6 +32,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: RUST_LOG
+              value: "info"
           envFrom:
             - secretRef:
                 name: copilot-runtime-secrets

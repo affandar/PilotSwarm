@@ -1,5 +1,7 @@
 
 * users should NOT be able to change the default md files and agent instructions or skills
+* profiling, why is it slow
+* evals, prompt validations & hardening, various models
 
 * parallel subagent spin off "getting interrupted"
 * build a few sample agents 

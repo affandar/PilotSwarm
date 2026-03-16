@@ -50,6 +50,7 @@ export type {
     CommandResponse,
     OrchestrationInput,
     SubAgentEntry,
+    SessionPolicy,
 } from "./types.js";
 
 // Skills loader

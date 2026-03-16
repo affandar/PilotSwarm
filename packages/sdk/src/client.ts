@@ -53,6 +53,16 @@ export class PilotSwarmClient {
     private lastSeenIteration = new Map<string, number>();
     private lastSeenResponseVersion = new Map<string, number>();
     private started = false;
+    /** Tracks agentId bound to each session (for policy and title prefixing). */
+    private sessionAgentIds = new Map<string, string>();
+    /** Effective session policy (set via config from worker). */
+    private get _sessionPolicy(): import("./types.js").SessionPolicy | null {
+        return this.config.sessionPolicy ?? null;
+    }
+    /** Allowed agent names (set via config from worker). */
+    private get _allowedAgentNames(): string[] {
+        return this.config.allowedAgentNames ?? [];
+    }
 
     constructor(options: PilotSwarmClientOptions) {
         this.config = {
@@ -72,7 +82,27 @@ export class PilotSwarmClient {
         parentSessionId?: string;
         /** Nesting level for sub-agent depth tracking. */
         nestingLevel?: number;
+        /** Agent ID to bind this session to (for policy validation and title prefixing). */
+        agentId?: string;
     }): Promise<PilotSwarmSession> {
+        // ── Policy enforcement (client-side) ─────────────────
+        const policy = this._sessionPolicy;
+        const isSubAgent = !!config?.parentSessionId;
+        if (policy && policy.creation?.mode === "allowlist" && !isSubAgent) {
+            const agentId = config?.agentId;
+            if (!agentId && !policy.creation.allowGeneric) {
+                throw new Error(
+                    "Session creation policy violation: generic sessions are not allowed. " +
+                    "Use createSessionForAgent() to specify an agent.",
+                );
+            }
+            if (agentId && !this._allowedAgentNames.includes(agentId)) {
+                throw new Error(
+                    `Session creation policy violation: agent "${agentId}" is not in the allowed agent list.`,
+                );
+            }
+        }
+
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         if (config) {
             const fullConfig: ManagedSessionConfig = {
@@ -101,8 +131,52 @@ export class PilotSwarmClient {
         if (config?.nestingLevel != null) {
             this.nestingLevels.set(sessionId, config.nestingLevel);
         }
+        // Track agentId for orchestration input
+        if (config?.agentId) {
+            this.sessionAgentIds.set(sessionId, config.agentId);
+        }
 
         return new PilotSwarmSession(sessionId, this, config?.onUserInputRequest);
+    }
+
+    /**
+     * Create a session bound to a named agent.
+     *
+     * Validates that the agent exists in the loaded (non-system) agent list.
+     * Sets the agentId on the session and applies a prefixed title:
+     * `"Agent Title: <shortId>"`.
+     *
+     * @throws If the agent is not found, is a system agent, or policy rejects it.
+     */
+    async createSessionForAgent(agentName: string, opts?: {
+        model?: string;
+        onUserInputRequest?: UserInputHandler;
+        toolNames?: string[];
+    }): Promise<PilotSwarmSession> {
+        // Validate the agent exists and is non-system
+        const allowed = this._allowedAgentNames;
+        if (!allowed.includes(agentName)) {
+            throw new Error(
+                `Cannot create session for agent "${agentName}": not found in loaded agents or is a system agent.`,
+            );
+        }
+
+        const session = await this.createSession({
+            model: opts?.model,
+            toolNames: opts?.toolNames,
+            onUserInputRequest: opts?.onUserInputRequest,
+            agentId: agentName,
+        });
+
+        // Set agent metadata in CMS (agentId + prefixed title)
+        const shortId = session.sessionId.slice(0, 8);
+        const agentTitle = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+        await this._catalog.updateSession(session.sessionId, {
+            agentId: agentName,
+            title: `${agentTitle}: ${shortId}`,
+        });
+
+        return session;
     }
 
     /**
@@ -313,6 +387,9 @@ export class PilotSwarmClient {
                 ...(parentSessionId ? { parentSessionId } : {}),
                 ...(nestingLevel != null ? { nestingLevel } : {}),
                 ...(this.systemSessions.has(sessionId) ? { isSystem: true } : {}),
+                ...(this.sessionAgentIds.has(sessionId) ? { agentId: this.sessionAgentIds.get(sessionId) } : {}),
+                ...(this._sessionPolicy ? { sessionPolicy: this._sessionPolicy } : {}),
+                ...(this._allowedAgentNames.length > 0 ? { allowedAgentNames: this._allowedAgentNames } : {}),
             };
             await this.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,

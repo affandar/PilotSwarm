@@ -383,14 +383,16 @@ Implement:
 
 ## Suggested Commands
 
-Eventually the suite should expose commands like:
+The test suite uses **vitest** and can be run via:
 
 ```bash
-npm run test --workspace=packages/sdk
-npm run test:local:smoke --workspace=packages/sdk
-npm run test:local:durability --workspace=packages/sdk
-npm run test:local:multi-worker --workspace=packages/sdk
-npm run test:local:chaos --workspace=packages/sdk
+./scripts/run-tests.sh                        # all suites in parallel
+./scripts/run-tests.sh --sequential           # all suites sequentially
+./scripts/run-tests.sh --suite=smoke          # only matching suite(s)
+
+cd packages/sdk
+npx vitest run test/local/smoke-basic.test.js  # run a single file
+npm run test:local                             # all local tests via npm
 ```
 
 ## Success Criteria
