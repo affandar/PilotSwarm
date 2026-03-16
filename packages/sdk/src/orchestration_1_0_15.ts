@@ -45,7 +45,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.16";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.15";
 
 /**
  * Long-lived durable session orchestration.
@@ -63,13 +63,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.16";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_16(
+export function* durableSessionOrchestration_1_0_15(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.16] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.15] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -951,18 +951,13 @@ export function* durableSessionOrchestration_1_0_16(
                 };
 
                 if (!resolvedAgentName && input.isSystem && agentTask) {
-                    const compactTask = agentTask.trim();
                     const titleMatch = agentTask.match(/You are the \*{0,2}([^*\n]+?Agent)\*{0,2}/i);
-                    const inferredLookup = (
-                        compactTask && compactTask.length <= 80 && !compactTask.includes("\n")
-                            ? compactTask
-                            : titleMatch?.[1]?.trim()
-                    );
+                    const inferredLookup = titleMatch?.[1]?.trim();
                     if (inferredLookup) {
                         const inferredDef = yield manager.resolveAgentConfig(inferredLookup);
                         if (inferredDef?.system && inferredDef?.parent) {
                             resolvedAgentName = inferredDef.id ?? inferredDef.name;
-                            ctx.traceInfo(`[orch] normalized custom system spawn to named agent: ${resolvedAgentName} (from "${inferredLookup}")`);
+                            ctx.traceInfo(`[orch] normalized custom system spawn to named agent: ${resolvedAgentName}`);
                             applyAgentDef(inferredDef, true);
                         }
                     }

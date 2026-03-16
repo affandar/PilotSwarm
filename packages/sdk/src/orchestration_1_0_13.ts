@@ -45,7 +45,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.16";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.13";
 
 /**
  * Long-lived durable session orchestration.
@@ -63,13 +63,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.16";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_16(
+export function* durableSessionOrchestration_1_0_13(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.16] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.13] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -92,7 +92,6 @@ export function* durableSessionOrchestration_1_0_16(
     // ─── Sub-agent tracking ──────────────────────────────────
     let subAgents: SubAgentEntry[] = input.subAgents ? [...input.subAgents] : [];
     let pendingToolActions: TurnAction[] = input.pendingToolActions ? [...input.pendingToolActions] : [];
-    let pendingMessage: any = input.pendingMessage;
     // parentSessionId: prefer new field, fall back to old parentOrchId for backward compat
     const parentSessionId = input.parentSessionId
         ?? (input.parentOrchId ? input.parentOrchId.replace(/^session-/, '') : undefined);
@@ -124,21 +123,18 @@ export function* durableSessionOrchestration_1_0_16(
         ctx.setValue(key, JSON.stringify(value));
     }
 
-    function readCounter(key: string): number {
-        const raw = ctx.getValue(key);
-        if (raw == null) return 0;
-        const parsed = Number(raw);
-        return Number.isFinite(parsed) ? parsed : 0;
+    function setCounter(key: string, value: number): void {
+        ctx.setValue(key, String(value));
     }
 
-    function bumpCounter(key: string): number {
-        const next = readCounter(key) + 1;
+    function bumpCounter(current: number, key: string): number {
+        const next = current + 1;
         ctx.setValue(key, String(next));
         return next;
     }
 
-    let lastResponseVersion = readCounter(RESPONSE_VERSION_KEY);
-    let lastCommandVersion = readCounter(COMMAND_VERSION_KEY);
+    let lastResponseVersion = input.responseVersion ?? 0;
+    let lastCommandVersion = input.commandVersion ?? 0;
     let lastCommandId: string | undefined;
 
     function publishStatus(status: PilotSwarmSessionStatus, extra: Record<string, unknown> = {}): void {
@@ -155,7 +151,7 @@ export function* durableSessionOrchestration_1_0_16(
     function* writeLatestResponse(
         payload: Omit<SessionResponsePayload, "schemaVersion" | "version" | "emittedAt">,
     ): Generator<any, SessionResponsePayload, any> {
-        const version = bumpCounter(RESPONSE_VERSION_KEY);
+        const version = bumpCounter(lastResponseVersion, RESPONSE_VERSION_KEY);
         const emittedAt: number = yield ctx.utcNow();
         const responsePayload: SessionResponsePayload = {
             schemaVersion: 1,
@@ -171,7 +167,7 @@ export function* durableSessionOrchestration_1_0_16(
     function* writeCommandResponse(
         response: CommandResponse,
     ): Generator<any, SessionCommandResponse, any> {
-        const version = bumpCounter(COMMAND_VERSION_KEY);
+        const version = bumpCounter(lastCommandVersion, COMMAND_VERSION_KEY);
         const emittedAt: number = yield ctx.utcNow();
         const payload: SessionCommandResponse = {
             ...response,
@@ -184,6 +180,11 @@ export function* durableSessionOrchestration_1_0_16(
         lastCommandId = response.id;
         return payload;
     }
+
+    // Mirror the carried counters into KV so external readers can inspect them,
+    // but source them from orchestration state to keep replay deterministic.
+    setCounter(RESPONSE_VERSION_KEY, lastResponseVersion);
+    setCounter(COMMAND_VERSION_KEY, lastCommandVersion);
 
     // ─── Helper: wrap prompt with resume context after dehydration ──
     function wrapWithResumeContext(userPrompt: string, extra?: string): string {
@@ -208,6 +209,8 @@ export function* durableSessionOrchestration_1_0_16(
             sessionId: input.sessionId,
             config,
             iteration,
+            responseVersion: lastResponseVersion,
+            commandVersion: lastCommandVersion,
             affinityKey,
             needsHydration,
             blobEnabled,
@@ -221,7 +224,6 @@ export function* durableSessionOrchestration_1_0_16(
             baseSystemMessage,
             subAgents,
             ...(pendingToolActions.length > 0 ? { pendingToolActions } : {}),
-            ...(pendingMessage !== undefined ? { pendingMessage } : {}),
             parentSessionId,
             nestingLevel,
             ...(isSystem ? { isSystem: true } : {}),
@@ -360,13 +362,8 @@ export function* durableSessionOrchestration_1_0_16(
                     // Child agents communicate via the SDK (sendToSession), which enqueues
                     // to the same "messages" queue as user prompts.
                     let msgData: any;
-                    if (pendingMessage !== undefined) {
-                        msgData = pendingMessage;
-                        pendingMessage = undefined;
-                    } else {
-                        const msg: any = yield ctx.dequeueEvent("messages");
-                        msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
-                    }
+                    const msg: any = yield ctx.dequeueEvent("messages");
+                    msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
 
                     // ── Command dispatch ─────────────────────────
                     if (msgData.type === "cmd") {
@@ -493,11 +490,6 @@ export function* durableSessionOrchestration_1_0_16(
                     const childUpdate = parseChildUpdate(msgData.prompt);
                     if (childUpdate) {
                         yield* applyChildUpdate(childUpdate);
-                        continue;
-                    }
-
-                    if (!msgData.prompt) {
-                        ctx.traceInfo(`[orch] ignoring non-prompt message while idle: ${JSON.stringify(msgData).slice(0, 120)}`);
                         continue;
                     }
 
@@ -686,8 +678,11 @@ export function* durableSessionOrchestration_1_0_16(
                             }
 
                             ctx.traceInfo("[session] user responded within idle window");
-                            pendingMessage = raceMsg;
-                            yield versionedContinueAsNew(continueInput());
+                            if (raceMsg.prompt) {
+                                yield versionedContinueAsNew(continueInputWithPrompt(raceMsg.prompt));
+                            } else {
+                                yield versionedContinueAsNew(continueInput());
+                            }
                             return "";
                         }
 
@@ -951,18 +946,13 @@ export function* durableSessionOrchestration_1_0_16(
                 };
 
                 if (!resolvedAgentName && input.isSystem && agentTask) {
-                    const compactTask = agentTask.trim();
                     const titleMatch = agentTask.match(/You are the \*{0,2}([^*\n]+?Agent)\*{0,2}/i);
-                    const inferredLookup = (
-                        compactTask && compactTask.length <= 80 && !compactTask.includes("\n")
-                            ? compactTask
-                            : titleMatch?.[1]?.trim()
-                    );
+                    const inferredLookup = titleMatch?.[1]?.trim();
                     if (inferredLookup) {
                         const inferredDef = yield manager.resolveAgentConfig(inferredLookup);
                         if (inferredDef?.system && inferredDef?.parent) {
                             resolvedAgentName = inferredDef.id ?? inferredDef.name;
-                            ctx.traceInfo(`[orch] normalized custom system spawn to named agent: ${resolvedAgentName} (from "${inferredLookup}")`);
+                            ctx.traceInfo(`[orch] normalized custom system spawn to named agent: ${resolvedAgentName}`);
                             applyAgentDef(inferredDef, true);
                         }
                     }

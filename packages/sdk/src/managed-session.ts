@@ -371,6 +371,7 @@ export class ManagedSession {
                 "Spawn a sub-agent. For KNOWN agents, pass agent_name ONLY (e.g. agent_name=\"sweeper\"). " +
                 "The agent's system message, tools, and initial prompt are loaded automatically from agent_name. " +
                 "Do NOT pass task or system_message when using agent_name. " +
+                "Passing task=\"sweeper\" or task=\"resourcemgr\" is WRONG — use agent_name for those. " +
                 "For CUSTOM agents (ad-hoc tasks), pass task instead. " +
                 "If you want a different model, call list_available_models first and use only an exact provider:model value from that list. " +
                 "Never invent, guess, or shorten model names.",
@@ -379,11 +380,11 @@ export class ManagedSession {
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known agent to spawn (from list_agents). Use this for pre-configured agents. Do NOT also pass task or system_message.",
+                        description: "Name of a known agent to spawn (from list_agents). Use this for pre-configured agents like sweeper or resourcemgr. Do NOT also pass task or system_message.",
                     },
                     task: {
                         type: "string",
-                        description: "For custom agents only: a clear description of what the sub-agent should do. Do NOT use this for known agents — use agent_name instead.",
+                        description: "For custom agents only: a clear description of what the sub-agent should do. Do NOT use this for known agents like sweeper or resourcemgr — use agent_name instead.",
                     },
                     model: {
                         type: "string",
