@@ -315,6 +315,12 @@ export function registerActivities(
                 return session.title || "";
             }
 
+            // Named agent sessions have a title prefix (e.g. "Alpha Agent: <shortId>").
+            // Detect this so we can preserve the prefix after summarization.
+            const agentTitlePrefix = session?.agentId && session?.title?.includes(": ")
+                ? session.title.split(": ")[0]
+                : null;
+
             const events = await catalog.getSessionEvents(input.sessionId, undefined, 50);
             if (!events || events.length === 0) return "";
 
@@ -357,8 +363,10 @@ export function registerActivities(
                 // Truncate to 60 chars max
                 title = title.slice(0, 60);
                 if (title) {
-                    await catalog.updateSession(input.sessionId, { title });
-                    activityCtx.traceInfo(`[summarizeSession] title="${title}"`);
+                    // Preserve named agent prefix: "Alpha Agent: <summary>"
+                    const finalTitle = agentTitlePrefix ? `${agentTitlePrefix}: ${title}` : title;
+                    await catalog.updateSession(input.sessionId, { title: finalTitle });
+                    activityCtx.traceInfo(`[summarizeSession] title="${finalTitle}"`);
                 }
                 return title;
             } catch (err: any) {
@@ -458,7 +466,13 @@ export function registerActivities(
             // One-time metadata write: isSystem, title, agentId, splash
             const meta: Record<string, any> = {};
             if (input.isSystem) meta.isSystem = true;
-            if (input.title) meta.title = input.title;
+            // Named agents get a prefixed title: "Agent Title: <shortId>"
+            // System agents keep their fixed title as-is.
+            if (input.title && !input.isSystem) {
+                meta.title = `${input.title}: ${childSessionId.slice(0, 8)}`;
+            } else if (input.title) {
+                meta.title = input.title;
+            }
             if (input.agentId) meta.agentId = input.agentId;
             if (input.splash) meta.splash = input.splash;
             if (Object.keys(meta).length > 0 && catalog) {
