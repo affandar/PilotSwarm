@@ -147,7 +147,9 @@ Useful local checks:
 
 ```bash
 npm run build --workspace=packages/sdk
-npm test --workspace=packages/sdk
+./scripts/run-tests.sh                         # full test suite (vitest)
+./scripts/run-tests.sh --suite=smoke           # just smoke tests
+cd packages/sdk && npx vitest run test/local/smoke-basic.test.js  # single file
 node --check packages/cli/cli/tui.js
 ```
 

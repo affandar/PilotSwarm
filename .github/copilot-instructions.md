@@ -109,19 +109,19 @@ Duroxide is the foundational runtime — papering over its bugs at higher layers
 
 ### Running Tests
 
-The local integration test suite requires a running PostgreSQL database and a GitHub token (in `.env`).
+The local integration test suite requires a running PostgreSQL database and a GitHub token (in `.env`). Tests use **vitest** as the test runner with `describe`/`it` from `vitest`.
 
 ```bash
-./scripts/test-local.sh              # run all suites sequentially
-./scripts/test-local.sh --parallel   # run all suites in parallel (faster)
-./scripts/test-local.sh --suite=smoke  # run only matching suite(s)
+./scripts/run-tests.sh              # run all suites in parallel (default)
+./scripts/run-tests.sh --sequential # run all suites sequentially
+./scripts/run-tests.sh --suite=smoke  # run only matching suite(s)
 ```
 
 Individual suites can also be run directly:
 ```bash
 cd packages/sdk
-node --env-file=../../.env test/local/smoke.test.js
-node --env-file=../../.env test/local/sub-agents.test.js --test="Named"  # filter by test name
+npx vitest run test/local/smoke-basic.test.js
+npx vitest run test/local/smoke-basic.test.js -t "Send And Receive"  # filter by test name
 ```
 
 ### Test Suite Structure
@@ -139,6 +139,7 @@ Tests are organized by level in `packages/sdk/test/local/`:
 | 7 | `cms-consistency.test.js` | CMS state consistency after turns |
 | 8 | `contracts.test.js` | API contract validation |
 | 9 | `chaos.test.js` | Chaos/fault injection scenarios |
+| 10 | `session-policy.test.js` | Session creation policy, agent namespacing |
 | — | `system-agents.test.js` | PilotSwarm/Sweeper/ResourceMgr auto-start lifecycle |
 
 Tests use a `withClient()` helper that spins up a co-located worker + client pair. Each test creates fresh sessions with isolated database schemas.
@@ -163,11 +164,23 @@ When adding a new feature, add or update tests following these rules:
 
 6. **New orchestration version** → freeze the current `orchestration.ts` to `orchestration_X_Y_Z.ts`, register in `orchestration-registry.ts`, then run the full suite. Multi-worker and chaos tests will catch replay/versioning issues.
 
+7. **New test suite file** → add it to both the `SUITES` array in `scripts/run-tests.sh` and the `test:local` npm script in `packages/sdk/package.json`. Every test file in `test/local/` must be runnable via `./scripts/run-tests.sh`. Orphaned test files that only run manually are not acceptable.
+
 Each test function should:
 - Use `withClient(env, ...)` for setup/teardown
 - Use assertion helpers from `test/helpers/assertions.js`
-- Call `pass("Test Name")` on success
+- Use `describe`/`it` from `vitest` (not `node:test`)
 - Log key values with `console.log("  ...")` for debuggability
+
+### Test Integrity Rules
+
+**No retries.** Never add `retry` to test configurations (vitest `retry`, `retries`, or manual retry loops). If a test fails, it means the product has a bug or the test prompt is wrong — fix the root cause.
+
+**No hacks.** Do not paper over product bugs by weakening assertions, adding arbitrary sleeps, or swallowing errors. Tests exist to catch real problems.
+
+**No custom system prompts to compensate for product behavior.** Tests should use `client.createSession()` without overriding `systemMessage` unless the test is specifically testing custom system messages. The default agent prompt and tool schemas should be sufficient for the LLM to use tools correctly. If the LLM isn't calling a tool, that's a product bug in the default prompt or tool schema — fix it there, not in the test.
+
+**Raise failures loudly.** When a test fails, investigate and report the root cause. Do not silence it. Flag the issue to the user.
 
 ## Common Patterns
 

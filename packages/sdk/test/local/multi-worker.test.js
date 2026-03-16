@@ -14,9 +14,10 @@
  * Run: node --env-file=../../.env test/local/multi-worker.test.js
  */
 
-import { runSuite } from "../helpers/runner.js";
+import { describe, it, beforeAll, afterAll } from "vitest";
+import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
 import { withClient, withTwoWorkers, PilotSwarmClient, PilotSwarmWorker } from "../helpers/local-workers.js";
-import { assert, assertEqual, assertIncludes, assertIncludesAny, assertGreaterOrEqual, pass } from "../helpers/assertions.js";
+import { assert, assertEqual, assertIncludes, assertIncludesAny, assertGreaterOrEqual } from "../helpers/assertions.js";
 import { createCatalog, waitForSessionState, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG, MEMORY_CONFIG } from "../helpers/fixtures.js";
 
@@ -43,7 +44,7 @@ async function testTwoWorkersObserveSession(env) {
             const row = await catalog.getSession(session.sessionId);
             assert(row !== null, "Session not found in CMS");
             console.log(`  CMS state: ${row.state}`);
-            pass("Two Workers Observe Same Session");
+            ("Two Workers Observe Same Session");
         } finally {
             await catalog.close();
         }
@@ -121,7 +122,7 @@ async function testSessionSurvivesWorkerRestart(env) {
 
         const v = await validateSessionAfterTurn(env, savedId, { minIteration: 2 });
         console.log(`  [CMS] state=${v.cmsRow.state}, iter=${v.orchStatus.customStatus?.iteration}`);
-        pass("Session Survives Worker Restart");
+        ("Session Survives Worker Restart");
     } finally {
         await client2.stop();
         await workerB.stop();
@@ -163,7 +164,7 @@ async function testMultipleSessionsTwoWorkers(env) {
             assert(listed.some(l => l.sessionId === s.sessionId), `Session ${s.sessionId.slice(0, 8)} missing from list`);
         }
 
-        pass("Multiple Sessions Across Two Workers");
+        ("Multiple Sessions Across Two Workers");
     });
 }
 
@@ -239,7 +240,7 @@ async function testWorkerHandoffAfterStop(env) {
 
         const v = await validateSessionAfterTurn(env, savedId, { minIteration: 2 });
         console.log(`  [CMS] state=${v.cmsRow.state}, iter=${v.orchStatus.customStatus?.iteration}`);
-        pass("Worker Handoff After Stop");
+        ("Worker Handoff After Stop");
     } finally {
         await client2.stop();
         await workerB.stop();
@@ -248,9 +249,23 @@ async function testWorkerHandoffAfterStop(env) {
 
 // ─── Runner ──────────────────────────────────────────────────────
 
-await runSuite("Level 3: Multi-Worker Tests", [
-    ["Two Workers Observe Same Session", testTwoWorkersObserveSession],
-    ["Session Survives Worker Restart", testSessionSurvivesWorkerRestart],
-    ["Multiple Sessions Across Two Workers", testMultipleSessionsTwoWorkers],
-    ["Worker Handoff After Stop", testWorkerHandoffAfterStop],
-]);
+describe.concurrent("Level 3: Multi-Worker Tests", () => {
+    beforeAll(async () => { await preflightChecks(); });
+
+    it("Two Workers Observe Same Session", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("multi-worker");
+        try { await testTwoWorkersObserveSession(env); } finally { await env.cleanup(); }
+    });
+    it("Session Survives Worker Restart", { timeout: TIMEOUT * 2 }, async () => {
+        const env = createTestEnv("multi-worker");
+        try { await testSessionSurvivesWorkerRestart(env); } finally { await env.cleanup(); }
+    });
+    it("Multiple Sessions Across Two Workers", { timeout: TIMEOUT * 2 }, async () => {
+        const env = createTestEnv("multi-worker");
+        try { await testMultipleSessionsTwoWorkers(env); } finally { await env.cleanup(); }
+    });
+    it("Worker Handoff After Stop", { timeout: TIMEOUT * 2 }, async () => {
+        const env = createTestEnv("multi-worker");
+        try { await testWorkerHandoffAfterStop(env); } finally { await env.cleanup(); }
+    });
+});

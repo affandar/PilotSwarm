@@ -15,17 +15,20 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "node --env-file=../../.env test/sdk.test.js",
-    "test:local:smoke": "node --env-file=../../.env test/local/smoke.test.js",
-    "test:local:durability": "node --env-file=../../.env test/local/durability.test.js",
-    "test:local:multi-worker": "node --env-file=../../.env test/local/multi-worker.test.js",
-    "test:local:commands": "node --env-file=../../.env test/local/commands.test.js",
-    "test:local:sub-agents": "node --env-file=../../.env test/local/sub-agents.test.js",
-    "test:local:kv-transport": "node --env-file=../../.env test/local/kv-transport.test.js",
-    "test:local:cms": "node --env-file=../../.env test/local/cms-consistency.test.js",
-    "test:local:contracts": "node --env-file=../../.env test/local/contracts.test.js",
-    "test:local:chaos": "node --env-file=../../.env test/local/chaos.test.js",
-    "test:local:system-agents": "node --env-file=../../.env test/local/system-agents.test.js",
-    "test:local": "node --env-file=../../.env test/local/smoke.test.js & node --env-file=../../.env test/local/durability.test.js & node --env-file=../../.env test/local/multi-worker.test.js & node --env-file=../../.env test/local/commands.test.js & node --env-file=../../.env test/local/sub-agents.test.js & node --env-file=../../.env test/local/kv-transport.test.js & node --env-file=../../.env test/local/cms-consistency.test.js & node --env-file=../../.env test/local/contracts.test.js & node --env-file=../../.env test/local/chaos.test.js & node --env-file=../../.env test/local/system-agents.test.js & wait",
+    "test:local:smoke": "vitest run --testPathPattern smoke",
+    "test:local:durability": "vitest run --testPathPattern durability",
+    "test:local:multi-worker": "vitest run --testPathPattern multi-worker",
+    "test:local:commands": "vitest run --testPathPattern commands",
+    "test:local:management": "vitest run --testPathPattern management",
+    "test:local:sub-agents": "vitest run --testPathPattern sub-agents",
+    "test:local:kv-transport": "vitest run --testPathPattern kv-transport",
+    "test:local:cms": "vitest run --testPathPattern cms-",
+    "test:local:contracts": "vitest run --testPathPattern contracts",
+    "test:local:chaos": "vitest run --testPathPattern chaos",
+    "test:local:system-agents": "vitest run --testPathPattern system-agents",
+    "test:local:session-policy": "vitest run --testPathPattern session-policy",
+    "test:local:reliability": "vitest run --testPathPattern reliability",
+    "test:local": "vitest run",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
@@ -49,7 +52,8 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/pg": "^8.16.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.0"
   },
   "engines": {
     "node": ">=24.0.0"

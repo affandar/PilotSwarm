@@ -58,7 +58,7 @@ export class PilotSwarmWorker {
     /** Loaded skill directories from plugins + direct config. */
     private _loadedSkillDirs: string[] = [];
     /** Loaded agent configs from plugins + direct config. */
-    private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null }> = [];
+    private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string }> = [];
     /** Loaded MCP server configs from plugins + direct config. */
     private _loadedMcpServers: Record<string, any> = {};
     /** Model provider registry — multi-provider LLM config. */
@@ -67,6 +67,8 @@ export class PilotSwarmWorker {
     private _defaultAgentPrompt: string | null = null;
     /** System agents loaded from plugins — started automatically on worker start. */
     private _loadedSystemAgents: AgentConfig[] = [];
+    /** Session creation policy loaded from session-policy.json. */
+    private _sessionPolicy: import("./types.js").SessionPolicy | null = null;
 
     constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
@@ -158,7 +160,7 @@ export class PilotSwarmWorker {
     }
 
     /** Loaded agent configs. */
-    get loadedAgents(): Array<{ name: string; description?: string; prompt: string; tools?: string[] | null }> {
+    get loadedAgents(): Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string }> {
         return this._loadedAgents;
     }
 
@@ -175,6 +177,16 @@ export class PilotSwarmWorker {
     /** System agents loaded from plugins. */
     get systemAgents(): AgentConfig[] {
         return this._loadedSystemAgents;
+    }
+
+    /** Session creation policy (null if no session-policy.json found). */
+    get sessionPolicy(): import("./types.js").SessionPolicy | null {
+        return this._sessionPolicy;
+    }
+
+    /** Names of loaded non-system agents that can be created as top-level sessions. */
+    get allowedAgentNames(): string[] {
+        return this._loadedAgents.map(a => a.name);
     }
 
     // ─── Lifecycle ───────────────────────────────────────────
@@ -219,6 +231,8 @@ export class PilotSwarmWorker {
                 duroxideSchema: this.config.duroxideSchema,
             },
             this._loadedSystemAgents,
+            this._sessionPolicy,
+            this.allowedAgentNames,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
@@ -264,7 +278,8 @@ export class PilotSwarmWorker {
         const listAgentsTool = defineTool("list_agents", {
             description:
                 "List all loaded agents in the PilotSwarm cluster. Returns both user-invocable agents and system agents " +
-                "with their name, description, tools, system flag, and parent relationship.",
+                "with their name, namespace, qualifiedName, description, tools, system flag, and parent relationship. " +
+                "Use creatableOnly=true to get only agents that users can create as top-level sessions.",
             parameters: {
                 type: "object" as const,
                 properties: {
@@ -272,12 +287,18 @@ export class PilotSwarmWorker {
                         type: "boolean",
                         description: "If true, only return system agents. Default: false",
                     },
+                    creatableOnly: {
+                        type: "boolean",
+                        description: "If true, only return user-creatable (non-system) agents. Default: false",
+                    },
                 },
             },
-            handler: async (args: { systemOnly?: boolean }) => {
+            handler: async (args: { systemOnly?: boolean; creatableOnly?: boolean }) => {
                 const allAgents = [
                     ...this._loadedAgents.map(a => ({
                         name: a.name,
+                        namespace: (a as any).namespace || "custom",
+                        qualifiedName: `${(a as any).namespace || "custom"}:${a.name}`,
                         description: a.description || null,
                         tools: a.tools || [],
                         system: false,
@@ -286,6 +307,8 @@ export class PilotSwarmWorker {
                     })),
                     ...this._loadedSystemAgents.map(a => ({
                         name: a.name,
+                        namespace: a.namespace || "pilotswarm",
+                        qualifiedName: `${a.namespace || "pilotswarm"}:${a.name}`,
                         description: a.description || null,
                         tools: a.tools || [],
                         system: true,
@@ -293,9 +316,12 @@ export class PilotSwarmWorker {
                         parent: a.parent || null,
                     })),
                 ];
-                const filtered = args.systemOnly
-                    ? allAgents.filter(a => a.system)
-                    : allAgents;
+                let filtered = allAgents;
+                if (args.systemOnly) {
+                    filtered = allAgents.filter(a => a.system);
+                } else if (args.creatableOnly) {
+                    filtered = allAgents.filter(a => !a.system);
+                }
                 return JSON.stringify({ agents: filtered, total: filtered.length }, null, 2);
             },
         });
@@ -416,10 +442,20 @@ export class PilotSwarmWorker {
     }
 
     /**
-     * Load agents, skills, and MCP config from a single plugin directory.
+     * Load agents, skills, MCP config, and session policy from a single plugin directory.
      */
     private _loadPluginDir(absDir: string): void {
         if (!fs.existsSync(absDir)) return;
+
+        // Determine namespace from plugin.json name or directory basename
+        let namespace = path.basename(absDir);
+        const pluginJsonPath = path.join(absDir, "plugin.json");
+        if (fs.existsSync(pluginJsonPath)) {
+            try {
+                const pluginJson = JSON.parse(fs.readFileSync(pluginJsonPath, "utf-8"));
+                if (pluginJson.name) namespace = pluginJson.name;
+            } catch {}
+        }
 
         // Skills
         const skillsDir = path.join(absDir, "skills");
@@ -427,11 +463,12 @@ export class PilotSwarmWorker {
             this._loadedSkillDirs.push(skillsDir);
         }
 
-        // Agents
+        // Agents — tag each with namespace
         const agentsDir = path.join(absDir, "agents");
         if (fs.existsSync(agentsDir)) {
             const agents = loadAgentFiles(agentsDir);
             for (const agent of agents) {
+                agent.namespace = namespace;
                 if (agent.name === "default") {
                     this._defaultAgentPrompt = agent.prompt;
                 } else if (agent.system) {
@@ -445,6 +482,16 @@ export class PilotSwarmWorker {
         // MCP
         const mcpConfig = loadMcpConfig(absDir);
         Object.assign(this._loadedMcpServers, mcpConfig);
+
+        // Session policy — last one wins
+        const policyPath = path.join(absDir, "session-policy.json");
+        if (fs.existsSync(policyPath)) {
+            try {
+                this._sessionPolicy = JSON.parse(fs.readFileSync(policyPath, "utf-8"));
+            } catch (err: any) {
+                console.warn(`[PilotSwarmWorker] Failed to parse session-policy.json: ${err.message}`);
+            }
+        }
     }
 
     /**

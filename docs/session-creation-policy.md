@@ -611,7 +611,7 @@ Add to `packages/sdk/package.json`:
 "test:local:session-policy": "node --env-file=../../.env test/local/session-policy.test.js"
 ```
 
-Add to the `test:local` parallel run and to `scripts/test-local.sh` SUITES array.
+Add to the `test:local` parallel run and to `scripts/run-tests.sh` SUITES array.
 
 Register in runner:
 

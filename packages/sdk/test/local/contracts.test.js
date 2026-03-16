@@ -14,9 +14,10 @@
  * Run: node --env-file=../../.env test/local/contracts.test.js
  */
 
-import { runSuite } from "../helpers/runner.js";
+import { describe, it, beforeAll, afterAll } from "vitest";
+import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
 import { withClient, defineTool, PilotSwarmWorker } from "../helpers/local-workers.js";
-import { assert, assertIncludes, assertGreaterOrEqual, assertNotNull, pass } from "../helpers/assertions.js";
+import { assert, assertIncludes, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
 import { validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG } from "../helpers/fixtures.js";
 
@@ -46,7 +47,7 @@ async function testWorkerToolByName(env) {
 
         const v = await validateSessionAfterTurn(env, session.sessionId);
         console.log(`  [CMS] state=${v.cmsRow.state}, events=${v.events.length}`);
-        pass("Worker-Registered Tool By Name");
+        ("Worker-Registered Tool By Name");
     });
 }
 
@@ -79,7 +80,7 @@ async function testRegistryPlusSessionTools(env) {
         console.log(`  Response: "${response}"`);
         assert(addTracker.called, "add tool was not called");
         assert(mulTracker.called, "multiply tool was not called");
-        pass("Registry + Per-Session Tools Combined");
+        ("Registry + Per-Session Tools Combined");
     });
 }
 
@@ -120,7 +121,7 @@ async function testToolUpdateAfterEviction(env) {
 
         const v = await validateSessionAfterTurn(env, session.sessionId, { minIteration: 2 });
         console.log(`  [CMS] state=${v.cmsRow.state}, iter=${v.orchStatus.customStatus?.iteration}`);
-        pass("Tool Update After Eviction");
+        ("Tool Update After Eviction");
     });
 }
 
@@ -142,7 +143,7 @@ async function testModeReplaceKeepsBase(env) {
         console.log(`  Response: "${response}"`);
 
         // If the wait tool wasn't available (base prompt removed), this would fail
-        pass("Mode Replace Keeps Base Prompt");
+        ("Mode Replace Keeps Base Prompt");
     });
 }
 
@@ -181,7 +182,7 @@ async function testWorkerLoadedAgents(env) {
             assert(a.system === true, `Agent '${a.name}' should have system=true`);
         }
 
-        pass("Worker Exposes Loaded Agents");
+        ("Worker Exposes Loaded Agents");
     } finally {
         await worker.stop();
     }
@@ -210,7 +211,7 @@ async function testWorkerSkillDirs(env) {
 
         // Skills may or may not be present depending on config, so just verify the API works
         assert(Array.isArray(dirs), "loadedSkillDirs should return an array");
-        pass("Worker Skill Dirs Loaded");
+        ("Worker Skill Dirs Loaded");
     } finally {
         await worker.stop();
     }
@@ -218,11 +219,31 @@ async function testWorkerSkillDirs(env) {
 
 // ─── Runner ──────────────────────────────────────────────────────
 
-await runSuite("Level 8: Contract Tests", [
-    ["Worker-Registered Tool By Name", testWorkerToolByName],
-    ["Registry + Per-Session Tools", testRegistryPlusSessionTools],
-    ["Tool Update After Eviction", testToolUpdateAfterEviction],
-    ["Mode Replace Keeps Base Prompt", testModeReplaceKeepsBase],
-    ["Worker Exposes Loaded Agents", testWorkerLoadedAgents],
-    ["Worker Skill Dirs Loaded", testWorkerSkillDirs],
-]);
+describe.concurrent("Level 8: Contract Tests", () => {
+    beforeAll(async () => { await preflightChecks(); });
+
+    it("Worker-Registered Tool By Name", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("contracts");
+        try { await testWorkerToolByName(env); } finally { await env.cleanup(); }
+    });
+    it("Registry + Per-Session Tools", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("contracts");
+        try { await testRegistryPlusSessionTools(env); } finally { await env.cleanup(); }
+    });
+    it("Tool Update After Eviction", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("contracts");
+        try { await testToolUpdateAfterEviction(env); } finally { await env.cleanup(); }
+    });
+    it("Mode Replace Keeps Base Prompt", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("contracts");
+        try { await testModeReplaceKeepsBase(env); } finally { await env.cleanup(); }
+    });
+    it("Worker Exposes Loaded Agents", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("contracts");
+        try { await testWorkerLoadedAgents(env); } finally { await env.cleanup(); }
+    });
+    it("Worker Skill Dirs Loaded", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("contracts");
+        try { await testWorkerSkillDirs(env); } finally { await env.cleanup(); }
+    });
+});
