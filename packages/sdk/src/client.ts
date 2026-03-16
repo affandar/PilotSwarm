@@ -1,6 +1,10 @@
 import {
     RESPONSE_LATEST_KEY,
 } from "./types.js";
+import {
+    DURABLE_SESSION_LATEST_VERSION,
+    DURABLE_SESSION_ORCHESTRATION_NAME,
+} from "./orchestration-registry.js";
 import type {
     PilotSwarmClientOptions,
     ManagedSessionConfig,
@@ -21,8 +25,6 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
-const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.16";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -290,9 +292,9 @@ export class PilotSwarmClient {
             };
             await this.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,
-                ORCHESTRATION_NAME,
+                DURABLE_SESSION_ORCHESTRATION_NAME,
                 input,
-                ORCHESTRATION_VERSION,
+                DURABLE_SESSION_LATEST_VERSION,
             );
             this.activeOrchestrations.set(sessionId, orchestrationId);
         }

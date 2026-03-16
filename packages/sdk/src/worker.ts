@@ -1,23 +1,11 @@
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
 import { registerActivities } from "./session-proxy.js";
-import { durableSessionOrchestration_1_0_13 } from "./orchestration_1_0_13.js";
-import { durableSessionOrchestration_1_0_12 } from "./orchestration_1_0_12.js";
-import { durableSessionOrchestration_1_0_10 } from "./orchestration_1_0_10.js";
-import { durableSessionOrchestration_1_0_11 } from "./orchestration_1_0_11.js";
-import { durableSessionOrchestration_1_0_9 } from "./orchestration_1_0_9.js";
-import { durableSessionOrchestration_1_0_1 } from "./orchestration_1_0_1.js";
-import { durableSessionOrchestration_1_0_0 } from "./orchestration_1_0_0.js";
-import { durableSessionOrchestration_1_0_2 } from "./orchestration_1_0_2.js";
-import { durableSessionOrchestration_1_0_3 } from "./orchestration_1_0_3.js";
-import { durableSessionOrchestration_1_0_4 } from "./orchestration_1_0_4.js";
-import { durableSessionOrchestration_1_0_5 } from "./orchestration_1_0_5.js";
-import { durableSessionOrchestration_1_0_6 } from "./orchestration_1_0_6.js";
-import { durableSessionOrchestration_1_0_7 } from "./orchestration_1_0_7.js";
-import { durableSessionOrchestration_1_0_8 } from "./orchestration_1_0_8.js";
-import { durableSessionOrchestration_1_0_14 } from "./orchestration_1_0_14.js";
-import { durableSessionOrchestration_1_0_15 } from "./orchestration_1_0_15.js";
-import { durableSessionOrchestration_1_0_16 } from "./orchestration.js";
+import {
+    DURABLE_SESSION_LATEST_VERSION,
+    DURABLE_SESSION_ORCHESTRATION_NAME,
+    DURABLE_SESSION_ORCHESTRATION_REGISTRY,
+} from "./orchestration-registry.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { loadAgentFiles, systemAgentUUID } from "./agent-loader.js";
@@ -41,8 +29,6 @@ const __sdkDir = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
 
-const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.16";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -232,23 +218,13 @@ export class PilotSwarmWorker {
             this._loadedSystemAgents,
         );
 
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.0", durableSessionOrchestration_1_0_0);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.1", durableSessionOrchestration_1_0_1);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.2", durableSessionOrchestration_1_0_2);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.3", durableSessionOrchestration_1_0_3);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.4", durableSessionOrchestration_1_0_4);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.5", durableSessionOrchestration_1_0_5);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.6", durableSessionOrchestration_1_0_6);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.7", durableSessionOrchestration_1_0_7);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.8", durableSessionOrchestration_1_0_8);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.9", durableSessionOrchestration_1_0_9);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.10", durableSessionOrchestration_1_0_10);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.11", durableSessionOrchestration_1_0_11);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.12", durableSessionOrchestration_1_0_12);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.13", durableSessionOrchestration_1_0_13);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.14", durableSessionOrchestration_1_0_14);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.15", durableSessionOrchestration_1_0_15);
-        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.16", durableSessionOrchestration_1_0_16);
+        for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
+            this.runtime.registerOrchestrationVersioned(
+                DURABLE_SESSION_ORCHESTRATION_NAME,
+                registration.version,
+                registration.handler,
+            );
+        }
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {
@@ -539,9 +515,9 @@ export class PilotSwarmWorker {
 
                 await duroxideClient.startOrchestrationVersioned(
                     orchestrationId,
-                    ORCHESTRATION_NAME,
+                    DURABLE_SESSION_ORCHESTRATION_NAME,
                     input,
-                    ORCHESTRATION_VERSION,
+                    DURABLE_SESSION_LATEST_VERSION,
                 );
 
                 // Update CMS with orchestration ID
