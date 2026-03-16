@@ -150,6 +150,8 @@ export interface OrchestrationInput {
     subAgents?: SubAgentEntry[];
     /** Durable queue of additional tool actions emitted in the same LLM turn. */
     pendingToolActions?: TurnAction[];
+    /** One already-dequeued inbound message to replay first after continueAsNew. */
+    pendingMessage?: unknown;
     /** If this is a sub-agent, the parent session ID (for sending updates back via SDK). */
     parentSessionId?: string;
     /** @deprecated Use parentSessionId. Kept for backward compat with frozen orchestration versions. */

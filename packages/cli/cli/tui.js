@@ -3114,6 +3114,21 @@ const sessionPendingTurns = new Set(); // orchIds with a locally-sent turn await
 const sessionPendingQuestions = new Map(); // orchId → latest input-required question awaiting a user answer
 const sessionLastSeenResponseVersion = new Map(); // orchId → latest KV-backed response version rendered
 const sessionLastSeenCommandVersion = new Map(); // orchId → latest KV-backed command response version rendered
+const sessionLoggedTerminalStatus = new Map(); // orchId → last terminal orchestration status already logged to Activity
+
+function isTerminalOrchestrationStatus(status) {
+    return status === "Completed" || status === "Failed" || status === "Terminated";
+}
+
+function isTerminalSessionState(state) {
+    return state === "completed" || state === "failed" || state === "error" || state === "terminated";
+}
+
+function shouldObserveSession(orchId, cached = orchStatusCache.get(orchId)) {
+    if (!orchId || sessionObservers.has(orchId)) return false;
+    const visualState = getSessionVisualState(orchId, cached);
+    return !isTerminalSessionState(visualState);
+}
 
 function getSessionVisualState(orchId, cached = orchStatusCache.get(orchId)) {
     const liveState = sessionLiveStatus.get(orchId) || cached?.liveState;
@@ -3710,7 +3725,8 @@ async function refreshOrchestrations(force = false) {
 
     // Start observers for any sessions that don't have one yet
     for (const { id, status } of entries) {
-        if (!sessionObservers.has(id) && status !== "Completed" && status !== "Failed" && status !== "Terminated") {
+        if (shouldObserveSession(id, orchStatusCache.get(id))
+            && status !== "Completed" && status !== "Failed" && status !== "Terminated") {
             startObserver(id);
         }
     }
@@ -4386,6 +4402,9 @@ function startObserver(orchId) {
         if (status !== "input_required") {
             clearSessionPendingQuestion(orchId);
         }
+        if (!isTerminalSessionState(status)) {
+            sessionLoggedTerminalStatus.delete(orchId);
+        }
         sessionLiveStatus.set(orchId, status);
         setSessionPendingTurn(orchId, false);
         // Lightweight: just update icons in the list without DB queries.
@@ -4550,6 +4569,44 @@ function startObserver(orchId) {
         return cs;
     }
 
+    async function stopObserverForTerminalStatus(statusSnapshot, source) {
+        const terminalStatus = statusSnapshot?.status || statusSnapshot?.orchestrationStatus;
+        if (!isTerminalOrchestrationStatus(terminalStatus)) {
+            return false;
+        }
+
+        const terminalCs = await consumeTerminalArtifacts(statusSnapshot, source);
+        clearSessionPendingQuestion(orchId);
+        const alreadyLogged = sessionLoggedTerminalStatus.get(orchId) === terminalStatus;
+
+        if (terminalStatus === "Failed") {
+            const reason = statusSnapshot?.failureDetails?.errorMessage?.split("\n")[0]
+                || statusSnapshot?.output?.split("\n")[0]
+                || "Unknown error";
+            if (!alreadyLogged) {
+                appendActivity(`{red-fg}❌ Orchestration failed: ${reason}{/red-fg}`, orchId);
+            }
+            updateLiveStatus("error");
+            resolvePendingDoneCommand(orchId, reason);
+            setStatusIfActive("Failed — session is dead");
+        } else {
+            if (!alreadyLogged) {
+                appendActivity(`{gray-fg}Orchestration ${terminalStatus}{/gray-fg}`, orchId);
+            }
+            updateLiveStatus(terminalStatus === "Completed" ? "completed" : "terminated");
+            if (terminalStatus === "Completed" && !terminalCs?.commandId) {
+                resolvePendingDoneCommand(orchId);
+            }
+            setStatusIfActive(terminalStatus === "Completed" ? "Session completed" : `${terminalStatus} — session is dead`);
+        }
+
+        sessionLoggedTerminalStatus.set(orchId, terminalStatus);
+        setSessionPendingTurn(orchId, false);
+        setTurnInProgressIfActive(false);
+        sessionObservers.delete(orchId);
+        return true;
+    }
+
     // ── Real-time CMS event subscription ────────────────────
     // CMS event polling is managed centrally via activeCmsPoller — only
     // the active session polls CMS. This avoids N concurrent pollers
@@ -4562,26 +4619,7 @@ function startObserver(orchId) {
             if (ac.signal.aborted) return;
 
             // Check for terminal states FIRST — before inspecting customStatus
-            if (currentStatus.status === "Failed" || currentStatus.status === "Completed" || currentStatus.status === "Terminated") {
-                const terminalCs = await consumeTerminalArtifacts(currentStatus, "terminal");
-                clearSessionPendingQuestion(orchId);
-                if (currentStatus.status === "Failed") {
-                    const reason = currentStatus.failureDetails?.errorMessage?.split("\n")[0]
-                        || currentStatus.output?.split("\n")[0]
-                        || "Unknown error";
-                    appendActivity(`{red-fg}❌ Orchestration failed: ${reason}{/red-fg}`, orchId);
-                    updateLiveStatus("error");
-                    resolvePendingDoneCommand(orchId, reason);
-                } else {
-                    appendActivity(`{gray-fg}Orchestration ${currentStatus.status}{/gray-fg}`, orchId);
-                    if (currentStatus.status === "Completed" && !terminalCs?.commandId) {
-                        resolvePendingDoneCommand(orchId);
-                    }
-                }
-                setSessionPendingTurn(orchId, false);
-                setTurnInProgressIfActive(false);
-                setStatusIfActive(`${currentStatus.status} — session is dead`);
-                sessionObservers.delete(orchId);
+            if (await stopObserverForTerminalStatus(currentStatus, "terminal")) {
                 return; // Don't enter the polling loop
             }
 
@@ -4668,6 +4706,10 @@ function startObserver(orchId) {
                 const _waitMs = Date.now() - _waitStart;
                 perfEnd(_obsPh, { orchId: orchId.slice(0, 12), ver: statusResult.customStatusVersion });
                 if (ac.signal.aborted) break;
+
+                if (await stopObserverForTerminalStatus(statusResult, "terminal")) {
+                    break;
+                }
 
                 const prevVersion = lastVersion;
                 const prevIteration = lastIteration;
@@ -4803,23 +4845,7 @@ function startObserver(orchId) {
                 appendActivity(`{yellow-fg}[obs] catch: ${err.message || "timeout"} lastVersion=${lastVersion} lastIteration=${lastIteration}{/yellow-fg}`, orchId);
                 try {
                     const info = await dc.getStatus(orchId);
-                    if (info.status === "Completed" || info.status === "Failed" || info.status === "Terminated") {
-                        const terminalCs = await consumeTerminalArtifacts(info, "terminal");
-                        clearSessionPendingQuestion(orchId);
-                        if (info.status === "Failed") {
-                            const reason = info.failureDetails?.errorMessage?.split("\n")[0]
-                                || info.output?.split("\n")[0]
-                                || "Unknown error";
-                            appendActivity(`{red-fg}❌ Session failed: ${reason}{/red-fg}`, orchId);
-                            resolvePendingDoneCommand(orchId, reason);
-                        } else if (info.status === "Completed" && !terminalCs?.commandId) {
-                            resolvePendingDoneCommand(orchId);
-                        }
-                        appendActivity(`{gray-fg}Orchestration ${info.status}{/gray-fg}`, orchId);
-                        setSessionPendingTurn(orchId, false);
-                        setTurnInProgressIfActive(false);
-                        setStatusIfActive(`${info.status} — session is dead`);
-                        sessionObservers.delete(orchId);
+                    if (await stopObserverForTerminalStatus(info, "terminal")) {
                         break;
                     }
                     // Detect continueAsNew: customStatusVersion went backwards
@@ -5003,8 +5029,10 @@ async function switchToOrchestration(orchId) {
             activityLines: cachedActivity?.length || 0,
         });
 
-        // Ensure an observer is running for this session
-        startObserver(orchId);
+        // Ensure an observer is running for this session when it's still live
+        if (shouldObserveSession(orchId)) {
+            startObserver(orchId);
+        }
         invalidateChat("bottom");
         invalidateActivity("bottom");
 
@@ -5064,7 +5092,9 @@ if (initialChatLines.length > 0) {
 }
 startupLandingVisible = true;
 // Start observing the initial session
-startObserver(activeOrchId);
+if (shouldObserveSession(activeOrchId)) {
+    startObserver(activeOrchId);
+}
 
 // Initial right-pane paint. In workers mode, kubectl log streaming may not
 // have created worker panes yet. Schedule repaints at increasing intervals

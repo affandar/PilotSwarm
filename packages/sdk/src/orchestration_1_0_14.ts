@@ -45,7 +45,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.16";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.14";
 
 /**
  * Long-lived durable session orchestration.
@@ -63,13 +63,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.16";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_16(
+export function* durableSessionOrchestration_1_0_14(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.16] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.14] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -92,7 +92,6 @@ export function* durableSessionOrchestration_1_0_16(
     // ─── Sub-agent tracking ──────────────────────────────────
     let subAgents: SubAgentEntry[] = input.subAgents ? [...input.subAgents] : [];
     let pendingToolActions: TurnAction[] = input.pendingToolActions ? [...input.pendingToolActions] : [];
-    let pendingMessage: any = input.pendingMessage;
     // parentSessionId: prefer new field, fall back to old parentOrchId for backward compat
     const parentSessionId = input.parentSessionId
         ?? (input.parentOrchId ? input.parentOrchId.replace(/^session-/, '') : undefined);
@@ -221,7 +220,6 @@ export function* durableSessionOrchestration_1_0_16(
             baseSystemMessage,
             subAgents,
             ...(pendingToolActions.length > 0 ? { pendingToolActions } : {}),
-            ...(pendingMessage !== undefined ? { pendingMessage } : {}),
             parentSessionId,
             nestingLevel,
             ...(isSystem ? { isSystem: true } : {}),
@@ -360,13 +358,8 @@ export function* durableSessionOrchestration_1_0_16(
                     // Child agents communicate via the SDK (sendToSession), which enqueues
                     // to the same "messages" queue as user prompts.
                     let msgData: any;
-                    if (pendingMessage !== undefined) {
-                        msgData = pendingMessage;
-                        pendingMessage = undefined;
-                    } else {
-                        const msg: any = yield ctx.dequeueEvent("messages");
-                        msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
-                    }
+                    const msg: any = yield ctx.dequeueEvent("messages");
+                    msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
 
                     // ── Command dispatch ─────────────────────────
                     if (msgData.type === "cmd") {
@@ -493,11 +486,6 @@ export function* durableSessionOrchestration_1_0_16(
                     const childUpdate = parseChildUpdate(msgData.prompt);
                     if (childUpdate) {
                         yield* applyChildUpdate(childUpdate);
-                        continue;
-                    }
-
-                    if (!msgData.prompt) {
-                        ctx.traceInfo(`[orch] ignoring non-prompt message while idle: ${JSON.stringify(msgData).slice(0, 120)}`);
                         continue;
                     }
 
@@ -686,8 +674,11 @@ export function* durableSessionOrchestration_1_0_16(
                             }
 
                             ctx.traceInfo("[session] user responded within idle window");
-                            pendingMessage = raceMsg;
-                            yield versionedContinueAsNew(continueInput());
+                            if (raceMsg.prompt) {
+                                yield versionedContinueAsNew(continueInputWithPrompt(raceMsg.prompt));
+                            } else {
+                                yield versionedContinueAsNew(continueInput());
+                            }
                             return "";
                         }
 
@@ -951,18 +942,13 @@ export function* durableSessionOrchestration_1_0_16(
                 };
 
                 if (!resolvedAgentName && input.isSystem && agentTask) {
-                    const compactTask = agentTask.trim();
                     const titleMatch = agentTask.match(/You are the \*{0,2}([^*\n]+?Agent)\*{0,2}/i);
-                    const inferredLookup = (
-                        compactTask && compactTask.length <= 80 && !compactTask.includes("\n")
-                            ? compactTask
-                            : titleMatch?.[1]?.trim()
-                    );
+                    const inferredLookup = titleMatch?.[1]?.trim();
                     if (inferredLookup) {
                         const inferredDef = yield manager.resolveAgentConfig(inferredLookup);
                         if (inferredDef?.system && inferredDef?.parent) {
                             resolvedAgentName = inferredDef.id ?? inferredDef.name;
-                            ctx.traceInfo(`[orch] normalized custom system spawn to named agent: ${resolvedAgentName} (from "${inferredLookup}")`);
+                            ctx.traceInfo(`[orch] normalized custom system spawn to named agent: ${resolvedAgentName}`);
                             applyAgentDef(inferredDef, true);
                         }
                     }
