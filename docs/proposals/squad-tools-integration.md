@@ -217,6 +217,6 @@ worker.registerTools([...squadTools, myTool]);
 
 ## Related
 
-- [PilotSwarm Layer Diagram](layer-diagram.md) — shows where tools fit in the architecture
-- [Management Client Proposal](proposals/management-client-boundary-cleanup.md) — `mgmt.listSessions()` for Squad status integration
+- [PilotSwarm Layer Diagram](../layer-diagram.md) — shows where tools fit in the architecture
+- [Management Client Proposal](./management-client-boundary-cleanup.md) — `mgmt.listSessions()` for Squad status integration
 - GitHub Issue [#1](https://github.com/affandar/pilotswarm/issues/1) — original session-scoped tool registration request

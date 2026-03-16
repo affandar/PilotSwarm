@@ -33,7 +33,7 @@ Everything else should move behind supported PilotSwarm APIs.
 
 ## Problem
 
-Today [cli/tui.js](cli/tui.js) is not just a UI.
+Today [packages/cli/cli/tui.js](../../packages/cli/cli/tui.js) is not just a UI.
 It also acts as a:
 
 - duroxide client

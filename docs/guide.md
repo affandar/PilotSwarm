@@ -1,5 +1,7 @@
 # User Guide
 
+> This guide is now a legacy broad overview. If you are starting fresh, use [docs/README.md](./README.md) and then pick one of these paths: [Working On PilotSwarm](./contributors/working-on-pilotswarm.md), [Building SDK Apps](./sdk/building-apps.md), or [Building CLI Apps](./cli/building-cli-apps.md).
+
 > **New here?** Start with the [Getting Started](./getting-started.md) guide to set up PostgreSQL, get a GitHub token, and create your `.env` file.
 
 ## What is PilotSwarm?

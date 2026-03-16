@@ -1,5 +1,7 @@
 # Writing Agents, Skills, Tools & MCP Servers for PilotSwarm
 
+> This guide is now a legacy deep-dive. For the clearest current path, use [Building Agents For SDK Apps](./sdk/building-agents.md), [Building Agents For CLI Apps](./cli/building-agents.md), and [Agent Contracts](./contracts/agent-contracts.md).
+
 This guide explains how to extend PilotSwarm with custom agents, skills, tools, and MCP servers —
 and how each component flows through the client/worker architecture.
 

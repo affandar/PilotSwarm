@@ -1,5 +1,7 @@
 # TUI Apps — Off-the-Shelf Terminal Interface
 
+> This document describes an older AppAdapter-oriented TUI design and is no longer the primary CLI guide. For the current supported path, use [Building CLI Apps](./cli/building-cli-apps.md) and [Building Agents For CLI Apps](./cli/building-agents.md).
+
 This guide covers the **AppAdapter** framework for building rich terminal applications
 on top of PilotSwarm. The runtime provides a shared `tui-core` — your app
 provides an adapter that configures the agent, UI behavior, and how to load skills/agents/tools/MCP config.

@@ -95,21 +95,28 @@ Client                        PostgreSQL                     Worker Pods
 
 | Example | Description | Command |
 |---------|-------------|---------|
-| [Chat](examples/chat.js) | Interactive console chat | `npm run chat` |
-| [TUI](cli/tui.js) | Multi-session terminal UI with logs | `npx pilotswarm-tui` |
-| [Worker](examples/worker.js) | Headless worker for K8s | `npm run worker` |
-| [Tests](test/sdk.test.js) | Automated test suite | `npm test` |
+| [Chat](packages/sdk/examples/chat.js) | Interactive console chat | `npm run chat` |
+| [TUI](packages/cli/bin/tui.js) | Multi-session terminal UI with logs | `npm run tui` |
+| [Worker](packages/sdk/examples/worker.js) | Headless worker for K8s | `npm run worker` |
+| [Tests](packages/sdk/test/sdk.test.js) | Automated test suite | `npm test` |
 
 ## Documentation
 
-| Guide | Description |
-|-------|-------------|
-| [Getting Started](docs/getting-started.md) | From zero to running — PostgreSQL, GitHub token, `.env`, AKS |
-| [User Guide](docs/guide.md) | Runtime concepts, API reference, standard vs durable comparison |
-| [Configuration](docs/configuration.md) | PostgreSQL, blob storage, environment variables, worker/client options |
-| [Deploying to AKS](docs/deploying-to-aks.md) | Kubernetes deployment, scaling, rolling updates |
-| [Examples](docs/examples.md) | Chat app, TUI, worker, and test suite walkthrough |
-| [Architecture](docs/architecture.md) | Internal design — orchestrations, session proxy, dehydration |
+Start with the documentation hub:
+
+- [Documentation Index](docs/README.md)
+
+Common entry points:
+
+- [Working On PilotSwarm](docs/contributors/working-on-pilotswarm.md) — contributors working on the SDK, TUI, providers, prompts, or orchestration
+- [Building SDK Apps](docs/sdk/building-apps.md) — app developers using `PilotSwarmClient` and `PilotSwarmWorker`
+- [Building Agents For SDK Apps](docs/sdk/building-agents.md) — the clearest path for authoring `default.agent.md`, named agents, skills, and tools
+- [Building CLI Apps](docs/cli/building-cli-apps.md) — plugin- and worker-module-driven apps on the shipped TUI
+- [Building Agents For CLI Apps](docs/cli/building-agents.md) — the CLI-focused agent-authoring guide
+- [Getting Started](docs/getting-started.md) — install, PostgreSQL, `.env`, and first run
+- [Configuration](docs/configuration.md) — environment variables, blob storage, worker/client options
+- [Deploying to AKS](docs/deploying-to-aks.md) — Kubernetes deployment, scaling, and rolling updates
+- [Architecture](docs/architecture.md) — internal design and runtime flow
 
 ## Requirements
 

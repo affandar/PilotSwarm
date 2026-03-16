@@ -1,5 +1,7 @@
 # Building Apps on PilotSwarm
 
+> This guide is now a legacy overview. For the current recommended paths, start with [Building SDK Apps](./sdk/building-apps.md), [Building Agents For SDK Apps](./sdk/building-agents.md), or [Building CLI Apps](./cli/building-cli-apps.md).
+
 This guide explains how to build apps on PilotSwarm. The primary
 extension mechanism is **plugins** — a directory structure containing agents, skills,
 and MCP server configs. Workers load plugin contents at startup and pass them through

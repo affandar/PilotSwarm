@@ -2,7 +2,7 @@
 
 PilotSwarm's plugin system lets you extend every part of the runtime — agents, skills, MCP servers, tools, and model providers — through a layered architecture that separates built-in system behavior from application customization. This guide is the complete technical reference for how plugins are structured, loaded, and merged.
 
-For practical examples, see [Blog 1: Test Swarm CLI](docs/blog-test-swarm-cli.md) and [Blog 2: Travel Event Scanner SDK](docs/blog-travel-event-scanner-sdk.md).
+For practical examples, see [Blog 1: Test Swarm CLI](./blog-test-swarm-cli.md) and [Blog 2: Travel Event Scanner SDK](./blog-travel-event-scanner-sdk.md).
 
 ---
 

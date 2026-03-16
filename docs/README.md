@@ -1,0 +1,53 @@
+# PilotSwarm Documentation
+
+Start with the path that matches what you are trying to do.
+
+## Choose Your Path
+
+### I want to work on PilotSwarm itself
+
+- [Working On PilotSwarm](./contributors/working-on-pilotswarm.md) — repo map, runtime/TUI/orchestration workflows, and contributor checklists
+- [Architecture](./architecture.md) — how the durable runtime, CMS, client, and worker fit together
+- [Plugin Architecture & Layering Guide](./plugin-architecture-guide.md) — deep reference for agents, skills, MCP, and merge semantics
+- [System Reference](./system-reference.md) — file map, orchestration lifecycle, CMS schema, and invariants
+
+### I want to build an app with the SDK
+
+- [Getting Started](./getting-started.md) — install, configure PostgreSQL, and run locally
+- [Building SDK Apps](./sdk/building-apps.md) — the recommended path for app developers using `PilotSwarmClient` and `PilotSwarmWorker`
+- [Building Agents For SDK Apps](./sdk/building-agents.md) — the canonical guide for `default.agent.md`, named agents, skills, tools, and system agents
+- [Configuration](./configuration.md) — environment variables, blob storage, worker/client options
+- [Examples](./examples.md) — runnable examples in the repo
+
+### I want to build an app with the CLI/TUI
+
+- [Building CLI Apps](./cli/building-cli-apps.md) — how the shipped TUI works today, local vs remote mode, and where plugins and worker modules fit
+- [Building Agents For CLI Apps](./cli/building-agents.md) — the agent-authoring path for plugin-driven CLI apps
+- [Keybindings](./keybindings.md) — TUI controls and slash commands
+- [Getting Started](./getting-started.md) — environment setup and first run
+
+## Contracts And Reference
+
+- [Agent Contracts](./contracts/agent-contracts.md) — prompt, tool, runtime, and naming rules that should stay true across code, docs, and tests
+- [Deploying To AKS](./deploying-to-aks.md) — remote worker deployment and rollout workflow
+- [Component Interactions](./component-interactions.md) — message flow and lifecycle diagrams
+- [Layer Diagram](./layer-diagram.md) — fast mental model for the stack
+
+## Internal Notes And Point-In-Time Docs
+
+These are useful for contributors but are not the main onboarding path:
+
+- [Orchestration Hardening Plan](./orchestration-hardening-plan.md)
+- [TUI Cleanup Status](./tui-cleanup-status.md)
+- [`docs/proposals/`](./proposals/)
+
+## Legacy Guides
+
+These older guides still contain useful detail, but they are no longer the primary entry points:
+
+- [Building Apps On PilotSwarm](./building-apps.md)
+- [Writing Agents, Skills, Tools & MCP Servers](./writing-agents.md)
+- [TUI Apps](./tui-apps.md)
+- [User Guide](./guide.md)
+
+If you are new to the repo, prefer the persona-based docs above.
