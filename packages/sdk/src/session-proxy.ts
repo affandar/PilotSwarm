@@ -1,5 +1,5 @@
 import type { SessionManager } from "./session-manager.js";
-import type { SessionBlobStore } from "./blob-store.js";
+import type { SessionStateStore } from "./session-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import type { SerializableSessionConfig, TurnResult, OrchestrationInput } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
@@ -118,7 +118,7 @@ export function createSessionManagerProxy(ctx: any) {
 export function registerActivities(
     runtime: any,
     sessionManager: SessionManager,
-    blobStore: SessionBlobStore | null,
+    _sessionStore: SessionStateStore | null,
     githubToken?: string,
     catalog?: SessionCatalogProvider | null,
     provider?: any,
@@ -185,7 +185,7 @@ export function registerActivities(
 
             // Mark session as "running" in CMS before the turn
             if (catalog) {
-                catalog.updateSession(input.sessionId, {
+                await catalog.updateSession(input.sessionId, {
                     state: "running",
                     lastActiveAt: new Date(),
                 }).catch((err: any) => {
@@ -236,7 +236,7 @@ export function registerActivities(
                     updates.waitReason = null;
                     updates.lastError = null;
                 }
-                catalog.updateSession(input.sessionId, updates).catch((err: any) => {
+                await catalog.updateSession(input.sessionId, updates).catch((err: any) => {
                     activityCtx.traceInfo(`[runTurn] CMS post-turn status writeback failed: ${err}`);
                 });
             }

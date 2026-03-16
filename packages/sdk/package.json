@@ -15,6 +15,17 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "node --env-file=../../.env test/sdk.test.js",
+    "test:local:smoke": "node --env-file=../../.env test/local/smoke.test.js",
+    "test:local:durability": "node --env-file=../../.env test/local/durability.test.js",
+    "test:local:multi-worker": "node --env-file=../../.env test/local/multi-worker.test.js",
+    "test:local:commands": "node --env-file=../../.env test/local/commands.test.js",
+    "test:local:sub-agents": "node --env-file=../../.env test/local/sub-agents.test.js",
+    "test:local:kv-transport": "node --env-file=../../.env test/local/kv-transport.test.js",
+    "test:local:cms": "node --env-file=../../.env test/local/cms-consistency.test.js",
+    "test:local:contracts": "node --env-file=../../.env test/local/contracts.test.js",
+    "test:local:chaos": "node --env-file=../../.env test/local/chaos.test.js",
+    "test:local:system-agents": "node --env-file=../../.env test/local/system-agents.test.js",
+    "test:local": "node --env-file=../../.env test/local/smoke.test.js & node --env-file=../../.env test/local/durability.test.js & node --env-file=../../.env test/local/multi-worker.test.js & node --env-file=../../.env test/local/commands.test.js & node --env-file=../../.env test/local/sub-agents.test.js & node --env-file=../../.env test/local/kv-transport.test.js & node --env-file=../../.env test/local/cms-consistency.test.js & node --env-file=../../.env test/local/contracts.test.js & node --env-file=../../.env test/local/chaos.test.js & node --env-file=../../.env test/local/system-agents.test.js & wait",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
@@ -33,7 +44,6 @@
     "@github/copilot": "^1.0.2",
     "@github/copilot-sdk": "^0.1.32",
     "duroxide": "^0.1.17",
-    "duroxide-darwin-arm64": "^0.1.17",
     "pg": "^8.18.0"
   },
   "devDependencies": {

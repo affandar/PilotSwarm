@@ -107,13 +107,67 @@ Duroxide is the foundational runtime — papering over its bugs at higher layers
 
 ## Testing
 
-Tests are integration tests that require a running database and a GitHub token. Run with:
+### Running Tests
+
+The local integration test suite requires a running PostgreSQL database and a GitHub token (in `.env`).
+
 ```bash
-npm test                           # all tests
-npm test -- --test=<filter>        # specific test by name
+./scripts/test-local.sh              # run all suites sequentially
+./scripts/test-local.sh --parallel   # run all suites in parallel (faster)
+./scripts/test-local.sh --suite=smoke  # run only matching suite(s)
 ```
 
-Tests use a `withClient()` helper that spins up a co-located worker + client pair. Each test creates fresh sessions.
+Individual suites can also be run directly:
+```bash
+cd packages/sdk
+node --env-file=../../.env test/local/smoke.test.js
+node --env-file=../../.env test/local/sub-agents.test.js --test="Named"  # filter by test name
+```
+
+### Test Suite Structure
+
+Tests are organized by level in `packages/sdk/test/local/`:
+
+| Level | File | What it covers |
+|-------|------|---------------|
+| 1 | `smoke.test.js` | Basic session create/send/receive, CMS state |
+| 2 | `durability.test.js` | Durable timers, orchestration replay |
+| 3 | `multi-worker.test.js` | Worker restart, session handoff, multi-node |
+| 4 | `commands.test.js` | Commands and events through orchestration |
+| 5 | `sub-agents.test.js` | Sub-agent spawning (custom + named), CMS metadata |
+| 6 | `kv-transport.test.js` | KV-based response transport |
+| 7 | `cms-consistency.test.js` | CMS state consistency after turns |
+| 8 | `contracts.test.js` | API contract validation |
+| 9 | `chaos.test.js` | Chaos/fault injection scenarios |
+| — | `system-agents.test.js` | PilotSwarm/Sweeper/ResourceMgr auto-start lifecycle |
+
+Tests use a `withClient()` helper that spins up a co-located worker + client pair. Each test creates fresh sessions with isolated database schemas.
+
+### Pre-Deploy Gate
+
+**The deploy script (`./scripts/deploy-aks.sh`) runs the full test suite automatically before deploying.** If any suite fails, the deploy aborts. To skip (not recommended): `--skip-tests`.
+
+### Updating the Test Suite
+
+When adding a new feature, add or update tests following these rules:
+
+1. **New tool or activity** → add a test in the appropriate level (usually L1 smoke or L5 sub-agents). Verify the tool is callable by the LLM and produces correct CMS state.
+
+2. **New orchestration behavior** → add tests in L2 (durability) or L3 (multi-worker) depending on whether the behavior involves replay, timers, or worker handoff.
+
+3. **New agent or agent parameter** → add a test in L5 (`sub-agents.test.js`) that spawns the agent and verifies CMS metadata (agentId, title, isSystem, splash, parent link). See `testSpawnNamedAgents` as the template.
+
+4. **New CMS fields or state transitions** → add assertions in L7 (`cms-consistency.test.js`).
+
+5. **Changed tool schema** → if you modify a tool's parameters (especially `spawn_agent`, `wait`, `ask_user`), verify both the stub schema (in `subAgentToolDefs()`) and the real handler schema (in `runTurn()`) are in sync. The "Spawn Named Agents" test catches stub/handler schema mismatches.
+
+6. **New orchestration version** → freeze the current `orchestration.ts` to `orchestration_X_Y_Z.ts`, register in `orchestration-registry.ts`, then run the full suite. Multi-worker and chaos tests will catch replay/versioning issues.
+
+Each test function should:
+- Use `withClient(env, ...)` for setup/teardown
+- Use assertion helpers from `test/helpers/assertions.js`
+- Call `pass("Test Name")` on success
+- Log key values with `console.log("  ...")` for debuggability
 
 ## Common Patterns
 

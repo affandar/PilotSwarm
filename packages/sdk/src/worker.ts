@@ -1,5 +1,6 @@
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
+import type { SessionStateStore } from "./session-store.js";
 import { registerActivities } from "./session-proxy.js";
 import {
     DURABLE_SESSION_LATEST_VERSION,
@@ -37,7 +38,7 @@ const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
  * Owns:
  *   - SessionManager (creates/resumes CopilotSessions, holds tools/hooks)
  *   - duroxide Runtime (dispatches activities + orchestrations)
- *   - BlobStore (optional, for session dehydration/hydration)
+ *   - Session state store (optional, for session dehydration/hydration)
  *
  * In single-process mode, pass this worker to PilotSwarmClient's
  * constructor so they share the database provider and the client can
@@ -46,6 +47,7 @@ const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 export class PilotSwarmWorker {
     private config: PilotSwarmWorkerOptions & { waitThreshold: number };
     private sessionManager: SessionManager;
+    private sessionStore: SessionStateStore | null = null;
     private blobStore: SessionBlobStore | null = null;
     private runtime: any = null;
     private _provider: any = null;
@@ -79,6 +81,7 @@ export class PilotSwarmWorker {
                 options.sessionStateDir,
             );
         }
+        this.sessionStore = options.sessionStore ?? this.blobStore;
 
         // Load plugins and merge with direct config — must happen before SessionManager init
         this._loadPlugins();
@@ -88,7 +91,7 @@ export class PilotSwarmWorker {
 
         this.sessionManager = new SessionManager(
             options.githubToken,
-            this.blobStore,
+            this.sessionStore,
             {
                 systemMessage: options.systemMessage ?? this._defaultAgentPrompt ?? undefined,
                 skillDirectories: this._loadedSkillDirs,
@@ -129,9 +132,9 @@ export class PilotSwarmWorker {
         this.sessionManager.setConfig(sessionId, config);
     }
 
-    /** Whether blob storage is configured. */
+    /** Whether a durable session store is configured. */
     get blobEnabled(): boolean {
-        return this.blobStore !== null;
+        return this.sessionStore !== null;
     }
 
     /** Whether the worker runtime is running. */
@@ -205,7 +208,7 @@ export class PilotSwarmWorker {
         registerActivities(
             this.runtime,
             this.sessionManager,
-            this.blobStore,
+            this.sessionStore,
             this.config.githubToken,
             this._catalog,
             this._provider,
@@ -325,7 +328,7 @@ export class PilotSwarmWorker {
 
     /** Dehydrate all active sessions, then stop. */
     async gracefulShutdown(): Promise<void> {
-        if (this.blobStore) {
+        if (this.sessionStore) {
             const ids = this.sessionManager.activeSessionIds();
             if (ids.length > 0) {
                 console.error(`[PilotSwarmWorker] Dehydrating ${ids.length} sessions...`);

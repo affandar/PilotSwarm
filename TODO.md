@@ -1,4 +1,6 @@
 
+* users should NOT be able to change the default md files and agent instructions or skills
+
 * parallel subagent spin off "getting interrupted"
 * build a few sample agents 
 * splashscreen not showing

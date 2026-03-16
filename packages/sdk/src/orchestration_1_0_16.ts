@@ -45,7 +45,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.17";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.16";
 
 /**
  * Long-lived durable session orchestration.
@@ -63,13 +63,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.17";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_17(
+export function* durableSessionOrchestration_1_0_16(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.17] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.16] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -657,14 +657,9 @@ export function* durableSessionOrchestration_1_0_17(
                 }
 
                 if (!blobEnabled || idleTimeout < 0) {
-                    // continueAsNew after each completed turn to reset history.
-                    // Without this, the same execution accumulates unbounded
-                    // history which breaks replay after a worker restart —
-                    // duroxide can match the second yield session.runTurn()
-                    // to the cached result of the first one.
+                    // Checkpoint while idle (no dehydration path)
                     yield* maybeCheckpoint();
-                    yield versionedContinueAsNew(continueInput());
-                    return "";
+                    continue;
                 }
 
                 // Race: next message vs idle timeout

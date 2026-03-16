@@ -151,6 +151,8 @@ npm test --workspace=packages/sdk
 node --check packages/cli/cli/tui.js
 ```
 
+For the broader local-only runtime test matrix, see [Local Integration Test Plan](./local-integration-test-plan.md).
+
 Useful end-to-end flows:
 
 - `npm run tui` — local embedded workers

@@ -1,6 +1,6 @@
 import { CopilotClient, type CopilotSession, type Tool } from "@github/copilot-sdk";
 import { ManagedSession } from "./managed-session.js";
-import { SessionBlobStore } from "./blob-store.js";
+import type { SessionStateStore } from "./session-store.js";
 import type { ManagedSessionConfig, SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import fs from "node:fs";
@@ -48,7 +48,7 @@ export interface WorkerDefaults {
 export class SessionManager {
     private client: CopilotClient | null = null;
     private sessions = new Map<string, ManagedSession>();
-    private blobStore: SessionBlobStore | null = null;
+    private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
     /** Worker-level tool registry — shared reference from PilotSwarmWorker. */
@@ -60,11 +60,11 @@ export class SessionManager {
 
     constructor(
         private githubToken?: string,
-        blobStore?: SessionBlobStore | null,
+        sessionStore?: SessionStateStore | null,
         workerDefaults?: WorkerDefaults,
         sessionStateDir?: string,
     ) {
-        this.blobStore = blobStore ?? null;
+        this.sessionStore = sessionStore ?? null;
         this.workerDefaults = workerDefaults ?? {};
         this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
     }
@@ -213,10 +213,10 @@ export class SessionManager {
         // 2. Check if local session files exist (post-hydration or same node restart)
         if (fs.existsSync(sessionDir)) {
             copilotSession = await client.resumeSession(sessionId, sessionConfig);
-        } else if (this.blobStore) {
-            // 3. Try to hydrate from blob (files missing, e.g. pod restarted)
+        } else if (this.sessionStore) {
+            // 3. Try to hydrate from the configured session store
             try {
-                await this.blobStore.hydrate(sessionId);
+                await this.sessionStore.hydrate(sessionId);
                 if (fs.existsSync(sessionDir)) {
                     copilotSession = await client.resumeSession(sessionId, sessionConfig);
                 } else {
@@ -241,7 +241,7 @@ export class SessionManager {
     }
 
     /**
-     * Dehydrate a session: destroy in memory → tar → upload to blob.
+     * Dehydrate a session: destroy in memory, then persist state to the configured session store.
      *
      * If destroy() fails (e.g., Copilot connection already disposed), we retry
      * by re-creating the session from local files and destroying again. The
@@ -249,7 +249,7 @@ export class SessionManager {
      * runTurn. We need destroy() to succeed (or at least not leave the session
      * in a broken state) before we can upload to blob.
      *
-     * After MAX_RETRIES, we still attempt the blob upload (session files on
+     * After MAX_RETRIES, we still attempt the session-store write (session files on
      * disk are likely valid) but throw a clear error if that also fails.
      */
     async dehydrate(sessionId: string, reason: string): Promise<void> {
@@ -296,17 +296,17 @@ export class SessionManager {
             }
         }
 
-        // Phase 2: Upload to blob storage (always attempt, even if destroy failed)
-        if (this.blobStore) {
+        // Phase 2: Persist to the session store (always attempt, even if destroy failed)
+        if (this.sessionStore) {
             try {
-                await this.blobStore.dehydrate(sessionId, { reason });
+                await this.sessionStore.dehydrate(sessionId, { reason });
             } catch (blobErr: any) {
-                // If destroy AND blob both failed, throw a combined error
+                // If destroy AND session-store persistence both failed, throw a combined error
                 if (lastError) {
                     throw new Error(
                         `Session ${sessionId} is not dehydratable: ` +
                         `destroy failed (${lastError.message}), ` +
-                        `blob upload also failed (${blobErr.message}). ` +
+                        `session-store persistence also failed (${blobErr.message}). ` +
                         `Session state may be lost on pod recycle.`
                     );
                 }
@@ -314,23 +314,23 @@ export class SessionManager {
             }
         }
 
-        // If destroy failed but blob succeeded, the session is safe in blob.
+        // If destroy failed but persistence succeeded, the session state is preserved.
         // Log but don't throw — the session can be recovered.
         if (lastError) {
             console.warn(
                 `[SessionManager] destroy() failed for ${sessionId} after ${MAX_RETRIES} attempts ` +
-                `(${lastError.message}), but blob upload succeeded. Session state is preserved.`
+                `(${lastError.message}), but session-store persistence succeeded. Session state is preserved.`
             );
         }
     }
 
     /**
-     * Hydrate: download session state from blob to local disk.
+     * Hydrate session state from the configured session store to local disk.
      * The next getOrCreate() will detect local files and resume.
      */
     async hydrate(sessionId: string): Promise<void> {
-        if (this.blobStore) {
-            await this.blobStore.hydrate(sessionId);
+        if (this.sessionStore) {
+            await this.sessionStore.hydrate(sessionId);
         }
     }
 
@@ -346,12 +346,12 @@ export class SessionManager {
     }
 
     /**
-     * Checkpoint: upload session state to blob without destroying the session or
+     * Checkpoint session state without destroying the session or
      * releasing affinity. Used for crash resilience — session stays warm.
      */
     async checkpoint(sessionId: string): Promise<void> {
-        if (this.blobStore) {
-            await this.blobStore.checkpoint(sessionId);
+        if (this.sessionStore) {
+            await this.sessionStore.checkpoint(sessionId);
         }
     }
 
