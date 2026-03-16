@@ -82,8 +82,8 @@ When you change orchestration behavior:
 
 1. Freeze the current latest orchestration into `packages/sdk/src/orchestration_<version>.ts`
 2. Update `packages/sdk/src/orchestration.ts` to the new latest version
-3. Register the new version in `packages/sdk/src/worker.ts`
-4. Bump the default start version in `packages/sdk/src/client.ts`
+3. Wire the new version in `packages/sdk/src/orchestration-registry.ts`
+4. Keep the client and worker on the shared registry constants instead of hard-coding versions in multiple files
 5. Keep version-specific logs obvious in orchestration tracing
 
 If the change affects replay behavior, `continueAsNew`, KV state, or command/event handling, treat it as a version bump even if the diff looks small.
