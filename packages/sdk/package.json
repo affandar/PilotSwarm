@@ -32,8 +32,8 @@
     "@azure/storage-blob": "^12.31.0",
     "@github/copilot": "^1.0.2",
     "@github/copilot-sdk": "^0.1.32",
-    "duroxide": "^0.1.16",
-    "duroxide-darwin-arm64": "^0.1.16",
+    "duroxide": "^0.1.17",
+    "duroxide-darwin-arm64": "^0.1.17",
     "pg": "^8.18.0"
   },
   "devDependencies": {

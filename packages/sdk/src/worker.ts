@@ -1,6 +1,7 @@
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
 import { registerActivities } from "./session-proxy.js";
+import { durableSessionOrchestration_1_0_13 } from "./orchestration_1_0_13.js";
 import { durableSessionOrchestration_1_0_12 } from "./orchestration_1_0_12.js";
 import { durableSessionOrchestration_1_0_10 } from "./orchestration_1_0_10.js";
 import { durableSessionOrchestration_1_0_11 } from "./orchestration_1_0_11.js";
@@ -14,7 +15,9 @@ import { durableSessionOrchestration_1_0_5 } from "./orchestration_1_0_5.js";
 import { durableSessionOrchestration_1_0_6 } from "./orchestration_1_0_6.js";
 import { durableSessionOrchestration_1_0_7 } from "./orchestration_1_0_7.js";
 import { durableSessionOrchestration_1_0_8 } from "./orchestration_1_0_8.js";
-import { durableSessionOrchestration_1_0_13 } from "./orchestration.js";
+import { durableSessionOrchestration_1_0_14 } from "./orchestration_1_0_14.js";
+import { durableSessionOrchestration_1_0_15 } from "./orchestration_1_0_15.js";
+import { durableSessionOrchestration_1_0_16 } from "./orchestration.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { loadAgentFiles, systemAgentUUID } from "./agent-loader.js";
@@ -39,7 +42,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
 
 const ORCHESTRATION_NAME = "durable-session-v2";
-const ORCHESTRATION_VERSION = "1.0.13";
+const ORCHESTRATION_VERSION = "1.0.16";
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 
 /**
@@ -243,6 +246,9 @@ export class PilotSwarmWorker {
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.11", durableSessionOrchestration_1_0_11);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.12", durableSessionOrchestration_1_0_12);
         this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.13", durableSessionOrchestration_1_0_13);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.14", durableSessionOrchestration_1_0_14);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.15", durableSessionOrchestration_1_0_15);
+        this.runtime.registerOrchestrationVersioned(ORCHESTRATION_NAME, "1.0.16", durableSessionOrchestration_1_0_16);
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {

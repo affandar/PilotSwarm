@@ -41,6 +41,7 @@ spawn_agent(agent_name="resourcemgr")
 ```
 
 **CRITICAL**: Do NOT pass `task` or `system_message` — those are only for custom agents. Named agents have pre-configured prompts and tools that load automatically from `agent_name`.
+Calling `spawn_agent(task="sweeper")` or `spawn_agent(task="resourcemgr")` is incorrect and will create generic agents instead of the real named system agents.
 
 ## Rules
 
