@@ -605,40 +605,45 @@ Assertions:
 
 ### Test Runner Entry
 
-Add to `packages/sdk/package.json`:
+Tests use **vitest** and are split across two files auto-discovered by the vitest config:
 
-```json
-"test:local:session-policy": "node --env-file=../../.env test/local/session-policy.test.js"
+- `test/local/session-policy-guards.test.js` — 8 tests: namespacing, list agents, client/orch rejection, deletion protection
+- `test/local/session-policy-behavior.test.js` — 12 tests: open policy, merge, title prefixing, summarization, sub-agent spawns
+
+Run:
+
+```bash
+cd packages/sdk
+npx vitest run test/local/session-policy-guards.test.js test/local/session-policy-behavior.test.js
+npx vitest run test/local/session-policy-behavior.test.js -t "Summarization"  # single test
 ```
 
-Add to the `test:local` parallel run and to `scripts/run-tests.sh` SUITES array.
+### Implementation Status
 
-Register in runner:
+All 20 tests (L10-1 through L10-20) are implemented and passing.
 
-```js
-await runSuite("Level 10: Session Creation Policy Tests", [
-    ["Agent Namespacing", testAgentNamespacing],
-    ["List Agents Omits System", testListAgentsOmitsSystem],
-    ["Client Rejects Generic When Disallowed", testClientRejectsGeneric],
-    ["Client Allows Named Agent", testClientAllowsNamedAgent],
-    ["Client Rejects Unknown Agent", testClientRejectsUnknown],
-    ["Client Rejects System Agent", testClientRejectsSystemAgent],
-    ["Orch Rejects Generic When Disallowed", testOrchRejectsGeneric],
-    ["Orch Allows Valid Named Agent", testOrchAllowsNamedAgent],
-    ["Orch Does Not Block Sub-Agent Spawns", testOrchAllowsSubAgents],
-    ["No Policy = Open Behavior", testNoPolicyOpen],
-    ["Open Policy Allows Generic", testOpenPolicyAllowsGeneric],
-    ["Qualified Name Resolution", testQualifiedNameResolution],
-    ["Deletion Protects System Sessions", testDeletionProtectsSystem],
-    ["App System Agents Coexist", testAppSystemAgentsCoexist],
-    ["Multiple Plugin Dirs Merge", testMultiplePluginDirsMerge],
-    ["Last Policy Wins", testLastPolicyWins],
-    ["Named Agent Title Prefix On Spawn", testNamedAgentTitlePrefix],
-    ["Named Agent Title Preserved After Summarization", testNamedAgentTitleAfterSummarization],
-    ["System Agent Title Not Prefixed", testSystemAgentTitleNotPrefixed],
-    ["Generic Session Title Has No Prefix", testGenericSessionTitleNoPrefix],
-]);
-```
+| Test | File | Status |
+|------|------|--------|
+| L10-1: Agent Namespacing | guards | ✓ |
+| L10-2: List Agents Omits System | guards | ✓ |
+| L10-3: Client Rejects Generic | guards | ✓ |
+| L10-4: Client Allows Named Agent | guards | ✓ |
+| L10-5: Client Rejects Unknown | guards | ✓ |
+| L10-6: Client Rejects System Agent | guards | ✓ |
+| L10-7: Orch Rejects Generic | guards | ✓ |
+| L10-8: Orch Allows Valid Named Agent | behavior | ✓ |
+| L10-9: Orch Does Not Block Sub-Agent Spawns | behavior | ✓ |
+| L10-10: No Policy = Open | behavior | ✓ |
+| L10-11: Open Policy Allows Generic | behavior | ✓ |
+| L10-12: Qualified Name Resolution | behavior | ✓ |
+| L10-13: Deletion Protects System | guards | ✓ |
+| L10-14: App System Agents Coexist | behavior | ✓ |
+| L10-15: Multiple Plugin Dirs Merge | behavior | ✓ |
+| L10-16: Last Policy Wins | behavior | ✓ |
+| L10-17: Named Agent Title Prefix | behavior | ✓ |
+| L10-18: Title Preserved After Summarization | behavior | ✓ |
+| L10-19: System Agent Title Not Prefixed | behavior | ✓ |
+| L10-20: Generic Session Title No Prefix | behavior | ✓ |
 
 ### Impact on Existing Tests
 
@@ -655,10 +660,14 @@ await runSuite("Level 10: Session Creation Policy Tests", [
 | L9 chaos | None |
 | System agents | Verify system agents have `namespace: "pilotswarm"` |
 
-### Test Helpers Needed
+### Test Helpers Used
 
-| Helper | Location | Purpose |
-|--------|----------|---------|
-| `createPolicyPlugin(dir, opts)` | `test/helpers/fixtures.js` | Create a temp plugin dir with `plugin.json`, `session-policy.json`, and `.agent.md` files |
-| `assertThrows(fn, pattern)` | `test/helpers/assertions.js` | Assert that an async function throws an error matching a pattern |
-| `waitForSessionState(catalog, id, states, timeout)` | Already exists in `test/helpers/cms-helpers.js` | Wait for CMS state to reach "rejected" |
+| Helper | Location | Status |
+|--------|----------|--------|
+| `assertThrows(fn, pattern)` | `test/helpers/assertions.js` | ✓ Implemented |
+| `createCatalog(env)` | `test/helpers/cms-helpers.js` | ✓ Implemented |
+| `withClient(env, opts, fn)` | `test/helpers/local-workers.js` | ✓ Implemented — forwards `pluginDirs`, `disableManagementAgents` |
+
+Test fixtures are static (not generated):
+- `test/fixtures/policy-plugin/` — allowlist policy with alpha (non-system) + beta (system)
+- `test/fixtures/open-policy-plugin/` — open policy with gamma agent

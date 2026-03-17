@@ -128,18 +128,21 @@ npx vitest run test/local/smoke-basic.test.js -t "Send And Receive"  # filter by
 
 Tests are organized by level in `packages/sdk/test/local/`:
 
-| Level | File | What it covers |
-|-------|------|---------------|
-| 1 | `smoke.test.js` | Basic session create/send/receive, CMS state |
+| Level | File(s) | What it covers |
+|-------|---------|---------------|
+| 1 | `smoke-basic.test.js`, `smoke-api.test.js` | Basic session create/send/receive, CMS state, session info API |
 | 2 | `durability.test.js` | Durable timers, orchestration replay |
 | 3 | `multi-worker.test.js` | Worker restart, session handoff, multi-node |
-| 4 | `commands.test.js` | Commands and events through orchestration |
-| 5 | `sub-agents.test.js` | Sub-agent spawning (custom + named), CMS metadata |
+| 4 | `commands-user.test.js` | Commands and events through orchestration |
+| 4b | `management.test.js` | Management client: sendMessage, renameSession, cancelSession, session ops |
+| 5 | `sub-agents/*.test.js` | Sub-agent spawning (custom, named, multiple), child metadata, model override, nested spawning (depth 2+), check_agents |
 | 6 | `kv-transport.test.js` | KV-based response transport |
-| 7 | `cms-consistency.test.js` | CMS state consistency after turns |
+| 7 | `cms-events.test.js`, `cms-state.test.js` | CMS event consistency, state transitions, title rename, soft delete |
 | 8 | `contracts.test.js` | API contract validation |
 | 9 | `chaos.test.js` | Chaos/fault injection scenarios |
-| 10 | `session-policy.test.js` | Session creation policy, agent namespacing |
+| 10 | `session-policy-guards.test.js`, `session-policy-behavior.test.js` | Session creation policy guards and behavior |
+| — | `model-selection.test.js` | Model selection (explicit, default, multi-model), CMS model column |
+| — | `reliability-crash.test.js`, `reliability-multi-crash.test.js` | Crash recovery, multi-crash scenarios |
 | — | `system-agents.test.js` | PilotSwarm/Sweeper/ResourceMgr auto-start lifecycle |
 
 Tests use a `withClient()` helper that spins up a co-located worker + client pair. Each test creates fresh sessions with isolated database schemas.

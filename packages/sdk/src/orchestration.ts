@@ -1074,7 +1074,7 @@ export function* durableSessionOrchestration_1_0_17(
                     `The wait tool is durable and survives process restarts.\n` +
                     (canSpawnMore
                         ? `- You CAN spawn your own sub-agents (you have ${MAX_NESTING_LEVEL - childNestingLevel} level(s) remaining). ` +
-                          `Use them for parallel independent tasks.\n`
+                          `Use them for parallel independent tasks. After spawning, call wait_for_agents to block until they finish.\n`
                         : `- You CANNOT spawn sub-agents — you are at the maximum nesting depth. Handle everything directly.\n`);
                 childConfig.systemMessage = subAgentPreamble + (parentSystemMsg ? "\n\n" + parentSystemMsg : "");
 
@@ -1107,9 +1107,9 @@ export function* durableSessionOrchestration_1_0_17(
                 const spawnMsg = `[SYSTEM: Sub-agent spawned successfully.\n` +
                     `  Agent ID: ${childOrchId}\n` +
                     `  ${resolvedAgentName ? `Agent: ${resolvedAgentName}\n  ` : ``}Task: "${agentTask.slice(0, 200)}"\n` +
-                    `  The agent is now running autonomously. Use check_agents to monitor progress, ` +
-                    `message_agent to send instructions. To wait for completion, use wait + check_agents ` +
-                    `in a loop (choose an appropriate interval) so you can report progress to the user.]`;
+                    `  The agent is now running autonomously. To wait for it to finish, call wait_for_agents ` +
+                    `(this blocks efficiently until the agent completes). You can also use check_agents to poll status, ` +
+                    `or message_agent to send instructions.]`;
 
                 if (yield* queueFollowupAndMaybeContinue(spawnMsg)) return "";
                 continue;

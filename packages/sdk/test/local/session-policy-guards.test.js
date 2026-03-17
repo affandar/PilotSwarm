@@ -96,6 +96,33 @@ async function testClientRejectsSystemAgent(env) {
     });
 }
 
+async function testDeletionProtectsSystem(env) {
+    await withClient(env, { worker: { pluginDirs: [POLICY_PLUGIN] } }, async (client, worker) => {
+        // Wait for beta system agent to auto-start
+        await new Promise(r => setTimeout(r, 3000));
+
+        const catalog = await createCatalog(env);
+        try {
+            const sessions = await catalog.listSessions();
+            const betaSession = sessions.find(s => s.agentId === "beta" && s.isSystem);
+            assertNotNull(betaSession, "beta system session exists");
+
+            await assertThrows(
+                () => client.deleteSession(betaSession.sessionId),
+                "system",
+                "cannot delete system session",
+            );
+
+            // Verify it still exists
+            const row = await catalog.getSession(betaSession.sessionId);
+            assertNotNull(row, "session still exists after failed delete");
+            assertEqual(row.deletedAt, null, "deletedAt still null");
+        } finally {
+            await catalog.close();
+        }
+    });
+}
+
 async function testOrchRejectsGeneric(env) {
     const { PilotSwarmClient, PilotSwarmWorker } = await import("../../dist/index.js");
 
@@ -176,5 +203,9 @@ describe.concurrent("Level 10a: Session Policy — Guards", () => {
     it("Orch Rejects Generic When Disallowed", { timeout: TIMEOUT }, async () => {
         const env = createTestEnv("session-policy");
         try { await testOrchRejectsGeneric(env); } finally { await env.cleanup(); }
+    });
+    it("Deletion Protects System Sessions", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("session-policy");
+        try { await testDeletionProtectsSystem(env); } finally { await env.cleanup(); }
     });
 });
