@@ -92,13 +92,26 @@ Recommended scripts:
 
 ```text
 packages/sdk/test/local/
-  smoke.test.js
+  smoke-basic.test.js
+  smoke-api.test.js
   durability.test.js
   multi-worker.test.js
-  commands.test.js
-  sub-agents.test.js
+  commands-user.test.js
+  management.test.js
+  sub-agents/*.test.js      (spawn-custom, named-agents, multiple-agents,
+                              child-metadata, model-override, nested-spawn,
+                              check-agents, custom-no-skill)
+  kv-transport.test.js
+  cms-events.test.js
+  cms-state.test.js
   contracts.test.js
   chaos.test.js
+  session-policy-guards.test.js
+  session-policy-behavior.test.js
+  model-selection.test.js
+  reliability-crash.test.js
+  reliability-multi-crash.test.js
+  system-agents.test.js
 ```
 
 ## Environment Setup

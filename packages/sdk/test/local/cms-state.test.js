@@ -9,7 +9,7 @@
 
 import { describe, it, beforeAll } from "vitest";
 import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
-import { withClient } from "../helpers/local-workers.js";
+import { withClient, createManagementClient } from "../helpers/local-workers.js";
 import { assert, assertEqual, assertNotNull, assertGreaterOrEqual } from "../helpers/assertions.js";
 import { createCatalog, getSession, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG, BRIEF_CONFIG } from "../helpers/fixtures.js";
@@ -134,6 +134,72 @@ async function testSoftDeleteHidesSession(env) {
     }
 }
 
+async function testRenameVisibleInListAndInfo(env) {
+    const mgmt = await createManagementClient(env);
+    try {
+        await withClient(env, async (client) => {
+            const session = await client.createSession(ONEWORD_CONFIG);
+            await session.sendAndWait("Say hello", TIMEOUT);
+
+            await mgmt.renameSession(session.sessionId, "My Custom Title");
+
+            // Verify via listSessions
+            const list = await client.listSessions();
+            const entry = list.find(s => s.sessionId === session.sessionId);
+            console.log(`  listSessions title: "${entry?.title}"`);
+            assertEqual(entry?.title, "My Custom Title", "title in listSessions");
+
+            // Verify via getInfo
+            const info = await session.getInfo();
+            console.log(`  getInfo title: "${info?.title}"`);
+            assertEqual(info?.title, "My Custom Title", "title in getInfo");
+        });
+    } finally {
+        await mgmt.stop();
+    }
+}
+
+async function testRenamePersistsAcrossResume(env) {
+    const mgmt = await createManagementClient(env);
+    try {
+        await withClient(env, async (client) => {
+            const session = await client.createSession(ONEWORD_CONFIG);
+            await session.sendAndWait("Say hello", TIMEOUT);
+
+            await mgmt.renameSession(session.sessionId, "Persisted Title");
+
+            // Resume the same session
+            const resumed = await client.resumeSession(session.sessionId);
+            const info = await resumed.getInfo();
+            console.log(`  Title after resume: "${info?.title}"`);
+            assertEqual(info?.title, "Persisted Title", "title survives resume");
+        });
+    } finally {
+        await mgmt.stop();
+    }
+}
+
+async function testRenameTruncatesLongTitle(env) {
+    const mgmt = await createManagementClient(env);
+    const catalog = await createCatalog(env);
+    try {
+        await withClient(env, async (client) => {
+            const session = await client.createSession(ONEWORD_CONFIG);
+
+            const longTitle = "A".repeat(100);
+            await mgmt.renameSession(session.sessionId, longTitle);
+
+            const row = await getSession(catalog, session.sessionId);
+            console.log(`  Title length: ${row?.title?.length}`);
+            assertGreaterOrEqual(60, row.title.length, "title truncated to <= 60 chars");
+            assertEqual(row.title, "A".repeat(60), "title is first 60 chars");
+        });
+    } finally {
+        await mgmt.stop();
+        await catalog.close();
+    }
+}
+
 describe.concurrent("Level 7b: CMS — State", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -152,5 +218,17 @@ describe.concurrent("Level 7b: CMS — State", () => {
     it("Soft Delete Hides Session", { timeout: TIMEOUT }, async () => {
         const env = createTestEnv("cms-consistency");
         try { await testSoftDeleteHidesSession(env); } finally { await env.cleanup(); }
+    });
+    it("Rename Visible in List and Info", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("cms-consistency");
+        try { await testRenameVisibleInListAndInfo(env); } finally { await env.cleanup(); }
+    });
+    it("Rename Persists Across Resume", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("cms-consistency");
+        try { await testRenamePersistsAcrossResume(env); } finally { await env.cleanup(); }
+    });
+    it("Rename Truncates Long Title", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("cms-consistency");
+        try { await testRenameTruncatesLongTitle(env); } finally { await env.cleanup(); }
     });
 });
