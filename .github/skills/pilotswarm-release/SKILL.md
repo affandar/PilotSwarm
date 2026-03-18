@@ -15,6 +15,7 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
    - Run `git status --short`.
    - Check changed runtime, docs, templates, examples, and workflow files.
    - Check current package names and versions in `packages/sdk/package.json` and `packages/cli/package.json`.
+   - Check whether each published workspace package has its own `README.md`.
 
 2. Verify feature-completeness around the change.
    - If behavior changed, confirm the canonical docs in `docs/` were updated.
@@ -38,8 +39,11 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 
 4. Validate npm-release wiring.
    - Check `.github/workflows/publish-npm.yml`.
-   - Confirm publish targets, access level, and required secrets still match the intended release.
+   - Confirm publish targets, access level, provenance flags, and required secrets still match the intended release.
+   - Confirm each published package has correct `repository`, `homepage`, and `bugs` metadata for npm provenance verification.
    - Confirm built-in PilotSwarm plugins that must ship with the SDK are included by package `files` config.
+   - Confirm package-local `README.md` files are actually present in `npm pack --dry-run` output for each workspace package.
+   - If package names, publish workflow wiring, or npm metadata changed, run the CI publish workflow in dry-run mode from `main` before tagging a real release.
 
 5. Prepare release notes for the user.
    - Summarize what changed.
@@ -60,6 +64,7 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 8. Verify publication.
    - Check that the GitHub Actions publish workflow started and completed.
    - Report the published package names and versions.
+   - Verify the registry directly with `npm view <package> version`.
    - If publish failed, surface the workflow error rather than guessing.
 
 ## Release Checklist
@@ -71,6 +76,8 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 - relevant builder templates are updated
 - package metadata is correct
 - `npm pack --dry-run` looks right
+- package-local `README.md` files are present for published workspaces
+- provenance metadata (`repository`, `homepage`, `bugs`) is correct
 - commit, push, and tag are complete
 - publish workflow ran successfully
 
@@ -87,4 +94,6 @@ If package names change later, update this skill in the same change.
 
 - Prefer fixing brittle tests over loosening product behavior just to get green.
 - If a test failure is caused by stale hardcoded assumptions such as old model names, update the test to follow the current repo contract.
+- npm package pages for workspace publishes come from the workspace-local `README.md`, not the repo-root README.
+- When provenance is enabled for npm publish, mismatched or missing repository metadata is a release blocker, not a cosmetic issue.
 - Treat the release agent as a maintainer workflow for this repository, not as an app-builder template.
