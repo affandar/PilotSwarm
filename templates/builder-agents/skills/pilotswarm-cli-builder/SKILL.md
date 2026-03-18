@@ -65,3 +65,4 @@ Example:
 - If you add or change TUI keybindings, update help/keybinding surfaces together.
 - Treat system-agent `initialPrompt` as bootstrap startup content, not a user-authored chat line.
 - Assume apps consume `pilotswarm-cli` and `pilotswarm-sdk`; built-in PilotSwarm plugins are embedded in those packages, not copied into the app repo.
+- Prefer generated app instructions that install `pilotswarm-cli` and `pilotswarm-sdk` from npm before suggesting local clone or link workflows.

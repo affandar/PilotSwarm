@@ -14,6 +14,12 @@ The SDK gives you the durable runtime primitives. Your app provides:
 - session lifecycle
 - whatever UI or API you want on top
 
+Install it from npm:
+
+```bash
+npm install pilotswarm-sdk
+```
+
 ## The Basic Shape
 
 Every SDK app has two halves:

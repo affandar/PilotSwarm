@@ -49,3 +49,4 @@ my-sdk-app/
 - Keep session policy and agent restrictions in config files rather than hand-wavy prompt text.
 - Use the DevOps sample as the reference for the layered split, not as a literal one-size-fits-all template.
 - Assume apps consume `pilotswarm-sdk`, whose built-in framework and management plugins are embedded rather than copied into the app repo.
+- Prefer generated app instructions that install `pilotswarm-sdk` from npm before falling back to local file or link workflows.

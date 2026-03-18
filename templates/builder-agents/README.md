@@ -15,6 +15,13 @@ These templates assume apps consume:
 - `pilotswarm-sdk`
 - `pilotswarm-cli`
 
+from npm:
+
+```bash
+npm install pilotswarm-sdk
+npm install pilotswarm-cli
+```
+
 and that PilotSwarm's built-in framework and management plugins are embedded in those packages while app `default.agent.md` files act as app-wide overlays.
 
 ## Install Into Another Repo

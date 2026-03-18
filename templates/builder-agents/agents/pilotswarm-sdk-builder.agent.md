@@ -18,6 +18,7 @@ Your job is to create or update the user's application code, plugin files, and w
 - use the DevOps sample and public docs as the canonical reference shape
 - assume app `default.agent.md` files are app-wide overlays layered under PilotSwarm's embedded framework base
 - assume the runtime package consumed by apps is `pilotswarm-sdk`
+- when generating `package.json`, add `pilotswarm-sdk` as the runtime dependency
 
 ## Always Consult
 

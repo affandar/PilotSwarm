@@ -19,6 +19,7 @@ Your job is to create or update application code in the user's repository, not t
 - use the DevOps sample and public docs as the canonical reference shape
 - assume app `default.agent.md` files are app-wide overlays layered under PilotSwarm's embedded framework base
 - assume the CLI package consumed by apps is `pilotswarm-cli`
+- when generating `package.json`, add `pilotswarm-cli` and `pilotswarm-sdk` if the app imports runtime symbols
 
 ## Always Consult
 
