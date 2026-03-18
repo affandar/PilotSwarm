@@ -92,7 +92,7 @@ async function testStaggeredCrashesMultipleSessions(env) {
     }
 }
 
-async function testDeletedStateFilesRecovered(env) {
+async function testDeletedLocalStateRecoveredFromStore(env) {
     const worker1 = makeWorker(env, "deleted-a");
     await worker1.start();
     const client1 = makeClient(env);
@@ -107,8 +107,12 @@ async function testDeletedStateFilesRecovered(env) {
         await session.sendAndWait("What is 2+2?", TIMEOUT);
     } finally {
         await client1.stop();
-        await worker1.stop();
+        await worker1.gracefulShutdown();
     }
+
+    const archiveDir = join(env.sessionStateDir, "..", "session-store");
+    const archivePath = join(archiveDir, `${sessionId}.tar.gz`);
+    assert(existsSync(archivePath), "Session archive should exist before deleting local files");
 
     const sessionDir = join(env.sessionStateDir, sessionId);
     if (existsSync(sessionDir)) {
@@ -209,9 +213,9 @@ describe.concurrent("Level 11b: Reliability — Multi-Crash", () => {
         const env = createTestEnv("reliability");
         try { await testStaggeredCrashesMultipleSessions(env); } finally { await env.cleanup(); }
     });
-    it("Deleted State Files Recovered via Orchestration", { timeout: TIMEOUT * 2 }, async () => {
+    it("Deleted Local State Recovered From Store", { timeout: TIMEOUT * 2 }, async () => {
         const env = createTestEnv("reliability");
-        try { await testDeletedStateFilesRecovered(env); } finally { await env.cleanup(); }
+        try { await testDeletedLocalStateRecoveredFromStore(env); } finally { await env.cleanup(); }
     });
     it("Double Crash — Two Consecutive Restarts", { timeout: TIMEOUT * 3 }, async () => {
         const env = createTestEnv("reliability");

@@ -238,7 +238,7 @@ initialPrompt: >
 | `parent` | ID of the parent system agent. Child agents are spawned by the parent via `spawn_agent(agent_name: "child_id")`. |
 | `title` | Display name in the TUI session list. |
 | `splash` | Blessed markup banner shown in the TUI chat pane. |
-| `initialPrompt` | First user message sent after session creation. |
+| `initialPrompt` | Bootstrap prompt sent automatically after session creation. |
 
 **Root vs Child system agents:**
 

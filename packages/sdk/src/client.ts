@@ -152,6 +152,9 @@ export class PilotSwarmClient {
         model?: string;
         onUserInputRequest?: UserInputHandler;
         toolNames?: string[];
+        title?: string;
+        splash?: string;
+        initialPrompt?: string;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -170,11 +173,16 @@ export class PilotSwarmClient {
 
         // Set agent metadata in CMS (agentId + prefixed title)
         const shortId = session.sessionId.slice(0, 8);
-        const agentTitle = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+        const agentTitle = opts?.title || (agentName.charAt(0).toUpperCase() + agentName.slice(1));
         await this._catalog.updateSession(session.sessionId, {
             agentId: agentName,
             title: `${agentTitle}: ${shortId}`,
+            ...(opts?.splash ? { splash: opts.splash } : {}),
         });
+
+        if (opts?.initialPrompt) {
+            await session.send(opts.initialPrompt, { bootstrap: true });
+        }
 
         return session;
     }
@@ -350,7 +358,7 @@ export class PilotSwarmClient {
     }
 
     /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
-    private async _ensureOrchestrationAndSend(sessionId: string, prompt: string): Promise<string> {
+    private async _ensureOrchestrationAndSend(sessionId: string, prompt: string, opts?: { bootstrap?: boolean }): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
 
         const orchestrationId = `session-${sessionId}`;
@@ -410,7 +418,7 @@ export class PilotSwarmClient {
         await this.duroxideClient.enqueueEvent(
             orchestrationId,
             "messages",
-            JSON.stringify({ prompt }),
+            JSON.stringify({ prompt, ...(opts?.bootstrap ? { bootstrap: true } : {}) }),
         );
 
         return orchestrationId;
@@ -423,8 +431,9 @@ export class PilotSwarmClient {
         onUserInput: UserInputHandler | undefined,
         timeout?: number,
         onIntermediateContent?: (content: string) => void,
+        opts?: { bootstrap?: boolean },
     ): Promise<string | undefined> {
-        const orchestrationId = await this._ensureOrchestrationAndSend(sessionId, prompt);
+        const orchestrationId = await this._ensureOrchestrationAndSend(sessionId, prompt, opts);
 
         return this._waitForTurnResult(
             orchestrationId,
@@ -436,8 +445,8 @@ export class PilotSwarmClient {
     }
 
     /** @internal */
-    async _startTurn(sessionId: string, prompt: string): Promise<string> {
-        return this._ensureOrchestrationAndSend(sessionId, prompt);
+    async _startTurn(sessionId: string, prompt: string, opts?: { bootstrap?: boolean }): Promise<string> {
+        return this._ensureOrchestrationAndSend(sessionId, prompt, opts);
     }
 
     /** @internal */
@@ -509,6 +518,7 @@ export class PilotSwarmClient {
             status,
             model: cmsRow?.model ?? undefined,
             title: cmsRow?.title ?? undefined,
+            agentId: cmsRow?.agentId ?? undefined,
             createdAt: cmsRow?.createdAt ?? new Date(),
             updatedAt: cmsRow?.updatedAt ?? new Date(),
             iterations: customStatus.iteration ?? cmsRow?.currentIteration ?? 0,
@@ -718,8 +728,8 @@ export class PilotSwarmSession {
         );
     }
 
-    async send(prompt: string): Promise<void> {
-        this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt);
+    async send(prompt: string, opts?: { bootstrap?: boolean }): Promise<void> {
+        this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt, opts);
     }
 
     async wait(timeout?: number): Promise<string | undefined> {

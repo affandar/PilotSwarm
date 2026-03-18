@@ -4,6 +4,9 @@ import {
     RESPONSE_LATEST_KEY,
     commandResponseKey,
 } from "./types.js";
+import {
+    SESSION_STATE_MISSING_PREFIX,
+} from "./types.js";
 import type {
     TurnAction,
     TurnResult,
@@ -45,7 +48,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.17";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.20";
 
 /**
  * Long-lived durable session orchestration.
@@ -63,13 +66,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.17";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_17(
+export function* durableSessionOrchestration_1_0_20(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.17] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.20] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -219,6 +222,7 @@ export function* durableSessionOrchestration_1_0_17(
             nextSummarizeAt,
             taskContext,
             baseSystemMessage,
+            ...(pendingPrompt ? { bootstrapPrompt } : {}),
             subAgents,
             ...(pendingToolActions.length > 0 ? { pendingToolActions } : {}),
             ...(pendingMessage !== undefined ? { pendingMessage } : {}),
@@ -333,6 +337,7 @@ export function* durableSessionOrchestration_1_0_17(
 
     // ─── Prompt carried from continueAsNew ───────────────────
     let pendingPrompt: string | undefined = input.prompt;
+    let bootstrapPrompt = input.bootstrapPrompt ?? false;
 
     ctx.traceInfo(`[orch] start: iter=${iteration} pending=${pendingPrompt ? `"${pendingPrompt.slice(0, 40)}"` : 'NONE'} queued=${pendingToolActions.length} hydrate=${needsHydration} blob=${blobEnabled}`);
 
@@ -361,10 +366,28 @@ export function* durableSessionOrchestration_1_0_17(
         }
     }
 
+    // ─── Resolve agent config for top-level named-agent sessions ───
+    // When a session is created via createSessionForAgent("investigator"),
+    // the agent's tools/systemMessage from .agent.md need to be injected
+    // into the session config. Sub-agents get this via spawn_agent resolution,
+    // but top-level sessions need it here.
+    if (iteration === 0 && !parentSessionId && input.agentId && !config.toolNames) {
+        const agentDef: any = yield manager.resolveAgentConfig(input.agentId);
+        if (agentDef) {
+            if (agentDef.tools?.length) {
+                config.toolNames = agentDef.tools;
+                ctx.traceInfo(`[orch] injected agent tools for top-level ${input.agentId}: ${agentDef.tools.join(", ")}`);
+            }
+            // Rebuild session proxy with updated config (tools now included)
+            session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
+        }
+    }
+
     // ─── MAIN LOOP ──────────────────────────────────────────
     while (true) {
         let result: TurnResult;
         let prompt = "";
+        let promptIsBootstrap = false;
         let replayingQueuedAction = false;
 
         if (pendingToolActions.length > 0) {
@@ -376,6 +399,8 @@ export function* durableSessionOrchestration_1_0_17(
             if (pendingPrompt) {
                 prompt = pendingPrompt;
                 pendingPrompt = undefined;
+                promptIsBootstrap = bootstrapPrompt;
+                bootstrapPrompt = false;
             } else {
                 publishStatus("idle");
 
@@ -527,7 +552,18 @@ export function* durableSessionOrchestration_1_0_17(
                     }
 
                     prompt = msgData.prompt;
+                    promptIsBootstrap = Boolean(msgData.bootstrap);
                     gotPrompt = true;
+                }
+            }
+
+            // Detect archived state even when dehydration happened outside the orchestration,
+            // such as abrupt worker loss or direct worker-side shutdown dehydration.
+            if (blobEnabled && !needsHydration) {
+                try {
+                    needsHydration = yield session.needsHydration();
+                } catch (err: any) {
+                    ctx.traceInfo(`[orch] needsHydration probe failed: ${err.message ?? err}`);
                 }
             }
 
@@ -583,10 +619,18 @@ export function* durableSessionOrchestration_1_0_17(
             publishStatus("running");
             let turnResult: any;
             try {
-                turnResult = yield session.runTurn(prompt);
+                turnResult = yield session.runTurn(prompt, promptIsBootstrap, iteration);
             } catch (err: any) {
                 // Activity failed (e.g. Copilot timeout, network error).
                 const errorMsg = err.message || String(err);
+                const missingStateIndex = errorMsg.indexOf(SESSION_STATE_MISSING_PREFIX);
+                if (missingStateIndex >= 0) {
+                    const fatalError = errorMsg.slice(missingStateIndex + SESSION_STATE_MISSING_PREFIX.length).trim();
+                    ctx.traceInfo(`[orch] fatal missing session state: ${fatalError}`);
+                    publishStatus("failed", { error: fatalError, fatal: true });
+                    yield manager.updateCmsState(input.sessionId, "failed", fatalError);
+                    throw new Error(fatalError);
+                }
                 retryCount++;
                 ctx.traceInfo(`[orch] runTurn FAILED (attempt ${retryCount}/${MAX_RETRIES}): ${errorMsg}`);
 
@@ -1450,6 +1494,15 @@ export function* durableSessionOrchestration_1_0_17(
             }
 
             case "error": {
+                const missingStateIndex = result.message.indexOf(SESSION_STATE_MISSING_PREFIX);
+                if (missingStateIndex >= 0) {
+                    const fatalError = result.message.slice(missingStateIndex + SESSION_STATE_MISSING_PREFIX.length).trim();
+                    ctx.traceInfo(`[orch] fatal missing session state: ${fatalError}`);
+                    publishStatus("failed", { error: fatalError, fatal: true });
+                    yield manager.updateCmsState(input.sessionId, "failed", fatalError);
+                    throw new Error(fatalError);
+                }
+
                 // Treat like an activity failure — retry with backoff.
                 retryCount++;
                 ctx.traceInfo(`[orch] turn returned error (attempt ${retryCount}/${MAX_RETRIES}): ${result.message}`);

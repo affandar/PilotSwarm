@@ -15,9 +15,15 @@ A plugin is a directory containing any combination of:
 | Agents | `agents/*.agent.md` | YAML frontmatter + markdown |
 | Skills | `skills/<name>/SKILL.md` | YAML frontmatter + markdown |
 | MCP servers | `.mcp.json` at directory root | JSON object |
-| Metadata | `plugin.json` at directory root | JSON (informational only) |
+| Metadata + TUI branding | `plugin.json` at directory root | JSON |
 
 Tools and model providers are configured in code or JSON rather than inside plugin directories.
+
+`plugin.json` is now used by the CLI/TUI for app branding. In addition to human-readable metadata, it may contain:
+
+- `tui.title` — app title for the terminal/tab and root system-session heading
+- `tui.splash` — inline blessed-markup splash text
+- `tui.splashFile` — path to a text file containing the splash markup
 
 ---
 
@@ -495,7 +501,7 @@ This ensures baseline rules (wait tool usage, artifact creation, sub-agent patte
 
 **Disable management agents in tests.** Set `disableManagementAgents: true` to avoid spawning sweeper and resource manager during integration tests.
 
-**Use `plugin.json` for documentation.** While not used for loading, it's the right place to record your plugin's name, version, and author for human readers.
+**Use `plugin.json` for documentation and TUI branding.** It remains the right place to record your plugin's name, version, and author, and the CLI/TUI also reads it for app title and splash configuration.
 
 ```json
 {

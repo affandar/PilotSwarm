@@ -8,6 +8,9 @@
  */
 
 import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "../dist/index.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const TIMEOUT = 120_000;
 const STORE = process.env.DATABASE_URL || "sqlite::memory:";
@@ -42,9 +45,12 @@ async function preflightChecks() {
 // ─── Helpers ─────────────────────────────────────────────────────
 
 async function withClient(opts, fn) {
+    const baseDir = mkdtempSync(join(tmpdir(), "pilotswarm-sdk-test-"));
+    const sessionStateDir = join(baseDir, "session-state");
     const worker = new PilotSwarmWorker({
         store: STORE,
         githubToken: process.env.GITHUB_TOKEN,
+        sessionStateDir,
     });
     await worker.start();
 
@@ -67,6 +73,7 @@ async function withClient(opts, fn) {
     } finally {
         await client.stop();
         await worker.stop();
+        rmSync(baseDir, { recursive: true, force: true });
     }
 }
 

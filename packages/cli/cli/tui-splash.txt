@@ -1,0 +1,11 @@
+{bold}{cyan-fg}
+    ____  _ __      __  _____                              
+   / __ \(_) /___  / /_/ ___/      ______ __________ ___  
+{/cyan-fg}{magenta-fg}  / /_/ / / / __ \/ __/\__ \ | /| / / __ `/ ___/ __ `__ \
+ / ____/ / / /_/ / /_ ___/ / |/ |/ / /_/ / /  / / / / / /{/magenta-fg}
+{yellow-fg}/_/   /_/_/\____/\__//____/|__/|__/\__,_/_/  /_/ /_/ /_/ {/yellow-fg}
+{/bold}
+
+  {bold}{white-fg}Durable AI Agent Orchestration{/white-fg}{/bold}
+  {cyan-fg}Crash recovery{/cyan-fg} · {magenta-fg}Durable timers{/magenta-fg} · {yellow-fg}Sub-agents{/yellow-fg} · {green-fg}Multi-node scaling{/green-fg}
+  {gray-fg}Powered by duroxide + GitHub Copilot SDK{/gray-fg}

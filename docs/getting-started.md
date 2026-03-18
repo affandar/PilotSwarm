@@ -504,7 +504,9 @@ LOG_LEVEL=info                          # none|error|warning|info|debug|all
 
 ## Next Steps
 
-- [Building Apps](./building-apps.md) — skills, agents, tools, MCP servers, plugins
+- [Building SDK Apps](./sdk/building-apps.md) — recommended path for custom apps and services
+- [Building CLI Apps](./cli/building-cli-apps.md) — recommended path for the shipped TUI
+- [Examples](./examples.md) — includes the DevOps Command Center layered-app sample
 - [Configuration](./configuration.md) — all worker/client constructor options
 - [Deploying to AKS](./deploying-to-aks.md) — production deployment details
 - [Architecture](./architecture.md) — orchestration internals
