@@ -32,6 +32,31 @@ Your job is to create or update deployment assets, environment documentation, an
 - call out database reset needs when orchestration versions or deterministic yields change
 - prefer explicit environment and packaging guidance over vague deployment prose
 
+## AKS Cross-Cluster Guidance
+
+When PilotSwarm workers run in one AKS control cluster and need to manage pods or
+Jobs in another AKS cluster:
+
+- prefer Azure Workload Identity over ambiguous node-managed identity selection
+- require OIDC issuer and workload identity to be enabled on the control cluster
+- use a user-assigned managed identity bound to a Kubernetes service account via:
+  - `azure.workload.identity/client-id: <client-id>`
+- require workload-identity-enabled pods to include:
+  - `serviceAccountName: <service-account-name>`
+  - label `azure.workload.identity/use: "true"`
+- at minimum, call out Azure RBAC needs:
+  - `Azure Kubernetes Service Cluster User Role` on the target AKS cluster
+  - `Storage Blob Data Contributor` on the storage account if artifacts/blob state are used
+- when working from a laptop or CI host, keep every `kubectl` call explicit with `--context`
+- when working from inside the control-plane pod, prefer:
+  - `az login --service-principal ... --federated-token "$(cat "$AZURE_FEDERATED_TOKEN_FILE")"`
+  - `az aks get-credentials --subscription ... --resource-group ... --name ... --file /tmp/<kubeconfig>`
+- validate the setup from inside the control-plane pod with:
+  - injected `AZURE_*` env vars present
+  - `kubectl auth can-i create pods`
+  - a short-lived probe pod on the target cluster
+- prefer `kubectl create secret generic ... --from-env-file=...` when documenting worker env delivery
+
 ## Output Shape
 
 Prefer producing deployment assets such as:

@@ -57,7 +57,7 @@ cp -R templates/builder-agents/skills/* .github/skills/
 
 - `pilotswarm-cli-builder` helps users build plugin-driven CLI/TUI apps on top of the shipped PilotSwarm UI.
 - `pilotswarm-sdk-builder` helps users build SDK-first services and applications around `PilotSwarmClient` and `PilotSwarmWorker`.
-- `pilotswarm-azure-deployer` helps users package and deploy PilotSwarm-based apps to Azure / AKS.
+- `pilotswarm-azure-deployer` helps users package and deploy PilotSwarm-based apps to Azure / AKS, with explicit env-template and cross-cluster workload-identity guidance.
 
 ## Maintenance Rule
 
