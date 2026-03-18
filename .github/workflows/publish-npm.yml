@@ -1,0 +1,87 @@
+name: Publish npm Packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: npm dist-tag to publish under
+        required: true
+        default: latest
+      dry_run:
+        description: Run npm publish in dry-run mode
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  NODE_VERSION: "24"
+  NPM_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}
+  NPM_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+
+jobs:
+  publish-sdk:
+    name: Publish @affandar/pilotswarm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build workspaces
+        run: npm run build
+
+      - name: Publish SDK
+        working-directory: packages/sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ "${NPM_DRY_RUN}" = "true" ]; then
+            npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
+          else
+            npm publish --access public --provenance --tag "${NPM_DIST_TAG}"
+          fi
+
+  publish-cli:
+    name: Publish @affandar/pilotswarm-cli
+    runs-on: ubuntu-latest
+    needs: publish-sdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build workspaces
+        run: npm run build
+
+      - name: Publish CLI
+        working-directory: packages/cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ "${NPM_DRY_RUN}" = "true" ]; then
+            npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
+          else
+            npm publish --access public --provenance --tag "${NPM_DIST_TAG}"
+          fi

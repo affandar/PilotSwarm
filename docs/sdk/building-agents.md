@@ -29,7 +29,7 @@ plugin/
 
 ## Step 1: Create `default.agent.md`
 
-`default.agent.md` is the base instruction set for every session on the worker.
+`default.agent.md` is your app-wide overlay for every session on the worker. PilotSwarm layers it underneath the embedded framework base prompt.
 
 ```md
 ---
@@ -47,9 +47,10 @@ If you need to wait or poll, use the `wait` tool rather than bash sleep.
 
 Important behavior:
 
-- the markdown body becomes the always-on base prompt
+- the markdown body becomes the app-wide default layer for your sessions
 - it is not a selectable agent
 - it still applies even when another agent prompt is used
+- it extends the embedded PilotSwarm framework instructions rather than replacing them
 
 ## Step 2: Add named agents
 
@@ -82,7 +83,7 @@ How it works:
 The worker must register any tool the agent is allowed to call.
 
 ```ts
-import { PilotSwarmWorker, defineTool } from "pilotswarm";
+import { PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
 
 const webFetch = defineTool("web_fetch", { /* ... */ });
 const writeArtifact = defineTool("write_artifact", { /* ... */ });
@@ -171,10 +172,11 @@ The worker supplies the actual agent definitions and tool handlers. The client o
 
 ### `default.agent.md`
 
-- body becomes the base worker prompt
+- body becomes the app-wide default prompt layer
 - not selectable
 - not a tool filter
 - should contain app-wide rules you always want
+- is wrapped beneath the embedded PilotSwarm framework base prompt
 
 ### `*.agent.md`
 

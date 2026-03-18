@@ -1,5 +1,5 @@
 {
-  "name": "pilotswarm-cli",
+  "name": "@affandar/pilotswarm-cli",
   "version": "0.1.0",
   "description": "Terminal UI for pilotswarm — interactive durable agent orchestration.",
   "type": "module",
@@ -22,7 +22,7 @@
   "author": "Affan Dar",
   "license": "MIT",
   "dependencies": {
-    "pilotswarm": "^0.1.0",
+    "@affandar/pilotswarm": "^0.1.0",
     "@bradygaster/squad-cli": "^0.8.25",
     "chalk": "^5.6.2",
     "marked": "^15.0.12",

@@ -65,6 +65,12 @@ export interface SerializableSessionConfig {
     workingDirectory?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
+    /** Internal: name of the bound agent definition whose prompt should be layered into this session. */
+    boundAgentName?: string;
+    /** Internal: selects how framework, app, and agent prompts compose for this session. */
+    promptLayering?: {
+        kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
+    };
     /**
      * Names of tools registered on the worker via `worker.registerTools()`.
      * Serializable — travels through duroxide. The worker resolves these
@@ -284,7 +290,10 @@ export interface PilotSwarmWorkerOptions {
     // ─── Building Blocks ─────────────────────────────────────
     // Workers own the building blocks. Clients are thin proxies.
 
-    /** Base system message for all sessions on this worker. */
+    /**
+     * Inline app-level default instructions layered beneath the embedded
+     * PilotSwarm framework base prompt.
+     */
     systemMessage?: string;
 
     /**

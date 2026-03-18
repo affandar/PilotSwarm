@@ -121,7 +121,7 @@ Tools are defined with `defineTool()` from the Copilot SDK (re-exported by Pilot
 
 ```javascript
 // tools/search-events.js
-import { defineTool } from "pilotswarm";
+import { defineTool } from "@affandar/pilotswarm";
 
 export const searchEventsTool = defineTool("search_events", {
   description:
@@ -194,7 +194,7 @@ export const searchEventsTool = defineTool("search_events", {
 
 ```javascript
 // tools/scan-social-feed.js
-import { defineTool } from "pilotswarm";
+import { defineTool } from "@affandar/pilotswarm";
 
 export const scanSocialFeedTool = defineTool("scan_social_feed", {
   description:
@@ -267,7 +267,7 @@ export const scanSocialFeedTool = defineTool("scan_social_feed", {
 
 ```javascript
 // tools/check-local-happenings.js
-import { defineTool } from "pilotswarm";
+import { defineTool } from "@affandar/pilotswarm";
 
 export const checkLocalHappeningsTool = defineTool("check_local_happenings", {
   description:
@@ -339,7 +339,7 @@ export const checkLocalHappeningsTool = defineTool("check_local_happenings", {
 
 ```javascript
 // tools/notify-user.js
-import { defineTool } from "pilotswarm";
+import { defineTool } from "@affandar/pilotswarm";
 
 export const notifyUserTool = defineTool("notify_user", {
   description:
@@ -482,7 +482,7 @@ The server process runs `PilotSwarmClient` — no GitHub token needed, no LLM ex
 // server.js
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { PilotSwarmClient } from "pilotswarm";
+import { PilotSwarmClient } from "@affandar/pilotswarm";
 
 const fastify = Fastify({ logger: true });
 await fastify.register(cors);
@@ -621,7 +621,7 @@ The worker runs separately. It handles all LLM execution, tool calls, and sessio
 
 ```javascript
 // worker.js
-import { PilotSwarmWorker } from "pilotswarm";
+import { PilotSwarmWorker } from "@affandar/pilotswarm";
 import { searchEventsTool } from "./tools/search-events.js";
 import { scanSocialFeedTool } from "./tools/scan-social-feed.js";
 import { checkLocalHappeningsTool } from "./tools/check-local-happenings.js";

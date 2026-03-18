@@ -42,6 +42,8 @@ These are useful for contributors but are not the main onboarding path:
 
 - [Orchestration Hardening Plan](./orchestration-hardening-plan.md)
 - [TUI Cleanup Status](./tui-cleanup-status.md)
+- [Proposal: Prompt Layering and Framework Precedence](./proposals/prompt-layering-and-precedence.md)
+- [Proposal: Scoped npm Packaging and Embedded PilotSwarm Plugins](./proposals/scoped-packaging-and-embedded-plugins.md)
 - [`docs/proposals/`](./proposals/)
 
 ## Legacy Guides

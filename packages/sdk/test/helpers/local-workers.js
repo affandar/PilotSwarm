@@ -5,7 +5,7 @@
  * instances with isolated schemas and shared session-state directories.
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, defineTool } from "../../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, defineTool, composeSystemPrompt } from "../../dist/index.js";
 
 // ─── Single Worker + Client ──────────────────────────────────────
 
@@ -144,4 +144,4 @@ export async function createManagementClient(env) {
 
 // ─── Re-exports ─────────────────────────────────────────────────
 
-export { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, defineTool };
+export { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, defineTool, composeSystemPrompt };

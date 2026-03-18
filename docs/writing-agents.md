@@ -47,7 +47,7 @@ plugin/
   plugin.json              ← Plugin metadata
   .mcp.json                ← MCP server configurations
   agents/
-    default.agent.md       ← Base system message (NOT a selectable agent)
+    default.agent.md       ← App-wide default overlay (NOT a selectable agent)
     planner.agent.md       ← User-invocable @planner agent
     pilotswarm.agent.md    ← System agent (auto-started)
     sweeper.agent.md       ← System agent (child of pilotswarm)
@@ -67,7 +67,7 @@ plugin/
 
 1. Worker reads each `pluginDirs` entry
 2. **Agents**: Parses every `*.agent.md` in `agents/`
-   - `default.agent.md` → becomes the base system message for ALL sessions
+   - `default.agent.md` → becomes the app-wide default overlay for the plugin's sessions
    - Files with `system: true` → stored as system agents (auto-started)
    - Everything else → user-invocable agents (available via `@name`)
 3. **Skills**: Each subdirectory of `skills/` with a `SKILL.md` → loaded as a skill
@@ -153,16 +153,16 @@ Here's exactly how each piece flows through the system:
                                First USER MESSAGE the LLM sees
 
 3. For regular (non-agent) sessions:
-   └─ default.agent.md body → base system message for ALL sessions
+   └─ PilotSwarm framework base + default.agent.md body → layered system prompt for app sessions
        ↓
-   SessionManager.workerDefaults.systemMessage
+   SessionManager prompt composition
        ↓
-   Prepended to any client-provided systemMessage
+   Wrapped ahead of any client-provided runtime overlay
 ```
 
-### The `default.agent.md` — Base System Message
+### The `default.agent.md` — App-Wide Default Overlay
 
-`default.agent.md` is special. It is NOT a selectable agent. Its markdown body becomes the **base system message** for every session on the worker:
+`default.agent.md` is special. It is NOT a selectable agent. Its markdown body becomes the **app-wide default overlay** for sessions created from that plugin:
 
 ```markdown
 ---
@@ -184,13 +184,16 @@ You are a helpful assistant running in a durable execution environment.
 
 The `tools` list in `default.agent.md` is ignored — it does not restrict tools. Only the markdown body matters.
 
-When a custom agent's prompt is used, it **replaces** the default prompt entirely (via `mode: "replace"`). The default prompt is also prepended to all non-system custom agent prompts during plugin loading:
+PilotSwarm now composes prompts in layers:
 
 ```
-default.agent.md body + "\n\n---\n\n" + custom_agent.agent.md body
+[PilotSwarm framework base]
+[app default.agent.md overlay, if any]
+[active agent prompt, if any]
+[runtime context overlay, if any]
 ```
 
-System agents get their prompt directly without the default prepend.
+PilotSwarm's own management agents use only the framework base plus the management-agent prompt. They do not inherit app `default.agent.md` overlays.
 
 ### Agent Types
 

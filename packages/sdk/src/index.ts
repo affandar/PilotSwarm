@@ -3,7 +3,7 @@
  *
  * @example
  * ```typescript
- * import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm";
+ * import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
  *
  * const worker = new PilotSwarmWorker({ store, githubToken });
  * worker.registerTools([myTool]);
@@ -65,6 +65,8 @@ export { createResourceManagerTools } from "./resourcemgr-tools.js";
 // Model providers
 export { loadModelProviders, ModelProviderRegistry } from "./model-providers.js";
 export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
+export { composeSystemPrompt, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
+export type { PromptLayeringKind } from "./prompt-layering.js";
 
 // Debug utilities
 export { SessionDumper } from "./session-dumper.js";
