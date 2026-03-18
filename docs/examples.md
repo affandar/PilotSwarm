@@ -25,7 +25,7 @@ Key files:
 Run the CLI/TUI version:
 
 ```bash
-npx pilotswarm-tui \
+npx pilotswarm \
    --plugin ./examples/devops-command-center/plugin \
    --worker ./examples/devops-command-center/worker-module.js \
    --env .env

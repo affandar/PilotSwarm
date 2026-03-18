@@ -26,7 +26,7 @@ In local development they can run in the same process. In production they often 
 ## Minimal Working App
 
 ```ts
-import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
 
 const getWeather = defineTool("get_weather", {
   description: "Get weather for a city",
@@ -91,6 +91,8 @@ This keeps the split clean:
 - worker code registers tool handlers
 - app code creates and drives sessions
 
+PilotSwarm's own framework prompt and management plugins are embedded in the installed `@affandar/pilotswarm` package. Your app ships only its own `plugin/` directory and worker code.
+
 The DevOps sample uses exactly this split:
 
 - plugin files in [examples/devops-command-center/plugin](../../examples/devops-command-center/plugin)
@@ -115,6 +117,8 @@ Your worker can also contribute defaults to every session through:
 - `customAgents`
 - `mcpServers`
 - `systemMessage`
+
+`default.agent.md` in your app plugin is layered underneath the embedded PilotSwarm framework base prompt. It extends the app-wide instructions for your sessions; it does not replace PilotSwarm's framework rules.
 
 If the same plugin also powers the shipped CLI, `plugin.json` may additionally define TUI branding (`tui.title`, `tui.splash`, `tui.splashFile`). That branding is consumed by the CLI/TUI, not by the SDK runtime itself.
 

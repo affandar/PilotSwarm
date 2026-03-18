@@ -121,6 +121,18 @@ If you add or change PilotSwarm features that affect app builders, keep the foll
 
 Treat these templates as a maintained product surface. Do not leave them stale when builder-relevant behavior changes.
 
+## Significant Feature Rollouts
+
+When you add or materially change a user-facing or builder-facing feature, update the surrounding surfaces in the same change whenever they are affected:
+
+- the canonical docs in `docs/` for the relevant SDK, CLI, plugin, or packaging behavior
+- the DevOps sample in `examples/devops-command-center/`
+- the builder templates in `templates/builder-agents/`
+- `.github/copilot-instructions.md` if the change affects contributor workflow or maintenance expectations
+- package names, install examples, and CI publish/release wiring if the npm surface changes
+
+Do not treat proposal docs as sufficient once behavior ships. If the product changed, the canonical docs, sample app, and builder templates should reflect it too.
+
 ## Duroxide Bugs
 
 When a bug is identified as originating in **duroxide** (the Rust-based durable orchestration runtime), do NOT attempt to work around it in the runtime or TUI layer. Instead:

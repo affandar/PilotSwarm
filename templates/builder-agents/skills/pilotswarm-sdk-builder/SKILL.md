@@ -34,11 +34,12 @@ my-sdk-app/
 ## Workflow
 
 1. Separate plugin content from runtime code.
-2. Define tools with `defineTool()` in worker-side code.
-3. Register tool handlers on the worker.
-4. Reference those handlers from sessions via `toolNames`.
-5. Keep client session config serializable.
-6. Add a local example or test that exercises the intended app flow.
+2. Treat `plugin/agents/default.agent.md` as the app-wide default overlay, not as a replacement for PilotSwarm's embedded framework base.
+3. Define tools with `defineTool()` in worker-side code.
+4. Register tool handlers on the worker.
+5. Reference those handlers from sessions via `toolNames`.
+6. Keep client session config serializable.
+7. Add a local example or test that exercises the intended app flow.
 
 ## Guardrails
 
@@ -47,3 +48,4 @@ my-sdk-app/
 - Prefer plugin files for prompts and skills even in SDK-first apps.
 - Keep session policy and agent restrictions in config files rather than hand-wavy prompt text.
 - Use the DevOps sample as the reference for the layered split, not as a literal one-size-fits-all template.
+- Assume apps consume `@affandar/pilotswarm`, whose built-in framework and management plugins are embedded rather than copied into the app repo.

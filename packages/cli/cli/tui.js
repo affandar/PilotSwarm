@@ -9,11 +9,11 @@
  *   Bottom: Input bar
  *
  * Usage:
- *   npx pilotswarm-tui --env .env.remote             # 4 embedded workers
- *   npx pilotswarm-tui remote --env .env.remote       # client-only (AKS)
+ *   npx pilotswarm --env .env.remote             # 4 embedded workers
+ *   npx pilotswarm remote --env .env.remote       # client-only (AKS)
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, systemAgentUUID } from "pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, systemAgentUUID } from "@affandar/pilotswarm";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";

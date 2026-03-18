@@ -21,7 +21,7 @@ You'll need:
 Install PilotSwarm and its CLI:
 
 ```bash
-npm install pilotswarm pilotswarm-cli
+npm install @affandar/pilotswarm @affandar/pilotswarm-cli
 ```
 
 Create an `.env` file in your project root with your connection details:
@@ -77,7 +77,7 @@ The `env:VAR_NAME` syntax pulls secrets from environment variables at load time 
 Use `--model` on the CLI to override the default for a session:
 
 ```bash
-npx pilotswarm-tui --env .env --plugin ./test-swarm-plugin --model azure-openai:gpt-4.1-mini
+npx pilotswarm --env .env --plugin ./test-swarm-plugin --model azure-openai:gpt-4.1-mini
 ```
 
 See [Plugin Architecture Guide](plugin-architecture-guide.md) for the full provider type reference.
@@ -85,7 +85,7 @@ See [Plugin Architecture Guide](plugin-architecture-guide.md) for the full provi
 Verify the CLI is available:
 
 ```bash
-npx pilotswarm-tui --help
+npx pilotswarm --help
 ```
 
 ## Designing the Plugin
@@ -307,7 +307,7 @@ Skills are automatically loaded by the agent runtime when the plugin is activate
 Everything is in place. Launch the swarm:
 
 ```bash
-npx pilotswarm-tui --env .env --plugin ./test-swarm-plugin
+npx pilotswarm --env .env --plugin ./test-swarm-plugin
 ```
 
 This starts PilotSwarm in **local mode** — the default — which runs the worker (LLM execution engine) embedded in the same process as the TUI. No separate infrastructure needed.
@@ -325,7 +325,7 @@ The coordinator reads your project structure, then spawns three specialist agent
 You can customize the launch with flags:
 
 ```bash
-npx pilotswarm-tui \
+npx pilotswarm \
   --env .env \
   --plugin ./test-swarm-plugin \
   --workers 4 \
@@ -355,7 +355,7 @@ The CLI manages workers for you, but understanding the configuration helps when 
 | Log level | `--log-level` | `LOG_LEVEL` | `error` | Trace verbosity (`error`, `warn`, `info`, `debug`) |
 | System prompt | `--system` | `SYSTEM_MESSAGE` | from plugin default | Base system message (path or inline) |
 
-In **local mode**, these configure the embedded workers. In **remote mode** (`npx pilotswarm-tui remote`), the TUI is a lightweight client — workers run separately and are configured via their own environment:
+In **local mode**, these configure the embedded workers. In **remote mode** (`npx pilotswarm remote`), the TUI is a lightweight client — workers run separately and are configured via their own environment:
 
 ```bash
 # Remote worker environment (.env on the worker machine)
@@ -398,7 +398,7 @@ When all specialists complete, the coordinator compiles their findings into a fi
 For large-scale analysis or production use, run in **remote mode**. In this setup, the TUI is a lightweight client and workers run separately — on Kubernetes, on other machines, wherever you need them:
 
 ```bash
-npx pilotswarm-tui --env .env --plugin ./test-swarm-plugin --store postgres://your-remote-db:5432/pilotswarm
+npx pilotswarm --env .env --plugin ./test-swarm-plugin --store postgres://your-remote-db:5432/pilotswarm
 ```
 
 Deploy workers on Kubernetes using the provided deployment manifests. The workers connect to the same database and pick up orchestration tasks automatically. See [Deploying to AKS](deploying-to-aks.md) for the full walkthrough.

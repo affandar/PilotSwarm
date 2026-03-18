@@ -16,6 +16,7 @@ import { loadModelProviders, type ModelProviderRegistry } from "./model-provider
 import { createArtifactTools } from "./artifact-tools.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
+import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig, OrchestrationInput } from "./types.js";
@@ -58,16 +59,22 @@ export class PilotSwarmWorker {
     private toolRegistry = new Map<string, Tool<any>>();
     /** Loaded skill directories from plugins + direct config. */
     private _loadedSkillDirs: string[] = [];
-    /** Loaded agent configs from plugins + direct config. */
+    /** Raw loaded user-creatable agent configs from plugins + direct config. */
+    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
+    /** Loaded agent configs from plugins + direct config, composed for SDK customAgents. */
     private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string }> = [];
     /** Loaded MCP server configs from plugins + direct config. */
     private _loadedMcpServers: Record<string, any> = {};
     /** Model provider registry — multi-provider LLM config. */
     private _modelProviders: ModelProviderRegistry | null = null;
-    /** Prompt from default.agent.md — used as base system message. */
-    private _defaultAgentPrompt: string | null = null;
+    /** Embedded PilotSwarm framework prompt. */
+    private _frameworkBasePrompt: string | null = null;
+    /** App-level default prompt overlay from app pluginDirs and inline worker config. */
+    private _appDefaultPrompt: string | null = null;
     /** System agents loaded from plugins — started automatically on worker start. */
     private _loadedSystemAgents: AgentConfig[] = [];
+    /** Prompt lookup used for direct named/system sessions. */
+    private _agentPromptLookup: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = {};
     /** Session creation policy loaded from session-policy.json. */
     private _sessionPolicy: import("./types.js").SessionPolicy | null = null;
 
@@ -102,7 +109,10 @@ export class PilotSwarmWorker {
             options.githubToken,
             this.sessionStore,
             {
-                systemMessage: options.systemMessage ?? this._defaultAgentPrompt ?? undefined,
+                frameworkBasePrompt: this._frameworkBasePrompt ?? undefined,
+                appDefaultPrompt: this._appDefaultPrompt ?? undefined,
+                systemMessage: this._frameworkBasePrompt ?? undefined,
+                agentPromptLookup: this._agentPromptLookup,
                 skillDirectories: this._loadedSkillDirs,
                 customAgents: this._loadedAgents,
                 mcpServers: this._loadedMcpServers,
@@ -240,7 +250,7 @@ export class PilotSwarmWorker {
             this._loadedSystemAgents,
             this._sessionPolicy,
             this.allowedAgentNames,
-            this._loadedAgents,
+            this._rawLoadedAgents,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
@@ -398,12 +408,12 @@ export class PilotSwarmWorker {
         // ── Tier 1: SDK system plugins (always loaded) ───────────────
         const sdkPluginsDir = path.resolve(__sdkDir, "..", "plugins");
         const systemDir = path.join(sdkPluginsDir, "system");
-        this._loadPluginDir(systemDir);
+        this._loadPluginDir(systemDir, "system");
 
         // ── Tier 2: SDK management plugins (opt-out) ─────────────────
         if (!(this.config as any).disableManagementAgents) {
             const mgmtDir = path.join(sdkPluginsDir, "mgmt");
-            this._loadPluginDir(mgmtDir);
+            this._loadPluginDir(mgmtDir, "management");
         }
 
         // ── Tier 3: App plugins (from pluginDirs option) ─────────────
@@ -414,7 +424,7 @@ export class PilotSwarmWorker {
                 console.warn(`[PilotSwarmWorker] Plugin dir not found: ${absDir}`);
                 continue;
             }
-            this._loadPluginDir(absDir);
+            this._loadPluginDir(absDir, "app");
         }
 
         // ── Tier 4: Direct config (inline options override all) ──────
@@ -422,22 +432,34 @@ export class PilotSwarmWorker {
             this._loadedSkillDirs.push(...this.config.skillDirectories);
         }
         if (this.config.customAgents?.length) {
-            this._loadedAgents.push(...this.config.customAgents);
+            for (const agent of this.config.customAgents) {
+                this._rawLoadedAgents.push({ ...agent, promptLayerKind: "app-agent" });
+                this._agentPromptLookup[agent.name] = {
+                    prompt: agent.prompt,
+                    kind: "app-agent",
+                };
+            }
         }
         if (this.config.mcpServers) {
             Object.assign(this._loadedMcpServers, this.config.mcpServers);
         }
-
-        // ── Prepend system prompt to all agents ──────────────────────
-        if (this._defaultAgentPrompt) {
-            for (const agent of this._loadedAgents) {
-                agent.prompt = `${this._defaultAgentPrompt}\n\n---\n\n${agent.prompt}`;
-            }
-        }
+        this._appDefaultPrompt = mergePromptSections([
+            this._appDefaultPrompt,
+            this.config.systemMessage,
+        ]) ?? null;
+        this._loadedAgents = this._rawLoadedAgents.map((agent) => ({
+            ...agent,
+            prompt: composeSystemPrompt({
+                frameworkBase: this._frameworkBasePrompt,
+                appDefault: this._appDefaultPrompt,
+                activeAgentPrompt: agent.prompt,
+            }) ?? agent.prompt,
+        }));
 
         // ── Log summary ──────────────────────────────────────────────
         const parts: string[] = [];
-        if (this._defaultAgentPrompt) parts.push(`default agent (system message)`);
+        if (this._frameworkBasePrompt) parts.push(`framework base prompt`);
+        if (this._appDefaultPrompt) parts.push(`app default prompt overlay`);
         if (this._loadedSkillDirs.length > 0) parts.push(`${this._loadedSkillDirs.length} skill dir(s)`);
         if (this._loadedAgents.length > 0) parts.push(`${this._loadedAgents.length} agent(s): ${this._loadedAgents.map(a => a.name).join(", ")}`);
         if (this._loadedSystemAgents.length > 0) parts.push(`${this._loadedSystemAgents.length} system agent(s): ${this._loadedSystemAgents.map(a => a.name).join(", ")}`);
@@ -452,7 +474,7 @@ export class PilotSwarmWorker {
     /**
      * Load agents, skills, MCP config, and session policy from a single plugin directory.
      */
-    private _loadPluginDir(absDir: string): void {
+    private _loadPluginDir(absDir: string, layer: "system" | "management" | "app"): void {
         if (!fs.existsSync(absDir)) return;
 
         // Determine namespace from plugin.json name or directory basename
@@ -478,11 +500,25 @@ export class PilotSwarmWorker {
             for (const agent of agents) {
                 agent.namespace = namespace;
                 if (agent.name === "default") {
-                    this._defaultAgentPrompt = agent.prompt;
+                    if (layer === "system") {
+                        this._frameworkBasePrompt = agent.prompt;
+                    } else if (layer === "app") {
+                        this._appDefaultPrompt = agent.prompt;
+                    }
                 } else if (agent.system) {
+                    agent.promptLayerKind = layer === "management" ? "pilotswarm-system-agent" : "app-system-agent";
+                    this._agentPromptLookup[agent.name] = {
+                        prompt: agent.prompt,
+                        kind: agent.promptLayerKind,
+                    };
                     this._loadedSystemAgents.push(agent);
                 } else {
-                    this._loadedAgents.push(agent);
+                    agent.promptLayerKind = "app-agent";
+                    this._agentPromptLookup[agent.name] = {
+                        prompt: agent.prompt,
+                        kind: "app-agent",
+                    };
+                    this._rawLoadedAgents.push(agent);
                 }
             }
         }
@@ -539,13 +575,11 @@ export class PilotSwarmWorker {
                     continue;
                 }
 
-                const systemMessage = {
-                    mode: "replace" as const,
-                    content: agent.prompt,
-                };
-
                 const serializableConfig = {
-                    systemMessage,
+                    boundAgentName: agent.name,
+                    promptLayering: {
+                        kind: agent.promptLayerKind ?? (agent.namespace === "pilotswarm" ? "pilotswarm-system-agent" : "app-system-agent"),
+                    },
                     toolNames: agent.tools ?? undefined,
                 };
 

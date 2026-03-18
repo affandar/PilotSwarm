@@ -27,6 +27,13 @@ import { FilesystemSessionStore, SessionManager } from "../../dist/index.js";
 
 const TIMEOUT = 120_000;
 
+const EXPECTED_ONE_WORD_ANSWERS = [
+    ["2", "two", "Two"],
+    ["4", "four", "Four"],
+    ["6", "six", "Six"],
+    ["8", "eight", "Eight"],
+];
+
 // ─── Test: Two Workers Observe Same Session ──────────────────────
 
 async function testTwoWorkersObserveSession(env) {
@@ -157,13 +164,11 @@ async function testMultipleSessionsTwoWorkers(env) {
             "What is 3+3?",
             "What is 4+4?",
         ];
-        const expected = ["2", "4", "6", "8"];
-
         for (let i = 0; i < sessions.length; i++) {
             console.log(`  Session ${i + 1}: ${questions[i]}`);
             const response = await sessions[i].sendAndWait(questions[i], TIMEOUT);
             console.log(`  Response ${i + 1}: "${response}"`);
-            assertIncludes(response, expected[i], `Session ${i + 1} response`);
+            assertIncludesAny(response, EXPECTED_ONE_WORD_ANSWERS[i], `Session ${i + 1} response`);
         }
 
         // Verify all sessions appear in list

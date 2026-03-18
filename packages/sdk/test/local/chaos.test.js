@@ -235,7 +235,7 @@ async function testRapidWorkerStopStart(env) {
         console.log(`  Response: "${response}"`);
 
         assertNotNull(response, "Should get response after rapid restarts");
-        assertIncludes(response, "6", "Should compute correctly after rapid restarts");
+        assertIncludesAny(response, ["6", "six", "Six"], "Should compute correctly after rapid restarts");
 
         const v = await validateSessionAfterTurn(env, sessionId, { minIteration: 2 });
         console.log(`  [CMS] state=${v.cmsRow.state}, iter=${v.orchStatus.customStatus?.iteration}`);

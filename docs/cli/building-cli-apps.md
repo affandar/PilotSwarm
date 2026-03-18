@@ -16,7 +16,7 @@ This is different from the older `tui-apps.md` AppAdapter concept. Today, the su
 
 ## What The CLI Package Is
 
-`pilotswarm-cli` ships a terminal UI with two modes:
+`@affandar/pilotswarm-cli` ships a terminal UI with two modes:
 
 - `local` — embeds workers in the same process as the TUI
 - `remote` — runs only the client/TUI and connects to already-running workers
@@ -59,7 +59,7 @@ The plugin directory supplies:
 Pass it with:
 
 ```bash
-npx pilotswarm-cli --plugin ./plugin
+npx pilotswarm --plugin ./plugin
 ```
 
 ### 2. Worker module
@@ -69,7 +69,7 @@ The worker module supplies local worker-side code such as custom tools.
 Pass it with:
 
 ```bash
-npx pilotswarm-cli --plugin ./plugin --worker ./worker-tools.js
+npx pilotswarm --plugin ./plugin --worker ./worker-tools.js
 ```
 
 The module is loaded in local mode and can export:
@@ -118,7 +118,7 @@ Minimal `plugin.json` example:
 ## Minimal Worker Module
 
 ```js
-import { defineTool } from "pilotswarm";
+import { defineTool } from "@affandar/pilotswarm";
 
 const summarizeRepo = defineTool("summarize_repo", {
   description: "Summarize the current repository",
@@ -139,7 +139,7 @@ export default {
 ## Running Locally
 
 ```bash
-npx pilotswarm-cli local --env .env --plugin ./plugin --worker ./worker-tools.js
+npx pilotswarm local --env .env --plugin ./plugin --worker ./worker-tools.js
 ```
 
 In local mode:
@@ -153,7 +153,7 @@ This is the easiest way to build and test a CLI app.
 ## Running Against Remote Workers
 
 ```bash
-npx pilotswarm-cli remote --env .env.remote --store "$DATABASE_URL"
+npx pilotswarm remote --env .env.remote --store "$DATABASE_URL"
 ```
 
 In remote mode:
@@ -173,7 +173,7 @@ This is the most important CLI caveat.
 - skills
 - MCP config
 - local worker-side tools
-- model and system-message defaults
+- model and app-level default prompt overlays
 
 ### Harder / contributor-level
 

@@ -25,7 +25,7 @@
 
 import os from "node:os";
 import fs from "node:fs";
-import { PilotSwarmWorker } from "pilotswarm";
+import { PilotSwarmWorker } from "@affandar/pilotswarm";
 
 const logLevel = process.env.LOG_LEVEL || "info";
 const podName = process.env.POD_NAME || os.hostname();

@@ -36,7 +36,7 @@ If you want the CLI to feel like an app instead of stock PilotSwarm, also add `p
 
 ## Step 1: Write `default.agent.md`
 
-This is the base instruction set for all sessions started by the CLI workers.
+This is the app-wide default instruction layer for all sessions started by the CLI workers.
 
 ```md
 ---
@@ -96,7 +96,7 @@ Optional `tools.json`:
 If your agents need custom tools, the CLI still needs worker-side code for them.
 
 ```js
-import { defineTool } from "pilotswarm";
+import { defineTool } from "@affandar/pilotswarm";
 
 const webFetch = defineTool("web_fetch", {
   description: "Fetch a web page",
@@ -123,13 +123,13 @@ export default {
 ### Local mode
 
 ```bash
-npx pilotswarm-cli local --env .env --plugin ./plugin --worker ./worker-tools.js
+npx pilotswarm local --env .env --plugin ./plugin --worker ./worker-tools.js
 ```
 
 ### Remote mode
 
 ```bash
-npx pilotswarm-cli remote --env .env.remote --store "$DATABASE_URL"
+npx pilotswarm remote --env .env.remote --store "$DATABASE_URL"
 ```
 
 In remote mode, make sure the remote workers were deployed with the same plugin files and worker tool code.
@@ -158,7 +158,7 @@ Use system agents only when you really want background durable behavior. Named a
 
 ## Contracts Worth Remembering
 
-- `default.agent.md` is the always-on base prompt
+- `default.agent.md` is the app-wide default prompt layer under the embedded PilotSwarm framework base
 - named agents use `agent_name`, not `task`, when spawned by name
 - tool names in agent files do not implement the tools; worker code does
 - sub-agent model overrides should use exact `provider:model` values returned by `list_available_models`
