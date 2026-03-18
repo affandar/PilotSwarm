@@ -47,6 +47,9 @@ If you're building your own app on top of the runtime:
 ```bash
 cd your-project
 
+# Published npm package
+npm install pilotswarm-sdk
+
 # Option A: file reference (local development)
 npm install ../path/to/pilotswarm/packages/sdk
 
@@ -59,6 +62,12 @@ Either way, import from `pilotswarm-sdk`:
 
 ```typescript
 import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm-sdk";
+```
+
+If you want the shipped TUI in your app as well:
+
+```bash
+npm install pilotswarm-cli
 ```
 
 ---

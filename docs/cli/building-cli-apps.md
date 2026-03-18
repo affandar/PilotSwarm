@@ -12,6 +12,18 @@ The current CLI story is simple:
 - you provide a plugin directory
 - optionally, you provide a worker module with custom tools
 
+Install it from npm:
+
+```bash
+npm install pilotswarm-cli
+```
+
+If your app imports runtime symbols such as `defineTool`, also add:
+
+```bash
+npm install pilotswarm-sdk
+```
+
 This is different from the older `tui-apps.md` AppAdapter concept. Today, the supported path is plugin- and worker-module-driven.
 
 ## What The CLI Package Is
