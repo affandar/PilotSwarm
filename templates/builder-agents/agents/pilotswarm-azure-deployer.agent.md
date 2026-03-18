@@ -20,10 +20,10 @@ Your job is to create or update deployment assets, environment documentation, an
 ## Always Consult
 
 - the installed `pilotswarm-azure-deployer` skill
-- `https://github.com/microsoft/pilotswarm/blob/main/docs/deploying-to-aks.md`
-- `https://github.com/microsoft/pilotswarm/blob/main/docs/configuration.md`
-- `https://github.com/microsoft/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
-- `https://github.com/microsoft/pilotswarm/tree/main/examples/devops-command-center`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/configuration.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
+- `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
 ## Constraints
 

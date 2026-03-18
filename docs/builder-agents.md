@@ -39,19 +39,19 @@ cp -R templates/builder-agents/skills/* .github/skills/
 ## Canonical Public References
 
 - CLI guide:
-  `https://github.com/microsoft/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
 - CLI agent guide:
-  `https://github.com/microsoft/pilotswarm/blob/main/docs/cli/building-agents.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-agents.md`
 - SDK guide:
-  `https://github.com/microsoft/pilotswarm/blob/main/docs/sdk/building-apps.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
 - SDK agent guide:
-  `https://github.com/microsoft/pilotswarm/blob/main/docs/sdk/building-agents.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-agents.md`
 - Plugin architecture:
-  `https://github.com/microsoft/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
 - AKS deployment:
-  `https://github.com/microsoft/pilotswarm/blob/main/docs/deploying-to-aks.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
 - DevOps sample:
-  `https://github.com/microsoft/pilotswarm/tree/main/examples/devops-command-center`
+  `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
 ## Design Intent
 
