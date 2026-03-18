@@ -1,5 +1,7 @@
 # Local Integration Test Plan
 
+See also [local-test-spec.md](./local-test-spec.md) for the current file-by-file local test inventory, concrete assertions, and hardening ideas.
+
 This plan is for a comprehensive local test matrix that exercises the PilotSwarm runtime without the TUI.
 
 The target topology is:
