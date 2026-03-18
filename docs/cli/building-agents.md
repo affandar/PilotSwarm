@@ -2,6 +2,8 @@
 
 This is the agent-authoring guide for CLI/TUI-based apps.
 
+For a full reference plugin that uses named agents, system agents, skills, a session policy, and custom TUI branding, see [examples/devops-command-center](../../examples/devops-command-center).
+
 The good news is that the agent format is the same as the SDK path. The practical difference is how those files get loaded:
 
 - in local CLI mode, the TUI loads your plugin directory into embedded workers
@@ -29,6 +31,8 @@ worker-tools.js
 ```
 
 for custom tool handlers.
+
+If you want the CLI to feel like an app instead of stock PilotSwarm, also add `plugin.json` with a `tui.title` and `tui.splash` or `tui.splashFile`.
 
 ## Step 1: Write `default.agent.md`
 
@@ -158,6 +162,7 @@ Use system agents only when you really want background durable behavior. Named a
 - named agents use `agent_name`, not `task`, when spawned by name
 - tool names in agent files do not implement the tools; worker code does
 - sub-agent model overrides should use exact `provider:model` values returned by `list_available_models`
+- `initialPrompt` is treated as bootstrap session startup content, not as a normal user-authored chat line in the TUI
 
 See [Agent Contracts](../contracts/agent-contracts.md) for the authoritative version of these rules.
 

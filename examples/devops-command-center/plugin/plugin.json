@@ -1,0 +1,9 @@
+{
+  "name": "devops",
+  "description": "DevOps Command Center — incident response, deployments, and infrastructure management powered by PilotSwarm agents.",
+  "version": "1.0.0",
+  "tui": {
+    "title": "DevOps Command Center",
+    "splashFile": "./tui-splash.txt"
+  }
+}

@@ -1,0 +1,17 @@
+{bold}{cyan-fg}
+   ____             ____             
+  / __ \___ _   __ / __ \____  _____ 
+ / / / / _ \ | / // / / / __ \/ ___/ 
+{/cyan-fg}{magenta-fg}/ /_/ /  __/ |/ // /_/ / /_/ (__  )  
+/_____/\___/|___/ \____/ .___/____/   
+                       /_/            {/magenta-fg}{yellow-fg}
+   ______                                          
+  / ____/___  ____ ___  ____ ___  ____ _____  ____/ / 
+ / /   / __ \/ __ `__ \/ __ `__ \/ __ `/ __ \/ __  /  
+{/yellow-fg}{green-fg}/ /___/ /_/ / / / / / / / / / / / /_/ / / / / /_/ /   
+\____/\____/_/ /_/ /_/_/ /_/ /_/\__,_/_/ /_/\__,_/    {/green-fg}
+{/bold}
+
+  {bold}{white-fg}Incident Response · Deployments · Live Ops{/white-fg}{/bold}
+  {cyan-fg}Metrics{/cyan-fg} · {magenta-fg}Logs{/magenta-fg} · {yellow-fg}Rollbacks{/yellow-fg} · {green-fg}Approvals{/green-fg}
+  {gray-fg}Mock tools, real orchestration, durable sessions{/gray-fg}

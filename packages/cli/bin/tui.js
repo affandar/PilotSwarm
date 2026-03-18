@@ -22,6 +22,19 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.resolve(__dirname, "..");
+const defaultTuiSplashPath = path.join(pkgRoot, "cli", "tui-splash.txt");
+
+function readPluginMetadata(pluginDir) {
+    if (!pluginDir) return null;
+    const pluginJsonPath = path.join(pluginDir, "plugin.json");
+    if (!fs.existsSync(pluginJsonPath)) return null;
+    try {
+        return JSON.parse(fs.readFileSync(pluginJsonPath, "utf-8"));
+    } catch (err) {
+        console.error(`Failed to parse plugin metadata: ${pluginJsonPath}: ${err.message}`);
+        process.exit(1);
+    }
+}
 
 // ─── Parse CLI args ──────────────────────────────────────────────
 
@@ -177,6 +190,39 @@ function resolvePluginDir() {
     return null;
 }
 
+function resolveTuiBranding(pluginDir) {
+    const pluginMeta = readPluginMetadata(pluginDir);
+    const tui = pluginMeta?.tui;
+    let defaultSplash = "";
+    if (fs.existsSync(defaultTuiSplashPath)) {
+        defaultSplash = fs.readFileSync(defaultTuiSplashPath, "utf-8").trimEnd();
+    }
+    if (!tui || typeof tui !== "object") {
+        return {
+            title: "PilotSwarm",
+            splash: defaultSplash,
+        };
+    }
+
+    const title = typeof tui.title === "string" && tui.title.trim()
+        ? tui.title.trim()
+        : "PilotSwarm";
+
+    let splash = defaultSplash;
+    if (typeof tui.splash === "string" && tui.splash.trim()) {
+        splash = tui.splash;
+    } else if (typeof tui.splashFile === "string" && tui.splashFile.trim()) {
+        const splashPath = path.resolve(pluginDir, tui.splashFile);
+        if (!fs.existsSync(splashPath)) {
+            console.error(`TUI splash file not found: ${splashPath}`);
+            process.exit(1);
+        }
+        splash = fs.readFileSync(splashPath, "utf-8").trimEnd();
+    }
+
+    return { title, splash };
+}
+
 // ─── Build TUI config and set env vars ───────────────────────────
 
 // Store
@@ -195,6 +241,7 @@ const pluginDir = resolvePluginDir();
 if (pluginDir) {
     process.env.PLUGIN_DIRS = pluginDir;
 }
+const tuiBranding = resolveTuiBranding(pluginDir);
 
 // Model
 process.env.COPILOT_MODEL = flags.model || process.env.COPILOT_MODEL || "";
@@ -209,6 +256,8 @@ process.env.K8S_POD_LABEL = flags.label || process.env.K8S_POD_LABEL || "app.kub
 
 // System message
 process.env._TUI_SYSTEM_MESSAGE = resolveSystemMessage();
+process.env._TUI_TITLE = tuiBranding.title;
+process.env._TUI_SPLASH = tuiBranding.splash;
 
 // ─── Load custom worker module (local mode only) ─────────────────
 

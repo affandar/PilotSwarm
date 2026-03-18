@@ -2,6 +2,8 @@
 
 This is the canonical guide for building agents on PilotSwarm when you are using the SDK directly.
 
+For a complete worked example, see [examples/devops-command-center](../../examples/devops-command-center). It includes root and child system agents, named agents, skills, a session policy, and worker-side mock tools.
+
 If you only remember one thing, remember this:
 
 - prompts live in plugin files
@@ -150,6 +152,8 @@ You clean up stale sessions and report cluster hygiene.
 
 Use system agents only when you want durable background behavior. Most apps only need named agents.
 
+`initialPrompt` for a system agent is bootstrap startup content. It is sent automatically when the session is created, but it should not be treated as an ordinary user-authored chat line in the CLI/TUI.
+
 ## Step 6: Create sessions that can use the agents
 
 ```ts
@@ -205,6 +209,7 @@ If an agent wants to choose a different model for a sub-agent:
 - Assuming the client can execute tools
 - Using `task=` instead of `agent_name=` for known named agents
 - Letting prompts carry critical correctness without runtime validation
+- Treating a system agent's `initialPrompt` as user chat instead of startup/bootstrap behavior
 
 ## What To Read Next
 

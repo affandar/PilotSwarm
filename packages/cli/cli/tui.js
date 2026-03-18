@@ -47,19 +47,45 @@ function formatDisplayDateTime(value, opts = {}) {
     });
 }
 
-const STARTUP_SPLASH_CONTENT = [
-    "{bold}{cyan-fg}",
-    "    ____  _ __      __  _____                              ",
-    "   / __ \\(_) /___  / /_/ ___/      ______ __________ ___  ",
-    "{/cyan-fg}{magenta-fg}  / /_/ / / / __ \\/ __/\\__ \\ | /| / / __ `/ ___/ __ `__ \\",
-    " / ____/ / / /_/ / /_ ___/ / |/ |/ / /_/ / /  / / / / / /{/magenta-fg}",
-    "{yellow-fg}/_/   /_/_/\\____/\\__//____/|__/|__/\\__,_/_/  /_/ /_/ /_/ {/yellow-fg}",
-    "{/bold}",
-    "",
-    "  {bold}{white-fg}Durable AI Agent Orchestration{/white-fg}{/bold}",
-    "  {cyan-fg}Crash recovery{/cyan-fg} · {magenta-fg}Durable timers{/magenta-fg} · {yellow-fg}Sub-agents{/yellow-fg} · {green-fg}Multi-node scaling{/green-fg}",
-    "  {gray-fg}Powered by duroxide + GitHub Copilot SDK{/gray-fg}",
-].join("\n");
+const DEFAULT_TUI_SPLASH_PATH = path.join(__dirname, "tui-splash.txt");
+const STARTUP_SPLASH_CONTENT = fs.existsSync(DEFAULT_TUI_SPLASH_PATH)
+    ? fs.readFileSync(DEFAULT_TUI_SPLASH_PATH, "utf-8").trimEnd()
+    : "{bold}{white-fg}PilotSwarm{/white-fg}{/bold}";
+
+const BASE_TUI_TITLE = (process.env._TUI_TITLE || "PilotSwarm").trim() || "PilotSwarm";
+const CUSTOM_TUI_SPLASH = process.env._TUI_SPLASH?.trim() || "";
+const ACTIVE_STARTUP_SPLASH_CONTENT = CUSTOM_TUI_SPLASH || STARTUP_SPLASH_CONTENT;
+const HAS_CUSTOM_TUI_BRANDING = BASE_TUI_TITLE !== "PilotSwarm" || Boolean(CUSTOM_TUI_SPLASH);
+
+function formatWindowTitle(detail) {
+    return detail ? `${BASE_TUI_TITLE} (${detail})` : BASE_TUI_TITLE;
+}
+
+function applyProcessTitle(title) {
+    try {
+        process.title = title;
+    } catch {}
+}
+
+function applyTerminalTitle(title) {
+    try {
+        process.stdout.write(`\u001b]0;${title}\u0007`);
+        process.stdout.write(`\u001b]2;${title}\u0007`);
+    } catch {}
+}
+
+function applyWindowTitle(title) {
+    applyProcessTitle(title);
+    applyTerminalTitle(title);
+}
+
+function hideTerminalCursor() {
+    try { screen?.program?.hideCursor(); } catch {}
+}
+
+function showTerminalCursor() {
+    try { screen?.program?.showCursor(); } catch {}
+}
 // ─── Global error handlers ──────────────────────────────────────
 // Prevent the TUI from crashing on transient network errors
 // (e.g. EADDRNOTAVAIL from stale PostgreSQL connections).
@@ -275,7 +301,7 @@ function renderMarkdown(md) {
     try {
         // Dynamically set width to match chat pane (minus borders/padding)
         const mdWidth = Math.max(40, leftW() - 4);
-        marked.use(markedTerminal({ reflowText: true, width: mdWidth, showSectionPrefix: false, tab: 2, blockquote: chalk.whiteBright.italic, html: chalk.white, codespan: chalk.yellowBright }, { theme: cliHighlightTheme }));
+            marked.use(markedTerminal({ reflowText: true, width: mdWidth, showSectionPrefix: false, tab: 2, blockquote: chalk.whiteBright.italic, html: chalk.white, codespan: chalk.yellowBright }, { theme: cliHighlightTheme }));
         const unescaped = md.replace(/\\n/g, "\n");
         const preprocessed = preserveAsciiArtBlocks(unescaped);
         let rendered = marked(preprocessed).replace(/\n{3,}/g, "\n\n").trimEnd();
@@ -290,6 +316,10 @@ function renderMarkdown(md) {
         // Catch any remaining OSC 8 fragments
         rendered = rendered.replace(/\x1b\]8;;[^\x07]*\x07/g, "");
         rendered = rendered.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "");
+        // Fallback formatting for markdown-ish text that marked-terminal leaves untouched.
+        rendered = rendered.replace(/\*\*([^*\n][\s\S]*?)\*\*/g, "{bold}$1{/bold}");
+        rendered = rendered.replace(/__([^_\n][\s\S]*?)__/g, "{bold}$1{/bold}");
+        rendered = rendered.replace(/`([^`\n]+)`/g, "{yellow-fg}$1{/yellow-fg}");
         perfEnd(_ph, { len: md.length });
         return rendered;
     } catch {
@@ -390,12 +420,13 @@ const screen = blessed.screen({
     // smartCSR path here; partial repaints were leaving stale glyphs behind
     // after session switches and pane relayouts.
     smartCSR: false,
-    title: "PilotSwarm",
+    title: BASE_TUI_TITLE,
     fullUnicode: true,
     forceUnicode: true,
     mouse: true,
 });
 process.stderr.write = _origStderr;
+applyWindowTitle(BASE_TUI_TITLE);
 
 // ─── Coalescing render loop (Option B) ───────────────────────────
 // Instead of rendering on every screen.render() call (80+ sites),
@@ -525,7 +556,23 @@ setInterval(() => {
 let rightPaneAdjust = Math.floor(screen.width * 0.55 * 0.25); // start right pane at 3/4 of default
 function leftW() { return Math.floor(screen.width * 0.45) + rightPaneAdjust; }
 function rightW() { return screen.width - leftW(); }
-function bodyH() { return screen.height - 3; } // total body (minus input bar)
+const MIN_PROMPT_EDITOR_ROWS = 1;
+const MAX_PROMPT_EDITOR_ROWS = 8;
+let promptValueCache = "";
+
+function promptLineCount(text) {
+    return Math.max(1, String(text || "").split("\n").length);
+}
+
+function promptEditorRows() {
+    return Math.min(MAX_PROMPT_EDITOR_ROWS, Math.max(MIN_PROMPT_EDITOR_ROWS, promptLineCount(promptValueCache)));
+}
+
+function inputBarHeight() {
+    return promptEditorRows() + 2; // border + content rows
+}
+
+function bodyH() { return screen.height - inputBarHeight(); } // total body (minus input bar)
 function sessH() { return Math.max(5, Math.floor(bodyH() * 0.25)); }
 function chatH() { return bodyH() - sessH(); }
 function activityH() { return Math.max(6, Math.floor(bodyH() * 0.28)); } // sticky Activity pane height
@@ -540,6 +587,7 @@ const paneDefaultBorderFg = new Map(); // pane → original border fg color
 function registerFocusRing(pane, defaultFg) {
     paneDefaultBorderFg.set(pane, defaultFg);
     pane.on("focus", () => {
+        if (pane !== inputBar) hideTerminalCursor();
         pane.style.border.fg = FOCUS_BORDER_FG;
         pane.style.border.bold = true;
         if (pane.style.label) {
@@ -628,7 +676,7 @@ orchList.on("select item", () => {
 
 // Show contextual help when the orch list gains focus
 orchList.on("focus", () => {
-    setStatus("{yellow-fg}j/k navigate · Enter switch · +/- expand/collapse · n new · t title · c cancel · d delete · r refresh · q quit{/yellow-fg}");
+    setNavigationStatusForPane("sessions");
 });
 orchList.on("blur", () => {
     setStatus("Ready — type a message");
@@ -714,7 +762,7 @@ const paneColors = ["yellow", "magenta", "green", "blue"];
 let nextColorIdx = 0;
 
 // Log viewing mode: "workers" | "orchestration" | "sequence" | "nodemap"
-let logViewMode = "workers";
+let logViewMode = "orchestration";
 // Markdown viewer overlay — toggled independently via 'v' key.
 // When active, replaces the entire right side (log panes + activity pane).
 let mdViewActive = false;
@@ -935,7 +983,7 @@ function refreshMarkdownViewer() {
         }
     } else {
         mdPreviewPane.setLabel(" Preview ");
-        mdPreviewPane.setContent("{gray-fg}No markdown files found.\n\nFiles appear here when:\n  • An agent exports an artifact\n  • You press 'D' to dump a session{/gray-fg}");
+        mdPreviewPane.setContent("{gray-fg}No markdown files found.\n\nFiles appear here when:\n  • An agent exports an artifact\n  • You press 'u' to dump a session{/gray-fg}");
     }
     scheduleRender();
 }
@@ -1051,29 +1099,18 @@ function appendActivity(text, orchId) {
     }
 }
 
-function ensureSystemSplashBuffer(orchId) {
+function ensureSessionSplashBuffer(orchId) {
     const existing = sessionChatBuffers.get(orchId) || [];
-    const splashText = systemAgentSplash.get(orchId);
-    if (!systemSessionIds.has(orchId) || !splashText) return existing.length > 0 ? existing : null;
-
-    // Idempotency: if splash was already applied for this session, don't re-check or double-inject
-    if (sessionSplashApplied.has(orchId)) {
-        sessionChatBuffers.set(orchId, existing);
-        return existing;
-    }
+    const splashText = systemSplashText.get(orchId);
+    if (!splashText) return existing.length > 0 ? existing : null;
 
     const splashLines = splashText.split("\n");
     const hasSplashPrefix = existing.length >= splashLines.length
         && splashLines.every((line, idx) => existing[idx] === line);
-    if (!hasSplashPrefix) {
-        const merged = [...splashLines, "", ...existing];
-        sessionChatBuffers.set(orchId, merged);
-        sessionSplashApplied.add(orchId);
-        return merged;
-    }
+    const merged = hasSplashPrefix ? existing : [...splashLines, "", ...existing];
     sessionSplashApplied.add(orchId);
-    sessionChatBuffers.set(orchId, existing);
-    return sessionChatBuffers.get(orchId);
+    sessionChatBuffers.set(orchId, merged);
+    return merged;
 }
 
 /**
@@ -1244,6 +1281,13 @@ registerFocusRing(mdFileListPane, "green");
 registerFocusRing(mdPreviewPane, "green");
 registerFocusRing(activityPane, "gray");
 registerFocusRing(seqPane, "magenta");
+chatBox.on("focus", () => setNavigationStatusForPane("chat"));
+orchLogPane.on("focus", () => setNavigationStatusForPane("orchestration"));
+nodeMapPane.on("focus", () => setNavigationStatusForPane("nodemap"));
+mdFileListPane.on("focus", () => setNavigationStatusForPane("markdownList"));
+mdPreviewPane.on("focus", () => setNavigationStatusForPane("markdownPreview"));
+activityPane.on("focus", () => setNavigationStatusForPane("activity"));
+seqPane.on("focus", () => setNavigationStatusForPane("sequence"));
 // Worker panes are created dynamically — registered in getOrCreateWorkerPane()
 
 function addSeqNode(podName) {
@@ -1885,6 +1929,7 @@ function getOrCreateWorkerPane(podName) {
     workerPanes.set(podName, pane);
     workerPaneOrder.push(podName);
     registerFocusRing(pane, color);
+    pane.on("focus", () => setNavigationStatusForPane("workers"));
 
     // Register this pod as a sequence diagram column so all nodes
     // appear regardless of whether the active session has used them.
@@ -1920,11 +1965,22 @@ function pruneWorkerPanes(activePods) {
 function relayoutAll() {
     const lW = leftW(), rW = rightW(), bH = bodyH(), sH = sessH(), cH = chatH();
     const aH = activityH(), rmH = rightMainH();
+    const iH = inputBarHeight();
 
     // Left column: sessions on top, chat below
     orchList.left = 0; orchList.top = 0; orchList.width = lW; orchList.height = sH;
     chatBox.left = 0; chatBox.top = sH; chatBox.width = lW; chatBox.height = cH;
-    statusBar.left = 1; statusBar.width = lW - 2;
+    if (typeof statusBar !== "undefined" && statusBar) {
+        statusBar.left = 1;
+        statusBar.width = lW - 2;
+        statusBar.bottom = iH - 1;
+    }
+    if (typeof inputBar !== "undefined" && inputBar) {
+        inputBar.left = 0;
+        inputBar.width = "100%";
+        inputBar.height = iH;
+        inputBar.bottom = 0;
+    }
 
     // Activity pane: sticky bottom-right (always visible)
     activityPane.left = lW;
@@ -2028,7 +2084,7 @@ function redrawActiveViews() {
 
 // ─── Input bar ───────────────────────────────────────────────────
 
-const inputBar = blessed.textbox({
+const inputBar = blessed.textarea({
     parent: screen,
     label: " {bold}you:{/bold} ",
     tags: true,
@@ -2047,6 +2103,11 @@ const inputBar = blessed.textbox({
     mouse: true,
 });
 registerFocusRing(inputBar, "green");
+inputBar.on("focus", () => {
+    showTerminalCursor();
+    setNavigationStatusForPane(activeOrchId && sessionPendingQuestions.has(activeOrchId) ? "answer" : "prompt");
+});
+inputBar.on("blur", () => { hideTerminalCursor(); });
 
 // Guard against double readInput — neo-blessed starts a new readInput on each
 // focus() call when inputOnFocus=true. If the textbox is already focused and
@@ -2056,6 +2117,221 @@ function focusInput() {
     if (screen.focused === inputBar) return; // already focused & reading
     inputBar.focus();
 }
+
+let inputCursorIndex = 0;
+
+function clampInputCursor(index, value = inputBar.getValue()) {
+    return Math.max(0, Math.min(index, String(value || "").length));
+}
+
+function getInputInnerWidth() {
+    const numericWidth = typeof inputBar.width === "number" ? inputBar.width : screen.width;
+    return Math.max(1, numericWidth - (inputBar.iwidth || 2));
+}
+
+function getCursorVisualPosition(value, cursorIndex) {
+    const text = String(value || "");
+    const width = getInputInnerWidth();
+    let row = 0;
+    let col = 0;
+
+    for (let i = 0; i < clampInputCursor(cursorIndex, text); i++) {
+        const ch = text[i];
+        if (ch === "\n") {
+            row += 1;
+            col = 0;
+            continue;
+        }
+        col += 1;
+        if (col >= width) {
+            row += 1;
+            col = 0;
+        }
+    }
+
+    return { row, col };
+}
+
+function syncInputLayout() {
+    promptValueCache = String(inputBar.getValue() || "");
+    const desiredHeight = inputBarHeight();
+    if (inputBar.height !== desiredHeight || statusBar.bottom !== desiredHeight - 1) {
+        relayoutAll();
+    } else if (slashPicker) {
+        slashPicker.bottom = inputBarHeight();
+    }
+}
+
+function setInputValue(value, cursorIndex = String(value || "").length) {
+    promptValueCache = String(value || "");
+    inputBar.setValue(promptValueCache);
+    inputCursorIndex = clampInputCursor(cursorIndex, promptValueCache);
+    syncInputLayout();
+    inputBar._updateCursor();
+}
+
+function insertInputText(text) {
+    const value = String(inputBar.getValue() || "");
+    const nextValue = value.slice(0, inputCursorIndex) + text + value.slice(inputCursorIndex);
+    setInputValue(nextValue, inputCursorIndex + text.length);
+}
+
+function deleteInputBackward() {
+    const value = String(inputBar.getValue() || "");
+    if (inputCursorIndex <= 0) return;
+    setInputValue(value.slice(0, inputCursorIndex - 1) + value.slice(inputCursorIndex), inputCursorIndex - 1);
+}
+
+function deleteInputForward() {
+    const value = String(inputBar.getValue() || "");
+    if (inputCursorIndex >= value.length) return;
+    setInputValue(value.slice(0, inputCursorIndex) + value.slice(inputCursorIndex + 1), inputCursorIndex);
+}
+
+function moveCursorLeft() {
+    inputCursorIndex = clampInputCursor(inputCursorIndex - 1);
+    inputBar._updateCursor();
+    screen.render();
+}
+
+function moveCursorRight() {
+    inputCursorIndex = clampInputCursor(inputCursorIndex + 1);
+    inputBar._updateCursor();
+    screen.render();
+}
+
+function getPreviousWordBoundary(value, fromIndex) {
+    let index = clampInputCursor(fromIndex, value);
+    while (index > 0 && /\s/.test(value[index - 1])) index -= 1;
+    while (index > 0 && !/\s/.test(value[index - 1])) index -= 1;
+    return index;
+}
+
+function getNextWordBoundary(value, fromIndex) {
+    let index = clampInputCursor(fromIndex, value);
+    while (index < value.length && /\s/.test(value[index])) index += 1;
+    while (index < value.length && !/\s/.test(value[index])) index += 1;
+    return index;
+}
+
+function moveCursorWordLeft() {
+    const value = String(inputBar.getValue() || "");
+    inputCursorIndex = getPreviousWordBoundary(value, inputCursorIndex);
+    inputBar._updateCursor();
+    screen.render();
+}
+
+function moveCursorWordRight() {
+    const value = String(inputBar.getValue() || "");
+    inputCursorIndex = getNextWordBoundary(value, inputCursorIndex);
+    inputBar._updateCursor();
+    screen.render();
+}
+
+function deleteInputWordBackward() {
+    const value = String(inputBar.getValue() || "");
+    const boundary = getPreviousWordBoundary(value, inputCursorIndex);
+    if (boundary === inputCursorIndex) return;
+    setInputValue(value.slice(0, boundary) + value.slice(inputCursorIndex), boundary);
+}
+
+inputBar.clearValue = function clearPromptValue() {
+    setInputValue("", 0);
+};
+
+inputBar._updateCursor = function updatePromptCursor(get) {
+    if (screen.focused !== inputBar) return;
+
+    const lpos = get ? inputBar.lpos : inputBar._getCoords();
+    if (!lpos) return;
+
+    const program = screen.program;
+    const value = String(inputBar.getValue() || "");
+    const { row, col } = getCursorVisualPosition(value, inputCursorIndex);
+    const visibleRows = Math.max(1, inputBar.height - inputBar.iheight);
+
+    if (row < (inputBar.childBase || 0)) {
+        inputBar.scrollTo(row);
+    } else if (row >= (inputBar.childBase || 0) + visibleRows) {
+        inputBar.scrollTo(row - visibleRows + 1);
+    }
+
+    const visibleRow = row - (inputBar.childBase || 0);
+    const cy = lpos.yi + inputBar.itop + Math.max(0, visibleRow);
+    const cx = lpos.xi + inputBar.ileft + col;
+    program.cup(cy, cx);
+};
+
+inputBar._listener = function promptInputListener(ch, key) {
+    if (!key) return;
+    const value = String(inputBar.getValue() || "");
+    const isMetaEnter = (key.meta && (key.name === "enter" || key.name === "return"))
+        || key.sequence === "\x1b\r"
+        || key.sequence === "\x1b\n";
+    const isMetaBackspace = (key.meta && key.name === "backspace")
+        || key.sequence === "\x1b\x7f";
+    const isWordLeft = (key.meta && (key.name === "left" || key.name === "b"))
+        || key.sequence === "\x1bb";
+    const isWordRight = (key.meta && (key.name === "right" || key.name === "f"))
+        || key.sequence === "\x1bf";
+
+    if (key.name === "escape") {
+        inputBar._done(null, null);
+        return;
+    }
+    if (key.name === "enter" || key.name === "return") {
+        if (isMetaEnter) {
+            insertInputText("\n");
+            screen.render();
+            return;
+        }
+        inputBar._done(null, value);
+        return;
+    }
+    if (isWordLeft) {
+        moveCursorWordLeft();
+        return;
+    }
+    if (isWordRight) {
+        moveCursorWordRight();
+        return;
+    }
+    if (key.name === "left") {
+        moveCursorLeft();
+        return;
+    }
+    if (key.name === "right") {
+        moveCursorRight();
+        return;
+    }
+    if (isMetaBackspace) {
+        deleteInputWordBackward();
+        screen.render();
+        return;
+    }
+    if (key.name === "backspace") {
+        deleteInputBackward();
+        screen.render();
+        return;
+    }
+    if (key.name === "delete") {
+        deleteInputForward();
+        screen.render();
+        return;
+    }
+    if (ch === "/" && value === "") {
+        insertInputText(ch);
+        setImmediate(() => {
+            if (!slashPicker) showSlashPicker();
+        });
+        screen.render();
+        return;
+    }
+    if (ch && !/^[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]$/.test(ch)) {
+        insertInputText(ch);
+        screen.render();
+    }
+};
 
 // ─── Slash command picker ────────────────────────────────────────
 const slashCommands = [
@@ -2082,7 +2358,7 @@ function showSlashPicker() {
 
     slashPicker = blessed.box({
         parent: screen,
-        bottom: 3,
+        bottom: inputBarHeight(),
         left: 1,
         width: 50,
         height: slashCommands.length + 2,
@@ -2113,7 +2389,7 @@ function showSlashPicker() {
         } else if (key.name === "return" || key.name === "enter") {
             const cmd = slashCommands[selectedIdx];
             dismissSlashPicker();
-            inputBar.setValue(cmd.name + (cmd.name === "/model" ? " " : ""));
+            setInputValue(cmd.name + (cmd.name === "/model" ? " " : ""));
             focusInput();
             screen.render();
             if (cmd.name !== "/model") {
@@ -2146,35 +2422,6 @@ function dismissSlashPicker() {
     }
 }
 
-// Alt+Backspace: delete word backwards in input bar
-inputBar.on("keypress", (ch, key) => {
-    if (!key) return;
-
-    // Show slash command picker when "/" is typed into an empty input bar
-    if (ch === "/" && inputBar.getValue() === "") {
-        // Let the "/" stay in the input bar — don't clear it
-        setImmediate(() => {
-            showSlashPicker();
-        });
-        return;
-    }
-
-    // Alt+Backspace shows up as meta+backspace or as \x1B (escape char) + backspace
-    const isAltBackspace = (key.meta && key.name === "backspace") ||
-        (key.name === "backspace" && key.sequence === "\x1b\x7f");
-    if (!isAltBackspace) return;
-
-    const val = inputBar.getValue();
-    // Find cursor position — neo-blessed textbox doesn't expose cursor,
-    // so we assume cursor is at end (most common case)
-    const before = val;
-    // Delete backwards: strip trailing spaces, then strip non-space chars
-    const trimmed = before.replace(/\s+$/, "");
-    const wordRemoved = trimmed.replace(/\S+$/, "");
-    inputBar.setValue(wordRemoved);
-    screen.render();
-});
-
 // ─── Status bar (bottom of chat column, above input) ─────────────
 
 const statusBar = blessed.box({
@@ -2188,8 +2435,10 @@ const statusBar = blessed.box({
     style: { fg: "gray" },
 });
 
+syncInputLayout();
 relayoutAll();
 screen.render();
+hideTerminalCursor();
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -2304,6 +2553,23 @@ function setStatus(text) {
     scheduleRender();
 }
 
+function setNavigationStatusForPane(kind) {
+    const hints = {
+        sessions: "{yellow-fg}j/k navigate · Enter switch · +/- expand/collapse · n new · t title · c cancel · d delete · r refresh · ? help · Esc then q quit{/yellow-fg}",
+        chat: "{yellow-fg}j/k scroll · g/G top/bottom · e expand history · p prompt · ? help · Esc then q quit{/yellow-fg}",
+        activity: "{yellow-fg}j/k scroll activity · g/G top/bottom · p prompt · ? help · Esc then q quit{/yellow-fg}",
+        orchestration: "{yellow-fg}j/k scroll logs · g/G top/bottom · m cycle log mode · p prompt · ? help · Esc then q quit{/yellow-fg}",
+        workers: "{yellow-fg}j/k scroll worker logs · g/G top/bottom · m cycle log mode · p prompt · ? help · Esc then q quit{/yellow-fg}",
+        sequence: "{yellow-fg}j/k scroll sequence · g/G top/bottom · m cycle log mode · p prompt · ? help · Esc then q quit{/yellow-fg}",
+        nodemap: "{yellow-fg}j/k scroll node map · g/G top/bottom · m cycle log mode · p prompt · ? help · Esc then q quit{/yellow-fg}",
+        markdownList: "{yellow-fg}j/k choose file · Enter preview · d delete file · v exit viewer · ? help · Esc then q quit{/yellow-fg}",
+        markdownPreview: "{yellow-fg}j/k scroll preview · g/G top/bottom · Ctrl+D/U page · o open · y copy path · v exit viewer · ? help{/yellow-fg}",
+        prompt: "{yellow-fg}Type a message · Opt+Enter newline · Opt+←/→ word move · Opt+Backspace word delete · Esc for navigation mode{/yellow-fg}",
+        answer: "{yellow-fg}Type your answer · Opt+Enter newline · Opt+←/→ word move · Opt+Backspace word delete · Esc for navigation mode{/yellow-fg}",
+    };
+    setStatus(hints[kind] || hints.chat);
+}
+
 function appendLog(text) {
     // Route through appendChatRaw so it goes into the session buffer
     // and gets rendered by the frame loop (no direct chatBox.log)
@@ -2414,6 +2680,22 @@ function shouldSkipCompletedTurnResult(raw, orchId) {
     return Boolean(normalized && promoted && normalized === promoted);
 }
 
+function isBootstrapPromptForSession(text, orchId) {
+    const normalized = normalizeObserverChatText(text);
+    if (!normalized) return false;
+    const agentId = sessionAgentIds.get(orchId);
+    if (agentId) {
+        const agent = _workerLoadedAgents.find((candidate) => candidate.id === agentId || candidate.name === agentId);
+        if (agent?.initialPrompt && normalizeObserverChatText(agent.initialPrompt) === normalized) {
+            return true;
+        }
+    }
+    return _workerLoadedAgents.some((candidate) => {
+        if (!candidate?.initialPrompt) return false;
+        return normalizeObserverChatText(candidate.initialPrompt) === normalized;
+    });
+}
+
 // Track whether sequence view has been seeded from CMS for a session.
 const seqCmsSeededSessions = new Set();
 
@@ -2502,8 +2784,11 @@ async function loadCmsHistory(orchId) {
             // arrived while we were fetching from CMS (race condition that
             // causes empty chat on first switch to a session).
             const existing = sessionChatBuffers.get(orchId);
-            if (!existing || existing.length === 0) {
-                const splashLines = ensureSystemSplashBuffer(orchId);
+            const isLoadingPlaceholder = existing
+                && existing.length === 1
+                && /Loading/.test(existing[0]);
+            if (!existing || existing.length === 0 || isLoadingPlaceholder) {
+                const splashLines = ensureSessionSplashBuffer(orchId);
                 if (!splashLines) {
                     sessionChatBuffers.set(orchId, []);
                 }
@@ -2559,7 +2844,7 @@ async function loadCmsHistory(orchId) {
             const timeStr = fmtTime(evt.createdAt);
             if (type === "user.message") {
                 const content = stripHostPrefix(evt.data?.content);
-                if (content && !content.startsWith("[SYSTEM:") && !isTimerPrompt(content)) {
+                if (content && !content.startsWith("[SYSTEM:") && !isTimerPrompt(content) && !isBootstrapPromptForSession(content, orchId)) {
                     // Format CHILD_UPDATE messages as distinct cards
                     const childMatch = content.match(/^\[CHILD_UPDATE from=(\S+) type=(\S+)(?:\s+iter=(\d+))?\]\n?(.*)$/s);
                     if (childMatch) {
@@ -2661,23 +2946,13 @@ async function loadCmsHistory(orchId) {
             lines.push("");
         }
 
-        // For system sessions, show the splash banner at the top of the chat
-        if (systemSessionIds.has(orchId) && !sessionSplashApplied.has(orchId)) {
-            // Try to preserve existing splash from the buffer
-            const existing = sessionChatBuffers.get(orchId);
-            let splashInjected = false;
-            if (existing && existing.length > 0) {
-                const splashEndIdx = existing.findIndex(l => l.includes("━━━━━━━━━"));
-                if (splashEndIdx >= 0) {
-                    const splashLines = existing.slice(0, splashEndIdx + 2); // +2 to include separator + blank
-                    lines.unshift(...splashLines);
-                    splashInjected = true;
-                }
-            }
-            // If no splash was in the buffer, inject from CMS-sourced splash map
-            if (!splashInjected && systemAgentSplash.has(orchId)) {
-                const splashText = systemAgentSplash.get(orchId);
-                const splashLines = splashText.split("\n");
+        // For any session with splash metadata, keep the splash banner at the top of the chat
+        if (systemSplashText.has(orchId)) {
+            const splashText = systemSplashText.get(orchId);
+            const splashLines = splashText.split("\n");
+            const hasSplashPrefix = lines.length >= splashLines.length
+                && splashLines.every((line, idx) => lines[idx] === line);
+            if (!hasSplashPrefix) {
                 lines.unshift(...splashLines, "");
             }
             sessionSplashApplied.add(orchId);
@@ -2743,12 +3018,16 @@ const numWorkers = parseInt(process.env.WORKERS ?? "4", 10);
 const isRemote = numWorkers === 0;
 
 if (isRemote) {
-    screen.title = "PilotSwarm (Scaled — Remote Workers)";
+    const title = formatWindowTitle("Scaled — Remote Workers");
+    screen.title = title;
+    applyWindowTitle(title);
     appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (AKS Workers){/magenta-fg}");
     appendLog(`{bold}Store:{/bold} {green-fg}Remote PostgreSQL{/green-fg}`);
     appendLog("{bold}Runtime:{/bold} {yellow-fg}AKS pods (remote){/yellow-fg}");
 } else {
-    screen.title = `PilotSwarm (${numWorkers} Embedded Workers)`;
+    const title = formatWindowTitle(`${numWorkers} Embedded Workers`);
+    screen.title = title;
+    applyWindowTitle(title);
     appendLog("{bold}Mode:{/bold} {magenta-fg}Scaled (Embedded Workers){/magenta-fg}");
     appendLog(`{bold}Store:{/bold} {green-fg}${store.includes("postgres") ? "Remote PostgreSQL" : store}{/green-fg}`);
     appendLog(`{bold}Workers:{/bold} {yellow-fg}${numWorkers} local runtimes{/yellow-fg}`);
@@ -2821,6 +3100,7 @@ if (!isRemote) {
             ...(cmsSchema ? { cmsSchema } : {}),
             githubToken: process.env.GITHUB_TOKEN,
             logLevel: process.env.LOG_LEVEL || "error",
+            sessionStateDir: process.env.SESSION_STATE_DIR || path.join(os.homedir(), ".copilot", "session-state"),
             blobConnectionString: workerModuleConfig.blobConnectionString || process.env.AZURE_STORAGE_CONNECTION_STRING,
             blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
             workerNodeId: `local-rt-${i}`,
@@ -2974,12 +3254,25 @@ if (!modelProviders) {
     // Will be populated from mgmt.getModelsByProvider() after mgmt.start()
 }
 
+// Capture session policy + agent list from the first worker
+const _workerSessionPolicy = workers[0]?.sessionPolicy || null;
+const _workerAllowedAgentNames = workers[0]?.allowedAgentNames || [];
+const _workerLoadedAgents = workers[0]?.loadedAgents || [];
+if (_workerSessionPolicy) {
+    appendLog(`Session policy: mode=${_workerSessionPolicy.creation?.mode || "open"}, allowGeneric=${_workerSessionPolicy.creation?.allowGeneric ?? true}`);
+}
+if (_workerAllowedAgentNames.length > 0) {
+    appendLog(`Available agents: ${_workerAllowedAgentNames.join(", ")}`);
+}
+
 // 2. Start the thin client (for creating orchestrations / reading status)
 const client = new PilotSwarmClient({
     store,
     blobEnabled: true,
     ...(duroxideSchema ? { duroxideSchema } : {}),
     ...(cmsSchema ? { cmsSchema } : {}),
+    ...(_workerSessionPolicy ? { sessionPolicy: _workerSessionPolicy } : {}),
+    ...(_workerAllowedAgentNames.length > 0 ? { allowedAgentNames: _workerAllowedAgentNames } : {}),
 });
 
 // 3. Start the management client (for session listing, admin, models)
@@ -3011,7 +3304,7 @@ screen.key(["q"], _startupQHandler);
 setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
 
 // Show splash immediately so the user sees something during DB connection
-chatBox.setContent(`${STARTUP_SPLASH_CONTENT}\n\n  {white-fg}Connecting...{/white-fg}`);
+chatBox.setContent(`${ACTIVE_STARTUP_SPLASH_CONTENT}\n\n  {white-fg}Connecting...{/white-fg}`);
 _origRender();
 
 // Start both clients with retry — they each open their own PG pool.
@@ -3047,7 +3340,7 @@ while (true) {
 
     const msg = String(err?.message || err || "Unknown database error");
     setStatus(`Database unavailable — retrying in 30s (${msg.slice(0, 80)})`);
-    chatBox.setContent(`${STARTUP_SPLASH_CONTENT}\n\n  {yellow-fg}Database unavailable.{/yellow-fg}\n  {white-fg}${msg}{/white-fg}\n\n  {gray-fg}Retrying connection in 30 seconds... (press q or Ctrl+C to quit){/gray-fg}`);
+    chatBox.setContent(`${ACTIVE_STARTUP_SPLASH_CONTENT}\n\n  {yellow-fg}Database unavailable.{/yellow-fg}\n  {white-fg}${msg}{/white-fg}\n\n  {gray-fg}Retrying connection in 30 seconds... (press q or Ctrl+C to quit){/gray-fg}`);
     _origRender();
 
     // Interruptible sleep — check every 500ms if the user pressed quit
@@ -3429,15 +3722,23 @@ function getCollapseBadge(orchId) {
 
 function canonicalSystemTitleFromSessionView(sv, orchId) {
     const agentId = sv?.agentId || sessionAgentIds.get(orchId) || "";
-    if (agentId === "pilotswarm") return "PilotSwarm Agent";
+    if (agentId === "pilotswarm") return HAS_CUSTOM_TUI_BRANDING ? BASE_TUI_TITLE : "PilotSwarm Agent";
     if (agentId === "sweeper") return "Sweeper Agent";
     if (agentId === "resourcemgr") return "Resource Manager Agent";
 
     const rawTitle = sv?.title || sessionHeadings.get(orchId) || "";
-    if (/^pilotswarm agent$/i.test(rawTitle)) return "PilotSwarm Agent";
+    if (/^pilotswarm agent$/i.test(rawTitle)) return HAS_CUSTOM_TUI_BRANDING ? BASE_TUI_TITLE : "PilotSwarm Agent";
     if (/^sweeper agent$/i.test(rawTitle) || /^sweeper$/i.test(rawTitle)) return "Sweeper Agent";
     if (/^resource manager agent$/i.test(rawTitle) || /^resourcemgr$/i.test(rawTitle)) return "Resource Manager Agent";
     return rawTitle;
+}
+
+function brandedSplashForSessionView(sv, orchId) {
+    const agentId = sv?.agentId || sessionAgentIds.get(orchId) || "";
+    if (agentId === "pilotswarm" && HAS_CUSTOM_TUI_BRANDING) {
+        return ACTIVE_STARTUP_SPLASH_CONTENT;
+    }
+    return sv?.splash || "";
 }
 
 async function refreshOrchestrations(force = false) {
@@ -3516,12 +3817,13 @@ async function refreshOrchestrations(force = false) {
         }
 
         // Splash from CMS — store and pre-populate chat buffer on first discovery
-        if (sv.splash && !systemAgentSplash.has(id)) {
-            systemAgentSplash.set(id, sv.splash);
+        const splashText = brandedSplashForSessionView(sv, id);
+        if (splashText && !systemSplashText.has(id)) {
+            systemSplashText.set(id, splashText);
             if (!sessionChatBuffers.has(id) || sessionChatBuffers.get(id).length === 0) {
                 sessionChatBuffers.set(id, []);
                 const buf = sessionChatBuffers.get(id);
-                for (const line of sv.splash.split("\n")) {
+                for (const line of splashText.split("\n")) {
                     buf.push(line);
                 }
                 buf.push("");
@@ -3593,7 +3895,15 @@ async function refreshOrchestrations(force = false) {
     });
     const orderedEntries = [];
     // System sessions go first (sorted among themselves by createdAt)
-    const systemRoots = rootEntries.filter(e => systemSessionIds.has(e.id));
+    const baseSystemAgentIds = new Set(["pilotswarm", "sweeper", "resourcemgr"]);
+    const systemRoots = rootEntries
+        .filter(e => systemSessionIds.has(e.id))
+        .sort((a, b) => {
+            const aBase = baseSystemAgentIds.has(sessionAgentIds.get(a.id) || "") ? 0 : 1;
+            const bBase = baseSystemAgentIds.has(sessionAgentIds.get(b.id) || "") ? 0 : 1;
+            if (aBase !== bBase) return aBase - bBase;
+            return b.createdAt - a.createdAt;
+        });
     const normalRoots = rootEntries.filter(e => !systemSessionIds.has(e.id));
     orchCollapsedCount = new Map();
     orchDescendantCount = new Map();
@@ -3773,8 +4083,27 @@ const perfSummaryInterval = setInterval(() => {
 }, 30_000);
 
 // Orchestrations panel key handlers
+async function requestQuit() {
+    if (shutdownInProgress) return;
+    shutdownInProgress = true;
+
+    const message = isRemote
+        ? "Shutting down client cleanly..."
+        : "Waiting for embedded workers to shut down cleanly...";
+    setStatus(`{yellow-fg}${message}{/yellow-fg}`);
+    appendLog(`{yellow-fg}${message}{/yellow-fg}`);
+    screen.render();
+
+    try {
+        await cleanup();
+        process.exit(0);
+    } catch {
+        process.exit(1);
+    }
+}
+
 orchList.key(["q"], () => {
-    cleanup().then(() => process.exit(0));
+    requestQuit();
 });
 
 orchList.key(["c"], async () => {
@@ -3831,6 +4160,150 @@ orchList.key(["enter"], async () => {
 });
 
 orchList.key(["n"], async () => {
+    // If agents are available, show an agent picker
+    const policy = _workerSessionPolicy;
+    const agents = _workerLoadedAgents;
+    const allowGeneric = policy?.creation?.allowGeneric ?? true;
+
+    if (agents.length > 0) {
+        const agentChoices = [];
+        if (allowGeneric) {
+            agentChoices.push({
+                name: null,
+                title: "Generic Session",
+                description: "Open-ended PilotSwarm session with no specialized agent boundary.",
+                splash: "{bold}{white-fg}Generic Session{/white-fg}{/bold}\n\nUse this only for open-ended work. Named agents are safer and more intentional.",
+                tools: [],
+            });
+        }
+        for (const agent of agents) {
+            agentChoices.push({
+                name: agent.name,
+                title: agent.title || agent.name,
+                description: agent.description || "",
+                splash: agent.splash || null,
+                initialPrompt: agent.initialPrompt || null,
+                tools: Array.isArray(agent.tools) ? agent.tools : [],
+            });
+        }
+
+        const modal = blessed.box({
+            parent: screen,
+            label: " {bold}Select agent for new session{/bold} ",
+            tags: true,
+            top: "center",
+            left: "center",
+            width: "84%",
+            height: 22,
+            border: { type: "line" },
+            style: { border: { fg: "cyan" } },
+        });
+
+        const picker = blessed.list({
+            parent: modal,
+            tags: true,
+            top: 0,
+            left: 0,
+            width: "38%",
+            height: "100%-1",
+            border: { type: "line" },
+            style: {
+                border: { fg: "cyan" },
+                selected: { bg: "cyan", fg: "black", bold: true },
+                item: { fg: "white" },
+            },
+            items: agentChoices.map(a => `  ${a.name || "(generic)"}${a.description ? ` — ${a.description}` : ""}`),
+            keys: true,
+            vi: true,
+            mouse: true,
+            scrollable: true,
+        });
+
+        const preview = blessed.box({
+            parent: modal,
+            label: " {bold}Preview{/bold} ",
+            tags: true,
+            top: 0,
+            left: "38%",
+            width: "62%",
+            height: "72%",
+            border: { type: "line" },
+            scrollable: true,
+            alwaysScroll: true,
+            style: { border: { fg: "cyan" } },
+        });
+
+        const details = blessed.box({
+            parent: modal,
+            label: " {bold}Details{/bold} ",
+            tags: true,
+            top: "72%",
+            left: "38%",
+            width: "62%",
+            height: "28%-1",
+            border: { type: "line" },
+            style: { border: { fg: "cyan" } },
+        });
+
+        const renderAgentChoice = (index) => {
+            const choice = agentChoices[index] || agentChoices[0];
+            const splash = buildAgentPickerSplash(choice);
+            preview.setContent(splash);
+            const toolLine = choice?.tools?.length ? choice.tools.join(", ") : "system defaults only";
+            details.setContent(
+                `{bold}${choice?.title || "Agent"}{/bold}\n\n` +
+                `${choice?.description || "No description provided."}\n\n` +
+                `{gray-fg}Tools:{/gray-fg} ${toolLine}`,
+            );
+            screen.render();
+        };
+
+        picker.focus();
+        renderAgentChoice(0);
+        screen.render();
+
+        picker.on("select item", () => {
+            renderAgentChoice(picker.selected);
+        });
+
+        picker.on("keypress", () => {
+            setImmediate(() => renderAgentChoice(picker.selected));
+        });
+
+        picker.on("select", async (item, index) => {
+            const choice = agentChoices[index];
+            modal.detach();
+            screen.render();
+
+            try {
+                let sess;
+                if (choice?.name) {
+                    sess = await createNewSessionForAgent(choice.name, choice.initialPrompt, buildAgentPickerSplash(choice), choice.title);
+                    appendLog(`{green-fg}New ${choice.name} session: ${shortId(sess.sessionId)}…{/green-fg}`);
+                } else {
+                    sess = await createNewSession();
+                    appendLog(`{green-fg}New session: ${shortId(sess.sessionId)}…{/green-fg}`);
+                }
+                const orchId = `session-${sess.sessionId}`;
+                knownOrchestrationIds.add(orchId);
+                await switchToOrchestration(orchId);
+                await refreshOrchestrations();
+                focusInput();
+                screen.render();
+            } catch (err) {
+                appendLog(`{red-fg}Create failed: ${err.message}{/red-fg}`);
+            }
+        });
+
+        picker.key(["escape", "q"], () => {
+            modal.detach();
+            orchList.focus();
+            screen.render();
+        });
+        return;
+    }
+
+    // No agents loaded — create generic session directly
     try {
         const sess = await createNewSession();
         const orchId = `session-${sess.sessionId}`;
@@ -4196,6 +4669,7 @@ if (isRemote) {
 // Map sessionId → PilotSwarmSession object
 const sessions = new Map();
 const sessionModels = new Map(); // orchId → model name used for that session
+let shutdownInProgress = false;
 
 // currentModel is declared earlier (before model providers loading)
 
@@ -4240,6 +4714,99 @@ function resolvePendingDoneCommand(orchId, error) {
     return false;
 }
 
+async function createNewSessionForAgent(agentName, initialPrompt, splash, title) {
+    let sessionOrchId = null;
+    const sess = await client.createSessionForAgent(agentName, {
+        ...(currentModel ? { model: currentModel } : {}),
+        toolNames: ["write_artifact", "export_artifact", "read_artifact"],
+        ...(title ? { title } : {}),
+        ...(splash ? { splash } : {}),
+        ...(initialPrompt ? { initialPrompt } : {}),
+        onUserInputRequest: async (request) => {
+            return new Promise((resolve, reject) => {
+                const q = request.question || "?";
+                const targetOrchId = sessionOrchId || activeOrchId;
+                appendChatRaw(`{magenta-fg}[?] ${q}{/magenta-fg}`, targetOrchId);
+                setSessionPendingQuestion(targetOrchId, q);
+                setPendingUserInputRequest(targetOrchId, { resolve, reject });
+                sessionLiveStatus.set(targetOrchId, "input_required");
+                if (targetOrchId !== activeOrchId) {
+                    orchHasChanges.add(targetOrchId);
+                } else {
+                    setStatus("Waiting for your answer...");
+                    focusInput();
+                }
+                updateSessionListIcons();
+                syncInputBarMode();
+                screen.render();
+            });
+        },
+    });
+    sessionOrchId = `session-${sess.sessionId}`;
+    sessions.set(sess.sessionId, sess);
+    sessionModels.set(sessionOrchId, currentModel || "default");
+    if (splash) {
+        systemSplashText.set(sessionOrchId, splash);
+        if (!sessionChatBuffers.has(sessionOrchId) || sessionChatBuffers.get(sessionOrchId).length === 0) {
+            sessionChatBuffers.set(sessionOrchId, [...splash.split("\n"), ""]);
+        }
+    }
+    return sess;
+}
+
+function buildAgentPickerSplash(choice) {
+    if (!choice) return "";
+    if (choice.splash) return choice.splash;
+
+    switch (choice.name) {
+        case "investigator":
+            return [
+                "{bold}{red-fg}",
+                "  ___                 _   _             _             _",
+                " |_ _|_ ____   _____ | |_(_) __ _  __ _| |_ ___  _ __",
+                "  | || '_ \\ \\ / / _ \\| __| |/ _` |/ _` | __/ _ \\| '__|",
+                "  | || | | \\ V / (_) | |_| | (_| | (_| | || (_) | |",
+                " |___|_| |_|\\_/ \\___/ \\__|_|\\__, |\\__,_|\\__\\___/|_|",
+                "                               |___/",
+                "{/red-fg}{white-fg}Incident Response + Root Cause Analysis{/white-fg}{/bold}",
+                "",
+                "{gray-fg}Guided flow:{/gray-fg} service, timeframe, symptoms, recent deploy, user impact.",
+            ].join("\n");
+        case "deployer":
+            return [
+                "{bold}{green-fg}",
+                "  ____             _",
+                " |  _ \\  ___ _ __ | | ___  _   _  ___ _ __",
+                " | | | |/ _ \\ '_ \\| |/ _ \\| | | |/ _ \\ '__|",
+                " | |_| |  __/ |_) | | (_) | |_| |  __/ |",
+                " |____/ \\___| .__/|_|\\___/ \\__, |\\___|_|",
+                "             |_|            |___/",
+                "{/green-fg}{white-fg}Safe Rollouts + Rollbacks{/white-fg}{/bold}",
+                "",
+                "{gray-fg}Guided flow:{/gray-fg} service, version, environment, pre-flight, approval, monitor.",
+            ].join("\n");
+        case "reporter":
+            return [
+                "{bold}{cyan-fg}",
+                "  ____                        _",
+                " |  _ \\ ___ _ __   ___  _ __| |_ ___ _ __",
+                " | |_) / _ \\ '_ \\ / _ \\| '__| __/ _ \\ '__|",
+                " |  _ <  __/ |_) | (_) | |  | ||  __/ |",
+                " |_| \\_\\___| .__/ \\___/|_|   \\__\\___|_|",
+                "            |_|",
+                "{/cyan-fg}{white-fg}Status Reports + Summaries{/white-fg}{/bold}",
+                "",
+                "{gray-fg}Guided flow:{/gray-fg} all services vs one service, deployments, concise vs detailed report.",
+            ].join("\n");
+        default:
+            return (
+                `{bold}{cyan-fg}${choice.title || "Agent"}{/cyan-fg}{/bold}\n\n` +
+                `{white-fg}${choice.description || "No description provided."}{/white-fg}\n\n` +
+                `{gray-fg}This session will start in a guided mode and keep the agent inside its domain.{/gray-fg}`
+            );
+    }
+}
+
 async function createNewSession() {
     let sessionOrchId = null;
     const sess = await client.createSession({
@@ -4271,7 +4838,9 @@ async function createNewSession() {
     return sess;
 }
 
-// Check for existing non-system sessions to resume, or start with sweeper
+// Resume existing non-system sessions in the background so they remain
+// available immediately in the session list, but do not make them active
+// by default at startup.
 let thisSessionId = null;
 try {
     const _resumePh = perfStart("startup.resumeSession");
@@ -4290,10 +4859,10 @@ try {
 
 // ─── System Agent Discovery ─────────────────────────────────────
 // System agents are discovered from the CMS (is_system flag, splash, agent_id).
-// The refresh loop populates systemSessionIds, systemAgentSplash, and chat buffers
+// The refresh loop populates systemSessionIds, systemSplashText, and chat buffers
 // from CMS data. At startup, we just need to resume the root system agent session
 // so the TUI can interact with it immediately.
-const systemAgentSplash = new Map(); // orchId → splash string
+const systemSplashText = new Map(); // orchId -> splash string
 try {
     const _saPh = perfStart("startup.systemAgentDiscovery");
     // Discover system sessions from CMS
@@ -4302,10 +4871,16 @@ try {
         if (!sv.isSystem) continue;
         const orchId = `session-${sv.sessionId}`;
         systemSessionIds.add(orchId);
-        if (sv.title) sessionHeadings.set(orchId, sv.title);
+        const startupTitle = sv.agentId === "pilotswarm" && HAS_CUSTOM_TUI_BRANDING
+            ? BASE_TUI_TITLE
+            : sv.title;
+        if (startupTitle) sessionHeadings.set(orchId, startupTitle);
         if (sv.agentId) sessionAgentIds.set(orchId, sv.agentId);
-        if (sv.splash) {
-            systemAgentSplash.set(orchId, sv.splash);
+        const startupSplash = sv.agentId === "pilotswarm" && HAS_CUSTOM_TUI_BRANDING
+            ? ACTIVE_STARTUP_SPLASH_CONTENT
+            : sv.splash;
+        if (startupSplash) {
+            systemSplashText.set(orchId, startupSplash);
         }
 
         // Resume the PilotSwarmSession handle so TUI can interact with it
@@ -4315,15 +4890,15 @@ try {
             client.systemSessions.add(sv.sessionId);
 
             // Pre-populate the chat buffer with its splash banner
-            if (sv.splash && !sessionChatBuffers.has(orchId)) {
+            if (startupSplash && !sessionChatBuffers.has(orchId)) {
                 sessionChatBuffers.set(orchId, []);
                 const buf = sessionChatBuffers.get(orchId);
-                for (const line of sv.splash.split("\n")) {
+                for (const line of startupSplash.split("\n")) {
                     buf.push(line);
                 }
                 buf.push("");
             }
-            const label = sv.title || sv.agentId || shortId(sv.sessionId);
+            const label = startupTitle || sv.agentId || shortId(sv.sessionId);
             appendLog(`System agent discovered: ${label} ✓ {yellow-fg}(${shortId(sv.sessionId)}…){/yellow-fg}`);
         } catch (err) {
             appendLog(`{yellow-fg}System agent ${sv.agentId || shortId(sv.sessionId)} not yet available: ${err.message}{/yellow-fg}`);
@@ -4353,12 +4928,10 @@ const pilotswarmOrchId = (() => {
 const preferredSystemOrchId = pilotswarmOrchId ?? ([...systemSessionIds][0] ?? "");
 const preferredSystemSessionId = preferredSystemOrchId ? preferredSystemOrchId.replace(/^session-/, "") : "";
 
-activeOrchId = thisSessionId
-    ? `session-${thisSessionId}`
-    : preferredSystemOrchId;
-activeSessionShort = thisSessionId
-    ? shortId(thisSessionId)
-    : (preferredSystemSessionId ? shortId(preferredSystemSessionId) : "");
+activeOrchId = preferredSystemOrchId || (thisSessionId ? `session-${thisSessionId}` : "");
+activeSessionShort = activeOrchId
+    ? shortId(activeOrchId)
+    : "";
 let orchSelectFollowActive = true; // when true, next refresh snaps selection to activeOrchId
 
 function updateChatLabel() {
@@ -5016,7 +5589,7 @@ async function switchToOrchestration(orchId) {
 
         // Show cached chat buffer instantly if available (no DB wait)
         const _cachePh = perfStart("switch.cachedRestore");
-        const cachedLines = sessionChatBuffers.get(orchId) || ensureSystemSplashBuffer(orchId);
+        const cachedLines = sessionChatBuffers.get(orchId) || ensureSessionSplashBuffer(orchId);
         if (cachedLines && cachedLines.length > 0) {
             sessionChatBuffers.set(orchId, cachedLines);
         } else {
@@ -5091,16 +5664,31 @@ async function switchToOrchestration(orchId) {
 }
 
 updateChatLabel();
-const initialChatLines = ensureSystemSplashBuffer(activeOrchId) || sessionChatBuffers.get(activeOrchId) || [];
+const initialChatLines = ensureSessionSplashBuffer(activeOrchId) || sessionChatBuffers.get(activeOrchId) || [];
 if (initialChatLines.length > 0) {
     chatBox.setContent(initialChatLines.map(styleUrls).join("\n"));
     chatBox.setScrollPerc(0);
 }
-startupLandingVisible = true;
-// Start observing the initial session
-if (shouldObserveSession(activeOrchId)) {
-    startObserver(activeOrchId);
+startupLandingVisible = !activeOrchId;
+if (activeOrchId) {
+    // Bootstrap the initial active session the same way a manual selection does.
+    if (shouldObserveSession(activeOrchId)) {
+        startObserver(activeOrchId);
+    }
+    loadCmsHistory(activeOrchId).then(() => {
+        if (activeOrchId) {
+            startCmsPoller(activeOrchId);
+            invalidateChat();
+            invalidateActivity();
+            scheduleLightRefresh("initialSessionHistoryLoaded", activeOrchId);
+        }
+    }).catch(() => {
+        if (activeOrchId) startCmsPoller(activeOrchId);
+    });
 }
+
+// Start in navigation mode so j/k works immediately without pressing Esc first.
+orchList.focus();
 
 // Initial right-pane paint. In workers mode, kubectl log streaming may not
 // have created worker panes yet. Schedule repaints at increasing intervals
@@ -5481,8 +6069,9 @@ inputBar.key(["escape"], () => {
 // ─── Help Overlay ────────────────────────────────────────────────
 
 function showHelpOverlay() {
+    const prevFocused = screen.focused;
     const helpContent = [
-        "{bold}{cyan-fg}PilotSwarm TUI — Keybindings{/cyan-fg}{/bold}",
+        `{bold}{cyan-fg}${BASE_TUI_TITLE} — Keybindings{/cyan-fg}{/bold}`,
         "",
         "{bold}Global{/bold}",
         "  {yellow-fg}?{/yellow-fg}           Show this help",
@@ -5504,15 +6093,37 @@ function showHelpOverlay() {
         "  {yellow-fg}n{/yellow-fg}           New session (default model)",
         "  {yellow-fg}Shift+N{/yellow-fg}     New session (model picker)",
         "  {yellow-fg}t{/yellow-fg}           Rename session (custom title or LLM summary)",
-        "  {yellow-fg}+ / -{/yellow-fg}       Expand / collapse sub-agent tree",
+        "  {yellow-fg}+ / ={/yellow-fg}       Expand sub-agent tree",
+        "  {yellow-fg}-{/yellow-fg}           Collapse sub-agent tree",
         "  {yellow-fg}c{/yellow-fg}           Cancel session",
         "  {yellow-fg}d{/yellow-fg}           Delete session",
+        "  {yellow-fg}r{/yellow-fg}           Refresh session list",
         "",
         "{bold}Chat / Activity / Log Panes{/bold}",
         "  {yellow-fg}j / k{/yellow-fg}       Scroll down / up",
         "  {yellow-fg}Ctrl+D/U{/yellow-fg}    Page down / up",
         "  {yellow-fg}g / G{/yellow-fg}       Scroll to top / bottom",
         "  {yellow-fg}e{/yellow-fg}           Expand history (load older messages, press again for full)",
+        "  {yellow-fg}mouse wheel{/yellow-fg}  Scroll any pane",
+        "",
+        "{bold}Prompt Editor{/bold}",
+        "  {yellow-fg}Enter{/yellow-fg}       Submit prompt",
+        "  {yellow-fg}Opt+Enter{/yellow-fg}   Insert newline and expand prompt",
+        "  {yellow-fg}← / →{/yellow-fg}       Move cursor by character",
+        "  {yellow-fg}Opt+← / →{/yellow-fg}   Move cursor by word",
+        "  {yellow-fg}Backspace{/yellow-fg}   Delete backward by character",
+        "  {yellow-fg}Opt+Backspace{/yellow-fg} Delete backward by word",
+        "  {yellow-fg}Esc{/yellow-fg}         Return to navigation mode",
+        "",
+        "{bold}Markdown Viewer{/bold}",
+        "  {yellow-fg}j / k{/yellow-fg}       Move file selection",
+        "  {yellow-fg}Enter{/yellow-fg}       Open selected file preview",
+        "  {yellow-fg}d{/yellow-fg}           Delete selected exported file",
+        "  {yellow-fg}g / G{/yellow-fg}       Preview top / bottom",
+        "  {yellow-fg}Ctrl+D/U{/yellow-fg}    Preview page down / up",
+        "  {yellow-fg}o{/yellow-fg}           Open selected file in $EDITOR",
+        "  {yellow-fg}y{/yellow-fg}           Copy selected file path",
+        "  {yellow-fg}v{/yellow-fg}           Exit markdown viewer",
         "",
         "{bold}Slash Commands{/bold} (type in input bar)",
         "  {cyan-fg}/models{/cyan-fg}         List available models",
@@ -5522,7 +6133,8 @@ function showHelpOverlay() {
         "  {cyan-fg}/new{/cyan-fg}            Create new session",
         "  {cyan-fg}/help{/cyan-fg}           Show command list in chat",
         "",
-        "{gray-fg}Press Esc or ? to close{/gray-fg}",
+        "",
+        "{gray-fg}Scroll with j/k, arrows, Ctrl+D/U, or mouse wheel · Press Esc or ? to close{/gray-fg}",
     ].join("\n");
 
     const helpBox = blessed.box({
@@ -5530,8 +6142,8 @@ function showHelpOverlay() {
         tags: true,
         left: "center",
         top: "center",
-        width: Math.min(70, screen.width - 4),
-        height: Math.min(42, screen.height - 4),
+        width: Math.min(92, screen.width - 2),
+        height: Math.min(52, screen.height - 2),
         border: { type: "line" },
         style: {
             fg: "white",
@@ -5551,22 +6163,49 @@ function showHelpOverlay() {
 
     const closeHelp = () => {
         helpBox.detach();
-        orchList.focus();
+        if (prevFocused && typeof prevFocused.focus === "function") prevFocused.focus();
+        else orchList.focus();
         screen.render();
     };
 
     helpBox.key(["escape", "q", "?"], closeHelp);
+    helpBox.key(["j", "down"], () => {
+        helpBox.scroll(1);
+        screen.render();
+    });
+    helpBox.key(["k", "up"], () => {
+        helpBox.scroll(-1);
+        screen.render();
+    });
+    helpBox.key(["C-d"], () => {
+        const innerHeight = Math.max(1, helpBox.height - 2);
+        helpBox.scroll(Math.floor(innerHeight / 2));
+        screen.render();
+    });
+    helpBox.key(["C-u"], () => {
+        const innerHeight = Math.max(1, helpBox.height - 2);
+        helpBox.scroll(-Math.floor(innerHeight / 2));
+        screen.render();
+    });
+    helpBox.key(["g"], () => {
+        helpBox.scrollTo(0);
+        screen.render();
+    });
+    helpBox.key(["S-g"], () => {
+        helpBox.setScrollPerc(100);
+        screen.render();
+    });
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────
 
 async function cleanup() {
-    // Force-exit after 3s — don't let hanging long-polls block shutdown
+    // Force-exit after 15s — don't let a stuck shutdown hang forever
     const forceExitTimer = setTimeout(() => {
         const buf = Buffer.from("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h");
         try { fs.writeSync(1, buf); } catch {}
         process.exit(0);
-    }, 3000);
+    }, 15000);
     forceExitTimer.unref();
 
     clearInterval(orchPollTimer);
@@ -5579,6 +6218,13 @@ async function cleanup() {
     for (const [, ac] of sessionObservers) { ac.abort(); }
     sessionObservers.clear();
     if (kubectlProc) { try { kubectlProc.kill("SIGKILL"); } catch {} kubectlProc = null; }
+
+    await Promise.allSettled([
+        ...workers.map(w => w.stop()),
+        client.stop(),
+        mgmt.stop(),
+    ]);
+
     // Suppress ALL output before destroying — neo-blessed dumps terminfo
     // compilation junk (SetUlc) synchronously during destroy().
     process.stdout.write = () => true;
@@ -5588,15 +6234,10 @@ async function cleanup() {
     // Disable mouse tracking modes + exit alt-screen + show cursor
     const buf = Buffer.from("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h");
     try { fs.writeSync(1, buf); } catch {}
-    await Promise.allSettled([
-        ...workers.map(w => w.stop()),
-        client.stop(),
-    ]);
 }
 
 screen.key(["C-c"], async () => {
-    await cleanup();
-    process.exit(0);
+    await requestQuit();
 });
 
 // ESC + q quit sequence: press Escape, then q within 1s to quit
@@ -5988,44 +6629,6 @@ screen.on("resize", () => {
     if (logViewMode === "sequence") refreshSeqPane();
     if (logViewMode === "nodemap") refreshNodeMap();
 });
-
-// ─── Welcome content (already shown as splash during startup) ────
-// Populate the chat buffer so it persists across session switches
-appendChatRaw("{bold}{cyan-fg}");
-appendChatRaw("    ____  _ __      __  _____                              ");
-appendChatRaw("   / __ \\(_) /___  / /_/ ___/      ______ __________ ___  ");
-appendChatRaw("{/cyan-fg}{magenta-fg}  / /_/ / / / __ \\/ __/\\__ \\ | /| / / __ `/ ___/ __ `__ \\");
-appendChatRaw(" / ____/ / / /_/ / /_ ___/ / |/ |/ / /_/ / /  / / / / / /{/magenta-fg}");
-appendChatRaw("{yellow-fg}/_/   /_/_/\\____/\\__//____/|__/|__/\\__,_/_/  /_/ /_/ /_/ {/yellow-fg}");
-appendChatRaw("{/bold}");
-appendChatRaw("");
-appendChatRaw("  {bold}{white-fg}Durable AI Agent Orchestration{/white-fg}{/bold}");
-appendChatRaw("  {cyan-fg}Crash recovery{/cyan-fg} · {magenta-fg}Durable timers{/magenta-fg} · {yellow-fg}Sub-agents{/yellow-fg} · {green-fg}Multi-node scaling{/green-fg}");
-appendChatRaw("  {gray-fg}Powered by duroxide + GitHub Copilot SDK{/gray-fg}");
-appendChatRaw("");
-appendChatRaw("  {cyan-fg}─────────────────────────────────────────────────────────{/cyan-fg}");
-appendChatRaw("");
-appendChatRaw("{bold}Controls:{/bold}");
-appendChatRaw("  {yellow-fg}Esc{/yellow-fg}    exit prompt → navigate TUI");
-appendChatRaw("  {yellow-fg}p{/yellow-fg}      back to prompt from anywhere");
-appendChatRaw("  {yellow-fg}Tab{/yellow-fg}    cycle panes forward");
-appendChatRaw("  {yellow-fg}S-Tab{/yellow-fg}  cycle panes backward");
-appendChatRaw("  {yellow-fg}v{/yellow-fg}      toggle markdown viewer (full right side)");
-appendChatRaw("  {yellow-fg}m{/yellow-fg}      cycle log mode (workers → orch logs → sequence → node map)");
-appendChatRaw("");
-appendChatRaw("{bold}Scrolling (when chat/log pane focused):{/bold}");
-appendChatRaw("  {yellow-fg}j/k{/yellow-fg} or {yellow-fg}↑/↓{/yellow-fg}   scroll line by line");
-appendChatRaw("  {yellow-fg}Ctrl-d/u{/yellow-fg}      page down/up");
-appendChatRaw("  {yellow-fg}g/G{/yellow-fg}          top / bottom");
-appendChatRaw("  {yellow-fg}e{/yellow-fg}            expand history (load older messages, press again for full)");
-appendChatRaw("  {yellow-fg}mouse wheel{/yellow-fg}    scroll any pane");
-appendChatRaw("");
-appendChatRaw("{bold}Sessions (left pane):{/bold}");
-appendChatRaw("  {yellow-fg}j/k{/yellow-fg}    navigate list");
-appendChatRaw("  {yellow-fg}Enter{/yellow-fg}  switch to session");
-appendChatRaw("  {yellow-fg}n{/yellow-fg}      new session");
-appendChatRaw("  {yellow-fg}c{/yellow-fg}      cancel · {yellow-fg}d{/yellow-fg} delete · {yellow-fg}r{/yellow-fg} refresh");
-appendChatRaw("");
 
 // Initial orchestration refresh
 await refreshOrchestrations();

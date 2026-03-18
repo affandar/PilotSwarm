@@ -384,7 +384,8 @@ The TUI is where the magic becomes visible. Once the coordinator spawns its spec
 | `Enter` | Switch to the selected session's conversation view |
 | `Tab` | Cycle between panes (session list, chat, logs) |
 | `m` | Cycle through log display modes |
-| `q` | Quit the TUI |
+| `?` | Show the keybinding help modal |
+| `Esc` → `q` | Quit the TUI |
 
 Use `j`/`k` to scroll through the session list and `Enter` to jump into any agent's conversation. You can watch the analyzer scanning files, the test runner executing your test suite, and the reviewer flagging issues — all happening in parallel. Press `Tab` to switch to the log pane for a lower-level view of tool executions and orchestration events.
 

@@ -1,6 +1,8 @@
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
 import type { SessionStateStore } from "./session-store.js";
 
+export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
+
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
 
@@ -50,6 +52,8 @@ export interface TurnOptions {
     onEvent?: (event: CapturedEvent) => void;
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
+    /** Internal: startup/bootstrap turn that should not be recorded as a user message. */
+    bootstrap?: boolean;
 }
 
 // ─── Session Config ──────────────────────────────────────────────
@@ -129,6 +133,8 @@ export interface OrchestrationInput {
     needsHydration?: boolean;
     blobEnabled?: boolean;
     prompt?: string;
+    /** Internal: pending prompt is a bootstrap message, not a user-authored prompt. */
+    bootstrapPrompt?: boolean;
     // Thresholds
     dehydrateThreshold?: number;
     idleTimeout?: number;

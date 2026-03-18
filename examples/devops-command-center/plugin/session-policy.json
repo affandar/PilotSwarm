@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "creation": {
+    "mode": "allowlist",
+    "allowGeneric": false,
+    "defaultAgent": "investigator"
+  },
+  "deletion": {
+    "protectSystem": true
+  }
+}

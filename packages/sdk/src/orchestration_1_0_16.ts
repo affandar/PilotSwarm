@@ -216,6 +216,7 @@ export function* durableSessionOrchestration_1_0_16(
             inputGracePeriod,
             checkpointInterval,
             rehydrationMessage,
+            ...(bootstrapPrompt ? { bootstrapPrompt: true } : {}),
             nextSummarizeAt,
             taskContext,
             baseSystemMessage,
@@ -333,6 +334,7 @@ export function* durableSessionOrchestration_1_0_16(
 
     // ─── Prompt carried from continueAsNew ───────────────────
     let pendingPrompt: string | undefined = input.prompt;
+    let bootstrapPrompt = input.bootstrapPrompt ?? false;
 
     ctx.traceInfo(`[orch] start: iter=${iteration} pending=${pendingPrompt ? `"${pendingPrompt.slice(0, 40)}"` : 'NONE'} queued=${pendingToolActions.length} hydrate=${needsHydration} blob=${blobEnabled}`);
 
@@ -341,6 +343,7 @@ export function* durableSessionOrchestration_1_0_16(
         let result: TurnResult;
         let prompt = "";
         let replayingQueuedAction = false;
+        let promptIsBootstrap = false;
 
         if (pendingToolActions.length > 0) {
             result = pendingToolActions.shift()!;
@@ -351,6 +354,8 @@ export function* durableSessionOrchestration_1_0_16(
             if (pendingPrompt) {
                 prompt = pendingPrompt;
                 pendingPrompt = undefined;
+                promptIsBootstrap = bootstrapPrompt;
+                bootstrapPrompt = false;
             } else {
                 publishStatus("idle");
 
@@ -502,6 +507,7 @@ export function* durableSessionOrchestration_1_0_16(
                     }
 
                     prompt = msgData.prompt;
+                    promptIsBootstrap = Boolean(msgData.bootstrap);
                     gotPrompt = true;
                 }
             }
@@ -558,7 +564,7 @@ export function* durableSessionOrchestration_1_0_16(
             publishStatus("running");
             let turnResult: any;
             try {
-                turnResult = yield session.runTurn(prompt);
+                turnResult = yield session.runTurn(prompt, promptIsBootstrap);
             } catch (err: any) {
                 // Activity failed (e.g. Copilot timeout, network error).
                 const errorMsg = err.message || String(err);
