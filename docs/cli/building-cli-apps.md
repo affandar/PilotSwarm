@@ -16,7 +16,7 @@ This is different from the older `tui-apps.md` AppAdapter concept. Today, the su
 
 ## What The CLI Package Is
 
-`@affandar/pilotswarm-cli` ships a terminal UI with two modes:
+`pilotswarm-cli` ships a terminal UI with two modes:
 
 - `local` — embeds workers in the same process as the TUI
 - `remote` — runs only the client/TUI and connects to already-running workers
@@ -118,7 +118,7 @@ Minimal `plugin.json` example:
 ## Minimal Worker Module
 
 ```js
-import { defineTool } from "@affandar/pilotswarm";
+import { defineTool } from "pilotswarm-sdk";
 
 const summarizeRepo = defineTool("summarize_repo", {
   description: "Summarize the current repository",

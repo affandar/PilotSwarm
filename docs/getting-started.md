@@ -52,13 +52,13 @@ npm install ../path/to/pilotswarm/packages/sdk
 
 # Option B: npm link (symlink — changes reflected immediately)
 cd /path/to/pilotswarm && npm link
-cd /path/to/your-project && npm link @affandar/pilotswarm
+cd /path/to/your-project && npm link pilotswarm-sdk
 ```
 
-Either way, import from `@affandar/pilotswarm`:
+Either way, import from `pilotswarm-sdk`:
 
 ```typescript
-import { PilotSwarmClient, PilotSwarmWorker } from "@affandar/pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm-sdk";
 ```
 
 ---

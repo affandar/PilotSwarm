@@ -20,7 +20,7 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PilotSwarmClient, PilotSwarmWorker } from "@affandar/pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm-sdk";
 import { devopsTools } from "./tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

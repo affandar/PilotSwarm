@@ -3,7 +3,7 @@
  *
  * @example
  * ```typescript
- * import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
+ * import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
  *
  * const worker = new PilotSwarmWorker({ store, githubToken });
  * worker.registerTools([myTool]);

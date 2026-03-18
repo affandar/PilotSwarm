@@ -7,7 +7,7 @@
  * If no models specified, tests all models from model_providers.json.
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, loadModelProviders } from "@affandar/pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker, loadModelProviders } from "pilotswarm-sdk";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 

@@ -96,7 +96,7 @@ Optional `tools.json`:
 If your agents need custom tools, the CLI still needs worker-side code for them.
 
 ```js
-import { defineTool } from "@affandar/pilotswarm";
+import { defineTool } from "pilotswarm-sdk";
 
 const webFetch = defineTool("web_fetch", {
   description: "Fetch a web page",

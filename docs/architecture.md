@@ -542,7 +542,7 @@ await client.stop();
 ### 6.2 PilotSwarm
 
 ```typescript
-import { PilotSwarmClient, defineTool } from "@affandar/pilotswarm";
+import { PilotSwarmClient, defineTool } from "pilotswarm-sdk";
 
 const getWeather = defineTool("get_weather", {
     description: "Get current weather for a city",

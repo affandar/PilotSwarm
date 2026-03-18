@@ -315,7 +315,7 @@ Tools add callable functions to the LLM's repertoire. Unlike agents and skills (
 ### Defining a Tool
 
 ```typescript
-import { defineTool } from "@affandar/pilotswarm";
+import { defineTool } from "pilotswarm-sdk";
 
 const greetTool = defineTool("greet", {
   description: "Greet a user by name",
@@ -335,7 +335,7 @@ const greetTool = defineTool("greet", {
 ### Registering on the Worker
 
 ```typescript
-import { PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
+import { PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
 
 const fetchUrlTool = defineTool("fetch_url", {
   description: "Fetch content from a URL",

@@ -61,7 +61,7 @@ cp -R templates/builder-agents/skills/* .github/skills/
 
 Builder templates should assume:
 
-- npm packages are consumed as `@affandar/pilotswarm` and `@affandar/pilotswarm-cli`
+- npm packages are consumed as `pilotswarm-sdk` and `pilotswarm-cli`
 - PilotSwarm's built-in framework and management plugins are embedded in those packages
 - app `default.agent.md` files are overlays layered under the embedded PilotSwarm framework base
 

@@ -78,8 +78,8 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 
 At the time this skill was added, PilotSwarm publishes:
 
-- `@affandar/pilotswarm`
-- `@affandar/pilotswarm-cli`
+- `pilotswarm-sdk`
+- `pilotswarm-cli`
 
 If package names change later, update this skill in the same change.
 

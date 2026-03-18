@@ -47,7 +47,7 @@ This works — but if the process crashes, the session is lost. `sleep()` blocks
 ### PilotSwarm (single-process mode)
 
 ```typescript
-import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
 
 // Same tool definition — unchanged from standard Copilot SDK
 const weather = defineTool("get_weather", {
