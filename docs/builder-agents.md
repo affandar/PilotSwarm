@@ -59,6 +59,12 @@ cp -R templates/builder-agents/skills/* .github/skills/
 - `pilotswarm-sdk-builder` helps users build SDK-first services and applications around `PilotSwarmClient` and `PilotSwarmWorker`.
 - `pilotswarm-azure-deployer` helps users package and deploy PilotSwarm-based apps to Azure / AKS, with explicit env-template and cross-cluster workload-identity guidance.
 
+Builder templates should assume:
+
+- npm packages are consumed as `@affandar/pilotswarm` and `@affandar/pilotswarm-cli`
+- PilotSwarm's built-in framework and management plugins are embedded in those packages
+- app `default.agent.md` files are overlays layered under the embedded PilotSwarm framework base
+
 ## Maintenance Rule
 
 When PilotSwarm gains features or changes builder-relevant behavior, update these template agents and skills alongside the docs and examples they reference.

@@ -174,7 +174,7 @@ You should see:
 From your application (anywhere with network access to the same PostgreSQL):
 
 ```typescript
-import { PilotSwarmClient } from "pilotswarm";
+import { PilotSwarmClient } from "@affandar/pilotswarm";
 
 const client = new PilotSwarmClient({
     store: process.env.DATABASE_URL,

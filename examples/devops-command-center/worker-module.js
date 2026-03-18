@@ -5,7 +5,7 @@
  * It exports the custom tools so the TUI workers can use them.
  *
  * Usage:
- *   npx pilotswarm-tui --plugin ./plugin --worker ./worker-module.js --env ../../.env
+ *   npx pilotswarm --plugin ./plugin --worker ./worker-module.js --env ../../.env
  */
 
 import { devopsTools } from "./tools.js";

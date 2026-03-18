@@ -108,6 +108,8 @@ export class PilotSwarmClient {
             const fullConfig: ManagedSessionConfig = {
                 model: config.model,
                 systemMessage: config.systemMessage,
+                boundAgentName: config.boundAgentName,
+                promptLayering: config.promptLayering,
                 tools: config.tools,
                 workingDirectory: config.workingDirectory,
                 hooks: config.hooks,
@@ -169,6 +171,8 @@ export class PilotSwarmClient {
             toolNames: opts?.toolNames,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
+            boundAgentName: agentName,
+            promptLayering: { kind: "app-agent" },
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)
@@ -376,6 +380,8 @@ export class PilotSwarmClient {
             systemMessage: fullConfig?.systemMessage,
             workingDirectory: fullConfig?.workingDirectory,
             waitThreshold: fullConfig?.waitThreshold ?? this.config.waitThreshold,
+            boundAgentName: fullConfig?.boundAgentName,
+            promptLayering: fullConfig?.promptLayering,
             toolNames: allNames.length ? allNames : undefined,
         };
 

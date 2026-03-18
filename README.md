@@ -19,13 +19,13 @@ These are not active agents in this repo. They are templates intended to be copi
 ## Quick Start
 
 ```bash
-npm install pilotswarm
+npm install @affandar/pilotswarm
 cp .env.example .env
 # edit .env with DATABASE_URL and GITHUB_TOKEN
 ```
 
 ```typescript
-import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
 
 // Define tools — same API as Copilot SDK
 const getWeather = defineTool("get_weather", {
@@ -69,6 +69,8 @@ console.log(response);
 await client.stop();
 await worker.stop();
 ```
+
+PilotSwarm's own framework prompt and management plugins ship embedded inside `@affandar/pilotswarm`. Apps layer their own `plugin/` directories on top; they do not need to copy the framework's built-in plugin text into their own repos.
 
 ## What You Get
 

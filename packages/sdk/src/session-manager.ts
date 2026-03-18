@@ -3,6 +3,7 @@ import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
+import { composeSystemPrompt, extractPromptContent } from "./prompt-layering.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -11,7 +12,12 @@ const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-s
 
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
+    frameworkBasePrompt?: string;
+    appDefaultPrompt?: string;
+    /** Backward-compatible alias for older code paths/tests. */
     systemMessage?: string;
+    /** Raw prompt lookup for named and system agents bound directly to sessions. */
+    agentPromptLookup?: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>;
     /** Skill directories to pass to the Copilot SDK. */
     skillDirectories?: string[];
     /** Custom agents to pass to the Copilot SDK. */
@@ -206,7 +212,7 @@ export class SessionManager {
         ];
 
         // Build system message: worker base + client override
-        const systemMessage = this._buildSystemMessage(config.systemMessage);
+        const systemMessage = this._buildSystemMessage(config);
 
         // Resolve model: config.model may be qualified (provider:model) or bare.
         // The SDK needs the bare model name; the provider config is separate.
@@ -530,30 +536,38 @@ export class SessionManager {
     }
 
     /**
-     * Build the final system message by combining:
-     * 1. Worker base system message (from workerDefaults)
-     * 2. Client override
-     *
-     * The worker base prompt is always-on. Even `mode: "replace"` only
-     * replaces the caller-specific overlay, not the worker base prompt.
-     * Skills/agents are NOT injected here — the Copilot SDK discovers
-     * them from plugins installed in configDir.
+     * Build the final system message from:
+     * 1. embedded PilotSwarm framework base
+     * 2. app-level default instructions
+     * 3. bound agent prompt (for named/system sessions)
+     * 4. caller/runtime context
      */
     private _buildSystemMessage(
-        clientMessage?: string | { mode: "append" | "replace"; content: string },
-    ): string | { mode: "append" | "replace"; content: string } | undefined {
-        const base = this.workerDefaults.systemMessage ?? "";
+        config: SerializableSessionConfig,
+    ): string | undefined {
+        const frameworkBase = this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage;
+        const runtimeContext = extractPromptContent(config.systemMessage);
+        const boundAgentName = config.boundAgentName;
+        const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
+        const activeAgentPrompt = boundAgentName
+            ? this.workerDefaults.agentPromptLookup?.[boundAgentName]?.prompt
+            : undefined;
 
-        if (!clientMessage) {
-            return base || undefined;
+        if (!layerKind || !activeAgentPrompt) {
+            return composeSystemPrompt({
+                frameworkBase,
+                appDefault: this.workerDefaults.appDefaultPrompt,
+                runtimeContext,
+            });
         }
-        if (typeof clientMessage === "string") {
-            return base ? `${base}\n\n${clientMessage}` : clientMessage;
-        }
-        if (clientMessage.mode === "replace") {
-            return base ? `${base}\n\n${clientMessage.content}` : clientMessage.content;
-        }
-        // mode === "append"
-        return base ? `${base}\n\n${clientMessage.content}` : clientMessage.content;
+
+        return composeSystemPrompt({
+            frameworkBase,
+            appDefault: layerKind === "pilotswarm-system-agent"
+                ? undefined
+                : this.workerDefaults.appDefaultPrompt,
+            activeAgentPrompt,
+            runtimeContext,
+        });
     }
 }

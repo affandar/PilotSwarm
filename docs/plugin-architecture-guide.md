@@ -38,7 +38,7 @@ Always loaded. Cannot be disabled. Provides the foundational behavior every sess
 ```text
 packages/sdk/plugins/system/
 ├── agents/
-│   └── default.agent.md        # Base system message for ALL sessions
+│   └── default.agent.md        # Embedded framework base prompt
 └── skills/
     ├── durable-timers/
     │   └── SKILL.md             # wait tool usage knowledge
@@ -46,7 +46,7 @@ packages/sdk/plugins/system/
         └── SKILL.md             # spawn_agent patterns
 ```
 
-The `default.agent.md` agent is special — its prompt is **prepended** to every other agent's prompt as the base system message. It is never listed as a selectable agent.
+The system `default.agent.md` file is special — it becomes the embedded PilotSwarm framework base. It is not treated as an application-overridable `default.agent.md`, and it is never listed as a selectable agent.
 
 ### Tier 2: Management (`packages/sdk/plugins/mgmt/`)
 
@@ -63,7 +63,7 @@ packages/sdk/plugins/mgmt/
         └── SKILL.md             # Cleanup domain knowledge
 ```
 
-Management agents have `system: true` and are started automatically by the worker. They run as long-lived background sessions with their own durable orchestrations.
+Management agents have `system: true` and are started automatically by the worker. They run as long-lived background sessions with their own durable orchestrations. They inherit the embedded PilotSwarm framework base, but they do not inherit application `default.agent.md` overlays.
 
 ### Tier 3: Application (`pluginDirs`)
 
@@ -84,11 +84,14 @@ plugins/my-app/
 ├── plugin.json
 ├── .mcp.json
 ├── agents/
+│   ├── default.agent.md
 │   └── analyst.agent.md
 └── skills/
     └── data-analysis/
         └── SKILL.md
 ```
+
+An app's `default.agent.md` becomes an application-level overlay layered beneath the embedded PilotSwarm framework base.
 
 ### Tier 4: Direct Config (Inline)
 
@@ -169,10 +172,11 @@ Be concise. Use tables for numeric summaries.
 
 The agent with `name: default` has unique behavior:
 
-- Its prompt is **prepended** to every other agent's system prompt, separated by `---`.
+- In the embedded PilotSwarm system layer, it becomes the framework base prompt.
+- In app plugin directories, it becomes the app-wide default overlay layered under the framework base.
 - It is never listed as a selectable agent.
-- Only one `default` agent should exist. If multiple tiers define one, the last tier wins.
-- It defines baseline rules (wait tool usage, artifact creation, sub-agent behavior) that apply to all sessions.
+- It defines app-wide rules that should apply to your app's sessions.
+- PilotSwarm management agents do not inherit app `default.agent.md` overlays.
 
 ### System Agents (`system: true`)
 
@@ -311,7 +315,7 @@ Tools add callable functions to the LLM's repertoire. Unlike agents and skills (
 ### Defining a Tool
 
 ```typescript
-import { defineTool } from "pilotswarm";
+import { defineTool } from "@affandar/pilotswarm";
 
 const greetTool = defineTool("greet", {
   description: "Greet a user by name",
@@ -331,7 +335,7 @@ const greetTool = defineTool("greet", {
 ### Registering on the Worker
 
 ```typescript
-import { PilotSwarmWorker, defineTool } from "pilotswarm";
+import { PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
 
 const fetchUrlTool = defineTool("fetch_url", {
   description: "Fetch content from a URL",
@@ -445,7 +449,7 @@ The complete loading pipeline:
 ```text
 ┌─────────────────────────────────────────────────────┐
 │  Tier 1: System plugins (always)                    │
-│    → default.agent.md saved as base system message  │
+│    → embedded framework base prompt                 │
 │    → skills/durable-timers, skills/sub-agents       │
 ├─────────────────────────────────────────────────────┤
 │  Tier 2: Management plugins (unless disabled)       │
@@ -458,8 +462,8 @@ The complete loading pipeline:
 │  Tier 4: Direct config (inline options)             │
 │    → skillDirectories, customAgents, mcpServers     │
 ├─────────────────────────────────────────────────────┤
-│  Post-merge: prepend default.agent.md prompt        │
-│    → every non-default agent gets system message    │
+│  Prompt composition                                 │
+│    → framework base + app default + agent + runtime │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -471,19 +475,25 @@ The complete loading pipeline:
 | Skills | **Additive** — all skill directories are combined, no collision |
 | MCP servers | Name collision → **later tier wins** (server config is replaced) |
 | Tools | Last `registerTools()` call wins for the same tool name |
-| `default.agent.md` | Last tier's version becomes the base system message |
+| `default.agent.md` | Embedded framework base plus optional app overlay |
 
-### System Message Prepend
+### Prompt Composition
 
-After all tiers are merged, the `default.agent.md` prompt is prepended to every loaded agent's prompt:
+PilotSwarm composes system prompts with explicit layers:
 
 ```text
-[default.agent.md prompt]
----
-[agent-specific prompt]
+[PilotSwarm framework base]
+[app default.agent.md overlay, if any]
+[active agent prompt, if any]
+[runtime context overlay, if any]
 ```
 
-This ensures baseline rules (wait tool usage, artifact creation, sub-agent patterns) apply to every session regardless of which agent is active.
+PilotSwarm's own management agents use:
+
+```text
+[PilotSwarm framework base]
+[management agent prompt]
+```
 
 ---
 
@@ -491,7 +501,7 @@ This ensures baseline rules (wait tool usage, artifact creation, sub-agent patte
 
 **Keep plugins focused.** Each plugin directory should represent a single application or feature domain. Don't mix unrelated agents and skills in the same directory.
 
-**Use the system tier for invariants.** If a rule must apply to every session without exception, put it in `default.agent.md`. Don't duplicate it across individual agents.
+**Use the embedded framework layer for invariants.** If a rule must apply to every session without exception, keep it in PilotSwarm's embedded framework prompt. Use your app's `default.agent.md` for app-wide overlays.
 
 **Prefer skills over long agent prompts.** Extract reusable domain knowledge into skills. Agents should define persona and tool access; skills should provide the how-to knowledge.
 

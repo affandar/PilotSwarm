@@ -48,17 +48,17 @@ If you're building your own app on top of the runtime:
 cd your-project
 
 # Option A: file reference (local development)
-npm install ../path/to/pilotswarm
+npm install ../path/to/pilotswarm/packages/sdk
 
 # Option B: npm link (symlink — changes reflected immediately)
 cd /path/to/pilotswarm && npm link
-cd /path/to/your-project && npm link pilotswarm
+cd /path/to/your-project && npm link @affandar/pilotswarm
 ```
 
-Either way, import from `pilotswarm`:
+Either way, import from `@affandar/pilotswarm`:
 
 ```typescript
-import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker } from "@affandar/pilotswarm";
 ```
 
 ---

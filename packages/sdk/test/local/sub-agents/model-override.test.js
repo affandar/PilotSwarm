@@ -12,15 +12,16 @@ import { createTestEnv, preflightChecks } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { assert, assertEqual, assertNotNull } from "../../helpers/assertions.js";
 import { createCatalog } from "../../helpers/cms-helpers.js";
+import { TEST_GPT_MODEL } from "../../helpers/fixtures.js";
 
 const TIMEOUT = 180_000;
 
 async function testChildInheritsParentModel(env) {
     await withClient(env, {}, async (client, worker) => {
-        const session = await client.createSession({ model: "gpt-4o" });
+        const session = await client.createSession({ model: TEST_GPT_MODEL });
         assertNotNull(session, "session created");
 
-        console.log("  Asking parent (gpt-4o) to spawn sub-agent without model override...");
+        console.log(`  Asking parent (${TEST_GPT_MODEL}) to spawn sub-agent without model override...`);
         const response = await session.sendAndWait(
             "Spawn a sub-agent with the task: 'Say hello world and nothing else'",
             TIMEOUT,
@@ -38,12 +39,12 @@ async function testChildInheritsParentModel(env) {
             console.log(`  Parent model: "${(await catalog.getSession(session.sessionId))?.model}"`);
             console.log(`  Child model: "${child.model}"`);
 
-            // Child should inherit parent's model (gpt-4o)
+            // Child should inherit the parent's configured model.
             if (child.model) {
                 assertEqual(
-                    child.model.includes("gpt-4o"),
+                    child.model.includes(TEST_GPT_MODEL),
                     true,
-                    `child inherited gpt-4o (got: ${child.model})`,
+                    `child inherited ${TEST_GPT_MODEL} (got: ${child.model})`,
                 );
             }
         } finally {

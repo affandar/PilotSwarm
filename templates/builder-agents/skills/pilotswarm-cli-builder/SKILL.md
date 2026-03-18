@@ -33,10 +33,11 @@ my-app/
 1. Identify whether the app should use the shipped TUI rather than a custom UI.
 2. Create `plugin/plugin.json` when the user wants app branding.
 3. Put prompts and personas in `plugin/agents/*.agent.md`.
-4. Put reusable domain knowledge in `plugin/skills/*/SKILL.md`.
-5. Put runtime tool handlers in `worker-module.js`.
-6. Add `session-policy.json` if the app should restrict which agents users may create.
-7. Add a README with local run instructions.
+4. Treat `plugin/agents/default.agent.md` as the app-wide default overlay under PilotSwarm's embedded framework base.
+5. Put reusable domain knowledge in `plugin/skills/*/SKILL.md`.
+6. Put runtime tool handlers in `worker-module.js`.
+7. Add `session-policy.json` if the app should restrict which agents users may create.
+8. Add a README with local run instructions.
 
 ## `plugin.json` Guidance
 
@@ -63,3 +64,4 @@ Example:
 - Keep prompts, skills, tool handlers, and branding in separate layers.
 - If you add or change TUI keybindings, update help/keybinding surfaces together.
 - Treat system-agent `initialPrompt` as bootstrap startup content, not a user-authored chat line.
+- Assume apps consume `@affandar/pilotswarm-cli` and `@affandar/pilotswarm`; built-in PilotSwarm plugins are embedded in those packages, not copied into the app repo.

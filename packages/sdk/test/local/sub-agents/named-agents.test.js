@@ -9,12 +9,16 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createTestEnv, preflightChecks } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { assertNotNull, assertGreaterOrEqual, assertEqual } from "../../helpers/assertions.js";
 import { createCatalog } from "../../helpers/cms-helpers.js";
 
 const TIMEOUT = 180_000;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const MGMT_PLUGIN_DIR = path.resolve(__dirname, "../../../plugins/mgmt");
 
 async function testSpawnNamedAgents(env) {
     const catalog = await createCatalog(env);
@@ -22,7 +26,7 @@ async function testSpawnNamedAgents(env) {
     try {
         // Load mgmt agent definitions (sweeper, resourcemgr) without auto-starting them
         await withClient(env, {
-            worker: { pluginDirs: ["plugins/mgmt"] },
+            worker: { pluginDirs: [MGMT_PLUGIN_DIR] },
         }, async (client) => {
             const session = await client.createSession();
 

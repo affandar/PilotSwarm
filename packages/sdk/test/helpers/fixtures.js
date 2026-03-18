@@ -2,7 +2,7 @@
  * Test fixtures — reusable tool definitions and session configs.
  */
 
-import { defineTool } from "../../dist/index.js";
+import { defineTool, loadModelProviders } from "../../dist/index.js";
 
 // ─── Common Tools ────────────────────────────────────────────────
 
@@ -104,3 +104,25 @@ export const WAIT_CONFIG = {
         content: "You have a wait tool. When asked to wait, use it with the exact seconds. After waiting, say 'Wait complete' and answer any pending question. Be brief.",
     },
 };
+
+const modelRegistry = loadModelProviders();
+
+function firstKnownModel(candidates) {
+    if (!modelRegistry) return candidates[0];
+    for (const candidate of candidates) {
+        const normalized = modelRegistry.normalize(candidate);
+        if (normalized) return candidate;
+    }
+    return candidates[0];
+}
+
+export const TEST_GPT_MODEL = firstKnownModel([
+    "gpt-5.1",
+    "gpt-4.1",
+    "gpt-4o",
+]);
+
+export const TEST_CLAUDE_MODEL = firstKnownModel([
+    "claude-sonnet-4.6",
+    "claude-opus-4.6",
+]);

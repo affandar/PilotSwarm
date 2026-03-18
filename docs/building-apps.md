@@ -8,7 +8,7 @@ and MCP server configs. Workers load plugin contents at startup and pass them th
 to the Copilot SDK via proven session config fields (`skillDirectories`, `customAgents`,
 `mcpServers`). Clients are thin proxies that send prompts and render events.
 
-The runtime ships a full TUI as a CLI (`pilotswarm-tui`) — see
+The runtime ships a full TUI as a CLI (`pilotswarm`) — see
 [Putting It All Together](#putting-it-all-together) for usage.
 
 ## Architecture: Plugins + Tools + Runtime
@@ -196,7 +196,7 @@ You never define these — they're part of the runtime.
 ### Registering Tools on the Worker
 
 ```typescript
-import { PilotSwarmWorker } from "pilotswarm";
+import { PilotSwarmWorker } from "@affandar/pilotswarm";
 
 const worker = new PilotSwarmWorker({
   store: process.env.DATABASE_URL,
@@ -257,7 +257,7 @@ Your PostgreSQL user needs `CREATE SCHEMA` permission on first run.
 **Local Development** — embedded workers in TUI (default):
 ```
 ┌─ Your Machine ──────────────────────────────────┐
-│  npx pilotswarm-tui --env .env              │
+│  npx pilotswarm --env .env              │
 │  (or: ./run.sh)                                  │
 │                                                  │
 │    ├─ PilotSwarmWorker × 4 (poll DB)         │
@@ -278,7 +278,7 @@ setup (no TUI), `examples/chat.js` runs one worker + one client in a single proc
 **Production** — TUI client-only + AKS workers:
 ```
 ┌─ Your Machine (TUI) ─────────────────────────┐
-│  npx pilotswarm-tui remote               │
+│  npx pilotswarm remote               │
 │    --store postgresql://...                   │
 │    --namespace my-app                         │
 │    └─ PilotSwarmClient                    │
@@ -379,7 +379,7 @@ You configure it, you don't code it:
 
 ## Putting It All Together
 
-The runtime ships a full TUI client as a CLI: `pilotswarm-tui`. You provide a plugin
+The runtime ships a full TUI client as a CLI: `pilotswarm`. You provide a plugin
 directory and optionally a worker module with custom tools — the TUI handles everything
 else (sessions, events, log streaming, chat rendering).
 
@@ -402,8 +402,8 @@ my-app/
 ```
 
 ```bash
-npm install pilotswarm
-npx pilotswarm-tui --env .env --plugin ./plugin
+npm install @affandar/pilotswarm
+npx pilotswarm --env .env --plugin ./plugin
 ```
 
 The CLI embeds 4 workers, loads your plugin, and launches the TUI. Done.
@@ -439,7 +439,7 @@ export default {
 ```
 
 ```bash
-npx pilotswarm-tui --env .env --plugin ./plugin --worker ./tools.js
+npx pilotswarm --env .env --plugin ./plugin --worker ./tools.js
 ```
 
 ### Production: Separate Worker + Remote TUI
@@ -466,7 +466,7 @@ my-app/
 
 ```javascript
 // worker.js
-import { PilotSwarmWorker } from "pilotswarm";
+import { PilotSwarmWorker } from "@affandar/pilotswarm";
 import { deployService, checkHealth, rollback } from "./src/tools.js";
 
 const worker = new PilotSwarmWorker({
@@ -484,7 +484,7 @@ await worker.start();
 **TUI** (thin client — needs only the database URL):
 
 ```bash
-npx pilotswarm-tui remote \
+npx pilotswarm remote \
   --store postgresql://... \
   --namespace my-app-workers
 ```
@@ -508,7 +508,7 @@ CMD ["node", "worker.js"]
 ### CLI Reference
 
 ```
-pilotswarm-tui [local|remote] [flags]
+pilotswarm [local|remote] [flags]
 
 FLAG                     ENV VAR EQUIVALENT
 --store <url>            DATABASE_URL
