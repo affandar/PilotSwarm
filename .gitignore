@@ -6,6 +6,7 @@ dist/
 vendor/
 nohup.out
 dumps/
+TODO.md
 # Squad: ignore runtime state (logs, inbox, sessions)
 .squad/orchestration-log/
 .squad/log/
