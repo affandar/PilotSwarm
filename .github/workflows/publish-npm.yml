@@ -26,7 +26,7 @@ env:
 
 jobs:
   publish-sdk:
-    name: Publish @affandar/pilotswarm
+    name: Publish pilotswarm-sdk
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -50,13 +50,13 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ "${NPM_DRY_RUN}" = "true" ]; then
-            npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
+            npm publish --provenance --tag "${NPM_DIST_TAG}" --dry-run
           else
-            npm publish --access public --provenance --tag "${NPM_DIST_TAG}"
+            npm publish --provenance --tag "${NPM_DIST_TAG}"
           fi
 
   publish-cli:
-    name: Publish @affandar/pilotswarm-cli
+    name: Publish pilotswarm-cli
     runs-on: ubuntu-latest
     needs: publish-sdk
     steps:
@@ -81,7 +81,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ "${NPM_DRY_RUN}" = "true" ]; then
-            npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
+            npm publish --provenance --tag "${NPM_DIST_TAG}" --dry-run
           else
-            npm publish --access public --provenance --tag "${NPM_DIST_TAG}"
+            npm publish --provenance --tag "${NPM_DIST_TAG}"
           fi

@@ -111,7 +111,7 @@ This means Squad tools work on PilotSwarm without any session ID adaptation.
 ### Basic: Register Squad tools on a PilotSwarm worker
 
 ```ts
-import { PilotSwarmClient, PilotSwarmWorker } from "@affandar/pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm-sdk";
 import { ToolRegistry } from "@bradygaster/squad-sdk";
 
 // Worker setup
@@ -167,7 +167,7 @@ const worker = await client.createSession({
 ### Custom tools alongside Squad tools
 
 ```ts
-import { defineTool } from "@affandar/pilotswarm";
+import { defineTool } from "pilotswarm-sdk";
 
 const myTool = defineTool("project_search", {
     description: "Search the project codebase",

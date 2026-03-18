@@ -196,7 +196,7 @@ You never define these — they're part of the runtime.
 ### Registering Tools on the Worker
 
 ```typescript
-import { PilotSwarmWorker } from "@affandar/pilotswarm";
+import { PilotSwarmWorker } from "pilotswarm-sdk";
 
 const worker = new PilotSwarmWorker({
   store: process.env.DATABASE_URL,
@@ -402,7 +402,7 @@ my-app/
 ```
 
 ```bash
-npm install @affandar/pilotswarm
+npm install pilotswarm-sdk
 npx pilotswarm --env .env --plugin ./plugin
 ```
 
@@ -466,7 +466,7 @@ my-app/
 
 ```javascript
 // worker.js
-import { PilotSwarmWorker } from "@affandar/pilotswarm";
+import { PilotSwarmWorker } from "pilotswarm-sdk";
 import { deployService, checkHealth, rollback } from "./src/tools.js";
 
 const worker = new PilotSwarmWorker({

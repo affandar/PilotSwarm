@@ -12,8 +12,8 @@ They are not active in this repository. Copy them into the target repository you
 
 These templates assume apps consume:
 
-- `@affandar/pilotswarm`
-- `@affandar/pilotswarm-cli`
+- `pilotswarm-sdk`
+- `pilotswarm-cli`
 
 and that PilotSwarm's built-in framework and management plugins are embedded in those packages while app `default.agent.md` files act as app-wide overlays.
 

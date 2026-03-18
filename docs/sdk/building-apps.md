@@ -26,7 +26,7 @@ In local development they can run in the same process. In production they often 
 ## Minimal Working App
 
 ```ts
-import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
 
 const getWeather = defineTool("get_weather", {
   description: "Get weather for a city",
@@ -91,7 +91,7 @@ This keeps the split clean:
 - worker code registers tool handlers
 - app code creates and drives sessions
 
-PilotSwarm's own framework prompt and management plugins are embedded in the installed `@affandar/pilotswarm` package. Your app ships only its own `plugin/` directory and worker code.
+PilotSwarm's own framework prompt and management plugins are embedded in the installed `pilotswarm-sdk` package. Your app ships only its own `plugin/` directory and worker code.
 
 The DevOps sample uses exactly this split:
 

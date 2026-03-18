@@ -153,7 +153,7 @@ A complete TUI app in ~100 lines — a deployment assistant:
 ```typescript
 // deploy-app/tui.js
 import { createTui } from "pilotswarm/tui";
-import { PilotSwarmClient, PilotSwarmWorker, loadSkills } from "@affandar/pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker, loadSkills } from "pilotswarm-sdk";
 import { deployService, checkHealth, rollback } from "./tools.js";
 
 await createTui({

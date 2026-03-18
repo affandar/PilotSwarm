@@ -21,7 +21,7 @@ You'll need:
 Install PilotSwarm and its CLI:
 
 ```bash
-npm install @affandar/pilotswarm @affandar/pilotswarm-cli
+npm install pilotswarm-sdk pilotswarm-cli
 ```
 
 Create an `.env` file in your project root with your connection details:

@@ -83,7 +83,7 @@ How it works:
 The worker must register any tool the agent is allowed to call.
 
 ```ts
-import { PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
+import { PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
 
 const webFetch = defineTool("web_fetch", { /* ... */ });
 const writeArtifact = defineTool("write_artifact", { /* ... */ });

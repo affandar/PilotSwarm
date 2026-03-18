@@ -1,4 +1,4 @@
-# Proposal: Scoped npm Packaging and Embedded PilotSwarm Plugins
+# Proposal: npm Packaging and Embedded PilotSwarm Plugins
 
 ## Status
 
@@ -10,7 +10,7 @@ Package PilotSwarm as a small npm family that app authors can consume directly w
 
 This proposal covers:
 
-- scoped package names under `@affandar`
+- dedicated unscoped package names
 - package responsibilities
 - what gets published in each tarball
 - how embedded PilotSwarm plugins should load
@@ -20,7 +20,7 @@ This proposal covers:
 
 ## Recommended Packages
 
-### `@affandar/pilotswarm`
+### `pilotswarm-sdk`
 
 The core runtime package.
 
@@ -39,25 +39,25 @@ It should also ship PilotSwarm's built-in runtime assets:
 - embedded PilotSwarm management agents
 - embedded PilotSwarm management skills
 
-### `@affandar/pilotswarm-cli`
+### `pilotswarm-cli`
 
 The terminal UI package.
 
 It should:
 
-- depend on `@affandar/pilotswarm`
+- depend on `pilotswarm-sdk`
 - provide the `pilotswarm` CLI binary
 - ship CLI/TUI code and optional CLI-specific assets
-- avoid duplicating PilotSwarm framework prompt content already owned by `@affandar/pilotswarm`
+- avoid duplicating PilotSwarm framework prompt content already owned by `pilotswarm-sdk`
 
 ---
 
 ## Naming Recommendation
 
-Use scoped packages:
+Use dedicated unscoped package names:
 
-- `@affandar/pilotswarm`
-- `@affandar/pilotswarm-cli`
+- `pilotswarm-sdk`
+- `pilotswarm-cli`
 
 Keep the binary name short:
 
@@ -66,8 +66,8 @@ Keep the binary name short:
 That gives us clear ownership in npm while preserving a clean CLI experience:
 
 ```bash
-npm install @affandar/pilotswarm
-npm install @affandar/pilotswarm-cli
+npm install pilotswarm-sdk
+npm install pilotswarm-cli
 npx pilotswarm
 ```
 
@@ -75,10 +75,10 @@ npx pilotswarm
 
 ## Packaging Model
 
-### What `@affandar/pilotswarm` should contain
+### What `pilotswarm-sdk` should contain
 
 ```text
-@affandar/pilotswarm
+pilotswarm-sdk
 ├── dist/
 │   ├── index.js
 │   ├── worker.js
@@ -99,10 +99,10 @@ If we keep the current `plugins/` folder name instead of introducing `embedded/`
 - the worker resolves them relative to the installed package location
 - consumer apps do not copy those files into their own repos
 
-### What `@affandar/pilotswarm-cli` should contain
+### What `pilotswarm-cli` should contain
 
 ```text
-@affandar/pilotswarm-cli
+pilotswarm-cli
 ├── bin/
 │   └── tui.js
 ├── cli/
@@ -110,7 +110,7 @@ If we keep the current `plugins/` folder name instead of introducing `embedded/`
 └── README.md
 ```
 
-If the CLI needs branding or CLI-only plugin assets, they should be clearly separated from the framework base prompt and management plugins owned by `@affandar/pilotswarm`.
+If the CLI needs branding or CLI-only plugin assets, they should be clearly separated from the framework base prompt and management plugins owned by `pilotswarm-sdk`.
 
 ### What an app package should contain
 
@@ -137,7 +137,7 @@ PilotSwarm's built-in plugins should be embedded package assets, not scaffolded 
 
 That means:
 
-- users install them by installing `@affandar/pilotswarm`
+- users install them by installing `pilotswarm-sdk`
 - the worker auto-loads them from the package itself
 - app packages layer their own plugin directories on top
 
@@ -148,7 +148,7 @@ This keeps the PilotSwarm base consistent across all consuming apps and avoids s
 ## Install and Load Order
 
 ```text
-npm install @affandar/pilotswarm
+npm install pilotswarm-sdk
 │
 ├─ SDK code
 ├─ embedded framework base
@@ -190,7 +190,7 @@ Apps own app instructions.
 
 ### 3. Simpler upgrades
 
-Upgrading `@affandar/pilotswarm` upgrades the built-in framework assets in one place.
+Upgrading `pilotswarm-sdk` upgrades the built-in framework assets in one place.
 
 ### 4. Better support story
 
@@ -221,7 +221,7 @@ Apps like Waldemort should depend on PilotSwarm and ship only app-specific asset
 
 Recommended responsibilities:
 
-- `@affandar/pilotswarm`
+- `pilotswarm-sdk`
   - runtime primitives
   - embedded PilotSwarm framework prompt
   - embedded PilotSwarm management agents and skills
@@ -238,7 +238,7 @@ At runtime, the app resolves its own package-local plugin directory and passes i
 
 ## Recommended Publish Settings
 
-### `@affandar/pilotswarm`
+### `pilotswarm-sdk`
 
 Publish compiled runtime code and embedded assets.
 
@@ -246,7 +246,7 @@ At minimum:
 
 ```json
 {
-  "name": "@affandar/pilotswarm",
+  "name": "pilotswarm-sdk",
   "files": [
     "dist/**/*",
     "embedded/**/*",
@@ -259,7 +259,7 @@ If we keep the current folder name:
 
 ```json
 {
-  "name": "@affandar/pilotswarm",
+  "name": "pilotswarm-sdk",
   "files": [
     "dist/**/*",
     "plugins/**/*",
@@ -268,13 +268,13 @@ If we keep the current folder name:
 }
 ```
 
-### `@affandar/pilotswarm-cli`
+### `pilotswarm-cli`
 
 Publish the CLI entrypoints plus any CLI-only assets.
 
 ```json
 {
-  "name": "@affandar/pilotswarm-cli",
+  "name": "pilotswarm-cli",
   "bin": {
     "pilotswarm": "./bin/tui.js"
   },
@@ -292,8 +292,8 @@ Publish the CLI entrypoints plus any CLI-only assets.
 
 Start with lockstep versions for the core runtime and CLI:
 
-- `@affandar/pilotswarm@0.x.y`
-- `@affandar/pilotswarm-cli@0.x.y`
+- `pilotswarm-sdk@0.x.y`
+- `pilotswarm-cli@0.x.y`
 
 That keeps upgrades simple while the packaging contract settles.
 

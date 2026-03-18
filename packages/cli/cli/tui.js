@@ -13,7 +13,7 @@
  *   npx pilotswarm remote --env .env.remote       # client-only (AKS)
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, systemAgentUUID } from "@affandar/pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, systemAgentUUID } from "pilotswarm-sdk";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";

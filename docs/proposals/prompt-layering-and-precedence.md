@@ -82,7 +82,7 @@ Examples:
 ### Install and load graph
 
 ```text
-@affandar/pilotswarm
+pilotswarm-sdk
 │
 ├─ Embedded framework base
 │  └─ highest-priority PilotSwarm instructions
