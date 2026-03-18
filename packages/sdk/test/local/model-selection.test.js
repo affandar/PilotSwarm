@@ -12,12 +12,13 @@ import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assertEqual, assertNotNull } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
+import { TEST_CLAUDE_MODEL, TEST_GPT_MODEL } from "../helpers/fixtures.js";
 
 const TIMEOUT = 120_000;
 
 async function testCreateSessionWithModel(env) {
     await withClient(env, {}, async (client, worker) => {
-        const session = await client.createSession({ model: "gpt-4o" });
+        const session = await client.createSession({ model: TEST_GPT_MODEL });
         assertNotNull(session, "session created");
 
         const catalog = await createCatalog(env);
@@ -28,9 +29,9 @@ async function testCreateSessionWithModel(env) {
             assertNotNull(row.model, "model recorded in CMS");
             // Model may be normalized to include provider prefix
             assertEqual(
-                row.model.includes("gpt-4o"),
+                row.model.includes(TEST_GPT_MODEL),
                 true,
-                `model contains gpt-4o (got: ${row.model})`,
+                `model contains ${TEST_GPT_MODEL} (got: ${row.model})`,
             );
         } finally {
             await catalog.close();
@@ -40,10 +41,10 @@ async function testCreateSessionWithModel(env) {
 
 async function testModelRecordedAfterTurn(env) {
     await withClient(env, {}, async (client, worker) => {
-        const session = await client.createSession({ model: "gpt-4o" });
+        const session = await client.createSession({ model: TEST_GPT_MODEL });
         assertNotNull(session, "session created");
 
-        console.log("  Sending prompt with gpt-4o model...");
+        console.log(`  Sending prompt with ${TEST_GPT_MODEL} model...`);
         const response = await session.sendAndWait("Say hello", TIMEOUT);
         console.log(`  Response: "${response?.slice(0, 80)}"`);
         assertNotNull(response, "got response");
@@ -55,9 +56,9 @@ async function testModelRecordedAfterTurn(env) {
             console.log(`  CMS model after turn: "${row.model}"`);
             assertNotNull(row.model, "model still in CMS after turn");
             assertEqual(
-                row.model.includes("gpt-4o"),
+                row.model.includes(TEST_GPT_MODEL),
                 true,
-                `model still gpt-4o after turn (got: ${row.model})`,
+                `model still ${TEST_GPT_MODEL} after turn (got: ${row.model})`,
             );
         } finally {
             await catalog.close();
@@ -67,8 +68,8 @@ async function testModelRecordedAfterTurn(env) {
 
 async function testDifferentModelSameWorker(env) {
     await withClient(env, {}, async (client, worker) => {
-        const s1 = await client.createSession({ model: "gpt-4o" });
-        const s2 = await client.createSession({ model: "claude-sonnet-4.6" });
+        const s1 = await client.createSession({ model: TEST_GPT_MODEL });
+        const s2 = await client.createSession({ model: TEST_CLAUDE_MODEL });
         assertNotNull(s1, "session 1 created");
         assertNotNull(s2, "session 2 created");
 
@@ -77,9 +78,9 @@ async function testDifferentModelSameWorker(env) {
             s1.sendAndWait("Say hello", TIMEOUT),
             s2.sendAndWait("Say hello", TIMEOUT),
         ]);
-        console.log(`  gpt-4o response: "${r1?.slice(0, 60)}"`);
-        console.log(`  claude response: "${r2?.slice(0, 60)}"`);
-        assertNotNull(r1, "got gpt-4o response");
+        console.log(`  ${TEST_GPT_MODEL} response: "${r1?.slice(0, 60)}"`);
+        console.log(`  ${TEST_CLAUDE_MODEL} response: "${r2?.slice(0, 60)}"`);
+        assertNotNull(r1, `got ${TEST_GPT_MODEL} response`);
         assertNotNull(r2, "got claude response");
 
         const catalog = await createCatalog(env);
@@ -89,14 +90,14 @@ async function testDifferentModelSameWorker(env) {
             console.log(`  CMS model 1: "${row1?.model}"`);
             console.log(`  CMS model 2: "${row2?.model}"`);
             assertEqual(
-                row1.model.includes("gpt-4o"),
+                row1.model.includes(TEST_GPT_MODEL),
                 true,
-                `session 1 model is gpt-4o (got: ${row1.model})`,
+                `session 1 model is ${TEST_GPT_MODEL} (got: ${row1.model})`,
             );
             assertEqual(
-                row2.model.includes("claude"),
+                row2.model.includes(TEST_CLAUDE_MODEL),
                 true,
-                `session 2 model is claude (got: ${row2.model})`,
+                `session 2 model is ${TEST_CLAUDE_MODEL} (got: ${row2.model})`,
             );
         } finally {
             await catalog.close();

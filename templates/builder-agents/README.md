@@ -10,6 +10,13 @@ They are not active in this repository. Copy them into the target repository you
 - `pilotswarm-sdk-builder` — scaffolds SDK-first apps and services built around `PilotSwarmClient` and `PilotSwarmWorker`
 - `pilotswarm-azure-deployer` — prepares PilotSwarm-based apps for Azure / AKS deployment, including env templates, workload identity, and cross-cluster AKS guidance
 
+These templates assume apps consume:
+
+- `@affandar/pilotswarm`
+- `@affandar/pilotswarm-cli`
+
+and that PilotSwarm's built-in framework and management plugins are embedded in those packages while app `default.agent.md` files act as app-wide overlays.
+
 ## Install Into Another Repo
 
 Copy these folders into the target repository:

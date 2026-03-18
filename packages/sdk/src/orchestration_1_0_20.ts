@@ -48,7 +48,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.21";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.20";
 
 /**
  * Long-lived durable session orchestration.
@@ -66,13 +66,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.21";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_21(
+export function* durableSessionOrchestration_1_0_20(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.21] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.20] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -1006,15 +1006,15 @@ export function* durableSessionOrchestration_1_0_21(
                 let agentTitle: string | undefined;
                 let agentId: string | undefined;
                 let agentSplash: string | undefined;
-                let boundAgentName: string | undefined;
-                let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
                 let resolvedAgentName = result.agentName;
 
                 const applyAgentDef = (agentDef: any, useDefinitionDefaults = false) => {
                     agentTask = useDefinitionDefaults
                         ? (agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`)
                         : (result.task || agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`);
-                    agentSystemMessage = useDefinitionDefaults ? undefined : result.systemMessage;
+                    agentSystemMessage = useDefinitionDefaults
+                        ? ({ mode: "replace" as const, content: agentDef.prompt })
+                        : (result.systemMessage ?? { mode: "replace" as const, content: agentDef.prompt });
                     agentToolNames = useDefinitionDefaults
                         ? (agentDef.tools ?? undefined)
                         : (result.toolNames ?? agentDef.tools ?? undefined);
@@ -1022,13 +1022,6 @@ export function* durableSessionOrchestration_1_0_21(
                     agentTitle = agentDef.title;
                     agentId = agentDef.id ?? resolvedAgentName;
                     agentSplash = agentDef.splash;
-                    boundAgentName = agentDef.name;
-                    promptLayeringKind = agentDef.promptLayerKind
-                        ?? (agentDef.system
-                            ? ((agentDef.namespace || "pilotswarm") === "pilotswarm"
-                                ? "pilotswarm-system-agent"
-                                : "app-system-agent")
-                            : "app-agent");
                 };
 
                 if (!resolvedAgentName && input.isSystem && agentTask) {
@@ -1092,17 +1085,10 @@ export function* durableSessionOrchestration_1_0_21(
                 ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${agentTask.slice(0, 80)}" model=${agentModel || "inherit"} agent=${resolvedAgentName || "custom"} nestingLevel=${childNestingLevel}`);
 
                 // Build child config — inherit parent's config with optional overrides
-                const {
-                    boundAgentName: _parentBoundAgentName,
-                    promptLayering: _parentPromptLayering,
-                    ...parentConfig
-                } = config;
                 const childConfig: SerializableSessionConfig = {
-                    ...parentConfig,
+                    ...config,
                     ...(agentModel ? { model: agentModel } : {}),
                     ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
-                    ...(boundAgentName ? { boundAgentName } : {}),
-                    ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                     ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                 };
 

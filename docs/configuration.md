@@ -75,7 +75,7 @@ node --env-file=.env scripts/db-reset.js
 The simplest setup — client and worker in the same process:
 
 ```typescript
-import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "@affandar/pilotswarm";
 
 const store = process.env.DATABASE_URL;
 
@@ -108,7 +108,7 @@ For production, run workers as separate processes:
 
 ```javascript
 // worker.js
-import { PilotSwarmWorker } from "pilotswarm";
+import { PilotSwarmWorker } from "@affandar/pilotswarm";
 
 const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
@@ -134,7 +134,7 @@ await new Promise(() => {});
 
 ```javascript
 // app.js
-import { PilotSwarmClient } from "pilotswarm";
+import { PilotSwarmClient } from "@affandar/pilotswarm";
 
 const client = new PilotSwarmClient({
     store: process.env.DATABASE_URL,

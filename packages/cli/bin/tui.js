@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 
 /**
- * pilotswarm-tui — CLI for the pilotswarm.
+ * pilotswarm — CLI for the pilotswarm.
  *
  * Modes:
  *   local   Embedded workers + TUI in one process (default)
  *   remote  Client-only TUI, workers run elsewhere (AKS, separate process)
  *
  * Usage:
- *   npx pilotswarm-tui local --plugin ./plugin
- *   npx pilotswarm-tui remote --store postgresql://... --context toygres-aks
- *   npx pilotswarm-tui --env .env --plugin ./my-plugin --workers 4
+ *   npx pilotswarm local --plugin ./plugin
+ *   npx pilotswarm remote --store postgresql://... --context toygres-aks
+ *   npx pilotswarm --env .env --plugin ./my-plugin --workers 4
  *
  * All flags can also be set via environment variables (CLI flags take precedence).
  */
@@ -66,10 +66,10 @@ const { values: flags, positionals } = parseArgs({
 
 if (flags.help) {
     console.log(`
-pilotswarm-tui — TUI for pilotswarm apps
+pilotswarm — TUI for pilotswarm apps
 
 USAGE
-  npx pilotswarm-tui [local|remote] [flags]
+  npx pilotswarm [local|remote] [flags]
 
 MODES
   local       Embed workers in the TUI process (default)
@@ -96,19 +96,19 @@ CLI flags take precedence over env vars.
 
 EXAMPLES
   # Plugin-only (no code), env from file
-  npx pilotswarm-tui --env .env --plugin ./my-plugin
+  npx pilotswarm --env .env --plugin ./my-plugin
 
   # Custom tools via worker module
-  npx pilotswarm-tui --env .env --plugin ./plugin --worker ./tools.js
+  npx pilotswarm --env .env --plugin ./plugin --worker ./tools.js
 
   # All config in .env (zero flags)
   echo "DATABASE_URL=postgresql://..." >> .env
   echo "GITHUB_TOKEN=ghu_..." >> .env
   echo "PLUGIN_DIRS=./plugin" >> .env
-  npx pilotswarm-tui
+  npx pilotswarm
 
   # Client-only, workers on AKS
-  npx pilotswarm-tui remote --store postgresql://... --namespace my-app
+  npx pilotswarm remote --store postgresql://... --namespace my-app
 `.trim());
     process.exit(0);
 }

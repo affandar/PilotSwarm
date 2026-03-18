@@ -54,7 +54,7 @@ GITHUB_TOKEN=your-token-here
 From the repo root:
 
 ```bash
-npx pilotswarm-tui \
+npx pilotswarm \
   --plugin ./examples/devops-command-center/plugin \
   --worker ./examples/devops-command-center/worker-module.js \
   --env .env
@@ -100,6 +100,7 @@ devops-command-center/
 │   ├── plugin.json                ← Plugin metadata (name: "devops")
 │   ├── session-policy.json        ← Allowlist policy
 │   ├── agents/
+│   │   ├── default.agent.md       ← App-wide default instructions layered under PilotSwarm's framework base
 │   │   ├── watchdog.agent.md      ← System: health monitor with durable timers
 │   │   ├── janitor.agent.md       ← System: cleanup scheduler
 │   │   ├── investigator.agent.md  ← Incident investigation, sub-agent spawning
@@ -121,6 +122,7 @@ devops-command-center/
 | PilotSwarm Feature | Where |
 |-------------------|-------|
 | Session policy (allowlist) | `session-policy.json` — only 3 agents creatable |
+| App default prompt layering | `plugin/agents/default.agent.md` — mock-lab rules layered under the PilotSwarm framework base |
 | System agents | `watchdog.agent.md`, `janitor.agent.md` — auto-start, deletion-protected |
 | Agent namespacing | All agents qualified as `devops:*` |
 | Custom tools | `tools.js` — 6 mock tools registered via `worker.registerTools()` |

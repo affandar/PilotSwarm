@@ -85,6 +85,8 @@ export interface AgentConfig {
     initialPrompt?: string;
     /** Source plugin namespace (e.g. "pilotswarm", "smelter"). Set by the worker during plugin loading. */
     namespace?: string;
+    /** Internal: identifies which prompt layering path this agent should use. */
+    promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
 }
 
 // ─── Frontmatter Parser ─────────────────────────────────────────

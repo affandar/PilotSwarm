@@ -5,7 +5,7 @@
  * Register on the worker with: worker.registerTools(devopsTools)
  */
 
-import { defineTool } from "pilotswarm";
+import { defineTool } from "@affandar/pilotswarm";
 
 // ─── Mock Data ───────────────────────────────────────────────────
 

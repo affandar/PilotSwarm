@@ -17,6 +17,8 @@ Your job is to create or update application code in the user's repository, not t
 - create or update worker-side tool registration modules
 - wire local development commands and README guidance
 - use the DevOps sample and public docs as the canonical reference shape
+- assume app `default.agent.md` files are app-wide overlays layered under PilotSwarm's embedded framework base
+- assume the CLI package consumed by apps is `@affandar/pilotswarm-cli`
 
 ## Always Consult
 
@@ -32,6 +34,7 @@ Your job is to create or update application code in the user's repository, not t
 - keep worker-side code limited to tool handlers and runtime wiring
 - do not model builder concerns as runtime system agents inside the user's PilotSwarm app
 - if you add or change TUI keybindings, update all help/keybinding surfaces together
+- do not copy PilotSwarm's built-in framework or management plugin text into the user's app
 
 ## Output Shape
 

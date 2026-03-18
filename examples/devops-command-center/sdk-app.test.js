@@ -140,6 +140,20 @@ async function testAgentNamespacing(env) {
     });
 }
 
+async function testDefaultAgentLayering(env) {
+    await withClient(env, DEVOPS_OPTS, async (_client, worker) => {
+        const investigator = worker.loadedAgents.find(a => a.name === "investigator");
+        assertNotNull(investigator, "investigator loaded");
+        assertIncludes(investigator.prompt, "# Application Default Instructions", "app default wrapper present");
+        assertIncludes(
+            investigator.prompt,
+            "Treat the current environment as a local mock lab unless a tool explicitly says otherwise.",
+            "devops default instructions layered into investigator",
+        );
+        assertIncludes(investigator.prompt, "<ACTIVE_AGENT>", "active agent wrapper present");
+    });
+}
+
 async function testRenameInvestigatorSession(env) {
     const mgmt = await createManagementClient(env);
     try {
@@ -217,6 +231,10 @@ describe.concurrent("DevOps Command Center", () => {
     it("Agent Namespacing", { timeout: TIMEOUT }, async () => {
         const env = createTestEnv("devops-example");
         try { await testAgentNamespacing(env); } finally { await env.cleanup(); }
+    });
+    it("Default Agent Layering", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("devops-example");
+        try { await testDefaultAgentLayering(env); } finally { await env.cleanup(); }
     });
 
     it("Rename Investigator Session", { timeout: TIMEOUT }, async () => {

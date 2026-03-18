@@ -12,7 +12,7 @@
  *   - Durable wait tool + ask_user tool
  */
 
-import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm";
+import { PilotSwarmClient, PilotSwarmWorker } from "@affandar/pilotswarm";
 import { createInterface } from "node:readline";
 
 const STORE = process.env.DATABASE_URL || "sqlite::memory:";

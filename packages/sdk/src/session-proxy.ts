@@ -151,7 +151,7 @@ export function registerActivities(
     /** Names of loaded non-system agents — used by getWorkerSessionPolicy activity. */
     workerAllowedAgentNames?: string[],
     /** Loaded user-creatable agents — used by resolveAgentConfig activity. */
-    userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; parent?: string }>,
+    userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; parent?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>,
 ) {
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
@@ -431,7 +431,7 @@ export function registerActivities(
     runtime.registerActivity("resolveAgentConfig", async (
         _activityCtx: any,
         input: { agentName: string },
-    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; parent?: string; splash?: string; namespace?: string } | null> => {
+    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; parent?: string; splash?: string; namespace?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" } | null> => {
         const agents: Array<any> = [...(systemAgents ?? []), ...(userAgents ?? []).map(a => ({ ...a, system: false }))];
         const normalize = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
         // Support qualified names: "smelter:supervisor" → namespace="smelter", name="supervisor"
@@ -464,6 +464,7 @@ export function registerActivities(
             parent: agent.parent ?? undefined,
             splash: agent.splash ?? undefined,
             namespace: agent.namespace ?? undefined,
+            promptLayerKind: agent.promptLayerKind ?? undefined,
         };
     });
 
@@ -506,7 +507,10 @@ export function registerActivities(
                 sdkClient.systemSessions.add(childSessionId);
             }
 
-            const normalizedModel = sessionManager.normalizeModelRef(input.config.model, { requireQualified: true });
+            // Child sessions may inherit a parent model that was created with a
+            // bare alias such as "gpt-4.1". Normalize it here, but do not
+            // require that the stored value is already provider-qualified.
+            const normalizedModel = sessionManager.normalizeModelRef(input.config.model);
             if (normalizedModel) {
                 input.config.model = normalizedModel;
             }
@@ -518,6 +522,8 @@ export function registerActivities(
                 nestingLevel: input.nestingLevel,
                 model: input.config.model,
                 systemMessage: input.config.systemMessage,
+                boundAgentName: input.config.boundAgentName,
+                promptLayering: input.config.promptLayering,
                 toolNames: input.config.toolNames,
                 waitThreshold: input.config.waitThreshold,
             });
