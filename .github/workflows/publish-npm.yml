@@ -50,9 +50,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ "${NPM_DRY_RUN}" = "true" ]; then
-            npm publish --provenance --tag "${NPM_DIST_TAG}" --dry-run
+            npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
           else
-            npm publish --provenance --tag "${NPM_DIST_TAG}"
+            npm publish --access public --provenance --tag "${NPM_DIST_TAG}"
           fi
 
   publish-cli:
@@ -81,7 +81,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ "${NPM_DRY_RUN}" = "true" ]; then
-            npm publish --provenance --tag "${NPM_DIST_TAG}" --dry-run
+            npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
           else
-            npm publish --provenance --tag "${NPM_DIST_TAG}"
+            npm publish --access public --provenance --tag "${NPM_DIST_TAG}"
           fi
