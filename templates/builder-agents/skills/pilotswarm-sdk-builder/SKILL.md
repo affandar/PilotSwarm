@@ -9,10 +9,10 @@ Build layered SDK-first applications on top of PilotSwarm.
 
 ## Canonical References
 
-- SDK guide: `https://github.com/microsoft/pilotswarm/blob/main/docs/sdk/building-apps.md`
-- SDK agent guide: `https://github.com/microsoft/pilotswarm/blob/main/docs/sdk/building-agents.md`
-- Plugin architecture: `https://github.com/microsoft/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
-- DevOps sample: `https://github.com/microsoft/pilotswarm/tree/main/examples/devops-command-center`
+- SDK guide: `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
+- SDK agent guide: `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-agents.md`
+- Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
+- DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
 ## Preferred Structure
 

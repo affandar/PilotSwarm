@@ -34,7 +34,7 @@ Optional (for AKS deployment):
 ## Step 1: Clone and Install
 
 ```bash
-git clone https://github.com/microsoft/pilotswarm.git
+git clone https://github.com/affandar/pilotswarm.git
 cd pilotswarm
 npm install
 npm run build

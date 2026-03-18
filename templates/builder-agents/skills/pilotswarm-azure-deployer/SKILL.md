@@ -9,10 +9,10 @@ Prepare PilotSwarm-based apps for Azure deployment, especially AKS worker deploy
 
 ## Canonical References
 
-- AKS deployment guide: `https://github.com/microsoft/pilotswarm/blob/main/docs/deploying-to-aks.md`
-- Configuration guide: `https://github.com/microsoft/pilotswarm/blob/main/docs/configuration.md`
-- Plugin architecture: `https://github.com/microsoft/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
-- DevOps sample: `https://github.com/microsoft/pilotswarm/tree/main/examples/devops-command-center`
+- AKS deployment guide: `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
+- Configuration guide: `https://github.com/affandar/pilotswarm/blob/main/docs/configuration.md`
+- Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
+- DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
 ## Preferred Outputs
 
