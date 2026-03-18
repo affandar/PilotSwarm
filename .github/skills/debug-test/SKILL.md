@@ -49,8 +49,12 @@ description: Diagnose and fix a failing integration test in PilotSwarm. Covers t
    ```
 
 ## Key files
-- [test/sdk.test.js](../../../test/sdk.test.js) — test definitions
-- [src/client.ts](../../../src/client.ts) — client-side orchestration polling
-- [src/orchestration.ts](../../../src/orchestration.ts) — orchestration logic
-- [src/managed-session.ts](../../../src/managed-session.ts) — LLM turn execution
-- [src/session-manager.ts](../../../src/session-manager.ts) — session lifecycle and tool resolution
+- [packages/sdk/test/sdk.test.js](../../../packages/sdk/test/sdk.test.js) — test definitions
+- [packages/sdk/src/client.ts](../../../packages/sdk/src/client.ts) — client-side orchestration polling
+- [packages/sdk/src/orchestration.ts](../../../packages/sdk/src/orchestration.ts) — orchestration logic
+- [packages/sdk/src/managed-session.ts](../../../packages/sdk/src/managed-session.ts) — LLM turn execution
+- [packages/sdk/src/session-manager.ts](../../../packages/sdk/src/session-manager.ts) — session lifecycle and tool resolution
+
+## TUI note
+
+If the bug touches TUI keybindings or keyboard help text, verify that the startup keybinding hint/splash and the help dialog/modal are still synchronized with the actual bound keys.

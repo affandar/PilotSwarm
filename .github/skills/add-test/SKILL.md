@@ -70,6 +70,7 @@ npx vitest run test/local/my-feature.test.js -t "My Test"  # filter by test name
 - Use `describe`/`it` from `vitest`.
 - Log key values with `console.log("  ...")` for debuggability.
 - Each test creates its own `env` via `createTestEnv()` for schema isolation.
+- If a change adds or modifies a TUI keybinding, update the startup keybinding hint/splash and the help dialog/modal at the same time, and add or update validation coverage for the affected user flow when practical.
 
 ## Key files
 - `packages/sdk/test/local/` — all test files
