@@ -8,7 +8,7 @@ They are not active in this repository. Copy them into the target repository you
 
 - `pilotswarm-cli-builder` — scaffolds plugin-driven CLI/TUI apps built on the shipped PilotSwarm UI
 - `pilotswarm-sdk-builder` — scaffolds SDK-first apps and services built around `PilotSwarmClient` and `PilotSwarmWorker`
-- `pilotswarm-azure-deployer` — prepares PilotSwarm-based apps for Azure / AKS deployment
+- `pilotswarm-azure-deployer` — prepares PilotSwarm-based apps for Azure / AKS deployment, including env templates, workload identity, and cross-cluster AKS guidance
 
 ## Install Into Another Repo
 
