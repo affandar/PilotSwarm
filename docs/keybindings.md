@@ -1,111 +1,118 @@
 # PilotSwarm TUI — Keybinding Cheat Sheet
 
-## Global (any pane, except when typing in input bar)
+This document matches the current shipped TUI behavior.
+
+## Global Navigation Mode
+
+These keys work when focus is not in the prompt editor.
 
 | Key | Action |
 |-----|--------|
-| `Esc` | Focus Sessions pane, start quit sequence |
-| `Esc` → `q` | Quit (within 1 second) |
-| `p` | Jump to input/prompt bar |
-| `Tab` | Cycle focus: Sessions → Chat → Right pane(s) → Activity → Sessions |
-| `h` | Move focus left (right pane → chat → sessions) |
-| `l` | Move focus right (sessions → chat → right pane) |
-| `m` | Cycle right-pane log mode: Workers → Orch Logs → Sequence → Node Map |
-| `r` | Force full screen redraw |
-| `[` | Shrink right column (grow left) |
-| `]` | Grow right column (shrink left) |
-| `u` | Dump active session to Markdown file (`dumps/`) |
+| `?` | Open the keybinding help modal |
+| `Esc` | Return to the Sessions pane and arm the quit sequence |
+| `Esc` → `q` | Quit within 1 second |
 | `Ctrl+C` | Quit immediately |
+| `p` | Jump to the prompt editor |
+| `Tab` / `Shift+Tab` | Cycle focus between panes |
+| `h` / `l` | Move focus left / right |
+| `m` | Cycle log mode: Workers → Orchestration → Sequence → Node Map |
+| `v` | Toggle markdown viewer |
+| `[` / `]` | Resize the right column |
+| `r` | Force a full redraw |
+| `u` | Dump the active session to `dumps/` |
+| `a` | Open artifact picker for the active session |
 
-## Sessions Pane (focused on session list)
+## Sessions Pane
 
 | Key | Action |
 |-----|--------|
 | `j` / `↓` | Move selection down |
 | `k` / `↑` | Move selection up |
 | `Enter` | Switch to selected session |
-| `n` | Create new session (default model) |
-| `Shift+N` | Create new session with model picker |
-| `t` | Rename session (custom title or LLM summary) |
-| `c` | Cancel selected session's orchestration |
-| `d` | Delete selected session (cancel + remove from catalog) |
+| `n` | Create a new session |
+| `Shift+N` | Create a new session with the model picker |
+| `t` | Rename session (typed title or LLM summary) |
+| `+` / `=` | Expand sub-agent tree |
+| `-` | Collapse sub-agent tree |
+| `c` | Cancel selected session |
+| `d` | Delete selected session |
 | `r` | Refresh session list |
-| `q` | Quit |
 
-## Chat Pane (focused on chat box)
+## Chat, Activity, Logs, and Node Map
+
+These apply to the chat pane, activity pane, orchestration logs, worker logs, sequence view, and node map.
 
 | Key | Action |
 |-----|--------|
-| `j` / `↓` | Scroll down one line |
-| `k` / `↑` | Scroll up one line |
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
 | `Ctrl+D` | Page down |
 | `Ctrl+U` | Page up |
-| `g` | Scroll to top |
-| `G` | Scroll to bottom |
+| `g` | Jump to top |
+| `G` | Jump to bottom |
+| `e` | Expand history for the active session |
+| mouse wheel | Scroll the focused pane |
 
-## Activity Pane
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Scroll down one line |
-| `k` / `↑` | Scroll up one line |
-| `Ctrl+D` | Page down |
-| `Ctrl+U` | Page up |
-| `g` | Scroll to top |
-| `G` | Scroll to bottom |
-
-## Right Panes (Worker Logs / Orch Logs / Sequence / Node Map)
+## Prompt Editor
 
 | Key | Action |
 |-----|--------|
-| `j` / `↓` | Scroll down one line |
-| `k` / `↑` | Scroll up one line |
-| `Ctrl+D` | Page down |
-| `Ctrl+U` | Page up |
-| `g` | Scroll to top |
-| `G` | Scroll to bottom |
+| `Enter` | Submit prompt |
+| `Option+Enter` | Insert newline and expand the prompt editor |
+| `Esc` | Exit prompt mode and return to navigation |
+| `/` | Open slash-command picker when the prompt is empty |
+| `←` / `→` | Move by character |
+| `Option+←` / `Option+→` | Move by word |
+| `Backspace` | Delete backward by character |
+| `Option+Backspace` | Delete backward by word |
+| `Delete` | Delete forward by character |
 
-## Input Bar (typing a message)
+## Markdown Viewer
+
+### File list
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Send message |
-| `Esc` | Exit input bar → navigate TUI |
-| `/` | Open slash command picker (when input is empty) |
-| `Alt+Backspace` | Delete previous word |
+| `j` / `k` | Move file selection |
+| `Enter` | Open selected file in preview pane |
+| `d` | Delete selected exported file |
+| `v` | Exit markdown viewer |
 
-## Slash Command Picker (when `/` pressed in empty input)
+### Preview pane
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Scroll preview |
+| `g` / `G` | Jump to top / bottom |
+| `Ctrl+D` / `Ctrl+U` | Page down / up |
+| `o` | Open current file in `$EDITOR` |
+| `y` | Copy current file path |
+| `v` | Exit markdown viewer |
+
+## Slash Command Picker
 
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` | Navigate commands |
-| `Enter` | Select command, paste into input |
+| `Enter` | Select command |
 | `Esc` | Dismiss picker |
 
-## Slash Commands (typed in input bar)
+## Slash Commands
 
 | Command | Action |
 |---------|--------|
 | `/models` | List all available models across providers |
-| `/model <name>` | Switch model for this session (e.g. `/model azure-openai:gpt-4.1`) |
-| `/info` | Show session info (model, iteration, affinity, hydration) |
-| `/done` | Complete and close this session (cascades to sub-agents) |
+| `/model <name>` | Switch model for this session |
+| `/info` | Show session info |
+| `/done` | Complete and close this session |
 | `/new` | Create a new session |
-| `/help` | Show command list |
+| `/help` | Show command list in chat |
 
-## Rename Dialog (after pressing `t`)
+## Modal Pickers and Dialogs
 
-| Key | Action |
-|-----|--------|
-| `↑` / `↓` | Select: custom title / LLM summary / cancel |
-| `Enter` | Confirm selection |
-| `Esc` / `q` | Cancel |
-
-## Model Picker (after pressing `Shift+N`)
-
-| Key | Action |
-|-----|--------|
-| `j` / `↓` | Move selection down |
-| `k` / `↑` | Move selection up |
-| `Enter` | Create session with selected model |
-| `Esc` / `q` | Cancel |
+| Context | Keys |
+|---------|------|
+| help modal | `j/k`, arrows, `Ctrl+D/U`, `g/G`, mouse wheel, `Esc`, `?`, `q` |
+| model picker | `j/k`, arrows, `Enter`, `Esc`, `q` |
+| rename dialog | arrows, `Enter`, `Esc`, `q` |
+| artifact picker | arrows, `Enter`, `Esc`, `q`, `a` |

@@ -1,5 +1,47 @@
 # Example Applications
 
+## DevOps Command Center (`examples/devops-command-center/`)
+
+The best current reference for a layered PilotSwarm app.
+
+It demonstrates:
+
+- plugin-driven app structure
+- custom TUI branding via `plugin.json`
+- root and child system agents
+- named user-creatable agents
+- skills and session policy
+- worker-registered tools
+- CLI/TUI usage and SDK/programmatic usage from the same app
+
+Key files:
+
+- [examples/devops-command-center/README.md](../examples/devops-command-center/README.md)
+- [examples/devops-command-center/plugin/plugin.json](../examples/devops-command-center/plugin/plugin.json)
+- [examples/devops-command-center/plugin/agents/watchdog.agent.md](../examples/devops-command-center/plugin/agents/watchdog.agent.md)
+- [examples/devops-command-center/sdk-app.js](../examples/devops-command-center/sdk-app.js)
+- [examples/devops-command-center/worker-module.js](../examples/devops-command-center/worker-module.js)
+
+Run the CLI/TUI version:
+
+```bash
+npx pilotswarm-tui \
+   --plugin ./examples/devops-command-center/plugin \
+   --worker ./examples/devops-command-center/worker-module.js \
+   --env .env
+```
+
+Run the SDK/programmatic version:
+
+```bash
+cd examples/devops-command-center
+node --env-file=../../.env sdk-app.js
+```
+
+If you are pointing other LLMs at one example first, point them here.
+
+---
+
 ## Chat App (`examples/chat.js`)
 
 A minimal interactive chat that demonstrates the core SDK in single-process mode — great for getting started.
@@ -122,15 +164,7 @@ npm run tui:remote
 
 ### Keyboard Shortcuts
 
-| Key | Action |
-|-----|--------|
-| `n` | New session |
-| `↑/↓` | Navigate sessions |
-| `Enter` | Switch to selected session |
-| `Tab` | Cycle focus (sessions → chat → input) |
-| `Ctrl+D` | Delete selected session |
-| `l` | Toggle log view mode |
-| `Ctrl+C` / `q` | Quit |
+See [Keybindings](./keybindings.md) for the up-to-date TUI reference. The shortcut list in this file is intentionally brief because the TUI evolves faster than this examples overview.
 
 ### Log View Modes
 

@@ -4,6 +4,15 @@
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
+## Builder Agents
+
+If you are building layered apps on top of PilotSwarm, this repo now ships distributable builder-agent templates you can copy into your own repository:
+
+- [Builder Agent Templates](docs/builder-agents.md)
+- [DevOps Command Center Sample](examples/devops-command-center/README.md)
+
+These are not active agents in this repo. They are templates intended to be copied into a user repo under `.github/agents/` and `.github/skills/`.
+
 <img width="630" height="239" alt="image" src="https://github.com/user-attachments/assets/807cdf40-b228-41c1-bfe2-8100230544c9" />
 
 
@@ -112,10 +121,12 @@ Start with the documentation hub:
 Common entry points:
 
 - [Working On PilotSwarm](docs/contributors/working-on-pilotswarm.md) — contributors working on the SDK, TUI, providers, prompts, or orchestration
+- [Builder Agent Templates](docs/builder-agents.md) — copyable Copilot custom agents for users building apps on top of PilotSwarm
 - [Building SDK Apps](docs/sdk/building-apps.md) — app developers using `PilotSwarmClient` and `PilotSwarmWorker`
 - [Building Agents For SDK Apps](docs/sdk/building-agents.md) — the clearest path for authoring `default.agent.md`, named agents, skills, and tools
 - [Building CLI Apps](docs/cli/building-cli-apps.md) — plugin- and worker-module-driven apps on the shipped TUI
 - [Building Agents For CLI Apps](docs/cli/building-agents.md) — the CLI-focused agent-authoring guide
+- [Example Applications](docs/examples.md) — includes the DevOps Command Center sample for layered apps
 - [Getting Started](docs/getting-started.md) — install, PostgreSQL, `.env`, and first run
 - [Configuration](docs/configuration.md) — environment variables, blob storage, worker/client options
 - [Deploying to AKS](docs/deploying-to-aks.md) — Kubernetes deployment, scaling, and rolling updates

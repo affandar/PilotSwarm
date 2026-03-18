@@ -95,6 +95,32 @@ Changing the orchestration code (adding/removing/reordering yields) creates a ne
 
 The TUI (`cli/tui.js`) must interact with PilotSwarm **exclusively through the public `PilotSwarmClient` and `PilotSwarmWorker` APIs**. It must never import or call internal modules (`session-manager.ts`, `managed-session.ts`, `cms.ts`, `session-proxy.ts`, `orchestration.ts`, etc.) directly. The only exception is **logging** (e.g. reading duroxide trace logs for display). If the TUI needs new data or capabilities, expose them through the client/worker API surface first.
 
+### TUI Keybindings
+
+If you add or change a TUI keybinding, you must update all user-facing keybinding surfaces together:
+
+- the startup keybinding hint/splash content
+- the help dialog/modal content
+- any contextual status hints that mention that key
+
+Do not change a TUI keybinding in code without keeping those surfaces in sync.
+
+## Builder Agent Templates
+
+This repo ships distributable builder-agent templates under `templates/builder-agents/`.
+
+These are **not** active repo-local agents for this workspace. They are copyable templates intended to be installed into a user's repository under `.github/agents/` and `.github/skills/`.
+
+If you add or change PilotSwarm features that affect app builders, keep the following in sync:
+
+- `templates/builder-agents/agents/*.agent.md`
+- `templates/builder-agents/skills/**/SKILL.md`
+- `templates/builder-agents/README.md`
+- [docs/builder-agents.md](../docs/builder-agents.md)
+- the builder-facing CLI/SDK docs those templates reference
+
+Treat these templates as a maintained product surface. Do not leave them stale when builder-relevant behavior changes.
+
 ## Duroxide Bugs
 
 When a bug is identified as originating in **duroxide** (the Rust-based durable orchestration runtime), do NOT attempt to work around it in the runtime or TUI layer. Instead:

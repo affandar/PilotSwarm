@@ -16,15 +16,18 @@ Start with the path that matches what you are trying to do.
 - [Getting Started](./getting-started.md) — install, configure PostgreSQL, and run locally
 - [Building SDK Apps](./sdk/building-apps.md) — the recommended path for app developers using `PilotSwarmClient` and `PilotSwarmWorker`
 - [Building Agents For SDK Apps](./sdk/building-agents.md) — the canonical guide for `default.agent.md`, named agents, skills, tools, and system agents
+- [Builder Agent Templates](./builder-agents.md) — distributable Copilot custom agents for users building apps on top of PilotSwarm
 - [Configuration](./configuration.md) — environment variables, blob storage, worker/client options
-- [Examples](./examples.md) — runnable examples in the repo
+- [Examples](./examples.md) — runnable examples in the repo, including the DevOps Command Center layered-app sample
 
 ### I want to build an app with the CLI/TUI
 
 - [Building CLI Apps](./cli/building-cli-apps.md) — how the shipped TUI works today, local vs remote mode, and where plugins and worker modules fit
 - [Building Agents For CLI Apps](./cli/building-agents.md) — the agent-authoring path for plugin-driven CLI apps
+- [Builder Agent Templates](./builder-agents.md) — distributable Copilot custom agents for users building layered PilotSwarm apps
 - [Keybindings](./keybindings.md) — TUI controls and slash commands
 - [Getting Started](./getting-started.md) — environment setup and first run
+- [Examples](./examples.md) — includes the DevOps Command Center sample that uses CLI branding, system agents, and session policy
 
 ## Contracts And Reference
 

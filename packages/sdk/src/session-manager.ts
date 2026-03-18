@@ -1,7 +1,7 @@
 import { CopilotClient, type CopilotSession, type Tool } from "@github/copilot-sdk";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
-import type { ManagedSessionConfig, SerializableSessionConfig } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -134,11 +134,50 @@ export class SessionManager {
         return this.client;
     }
 
+    private _missingSessionStateError(sessionId: string, turnIndex: number, detail?: string): Error {
+        const suffix = detail ? ` ${detail}` : "";
+        return new Error(
+            `${SESSION_STATE_MISSING_PREFIX} turn ${turnIndex} expected resumable Copilot session state for ${sessionId}, ` +
+            `but none was found in memory, on disk, or in the session store.${suffix}`,
+        );
+    }
+
+    private async _resetSessionState(sessionId: string): Promise<void> {
+        const existing = this.sessions.get(sessionId);
+        if (existing) {
+            try {
+                await existing.destroy();
+            } catch {}
+            this.sessions.delete(sessionId);
+        }
+
+        try {
+            const client = await this.ensureClient();
+            await client.deleteSession(sessionId);
+        } catch {}
+
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        if (fs.existsSync(sessionDir)) {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+
+        if (this.sessionStore) {
+            try {
+                await this.sessionStore.delete(sessionId);
+            } catch {}
+        }
+    }
+
     /**
      * Get existing session or create/resume one.
      * Merges: worker defaults → serializable config (from client) → in-memory config (tools/hooks).
      */
-    async getOrCreate(sessionId: string, serializableConfig: SerializableSessionConfig): Promise<ManagedSession> {
+    async getOrCreate(
+        sessionId: string,
+        serializableConfig: SerializableSessionConfig,
+        options?: { turnIndex?: number },
+    ): Promise<ManagedSession> {
+        const turnIndex = options?.turnIndex;
         // Resolve tools: merge per-session (setConfig) + registry (toolNames)
         const storedConfig = this.sessionConfigs.get(sessionId);
         const resolvedTools = this._resolveTools(storedConfig, serializableConfig);
@@ -150,14 +189,6 @@ export class SessionManager {
             hooks: storedConfig?.hooks,
             turnTimeoutMs: this.workerDefaults.turnTimeoutMs,
         };
-
-        // 1. Check if already in memory (warm) — update config in case
-        //    tools were registered after the session was first created.
-        const existing = this.sessions.get(sessionId);
-        if (existing) {
-            existing.updateConfig(config);
-            return existing;
-        }
 
         const client = await this.ensureClient();
         const sessionDir = path.join(this.sessionStateDir, sessionId);
@@ -196,6 +227,7 @@ export class SessionManager {
             systemMessage: systemMessage
                 ? (typeof systemMessage === "string" ? { content: systemMessage } : systemMessage)
                 : undefined,
+            configDir: path.dirname(this.sessionStateDir),
             workingDirectory: config.workingDirectory,
             hooks: config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? (async () => ({ kind: "approved" as const })),
@@ -210,24 +242,65 @@ export class SessionManager {
 
         let copilotSession: CopilotSession;
 
-        // 2. Check if local session files exist (post-hydration or same node restart)
-        if (fs.existsSync(sessionDir)) {
-            copilotSession = await client.resumeSession(sessionId, sessionConfig);
-        } else if (this.sessionStore) {
-            // 3. Try to hydrate from the configured session store
-            try {
+        // 1. Check if already in memory (warm) — update config in case
+        //    tools were registered after the session was first created.
+        const existing = this.sessions.get(sessionId);
+        if (existing) {
+            if (turnIndex === 0) {
+                console.warn(
+                    `[SessionManager] stale in-memory Copilot session found for turn 0 (${sessionId}); ` +
+                    `discarding it and creating a fresh session.`,
+                );
+                await this._resetSessionState(sessionId);
+            } else {
+                existing.updateConfig(config);
+                return existing;
+            }
+        }
+
+        const localExists = fs.existsSync(sessionDir);
+        const storedExists = this.sessionStore ? await this.sessionStore.exists(sessionId).catch(() => false) : false;
+
+        if (turnIndex === 0) {
+            if (localExists || storedExists) {
+                console.warn(
+                    `[SessionManager] stale persisted Copilot session found for turn 0 (${sessionId}); ` +
+                    `discarding it and creating a fresh session.`,
+                );
+                await this._resetSessionState(sessionId);
+            }
+
+            copilotSession = await client.createSession(sessionConfig);
+        } else if (turnIndex != null && turnIndex > 0) {
+            if (fs.existsSync(sessionDir)) {
+                copilotSession = await client.resumeSession(sessionId, sessionConfig);
+            } else if (this.sessionStore && storedExists) {
                 await this.sessionStore.hydrate(sessionId);
-                if (fs.existsSync(sessionDir)) {
-                    copilotSession = await client.resumeSession(sessionId, sessionConfig);
-                } else {
-                    copilotSession = await client.createSession(sessionConfig);
+                if (!fs.existsSync(sessionDir)) {
+                    throw this._missingSessionStateError(sessionId, turnIndex, " Hydration completed but no local session directory was restored.");
                 }
-            } catch {
-                copilotSession = await client.createSession(sessionConfig);
+                copilotSession = await client.resumeSession(sessionId, sessionConfig);
+            } else {
+                throw this._missingSessionStateError(sessionId, turnIndex);
             }
         } else {
-            // 4. Brand new session
-            copilotSession = await client.createSession(sessionConfig);
+            // Backward-compatible permissive path for older orchestration versions.
+            if (fs.existsSync(sessionDir)) {
+                copilotSession = await client.resumeSession(sessionId, sessionConfig);
+            } else if (this.sessionStore) {
+                try {
+                    await this.sessionStore.hydrate(sessionId);
+                    if (fs.existsSync(sessionDir)) {
+                        copilotSession = await client.resumeSession(sessionId, sessionConfig);
+                    } else {
+                        copilotSession = await client.createSession(sessionConfig);
+                    }
+                } catch {
+                    copilotSession = await client.createSession(sessionConfig);
+                }
+            } else {
+                copilotSession = await client.createSession(sessionConfig);
+            }
         }
 
         const managed = new ManagedSession(sessionId, copilotSession, config);
@@ -243,14 +316,14 @@ export class SessionManager {
     /**
      * Dehydrate a session: destroy in memory, then persist state to the configured session store.
      *
-     * If destroy() fails (e.g., Copilot connection already disposed), we retry
-     * by re-creating the session from local files and destroying again. The
-     * session files on disk are the source of truth — they were written during
-     * runTurn. We need destroy() to succeed (or at least not leave the session
-     * in a broken state) before we can upload to blob.
+     * The Copilot SDK's disconnect path preserves session state on disk, so we
+     * first release the in-memory session and then archive the resulting local
+     * session files into the configured session store.
      *
-     * After MAX_RETRIES, we still attempt the session-store write (session files on
-     * disk are likely valid) but throw a clear error if that also fails.
+     * If destroy() fails (e.g., Copilot connection already disposed), we retry
+     * by re-creating the session from local files and destroying again.
+     * After MAX_RETRIES, we still attempt the session-store write and throw a
+     * clear error if that also fails.
      */
     async dehydrate(sessionId: string, reason: string): Promise<void> {
         const MAX_RETRIES = 3;
@@ -271,7 +344,6 @@ export class SessionManager {
 
                 if (attempt < MAX_RETRIES) {
                     // Re-create the session from local files so we can try destroy again.
-                    // The session directory should exist — runTurn wrote to it.
                     const sessionDir = path.join(this.sessionStateDir, sessionId);
                     if (fs.existsSync(sessionDir)) {
                         try {
@@ -300,22 +372,19 @@ export class SessionManager {
         if (this.sessionStore) {
             try {
                 await this.sessionStore.dehydrate(sessionId, { reason });
-            } catch (blobErr: any) {
-                // If destroy AND session-store persistence both failed, throw a combined error
+            } catch (storeErr: any) {
                 if (lastError) {
                     throw new Error(
                         `Session ${sessionId} is not dehydratable: ` +
                         `destroy failed (${lastError.message}), ` +
-                        `session-store persistence also failed (${blobErr.message}). ` +
-                        `Session state may be lost on pod recycle.`
+                        `session-store persistence also failed (${storeErr.message}). ` +
+                        `Session state may be lost on worker recycle.`
                     );
                 }
-                throw blobErr;
+                throw storeErr;
             }
         }
 
-        // If destroy failed but persistence succeeded, the session state is preserved.
-        // Log but don't throw — the session can be recovered.
         if (lastError) {
             console.warn(
                 `[SessionManager] destroy() failed for ${sessionId} after ${MAX_RETRIES} attempts ` +
@@ -331,6 +400,24 @@ export class SessionManager {
     async hydrate(sessionId: string): Promise<void> {
         if (this.sessionStore) {
             await this.sessionStore.hydrate(sessionId);
+        }
+    }
+
+    /**
+     * Return true when the next turn must hydrate state from the session store.
+     * This supports abrupt worker loss and direct worker-side dehydration.
+     */
+    async needsHydration(sessionId: string): Promise<boolean> {
+        if (!this.sessionStore) return false;
+        if (this.sessions.has(sessionId)) return false;
+
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        if (fs.existsSync(sessionDir)) return false;
+
+        try {
+            return await this.sessionStore.exists(sessionId);
+        } catch {
+            return false;
         }
     }
 

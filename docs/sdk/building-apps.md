@@ -2,6 +2,10 @@
 
 Use the SDK path when you want to build your own application around PilotSwarm: a service, job runner, custom UI, integration test harness, or a specialized orchestrated workflow.
 
+If you want a concrete layered-app reference while reading this guide, use [examples/devops-command-center](../../examples/devops-command-center). It includes the same plugin files you would ship in a real app plus a programmatic SDK entrypoint.
+
+If you want reusable Copilot custom agents that help scaffold this kind of app in another repository, see [Builder Agent Templates](../builder-agents.md).
+
 The SDK gives you the durable runtime primitives. Your app provides:
 
 - tools
@@ -87,6 +91,12 @@ This keeps the split clean:
 - worker code registers tool handlers
 - app code creates and drives sessions
 
+The DevOps sample uses exactly this split:
+
+- plugin files in [examples/devops-command-center/plugin](../../examples/devops-command-center/plugin)
+- worker-side tools in [examples/devops-command-center/tools.js](../../examples/devops-command-center/tools.js)
+- SDK app driver in [examples/devops-command-center/sdk-app.js](../../examples/devops-command-center/sdk-app.js)
+
 ## Session Creation Model
 
 The client sends only serializable configuration. The worker holds the actual tool handlers.
@@ -105,6 +115,8 @@ Your worker can also contribute defaults to every session through:
 - `customAgents`
 - `mcpServers`
 - `systemMessage`
+
+If the same plugin also powers the shipped CLI, `plugin.json` may additionally define TUI branding (`tui.title`, `tui.splash`, `tui.splashFile`). That branding is consumed by the CLI/TUI, not by the SDK runtime itself.
 
 ## Plugin-Driven vs Inline Configuration
 
@@ -168,9 +180,20 @@ For remote mode:
 - the client does not execute tools
 - blob storage is recommended if you want reliable dehydration across nodes
 
+## Layered-App Checklist
+
+For apps you expect other LLMs or engineers to extend, keep these layers separate:
+
+- plugin files for prompts, agents, skills, MCP config, session policy, and optional CLI branding
+- worker code for tool handlers and any runtime-only defaults
+- app code for session orchestration, API/UI behavior, and deployment wiring
+
+That is the pattern used by the DevOps sample and the one we recommend pointing future LLMs at.
+
 ## What To Read Next
 
 - [Building Agents For SDK Apps](./building-agents.md)
 - [Configuration](../configuration.md)
 - [Plugin Architecture & Layering Guide](../plugin-architecture-guide.md)
+- [Examples](../examples.md)
 - [Getting Started](../getting-started.md)

@@ -1,7 +1,7 @@
 import type { SessionManager } from "./session-manager.js";
 import type { SessionStateStore } from "./session-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
-import type { SerializableSessionConfig, TurnResult, OrchestrationInput } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
@@ -18,10 +18,10 @@ export function createSessionProxy(
     config: SerializableSessionConfig,
 ) {
     return {
-        runTurn(prompt: string) {
+        runTurn(prompt: string, bootstrap?: boolean, turnIndex?: number) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
-                { sessionId, prompt, config },
+                { sessionId, prompt, config, ...(bootstrap ? { bootstrap: true } : {}), ...(turnIndex != null ? { turnIndex } : {}) },
                 affinityKey,
             );
         },
@@ -35,6 +35,13 @@ export function createSessionProxy(
         hydrate() {
             return ctx.scheduleActivityOnSession(
                 "hydrateSession",
+                { sessionId },
+                affinityKey,
+            );
+        },
+        needsHydration() {
+            return ctx.scheduleActivityOnSession(
+                "needsHydrationSession",
                 { sessionId },
                 affinityKey,
             );
@@ -109,8 +116,8 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("deleteSession", { sessionId, reason });
         },
         /** Update a session's CMS state (e.g. "rejected" for policy violations). */
-        updateCmsState(sessionId: string, state: string) {
-            return ctx.scheduleActivity("updateCmsState", { sessionId, state });
+        updateCmsState(sessionId: string, state: string, lastError?: string) {
+            return ctx.scheduleActivity("updateCmsState", { sessionId, state, ...(lastError ? { lastError } : {}) });
         },
         /** Get the worker's authoritative session policy + allowed agent names. */
         getWorkerSessionPolicy() {
@@ -143,15 +150,34 @@ export function registerActivities(
     workerSessionPolicy?: import("./types.js").SessionPolicy | null,
     /** Names of loaded non-system agents — used by getWorkerSessionPolicy activity. */
     workerAllowedAgentNames?: string[],
+    /** Loaded user-creatable agents — used by resolveAgentConfig activity. */
+    userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; parent?: string }>,
 ) {
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
         activityCtx: any,
-        input: { sessionId: string; prompt: string; config: SerializableSessionConfig },
+        input: { sessionId: string; prompt: string; config: SerializableSessionConfig; bootstrap?: boolean; turnIndex?: number },
     ): Promise<TurnResult> => {
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId}`);
 
-        const session = await sessionManager.getOrCreate(input.sessionId, input.config);
+        let session;
+        try {
+            session = await sessionManager.getOrCreate(input.sessionId, input.config, {
+                turnIndex: input.turnIndex,
+            });
+        } catch (err: any) {
+            const message = err?.message || String(err);
+            if (message.includes(SESSION_STATE_MISSING_PREFIX)) {
+                if (catalog) {
+                    await catalog.updateSession(input.sessionId, {
+                        state: "failed",
+                        lastError: message,
+                    }).catch(() => {});
+                }
+                return { type: "error", message };
+            }
+            throw err;
+        }
 
         // Cooperative cancellation: poll for lock steal
         let cancelled = false;
@@ -186,7 +212,7 @@ export function registerActivities(
             // Record the user prompt as a CMS event before running the turn.
             // Skip internal timer continuation prompts — they're system-generated, not user input.
             const isTimerPrompt = /^The \d+ second wait is now complete\./i.test(input.prompt);
-            if (catalog && !isTimerPrompt) {
+            if (catalog && !isTimerPrompt && !input.bootstrap) {
                 catalog.recordEvents(input.sessionId, [{
                     eventType: "user.message",
                     data: { content: input.prompt },
@@ -205,10 +231,13 @@ export function registerActivities(
                 });
             }
 
+            activityCtx.traceInfo(`[runTurn] invoking ManagedSession.runTurn for ${input.sessionId}`);
             const result = await session.runTurn(enrichedPrompt, {
                 onEvent,
                 modelSummary: sessionManager.getModelSummary(),
+                bootstrap: input.bootstrap,
             });
+            activityCtx.traceInfo(`[runTurn] ManagedSession.runTurn completed for ${input.sessionId} type=${result.type}`);
             if (cancelled) return { type: "cancelled" };
 
             // ── Activity-level writeback: sync turn result → CMS ──
@@ -265,6 +294,13 @@ export function registerActivities(
         input: { sessionId: string; reason?: string },
     ): Promise<void> => {
         await sessionManager.dehydrate(input.sessionId, input.reason ?? "unknown");
+    });
+
+    runtime.registerActivity("needsHydrationSession", async (
+        _activityCtx: any,
+        input: { sessionId: string },
+    ): Promise<boolean> => {
+        return sessionManager.needsHydration(input.sessionId);
     });
 
     // ── hydrateSession ──────────────────────────────────────
@@ -396,7 +432,7 @@ export function registerActivities(
         _activityCtx: any,
         input: { agentName: string },
     ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; parent?: string; splash?: string; namespace?: string } | null> => {
-        const agents = systemAgents ?? [];
+        const agents: Array<any> = [...(systemAgents ?? []), ...(userAgents ?? []).map(a => ({ ...a, system: false }))];
         const normalize = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
         // Support qualified names: "smelter:supervisor" → namespace="smelter", name="supervisor"
         let lookupNamespace: string | undefined;
@@ -502,8 +538,10 @@ export function registerActivities(
                 await catalog.updateSession(childSessionId, meta);
             }
 
-            // Fire the initial task prompt (non-blocking: just enqueues)
-            await session.send(input.task);
+            // Fire the initial task prompt (non-blocking: just enqueues).
+            // This prompt is orchestration-generated bootstrap state for the child
+            // session, not an actual user-authored message inside that child chat.
+            await session.send(input.task, { bootstrap: true });
 
             activityCtx.traceInfo(`[spawnChildSession] session created and task sent: ${childSessionId}`);
             return childSessionId;
@@ -728,10 +766,13 @@ export function registerActivities(
     if (catalog) {
         runtime.registerActivity("updateCmsState", async (
             activityCtx: any,
-            input: { sessionId: string; state: string },
+            input: { sessionId: string; state: string; lastError?: string },
         ): Promise<void> => {
             activityCtx.traceInfo(`[updateCmsState] session=${input.sessionId} state=${input.state}`);
-            await catalog.updateSession(input.sessionId, { state: input.state });
+            await catalog.updateSession(input.sessionId, {
+                state: input.state,
+                ...(input.lastError ? { lastError: input.lastError } : {}),
+            });
         });
     }
 

@@ -1,5 +1,6 @@
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
+import { FilesystemSessionStore } from "./session-store.js";
 import type { SessionStateStore } from "./session-store.js";
 import { registerActivities } from "./session-proxy.js";
 import {
@@ -83,7 +84,13 @@ export class PilotSwarmWorker {
                 options.sessionStateDir,
             );
         }
-        this.sessionStore = options.sessionStore ?? this.blobStore;
+
+        let defaultSessionStore: SessionStateStore | null = this.blobStore;
+        if (!defaultSessionStore && options.sessionStateDir) {
+            const storeDir = path.join(path.dirname(options.sessionStateDir), "session-store");
+            defaultSessionStore = new FilesystemSessionStore(storeDir, options.sessionStateDir);
+        }
+        this.sessionStore = options.sessionStore ?? defaultSessionStore;
 
         // Load plugins and merge with direct config — must happen before SessionManager init
         this._loadPlugins();
@@ -233,6 +240,7 @@ export class PilotSwarmWorker {
             this._loadedSystemAgents,
             this._sessionPolicy,
             this.allowedAgentNames,
+            this._loadedAgents,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
@@ -582,7 +590,7 @@ export class PilotSwarmWorker {
                     await duroxideClient.enqueueEvent(
                         orchestrationId,
                         "messages",
-                        JSON.stringify({ prompt: agent.initialPrompt }),
+                        JSON.stringify({ prompt: agent.initialPrompt, bootstrap: true }),
                     );
                 }
 
