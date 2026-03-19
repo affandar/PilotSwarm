@@ -31,13 +31,50 @@ my-app/
 ## Workflow
 
 1. Identify whether the app should use the shipped TUI rather than a custom UI.
-2. Create `plugin/plugin.json` when the user wants app branding.
-3. Put prompts and personas in `plugin/agents/*.agent.md`.
-4. Treat `plugin/agents/default.agent.md` as the app-wide default overlay under PilotSwarm's embedded framework base.
-5. Put reusable domain knowledge in `plugin/skills/*/SKILL.md`.
-6. Put runtime tool handlers in `worker-module.js`.
-7. Add `session-policy.json` if the app should restrict which agents users may create.
-8. Add a README with local run instructions.
+2. Run a guided intake before scaffolding.
+3. Create `plugin/plugin.json` when the user wants app branding.
+4. Put prompts and personas in `plugin/agents/*.agent.md`.
+5. Treat `plugin/agents/default.agent.md` as the app-wide default overlay under PilotSwarm's embedded framework base.
+6. Put reusable domain knowledge in `plugin/skills/*/SKILL.md`.
+7. Put runtime tool handlers in `worker-module.js`.
+8. Add `session-policy.json` if the user does not want generic sessions.
+9. Build `.env.example` and a gitignored `.env` from the PilotSwarm sample env shape when the user wants runnable scaffolding.
+10. Add a README with local run instructions.
+
+## Guided Intake Questions
+
+Before generating files, ask:
+
+1. Should the app allow generic sessions under the default agent, or should usage be steered into named agents through a restrictive session policy?
+2. Which values should be plugged into `.env` now, especially `GITHUB_TOKEN` and `DATABASE_URL`?
+3. If the user has not specified the agent roster, what workflows should the app support so you can derive the first agent set?
+4. Which topology should the scaffold target?
+   - local-only, using Docker Postgres
+   - standard remote topology using AKS + PostgreSQL + Blob storage
+   - custom topology supplied by the user
+
+Do not guess these answers when the user has not provided them. Offer the standard topology choices explicitly so the guided experience stays fast.
+
+## Env File Guidance
+
+- Treat `DATABASE_URL` as the canonical PostgreSQL connection input.
+- Do not generate redundant `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, or `PGDATABASE` entries unless the user explicitly needs them.
+- Prefer a checked-in `.env.example` plus a local gitignored `.env`.
+- Align the variable set with the PilotSwarm sample env shape, typically including:
+  - `DATABASE_URL`
+  - `GITHUB_TOKEN`
+  - `LLM_PROVIDER_TYPE`
+  - `LLM_ENDPOINT`
+  - `LLM_API_KEY`
+  - `LLM_API_VERSION`
+  - optional storage or deployment variables for the chosen topology
+- Only copy secrets from another repo or local file after the user explicitly asks for that behavior.
+
+## Agent Derivation Guidance
+
+- If the user names agents, scaffold those agents directly.
+- If the user only describes workflows, derive a starter agent set from those workflows and explain the mapping.
+- Keep the first scaffold minimal but coherent; do not invent a large agent roster without justification.
 
 ## `plugin.json` Guidance
 
