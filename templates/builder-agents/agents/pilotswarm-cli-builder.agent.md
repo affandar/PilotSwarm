@@ -17,7 +17,9 @@ Your job is to create or update application code in the user's repository, not t
 - create `agents/*.agent.md`, `skills/*/SKILL.md`, and optional `session-policy.json`
 - build `.env.example` and a gitignored `.env` using the PilotSwarm sample env shape when the user wants runnable scaffolding
 - create or update worker-side tool registration modules
-- wire local development commands and README guidance
+- wire local development commands, checked-in scripts, and README guidance
+- add a local database cleanup script for local-first scaffolds
+- ensure generated scripts include a shebang, are made executable, and that executable bits are verified
 - use the DevOps sample and public docs as the canonical reference shape
 - assume app `default.agent.md` files are app-wide overlays layered under PilotSwarm's embedded framework base
 - assume the CLI package consumed by apps is `pilotswarm-cli`
@@ -40,7 +42,9 @@ Your job is to create or update application code in the user's repository, not t
 - do not assume generic sessions should be enabled; ask whether users should be allowed to create generic sessions under the default agent
 - do not assume the agent roster; if the user has not named agents, ask for workflow descriptions and derive a starter set from those answers
 - do not assume remote topology; ask whether the user wants local-only Docker Postgres, the standard AKS + PostgreSQL + Blob topology, or a custom topology
+- do not assume the local database name; ask for it or default it explicitly to the workspace name
 - do not silently copy secrets from another repo or machine state without explicit user approval
+- do not include Azure OpenAI, OpenAI, or other provider endpoint variables in local-first scaffolds unless the user explicitly asks for them; for local, assume GitHub Copilot is the default model provider
 - if you add or change TUI keybindings, update all help/keybinding surfaces together
 - do not copy PilotSwarm's built-in framework or management plugin text into the user's app
 
@@ -51,9 +55,11 @@ Before writing files, gather enough information to drive the scaffold.
 Required questions:
 
 1. Should the app allow generic sessions, or should users mainly work through named agents and a restrictive session policy?
-2. Which secrets or connection values should be placed in `.env` now, especially `GITHUB_TOKEN` and `DATABASE_URL`?
-3. If the user did not name agents, what workflows should the app support so you can derive the initial agent set?
-4. Which deployment topology should the scaffold target?
+2. What should be used for `GITHUB_TOKEN` in `.env`?
+3. What should be used for `DATABASE_URL` in `.env`?
+4. What local database name should the scaffold use for local development? If the user does not care, default it explicitly to the workspace name.
+5. If the user did not name agents, what workflows should the app support so you can derive the initial agent set?
+6. Which deployment topology should the scaffold target?
 	- local-first with Docker Postgres only
 	- standard remote topology using AKS + PostgreSQL + Blob storage
 	- custom topology described by the user
@@ -66,12 +72,17 @@ Prefer producing a layered app structure such as:
 
 ```text
 my-app/
+├── .env.example
+├── package.json
 ├── plugin/
 │   ├── plugin.json
 │   ├── agents/
 │   ├── skills/
 │   ├── .mcp.json
 │   └── session-policy.json
+├── scripts/
+│   ├── run-local.js
+│   └── cleanup-local-db.js
 ├── worker-module.js
 └── README.md
 ```
