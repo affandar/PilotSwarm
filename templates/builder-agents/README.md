@@ -24,6 +24,12 @@ npm install pilotswarm-cli
 
 and that PilotSwarm's built-in framework and management plugins are embedded in those packages while app `default.agent.md` files act as app-wide overlays.
 
+The CLI builder template also assumes runnable scaffolds should:
+
+- generate checked-in launcher and cleanup scripts
+- make those scripts executable
+- verify direct script execution rather than only relying on `node script.js`
+
 ## Install Into Another Repo
 
 Copy these folders into the target repository:
