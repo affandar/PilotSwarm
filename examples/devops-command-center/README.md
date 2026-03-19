@@ -77,6 +77,22 @@ node --env-file=../../.env sdk-app.js
 
 This runs a scripted scenario: creates an Investigator session, sends an incident prompt, streams tool calls, and prints the root cause analysis.
 
+## Resetting Local State
+
+To drop database schemas and clean up local session state, artifacts, and session store files:
+
+```bash
+node --env-file=../../.env examples/devops-command-center/scripts/cleanup-local-db.js
+```
+
+This removes:
+- Local artifact files for sessions tracked in the CMS (`~/.copilot/artifacts/<sessionId>/`)
+- Local session state dirs (`~/.copilot/session-state/<sessionId>/`)
+- Local session store archives (`~/.copilot/session-store/<sessionId>.tar.gz`, `.meta.json`)
+- Database schemas (`duroxide`, `copilot_sessions`)
+
+Schemas are recreated automatically on next start.
+
 ## Running Tests
 
 ```bash
@@ -111,6 +127,8 @@ devops-command-center/
 │       │   └── SKILL.md           ← Triage, correlation, escalation knowledge
 │       └── deployment-safety/
 │           └── SKILL.md           ← Pre-flight checks, rollback triggers
+├── scripts/
+│   └── cleanup-local-db.js        ← Local reset: drops schemas + cleans artifacts, session state, store
 ├── tools.js                       ← Mock tools (query_metrics, deploy_service, etc.)
 ├── worker-module.js               ← Worker module for TUI (exports tools)
 ├── sdk-app.js                     ← SDK example (programmatic usage)

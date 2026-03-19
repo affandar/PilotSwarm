@@ -12,6 +12,7 @@ import {
     DEFAULT_SESSION_STATE_DIR,
     type SessionMetadata,
     type SessionStateStore,
+    type ArtifactStore,
     archiveSessionDir,
     buildMetadata,
     extractSessionArchive,
@@ -27,7 +28,7 @@ import {
  *
  * @internal
  */
-export class SessionBlobStore implements SessionStateStore {
+export class SessionBlobStore implements SessionStateStore, ArtifactStore {
     private containerClient;
     private connectionString: string;
     private containerName: string;

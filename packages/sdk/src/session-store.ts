@@ -112,7 +112,74 @@ export class FilesystemSessionStore implements SessionStateStore {
     }
 }
 
+/**
+ * Interface for artifact (file) storage.
+ * Implemented by both SessionBlobStore (Azure Blob) and FilesystemArtifactStore (local disk).
+ */
+export interface ArtifactStore {
+    uploadArtifact(sessionId: string, filename: string, content: string, contentType?: string): Promise<string>;
+    downloadArtifact(sessionId: string, filename: string): Promise<string>;
+    listArtifacts(sessionId: string): Promise<string[]>;
+    artifactExists(sessionId: string, filename: string): Promise<boolean>;
+}
+
+const DEFAULT_ARTIFACT_DIR = path.join(os.homedir(), ".copilot", "artifacts");
+
+/**
+ * Filesystem-based artifact store for local mode (no Azure Blob).
+ * Stores artifacts as plain files under `<artifactDir>/<sessionId>/<filename>`.
+ * @internal
+ */
+export class FilesystemArtifactStore implements ArtifactStore {
+    private artifactDir: string;
+
+    constructor(artifactDir = DEFAULT_ARTIFACT_DIR) {
+        this.artifactDir = artifactDir;
+        fs.mkdirSync(this.artifactDir, { recursive: true });
+    }
+
+    private safePath(sessionId: string, filename: string): string {
+        const safe = filename.replace(/[/\\]/g, "_");
+        return path.join(this.artifactDir, sessionId, safe);
+    }
+
+    async uploadArtifact(
+        sessionId: string,
+        filename: string,
+        content: string,
+        _contentType = "text/markdown",
+    ): Promise<string> {
+        const MAX_SIZE = 1_048_576; // 1MB
+        if (content.length > MAX_SIZE) {
+            throw new Error(`Artifact too large: ${content.length} bytes (max ${MAX_SIZE})`);
+        }
+        const filePath = this.safePath(sessionId, filename);
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, content, "utf-8");
+        return filePath;
+    }
+
+    async downloadArtifact(sessionId: string, filename: string): Promise<string> {
+        const filePath = this.safePath(sessionId, filename);
+        if (!fs.existsSync(filePath)) {
+            throw new Error(`Artifact not found: ${filename} in session ${sessionId}`);
+        }
+        return fs.readFileSync(filePath, "utf-8");
+    }
+
+    async listArtifacts(sessionId: string): Promise<string[]> {
+        const dir = path.join(this.artifactDir, sessionId);
+        if (!fs.existsSync(dir)) return [];
+        return fs.readdirSync(dir).filter(f => !f.startsWith("."));
+    }
+
+    async artifactExists(sessionId: string, filename: string): Promise<boolean> {
+        return fs.existsSync(this.safePath(sessionId, filename));
+    }
+}
+
 export {
+    DEFAULT_ARTIFACT_DIR,
     DEFAULT_FILESYSTEM_STORE_DIR,
     DEFAULT_SESSION_STATE_DIR,
     archiveSessionDir,

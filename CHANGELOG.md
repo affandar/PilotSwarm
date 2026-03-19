@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.5 — 2026-03-18
+
+### SDK
+
+- **Filesystem artifact store** — `write_artifact`, `read_artifact`, `export_artifact`, and `list_artifacts` now work without Azure Blob Storage. In local mode a `FilesystemArtifactStore` stores artifacts under `~/.copilot/artifacts/<sessionId>/`. New `ArtifactStore` interface lets both backends be used interchangeably.
+- **Exclude Copilot SDK's built-in `task` tool** — added `excludedTools: ["task"]` to `createSession` config so the LLM uses PilotSwarm's durable `spawn_agent` instead of the SDK's in-process sub-agent mechanism.
+- **Default agent prompt** — added critical rule #6 reinforcing `spawn_agent` over any built-in `task` tool.
+
+### CLI
+
+- **`loadCmsHistory` concurrency fix** — refactored to deduplicate concurrent loads via a promise cache and added a `force` reload option.
+
+### Scripts & Tooling
+
+- **`reset-local.sh`** — new step deletes local artifact directories (`~/.copilot/artifacts/<sessionId>/`) for CMS sessions being cleaned up.
+- **Release skill** — full test suite (`./scripts/run-tests.sh`) is now mandatory before any official release, no partial runs.
+
+### DevOps Sample
+
+- **`scripts/cleanup-local-db.js`** — new cleanup script that queries CMS session IDs, removes artifact dirs, session state dirs, and session store archives before dropping schemas.
+- **README** — added "Resetting Local State" section and updated directory structure.
+
+### Builder Templates
+
+- **CLI builder** — cleanup scripts must now also purge local artifact files and session state.
+- **SDK builder** — output shape includes `scripts/cleanup-local-db.js`; new "Local Cleanup Guidance" section; workflow step added.
+
+### Docs
+
+- **`writing-agents.md`** — artifact tool availability updated from "Blob storage configured" to "Always (local filesystem or blob)".
+
 ## 2026-03-01
 
 ### CLI (`bin/tui.js`)

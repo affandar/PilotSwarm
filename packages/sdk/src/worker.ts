@@ -1,7 +1,6 @@
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
-import { FilesystemSessionStore } from "./session-store.js";
-import type { SessionStateStore } from "./session-store.js";
+import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
 import { registerActivities } from "./session-proxy.js";
 import {
     DURABLE_SESSION_LATEST_VERSION,
@@ -51,6 +50,7 @@ export class PilotSwarmWorker {
     private sessionManager: SessionManager;
     private sessionStore: SessionStateStore | null = null;
     private blobStore: SessionBlobStore | null = null;
+    private artifactStore: ArtifactStore | null = null;
     private runtime: any = null;
     private _provider: any = null;
     private _catalog: SessionCatalogProvider | null = null;
@@ -90,6 +90,13 @@ export class PilotSwarmWorker {
                 options.blobContainer ?? "copilot-sessions",
                 options.sessionStateDir,
             );
+            this.artifactStore = this.blobStore;
+        } else {
+            // Local mode: use filesystem-based artifact storage
+            const artifactDir = options.sessionStateDir
+                ? path.join(path.dirname(options.sessionStateDir), "artifacts")
+                : undefined;
+            this.artifactStore = new FilesystemArtifactStore(artifactDir);
         }
 
         let defaultSessionStore: SessionStateStore | null = this.blobStore;
@@ -273,9 +280,9 @@ export class PilotSwarmWorker {
             this.registerTools(sweeperTools);
         }
 
-        // Auto-register artifact tools if blob storage is available
-        if (this.blobStore) {
-            const artifactTools = createArtifactTools({ blobStore: this.blobStore });
+        // Auto-register artifact tools (blob storage or local filesystem)
+        if (this.artifactStore) {
+            const artifactTools = createArtifactTools({ blobStore: this.artifactStore });
             this.registerTools(artifactTools);
         }
 

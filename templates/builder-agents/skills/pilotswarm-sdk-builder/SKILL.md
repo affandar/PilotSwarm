@@ -23,6 +23,8 @@ my-sdk-app/
 │   ├── skills/
 │   ├── .mcp.json
 │   └── session-policy.json
+├── scripts/
+│   └── cleanup-local-db.js
 ├── src/
 │   ├── tools.ts
 │   ├── worker.ts
@@ -42,7 +44,8 @@ my-sdk-app/
 7. Keep client session config serializable.
 8. Add `session-policy.json` if the user does not want generic sessions.
 9. Build `.env.example` and a gitignored `.env` from the PilotSwarm sample env shape when the user wants runnable scaffolding.
-10. Add a local example or test that exercises the intended app flow.
+10. Add a checked-in local cleanup script that drops database schemas and removes session state, session store archives, and local artifact files.
+11. Add a local example or test that exercises the intended app flow.
 
 ## Guided Intake Questions
 
@@ -101,3 +104,13 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - Use the DevOps sample as the reference for the layered split, not as a literal one-size-fits-all template.
 - Assume apps consume `pilotswarm-sdk`, whose built-in framework and management plugins are embedded rather than copied into the app repo.
 - Prefer generated app instructions that install `pilotswarm-sdk` from npm before falling back to local file or link workflows.
+
+## Local Cleanup Guidance
+
+- Generate a cleanup script (`scripts/cleanup-local-db.js`) for local development resets.
+- The cleanup script must also remove local artifact files for cleaned-up sessions:
+  - Query session IDs from the CMS (`copilot_sessions.sessions`) before dropping schemas.
+  - For each session ID, remove the corresponding artifact directory at `~/.copilot/artifacts/<sessionId>/`.
+  - Also remove session state dirs (`~/.copilot/session-state/<sessionId>/`) and session store archives (`~/.copilot/session-store/<sessionId>.tar.gz`, `.meta.json`).
+- Follow the pattern in PilotSwarm's own `scripts/reset-local.sh` which deletes CMS-scoped artifacts, session state, and session store files before dropping schemas.
+- Document what the cleanup script removes in the generated README.

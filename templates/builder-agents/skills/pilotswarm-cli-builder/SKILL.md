@@ -44,7 +44,7 @@ my-app/
 7. Put runtime tool handlers in `worker-module.js`.
 8. Add `session-policy.json` if the user does not want generic sessions.
 9. Build `.env.example` and a gitignored `.env` from the PilotSwarm sample env shape when the user wants runnable scaffolding.
-10. Add checked-in scripts for local launch and local database cleanup.
+10. Add checked-in scripts for local launch and local database cleanup (including artifact and session state purging).
 11. Make generated scripts executable and verify the executable bit.
 12. Add a README with local run instructions.
 
@@ -84,6 +84,11 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - If the user does not care, default the database name to the workspace name.
 - Generate a checked-in local cleanup script for the local database and document what it removes.
 - Keep the cleanup script scoped to local development and name it clearly, for example `scripts/cleanup-local-db.js`.
+- The cleanup script must also remove local artifact files for cleaned-up sessions:
+  - Query session IDs from the CMS (`copilot_sessions.sessions`) before dropping schemas.
+  - For each session ID, remove the corresponding artifact directory at `~/.copilot/artifacts/<sessionId>/`.
+  - Also remove session state dirs (`~/.copilot/session-state/<sessionId>/`) and session store archives (`~/.copilot/session-store/<sessionId>.tar.gz`, `.meta.json`).
+- Follow the pattern in PilotSwarm's own `scripts/reset-local.sh` which deletes CMS-scoped artifacts, session state, and session store files before dropping schemas.
 
 ## Launcher Script Guidance
 
