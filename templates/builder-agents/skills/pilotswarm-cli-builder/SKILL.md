@@ -70,6 +70,27 @@ Do not guess these answers when the user has not provided them. Offer the standa
   - optional storage or deployment variables for the chosen topology
 - Only copy secrets from another repo or local file after the user explicitly asks for that behavior.
 
+## Launcher Script Guidance
+
+- For runnable CLI scaffolds, prefer generating a checked-in launcher under `scripts/`.
+- Use the launcher as the canonical entrypoint for local and remote modes.
+- Keep `package.json` scripts thin and point them at the launcher.
+- Use the launcher for env selection, preflight checks, and isolated compatibility workarounds.
+- If a dependency or runtime issue requires a workaround, keep that logic in the launcher or setup scripts rather than scattering it across README steps and npm scripts.
+
+## Validation Guidance
+
+- When the user wants runnable scaffolding, do more than write files: install dependencies and run a smoke test.
+- Do not treat `--help` output as proof that the app actually starts; prefer the real startup path when practical.
+- Check the declared runtime requirements and compare them against the current machine.
+- If the scaffold defaults or inferred decisions matter, record them in the generated README.
+
+## Compatibility Guidance
+
+- If the generated app hits a known dependency issue during setup, isolate the workaround in setup or launcher scripts and explain why it exists.
+- Prefer deterministic fixes that can be re-applied after reinstall, such as `postinstall` or a verified pre-launch patch step, over one-off manual instructions.
+- Remove or simplify compatibility shims once the upstream dependency is fixed.
+
 ## Agent Derivation Guidance
 
 - If the user names agents, scaffold those agents directly.

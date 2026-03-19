@@ -73,6 +73,19 @@ Do not guess these answers when the user has not provided them. Offer the standa
 	- optional storage or deployment variables for the chosen topology
 - Only copy secrets from another repo or local file after the user explicitly asks for that behavior.
 
+## Validation Guidance
+
+- When the user wants runnable scaffolding, do more than write files: install dependencies and run a smoke test.
+- Do not treat `--help` output or a dry import as proof that the full app path actually starts.
+- Check the declared runtime requirements and compare them against the current machine.
+- If the scaffold defaults or inferred decisions matter, record them in the generated README.
+
+## Compatibility Guidance
+
+- If the generated app hits a known dependency issue during setup, isolate the workaround in setup scripts or a clearly documented bootstrap path and explain why it exists.
+- Prefer deterministic fixes that can be re-applied after reinstall, such as `postinstall` or setup-time verification, over one-off manual instructions.
+- Remove or simplify compatibility shims once the upstream dependency is fixed.
+
 ## Agent Derivation Guidance
 
 - If the user names agents, scaffold those agents directly.
