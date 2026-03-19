@@ -58,11 +58,12 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 7. Tag and publish only with explicit user approval.
    - Create an annotated tag for the release version.
    - Push the commit and tag.
-   - If npm publish is CI-driven, create or publish the GitHub release that triggers the workflow.
-   - If a manual workflow dispatch is used, report the exact inputs used.
+   - Create a **GitHub Release** from the tag using `gh release create`. The npm publish workflow (`publish-npm.yml`) triggers on `release: [published]`, **not** on tag push alone. Without a GitHub Release, the publish will not run.
+   - Include a concise release notes summary in the GitHub Release body.
+   - If a manual workflow dispatch is used instead, report the exact inputs used.
 
 8. Verify publication.
-   - Check that the GitHub Actions publish workflow started and completed.
+   - Check that the GitHub Actions publish workflow started and completed using `gh run list --workflow=publish-npm.yml`.
    - Report the published package names and versions.
    - Verify the registry directly with `npm view <package> version`.
    - If publish failed, surface the workflow error rather than guessing.
