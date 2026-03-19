@@ -238,6 +238,11 @@ export class SessionManager {
             hooks: config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? (async () => ({ kind: "approved" as const })),
             infiniteSessions: { enabled: false },
+            // Exclude the Copilot SDK's built-in "task" tool — PilotSwarm provides
+            // its own durable sub-agent mechanism via spawn_agent / check_agents.
+            // The native "task" tool spawns in-process sub-agents that bypass the
+            // durable orchestration layer, causing the LLM to use the wrong mechanism.
+            excludedTools: ["task"],
             // Custom LLM provider — resolve from registry or legacy single provider
             ...resolvedProviderConfig,
             // Pass loaded skills, agents, and MCP from worker defaults

@@ -385,9 +385,9 @@ These tools are automatically registered by the worker and don't need explicit r
 | `scan_completed_sessions` | CMS available | Find stale sessions |
 | `cleanup_session` | CMS available | Delete a stale session |
 | `prune_orchestrations` | CMS available | Clean duroxide state |
-| `write_artifact` | Blob storage configured | Save file to shared storage |
-| `export_artifact` | Blob storage configured | Get downloadable link |
-| `read_artifact` | Blob storage configured | Read file from storage |
+| `write_artifact` | Always (local filesystem or blob) | Save file to shared storage |
+| `export_artifact` | Always (local filesystem or blob) | Get downloadable link |
+| `read_artifact` | Always (local filesystem or blob) | Read file from storage |
 | `get_system_stats` | CMS available | Cluster stats |
 | `get_infrastructure_stats` | CMS available | Compute/pod stats |
 | `get_storage_stats` | CMS + Blob available | Blob storage stats |

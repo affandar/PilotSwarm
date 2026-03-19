@@ -29,7 +29,9 @@ fi
 
 SESSION_STATE_DIR="${SESSION_STATE_DIR:-$HOME/.copilot/session-state}"
 SESSION_STORE_DIR="${SESSION_STORE_DIR:-$(dirname "$SESSION_STATE_DIR")/session-store}"
+ARTIFACT_DIR="${ARTIFACT_DIR:-$(dirname "$SESSION_STATE_DIR")/artifacts}"
 DEFAULT_SESSION_STORE_DIR="$HOME/.copilot/session-store"
+DEFAULT_ARTIFACT_DIR="$HOME/.copilot/artifacts"
 SKIP_CONFIRM=false
 if [[ "${1:-}" == "--yes" || "${1:-}" == "-y" ]]; then
     SKIP_CONFIRM=true
@@ -154,22 +156,51 @@ if [[ -s "$STORE_META_PATHS_FILE" ]]; then
     STORE_META_MATCH_COUNT=$(wc -l < "$STORE_META_PATHS_FILE" | tr -d ' ')
 fi
 
+# Count matching local artifact dirs
+ARTIFACT_DIRS=()
+add_artifact_dir() {
+    local dir="$1"
+    [[ -z "$dir" ]] && return
+    for existing in "${ARTIFACT_DIRS[@]:-}"; do
+        [[ "$existing" == "$dir" ]] && return
+    done
+    ARTIFACT_DIRS+=("$dir")
+}
+add_artifact_dir "$ARTIFACT_DIR"
+add_artifact_dir "$DEFAULT_ARTIFACT_DIR"
+
+ARTIFACT_MATCH_COUNT=0
+if [[ -s "$SESSION_IDS_FILE" ]]; then
+    for art_dir in "${ARTIFACT_DIRS[@]}"; do
+        [[ -d "$art_dir" ]] || continue
+        while IFS= read -r sid; do
+            [[ -d "${art_dir}/${sid}" ]] && ARTIFACT_MATCH_COUNT=$((ARTIFACT_MATCH_COUNT + 1))
+        done < "$SESSION_IDS_FILE"
+    done
+fi
+
 # ── Summary ──────────────────────────────────────────────────
+STEP=1
 echo ""
 echo "🔄 PilotSwarm Local Reset"
 echo ""
 echo "   This will:"
-echo "     1. DROP database schemas: duroxide, copilot_sessions"
-echo "     2. Delete ${LOCAL_MATCH_COUNT} local session dir(s) matching ${CMS_COUNT} CMS session(s)"
+echo "     ${STEP}. DROP database schemas: duroxide, copilot_sessions"
+STEP=$((STEP + 1))
+echo "     ${STEP}. Delete ${LOCAL_MATCH_COUNT} local session dir(s) matching ${CMS_COUNT} CMS session(s)"
 echo "        (other Copilot sessions in ${SESSION_STATE_DIR} are kept)"
-echo "     3. Delete ${STORE_MATCH_COUNT} matching filesystem session-store archive(s)"
+STEP=$((STEP + 1))
+echo "     ${STEP}. Delete ${STORE_MATCH_COUNT} matching filesystem session-store archive(s)"
 if [[ "$STORE_MATCH_COUNT" -gt 0 || "$STORE_META_MATCH_COUNT" -gt 0 ]]; then
     echo "        and ${STORE_META_MATCH_COUNT} matching metadata file(s) from local session-store dirs"
 else
     echo "        from local session-store dirs (none currently matched)"
 fi
+STEP=$((STEP + 1))
+echo "     ${STEP}. Delete ${ARTIFACT_MATCH_COUNT} local artifact dir(s) for cleaned-up sessions"
 if [[ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]]; then
-    echo "     4. Purge blob storage container: ${AZURE_STORAGE_CONTAINER:-copilot-sessions}"
+    STEP=$((STEP + 1))
+    echo "     ${STEP}. Purge blob storage container: ${AZURE_STORAGE_CONTAINER:-copilot-sessions}"
 fi
 echo ""
 
@@ -242,7 +273,24 @@ else
     echo "   ✅ No matching local session-store archives to clean"
 fi
 
-# ── 4. Clean up any stray .tar files ────────────────────────
+# ── 4. Delete local artifact dirs matching CMS sessions ─────
+if [[ -s "$SESSION_IDS_FILE" ]]; then
+    DELETED_ARTIFACTS=0
+    for art_dir in "${ARTIFACT_DIRS[@]}"; do
+        [[ -d "$art_dir" ]] || continue
+        while IFS= read -r sid; do
+            if [[ -d "${art_dir}/${sid}" ]]; then
+                rm -rf "${art_dir:?}/${sid}"
+                DELETED_ARTIFACTS=$((DELETED_ARTIFACTS + 1))
+            fi
+        done < "$SESSION_IDS_FILE"
+    done
+    echo "   ✅ Deleted ${DELETED_ARTIFACTS} local artifact dir(s)"
+else
+    echo "   ✅ No artifact dirs to clean"
+fi
+
+# ── 5. Clean up any stray .tar files ────────────────────────
 TAR_COUNT=$(find "$REPO_ROOT" -maxdepth 3 -name "*.tar" -o -name "*.tar.gz" 2>/dev/null | wc -l | tr -d ' ')
 if [[ "$TAR_COUNT" -gt 0 ]]; then
     echo "   Removing ${TAR_COUNT} tar file(s) under repo root..."
@@ -250,7 +298,7 @@ if [[ "$TAR_COUNT" -gt 0 ]]; then
     echo "   ✅ Tar files removed"
 fi
 
-# ── 5. Blob storage purge (if configured) ───────────────────
+# ── 6. Blob storage purge (if configured) ───────────────────
 if [[ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]]; then
     echo "   Purging blob storage..."
     node --env-file="$ENV_FILE" -e "

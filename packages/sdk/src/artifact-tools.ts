@@ -20,16 +20,17 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
-import type { SessionBlobStore } from "./blob-store.js";
+import type { ArtifactStore } from "./session-store.js";
 
 /**
- * Create artifact tools bound to the given blob store.
+ * Create artifact tools bound to the given artifact store.
  *
- * The `sessionId` for write/export operations is injected by the tool handler
- * via the session context (the agent's own session ID).
+ * The store can be Azure Blob (SessionBlobStore) or local filesystem
+ * (FilesystemArtifactStore). The `sessionId` for write/export operations
+ * is injected by the tool handler via the session context.
  */
 export function createArtifactTools(opts: {
-    blobStore: SessionBlobStore;
+    blobStore: ArtifactStore;
 }): Tool<any>[] {
     const { blobStore } = opts;
 

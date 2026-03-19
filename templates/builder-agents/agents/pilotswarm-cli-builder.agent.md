@@ -18,7 +18,7 @@ Your job is to create or update application code in the user's repository, not t
 - build `.env.example` and a gitignored `.env` using the PilotSwarm sample env shape when the user wants runnable scaffolding
 - create or update worker-side tool registration modules
 - wire local development commands, checked-in scripts, and README guidance
-- add a local database cleanup script for local-first scaffolds
+- add a local database cleanup script for local-first scaffolds that also cleans local artifact files and session state
 - ensure generated scripts include a shebang, are made executable, and that executable bits are verified
 - use the DevOps sample and public docs as the canonical reference shape
 - assume app `default.agent.md` files are app-wide overlays layered under PilotSwarm's embedded framework base

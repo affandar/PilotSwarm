@@ -23,14 +23,14 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
    - Confirm relevant builder templates in `templates/builder-agents/` were updated when builder-facing behavior changed.
    - Confirm `.github/copilot-instructions.md` was updated if contributor workflow or maintenance expectations changed.
 
-3. Run build and targeted verification.
+3. Run build and full test suite.
    - Start with `npm run build`.
-   - Run the smallest set of tests that proves the changed behavior.
-   - If you are fixing regressions, rerun the failing tests first, then a broader confidence pass.
-   - For local integration tests, prefer:
+   - Run the **full** local integration test suite before any release:
      ```bash
-     node --env-file=.env ./node_modules/vitest/vitest.mjs run <path-to-test>
+     ./scripts/run-tests.sh
      ```
+     All suites must pass. Do not skip suites or accept partial runs for an official release.
+   - If a test fails, investigate and fix the root cause. Do not silence failures or weaken assertions to proceed.
    - If package contents matter, run:
      ```bash
      npm pack --dry-run
@@ -70,7 +70,7 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 ## Release Checklist
 
 - build passes
-- changed tests pass
+- full test suite passes (`./scripts/run-tests.sh` — all suites, no skips)
 - sample app still reflects shipped behavior
 - relevant docs and guides are updated
 - relevant builder templates are updated

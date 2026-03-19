@@ -2703,11 +2703,10 @@ const seqCmsSeededSessions = new Set();
  * Load conversation history from CMS and rebuild chat buffer for the session.
  * Includes ALL persisted events (not truncated) so switching sessions is deterministic.
  */
-async function loadCmsHistory(orchId) {
+async function loadCmsHistory(orchId, options = {}) {
     const _ph = perfStart("loadCmsHistory");
     const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
-    const generation = (sessionHistoryLoadGeneration.get(orchId) ?? 0) + 1;
-    sessionHistoryLoadGeneration.set(orchId, generation);
+    const force = options.force === true;
     let eventCount = 0;
     let loadFailed = false;
 
@@ -2716,297 +2715,320 @@ async function loadCmsHistory(orchId) {
     // so reloading on every session switch just adds latency.
     const cached = sessionChatBuffers.get(orchId);
     const loadedAt = sessionHistoryLoadedAt.get(orchId) ?? 0;
-    if (cached && cached.length > 1 && (Date.now() - loadedAt) < 30_000 && !orchHasChanges.has(orchId)) {
+    if (!force && cached && cached.length > 1 && (Date.now() - loadedAt) < 30_000 && !orchHasChanges.has(orchId)) {
+        perfEnd(_ph, { orchId: orchId.slice(0, 12), cached: true });
         return;
     }
 
-    // Ensure we have a PilotSwarmSession handle (may not exist for sessions from previous TUI runs)
-    let sess = sessions.get(sid);
-    if (!sess) {
-        try {
-            sess = await client.resumeSession(sid);
-            sessions.set(sid, sess);
-        } catch (err) {
-            appendLog(`{yellow-fg}Could not resume session ${shortId(sid)}: ${err.message}{/yellow-fg}`);
-            return;
-        }
+    const inFlight = sessionHistoryLoadPromises.get(orchId);
+    if (inFlight && !force) {
+        perfEnd(_ph, { orchId: orchId.slice(0, 12), deduped: true });
+        return inFlight;
     }
 
-    try {
-        const expand = sessionExpandLevel.get(orchId) || 0;
-        const CMS_HISTORY_FETCH_LIMIT = expand >= 2 ? 2000 : expand >= 1 ? 500 : 250;
-        const MAX_RENDERED_EVENTS = expand >= 2 ? 2000 : expand >= 1 ? 500 : 120;
-        const MAX_TOTAL_RENDER_CHARS = expand >= 2 ? 500_000 : expand >= 1 ? 200_000 : 50_000;
-        const MAX_ASSISTANT_MESSAGE_CHARS = expand >= 1 ? 20_000 : 4_000;
-        const dc = getDc();
+    const generation = (sessionHistoryLoadGeneration.get(orchId) ?? 0) + 1;
+    sessionHistoryLoadGeneration.set(orchId, generation);
 
-        // Fetch events, session info, and live status in parallel.
-        // The live custom status may contain the latest `turnResult` even when
-        // the CMS history does not yet have a persisted `assistant.message`.
-        const [events, info, liveStatus] = await Promise.all([
-            sess.getMessages(CMS_HISTORY_FETCH_LIMIT),
-            (!sessionModels.has(orchId)) ? sess.getInfo().catch(() => null) : Promise.resolve(null),
-            dc ? dc.getStatus(orchId).catch(() => null) : Promise.resolve(null),
-        ]);
-        eventCount = events?.length || 0;
-
-        let liveCustomStatus = null;
-        let liveResponsePayload = null;
-        if (liveStatus?.customStatus) {
+    const loadPromise = (async () => {
+        // Ensure we have a PilotSwarmSession handle (may not exist for sessions from previous TUI runs)
+        let sess = sessions.get(sid);
+        if (!sess) {
             try {
-                liveCustomStatus = typeof liveStatus.customStatus === "string"
-                    ? JSON.parse(liveStatus.customStatus)
-                    : liveStatus.customStatus;
-            } catch {}
-        }
-        if (liveCustomStatus?.responseVersion) {
-            liveResponsePayload = await fetchLatestResponsePayload(orchId, dc);
-        }
-
-        const liveTurnContent = liveCustomStatus?.turnResult?.type === "completed"
-            ? liveCustomStatus.turnResult.content
-            : liveResponsePayload?.type === "completed"
-                ? liveResponsePayload.content
-            : "";
-
-        // Populate session model if not already known
-        if (info?.model) {
-            sessionModels.set(orchId, info.model);
-            if (orchId === activeOrchId) updateChatLabel();
+                sess = await client.resumeSession(sid);
+                sessions.set(sid, sess);
+            } catch (err) {
+                appendLog(`{yellow-fg}Could not resume session ${shortId(sid)}: ${err.message}{/yellow-fg}`);
+                return;
+            }
         }
 
-        if ((!events || events.length === 0) && !liveTurnContent) {
+        try {
+            const expand = sessionExpandLevel.get(orchId) || 0;
+            const CMS_HISTORY_FETCH_LIMIT = expand >= 2 ? 2000 : expand >= 1 ? 500 : 250;
+            const MAX_RENDERED_EVENTS = expand >= 2 ? 2000 : expand >= 1 ? 500 : 120;
+            const MAX_TOTAL_RENDER_CHARS = expand >= 2 ? 500_000 : expand >= 1 ? 200_000 : 50_000;
+            const MAX_ASSISTANT_MESSAGE_CHARS = expand >= 1 ? 20_000 : 4_000;
+            const dc = getDc();
+
+            // Fetch events, session info, and live status in parallel.
+            // The live custom status may contain the latest `turnResult` even when
+            // the CMS history does not yet have a persisted `assistant.message`.
+            const [events, info, liveStatus] = await Promise.all([
+                sess.getMessages(CMS_HISTORY_FETCH_LIMIT),
+                (!sessionModels.has(orchId)) ? sess.getInfo().catch(() => null) : Promise.resolve(null),
+                dc ? dc.getStatus(orchId).catch(() => null) : Promise.resolve(null),
+            ]);
+            eventCount = events?.length || 0;
+
+            let liveCustomStatus = null;
+            let liveResponsePayload = null;
+            if (liveStatus?.customStatus) {
+                try {
+                    liveCustomStatus = typeof liveStatus.customStatus === "string"
+                        ? JSON.parse(liveStatus.customStatus)
+                        : liveStatus.customStatus;
+                } catch {}
+            }
+            if (liveCustomStatus?.responseVersion) {
+                liveResponsePayload = await fetchLatestResponsePayload(orchId, dc);
+            }
+
+            const liveTurnContent = liveCustomStatus?.turnResult?.type === "completed"
+                ? liveCustomStatus.turnResult.content
+                : liveResponsePayload?.type === "completed"
+                    ? liveResponsePayload.content
+                    : "";
+
+            // Populate session model if not already known
+            if (info?.model) {
+                sessionModels.set(orchId, info.model);
+                if (orchId === activeOrchId) updateChatLabel();
+            }
+
+            if ((!events || events.length === 0) && !liveTurnContent) {
+                if (sessionHistoryLoadGeneration.get(orchId) !== generation) {
+                    return;
+                }
+                // Only blank the buffer if the observer hasn't already written
+                // content into it. Otherwise we'd nuke live turn output that
+                // arrived while we were fetching from CMS (race condition that
+                // causes empty chat on first switch to a session).
+                const existing = sessionChatBuffers.get(orchId);
+                const isLoadingPlaceholder = existing
+                    && existing.length === 1
+                    && /Loading/.test(existing[0]);
+                if (!existing || existing.length === 0 || isLoadingPlaceholder) {
+                    const splashLines = ensureSessionSplashBuffer(orchId);
+                    if (!splashLines) {
+                        sessionChatBuffers.set(orchId, ["{gray-fg}(no recent chat history yet){/gray-fg}"]);
+                    }
+                }
+                const existingActivity = sessionActivityBuffers.get(orchId);
+                if (!existingActivity || existingActivity.length === 0) {
+                    sessionActivityBuffers.set(orchId, ["{gray-fg}(no recent activity yet){/gray-fg}"]);
+                }
+                sessionHistoryLoadedAt.set(orchId, Date.now());
+                sessionRenderedCmsSeq.set(orchId, 0);
+                sessionRecoveredTurnResult.delete(orchId);
+                if (orchId === activeOrchId) {
+                    invalidateChat();
+                    invalidateActivity();
+                }
+                return;
+            }
+
+            // Strip the [SYSTEM: Running on host ...] prefix from user prompts
+            const stripHostPrefix = (text) => text?.replace(/^\[SYSTEM: Running on host "[^"]*"\.\]\n\n/, "") || text;
+
+            // Filter out internal timer continuation prompts — these aren't real user messages
+            const isTimerPrompt = (text) => /^The \d+ second wait is now complete\./i.test(text);
+
+            const lines = [];
+            const fmtTime = (value) => {
+                if (!value) return "--:--:--";
+                return formatDisplayTime(value, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                });
+            };
+            const normalizeContent = (text) => (text || "").replace(/\r\n/g, "\n").trim();
+
+            // Cap rendered events to the most recent N to keep switching fast.
+            const renderEvents = (events || []).length > MAX_RENDERED_EVENTS
+                ? events.slice(-MAX_RENDERED_EVENTS)
+                : (events || []);
+            const truncated = (events || []).length > MAX_RENDERED_EVENTS;
+
+            // Build display lines from persisted events
+            // Chat lines = user messages + assistant responses
+            // Activity lines = tool calls, reasoning, status changes
+            const activityLines = [];
+            let renderedChars = 0;
+            let lastAssistantContent = "";
+            if (truncated) {
+                lines.push(`{gray-fg}── ${events.length - MAX_RENDERED_EVENTS} older events omitted (${events.length} total) · press {bold}e{/bold} to expand ──{/gray-fg}`);
+                lines.push("");
+            }
+            for (const evt of renderEvents) {
+                const type = evt.eventType;
+                const timeStr = fmtTime(evt.createdAt);
+                if (type === "user.message") {
+                    const content = stripHostPrefix(evt.data?.content);
+                    if (content && !content.startsWith("[SYSTEM:") && !isTimerPrompt(content) && !isBootstrapPromptForSession(content, orchId)) {
+                        // Format CHILD_UPDATE messages as distinct cards
+                        const childMatch = content.match(/^\[CHILD_UPDATE from=(\S+) type=(\S+)(?:\s+iter=(\d+))?\]\n?(.*)$/s);
+                        if (childMatch) {
+                            const childId = childMatch[1].slice(0, 8);
+                            const updateType = childMatch[2];
+                            const body = (childMatch[4] || "").trim();
+                            const childTitle = sessionHeadings.get(`session-${childMatch[1]}`) || `Agent ${childId}`;
+                            const typeColor = updateType === "completed" ? "green" : updateType === "error" ? "red" : "magenta";
+                            lines.push(`{white-fg}[${timeStr}]{/white-fg}`);
+                            lines.push(`{${typeColor}-fg}┌─ {bold}${childTitle}{/bold} · ${updateType} ─┐{/${typeColor}-fg}`);
+                            if (body) {
+                                const bodyLines = body.split("\n");
+                                for (const bl of bodyLines.slice(0, 8)) {
+                                    lines.push(`{${typeColor}-fg}│{/${typeColor}-fg}  ${bl}`);
+                                }
+                                if (bodyLines.length > 8) {
+                                    lines.push(`{${typeColor}-fg}│{/${typeColor}-fg}  {gray-fg}… ${bodyLines.length - 8} more lines{/gray-fg}`);
+                                }
+                            }
+                            lines.push(`{${typeColor}-fg}└${"─".repeat(30)}┘{/${typeColor}-fg}`);
+                            lines.push("");
+                        } else {
+                            lines.push(`{white-fg}[${timeStr}]{/white-fg} {bold}You:{/bold} ${content}`);
+                        }
+                    }
+                } else if (type === "assistant.message") {
+                    const content = evt.data?.content;
+                    if (content) {
+                        lastAssistantContent = content;
+                        detectArtifactLinks(content, orchId);
+                        if (renderedChars >= MAX_TOTAL_RENDER_CHARS) {
+                            lines.push(`{gray-fg}── additional assistant output omitted to keep session switching fast ──{/gray-fg}`);
+                            lines.push("");
+                            break;
+                        }
+                        const clipped = content.length > MAX_ASSISTANT_MESSAGE_CHARS
+                            ? content.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + "\n\n[output truncated in TUI history view]"
+                            : content;
+                        const displayClipped = clipped.replace(
+                            /artifact:\/\/[a-f0-9-]+\/([^\s"'{}]+)/g,
+                            "📎 **$1** _(press 'a' to download)_",
+                        );
+                        lines.push(`{white-fg}[${timeStr}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
+                        const rendered = renderMarkdown(displayClipped);
+                        renderedChars += clipped.length;
+                        for (const line of rendered.split("\n")) {
+                            lines.push(line);
+                        }
+                        lines.push("");
+                    }
+                } else if (type === "tool.execution_start") {
+                    const toolName = evt.data?.toolName || "tool";
+                    const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${shortId(evt.data.durableSessionId)}]{/gray-fg}` : "";
+                    activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}${dsid}`);
+                } else if (type === "tool.execution_complete") {
+                    const toolName = evt.data?.toolName || "tool";
+                    activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`);
+                } else if (type === "abort" || type === "session.info" || type === "session.idle"
+                    || type === "session.usage_info" || type === "pending_messages.modified"
+                    || type === "assistant.usage") {
+                    // skip internal/noisy events
+                } else {
+                    activityLines.push(`{white-fg}[${timeStr}] [${type}]{/white-fg}`);
+                }
+            }
+
+            const normalizedLiveTurn = normalizeContent(liveTurnContent);
+            const normalizedLastAssistant = normalizeContent(lastAssistantContent);
+            const liveTurnMissingFromHistory = normalizedLiveTurn
+                && normalizedLiveTurn !== normalizedLastAssistant;
+
+            if (liveTurnMissingFromHistory) {
+                if (lines.length > 0 && lines[lines.length - 1] !== "") {
+                    lines.push("");
+                }
+                lines.push("{gray-fg}── latest turn result recovered from live status ──{/gray-fg}");
+                lines.push("");
+
+                const clippedLiveTurn = liveTurnContent.length > MAX_ASSISTANT_MESSAGE_CHARS
+                    ? liveTurnContent.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + "\n\n[output truncated in TUI history view]"
+                    : liveTurnContent;
+                lines.push(`{white-fg}[${fmtTime(Date.now())}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
+                const renderedLiveTurn = renderMarkdown(clippedLiveTurn);
+                renderedChars += clippedLiveTurn.length;
+                for (const line of renderedLiveTurn.split("\n")) {
+                    lines.push(line);
+                }
+                lines.push("");
+                sessionRecoveredTurnResult.set(orchId, normalizedLiveTurn);
+                noteSeenResponseVersion(orchId, liveResponsePayload?.version);
+            } else {
+                sessionRecoveredTurnResult.delete(orchId);
+            }
+
+            if (eventCount > 0) {
+                lines.push(`{white-fg}── recent history loaded from database (${eventCount} events fetched) ──{/white-fg}`);
+                lines.push("");
+            }
+
+            if (systemSplashText.has(orchId)) {
+                const splashText = systemSplashText.get(orchId);
+                const splashLines = splashText.split("\n");
+                const hasSplashPrefix = lines.length >= splashLines.length
+                    && splashLines.every((line, idx) => lines[idx] === line);
+                if (!hasSplashPrefix) {
+                    lines.unshift(...splashLines, "");
+                }
+                sessionSplashApplied.add(orchId);
+            }
+
             if (sessionHistoryLoadGeneration.get(orchId) !== generation) {
                 return;
             }
-            // Only blank the buffer if the observer hasn't already written
-            // content into it. Otherwise we'd nuke live turn output that
-            // arrived while we were fetching from CMS (race condition that
-            // causes empty chat on first switch to a session).
-            const existing = sessionChatBuffers.get(orchId);
-            const isLoadingPlaceholder = existing
-                && existing.length === 1
-                && /Loading/.test(existing[0]);
-            if (!existing || existing.length === 0 || isLoadingPlaceholder) {
-                const splashLines = ensureSessionSplashBuffer(orchId);
-                if (!splashLines) {
-                    sessionChatBuffers.set(orchId, []);
-                }
-            }
-            if (!sessionActivityBuffers.has(orchId)) {
-                sessionActivityBuffers.set(orchId, ["{gray-fg}(no recent activity yet){/gray-fg}"]);
-            }
+
+            const maxRenderedSeq = (events || []).reduce((max, evt) => Math.max(max, evt.seq || 0), 0);
+            sessionChatBuffers.set(orchId, lines);
+            sessionActivityBuffers.set(orchId, activityLines);
             sessionHistoryLoadedAt.set(orchId, Date.now());
-            sessionRenderedCmsSeq.set(orchId, 0);
-            sessionRecoveredTurnResult.delete(orchId);
+            sessionRenderedCmsSeq.set(orchId, maxRenderedSeq);
+
             if (orchId === activeOrchId) {
                 invalidateChat();
                 invalidateActivity();
             }
-            return;
-        }
 
-        // Strip the [SYSTEM: Running on host ...] prefix from user prompts
-        const stripHostPrefix = (text) => text?.replace(/^\[SYSTEM: Running on host "[^"]*"\.\]\n\n/, "") || text;
-
-        // Filter out internal timer continuation prompts — these aren't real user messages
-        const isTimerPrompt = (text) => /^The \d+ second wait is now complete\./i.test(text);
-
-        const lines = [];
-        const fmtTime = (value) => {
-            if (!value) return "--:--:--";
-            return formatDisplayTime(value, {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-            });
-        };
-        const normalizeContent = (text) => (text || "").replace(/\r\n/g, "\n").trim();
-
-        // Cap rendered events to the most recent N to keep switching fast.
-        const renderEvents = (events || []).length > MAX_RENDERED_EVENTS
-            ? events.slice(-MAX_RENDERED_EVENTS)
-            : (events || []);
-        const truncated = (events || []).length > MAX_RENDERED_EVENTS;
-
-        // Build display lines from persisted events
-        // Chat lines = user messages + assistant responses
-        // Activity lines = tool calls, reasoning, status changes
-        const activityLines = [];
-        let renderedChars = 0;
-        let lastAssistantContent = "";
-        if (truncated) {
-            lines.push(`{gray-fg}── ${events.length - MAX_RENDERED_EVENTS} older events omitted (${events.length} total) · press {bold}e{/bold} to expand ──{/gray-fg}`);
-            lines.push("");
-        }
-        for (const evt of renderEvents) {
-            const type = evt.eventType;
-            const timeStr = fmtTime(evt.createdAt);
-            if (type === "user.message") {
-                const content = stripHostPrefix(evt.data?.content);
-                if (content && !content.startsWith("[SYSTEM:") && !isTimerPrompt(content) && !isBootstrapPromptForSession(content, orchId)) {
-                    // Format CHILD_UPDATE messages as distinct cards
-                    const childMatch = content.match(/^\[CHILD_UPDATE from=(\S+) type=(\S+)(?:\s+iter=(\d+))?\]\n?(.*)$/s);
-                    if (childMatch) {
-                        const childId = childMatch[1].slice(0, 8);
-                        const updateType = childMatch[2];
-                        const body = (childMatch[4] || "").trim();
-                        const childTitle = sessionHeadings.get(`session-${childMatch[1]}`) || `Agent ${childId}`;
-                        const typeColor = updateType === "completed" ? "green" : updateType === "error" ? "red" : "magenta";
-                        lines.push(`{white-fg}[${timeStr}]{/white-fg}`);
-                        lines.push(`{${typeColor}-fg}┌─ {bold}${childTitle}{/bold} · ${updateType} ─┐{/${typeColor}-fg}`);
-                        if (body) {
-                            const bodyLines = body.split("\n");
-                            for (const bl of bodyLines.slice(0, 8)) {
-                                lines.push(`{${typeColor}-fg}│{/${typeColor}-fg}  ${bl}`);
+            if (!seqCmsSeededSessions.has(orchId)) {
+                const existingSeq = seqEventBuffers.get(orchId) ?? [];
+                if (existingSeq.length === 0) {
+                    const cmsNode = addSeqNode("cms");
+                    const seeded = [];
+                    for (const evt of events) {
+                        const t = fmtTime(evt.createdAt);
+                        if (evt.eventType === "user.message") {
+                            const txt = stripHostPrefix(evt.data?.content || "");
+                            if (txt && !isTimerPrompt(txt)) {
+                                seeded.push({ type: "user_msg_synth", time: t, orchNode: cmsNode, actNode: cmsNode, label: txt });
                             }
-                            if (bodyLines.length > 8) {
-                                lines.push(`{${typeColor}-fg}│{/${typeColor}-fg}  {gray-fg}… ${bodyLines.length - 8} more lines{/gray-fg}`);
+                        } else if (evt.eventType === "assistant.message") {
+                            const txt = evt.data?.content || "";
+                            if (txt) {
+                                seeded.push({ type: "response", time: t, orchNode: cmsNode, actNode: cmsNode, snippet: txt.slice(0, 40) });
                             }
+                        } else if (evt.eventType === "tool.execution_start") {
+                            seeded.push({ type: "activity_start", time: t, orchNode: cmsNode, actNode: cmsNode });
                         }
-                        lines.push(`{${typeColor}-fg}└${'─'.repeat(30)}┘{/${typeColor}-fg}`);
-                        lines.push("");
-                    } else {
-                        lines.push(`{white-fg}[${timeStr}]{/white-fg} {bold}You:{/bold} ${content}`);
+                    }
+                    if (seeded.length > 0) {
+                        seqEventBuffers.set(orchId, seeded);
                     }
                 }
-            } else if (type === "assistant.message") {
-                const content = evt.data?.content;
-                if (content) {
-                    lastAssistantContent = content;
-                    // Detect artifact links in history
-                    detectArtifactLinks(content, orchId);
-                    if (renderedChars >= MAX_TOTAL_RENDER_CHARS) {
-                        lines.push(`{gray-fg}── additional assistant output omitted to keep session switching fast ──{/gray-fg}`);
-                        lines.push("");
-                        break;
-                    }
-                    const clipped = content.length > MAX_ASSISTANT_MESSAGE_CHARS
-                        ? content.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + "\n\n[output truncated in TUI history view]"
-                        : content;
-                    // Replace artifact:// URIs with highlighted display
-                    const displayClipped = clipped.replace(
-                        /artifact:\/\/[a-f0-9-]+\/([^\s"'{}]+)/g,
-                        "📎 **$1** _(press 'a' to download)_",
-                    );
-                    lines.push(`{white-fg}[${timeStr}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
-                    const rendered = renderMarkdown(displayClipped);
-                    renderedChars += clipped.length;
-                    for (const line of rendered.split("\n")) {
-                        lines.push(line);
-                    }
-                    lines.push("");
-                }
-            } else if (type === "tool.execution_start") {
-                const toolName = evt.data?.toolName || "tool";
-                const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${shortId(evt.data.durableSessionId)}]{/gray-fg}` : "";
-                activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}${dsid}`);
-            } else if (type === "tool.execution_complete") {
-                const toolName = evt.data?.toolName || "tool";
-                activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`);
-            } else if (type === "abort" || type === "session.info" || type === "session.idle"
-                || type === "session.usage_info" || type === "pending_messages.modified"
-                || type === "assistant.usage") {
-                // skip internal/noisy events
-            } else {
-                activityLines.push(`{white-fg}[${timeStr}] [${type}]{/white-fg}`);
+                seqCmsSeededSessions.add(orchId);
+            }
+        } catch (err) {
+            loadFailed = true;
+            appendLog(`{yellow-fg}CMS history load failed: ${err.message}{/yellow-fg}`);
+        } finally {
+            if (sessionHistoryLoadPromises.get(orchId) === loadPromise) {
+                sessionHistoryLoadPromises.delete(orchId);
             }
         }
+    })();
 
-        const normalizedLiveTurn = normalizeContent(liveTurnContent);
-        const normalizedLastAssistant = normalizeContent(lastAssistantContent);
-        const liveTurnMissingFromHistory = normalizedLiveTurn
-            && normalizedLiveTurn !== normalizedLastAssistant;
-
-        if (liveTurnMissingFromHistory) {
-            if (lines.length > 0 && lines[lines.length - 1] !== "") {
-                lines.push("");
-            }
-            lines.push("{gray-fg}── latest turn result recovered from live status ──{/gray-fg}");
-            lines.push("");
-
-            const clippedLiveTurn = liveTurnContent.length > MAX_ASSISTANT_MESSAGE_CHARS
-                ? liveTurnContent.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + "\n\n[output truncated in TUI history view]"
-                : liveTurnContent;
-            lines.push(`{white-fg}[${fmtTime(Date.now())}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
-            const renderedLiveTurn = renderMarkdown(clippedLiveTurn);
-            renderedChars += clippedLiveTurn.length;
-            for (const line of renderedLiveTurn.split("\n")) {
-                lines.push(line);
-            }
-            lines.push("");
-            sessionRecoveredTurnResult.set(orchId, normalizedLiveTurn);
-            noteSeenResponseVersion(orchId, liveResponsePayload?.version);
-        } else {
-            sessionRecoveredTurnResult.delete(orchId);
-        }
-
-        if (eventCount > 0) {
-            lines.push(`{white-fg}── recent history loaded from database (${eventCount} events fetched) ──{/white-fg}`);
-            lines.push("");
-        }
-
-        // For any session with splash metadata, keep the splash banner at the top of the chat
-        if (systemSplashText.has(orchId)) {
-            const splashText = systemSplashText.get(orchId);
-            const splashLines = splashText.split("\n");
-            const hasSplashPrefix = lines.length >= splashLines.length
-                && splashLines.every((line, idx) => lines[idx] === line);
-            if (!hasSplashPrefix) {
-                lines.unshift(...splashLines, "");
-            }
-            sessionSplashApplied.add(orchId);
-        }
-
-        if (sessionHistoryLoadGeneration.get(orchId) !== generation) {
-            return;
-        }
-
-        const maxRenderedSeq = (events || []).reduce((max, evt) => Math.max(max, evt.seq || 0), 0);
-        sessionChatBuffers.set(orchId, lines);
-        sessionActivityBuffers.set(orchId, activityLines);
-        sessionHistoryLoadedAt.set(orchId, Date.now());
-        sessionRenderedCmsSeq.set(orchId, maxRenderedSeq);
-
-        if (orchId === activeOrchId) {
-            // Let the frame loop sync this buffer to chatBox
-            invalidateChat();
-            invalidateActivity();
-        }
-
-        // Seed sequence view from CMS when no live worker-log sequence exists yet.
-        if (!seqCmsSeededSessions.has(orchId)) {
-            const existingSeq = seqEventBuffers.get(orchId) ?? [];
-            if (existingSeq.length === 0) {
-                const cmsNode = addSeqNode("cms");
-                const seeded = [];
-                for (const evt of events) {
-                    const t = fmtTime(evt.createdAt);
-                    if (evt.eventType === "user.message") {
-                        const txt = stripHostPrefix(evt.data?.content || "");
-                        if (txt && !isTimerPrompt(txt)) {
-                            seeded.push({ type: "user_msg_synth", time: t, orchNode: cmsNode, actNode: cmsNode, label: txt });
-                        }
-                    } else if (evt.eventType === "assistant.message") {
-                        const txt = evt.data?.content || "";
-                        if (txt) {
-                            seeded.push({ type: "response", time: t, orchNode: cmsNode, actNode: cmsNode, snippet: txt.slice(0, 40) });
-                        }
-                    } else if (evt.eventType === "tool.execution_start") {
-                        seeded.push({ type: "activity_start", time: t, orchNode: cmsNode, actNode: cmsNode });
-                    }
-                }
-                if (seeded.length > 0) {
-                    seqEventBuffers.set(orchId, seeded);
-                }
-            }
-            seqCmsSeededSessions.add(orchId);
-        }
-    } catch (err) {
-        loadFailed = true;
-        appendLog(`{yellow-fg}CMS history load failed: ${err.message}{/yellow-fg}`);
+    sessionHistoryLoadPromises.set(orchId, loadPromise);
+    try {
+        return await loadPromise;
+    } finally {
+        perfEnd(_ph, {
+            orchId: orchId.slice(0, 12),
+            events: eventCount,
+            err: loadFailed || undefined,
+            force: force || undefined,
+        });
     }
-    perfEnd(_ph, { orchId: orchId.slice(0, 12), events: eventCount, err: loadFailed || undefined });
 }
 
 // ─── Start the PilotSwarm client (embedded workers + client) ────────
@@ -3402,6 +3424,7 @@ const sessionAgentIds = new Map(); // orchId → agentId string (e.g. "pilotswar
 const sessionChatBuffers = new Map(); // orchId → string[]
 const sessionHistoryLoadedAt = new Map(); // orchId → epoch ms of last CMS history load
 const sessionHistoryLoadGeneration = new Map(); // orchId → monotonically increasing async load token
+const sessionHistoryLoadPromises = new Map(); // orchId → in-flight CMS history load promise
 const sessionRenderedCmsSeq = new Map(); // orchId → highest CMS seq already incorporated into buffers
 const sessionExpandLevel = new Map(); // orchId → 0 (default) | 1 | 2 (how many times user expanded history)
 const sessionSplashApplied = new Set(); // orchIds that have had splash prepended (idempotency guard)
@@ -6509,7 +6532,7 @@ screen.on("keypress", (ch, key) => {
         const levelNames = ["", "expanded (500)", "full history"];
         setStatus(`Loading ${levelNames[currentLevel + 1]}...`);
         screen.render();
-        loadCmsHistory(targetOrchId).then(() => {
+        loadCmsHistory(targetOrchId, { force: true }).then(() => {
             if (targetOrchId === activeOrchId) {
                 startCmsPoller(targetOrchId);
                 invalidateChat("top");
