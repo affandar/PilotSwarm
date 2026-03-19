@@ -13,7 +13,7 @@
  *   npx pilotswarm remote --env .env.remote       # client-only (AKS)
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, systemAgentUUID } from "pilotswarm-sdk";
+import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, SessionBlobStore, FilesystemArtifactStore, systemAgentUUID, loadAgentFiles } from "pilotswarm-sdk";
 import { createRequire } from "node:module";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
@@ -340,15 +340,19 @@ const sessionArtifacts = new Map();
 const _registeredArtifacts = new Set();
 const MAX_ARTIFACT_REGISTRY = 500;
 
-/** TUI-level blob store for on-demand artifact downloads. Created lazily. */
-let _tuiBlobStore = null;
-function getTuiBlobStore() {
-    if (_tuiBlobStore) return _tuiBlobStore;
+/** TUI-level artifact store for on-demand downloads. Created lazily.
+ *  Uses Azure Blob when configured, otherwise falls back to local filesystem. */
+let _tuiArtifactStore = null;
+function getTuiArtifactStore() {
+    if (_tuiArtifactStore) return _tuiArtifactStore;
     const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING;
-    const container = process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions";
-    if (!connStr) return null;
-    _tuiBlobStore = new SessionBlobStore(connStr, container);
-    return _tuiBlobStore;
+    if (connStr) {
+        const container = process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions";
+        _tuiArtifactStore = new SessionBlobStore(connStr, container);
+    } else {
+        _tuiArtifactStore = new FilesystemArtifactStore();
+    }
+    return _tuiArtifactStore;
 }
 
 /**
@@ -381,17 +385,13 @@ function detectArtifactLinks(text, orchId) {
  * Returns the local path on success, null on failure.
  */
 async function downloadArtifact(sessionId, filename) {
-    const bs = getTuiBlobStore();
-    if (!bs) {
-        appendLog("{red-fg}📥 No blob storage configured — cannot download artifacts.{/red-fg}");
-        return null;
-    }
+    const store = getTuiArtifactStore();
     const sessionDir = path.join(EXPORTS_DIR, sessionId.slice(0, 8));
     fs.mkdirSync(sessionDir, { recursive: true });
     const localPath = path.join(sessionDir, filename);
 
     try {
-        const content = await bs.downloadArtifact(sessionId, filename);
+        const content = await store.downloadArtifact(sessionId, filename);
         fs.writeFileSync(localPath, content, "utf-8");
         appendLog(`{green-fg}📥 Downloaded: ~/${path.relative(os.homedir(), localPath)} (${(content.length / 1024).toFixed(1)}KB){/green-fg}`);
         return localPath;
@@ -3276,10 +3276,30 @@ if (!modelProviders) {
     // Will be populated from mgmt.getModelsByProvider() after mgmt.start()
 }
 
-// Capture session policy + agent list from the first worker
-const _workerSessionPolicy = workers[0]?.sessionPolicy || null;
-const _workerAllowedAgentNames = workers[0]?.allowedAgentNames || [];
-const _workerLoadedAgents = workers[0]?.loadedAgents || [];
+// Capture session policy + agent list from the first worker.
+// In remote mode (no local workers), load directly from the plugin directory
+// so the TUI enforces the same session creation restrictions as the backend.
+let _workerSessionPolicy = workers[0]?.sessionPolicy || null;
+let _workerAllowedAgentNames = workers[0]?.allowedAgentNames || [];
+let _workerLoadedAgents = workers[0]?.loadedAgents || [];
+
+if (workers.length === 0 && process.env.PLUGIN_DIRS) {
+    const pluginDirsArr = process.env.PLUGIN_DIRS.split(",").map(d => d.trim()).filter(Boolean);
+    for (const dir of pluginDirsArr) {
+        const policyFile = path.join(dir, "session-policy.json");
+        if (fs.existsSync(policyFile)) {
+            try { _workerSessionPolicy = JSON.parse(fs.readFileSync(policyFile, "utf-8")); } catch {}
+        }
+        const agentsDir = path.join(dir, "agents");
+        if (fs.existsSync(agentsDir)) {
+            try {
+                const agents = loadAgentFiles(agentsDir).filter(a => !a.system && a.name !== "default");
+                _workerLoadedAgents = agents;
+                _workerAllowedAgentNames = agents.map(a => a.name).filter(Boolean);
+            } catch {}
+        }
+    }
+}
 if (_workerSessionPolicy) {
     appendLog(`Session policy: mode=${_workerSessionPolicy.creation?.mode || "open"}, allowGeneric=${_workerSessionPolicy.creation?.allowGeneric ?? true}`);
 }

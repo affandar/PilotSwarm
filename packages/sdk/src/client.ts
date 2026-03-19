@@ -88,8 +88,17 @@ export class PilotSwarmClient {
         // ── Policy enforcement (client-side) ─────────────────
         const policy = this._sessionPolicy;
         const isSubAgent = !!config?.parentSessionId;
+
+        // The "default" agent is a prompt overlay, not a session-level agent.
+        // Reject it unconditionally regardless of policy mode.
+        const agentId = config?.agentId;
+        if (agentId === "default" && !isSubAgent) {
+            throw new Error(
+                'Session creation rejected: "default" is a prompt overlay, not a selectable agent.',
+            );
+        }
+
         if (policy && policy.creation?.mode === "allowlist" && !isSubAgent) {
-            const agentId = config?.agentId;
             if (!agentId && !policy.creation.allowGeneric) {
                 throw new Error(
                     "Session creation policy violation: generic sessions are not allowed. " +

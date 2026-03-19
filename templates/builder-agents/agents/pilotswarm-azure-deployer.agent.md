@@ -31,6 +31,7 @@ Your job is to create or update deployment assets, environment documentation, an
 - do not assume local-only tools or plugin paths magically exist in remote workers
 - call out database reset needs when orchestration versions or deterministic yields change
 - prefer explicit environment and packaging guidance over vague deployment prose
+- **never reuse or modify existing Azure resources without explicit user approval** — when provisioning fails and an existing resource could be shared (e.g. creating a database on an existing server, reusing a storage account), present the situation and wait for confirmation before proceeding
 
 ## AKS Cross-Cluster Guidance
 

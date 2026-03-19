@@ -27,7 +27,7 @@ my-app/
 │   ├── .mcp.json
 │   └── session-policy.json
 ├── scripts/
-│   ├── run-local.js
+│   ├── run.sh
 │   └── cleanup-local-db.js
 ├── worker-module.js
 └── README.md
@@ -39,10 +39,10 @@ my-app/
 2. Run a guided intake before scaffolding.
 3. Create `plugin/plugin.json` when the user wants app branding.
 4. Put prompts and personas in `plugin/agents/*.agent.md`.
-5. Treat `plugin/agents/default.agent.md` as the app-wide default overlay under PilotSwarm's embedded framework base.
+5. Treat `plugin/agents/default.agent.md` as the app-wide default overlay under PilotSwarm's embedded framework base. It is **not** a selectable session agent — PilotSwarm excludes it from the agent picker, the client rejects `createSession` calls with `agentId: "default"`, and the worker never adds it to `allowedAgentNames`. Do not name any other agent file `default`.
 6. Put reusable domain knowledge in `plugin/skills/*/SKILL.md`.
 7. Put runtime tool handlers in `worker-module.js`.
-8. Add `session-policy.json` if the user does not want generic sessions.
+8. Add `session-policy.json` if the user does not want generic sessions. The policy is enforced in both local and remote modes — the TUI reads it from the plugin directory even when there are no embedded workers.
 9. Build `.env.example` and a gitignored `.env` from the PilotSwarm sample env shape when the user wants runnable scaffolding.
 10. Add checked-in scripts for local launch and local database cleanup (including artifact and session state purging).
 11. Make generated scripts executable and verify the executable bit.
@@ -92,13 +92,17 @@ Do not guess these answers when the user has not provided them. Offer the standa
 
 ## Launcher Script Guidance
 
-- For runnable CLI scaffolds, prefer generating a checked-in launcher under `scripts/`.
-- Use the launcher as the canonical entrypoint for local and remote modes.
-- Keep `package.json` scripts thin and point them at the launcher.
-- Use the launcher for env selection, preflight checks, and isolated compatibility workarounds.
-- If a dependency or runtime issue requires a workaround, keep that logic in the launcher or setup scripts rather than scattering it across README steps and npm scripts.
-- Generated scripts should include a Node shebang so they can be run directly from the shell.
-- After creating scripts, make them executable and verify that the executable bit was actually applied.
+- Generate a single `scripts/run.sh` that supports both local and remote modes:
+  - `./scripts/run.sh` or `./scripts/run.sh local` — local mode with embedded workers
+  - `./scripts/run.sh remote` — remote mode connecting to AKS workers
+- Wire `package.json` scripts to point at `run.sh`:
+  - `"start": "./scripts/run.sh"` for local
+  - `"start:remote": "./scripts/run.sh remote"` for remote
+- Use `.env` for local mode and `.env.remote` for remote mode. The script selects the right file based on the mode argument.
+- Include preflight checks (env file exists, plugin dir exists, worker module exists for local).
+- Use `exec npx pilotswarm ...` for local and `exec npx pilotswarm remote ...` for remote.
+- Make the script executable and verify the executable bit after creation.
+- Keep compatibility workarounds in the launcher or `postinstall` scripts, not scattered across README steps.
 
 ## Validation Guidance
 

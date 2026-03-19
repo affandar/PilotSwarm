@@ -24,6 +24,7 @@ my-sdk-app/
 │   ├── .mcp.json
 │   └── session-policy.json
 ├── scripts/
+│   ├── run.sh
 │   └── cleanup-local-db.js
 ├── src/
 │   ├── tools.ts
@@ -37,12 +38,12 @@ my-sdk-app/
 
 1. Run a guided intake before scaffolding.
 2. Separate plugin content from runtime code.
-3. Treat `plugin/agents/default.agent.md` as the app-wide default overlay, not as a replacement for PilotSwarm's embedded framework base.
+3. Treat `plugin/agents/default.agent.md` as the app-wide default overlay, not as a replacement for PilotSwarm's embedded framework base. It is **not** a selectable session agent — PilotSwarm excludes it at all three layers (worker, client, TUI). Do not name any other agent file `default`.
 4. Define tools with `defineTool()` in worker-side code.
 5. Register tool handlers on the worker.
 6. Reference those handlers from sessions via `toolNames`.
 7. Keep client session config serializable.
-8. Add `session-policy.json` if the user does not want generic sessions.
+8. Add `session-policy.json` if the user does not want generic sessions. The policy is enforced in both local and remote modes.
 9. Build `.env.example` and a gitignored `.env` from the PilotSwarm sample env shape when the user wants runnable scaffolding.
 10. Add a checked-in local cleanup script that drops database schemas and removes session state, session store archives, and local artifact files.
 11. Add a local example or test that exercises the intended app flow.
@@ -83,6 +84,19 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - Check the declared runtime requirements and compare them against the current machine.
 - If the scaffold defaults or inferred decisions matter, record them in the generated README.
 
+## Launcher Script Guidance
+
+- Generate a single `scripts/run.sh` that supports both local and remote modes:
+  - `./scripts/run.sh` or `./scripts/run.sh local` — local mode
+  - `./scripts/run.sh remote` — remote mode connecting to AKS workers
+- Wire `package.json` scripts to point at `run.sh`:
+  - `"start": "./scripts/run.sh"` for local
+  - `"start:remote": "./scripts/run.sh remote"` for remote
+- Use `.env` for local mode and `.env.remote` for remote mode. The script selects the right file based on the mode argument.
+- Include preflight checks (env file exists, plugin dir exists).
+- Make the script executable and verify the executable bit after creation.
+- Keep compatibility workarounds in the launcher or `postinstall` scripts, not scattered across README steps.
+
 ## Compatibility Guidance
 
 - If the generated app hits a known dependency issue during setup, isolate the workaround in setup scripts or a clearly documented bootstrap path and explain why it exists.
@@ -100,7 +114,8 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - Do not assume the client can execute tools.
 - Do not collapse prompts, worker logic, and app wiring into one file unless the user explicitly wants a tiny demo.
 - Prefer plugin files for prompts and skills even in SDK-first apps.
-- Keep session policy and agent restrictions in config files rather than hand-wavy prompt text.
+- Keep session policy and agent restrictions in config files rather than hand-wavy prompt text. The policy is enforced in both local and remote modes.
+- Never use `"default"` as an agent name for session-bound agents — PilotSwarm reserves it as a prompt overlay and rejects session creation for it at the client layer.
 - Use the DevOps sample as the reference for the layered split, not as a literal one-size-fits-all template.
 - Assume apps consume `pilotswarm-sdk`, whose built-in framework and management plugins are embedded rather than copied into the app repo.
 - Prefer generated app instructions that install `pilotswarm-sdk` from npm before falling back to local file or link workflows.
