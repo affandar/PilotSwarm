@@ -18,12 +18,17 @@ Build layered CLI/TUI apps on top of the shipped PilotSwarm interface.
 
 ```text
 my-app/
+├── .env.example
+├── package.json
 ├── plugin/
 │   ├── plugin.json
 │   ├── agents/
 │   ├── skills/
 │   ├── .mcp.json
 │   └── session-policy.json
+├── scripts/
+│   ├── run-local.js
+│   └── cleanup-local-db.js
 ├── worker-module.js
 └── README.md
 ```
@@ -39,16 +44,20 @@ my-app/
 7. Put runtime tool handlers in `worker-module.js`.
 8. Add `session-policy.json` if the user does not want generic sessions.
 9. Build `.env.example` and a gitignored `.env` from the PilotSwarm sample env shape when the user wants runnable scaffolding.
-10. Add a README with local run instructions.
+10. Add checked-in scripts for local launch and local database cleanup.
+11. Make generated scripts executable and verify the executable bit.
+12. Add a README with local run instructions.
 
 ## Guided Intake Questions
 
 Before generating files, ask:
 
 1. Should the app allow generic sessions under the default agent, or should usage be steered into named agents through a restrictive session policy?
-2. Which values should be plugged into `.env` now, especially `GITHUB_TOKEN` and `DATABASE_URL`?
-3. If the user has not specified the agent roster, what workflows should the app support so you can derive the first agent set?
-4. Which topology should the scaffold target?
+2. What should be used for `GITHUB_TOKEN` in `.env`?
+3. What should be used for `DATABASE_URL` in `.env`?
+4. What local database name should the scaffold use? If unspecified, default it explicitly to the workspace name.
+5. If the user has not specified the agent roster, what workflows should the app support so you can derive the first agent set?
+6. Which topology should the scaffold target?
    - local-only, using Docker Postgres
    - standard remote topology using AKS + PostgreSQL + Blob storage
    - custom topology supplied by the user
@@ -58,17 +67,23 @@ Do not guess these answers when the user has not provided them. Offer the standa
 ## Env File Guidance
 
 - Treat `DATABASE_URL` as the canonical PostgreSQL connection input.
+- For local-first scaffolds, assume GitHub Copilot is the only model provider unless the user explicitly asks for another provider.
+- For local-first scaffolds, do not include `LLM_PROVIDER_TYPE`, `LLM_ENDPOINT`, `LLM_API_KEY`, or `LLM_API_VERSION` by default.
 - Do not generate redundant `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, or `PGDATABASE` entries unless the user explicitly needs them.
 - Prefer a checked-in `.env.example` plus a local gitignored `.env`.
-- Align the variable set with the PilotSwarm sample env shape, typically including:
+- Align the variable set with the chosen topology rather than blindly copying every sample env field.
+- For local-first scaffolds, the default env surface should usually be:
   - `DATABASE_URL`
   - `GITHUB_TOKEN`
-  - `LLM_PROVIDER_TYPE`
-  - `LLM_ENDPOINT`
-  - `LLM_API_KEY`
-  - `LLM_API_VERSION`
-  - optional storage or deployment variables for the chosen topology
+- Add optional storage or deployment variables only when the topology requires them.
 - Only copy secrets from another repo or local file after the user explicitly asks for that behavior.
+
+## Local Database Guidance
+
+- Ask the user for the local database name separately from `DATABASE_URL` when scaffolding a local-first app.
+- If the user does not care, default the database name to the workspace name.
+- Generate a checked-in local cleanup script for the local database and document what it removes.
+- Keep the cleanup script scoped to local development and name it clearly, for example `scripts/cleanup-local-db.js`.
 
 ## Launcher Script Guidance
 
@@ -77,12 +92,15 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - Keep `package.json` scripts thin and point them at the launcher.
 - Use the launcher for env selection, preflight checks, and isolated compatibility workarounds.
 - If a dependency or runtime issue requires a workaround, keep that logic in the launcher or setup scripts rather than scattering it across README steps and npm scripts.
+- Generated scripts should include a Node shebang so they can be run directly from the shell.
+- After creating scripts, make them executable and verify that the executable bit was actually applied.
 
 ## Validation Guidance
 
 - When the user wants runnable scaffolding, do more than write files: install dependencies and run a smoke test.
 - Do not treat `--help` output as proof that the app actually starts; prefer the real startup path when practical.
 - Check the declared runtime requirements and compare them against the current machine.
+- If scripts are intended to be run directly, verify direct execution rather than only `node script.js`.
 - If the scaffold defaults or inferred decisions matter, record them in the generated README.
 
 ## Compatibility Guidance
