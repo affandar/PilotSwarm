@@ -45,7 +45,7 @@ my-sdk-app/
 7. Keep client session config serializable.
 8. Add `session-policy.json` if the user does not want generic sessions. The policy is enforced in both local and remote modes.
 9. Build `.env.example` and a gitignored `.env` from the PilotSwarm sample env shape when the user wants runnable scaffolding.
-10. Add a checked-in local cleanup script that drops database schemas and removes session state, session store archives, and local artifact files.
+10. Add a checked-in cleanup script that drops database schemas and removes session state (handles both local and remote modes).
 11. Add a local example or test that exercises the intended app flow.
 
 ## Guided Intake Questions
@@ -120,12 +120,19 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - Assume apps consume `pilotswarm-sdk`, whose built-in framework and management plugins are embedded rather than copied into the app repo.
 - Prefer generated app instructions that install `pilotswarm-sdk` from npm before falling back to local file or link workflows.
 
-## Local Cleanup Guidance
+## Database Cleanup Guidance
 
-- Generate a cleanup script (`scripts/cleanup-local-db.js`) for local development resets.
-- The cleanup script must also remove local artifact files for cleaned-up sessions:
-  - Query session IDs from the CMS (`copilot_sessions.sessions`) before dropping schemas.
-  - For each session ID, remove the corresponding artifact directory at `~/.copilot/artifacts/<sessionId>/`.
-  - Also remove session state dirs (`~/.copilot/session-state/<sessionId>/`) and session store archives (`~/.copilot/session-store/<sessionId>.tar.gz`, `.meta.json`).
-- Follow the pattern in PilotSwarm's own `scripts/reset-local.sh` which deletes CMS-scoped artifacts, session state, and session store files before dropping schemas.
+- Generate a single cleanup script (`scripts/cleanup-local-db.js`) that handles both local and remote modes:
+  - `node scripts/cleanup-local-db.js` — uses `.env` (local)
+  - `node scripts/cleanup-local-db.js remote` — uses `.env.remote`
+- Parse `sslmode` from the `DATABASE_URL` and pass `ssl: { rejectUnauthorized: false }` to the `pg` client when connecting to Azure PostgreSQL. Follow the pattern in the DevOps sample's cleanup script.
+- Query session IDs from CMS (`copilot_sessions.sessions`) before dropping schemas.
+- In local mode, also remove local files for each session:
+  - Artifact directories at `~/.copilot/artifacts/<sessionId>/`
+  - Session state dirs at `~/.copilot/session-state/<sessionId>/`
+  - Session store archives at `~/.copilot/session-store/<sessionId>.tar.gz` and `.meta.json`
+- In remote mode, skip local file cleanup (artifacts live in blob storage).
+- Drop `duroxide` and `copilot_sessions` schemas.
+- In remote mode, print the `kubectl rollout restart` command to recreate schemas.
+- Follow the pattern in PilotSwarm's DevOps sample `scripts/cleanup-local-db.js`.
 - Document what the cleanup script removes in the generated README.

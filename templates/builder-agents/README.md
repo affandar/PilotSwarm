@@ -8,7 +8,15 @@ They are not active in this repository. Copy them into the target repository you
 
 - `pilotswarm-cli-builder` — scaffolds plugin-driven CLI/TUI apps built on the shipped PilotSwarm UI
 - `pilotswarm-sdk-builder` — scaffolds SDK-first apps and services built around `PilotSwarmClient` and `PilotSwarmWorker`
-- `pilotswarm-azure-deployer` — prepares PilotSwarm-based apps for Azure / AKS deployment, including env templates, workload identity, and cross-cluster AKS guidance
+- `pilotswarm-azure-deployer` — prepares PilotSwarm-based apps for Azure / AKS deployment, including env templates, manifests, and worker observability
+
+## Included Skills (split for focused retrieval)
+
+- `pilotswarm-cli-builder` — CLI/TUI scaffold guidance, env files, launcher scripts
+- `pilotswarm-sdk-builder` — SDK app scaffold guidance, client/worker split, tests
+- `pilotswarm-azure-deployer` — deployment workflow, manifests, env checklist, `RUST_LOG` observability
+- `pilotswarm-aks-identity` — cross-cluster AKS access, Workload Identity, kubectl patterns
+- `pilotswarm-azure-lessons` — RBAC conditional access workaround, PostgreSQL region restrictions, Key Vault + CSI
 
 These templates assume apps consume:
 
@@ -45,7 +53,11 @@ Copy these folders into the target repository:
     │   └── SKILL.md
     ├── pilotswarm-sdk-builder/
     │   └── SKILL.md
-    └── pilotswarm-azure-deployer/
+    ├── pilotswarm-azure-deployer/
+    │   └── SKILL.md
+    ├── pilotswarm-aks-identity/
+    │   └── SKILL.md
+    └── pilotswarm-azure-lessons/
         └── SKILL.md
 ```
 

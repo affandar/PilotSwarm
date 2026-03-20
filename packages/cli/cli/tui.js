@@ -2971,7 +2971,45 @@ async function loadCmsHistory(orchId, options = {}) {
             }
 
             const maxRenderedSeq = (events || []).reduce((max, evt) => Math.max(max, evt.seq || 0), 0);
-            sessionChatBuffers.set(orchId, lines);
+
+            // Append pending question so it survives the history buffer swap.
+            // The observer may have written it into the old buffer, but this
+            // replacement would nuke it without this check.
+            const pendingQ = sessionPendingQuestions.get(orchId);
+            if (pendingQ) {
+                lines.push(`{cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
+                const renderedQ = renderMarkdown(pendingQ);
+                for (const line of renderedQ.split("\n")) {
+                    lines.push(line);
+                }
+                lines.push("");
+            }
+
+            // If CMS history produced no chat-visible lines (only the footer),
+            // but the observer previously wrote real content into the buffer,
+            // keep the existing buffer. This handles the case where assistant
+            // response text comes via the observer (customStatus streaming) but
+            // hasn't been persisted as CMS assistant.message events yet.
+            const chatContentLines = lines.filter(l =>
+                l && !/^{(?:white|gray)-fg}──/.test(l) && l.trim() !== "",
+            );
+            const existing = sessionChatBuffers.get(orchId);
+            const existingHasContent = existing && existing.length > 1
+                && existing.some(l => l && !/Loading/.test(l) && !/no recent/.test(l));
+
+            if (chatContentLines.length === 0 && existingHasContent) {
+                // CMS has no chat-worthy content but observer buffer does —
+                // append the footer to the existing buffer instead of replacing.
+                if (eventCount > 0) {
+                    const footerIdx = lines.findIndex(l => /recent history loaded/.test(l));
+                    if (footerIdx >= 0) {
+                        existing.push(lines[footerIdx]);
+                        existing.push("");
+                    }
+                }
+            } else {
+                sessionChatBuffers.set(orchId, lines);
+            }
             sessionActivityBuffers.set(orchId, activityLines);
             sessionHistoryLoadedAt.set(orchId, Date.now());
             sessionRenderedCmsSeq.set(orchId, maxRenderedSeq);
@@ -6396,9 +6434,27 @@ screen.on("keypress", (ch, key) => {
         picker.key(["escape", "q", "a"], closePicker);
 
         picker.on("select", async (_el, idx) => {
-            closePicker();
             const art = artifacts[idx];
             if (!art) return;
+
+            if (art.downloaded) {
+                // Already downloaded — close picker and open viewer
+                closePicker();
+                mdViewActive = true;
+                refreshMarkdownViewer();
+                const files = scanExportFiles();
+                const matchIdx = files.findIndex(f => f.localPath === art.localPath);
+                if (matchIdx >= 0) {
+                    mdViewerSelectedIdx = matchIdx;
+                    mdFileListPane.select(matchIdx);
+                    refreshMarkdownViewer();
+                }
+                screen.realloc();
+                relayoutAll();
+                setStatus("Markdown Viewer (v to exit)");
+                screen.render();
+                return;
+            }
 
             setStatus(`Downloading ${art.filename}...`);
             screen.render();
@@ -6407,22 +6463,14 @@ screen.on("keypress", (ch, key) => {
                 art.downloaded = true;
                 art.localPath = localPath;
 
-                // Open markdown viewer with this file selected
-                mdViewActive = true;
-                refreshMarkdownViewer();
-
-                // Find and select the downloaded file in the viewer
-                const files = scanExportFiles();
-                const matchIdx = files.findIndex(f => f.localPath === localPath);
-                if (matchIdx >= 0) {
-                    mdViewerSelectedIdx = matchIdx;
-                    mdFileListPane.select(matchIdx);
-                    refreshMarkdownViewer();
-                }
-
-                screen.realloc();
-                relayoutAll();
-                setStatus("Markdown Viewer (v to exit)");
+                // Update picker item to show downloaded state
+                const updatedItems = artifacts.map((a) => {
+                    const icon = a.downloaded ? "✓" : "↓";
+                    return ` ${icon} ${a.filename}`;
+                });
+                picker.setItems(updatedItems);
+                picker.select(idx);
+                setStatus(`Downloaded ${art.filename}`);
             } else {
                 setStatus("Download failed — check logs");
             }

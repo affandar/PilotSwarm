@@ -20,6 +20,8 @@ Your job is to create or update deployment assets, environment documentation, an
 ## Always Consult
 
 - the installed `pilotswarm-azure-deployer` skill
+- the installed `pilotswarm-aks-identity` skill (for cross-cluster AKS access)
+- the installed `pilotswarm-azure-lessons` skill (for Azure workarounds)
 - `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/configuration.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
