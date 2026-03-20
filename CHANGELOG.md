@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.1.7 — 2026-03-20
+
+### SDK
+
+- **Wait-affinity for durable timers** — new `wait-affinity.ts` module and orchestration support for preserving worker affinity across `wait` calls. Long waits can optionally keep the session pinned to the same worker instead of rotating. Orchestration bumped to 1.0.23 with frozen versions 1.0.21 and 1.0.22.
+- **Managed session improvements** — enhanced `runTurn` logic in `managed-session.ts` with better tool merge handling and agent tool resolution.
+- **Default agent prompt** — updated system prompt with improved tool usage directives.
+- **Durable timers skill** — updated guidance for wait-affinity behavior.
+
+### CLI
+
+- **TUI history recovery** — improved `loadCmsHistory` with better recovery from corrupted or incomplete CMS state.
+- **Remote-mode agent loading** — TUI now uses `loadAgentFiles` import from SDK for consistent agent file parsing.
+
+### DevOps Sample
+
+- **New `builder` agent** — added `builder.agent.md` to the DevOps Command Center sample.
+- **Expanded tools** — additional mock tools added to `tools.js`.
+- **SDK app improvements** — enhanced `sdk-app.js` and updated test suite with new test cases.
+- **README** — updated with new agent and tool documentation.
+
+### Builder Templates
+
+- **Azure deployer skills split** — new `pilotswarm-aks-identity/SKILL.md` and `pilotswarm-azure-lessons/SKILL.md` extracted from the monolithic Azure deployer skill for better modularity.
+- **CLI builder** — launcher script guidance updated; `run.sh` replaces `run-local.js` pattern.
+- **SDK builder** — launcher script guidance added; `run.sh` included in preferred structure.
+
+### Tests
+
+- **Wait-affinity tests** — new `wait-affinity.test.js` suite verifying affinity rotation and preservation.
+- **Tool merge contracts** — new contract tests for agent tool merge behavior.
+- **No-tools override** — new sub-agent test for agents with no explicit tools.
+
+### Docs
+
+- **Wait-affinity proposal** — new design doc at `docs/proposals/wait-preserve-worker-affinity.md`.
+- **Agent contracts** — updated with tool merge contract documentation.
+
 ## 0.1.6 — 2026-03-19
 
 ### SDK
