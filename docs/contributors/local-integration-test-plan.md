@@ -202,6 +202,8 @@ Cases:
 - short wait stays in-process
 - long wait crosses the durable threshold
 - wait completes and returns the correct response
+- long wait without `preserveWorkerAffinity` rotates affinity
+- long wait with `preserveWorkerAffinity` keeps affinity
 - `input_required` round-trip
 - repeated waits across multiple iterations
 - continue-as-new after idle

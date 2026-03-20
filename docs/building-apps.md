@@ -186,7 +186,7 @@ const deployService = defineTool("deploy_service", {
 
 Two tools are injected into every session automatically:
 
-- **`wait`** — Durable timer. Short waits sleep in-process; long waits dehydrate the session
+- **`wait`** — Durable timer. Short waits sleep in-process; long waits dehydrate the session and may resume on a different worker unless the agent requests `preserveWorkerAffinity`
   and schedule a durable timer that survives process restarts and node migrations.
 - **`ask_user`** — Pause and wait for user input. The orchestration dehydrates and blocks
   until the user responds via the event queue.

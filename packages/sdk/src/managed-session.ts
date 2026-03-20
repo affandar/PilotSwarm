@@ -53,12 +53,39 @@ export class ManagedSession {
                 "poll, check back later, schedule a future action, or implement " +
                 "any recurring/periodic task. NEVER use bash sleep, setTimeout, " +
                 "setInterval, cron, or any other timing mechanism. This tool " +
-                "enables durable waiting that survives process restarts.",
+                "enables durable waiting that survives process restarts. " +
+                "Long waits may resume on a different worker unless you set " +
+                "`preserveWorkerAffinity: true` for node-local work.",
             parameters: {
                 type: "object",
                 properties: {
                     seconds: { type: "number", description: "How long to wait in seconds" },
                     reason: { type: "string", description: "Why you're waiting" },
+                    preserveWorkerAffinity: {
+                        type: "boolean",
+                        description:
+                            "Set true when the work you are waiting on is tied to this worker's local state " +
+                            "(for example a local process, file, or socket) and you want PilotSwarm to " +
+                            "preserve the current worker affinity across a durable wait.",
+                    },
+                },
+                required: ["seconds"],
+            },
+            handler: async () => "stub",
+        });
+
+        const waitOnWorkerTool = defineTool("wait_on_worker", {
+            description:
+                "Durably wait while preserving the current worker affinity when possible. " +
+                "Use this when the thing you are waiting on is tied to worker-local state " +
+                "(for example a local process, file, socket, or in-memory store on this worker). " +
+                "This is equivalent to wait(..., preserveWorkerAffinity=true), but more reliable " +
+                "because you do not need to set the flag yourself.",
+            parameters: {
+                type: "object",
+                properties: {
+                    seconds: { type: "number", description: "How long to wait in seconds" },
+                    reason: { type: "string", description: "Why you're waiting on worker-local state" },
                 },
                 required: ["seconds"],
             },
@@ -104,7 +131,7 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [waitTool, askUserTool, listModelsTool];
+        return [waitTool, waitOnWorkerTool, askUserTool, listModelsTool];
     }
 
     /**
@@ -299,12 +326,53 @@ export class ManagedSession {
                 "poll, check back later, schedule a future action, or implement " +
                 "any recurring/periodic task. NEVER use bash sleep, setTimeout, " +
                 "setInterval, cron, or any other timing mechanism. This tool " +
-                "enables durable waiting that survives process restarts.",
+                "enables durable waiting that survives process restarts. " +
+                "Long waits may resume on a different worker unless you set " +
+                "`preserveWorkerAffinity: true` for node-local work.",
             parameters: {
                 type: "object",
                 properties: {
                     seconds: { type: "number", description: "How long to wait in seconds" },
                     reason: { type: "string", description: "Why you're waiting" },
+                    preserveWorkerAffinity: {
+                        type: "boolean",
+                        description:
+                            "Set true when the work you are waiting on is tied to this worker's local state " +
+                            "(for example a local process, file, or socket) and you want PilotSwarm to " +
+                            "preserve the current worker affinity across a durable wait.",
+                    },
+                },
+                required: ["seconds"],
+            },
+            handler: async (args: { seconds: number; reason?: string; preserveWorkerAffinity?: boolean }) => {
+                const reason = args.reason ?? "unspecified";
+                if (args.seconds <= turnState.waitThreshold) {
+                    await new Promise(r => setTimeout(r, args.seconds * 1000));
+                    return `Waited for ${args.seconds} seconds. The wait is complete, you may continue.`;
+                }
+                turnState.pendingActions.push({
+                    type: "wait",
+                    seconds: args.seconds,
+                    reason,
+                    preserveWorkerAffinity: args.preserveWorkerAffinity ?? false,
+                });
+                if (turnState.session) turnState.session.abort();
+                return "aborted";
+            },
+        });
+
+        const waitOnWorkerTool = defineTool("wait_on_worker", {
+            description:
+                "Durably wait while preserving the current worker affinity when possible. " +
+                "Use this when the thing you are waiting on is tied to worker-local state " +
+                "(for example a local process, file, socket, or in-memory store on this worker). " +
+                "This is equivalent to wait(..., preserveWorkerAffinity=true), but more reliable " +
+                "because you do not need to set the flag yourself.",
+            parameters: {
+                type: "object",
+                properties: {
+                    seconds: { type: "number", description: "How long to wait in seconds" },
+                    reason: { type: "string", description: "Why you're waiting on worker-local state" },
                 },
                 required: ["seconds"],
             },
@@ -312,9 +380,14 @@ export class ManagedSession {
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
-                    return `Waited for ${args.seconds} seconds. The wait is complete, you may continue.`;
+                    return `Waited for ${args.seconds} seconds on the current worker. The wait is complete, you may continue.`;
                 }
-                turnState.pendingActions.push({ type: "wait", seconds: args.seconds, reason });
+                turnState.pendingActions.push({
+                    type: "wait",
+                    seconds: args.seconds,
+                    reason,
+                    preserveWorkerAffinity: true,
+                });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
             },
@@ -591,6 +664,7 @@ export class ManagedSession {
         const allTools: Tool<any>[] = [
             ...wrappedUserTools,
             waitTool,
+            waitOnWorkerTool,
             askUserTool,
             listModelsTool,
             spawnAgentTool,

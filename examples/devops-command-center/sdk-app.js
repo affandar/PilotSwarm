@@ -21,15 +21,52 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm-sdk";
-import { devopsTools } from "./tools.js";
+import { createDevopsTools } from "./tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_DIR = path.join(__dirname, "plugin");
 const STORE = process.env.DATABASE_URL || "sqlite::memory:";
+const SCENARIO = process.env.DEVOPS_SCENARIO || "incident";
+const devopsTools = createDevopsTools({ workerMarker: "sdk-example-worker" });
+
+const SCENARIOS = {
+    incident: {
+        title: "Incident Investigation",
+        agent: "investigator",
+        timeoutMs: 180_000,
+        prompt:
+            "There's a CPU spike on payment-service. Error rates are elevated. " +
+            "Investigate the root cause — check metrics, logs, and health for " +
+            "payment-service and any upstream/downstream services that might be affected.",
+    },
+    "build-local": {
+        title: "Worker-Local Build",
+        agent: "builder",
+        timeoutMs: 300_000,
+        prompt:
+            "Start a new build from the devops-command-center repo on this worker and monitor it until it completes. " +
+            "Use the worker-local build flow.",
+    },
+    "build-remote": {
+        title: "Remote Build Monitoring",
+        agent: "builder",
+        timeoutMs: 300_000,
+        prompt:
+            "Start a mock remote build for the devops-command-center repo and monitor it until it completes. " +
+            "Use the remote build monitoring flow.",
+    },
+};
+
+const scenario = SCENARIOS[SCENARIO];
+if (!scenario) {
+    console.error(`Unknown DEVOPS_SCENARIO="${SCENARIO}". Available: ${Object.keys(SCENARIOS).join(", ")}`);
+    process.exit(1);
+}
 
 console.log("🔧 DevOps Command Center (SDK)");
 console.log(`   Store: ${STORE.startsWith("postgres") ? "PostgreSQL" : STORE}`);
-console.log(`   Plugin: ${PLUGIN_DIR}\n`);
+console.log(`   Plugin: ${PLUGIN_DIR}`);
+console.log(`   Scenario: ${scenario.title} (${SCENARIO})\n`);
 
 // ─── Start worker with devops tools + plugin ─────────────────────
 
@@ -55,11 +92,11 @@ const client = new PilotSwarmClient({
 });
 await client.start();
 
-// ─── Scenario: Investigate a production incident ─────────────────
+// ─── Scenario runner ──────────────────────────────────────────────
 
-console.log("━━━ Scenario: Incident Investigation ━━━\n");
+console.log(`━━━ Scenario: ${scenario.title} ━━━\n`);
 
-const session = await client.createSessionForAgent("investigator");
+const session = await client.createSessionForAgent(scenario.agent);
 worker.setSessionConfig(session.sessionId, {});
 
 console.log(`   Session: ${session.sessionId}`);
@@ -77,16 +114,14 @@ session.on((event) => {
     }
 });
 
-// Send the incident prompt
-console.log("   Sending: Investigate CPU spike on payment-service...\n");
+// Send the scenario prompt
+console.log(`   Sending: ${scenario.prompt}\n`);
 const response = await session.sendAndWait(
-    "There's a CPU spike on payment-service. Error rates are elevated. " +
-    "Investigate the root cause — check metrics, logs, and health for " +
-    "payment-service and any upstream/downstream services that might be affected.",
-    180_000,
+    scenario.prompt,
+    scenario.timeoutMs,
 );
 
-console.log("\n━━━ Investigation Result ━━━\n");
+console.log(`\n━━━ ${scenario.title} Result ━━━\n`);
 console.log(response?.slice(0, 1500) || "(no response)");
 console.log("\n");
 

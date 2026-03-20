@@ -36,4 +36,6 @@ loop:
 - ALWAYS use the `wait` tool — never `setTimeout`, `sleep`, or cron
 - Timers are durable: they persist across pod restarts and worker migrations
 - The wait tool accepts seconds (integer). For minutes: multiply by 60
-- After a wait, you resume on potentially a different worker node — don't rely on in-memory state
+- By default, after a long wait you resume on potentially a different worker node — don't rely on in-memory state
+- If the wait depends on this specific worker's local state (for example a local process, file, or socket), call `wait(..., preserveWorkerAffinity: true)`
+- `preserveWorkerAffinity: true` is best-effort affinity preservation, not a hard same-node guarantee

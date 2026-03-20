@@ -8,8 +8,8 @@
  *   npx pilotswarm --plugin ./plugin --worker ./worker-module.js --env ../../.env
  */
 
-import { devopsTools } from "./tools.js";
+import { createDevopsTools } from "./tools.js";
 
 export default {
-    tools: devopsTools,
+    createTools: ({ workerNodeId }) => createDevopsTools({ workerMarker: workerNodeId }),
 };

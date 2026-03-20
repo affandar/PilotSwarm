@@ -14,8 +14,7 @@ import { describe, it, beforeAll } from "vitest";
 import { createTestEnv, preflightChecks } from "../../packages/sdk/test/helpers/local-env.js";
 import { withClient, createManagementClient } from "../../packages/sdk/test/helpers/local-workers.js";
 import { assert, assertEqual, assertNotNull, assertIncludes, assertThrows } from "../../packages/sdk/test/helpers/assertions.js";
-import { createCatalog, getSession } from "../../packages/sdk/test/helpers/cms-helpers.js";
-import { devopsTools } from "./tools.js";
+import { createDevopsTools, devopsTools } from "./tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_DIR = path.join(__dirname, "plugin");
@@ -26,6 +25,12 @@ const DEVOPS_OPTS = {
     worker: { pluginDirs: [PLUGIN_DIR] },
     tools: devopsTools,
 };
+
+function getDevopsTool(name) {
+    const tool = devopsTools.find((entry) => entry.name === name);
+    assertNotNull(tool, `tool ${name} loaded`);
+    return tool;
+}
 
 // ─── Tests ───────────────────────────────────────────────────────
 
@@ -128,6 +133,9 @@ async function testAgentNamespacing(env) {
         const investigator = agents.find(a => a.name === "investigator");
         assertNotNull(investigator, "investigator loaded");
         assertEqual(investigator.namespace, "devops", "investigator has devops namespace");
+        const builder = agents.find(a => a.name === "builder");
+        assertNotNull(builder, "builder loaded");
+        assertEqual(builder.namespace, "devops", "builder has devops namespace");
 
         // System agents are in a separate accessor
         const sysAgents = worker.systemAgents;
@@ -151,7 +159,97 @@ async function testDefaultAgentLayering(env) {
             "devops default instructions layered into investigator",
         );
         assertIncludes(investigator.prompt, "<ACTIVE_AGENT>", "active agent wrapper present");
+
+        const builder = worker.loadedAgents.find(a => a.name === "builder");
+        assertNotNull(builder, "builder loaded");
+        assertIncludes(builder.prompt, "preserveWorkerAffinity: true", "builder prompt explains local build affinity preservation");
+        assertIncludes(builder.prompt, "do not preserve worker affinity", "builder prompt explains remote monitoring without affinity");
     });
+}
+
+async function testBuilderToolBehavior() {
+    const startLocalBuild = getDevopsTool("start_local_build");
+    const getLocalBuildStatus = getDevopsTool("get_local_build_status");
+    const startRemoteBuild = getDevopsTool("start_remote_build");
+    const getRemoteBuildStatus = getDevopsTool("get_remote_build_status");
+
+    const localStart = await startLocalBuild.handler({
+        repo: "devops-command-center",
+        branch: "main",
+        target: "ci",
+        duration_seconds: 1,
+    });
+    assertEqual(localStart.build_scope, "worker_local", "local build scope");
+    assertEqual(localStart.preserve_worker_affinity, true, "local build starts with affinity preserved");
+    assertEqual(localStart.recommended_wait?.preserveWorkerAffinity, true, "local build recommends preserved affinity wait");
+
+    const localRunning = await getLocalBuildStatus.handler({ build_id: localStart.build_id });
+    assertEqual(localRunning.status, "running", "local build initially running");
+    assertEqual(localRunning.preserve_worker_affinity, true, "local build still needs affinity while running");
+    assertEqual(localRunning.recommended_wait?.preserveWorkerAffinity, true, "running local build keeps preserveWorkerAffinity in recommended wait");
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const localDone = await getLocalBuildStatus.handler({ build_id: localStart.build_id });
+    assertEqual(localDone.status, "done", "local build completes after mock duration");
+    assertEqual(localDone.preserve_worker_affinity, false, "local build drops affinity requirement after completion");
+    assertEqual(localDone.recommended_wait, null, "completed local build has no recommended wait");
+
+    const remoteStart = await startRemoteBuild.handler({
+        repo: "devops-command-center",
+        branch: "main",
+        target: "ci",
+        duration_seconds: 1,
+    });
+    assertEqual(remoteStart.build_scope, "remote", "remote build scope");
+    assertEqual(remoteStart.preserve_worker_affinity, false, "remote build never requires affinity");
+    assertEqual(remoteStart.recommended_wait?.preserveWorkerAffinity, false, "remote build recommends ordinary wait");
+
+    const remoteRunning = await getRemoteBuildStatus.handler({
+        build_id: remoteStart.build_id,
+        repo: "devops-command-center",
+        branch: "main",
+        target: "ci",
+    });
+    assertEqual(remoteRunning.status, "running", "remote build initially running");
+    assertEqual(remoteRunning.preserve_worker_affinity, false, "remote build stays affinity-free while running");
+    assertEqual(remoteRunning.recommended_wait?.preserveWorkerAffinity, false, "remote running build stays affinity-free in recommended wait");
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const remoteDone = await getRemoteBuildStatus.handler({
+        build_id: remoteStart.build_id,
+        repo: "devops-command-center",
+        branch: "main",
+        target: "ci",
+    });
+    assertEqual(remoteDone.status, "done", "remote build completes after mock duration");
+    assertEqual(remoteDone.preserve_worker_affinity, false, "remote build remains affinity-free after completion");
+    assertEqual(remoteDone.recommended_wait, null, "completed remote build has no recommended wait");
+}
+
+async function testBuilderToolFactoryIsolation() {
+    const toolsA = createDevopsTools({ workerMarker: "worker-a" });
+    const toolsB = createDevopsTools({ workerMarker: "worker-b" });
+    const startA = toolsA.find((entry) => entry.name === "start_local_build");
+    const statusA = toolsA.find((entry) => entry.name === "get_local_build_status");
+    const statusB = toolsB.find((entry) => entry.name === "get_local_build_status");
+
+    assertNotNull(startA, "start_local_build tool exists in factory A");
+    assertNotNull(statusA, "get_local_build_status tool exists in factory A");
+    assertNotNull(statusB, "get_local_build_status tool exists in factory B");
+
+    const build = await startA.handler({
+        repo: "devops-command-center",
+        branch: "main",
+        target: "ci",
+        duration_seconds: 5,
+    });
+    const sameWorker = await statusA.handler({ build_id: build.build_id });
+    const otherWorker = await statusB.handler({ build_id: build.build_id });
+
+    assertEqual(sameWorker.status, "running", "origin worker can still see local build");
+    assertEqual(sameWorker.worker_marker, "worker-a", "origin worker marker preserved");
+    assertEqual(otherWorker.status, "not_found_on_this_worker", "other worker cannot see worker-local build");
+    assertEqual(otherWorker.worker_marker, "worker-b", "other worker reports its own marker");
 }
 
 async function testRenameInvestigatorSession(env) {
@@ -235,6 +333,14 @@ describe.concurrent("DevOps Command Center", () => {
     it("Default Agent Layering", { timeout: TIMEOUT }, async () => {
         const env = createTestEnv("devops-example");
         try { await testDefaultAgentLayering(env); } finally { await env.cleanup(); }
+    });
+
+    it("Builder Tool Behavior", { timeout: TIMEOUT }, async () => {
+        await testBuilderToolBehavior();
+    });
+
+    it("Builder Tool Factory Isolation", { timeout: TIMEOUT }, async () => {
+        await testBuilderToolFactoryIsolation();
     });
 
     it("Rename Investigator Session", { timeout: TIMEOUT }, async () => {

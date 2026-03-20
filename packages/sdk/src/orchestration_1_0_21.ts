@@ -21,7 +21,6 @@ import type {
     SessionStatusSignal,
 } from "./types.js";
 import { createSessionProxy, createSessionManagerProxy } from "./session-proxy.js";
-import { planWaitHandling } from "./wait-affinity.js";
 
 /**
  * Set custom status as a JSON blob of session state.
@@ -49,7 +48,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.23";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.21";
 
 /**
  * Long-lived durable session orchestration.
@@ -67,13 +66,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.23";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_23(
+export function* durableSessionOrchestration_1_0_21(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.23] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.21] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -83,7 +82,6 @@ export function* durableSessionOrchestration_1_0_23(
     const blobEnabled = input.blobEnabled ?? false;
     let needsHydration = input.needsHydration ?? false;
     let affinityKey = input.affinityKey ?? input.sessionId;
-    let preserveAffinityOnHydrate = input.preserveAffinityOnHydrate ?? false;
     let iteration = input.iteration ?? 0;
     let config = { ...input.config };
     let retryCount = input.retryCount ?? 0;
@@ -214,7 +212,6 @@ export function* durableSessionOrchestration_1_0_23(
             config,
             iteration,
             affinityKey,
-            preserveAffinityOnHydrate,
             needsHydration,
             blobEnabled,
             dehydrateThreshold,
@@ -295,16 +292,13 @@ export function* durableSessionOrchestration_1_0_23(
         } catch {}
     }
 
-    // ─── Helper: dehydrate and optionally release affinity ───
-    function* dehydrateForNextTurn(reason: string, resetAffinity = true): Generator<any, void, any> {
-        ctx.traceInfo(`[orch] dehydrating session (reason=${reason}, resetAffinity=${resetAffinity})`);
+    // ─── Helper: dehydrate + reset affinity ──────────────────
+    function* dehydrateAndReset(reason: string): Generator<any, void, any> {
+        ctx.traceInfo(`[orch] dehydrating session (reason=${reason})`);
         yield session.dehydrate(reason);
         needsHydration = true;
-        preserveAffinityOnHydrate = !resetAffinity;
-        if (resetAffinity) {
-            affinityKey = yield ctx.newGuid();
-            session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
-        }
+        affinityKey = yield ctx.newGuid();
+        session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
     }
 
     // ─── Helper: checkpoint without releasing pin ────────────
@@ -377,16 +371,12 @@ export function* durableSessionOrchestration_1_0_23(
     // the agent's tools/systemMessage from .agent.md need to be injected
     // into the session config. Sub-agents get this via spawn_agent resolution,
     // but top-level sessions need it here.
-    if (iteration === 0 && !parentSessionId && input.agentId) {
+    if (iteration === 0 && !parentSessionId && input.agentId && !config.toolNames) {
         const agentDef: any = yield manager.resolveAgentConfig(input.agentId);
         if (agentDef) {
-            const mergedToolNames = Array.from(new Set([
-                ...(agentDef.tools ?? []),
-                ...(config.toolNames ?? []),
-            ]));
-            if (mergedToolNames.length > 0) {
-                config.toolNames = mergedToolNames;
-                ctx.traceInfo(`[orch] merged top-level agent tools for ${input.agentId}: ${mergedToolNames.join(", ")}`);
+            if (agentDef.tools?.length) {
+                config.toolNames = agentDef.tools;
+                ctx.traceInfo(`[orch] injected agent tools for top-level ${input.agentId}: ${agentDef.tools.join(", ")}`);
             }
             // Rebuild session proxy with updated config (tools now included)
             session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
@@ -482,7 +472,6 @@ export function* durableSessionOrchestration_1_0_23(
                                         iteration,
                                         sessionId: input.sessionId,
                                         affinityKey: affinityKey?.slice(0, 8),
-                                        preserveAffinityOnHydrate,
                                         needsHydration,
                                         blobEnabled,
                                     },
@@ -591,13 +580,10 @@ export function* durableSessionOrchestration_1_0_23(
                 let hydrateAttempts = 0;
                 while (true) {
                     try {
-                        if (!preserveAffinityOnHydrate) {
-                            affinityKey = yield ctx.newGuid();
-                        }
+                        affinityKey = yield ctx.newGuid();
                         session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
                         yield session.hydrate();
                         needsHydration = false;
-                        preserveAffinityOnHydrate = false;
                         break;
                     } catch (hydrateErr: any) {
                         const hMsg = hydrateErr.message || String(hydrateErr);
@@ -606,7 +592,6 @@ export function* durableSessionOrchestration_1_0_23(
                         if (hMsg.includes("blob does not exist") || hMsg.includes("BlobNotFound") || hMsg.includes("404")) {
                             ctx.traceInfo(`[orch] hydrate skipped — blob not found, starting fresh session`);
                             needsHydration = false;
-                            preserveAffinityOnHydrate = false;
                             break;
                         }
 
@@ -671,7 +656,7 @@ export function* durableSessionOrchestration_1_0_23(
                 ctx.traceInfo(`[orch] retrying in ${retryDelay}s`);
 
                 if (blobEnabled) {
-                    yield* dehydrateForNextTurn("error");
+                    yield* dehydrateAndReset("error");
                 }
 
                 yield ctx.scheduleTimer(retryDelay * 1000);
@@ -785,7 +770,7 @@ export function* durableSessionOrchestration_1_0_23(
 
                     // Idle timeout → dehydrate. Next message will need resume context.
                     ctx.traceInfo("[session] idle timeout, dehydrating");
-                    yield* dehydrateForNextTurn("idle");
+                    yield* dehydrateAndReset("idle");
                     // Don't continueAsNew with a prompt — wait for the next user message,
                     // which will be wrapped with resume context because needsHydration=true.
                     yield versionedContinueAsNew(continueInput());
@@ -823,14 +808,9 @@ export function* durableSessionOrchestration_1_0_23(
                 ctx.traceInfo(`[orch] durable timer: ${result.seconds}s (${result.reason})`);
 
                 {
-                    const waitPlan = planWaitHandling({
-                        blobEnabled,
-                        seconds: result.seconds,
-                        dehydrateThreshold,
-                        preserveWorkerAffinity: result.preserveWorkerAffinity,
-                    });
-                    if (waitPlan.shouldDehydrate) {
-                        yield* dehydrateForNextTurn("timer", waitPlan.resetAffinityOnDehydrate);
+                    const shouldDehydrate = blobEnabled && result.seconds > dehydrateThreshold;
+                    if (shouldDehydrate) {
+                        yield* dehydrateAndReset("timer");
                     }
 
                     const waitStartedAt: number = yield ctx.utcNow();
@@ -851,11 +831,10 @@ export function* durableSessionOrchestration_1_0_23(
                         waitSeconds: result.seconds,
                         waitReason: result.reason,
                         waitStartedAt,
-                        preserveWorkerAffinity: waitPlan.preserveAffinityOnHydrate,
                     });
 
                     // Checkpoint before the blocking wait
-                    if (!waitPlan.shouldDehydrate) yield* maybeCheckpoint();
+                    if (!shouldDehydrate) yield* maybeCheckpoint();
 
                     const timerTask = ctx.scheduleTimer(result.seconds * 1000);
                     const interruptMsg = ctx.dequeueEvent("messages");
@@ -874,12 +853,12 @@ export function* durableSessionOrchestration_1_0_23(
                                 const timerPrompt = `The ${result.seconds} second wait is now complete. Continue with your task.`;
                                 yield versionedContinueAsNew(continueInputWithPrompt(
                                     timerPrompt,
-                                    { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
+                                    { needsHydration: shouldDehydrate ? true : needsHydration },
                                 ));
                             } else {
                                 yield versionedContinueAsNew(continueInputWithPrompt(
                                     `The wait was partially completed (${elapsedSec}s elapsed, ${remainingSec}s remain). Resume the wait for the remaining ${remainingSec} seconds.`,
-                                    { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
+                                    { needsHydration: shouldDehydrate ? true : needsHydration },
                                 ));
                             }
                             return "";
@@ -893,7 +872,7 @@ export function* durableSessionOrchestration_1_0_23(
                         const userPrompt = interruptData.prompt || "";
 
                         let finalPrompt: string;
-                        if (waitPlan.shouldDehydrate && userPrompt) {
+                        if (shouldDehydrate && userPrompt) {
                             finalPrompt = wrapWithResumeContext(
                                 userPrompt,
                                 `Your timer was interrupted by a USER MESSAGE. You MUST respond to the user's message below before doing anything else. ` +
@@ -913,7 +892,7 @@ export function* durableSessionOrchestration_1_0_23(
 
                         yield versionedContinueAsNew(continueInputWithPrompt(
                             finalPrompt,
-                            { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
+                            { needsHydration: shouldDehydrate ? true : needsHydration },
                         ));
                         return "";
                     }
@@ -921,7 +900,7 @@ export function* durableSessionOrchestration_1_0_23(
                     const timerPrompt = `The ${result.seconds} second wait is now complete. Continue with your task.`;
                     yield versionedContinueAsNew(continueInputWithPrompt(
                         timerPrompt,
-                        { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
+                        { needsHydration: shouldDehydrate ? true : needsHydration },
                     ));
                     return "";
                 }
@@ -952,7 +931,7 @@ export function* durableSessionOrchestration_1_0_23(
 
                 if (inputGracePeriod === 0) {
                     publishStatus("input_required");
-                    yield* dehydrateForNextTurn("input_required");
+                    yield* dehydrateAndReset("input_required");
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
@@ -979,7 +958,7 @@ export function* durableSessionOrchestration_1_0_23(
                         return "";
                     }
 
-                    yield* dehydrateForNextTurn("input_required");
+                    yield* dehydrateAndReset("input_required");
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
@@ -1560,7 +1539,7 @@ export function* durableSessionOrchestration_1_0_23(
                 ctx.traceInfo(`[orch] retrying in ${errorRetryDelay}s after turn error`);
 
                 if (blobEnabled) {
-                    yield* dehydrateForNextTurn("error");
+                    yield* dehydrateAndReset("error");
                 }
 
                 yield ctx.scheduleTimer(errorRetryDelay * 1000);

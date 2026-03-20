@@ -4,6 +4,8 @@
  * Usage:
  *   npx pilotswarm --plugin ./plugin --worker ./worker.js
  */
-import devopsTools from "./tools.js";
+import { createDevopsTools } from "./tools.js";
 
-export default { tools: devopsTools };
+export default {
+    createTools: ({ workerNodeId }) => createDevopsTools({ workerMarker: workerNodeId }),
+};

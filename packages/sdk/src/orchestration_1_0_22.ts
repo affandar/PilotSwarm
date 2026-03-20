@@ -49,7 +49,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.23";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.22";
 
 /**
  * Long-lived durable session orchestration.
@@ -67,13 +67,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.23";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_23(
+export function* durableSessionOrchestration_1_0_22(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.23] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.22] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -377,16 +377,12 @@ export function* durableSessionOrchestration_1_0_23(
     // the agent's tools/systemMessage from .agent.md need to be injected
     // into the session config. Sub-agents get this via spawn_agent resolution,
     // but top-level sessions need it here.
-    if (iteration === 0 && !parentSessionId && input.agentId) {
+    if (iteration === 0 && !parentSessionId && input.agentId && !config.toolNames) {
         const agentDef: any = yield manager.resolveAgentConfig(input.agentId);
         if (agentDef) {
-            const mergedToolNames = Array.from(new Set([
-                ...(agentDef.tools ?? []),
-                ...(config.toolNames ?? []),
-            ]));
-            if (mergedToolNames.length > 0) {
-                config.toolNames = mergedToolNames;
-                ctx.traceInfo(`[orch] merged top-level agent tools for ${input.agentId}: ${mergedToolNames.join(", ")}`);
+            if (agentDef.tools?.length) {
+                config.toolNames = agentDef.tools;
+                ctx.traceInfo(`[orch] injected agent tools for top-level ${input.agentId}: ${agentDef.tools.join(", ")}`);
             }
             // Rebuild session proxy with updated config (tools now included)
             session = createSessionProxy(ctx, input.sessionId, affinityKey, config);

@@ -44,6 +44,7 @@ These are useful for contributors but are not the main onboarding path:
 - [TUI Cleanup Status](./tui-cleanup-status.md)
 - [Proposal: Prompt Layering and Framework Precedence](./proposals/prompt-layering-and-precedence.md)
 - [Proposal: npm Packaging and Embedded PilotSwarm Plugins](./proposals/npm-packaging-and-embedded-plugins.md)
+- [Proposal: Preserve Worker Affinity For Durable Waits](./proposals/wait-preserve-worker-affinity.md)
 - [`docs/proposals/`](./proposals/)
 
 ## Legacy Guides

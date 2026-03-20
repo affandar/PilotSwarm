@@ -78,6 +78,19 @@ Contract:
 Examples:
 
 - normalize mistaken named-agent spawns where safe
+
+## 7. Long Waits May Migrate Unless Affinity Is Preserved
+
+Contract:
+
+- long durable waits may resume on a different worker
+- if an agent is waiting on worker-local state, it must call `wait(..., preserveWorkerAffinity: true)`
+- prompts, tool descriptions, and tests should all describe this consistently
+
+Why it matters:
+
+- node-local work is the main exception to the usual "durable waits can resume anywhere" model
+- the LLM needs an explicit, reliable way to opt into preserving worker affinity
 - reject invalid sub-agent model overrides
 - preserve orchestration behavior even if prompt wording drifts
 

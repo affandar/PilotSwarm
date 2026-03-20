@@ -1099,6 +1099,58 @@ function appendActivity(text, orchId) {
     }
 }
 
+function formatToolArgValue(value) {
+    if (typeof value === "string") return JSON.stringify(value);
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (value === null) return "null";
+    if (Array.isArray(value)) return `[${value.map(formatToolArgValue).join(", ")}]`;
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+function formatToolArgsSummary(toolName, args) {
+    if (!args || typeof args !== "object") return "";
+    if (toolName === "wait") {
+        const seconds = args.seconds != null ? `${args.seconds}s` : "?";
+        const preserve = args.preserveWorkerAffinity === true ? " preserve=true" : "";
+        const reason = typeof args.reason === "string" && args.reason
+            ? ` reason=${JSON.stringify(args.reason)}`
+            : "";
+        return ` ${seconds}${preserve}${reason}`;
+    }
+
+    const entries = Object.entries(args)
+        .slice(0, 4)
+        .map(([key, value]) => `${key}=${formatToolArgValue(value)}`);
+    if (entries.length === 0) return "";
+    const suffix = Object.keys(args).length > entries.length ? ", ..." : "";
+    return ` ${entries.join(", ")}${suffix}`;
+}
+
+function formatToolActivityLine(timeStr, evt, phase = "start") {
+    const toolName = evt.data?.toolName || evt.data?.name || "tool";
+    const args = evt.data?.arguments || evt.data?.args;
+    const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${shortId(evt.data.durableSessionId)}]{/gray-fg}` : "";
+    const summary = formatToolArgsSummary(toolName, args);
+    if (phase === "start") {
+        return `{white-fg}[${timeStr}]{/white-fg} {yellow-fg}▶ ${toolName}${summary}{/yellow-fg}${dsid}`;
+    }
+    return `{white-fg}[${timeStr}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}${dsid}`;
+}
+
+function summarizeActivityPreview(text, maxLen = 100) {
+    const compact = String(text || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (!compact) return "(no content)";
+    return compact.length > maxLen
+        ? `${compact.slice(0, maxLen - 1)}...`
+        : compact;
+}
+
 function ensureSessionSplashBuffer(orchId) {
     const existing = sessionChatBuffers.get(orchId) || [];
     const splashText = systemSplashText.get(orchId);
@@ -2907,12 +2959,9 @@ async function loadCmsHistory(orchId, options = {}) {
                         lines.push("");
                     }
                 } else if (type === "tool.execution_start") {
-                    const toolName = evt.data?.toolName || "tool";
-                    const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${shortId(evt.data.durableSessionId)}]{/gray-fg}` : "";
-                    activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}${dsid}`);
+                    activityLines.push(formatToolActivityLine(timeStr, evt, "start"));
                 } else if (type === "tool.execution_complete") {
-                    const toolName = evt.data?.toolName || "tool";
-                    activityLines.push(`{white-fg}[${timeStr}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`);
+                    activityLines.push(formatToolActivityLine(timeStr, evt, "complete"));
                 } else if (type === "abort" || type === "session.info" || type === "session.idle"
                     || type === "session.usage_info" || type === "pending_messages.modified"
                     || type === "assistant.usage") {
@@ -3172,8 +3221,11 @@ if (!isRemote) {
             ...(workerModuleConfig.mcpServers && { mcpServers: workerModuleConfig.mcpServers }),
         });
         // Register custom tools from worker module
-        if (workerModuleConfig.tools?.length) {
-            w.registerTools(workerModuleConfig.tools);
+        const workerTools = typeof workerModuleConfig.createTools === "function"
+            ? await workerModuleConfig.createTools({ workerNodeId: `local-rt-${i}`, workerIndex: i })
+            : workerModuleConfig.tools;
+        if (workerTools?.length) {
+            w.registerTools(workerTools);
         }
         await w.start();
         workers.push(w);
@@ -5166,12 +5218,8 @@ function startObserver(orchId) {
         }
         if (response.type === "wait" && response.content) {
             appendActivity(`{green-fg}[obs] ✓ SHOWING ${source}: version=${response.version} type=wait content=${response.content.slice(0, 80)}{/green-fg}`, orchId);
-            const prefix = `{white-fg}[${ts()}]{/white-fg} {gray-fg}[intermediate]{/gray-fg}`;
-            appendActivity(prefix, orchId);
-            const rendered = renderMarkdown(response.content);
-            for (const line of rendered.split("\n")) {
-                appendActivity(line, orchId);
-            }
+            const preview = summarizeActivityPreview(response.content);
+            appendActivity(`{white-fg}[${ts()}]{/white-fg} {gray-fg}[intermediate]{/gray-fg} ${preview}`, orchId);
             promoteIntermediateContent(response.content, orchId);
             setStatusIfActive(`Waiting (${cs.waitReason || response.waitReason || "timer"})…`);
             return;
@@ -5571,13 +5619,12 @@ function startCmsPoller(orchId) {
 
             if (type === "tool.execution_start") {
                 const toolName = evt.data?.toolName || "tool";
-                const dsid = evt.data?.durableSessionId ? ` {gray-fg}[${shortId(evt.data.durableSessionId)}]{/gray-fg}` : "";
                 // Track last tool name so we can show it on completion too
                 sess._lastToolName = toolName;
-                appendActivity(`{white-fg}[${t}]{/white-fg} {yellow-fg}▶ ${toolName}{/yellow-fg}${dsid}`, orchId);
+                appendActivity(formatToolActivityLine(t, evt, "start"), orchId);
             } else if (type === "tool.execution_complete") {
                 const toolName = evt.data?.toolName || sess._lastToolName || "tool";
-                appendActivity(`{white-fg}[${t}]{/white-fg} {green-fg}✓ ${toolName}{/green-fg}`, orchId);
+                appendActivity(formatToolActivityLine(t, { ...evt, data: { ...(evt.data || {}), toolName } }, "complete"), orchId);
             } else if (type === "assistant.reasoning") {
                 appendActivity(`{white-fg}[${t}]{/white-fg} {gray-fg}[reasoning]{/gray-fg}`, orchId);
             } else if (type === "assistant.turn_start") {

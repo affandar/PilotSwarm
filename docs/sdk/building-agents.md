@@ -42,7 +42,7 @@ description: Base instructions for all sessions.
 You are a helpful assistant running in PilotSwarm.
 
 Always use `write_artifact` + `export_artifact` when you create a file the user should download.
-If you need to wait or poll, use the `wait` tool rather than bash sleep.
+If you need to wait or poll, use the `wait` tool rather than bash sleep. For long waits, assume the next turn may resume on a different worker unless you intentionally pass `preserveWorkerAffinity: true` for worker-local work.
 ```
 
 Important behavior:

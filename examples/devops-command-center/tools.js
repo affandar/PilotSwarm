@@ -5,6 +5,7 @@
  * Register on the worker with: worker.registerTools(devopsTools)
  */
 
+import os from "node:os";
 import { defineTool } from "pilotswarm-sdk";
 
 // ─── Mock Data ───────────────────────────────────────────────────
@@ -58,6 +59,10 @@ const LOG_TEMPLATES = {
 };
 
 let _deployCounter = 1000;
+let _buildCounter = 2000;
+const DEFAULT_WORKER_LOCAL_BUILDS = new Map();
+const DEFAULT_BUILD_DURATION_SECONDS = 180;
+const DEFAULT_BUILD_POLL_SECONDS = 40;
 const DEPLOYMENTS = [
     { id: "deploy-1001", service: "payment-service", version: "2.4.1", status: "active",      deployed_at: "2026-03-16T08:30:00Z", deployed_by: "ci-pipeline" },
     { id: "deploy-1002", service: "user-service",    version: "3.1.0", status: "active",      deployed_at: "2026-03-15T14:20:00Z", deployed_by: "ci-pipeline" },
@@ -66,6 +71,82 @@ const DEPLOYMENTS = [
     { id: "deploy-0998", service: "payment-service", version: "2.3.9", status: "rolled_back", deployed_at: "2026-03-12T16:45:00Z", deployed_by: "ci-pipeline" },
     { id: "deploy-0995", service: "order-service",   version: "1.9.0", status: "failed",      deployed_at: "2026-03-11T11:30:00Z", deployed_by: "ci-pipeline" },
 ];
+
+function resolveBuildDurationSeconds(durationSeconds) {
+    if (typeof durationSeconds === "number" && Number.isFinite(durationSeconds) && durationSeconds > 0) {
+        return Math.round(durationSeconds);
+    }
+    return DEFAULT_BUILD_DURATION_SECONDS;
+}
+
+function nextBuildId(prefix, startedAtMs) {
+    _buildCounter += 1;
+    return `${prefix}-${startedAtMs}-${_buildCounter}`;
+}
+
+function nextRemoteBuildId(startedAtMs, durationSeconds) {
+    _buildCounter += 1;
+    return `remote-build-${startedAtMs}-${durationSeconds}-${_buildCounter}`;
+}
+
+function buildWorkerMarker(override) {
+    return override || `${os.hostname()}:${process.pid}`;
+}
+
+function formatBuildStatus(state, opts = {}) {
+    const now = opts.now ?? Date.now();
+    const elapsedSeconds = Math.max(0, Math.floor((now - state.startedAtMs) / 1000));
+    const remainingSeconds = Math.max(0, state.durationSeconds - elapsedSeconds);
+    const status = remainingSeconds === 0 ? "done" : "running";
+    const preserveWorkerAffinity = Boolean(opts.local && status !== "done");
+    const pollIntervalSeconds = status === "done"
+        ? 0
+        : Math.min(DEFAULT_BUILD_POLL_SECONDS, Math.max(1, remainingSeconds));
+    const reason = opts.local
+        ? "Waiting before next poll of worker-local build (preserving worker affinity)"
+        : "Waiting before next poll of remote build";
+
+    return {
+        build_id: state.buildId,
+        repo: state.repo,
+        branch: state.branch,
+        target: state.target,
+        build_scope: opts.local ? "worker_local" : "remote",
+        status,
+        elapsed_seconds: elapsedSeconds,
+        remaining_seconds: remainingSeconds,
+        poll_interval_seconds: pollIntervalSeconds,
+        preserve_worker_affinity: preserveWorkerAffinity,
+        affinity_guidance: preserveWorkerAffinity
+            ? "This build is tied to worker-local mock state. Keep preserveWorkerAffinity=true on each durable wait until status becomes done."
+            : "This build no longer requires worker affinity. Use ordinary waits without preserveWorkerAffinity.",
+        recommended_wait: status === "done"
+            ? null
+            : {
+                seconds: pollIntervalSeconds,
+                reason,
+                preserveWorkerAffinity,
+            },
+        worker_marker: state.workerMarker,
+        summary: status === "done"
+            ? `${state.repo} build finished successfully on ${state.target}.`
+            : `${state.repo} build is still running on ${state.target}.`,
+    };
+}
+
+function parseRemoteBuildId(buildId) {
+    const match = /^remote-build-(\d+)-(\d+)-(\d+)$/.exec(buildId);
+    if (!match) return null;
+    return {
+        startedAtMs: Number(match[1]),
+        durationSeconds: Number(match[2]),
+        counter: Number(match[3]),
+    };
+}
+
+export function resetMockBuildState() {
+    DEFAULT_WORKER_LOCAL_BUILDS.clear();
+}
 
 // ─── Tool Definitions ────────────────────────────────────────────
 
@@ -266,7 +347,197 @@ const getServiceHealth = defineTool("get_service_health", {
     },
 });
 
+function createBuildTools(workerMarker = buildWorkerMarker(), localBuilds = DEFAULT_WORKER_LOCAL_BUILDS) {
+    const startLocalBuild = defineTool("start_local_build", {
+        description:
+            "Start a mock DevOps repo build on this worker. The build state is stored in worker-local memory, " +
+            "so monitoring should preserve worker affinity until the build completes.",
+        parameters: {
+            type: "object",
+            properties: {
+                repo: {
+                    type: "string",
+                    description: "Repository or project name. Default: devops-command-center",
+                },
+                branch: {
+                    type: "string",
+                    description: "Branch to build. Default: main",
+                },
+                target: {
+                    type: "string",
+                    description: "Build target or pipeline name. Default: ci",
+                },
+                duration_seconds: {
+                    type: "number",
+                    description: "Optional override for the mock build duration. Default: 180 seconds.",
+                },
+            },
+        },
+        handler: async ({ repo, branch, target, duration_seconds }) => {
+            const startedAtMs = Date.now();
+            const state = {
+                buildId: nextBuildId("local-build", startedAtMs),
+                repo: repo || "devops-command-center",
+                branch: branch || "main",
+                target: target || "ci",
+                durationSeconds: resolveBuildDurationSeconds(duration_seconds),
+                startedAtMs,
+                workerMarker,
+            };
+            localBuilds.set(state.buildId, state);
+            return {
+                ...formatBuildStatus(state, { local: true, now: startedAtMs }),
+                started: true,
+                note: "This mock build lives in worker-local memory. Preserve worker affinity while polling it.",
+            };
+        },
+    });
+
+    const getLocalBuildStatus = defineTool("get_local_build_status", {
+        description:
+            "Check the status of a mock worker-local build started with start_local_build.",
+        parameters: {
+            type: "object",
+            properties: {
+                build_id: {
+                    type: "string",
+                    description: "The local build ID returned by start_local_build.",
+                },
+            },
+            required: ["build_id"],
+        },
+        handler: async ({ build_id }) => {
+            const state = localBuilds.get(build_id);
+            if (!state) {
+                return {
+                    build_id,
+                    build_scope: "worker_local",
+                    status: "not_found_on_this_worker",
+                    preserve_worker_affinity: false,
+                    recommended_wait: null,
+                    worker_marker: workerMarker,
+                    error:
+                        "This mock build was not found in the current worker-local store. " +
+                        "If you were monitoring a worker-local build, resume on the same worker or start a new local build.",
+                };
+            }
+            return formatBuildStatus(state, { local: true });
+        },
+    });
+
+    const startRemoteBuild = defineTool("start_remote_build", {
+        description:
+            "Start a mock remote build. Status is derived from the build ID itself, so monitoring does not require worker affinity.",
+        parameters: {
+            type: "object",
+            properties: {
+                repo: {
+                    type: "string",
+                    description: "Repository or project name. Default: devops-command-center",
+                },
+                branch: {
+                    type: "string",
+                    description: "Branch to build. Default: main",
+                },
+                target: {
+                    type: "string",
+                    description: "Remote build target or pipeline name. Default: ci",
+                },
+                duration_seconds: {
+                    type: "number",
+                    description: "Optional override for the mock build duration. Default: 180 seconds.",
+                },
+            },
+        },
+        handler: async ({ repo, branch, target, duration_seconds }) => {
+            const startedAtMs = Date.now();
+            const durationSeconds = resolveBuildDurationSeconds(duration_seconds);
+            const state = {
+                buildId: nextRemoteBuildId(startedAtMs, durationSeconds),
+                repo: repo || "devops-command-center",
+                branch: branch || "main",
+                target: target || "ci",
+                durationSeconds,
+                startedAtMs,
+                workerMarker: "remote-controller",
+            };
+            return {
+                ...formatBuildStatus(state, { local: false, now: startedAtMs }),
+                started: true,
+                note: "This mock build is remote. Poll it with ordinary durable waits and do not preserve worker affinity.",
+            };
+        },
+    });
+
+    const getRemoteBuildStatus = defineTool("get_remote_build_status", {
+        description:
+            "Check the status of a mock remote build. Any worker can monitor it without preserving worker affinity.",
+        parameters: {
+            type: "object",
+            properties: {
+                build_id: {
+                    type: "string",
+                    description: "The remote build ID returned by start_remote_build.",
+                },
+                repo: {
+                    type: "string",
+                    description: "Optional repo name for nicer status text when monitoring an existing build ID.",
+                },
+                branch: {
+                    type: "string",
+                    description: "Optional branch name for nicer status text when monitoring an existing build ID.",
+                },
+                target: {
+                    type: "string",
+                    description: "Optional target name for nicer status text when monitoring an existing build ID.",
+                },
+            },
+            required: ["build_id"],
+        },
+        handler: async ({ build_id, repo, branch, target }) => {
+            const parsed = parseRemoteBuildId(build_id);
+            if (!parsed) {
+                return {
+                    build_id,
+                    build_scope: "remote",
+                    status: "invalid_build_id",
+                    preserve_worker_affinity: false,
+                    recommended_wait: null,
+                    error: "Remote build IDs must come from start_remote_build in this mock sample.",
+                };
+            }
+            const state = {
+                buildId: build_id,
+                repo: repo || "devops-command-center",
+                branch: branch || "main",
+                target: target || "ci",
+                durationSeconds: parsed.durationSeconds,
+                startedAtMs: parsed.startedAtMs,
+                workerMarker: "remote-controller",
+            };
+            return formatBuildStatus(state, { local: false });
+        },
+    });
+
+    return [startLocalBuild, getLocalBuildStatus, startRemoteBuild, getRemoteBuildStatus];
+}
+
 // ─── Export ──────────────────────────────────────────────────────
+
+export function createDevopsTools(opts = {}) {
+    const buildTools = createBuildTools(buildWorkerMarker(opts.workerMarker), new Map());
+    return [
+        queryMetrics,
+        queryLogs,
+        listDeployments,
+        deployService,
+        rollbackService,
+        getServiceHealth,
+        ...buildTools,
+    ];
+}
+
+const defaultBuildTools = createBuildTools(buildWorkerMarker(), DEFAULT_WORKER_LOCAL_BUILDS);
 
 export const devopsTools = [
     queryMetrics,
@@ -275,6 +546,7 @@ export const devopsTools = [
     deployService,
     rollbackService,
     getServiceHealth,
+    ...defaultBuildTools,
 ];
 
 export default devopsTools;

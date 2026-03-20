@@ -12,6 +12,7 @@ It demonstrates:
 - named user-creatable agents
 - skills and session policy
 - worker-registered tools
+- affinity-aware local-vs-remote build monitoring
 - CLI/TUI usage and SDK/programmatic usage from the same app
 
 Key files:
@@ -36,6 +37,14 @@ Run the SDK/programmatic version:
 ```bash
 cd examples/devops-command-center
 node --env-file=../../.env sdk-app.js
+```
+
+Alternate SDK scenarios:
+
+```bash
+cd examples/devops-command-center
+DEVOPS_SCENARIO=build-local node --env-file=../../.env sdk-app.js
+DEVOPS_SCENARIO=build-remote node --env-file=../../.env sdk-app.js
 ```
 
 If you are pointing other LLMs at one example first, point them here.

@@ -32,7 +32,7 @@ The API surface mirrors the Copilot SDK exactly. Internally, each SDK call is "r
 | Capability | Copilot SDK (vanilla) | PilotSwarm |
 |---|---|---|
 | **Crash recovery** | Session lost if process dies | Orchestration survives, session rehydrates from blob |
-| **Long waits** | `setTimeout` — process must stay alive | Durable timer — process can die, wake on any node |
+| **Long waits** | `setTimeout` — process must stay alive | Durable timer — process can die, wake on any node by default, or preserve worker affinity when requested |
 | **Scaling** | Single process, single machine | N worker pods, session affinity + relocation |
 | **Offline reconnect** | Must re-create session, history lost | CMS has full event log, cursor-based catch-up |
 | **Observability** | Events visible only in-process | All events persisted to CMS, traceable across nodes |
@@ -608,6 +608,7 @@ await client.renameSession(session.sessionId, "Weather Bot");
 // Agent can use durable waits (the wait tool is injected automatically)
 await session.send({ prompt: "Check the weather every hour and alert me if it rains" });
 // The agent calls wait(3600) → durable timer → process can die → wakes up an hour later
+// If the wait depends on worker-local state, the agent can call wait(..., preserveWorkerAffinity: true)
 
 // List all sessions with names and status
 const sessions = await client.listSessions();

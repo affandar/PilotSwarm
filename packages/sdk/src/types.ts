@@ -7,7 +7,7 @@ export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 // What ManagedSession.runTurn() returns to the orchestration.
 
 export type TurnAction =
-    | { type: "wait"; seconds: number; reason: string; content?: string; events?: CapturedEvent[] }
+    | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
     | { type: "spawn_agent"; task: string; model?: string; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; content?: string; events?: CapturedEvent[] }
     | { type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] }
@@ -24,7 +24,7 @@ type QueuedTurnActionCarrier = {
 
 export type TurnResult =
     | { type: "completed"; content: string; events?: CapturedEvent[] }
-    | ({ type: "wait"; seconds: number; reason: string; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "spawn_agent"; task: string; model?: string; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -136,6 +136,8 @@ export interface OrchestrationInput {
     responseVersion?: number;
     commandVersion?: number;
     affinityKey?: string;
+    /** Internal: preserve the current worker affinity across the next hydration attempt. */
+    preserveAffinityOnHydrate?: boolean;
     needsHydration?: boolean;
     blobEnabled?: boolean;
     prompt?: string;
