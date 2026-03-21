@@ -143,6 +143,7 @@ export function registerActivities(
     clientConfig?: {
         blobEnabled?: boolean;
         duroxideSchema?: string;
+        factsSchema?: string;
     },
     /** Loaded system agents — used by resolveAgentConfig activity. */
     systemAgents?: AgentConfig[],
@@ -490,6 +491,7 @@ export function registerActivities(
             // Forward blob/dehydration config so child orchestrations inherit the parent's settings
             ...(clientConfig?.blobEnabled != null && { blobEnabled: clientConfig.blobEnabled }),
             ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
+            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
         });
         try {
             await sdkClient.start();
@@ -570,6 +572,8 @@ export function registerActivities(
         const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
+            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
+            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
         });
         try {
             await sdkClient.start();
@@ -599,6 +603,8 @@ export function registerActivities(
         const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
+            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
+            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
         });
         try {
             await sdkClient.start();
@@ -626,6 +632,8 @@ export function registerActivities(
         const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
+            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
+            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
         });
         try {
             await sdkClient.start();
@@ -655,6 +663,8 @@ export function registerActivities(
         const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
+            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
+            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
         });
         try {
             await sdkClient.start();
@@ -722,6 +732,8 @@ export function registerActivities(
         const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
+            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
+            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
         });
         try {
             await sdkClient.start();
@@ -756,6 +768,8 @@ export function registerActivities(
         const sdkClient = new PilotSwarmClient({
             store: storeUrl,
             cmsSchema,
+            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
+            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
         });
         try {
             await sdkClient.start();

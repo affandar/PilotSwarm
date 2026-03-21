@@ -3,9 +3,10 @@
 /**
  * Reset the pilotswarm database.
  *
- * Drops both schemas:
+ * Drops PilotSwarm schemas:
  *   - duroxide          (orchestration runtime tables)
  *   - copilot_sessions  (CMS session catalog + events)
+ *   - pilotswarm_facts  (durable facts)
  *
  * Usage:
  *   node --env-file=.env scripts/db-reset.js
@@ -19,6 +20,9 @@ if (!DATABASE_URL) {
     console.error("ERROR: DATABASE_URL not set. Use --env-file=.env");
     process.exit(1);
 }
+const DUROXIDE_SCHEMA = process.env.DUROXIDE_SCHEMA || "duroxide";
+const CMS_SCHEMA = process.env.CMS_SCHEMA || "copilot_sessions";
+const FACTS_SCHEMA = process.env.FACTS_SCHEMA || "pilotswarm_facts";
 
 const skipConfirm = process.argv.includes("--yes") || process.argv.includes("-y");
 
@@ -28,8 +32,9 @@ const displayUrl = DATABASE_URL.replace(/:\/\/([^:]+):[^@]+@/, "://$1:***@");
 console.log(`\n🗑️  Database Reset`);
 console.log(`   Target: ${displayUrl}\n`);
 console.log(`   This will DROP:`);
-console.log(`     • Schema "duroxide"         (orchestrations, queues, timers, history)`);
-console.log(`     • Schema "copilot_sessions"  (sessions, events)\n`);
+console.log(`     • Schema "${DUROXIDE_SCHEMA}"         (orchestrations, queues, timers, history)`);
+console.log(`     • Schema "${CMS_SCHEMA}"  (sessions, events)`);
+console.log(`     • Schema "${FACTS_SCHEMA}"   (durable facts)\n`);
 
 if (!skipConfirm) {
     const readline = await import("node:readline");
@@ -53,14 +58,21 @@ const pool = new pg.Pool({
     ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 
+function quoteIdent(value) {
+    return `"${String(value).replace(/"/g, "\"\"")}"`;
+}
+
 try {
     console.log("\n   Dropping schemas...");
 
-    await pool.query("DROP SCHEMA IF EXISTS duroxide CASCADE");
-    console.log("   ✅ duroxide");
+    await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdent(DUROXIDE_SCHEMA)} CASCADE`);
+    console.log(`   ✅ ${DUROXIDE_SCHEMA}`);
 
-    await pool.query("DROP SCHEMA IF EXISTS copilot_sessions CASCADE");
-    console.log("   ✅ copilot_sessions");
+    await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdent(CMS_SCHEMA)} CASCADE`);
+    console.log(`   ✅ ${CMS_SCHEMA}`);
+
+    await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdent(FACTS_SCHEMA)} CASCADE`);
+    console.log(`   ✅ ${FACTS_SCHEMA}`);
 
     // Also clean up any leftover duroxide tables in public schema (from before schema migration)
     const { rows } = await pool.query(`

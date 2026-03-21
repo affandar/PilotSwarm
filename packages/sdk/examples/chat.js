@@ -15,7 +15,10 @@
 import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm-sdk";
 import { createInterface } from "node:readline";
 
-const STORE = process.env.DATABASE_URL || "sqlite::memory:";
+const STORE = process.env.DATABASE_URL;
+if (!STORE) {
+    throw new Error("Missing DATABASE_URL. PilotSwarm requires PostgreSQL for CMS and facts.");
+}
 
 // ─── Model selection (--model=provider:model or bare model name) ─
 const MODEL = process.argv.find(a => a.startsWith('--model='))?.split('=')[1] || undefined;

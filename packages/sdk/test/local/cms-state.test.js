@@ -49,7 +49,7 @@ async function testSessionStateTransitions(env) {
 
 async function testTitleUpdate(env) {
     const catalog = await createCatalog(env);
-    const { PilotSwarmManagementClient } = await import("../../dist/index.js");
+    const { PilotSwarmManagementClient } = await import("../../src/index.ts");
     const mgmt = new PilotSwarmManagementClient({
         store: env.store,
         duroxideSchema: env.duroxideSchema,

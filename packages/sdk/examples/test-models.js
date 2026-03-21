@@ -12,7 +12,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const STORE = process.env.DATABASE_URL || "sqlite::memory:";
+const STORE = process.env.DATABASE_URL;
+if (!STORE) {
+    throw new Error("Missing DATABASE_URL. PilotSwarm requires PostgreSQL for CMS and facts.");
+}
 
 // Build model list: CLI args or all from model_providers.json (qualified names)
 let MODELS;

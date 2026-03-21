@@ -19,6 +19,8 @@ import type {
 } from "./types.js";
 import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
+import type { FactStore } from "./facts-store.js";
+import { createFactStoreForUrl } from "./facts-store.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -40,6 +42,7 @@ const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 export class PilotSwarmClient {
     private config: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalogProvider;
+    private _factStore: FactStore | null = null;
     private duroxideClient: any = null;
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
     /** parentSessionId for sub-agent sessions. */
@@ -317,6 +320,14 @@ export class PilotSwarmClient {
         // CMS: soft-delete (source of truth)
         await this._catalog.softDeleteSession(sessionId);
 
+        if (this._factStore) {
+            try {
+                await this._factStore.deleteSessionFactsForSession(sessionId);
+            } catch (err) {
+                console.error(`[PilotSwarmClient] session fact cleanup failed for ${sessionId}:`, err);
+            }
+        }
+
         // Duroxide: cancel orchestration (best effort)
         const orchestrationId = `session-${sessionId}`;
         if (this.duroxideClient) {
@@ -356,10 +367,23 @@ export class PilotSwarmClient {
             _trace("[client] CMS initialize done");
         }
 
+        _trace("[client] facts create start...");
+        this._factStore = await createFactStoreForUrl(store, this.config.factsSchema);
+        _trace("[client] facts initialize start...");
+        await this._factStore.initialize();
+        _trace("[client] facts initialize done");
+
         this.started = true;
     }
 
     async stop(): Promise<void> {
+        if (this._factStore) {
+            try { await this._factStore.close(); } catch {}
+            this._factStore = null;
+        }
+        if (this._catalog) {
+            try { await this._catalog.close(); } catch {}
+        }
         this.duroxideClient = null;
         this.started = false;
     }

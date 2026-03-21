@@ -149,7 +149,7 @@ async function testCmsConsistencyAcrossCrash(env) {
 }
 
 async function testToolWorksOnReplacementWorker(env) {
-    const { defineTool } = await import("../../dist/index.js");
+    const { defineTool } = await import("../../src/index.ts");
 
     function makeAddTool() {
         return defineTool("reliability_add", {

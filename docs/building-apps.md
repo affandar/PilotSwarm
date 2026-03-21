@@ -193,6 +193,14 @@ Two tools are injected into every session automatically:
 
 You never define these — they're part of the runtime.
 
+PilotSwarm workers auto-register built-in facts tools:
+
+- **`store_fact`** — persist structured facts
+- **`read_facts`** — query current-session and shared facts
+- **`delete_fact`** — delete current-session or shared facts by key
+
+These tools are part of the runtime and are available to every session automatically, including named and system agents. You can still list them in agent `tools` frontmatter if you want that dependency to be explicit.
+
 ### Registering Tools on the Worker
 
 ```typescript
@@ -249,8 +257,11 @@ Rule: **if a tool handler calls it, it must exist at runtime.**
 The runtime auto-creates its schemas on first startup:
 - `duroxide` — orchestration state (instances, executions, history)
 - `copilot_sessions` — CMS (sessions, session_events)
+- `pilotswarm_facts` — durable agent facts (session-scoped by default, optionally shared)
 
 Your PostgreSQL user needs `CREATE SCHEMA` permission on first run.
+
+Facts use the same database as the runtime and CMS. Facts are session-scoped by default and are deleted automatically when their session is deleted. Facts written with `shared=true` remain until explicitly removed with `delete_fact`.
 
 ### Deployment Topologies
 

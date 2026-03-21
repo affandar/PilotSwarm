@@ -47,6 +47,7 @@ my-sdk-app/
 9. Build `.env.example` and a gitignored `.env` from the PilotSwarm sample env shape when the user wants runnable scaffolding.
 10. Add a checked-in cleanup script that drops database schemas and removes session state (handles both local and remote modes).
 11. Add a local example or test that exercises the intended app flow.
+12. When agents need durable structured memory or cross-agent shared state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`). They are available to every agent session by default, including system agents, and should be treated as the primary memory mechanism instead of inventing a one-off app-specific table.
 
 ## Guided Intake Questions
 
@@ -118,6 +119,7 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - Never use `"default"` as an agent name for session-bound agents — PilotSwarm reserves it as a prompt overlay and rejects session creation for it at the client layer.
 - Use the DevOps sample as the reference for the layered split, not as a literal one-size-fits-all template.
 - Assume apps consume `pilotswarm-sdk`, whose built-in framework and management plugins are embedded rather than copied into the app repo.
+- Assume PostgreSQL-backed apps can opt into the built-in facts tools with agent `tools` lists instead of re-implementing fact storage from scratch.
 - Prefer generated app instructions that install `pilotswarm-sdk` from npm before falling back to local file or link workflows.
 
 ## Database Cleanup Guidance

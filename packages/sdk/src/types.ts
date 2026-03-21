@@ -289,6 +289,13 @@ export interface PilotSwarmWorkerOptions {
      */
     cmsSchema?: string;
 
+    /**
+     * PostgreSQL schema name for the built-in facts tables.
+     * Default: `"pilotswarm_facts"`. Change this to isolate durable
+     * fact storage across deployments sharing the same database.
+     */
+    factsSchema?: string;
+
     // ─── Building Blocks ─────────────────────────────────────
     // Workers own the building blocks. Clients are thin proxies.
 
@@ -356,7 +363,7 @@ export interface PilotSwarmWorkerOptions {
 // ─── Client Options ──────────────────────────────────────────────
 
 export interface PilotSwarmClientOptions {
-    /** Store URL (postgres:// or sqlite://). */
+    /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
     store: string;
     /** Enables durable session-store paths in the orchestration. Works with Azure blob or any custom session store configured on workers. */
     blobEnabled?: boolean;
@@ -388,6 +395,12 @@ export interface PilotSwarmClientOptions {
      * Default: `"copilot_sessions"`. Must match the worker's `cmsSchema`.
      */
     cmsSchema?: string;
+
+    /**
+     * PostgreSQL schema name for the built-in facts tables.
+     * Default: `"pilotswarm_facts"`. Must match the worker's `factsSchema`.
+     */
+    factsSchema?: string;
 
     /**
      * Session creation policy. Typically set by the worker and forwarded

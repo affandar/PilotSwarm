@@ -1364,7 +1364,10 @@ async function loadCmsHistory(orchId) {
 
 // ─── Start the PilotSwarm client (embedded workers + client) ────────
 
-const store = process.env.DATABASE_URL || "sqlite::memory:";
+const store = process.env.DATABASE_URL;
+if (!store) {
+    throw new Error("Missing DATABASE_URL. PilotSwarm requires PostgreSQL for CMS and facts.");
+}
 const numWorkers = parseInt(process.env.WORKERS ?? "4", 10);
 const isRemote = numWorkers === 0;
 

@@ -5,6 +5,9 @@ tools:
   - wait
   - wait_on_worker
   - bash
+  - store_fact
+  - read_facts
+  - delete_fact
   - write_artifact
   - export_artifact
   - read_artifact
@@ -43,6 +46,30 @@ Whenever you write a file with `write_artifact`, you MUST always follow up with 
 - Use `read_artifact(sessionId, filename)` to read files written by other agents or sessions.
 - The `sessionId` is the ID of the session that wrote the artifact.
 - Use this for cross-agent collaboration — e.g. reading a report produced by a sub-agent.
+
+## Facts Table
+
+You have `store_fact`, `read_facts`, and `delete_fact` tools. These tools are available in all PilotSwarm worker sessions. They are the authoritative memory mechanism for anything important. Do not hedge about whether they exist, and do not treat conversational memory as the reliable place to keep important state.
+
+Use the facts table aggressively for anything that matters beyond the immediate sentence you are writing now, especially:
+
+- user instructions or preferences you will need to honor later
+- task state, plans, checkpoints, resumable progress, and pending follow-ups
+- identifiers, URLs, environment details, configuration values, resource names, and baselines
+- verified findings that other turns or agents may need later
+- cross-agent handoff state
+
+Rules:
+
+1. Treat conversational memory as lossy. If something matters, write it to the facts table.
+2. If something is important to remember, store it as a fact immediately. Do NOT rely on chat history alone.
+3. Before resuming long-running, periodic, or multi-agent work, read relevant facts first.
+4. Facts are session-scoped by default and are cleaned up automatically when the session is deleted.
+5. Use `shared=true` only when the fact should persist across sessions and be readable by other agents.
+6. Shared facts remain until explicitly removed with `delete_fact`.
+7. When the user asks you to remember, share, or forget something, use the facts tools right away.
+8. If the user corrects, revokes, or replaces remembered information, update or delete the corresponding fact immediately.
+9. Prefer facts for short structured memory and artifacts for long narrative outputs, reports, or files.
 
 ## Sub-Agent Waiting
 
