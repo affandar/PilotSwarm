@@ -478,11 +478,15 @@ export function registerActivities(
         activityCtx: any,
         input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string },
     ): Promise<string> => {
+        const startedAt = Date.now();
+        const trace = (message: string) => {
+            activityCtx.traceInfo(`[spawnChildSession] +${Date.now() - startedAt}ms ${message}`);
+        };
         const isDeterministicSystemChild = Boolean(input.isSystem && input.agentId);
         const childSessionId = isDeterministicSystemChild
             ? systemChildAgentUUID(input.parentSessionId, input.agentId!)
             : crypto.randomUUID();
-        activityCtx.traceInfo(`[spawnChildSession] child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0} isSystem=${input.isSystem ?? false} agent=${input.agentId ?? "custom"}`);
+        trace(`child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0} isSystem=${input.isSystem ?? false} agent=${input.agentId ?? "custom"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
         const sdkClient = new PilotSwarmClient({
@@ -492,14 +496,19 @@ export function registerActivities(
             ...(clientConfig?.blobEnabled != null && { blobEnabled: clientConfig.blobEnabled }),
             ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
             ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
+            traceWriter: (message: string) => trace(message),
         });
         try {
+            const clientStartAt = Date.now();
             await sdkClient.start();
+            trace(`sdkClient.start done (${Date.now() - clientStartAt}ms)`);
 
             if (isDeterministicSystemChild && catalog) {
+                const existingCheckAt = Date.now();
                 const existing = await catalog.getSession(childSessionId);
+                trace(`catalog.getSession existing check done (${Date.now() - existingCheckAt}ms)`);
                 if (existing && !["completed", "failed", "terminated"].includes(existing.state)) {
-                    activityCtx.traceInfo(`[spawnChildSession] reusing existing live system child: ${childSessionId}`);
+                    trace(`reusing existing live system child: ${childSessionId}`);
                     return childSessionId;
                 }
             }
@@ -516,8 +525,10 @@ export function registerActivities(
             if (normalizedModel) {
                 input.config.model = normalizedModel;
             }
+            trace(`model normalization done (${input.config.model ?? "inherit"})`);
 
             // Create the child session via the SDK — handles CMS row + orchestration start
+            const createSessionAt = Date.now();
             const session = await sdkClient.createSession({
                 sessionId: childSessionId,
                 parentSessionId: input.parentSessionId,
@@ -529,6 +540,7 @@ export function registerActivities(
                 toolNames: input.config.toolNames,
                 waitThreshold: input.config.waitThreshold,
             });
+            trace(`sdkClient.createSession done (${Date.now() - createSessionAt}ms)`);
 
             // One-time metadata write: isSystem, title, agentId, splash
             const meta: Record<string, any> = {};
@@ -543,18 +555,24 @@ export function registerActivities(
             if (input.agentId) meta.agentId = input.agentId;
             if (input.splash) meta.splash = input.splash;
             if (Object.keys(meta).length > 0 && catalog) {
+                const metaAt = Date.now();
                 await catalog.updateSession(childSessionId, meta);
+                trace(`catalog.updateSession meta done (${Date.now() - metaAt}ms)`);
             }
 
             // Fire the initial task prompt (non-blocking: just enqueues).
             // This prompt is orchestration-generated bootstrap state for the child
             // session, not an actual user-authored message inside that child chat.
+            const sendAt = Date.now();
             await session.send(input.task, { bootstrap: true });
+            trace(`session.send bootstrap done (${Date.now() - sendAt}ms)`);
 
-            activityCtx.traceInfo(`[spawnChildSession] session created and task sent: ${childSessionId}`);
+            trace(`session created and task sent: ${childSessionId}`);
             return childSessionId;
         } finally {
+            const clientStopAt = Date.now();
             await sdkClient.stop();
+            trace(`sdkClient.stop done (${Date.now() - clientStopAt}ms total=${Date.now() - startedAt}ms)`);
         }
     });
 

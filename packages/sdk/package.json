@@ -29,6 +29,8 @@
     "test:local:session-policy": "vitest run --testPathPattern session-policy",
     "test:local:reliability": "vitest run --testPathPattern reliability",
     "test:local": "vitest run",
+    "test:perf": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run",
+    "test:perf:spawn": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run test/perf/spawn.perf.test.js",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
   },

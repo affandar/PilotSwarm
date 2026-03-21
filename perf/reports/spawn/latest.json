@@ -1,0 +1,292 @@
+{
+  "schemaVersion": 1,
+  "kind": "spawn-perf-report",
+  "surface": "sdk-spawn",
+  "status": "passed",
+  "runAt": "2026-03-21T17:27:49.153Z",
+  "command": "npm run perf:spawn",
+  "git": {
+    "commit": "884a139d3a074a689ccfcaae068cec23309501db",
+    "shortCommit": "884a139",
+    "branch": "main",
+    "dirty": true
+  },
+  "suite": {
+    "durationMs": 61720
+  },
+  "metrics": {
+    "single": {
+      "label": "single",
+      "turnMs": 9447,
+      "visibleAtMs": {
+        "1": 6070
+      },
+      "startedAtMs": {
+        "1": 6070
+      },
+      "visibleGapsMs": [
+        6070
+      ],
+      "startedGapsMs": [
+        6070
+      ],
+      "childCountChanges": [
+        {
+          "atMs": 0,
+          "visibleCount": 0,
+          "startedCount": 0
+        },
+        {
+          "atMs": 6070,
+          "visibleCount": 1,
+          "startedCount": 1
+        }
+      ],
+      "newChildren": 1,
+      "responsePreview": "\n\nSub-agent spawned. It's running now with ID `session-71baffdc-37b6-4209-87d5-6da0a4d35cbb`.",
+      "spawnToolCalls": 1
+    },
+    "sequential-turn-1": {
+      "label": "sequential-turn-1",
+      "turnMs": 9694,
+      "visibleAtMs": {
+        "1": 6329
+      },
+      "startedAtMs": {
+        "1": 6329
+      },
+      "visibleGapsMs": [
+        6329
+      ],
+      "startedGapsMs": [
+        6329
+      ],
+      "childCountChanges": [
+        {
+          "atMs": 0,
+          "visibleCount": 0,
+          "startedCount": 0
+        },
+        {
+          "atMs": 6329,
+          "visibleCount": 1,
+          "startedCount": 1
+        }
+      ],
+      "newChildren": 1,
+      "responsePreview": "\n\nSub-agent spawned. Agent `session-dec5e0ce` is running with the task to say \"alpha\"."
+    },
+    "sequential-turn-2": {
+      "label": "sequential-turn-2",
+      "turnMs": 5965,
+      "visibleAtMs": {
+        "1": 3068
+      },
+      "startedAtMs": {
+        "1": 3169
+      },
+      "visibleGapsMs": [
+        3068
+      ],
+      "startedGapsMs": [
+        3169
+      ],
+      "childCountChanges": [
+        {
+          "atMs": 1,
+          "visibleCount": 0,
+          "startedCount": 0
+        },
+        {
+          "atMs": 3068,
+          "visibleCount": 1,
+          "startedCount": 0
+        },
+        {
+          "atMs": 3169,
+          "visibleCount": 1,
+          "startedCount": 1
+        }
+      ],
+      "newChildren": 1,
+      "responsePreview": "\n\nSub-agent spawned. Agent `session-70e6840e` is running with the task to say \"beta\"."
+    },
+    "sequential-turn-3": {
+      "label": "sequential-turn-3",
+      "turnMs": 5566,
+      "visibleAtMs": {
+        "1": 3079
+      },
+      "startedAtMs": {
+        "1": 3079
+      },
+      "visibleGapsMs": [
+        3079
+      ],
+      "startedGapsMs": [
+        3079
+      ],
+      "childCountChanges": [
+        {
+          "atMs": 0,
+          "visibleCount": 0,
+          "startedCount": 0
+        },
+        {
+          "atMs": 3079,
+          "visibleCount": 1,
+          "startedCount": 1
+        }
+      ],
+      "newChildren": 1,
+      "responsePreview": "\n\nSub-agent spawned. Agent `session-cf813362` is running with the task to say \"gamma\"."
+    },
+    "sequential-total": {
+      "totalMs": 21226,
+      "childCount": 3,
+      "spawnToolCalls": 3,
+      "perTurn": [
+        {
+          "turnMs": 9694,
+          "visibleAtMs": {
+            "1": 6329
+          },
+          "startedAtMs": {
+            "1": 6329
+          }
+        },
+        {
+          "turnMs": 5965,
+          "visibleAtMs": {
+            "1": 3068
+          },
+          "startedAtMs": {
+            "1": 3169
+          }
+        },
+        {
+          "turnMs": 5566,
+          "visibleAtMs": {
+            "1": 3079
+          },
+          "startedAtMs": {
+            "1": 3079
+          }
+        }
+      ]
+    },
+    "same-turn-fanout": {
+      "label": "same-turn-fanout",
+      "turnMs": 13404,
+      "visibleAtMs": {
+        "1": 6951,
+        "2": 7053,
+        "3": 7053
+      },
+      "startedAtMs": {
+        "1": 6951,
+        "2": 7053,
+        "3": 7053
+      },
+      "visibleGapsMs": [
+        6951,
+        102,
+        0
+      ],
+      "startedGapsMs": [
+        6951,
+        102,
+        0
+      ],
+      "childCountChanges": [
+        {
+          "atMs": 2,
+          "visibleCount": 0,
+          "startedCount": 0
+        },
+        {
+          "atMs": 6951,
+          "visibleCount": 1,
+          "startedCount": 1
+        },
+        {
+          "atMs": 7053,
+          "visibleCount": 3,
+          "startedCount": 3
+        }
+      ],
+      "newChildren": 3,
+      "responsePreview": "\n\nAll three sub-agents spawned and running:\n\n1. **Red** → `session-b3339eaf`\n2. **Green** → `session-0ba19bbd`\n3. **Blue** → `session-1ebb86a2`",
+      "spawnToolCalls": 3
+    }
+  },
+  "summary": {
+    "single": {
+      "turnMs": 9447,
+      "child1VisibleMs": 6070,
+      "child1StartedMs": 6070,
+      "spawnToolCalls": 1
+    },
+    "sequential": {
+      "turns": [
+        {
+          "label": "turn-1",
+          "turnMs": 9694,
+          "child1VisibleMs": 6329,
+          "child1StartedMs": 6329
+        },
+        {
+          "label": "turn-2",
+          "turnMs": 5965,
+          "child1VisibleMs": 3068,
+          "child1StartedMs": 3169
+        },
+        {
+          "label": "turn-3",
+          "turnMs": 5566,
+          "child1VisibleMs": 3079,
+          "child1StartedMs": 3079
+        }
+      ],
+      "total": {
+        "totalMs": 21226,
+        "childCount": 3,
+        "spawnToolCalls": 3
+      }
+    },
+    "sameTurnFanout": {
+      "turnMs": 13404,
+      "child1VisibleMs": 6951,
+      "child2VisibleMs": 7053,
+      "child3VisibleMs": 7053,
+      "child1StartedMs": 6951,
+      "child2StartedMs": 7053,
+      "child3StartedMs": 7053,
+      "visibleSpanMs": 102,
+      "startedSpanMs": 102,
+      "spawnToolCalls": 3
+    }
+  },
+  "comparisonToPrevious": {
+    "single": {
+      "turnMsDelta": -1028,
+      "child1VisibleMsDelta": -370,
+      "child1StartedMsDelta": -370
+    },
+    "sequentialTotal": {
+      "totalMsDelta": -1969
+    },
+    "sameTurnFanout": {
+      "turnMsDelta": 391,
+      "child1VisibleMsDelta": 119,
+      "child3VisibleMsDelta": 19,
+      "visibleSpanMsDelta": -100,
+      "startedSpanMsDelta": -100
+    }
+  },
+  "files": {
+    "rawLog": "perf/reports/spawn/history/2026-03-21T17-27-49-153Z.log",
+    "json": "perf/reports/spawn/history/2026-03-21T17-27-49-153Z.json",
+    "markdown": "perf/reports/spawn/history/2026-03-21T17-27-49-153Z.md"
+  }
+}

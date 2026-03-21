@@ -1,0 +1,52 @@
+
+ RUN  v4.1.0 /Users/affandar/workshop/drox/pilotswarm/packages/sdk
+
+stdout | test/perf/spawn.perf.test.js > Perf: Spawn > Single Spawn
+[PilotSwarmWorker] Loaded: framework base prompt; 1 skill dir(s)
+
+stdout | test/perf/spawn.perf.test.js > Perf: Spawn > Single Spawn
+  [perf:single] {"label":"single","turnMs":10475,"visibleAtMs":{"1":6440},"startedAtMs":{"1":6440},"visibleGapsMs":[6440],"startedGapsMs":[6440],"childCountChanges":[{"atMs":0,"visibleCount":0,"startedCount":0},{"atMs":6440,"visibleCount":1,"startedCount":1}],"newChildren":1,"responsePreview":"\n\nSub-agent spawned (ID: `session-d30e1ae3-6a61-4be2-a36b-7540bfbdccdb`) with the task to say \"baseline\".","spawnToolCalls":1}
+  [single] visible milestones: 1:6440ms
+  [single] started milestones: 1:6440ms
+  [single] child count changes: +0ms visible=0 started=0 | +6440ms visible=1 started=1
+
+ ✓ test/perf/spawn.perf.test.js > Perf: Spawn > Single Spawn 16262ms
+stdout | test/perf/spawn.perf.test.js > Perf: Spawn > Sequential Spawns
+[PilotSwarmWorker] Loaded: framework base prompt; 1 skill dir(s)
+
+stdout | test/perf/spawn.perf.test.js > Perf: Spawn > Sequential Spawns
+  [perf:sequential-turn-1] {"label":"sequential-turn-1","turnMs":10969,"visibleAtMs":{"1":5920},"startedAtMs":{"1":5920},"visibleGapsMs":[5920],"startedGapsMs":[5920],"childCountChanges":[{"atMs":1,"visibleCount":0,"startedCount":0},{"atMs":5920,"visibleCount":1,"startedCount":1}],"newChildren":1,"responsePreview":"\n\nSub-agent spawned. It's running now with task \"say alpha and nothing else.\""}
+
+stdout | test/perf/spawn.perf.test.js > Perf: Spawn > Sequential Spawns
+  [perf:sequential-turn-2] {"label":"sequential-turn-2","turnMs":6812,"visibleAtMs":{"1":3989},"startedAtMs":{"1":3989},"visibleGapsMs":[3989],"startedGapsMs":[3989],"childCountChanges":[{"atMs":0,"visibleCount":0,"startedCount":0},{"atMs":3989,"visibleCount":1,"startedCount":1}],"newChildren":1,"responsePreview":"\n\nSub-agent spawned. It's running now with task \"say beta and nothing else.\""}
+
+stdout | test/perf/spawn.perf.test.js > Perf: Spawn > Sequential Spawns
+  [perf:sequential-turn-3] {"label":"sequential-turn-3","turnMs":5414,"visibleAtMs":{"1":2864},"startedAtMs":{"1":2864},"visibleGapsMs":[2864],"startedGapsMs":[2864],"childCountChanges":[{"atMs":1,"visibleCount":0,"startedCount":0},{"atMs":2864,"visibleCount":1,"startedCount":1}],"newChildren":1,"responsePreview":"\n\nSub-agent spawned. It's running now with task \"say gamma and nothing else.\""}
+
+stdout | test/perf/spawn.perf.test.js > Perf: Spawn > Sequential Spawns
+  [perf:sequential-total] {"totalMs":23195,"childCount":3,"spawnToolCalls":3,"perTurn":[{"turnMs":10969,"visibleAtMs":{"1":5920},"startedAtMs":{"1":5920}},{"turnMs":6812,"visibleAtMs":{"1":3989},"startedAtMs":{"1":3989}},{"turnMs":5414,"visibleAtMs":{"1":2864},"startedAtMs":{"1":2864}}]}
+
+ ✓ test/perf/spawn.perf.test.js > Perf: Spawn > Sequential Spawns 29040ms
+stdout | test/perf/spawn.perf.test.js > Perf: Spawn > Same-Turn Fanout
+[PilotSwarmWorker] Loaded: framework base prompt; 1 skill dir(s)
+
+stdout | test/perf/spawn.perf.test.js > Perf: Spawn > Same-Turn Fanout
+  [perf:same-turn-fanout] {"label":"same-turn-fanout","turnMs":13013,"visibleAtMs":{"1":6832,"2":6932,"3":7034},"startedAtMs":{"1":6832,"2":6932,"3":7034},"visibleGapsMs":[6832,100,102],"startedGapsMs":[6832,100,102],"childCountChanges":[{"atMs":0,"visibleCount":0,"startedCount":0},{"atMs":6832,"visibleCount":1,"startedCount":1},{"atMs":6932,"visibleCount":2,"startedCount":2},{"atMs":7034,"visibleCount":3,"startedCount":3}],"newChildren":3,"responsePreview":"\n\nAll three sub-agents spawned and running:\n\n1. **Red** → `session-ef89c78d`\n2. **Green** → `session-2e8e643e`\n3. **Blue** → `session-c4a9ced7`","spawnToolCalls":3}
+  [same-turn] visible milestones: 1:6832ms, 2:6932ms, 3:7034ms
+  [same-turn] started milestones: 1:6832ms, 2:6932ms, 3:7034ms
+  [same-turn] child count changes: +0ms visible=0 started=0 | +6832ms visible=1 started=1 | +6932ms visible=2 started=2 | +7034ms visible=3 started=3
+
+ ✓ test/perf/spawn.perf.test.js > Perf: Spawn > Same-Turn Fanout 18613ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  10:26:08
+   Duration  64.53s (transform 343ms, setup 0ms, import 521ms, tests 63.95s, environment 0ms)
+
+
+[CLI subprocess] (node:87861) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+[CLI subprocess] (Use `node --trace-warnings ...` to show where the warning was created)
+[CLI subprocess] (node:88421) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+[CLI subprocess] (Use `node --trace-warnings ...` to show where the warning was created)
+[CLI subprocess] (node:89376) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+[CLI subprocess] (Use `node --trace-warnings ...` to show where the warning was created)
