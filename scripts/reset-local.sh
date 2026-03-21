@@ -32,6 +32,9 @@ SESSION_STORE_DIR="${SESSION_STORE_DIR:-$(dirname "$SESSION_STATE_DIR")/session-
 ARTIFACT_DIR="${ARTIFACT_DIR:-$(dirname "$SESSION_STATE_DIR")/artifacts}"
 DEFAULT_SESSION_STORE_DIR="$HOME/.copilot/session-store"
 DEFAULT_ARTIFACT_DIR="$HOME/.copilot/artifacts"
+DUROXIDE_SCHEMA="${DUROXIDE_SCHEMA:-duroxide}"
+CMS_SCHEMA="${CMS_SCHEMA:-copilot_sessions}"
+FACTS_SCHEMA="${FACTS_SCHEMA:-pilotswarm_facts}"
 SKIP_CONFIRM=false
 if [[ "${1:-}" == "--yes" || "${1:-}" == "-y" ]]; then
     SKIP_CONFIRM=true
@@ -58,20 +61,40 @@ add_store_dir "$(dirname "$SESSION_STATE_DIR")/session-store"
 add_store_dir "$DEFAULT_SESSION_STORE_DIR"
 
 CMS_COUNT=0
+FACT_COUNT=0
 if [[ -n "${DATABASE_URL:-}" ]]; then
     node --env-file="$ENV_FILE" -e "
 import pg from 'pg';
 const url = new URL(process.env.DATABASE_URL);
+const quoteIdent = (value) => '\"' + String(value).replace(/\"/g, '\"\"') + '\"';
 const ssl = ['require','prefer','verify-ca','verify-full'].includes(url.searchParams.get('sslmode') ?? '');
 url.searchParams.delete('sslmode');
 const pool = new pg.Pool({ connectionString: url.toString(), ...(ssl ? { ssl: { rejectUnauthorized: false } } : {}) });
 try {
-    const { rows } = await pool.query('SELECT session_id FROM copilot_sessions.sessions');
+    const cmsSchema = process.env.CMS_SCHEMA || 'copilot_sessions';
+    const { rows } = await pool.query('SELECT session_id FROM ' + quoteIdent(cmsSchema) + '.sessions');
     for (const r of rows) console.log(r.session_id);
 } catch {}
 await pool.end();
 " > "$SESSION_IDS_FILE" 2>/dev/null || true
     CMS_COUNT=$(wc -l < "$SESSION_IDS_FILE" | tr -d ' ')
+
+    FACT_COUNT=$(node --env-file="$ENV_FILE" -e "
+import pg from 'pg';
+const url = new URL(process.env.DATABASE_URL);
+const quoteIdent = (value) => '\"' + String(value).replace(/\"/g, '\"\"') + '\"';
+const ssl = ['require','prefer','verify-ca','verify-full'].includes(url.searchParams.get('sslmode') ?? '');
+url.searchParams.delete('sslmode');
+const pool = new pg.Pool({ connectionString: url.toString(), ...(ssl ? { ssl: { rejectUnauthorized: false } } : {}) });
+try {
+    const factsSchema = process.env.FACTS_SCHEMA || 'pilotswarm_facts';
+    const { rows } = await pool.query('SELECT COUNT(*)::text AS count FROM ' + quoteIdent(factsSchema) + '.facts');
+    process.stdout.write(rows[0]?.count ?? '0');
+} catch {
+    process.stdout.write('0');
+}
+await pool.end();
+" 2>/dev/null || echo "0")
 fi
 
 # Add deterministic system-agent IDs from built-in and configured plugins.
@@ -185,7 +208,9 @@ echo ""
 echo "🔄 PilotSwarm Local Reset"
 echo ""
 echo "   This will:"
-echo "     ${STEP}. DROP database schemas: duroxide, copilot_sessions"
+echo "     ${STEP}. DROP database schemas: ${DUROXIDE_SCHEMA}, ${CMS_SCHEMA}, ${FACTS_SCHEMA}"
+STEP=$((STEP + 1))
+echo "     ${STEP}. Delete ${FACT_COUNT} fact row(s) from ${FACTS_SCHEMA}.facts"
 STEP=$((STEP + 1))
 echo "     ${STEP}. Delete ${LOCAL_MATCH_COUNT} local session dir(s) matching ${CMS_COUNT} CMS session(s)"
 echo "        (other Copilot sessions in ${SESSION_STATE_DIR} are kept)"
@@ -225,13 +250,19 @@ else
     node --env-file="$ENV_FILE" -e "
 import pg from 'pg';
 const url = new URL(process.env.DATABASE_URL);
+const quoteIdent = (value) => '\"' + String(value).replace(/\"/g, '\"\"') + '\"';
 const ssl = ['require','prefer','verify-ca','verify-full'].includes(url.searchParams.get('sslmode') ?? '');
 url.searchParams.delete('sslmode');
 const pool = new pg.Pool({ connectionString: url.toString(), ...(ssl ? { ssl: { rejectUnauthorized: false } } : {}) });
-await pool.query('DROP SCHEMA IF EXISTS duroxide CASCADE');
-console.log('   ✅ duroxide schema dropped');
-await pool.query('DROP SCHEMA IF EXISTS copilot_sessions CASCADE');
-console.log('   ✅ copilot_sessions schema dropped');
+const duroxideSchema = process.env.DUROXIDE_SCHEMA || 'duroxide';
+const cmsSchema = process.env.CMS_SCHEMA || 'copilot_sessions';
+const factsSchema = process.env.FACTS_SCHEMA || 'pilotswarm_facts';
+await pool.query('DROP SCHEMA IF EXISTS ' + quoteIdent(duroxideSchema) + ' CASCADE');
+console.log('   ✅ ' + duroxideSchema + ' schema dropped');
+await pool.query('DROP SCHEMA IF EXISTS ' + quoteIdent(cmsSchema) + ' CASCADE');
+console.log('   ✅ ' + cmsSchema + ' schema dropped');
+await pool.query('DROP SCHEMA IF EXISTS ' + quoteIdent(factsSchema) + ' CASCADE');
+console.log('   ✅ ' + factsSchema + ' schema dropped');
 await pool.end();
 "
 fi

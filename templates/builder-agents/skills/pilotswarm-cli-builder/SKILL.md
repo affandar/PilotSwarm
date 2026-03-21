@@ -47,6 +47,7 @@ my-app/
 10. Add checked-in scripts for launch and database cleanup (both local and remote modes).
 11. Make generated scripts executable and verify the executable bit.
 12. Add a README with local run instructions.
+13. When agents need durable structured memory or shared coordination state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) as the primary memory layer. They are available to every agent session by default, including system agents, so do not build a separate fact table unless the app truly requires it.
 
 ## Guided Intake Questions
 
@@ -157,4 +158,5 @@ Example:
 - If you add or change TUI keybindings, update help/keybinding surfaces together.
 - Treat system-agent `initialPrompt` as bootstrap startup content, not a user-authored chat line.
 - Assume apps consume `pilotswarm-cli` and `pilotswarm-sdk`; built-in PilotSwarm plugins are embedded in those packages, not copied into the app repo.
+- Assume PostgreSQL-backed apps can opt into the built-in facts tools with agent `tools` lists instead of re-implementing fact storage from scratch.
 - Prefer generated app instructions that install `pilotswarm-cli` and `pilotswarm-sdk` from npm before suggesting local clone or link workflows.

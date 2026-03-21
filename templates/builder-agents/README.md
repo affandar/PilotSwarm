@@ -17,6 +17,7 @@ They are not active in this repository. Copy them into the target repository you
 - `pilotswarm-azure-deployer` — deployment workflow, manifests, env checklist, `RUST_LOG` observability
 - `pilotswarm-aks-identity` — cross-cluster AKS access, Workload Identity, kubectl patterns
 - `pilotswarm-azure-lessons` — RBAC conditional access workaround, PostgreSQL region restrictions, Key Vault + CSI
+- `pilotswarm-three-tier` — dedicated worker-cluster topology for long-running or dehydration-resistant jobs
 
 These templates assume apps consume:
 
@@ -31,6 +32,8 @@ npm install pilotswarm-cli
 ```
 
 and that PilotSwarm's built-in framework and management plugins are embedded in those packages while app `default.agent.md` files act as app-wide overlays.
+
+PilotSwarm includes built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) on workers, and they are available to every agent session by default, including system agents. Use them for durable structured memory and shared cross-agent state instead of inventing an app-specific facts table unless the app truly needs one.
 
 The CLI builder template also assumes runnable scaffolds should:
 
@@ -56,6 +59,8 @@ Copy these folders into the target repository:
     ├── pilotswarm-azure-deployer/
     │   └── SKILL.md
     ├── pilotswarm-aks-identity/
+    │   └── SKILL.md
+    ├── pilotswarm-three-tier/
     │   └── SKILL.md
     └── pilotswarm-azure-lessons/
         └── SKILL.md

@@ -5,7 +5,7 @@
  * orchestration state to verify session consistency after operations.
  */
 
-import { PgSessionCatalogProvider } from "../../dist/index.js";
+import { PgSessionCatalogProvider } from "../../src/index.ts";
 import { createManagementClient } from "./local-workers.js";
 
 // ─── CMS Helpers ─────────────────────────────────────────────────

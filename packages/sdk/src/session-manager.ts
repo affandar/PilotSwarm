@@ -3,6 +3,8 @@ import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
+import { createFactTools } from "./facts-tools.js";
+import type { FactStore } from "./facts-store.js";
 import { composeSystemPrompt, extractPromptContent } from "./prompt-layering.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -63,6 +65,8 @@ export class SessionManager {
     private workerDefaults: WorkerDefaults;
     /** Base directory for local session state files. */
     private sessionStateDir: string;
+    /** Shared facts store used to build always-on facts tools. */
+    private factStore: FactStore | null = null;
 
     constructor(
         private githubToken?: string,
@@ -114,6 +118,11 @@ export class SessionManager {
     /** Set the worker-level tool registry. Called by PilotSwarmWorker. */
     setToolRegistry(registry: Map<string, Tool<any>>): void {
         this.toolRegistry = registry;
+    }
+
+    /** Set the cluster facts store for always-on facts tools. */
+    setFactStore(factStore: FactStore | null): void {
+        this.factStore = factStore;
     }
 
     /** Ensure the CopilotClient is started. */
@@ -201,15 +210,27 @@ export class SessionManager {
 
         // Merge user tools with system tool definitions (wait, ask_user, sub-agent tools)
         // so the LLM sees them at session creation time.
+        if (!this.factStore) {
+            throw new Error(
+                "PilotSwarm invariant violated: factStore must be initialized before creating sessions.",
+            );
+        }
         const userTools = config.tools ?? [];
         const systemTools = ManagedSession.systemToolDefs();
         const subAgentTools = ManagedSession.subAgentToolDefs();
-        const SYSTEM_TOOL_NAMES = new Set([...systemTools, ...subAgentTools].map((t: any) => t.name));
-        const allTools = [
+        const factTools = createFactTools({ factStore: this.factStore });
+        const SYSTEM_TOOL_NAMES = new Set([...systemTools, ...subAgentTools, ...factTools].map((t: any) => t.name));
+        const persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
+            ...factTools,
+        ];
+        const allTools = [
+            ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...systemTools,
             ...subAgentTools,
+            ...factTools,
         ];
+        config.tools = persistentSessionTools;
 
         // Build system message: worker base + client override
         const systemMessage = this._buildSystemMessage(config);

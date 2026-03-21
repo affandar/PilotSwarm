@@ -25,7 +25,10 @@ import { createDevopsTools } from "./tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_DIR = path.join(__dirname, "plugin");
-const STORE = process.env.DATABASE_URL || "sqlite::memory:";
+const STORE = process.env.DATABASE_URL;
+if (!STORE) {
+    throw new Error("Missing DATABASE_URL. DevOps Command Center requires PostgreSQL for PilotSwarm CMS and facts.");
+}
 const SCENARIO = process.env.DEVOPS_SCENARIO || "incident";
 const devopsTools = createDevopsTools({ workerMarker: "sdk-example-worker" });
 

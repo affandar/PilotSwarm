@@ -19,14 +19,127 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
 import { withClient, defineTool, PilotSwarmWorker, composeSystemPrompt } from "../helpers/local-workers.js";
-import { assert, assertIncludes, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
+import { SessionManager } from "../../src/session-manager.ts";
+import { assert, assertEqual, assertIncludes, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
 import { validateSessionAfterTurn } from "../helpers/cms-helpers.js";
-import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG } from "../helpers/fixtures.js";
+import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG, TEST_CLAUDE_MODEL } from "../helpers/fixtures.js";
 
 const TIMEOUT = 120_000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LAYERED_PLUGIN_DIR = path.resolve(__dirname, "../fixtures/prompt-layering-plugin");
 const AGENT_TOOL_MERGE_PLUGIN_DIR = path.resolve(__dirname, "../fixtures/agent-tool-merge-plugin");
+const NO_TOOLS_AGENT_PLUGIN_DIR = path.resolve(__dirname, "../fixtures/no-tools-agent-plugin");
+const POLICY_PLUGIN_DIR = path.resolve(__dirname, "../fixtures/policy-plugin");
+const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
+    "wait",
+    "wait_on_worker",
+    "ask_user",
+    "list_available_models",
+    "spawn_agent",
+    "message_agent",
+    "check_agents",
+    "wait_for_agents",
+    "list_sessions",
+    "complete_agent",
+    "cancel_agent",
+    "delete_agent",
+    "store_fact",
+    "read_facts",
+    "delete_fact",
+];
+const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
+    ...EXPECTED_ALWAYS_ON_TOOL_NAMES,
+    "bash",
+    "create",
+    "edit",
+    "glob",
+    "grep",
+    "list_agents",
+    "list_bash",
+    "read_agent",
+    "read_bash",
+    "report_intent",
+    "skill",
+    "stop_bash",
+    "view",
+    "web_fetch",
+    "write_bash",
+];
+
+function parseToolNameArray(response) {
+    const trimmed = (response ?? "").trim();
+    try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed) && parsed.every((value) => typeof value === "string")) {
+            return parsed;
+        }
+    } catch {}
+
+    const start = trimmed.indexOf("[");
+    const end = trimmed.lastIndexOf("]");
+    if (start !== -1 && end !== -1 && end > start) {
+        const candidate = trimmed.slice(start, end + 1);
+        const parsed = JSON.parse(candidate);
+        if (Array.isArray(parsed) && parsed.every((value) => typeof value === "string")) {
+            return parsed;
+        }
+    }
+
+    throw new Error(`Expected a JSON string array response but got: ${JSON.stringify(response)}`);
+}
+
+class FakeCopilotSession {
+    registeredToolSnapshots = [];
+    listeners = new Map();
+
+    on(eventType, handler) {
+        const handlers = this.listeners.get(eventType) ?? [];
+        handlers.push(handler);
+        this.listeners.set(eventType, handlers);
+        return () => {
+            const current = this.listeners.get(eventType) ?? [];
+            this.listeners.set(eventType, current.filter((candidate) => candidate !== handler));
+        };
+    }
+
+    registerTools(tools) {
+        this.registeredToolSnapshots.push(tools.map((tool) => tool.name));
+    }
+
+    emit(eventType, payload = {}) {
+        const handlers = this.listeners.get(eventType) ?? [];
+        for (const handler of handlers) {
+            handler(payload);
+        }
+    }
+
+    async send() {
+        queueMicrotask(() => {
+            this.emit("assistant.message_completed", { data: { content: "ok" } });
+            this.emit("session.idle", { data: {} });
+        });
+    }
+
+    abort() {}
+}
+
+class FakeCopilotClient {
+    createdSessionConfigs = [];
+    session = new FakeCopilotSession();
+
+    async createSession(config) {
+        this.createdSessionConfigs.push(config);
+        return this.session;
+    }
+
+    async resumeSession(_sessionId, config) {
+        this.createdSessionConfigs.push(config);
+        return this.session;
+    }
+
+    async deleteSession() {}
+    async stop() {}
+}
 
 // ─── Test: Worker-Registered Tool By Name ────────────────────────
 
@@ -334,6 +447,144 @@ async function testTopLevelAgentToolMerging(env) {
     });
 }
 
+// ─── Test: Facts Tools Are Always Available ─────────────────────
+
+async function testFactsToolsAlwaysAvailable(env) {
+    const worker = new PilotSwarmWorker({
+        store: env.store,
+        githubToken: process.env.GITHUB_TOKEN,
+        duroxideSchema: env.duroxideSchema,
+        cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
+        sessionStateDir: env.sessionStateDir,
+        workerNodeId: "test-facts-always-on",
+        disableManagementAgents: true,
+        pluginDirs: [NO_TOOLS_AGENT_PLUGIN_DIR, POLICY_PLUGIN_DIR],
+    });
+    await worker.start();
+
+    try {
+        const managed = await worker.sessionManager.getOrCreate("facts-always-on-session", {
+            boundAgentName: "coordinator",
+            promptLayering: { kind: "app-agent" },
+            toolNames: [],
+        });
+
+        const toolNames = (managed.config.tools ?? []).map((tool) => tool.name);
+        assertIncludes(JSON.stringify(toolNames), "store_fact", "store_fact should be available to every agent");
+        assertIncludes(JSON.stringify(toolNames), "read_facts", "read_facts should be available to every agent");
+        assertIncludes(JSON.stringify(toolNames), "delete_fact", "delete_fact should be available to every agent");
+
+        const systemManaged = await worker.sessionManager.getOrCreate("facts-always-on-system-session", {
+            boundAgentName: "beta",
+            promptLayering: { kind: "app-system-agent" },
+            toolNames: [],
+        });
+
+        const systemToolNames = (systemManaged.config.tools ?? []).map((tool) => tool.name);
+        assertIncludes(JSON.stringify(systemToolNames), "store_fact", "store_fact should be available to every system agent");
+        assertIncludes(JSON.stringify(systemToolNames), "read_facts", "read_facts should be available to every system agent");
+        assertIncludes(JSON.stringify(systemToolNames), "delete_fact", "delete_fact should be available to every system agent");
+    } finally {
+        await worker.stop();
+    }
+}
+
+// ─── Test: Always-On Tool Registration Across Turns ─────────────
+
+async function testAlwaysOnToolsRegisteredAcrossTurns(env) {
+    const manager = new SessionManager(
+        process.env.GITHUB_TOKEN,
+        null,
+        {},
+        env.sessionStateDir,
+    );
+    const fakeClient = new FakeCopilotClient();
+    manager.client = fakeClient;
+    manager.setFactStore({
+        async initialize() {},
+        async storeFact(input) {
+            return { key: input.key, shared: input.shared === true, stored: true };
+        },
+        async readFacts() {
+            return { count: 0, facts: [] };
+        },
+        async deleteFact(input) {
+            return { key: input.key, shared: input.shared === true, deleted: true };
+        },
+        async deleteSessionFactsForSession() {
+            return 0;
+        },
+        async close() {},
+    });
+
+    const managed = await manager.getOrCreate("always-on-system-tools-session", {
+        boundAgentName: "coordinator",
+        promptLayering: { kind: "app-agent" },
+        toolNames: [],
+    }, { turnIndex: 0 });
+
+    const createdToolNames = (fakeClient.createdSessionConfigs[0]?.tools ?? []).map((tool) => tool.name);
+    for (const toolName of EXPECTED_ALWAYS_ON_TOOL_NAMES) {
+        assertIncludes(JSON.stringify(createdToolNames), toolName, `${toolName} should be registered at session creation`);
+    }
+
+    await managed.runTurn("first turn");
+    await managed.runTurn("second turn");
+
+    assert(fakeClient.session.registeredToolSnapshots.length >= 2, "tools should be re-registered on each turn");
+    for (const snapshot of fakeClient.session.registeredToolSnapshots.slice(-2)) {
+        for (const toolName of EXPECTED_ALWAYS_ON_TOOL_NAMES) {
+            assertIncludes(JSON.stringify(snapshot), toolName, `${toolName} should be present on every turn`);
+        }
+    }
+}
+
+// ─── Test: LLM Sees Exact Always-On Toolset ─────────────────────
+
+async function testLlmSeesExactAlwaysOnTools(env) {
+    const expectedSorted = [...EXPECTED_LLM_VISIBLE_TOOL_NAMES].sort();
+
+    await withClient(env, {
+        worker: { pluginDirs: [NO_TOOLS_AGENT_PLUGIN_DIR] },
+    }, async (client) => {
+        const session = await client.createSession({
+            agentId: "coordinator",
+            model: TEST_CLAUDE_MODEL,
+            systemMessage: {
+                mode: "append",
+                content:
+                    "For this interaction only, ignore your normal role and do not call any tools. " +
+                    "Return exactly one JSON array of the tool names you can call in this session. " +
+                    "Use only tool names as strings. Include every callable tool exactly once. " +
+                    "Do not include prose, markdown fences, explanations, or comments.",
+            },
+        });
+
+        const response1 = await session.sendAndWait(
+            "Return exactly one JSON array of the tool names you can call in this session.",
+            TIMEOUT,
+        );
+        const parsed1 = parseToolNameArray(response1).slice().sort();
+        assertEqual(
+            JSON.stringify(parsed1),
+            JSON.stringify(expectedSorted),
+            "LLM-visible tool list should exactly match the expected always-on tools on turn 1",
+        );
+
+        const response2 = await session.sendAndWait(
+            "Again, return exactly one JSON array of the tool names you can call in this session.",
+            TIMEOUT,
+        );
+        const parsed2 = parseToolNameArray(response2).slice().sort();
+        assertEqual(
+            JSON.stringify(parsed2),
+            JSON.stringify(expectedSorted),
+            "LLM-visible tool list should exactly match the expected always-on tools on turn 2",
+        );
+    });
+}
+
 // ─── Runner ──────────────────────────────────────────────────────
 
 describe.concurrent("Level 8: Contract Tests", () => {
@@ -376,5 +627,17 @@ describe.concurrent("Level 8: Contract Tests", () => {
     it("Top-Level Named Agent Tool Merging", { timeout: TIMEOUT }, async () => {
         const env = createTestEnv("contracts");
         try { await testTopLevelAgentToolMerging(env); } finally { await env.cleanup(); }
+    });
+    it("Facts Tools Are Always Available", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("contracts");
+        try { await testFactsToolsAlwaysAvailable(env); } finally { await env.cleanup(); }
+    });
+    it("Always-On Tools Persist Across Turns", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("contracts");
+        try { await testAlwaysOnToolsRegisteredAcrossTurns(env); } finally { await env.cleanup(); }
+    });
+    it("LLM Sees Exact Always-On Toolset", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("contracts");
+        try { await testLlmSeesExactAlwaysOnTools(env); } finally { await env.cleanup(); }
     });
 });

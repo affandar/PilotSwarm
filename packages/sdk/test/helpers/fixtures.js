@@ -2,7 +2,7 @@
  * Test fixtures — reusable tool definitions and session configs.
  */
 
-import { defineTool, loadModelProviders } from "../../dist/index.js";
+import { defineTool, loadModelProviders } from "../../src/index.ts";
 
 // ─── Common Tools ────────────────────────────────────────────────
 
