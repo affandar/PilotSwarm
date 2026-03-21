@@ -403,7 +403,8 @@ Implement:
 The test suite uses **vitest** and can be run via:
 
 ```bash
-./scripts/run-tests.sh                        # all suites in parallel
+./scripts/run-tests.sh                        # all suites in parallel (default)
+./scripts/run-tests.sh --parallel             # all suites in parallel explicitly
 ./scripts/run-tests.sh --sequential           # all suites sequentially
 ./scripts/run-tests.sh --suite=smoke          # only matching suite(s)
 

@@ -151,6 +151,7 @@ The local integration test suite requires a running PostgreSQL database and a Gi
 
 ```bash
 ./scripts/run-tests.sh              # run all suites in parallel (default)
+./scripts/run-tests.sh --parallel   # run all suites in parallel explicitly
 ./scripts/run-tests.sh --sequential # run all suites sequentially
 ./scripts/run-tests.sh --suite=smoke  # run only matching suite(s)
 ```
