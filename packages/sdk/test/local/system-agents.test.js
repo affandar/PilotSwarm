@@ -34,7 +34,7 @@ import {
     waitForSessionState,
     validateSessionAfterTurn,
 } from "../helpers/cms-helpers.js";
-import { systemAgentUUID } from "../../dist/index.js";
+import { systemAgentUUID } from "../../src/index.ts";
 
 const TIMEOUT = 180_000; // System agent flows need time for LLM tool calls
 

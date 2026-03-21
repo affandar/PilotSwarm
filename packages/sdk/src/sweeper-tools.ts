@@ -14,6 +14,7 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import type { SessionCatalogProvider } from "./cms.js";
+import type { FactStore } from "./facts-store.js";
 import type { Tool } from "@github/copilot-sdk";
 
 /**
@@ -25,10 +26,11 @@ import type { Tool } from "@github/copilot-sdk";
 export function createSweeperTools(opts: {
     catalog: SessionCatalogProvider;
     duroxideClient: any;
+    factStore?: FactStore | null;
     duroxideSchema?: string;
     storeUrl?: string;
 }): Tool<any>[] {
-    const { catalog, duroxideClient } = opts;
+    const { catalog, duroxideClient, factStore } = opts;
 
     // ── scan_completed_sessions ───────────────────────────────
 
@@ -200,6 +202,11 @@ export function createSweeperTools(opts: {
                 for (const descId of descendants) {
                     try {
                         await catalog.softDeleteSession(descId);
+                        if (factStore) {
+                            try {
+                                await factStore.deleteSessionFactsForSession(descId);
+                            } catch {}
+                        }
                         try {
                             await duroxideClient.deleteInstance(`session-${descId}`, true);
                         } catch {}
@@ -209,6 +216,11 @@ export function createSweeperTools(opts: {
 
                 // Delete the session itself
                 await catalog.softDeleteSession(sessionId);
+                if (factStore) {
+                    try {
+                        await factStore.deleteSessionFactsForSession(sessionId);
+                    } catch {}
+                }
                 try {
                     await duroxideClient.deleteInstance(`session-${sessionId}`, true);
                 } catch {}

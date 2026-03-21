@@ -23,6 +23,8 @@ import type {
 } from "./types.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
+import type { FactStore } from "./facts-store.js";
+import { createFactStoreForUrl } from "./facts-store.js";
 import { SessionDumper } from "./session-dumper.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor } from "./model-providers.js";
 
@@ -78,12 +80,14 @@ export interface SessionStatusChange {
 
 /** Options for PilotSwarmManagementClient. */
 export interface PilotSwarmManagementClientOptions {
-    /** Store URL (postgres:// or sqlite://). */
+    /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
     store: string;
     /** PostgreSQL schema for duroxide tables. Default: "duroxide". */
     duroxideSchema?: string;
     /** PostgreSQL schema for CMS tables. Default: "copilot_sessions". */
     cmsSchema?: string;
+    /** PostgreSQL schema for durable facts. Default: "pilotswarm_facts". */
+    factsSchema?: string;
     /** Path to model_providers.json. Auto-discovers if not set. */
     modelProvidersPath?: string;
     /**
@@ -98,6 +102,7 @@ export interface PilotSwarmManagementClientOptions {
 export class PilotSwarmManagementClient {
     private config: PilotSwarmManagementClientOptions;
     private _catalog: SessionCatalogProvider | null = null;
+    private _factStore: FactStore | null = null;
     private _duroxideClient: any = null;
     private _modelProviders: ModelProviderRegistry | null = null;
     private _started = false;
@@ -138,6 +143,12 @@ export class PilotSwarmManagementClient {
             _trace("[mgmt] CMS initialize done");
         }
 
+        _trace("[mgmt] facts create start...");
+        this._factStore = await createFactStoreForUrl(store, this.config.factsSchema);
+        _trace("[mgmt] facts initialize start...");
+        await this._factStore.initialize();
+        _trace("[mgmt] facts initialize done");
+
         // Load model providers
         this._modelProviders = loadModelProviders(this.config.modelProvidersPath);
 
@@ -145,6 +156,10 @@ export class PilotSwarmManagementClient {
     }
 
     async stop(): Promise<void> {
+        if (this._factStore) {
+            try { await this._factStore.close(); } catch {}
+            this._factStore = null;
+        }
         if (this._catalog) {
             try { await this._catalog.close(); } catch {}
             this._catalog = null;
@@ -332,6 +347,14 @@ export class PilotSwarmManagementClient {
 
         // CMS soft-delete
         await this._catalog!.softDeleteSession(sessionId);
+
+        if (this._factStore) {
+            try {
+                await this._factStore.deleteSessionFactsForSession(sessionId);
+            } catch (err) {
+                console.error(`[PilotSwarmManagementClient] session fact cleanup failed for ${sessionId}:`, err);
+            }
+        }
 
         // Duroxide: delete instance (best effort)
         try {

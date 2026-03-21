@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const TIMEOUT = 120_000;
-const STORE = process.env.DATABASE_URL || "sqlite::memory:";
+const STORE = process.env.DATABASE_URL;
 
 async function preflightChecks() {
     if (!process.env.GITHUB_TOKEN) {
@@ -22,23 +22,27 @@ async function preflightChecks() {
         );
     }
 
-    if (STORE.startsWith("postgres://") || STORE.startsWith("postgresql://")) {
-        const { Client } = await import("pg");
-        const client = new Client({
-            connectionString: STORE,
-            connectionTimeoutMillis: 4000,
-        });
-        try {
-            await client.connect();
-            await client.query("SELECT 1");
-        } catch (err) {
-            const message = err?.message || String(err);
-            throw new Error(
-                `PostgreSQL is not reachable at DATABASE_URL (${message}). Start Postgres or set DATABASE_URL=sqlite::memory:.`,
-            );
-        } finally {
-            try { await client.end(); } catch {}
-        }
+    if (!STORE) {
+        throw new Error(
+            "Missing DATABASE_URL. PilotSwarm requires PostgreSQL for CMS and facts.",
+        );
+    }
+
+    const { Client } = await import("pg");
+    const client = new Client({
+        connectionString: STORE,
+        connectionTimeoutMillis: 4000,
+    });
+    try {
+        await client.connect();
+        await client.query("SELECT 1");
+    } catch (err) {
+        const message = err?.message || String(err);
+        throw new Error(
+            `PostgreSQL is not reachable at DATABASE_URL (${message}). Start Postgres first.`,
+        );
+    } finally {
+        try { await client.end(); } catch {}
     }
 }
 

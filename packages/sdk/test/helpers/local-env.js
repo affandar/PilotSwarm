@@ -45,6 +45,7 @@ export function createTestEnv(suiteName = "test") {
     const runId = randomBytes(4).toString("hex");
     const duroxideSchema = uniqueSchemaName("duroxide");
     const cmsSchema = uniqueSchemaName("copilot_sessions");
+    const factsSchema = uniqueSchemaName("pilotswarm_facts");
     const sessionStateDir = join(tmpdir(), `pilotswarm-test-${runId}`, "session-state");
 
     // Create temp directory
@@ -54,6 +55,7 @@ export function createTestEnv(suiteName = "test") {
         store: DATABASE_URL,
         duroxideSchema,
         cmsSchema,
+        factsSchema,
         sessionStateDir,
         timeout: TIMEOUT,
         runId,
@@ -73,6 +75,7 @@ export function createTestEnv(suiteName = "test") {
                 await client.connect();
                 await client.query(`DROP SCHEMA IF EXISTS "${duroxideSchema}" CASCADE`);
                 await client.query(`DROP SCHEMA IF EXISTS "${cmsSchema}" CASCADE`);
+                await client.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
             } catch (err) {
                 console.warn(`  ⚠️  Schema cleanup warning: ${err.message}`);
             } finally {

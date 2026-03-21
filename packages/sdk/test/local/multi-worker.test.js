@@ -23,7 +23,7 @@ import { createCatalog, waitForSessionState, validateSessionAfterTurn } from "..
 import { ONEWORD_CONFIG, MEMORY_CONFIG } from "../helpers/fixtures.js";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { FilesystemSessionStore, SessionManager } from "../../dist/index.js";
+import { FilesystemSessionStore, SessionManager, createFactStoreForUrl } from "../../src/index.ts";
 
 const TIMEOUT = 120_000;
 
@@ -264,14 +264,18 @@ async function testTurnZeroResetsStaleStoredSession(env) {
     const fixedSessionId = "00000000-0000-4000-8000-000000000001";
     const archiveDir = join(dirname(env.sessionStateDir), "session-store");
     const store = new FilesystemSessionStore(archiveDir, env.sessionStateDir);
+    const factStore = await createFactStoreForUrl(env.store, env.factsSchema);
+    await factStore.initialize();
 
     // Pre-seed stale Copilot session state without any orchestration/CMS history.
     const seedManager = new SessionManager(process.env.GITHUB_TOKEN, store, {}, env.sessionStateDir);
+    seedManager.setFactStore(factStore);
     const stale = await seedManager.getOrCreate(fixedSessionId, MEMORY_CONFIG);
     const r1 = await stale.runTurn("Remember this exact code: STALE42");
     assertEqual(r1.type, "completed", "stale seed turn should complete");
     await seedManager.dehydrate(fixedSessionId, "seed");
     await seedManager.shutdown();
+    await factStore.close();
 
     const archivePath = join(archiveDir, `${fixedSessionId}.tar.gz`);
     assert(existsSync(archivePath), "Expected seeded archive before turn-0 reset");

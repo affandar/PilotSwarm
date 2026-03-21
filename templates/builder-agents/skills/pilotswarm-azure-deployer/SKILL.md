@@ -53,11 +53,11 @@ Also call out the Azure resources the user must provision:
 
 - Azure Database for PostgreSQL
 - control AKS cluster
-- workload AKS cluster
 - user-assigned managed identity for control-plane pods
 - federated identity credential
 - Azure Storage account
 - Azure Container Registry
+- worker AKS cluster + namespace (three-tier only — see `pilotswarm-three-tier` skill)
 
 ## Worker Observability
 

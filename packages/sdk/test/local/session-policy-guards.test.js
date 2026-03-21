@@ -124,7 +124,7 @@ async function testDeletionProtectsSystem(env) {
 }
 
 async function testOrchRejectsGeneric(env) {
-    const { PilotSwarmClient, PilotSwarmWorker } = await import("../../dist/index.js");
+    const { PilotSwarmClient, PilotSwarmWorker } = await import("../../src/index.ts");
 
     const worker = new PilotSwarmWorker({
         store: env.store,
@@ -157,7 +157,7 @@ async function testOrchRejectsGeneric(env) {
             response = err.message;
         }
 
-        const catalog = await import("../../dist/index.js").then(m => m.PgSessionCatalogProvider);
+        const catalog = await import("../../src/index.ts").then(m => m.PgSessionCatalogProvider);
         const cat = await catalog.create(env.store, env.cmsSchema);
         await cat.initialize();
         try {

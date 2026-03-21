@@ -5,7 +5,7 @@
  * instances with isolated schemas and shared session-state directories.
  */
 
-import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, defineTool, composeSystemPrompt } from "../../dist/index.js";
+import { PilotSwarmClient, PilotSwarmWorker, PilotSwarmManagementClient, defineTool, composeSystemPrompt } from "../../src/index.ts";
 
 // ─── Single Worker + Client ──────────────────────────────────────
 
@@ -27,6 +27,7 @@ export async function withClient(env, opts, fn) {
         githubToken: process.env.GITHUB_TOKEN,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
         sessionStateDir: env.sessionStateDir,
         workerNodeId: opts.workerNodeId || "test-worker-a",
         disableManagementAgents: true,
@@ -41,6 +42,7 @@ export async function withClient(env, opts, fn) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
         // Auto-forward policy + agent names from co-located worker
         ...(worker.sessionPolicy ? { sessionPolicy: worker.sessionPolicy } : {}),
         ...(worker.allowedAgentNames?.length ? { allowedAgentNames: worker.allowedAgentNames } : {}),
@@ -85,6 +87,7 @@ export async function withTwoWorkers(env, opts, fn) {
         githubToken: process.env.GITHUB_TOKEN,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
         sessionStateDir: env.sessionStateDir,
     };
 
@@ -114,6 +117,7 @@ export async function withTwoWorkers(env, opts, fn) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
         ...(opts.client || {}),
     });
     await client.start();
@@ -137,6 +141,7 @@ export async function createManagementClient(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
     });
     await mgmt.start();
     return mgmt;

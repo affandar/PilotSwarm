@@ -17,11 +17,43 @@ Your job is to create or update deployment assets, environment documentation, an
 - explain rollout and reset constraints clearly when orchestration changes are involved
 - use the public deployment docs and DevOps sample as the canonical reference shape
 
+## Deployment Topology
+
+Before scaffolding, ask the user which topology they need:
+
+- **Two-Tier** (default): TUI → Control AKS. Agents run tools inline. Simpler setup, good for lightweight workloads.
+- **Three-Tier**: TUI → Control AKS → Worker AKS. Agents dispatch ephemeral work pods to a dedicated cluster. Recommended when agents run long processes (stress tests, ETL, provisioning) that must survive dehydration.
+
+If the user picks three-tier, consult the `pilotswarm-three-tier` skill and walk them through each step in order, confirming at each checkpoint.
+
+## Resource Naming
+
+Before creating any Azure resource, propose a name and ask the user to confirm or override. Derive defaults from the workspace name (or the app name if apparent from `plugin.json` or `package.json`):
+
+- Worker cluster: `<app>-workers`
+- Worker namespace: `<app>-jobs`
+- Resource group: `<app>-rg` (or reuse the existing one if already provisioned)
+- Managed identity: `<app>-identity`
+- Container registry: `<app>cr`
+- Storage account: `<app>storage`
+
+Present the full list of proposed names before provisioning anything. Example:
+
+> I'll create these resources in `westus2` under subscription `My Subscription`:
+> - Worker cluster: `myapp-workers`
+> - Namespace: `myapp-jobs`
+> - RBAC: AKS Cluster User for `myapp-identity` on the worker cluster
+>
+> Want to change any of these names or the region?
+
+Only proceed after the user confirms.
+
 ## Always Consult
 
 - the installed `pilotswarm-azure-deployer` skill
 - the installed `pilotswarm-aks-identity` skill (for cross-cluster AKS access)
 - the installed `pilotswarm-azure-lessons` skill (for Azure workarounds)
+- the installed `pilotswarm-three-tier` skill (when the user chooses three-tier topology)
 - `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/configuration.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`

@@ -55,3 +55,37 @@ When using AKV + Secrets Store CSI in AKS:
 - Use a `SecretProviderClass` manifest with `objectType: secret` entries
 - Mount secrets as env vars via `secretObjects` in the SecretProviderClass
 - The CSI driver requires a volume mount even if you only use env vars
+
+## Docker Image Platform Mismatch
+
+Building Docker images on macOS (Apple Silicon) produces ARM64 images by default.
+AKS nodes run linux/amd64. Always use `--platform linux/amd64` when building:
+
+```bash
+docker build --platform linux/amd64 -f deploy/Dockerfile.worker -t <tag> .
+```
+
+Without this, pods will fail with `no match for platform in manifest` on image pull.
+
+## Local Package Parity in Docker Builds
+
+When `package.json` uses `file:` links to a peer package (e.g., `"pilotswarm-sdk": "file:../pilotswarm/packages/sdk"`),
+the Docker build context cannot follow symlinks outside the build root.
+
+If `package.docker.json` references `"^0.1.6"` (npm), the deployed image gets the
+**published** version — which may be behind the local source.
+
+**Fix:** Copy the peer packages into the build context and use `file:` references in `package.docker.json`:
+
+```bash
+# Before docker build
+cp -r ../pilotswarm/packages/sdk pilotswarm-sdk-local
+cp -r ../pilotswarm/packages/cli pilotswarm-cli-local
+```
+
+```json
+"pilotswarm-sdk": "file:pilotswarm-sdk-local",
+"pilotswarm-cli": "file:pilotswarm-cli-local"
+```
+
+Add the local copies to `.gitignore`.

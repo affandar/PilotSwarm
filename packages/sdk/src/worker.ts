@@ -13,6 +13,7 @@ import { loadAgentFiles, systemAgentUUID } from "./agent-loader.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
+import { createFactStoreForUrl, type FactStore } from "./facts-store.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
@@ -51,6 +52,7 @@ export class PilotSwarmWorker {
     private sessionStore: SessionStateStore | null = null;
     private blobStore: SessionBlobStore | null = null;
     private artifactStore: ArtifactStore | null = null;
+    private factStore: FactStore | null = null;
     private runtime: any = null;
     private _provider: any = null;
     private _catalog: SessionCatalogProvider | null = null;
@@ -220,7 +222,7 @@ export class PilotSwarmWorker {
 
         this._provider = await this._createProvider();
 
-        // Initialize CMS catalog for PostgreSQL stores
+        // Initialize CMS catalog and facts store
         const store = this.config.store;
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
             try {
@@ -231,6 +233,9 @@ export class PilotSwarmWorker {
                 this._catalog = null;
             }
         }
+        this.factStore = await createFactStoreForUrl(store, this.config.factsSchema);
+        await this.factStore.initialize();
+        this.sessionManager.setFactStore(this.factStore);
 
         this.runtime = new Runtime(this._provider, {
             dispatcherPollIntervalMs: 10,
@@ -253,6 +258,7 @@ export class PilotSwarmWorker {
             {
                 blobEnabled: this.blobEnabled,
                 duroxideSchema: this.config.duroxideSchema,
+                factsSchema: this.config.factsSchema,
             },
             this._loadedSystemAgents,
             this._sessionPolicy,
@@ -274,6 +280,7 @@ export class PilotSwarmWorker {
             const sweeperTools = createSweeperTools({
                 catalog: this._catalog,
                 duroxideClient: sweeperClient,
+                factStore: this.factStore,
                 duroxideSchema: this.config.duroxideSchema,
                 storeUrl: this.config.store,
             });
@@ -372,6 +379,10 @@ export class PilotSwarmWorker {
         if (this._catalog) {
             try { await this._catalog.close(); } catch {}
             this._catalog = null;
+        }
+        if (this.factStore) {
+            try { await this.factStore.close(); } catch {}
+            this.factStore = null;
         }
         this._provider = null;
         this._started = false;

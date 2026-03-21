@@ -3756,6 +3756,33 @@ function handleDbRecovered() {
     if (_dbOffline) {
         appendLog(`{green-fg}Database connection restored.{/green-fg}`);
         setStatus("Database connection restored.");
+
+        // The orchestration list poll uses its own management client pool, but
+        // the active session's CMS event stream and reconstructed history may
+        // still be stale after a DB outage. Re-prime the active session view so
+        // chat/activity panes resume updating without requiring a manual switch.
+        const recoveredOrchId = activeOrchId;
+        if (recoveredOrchId) {
+            stopCmsPoller();
+            loadCmsHistory(recoveredOrchId, { force: true })
+                .then(() => {
+                    if (recoveredOrchId === activeOrchId) {
+                        startCmsPoller(recoveredOrchId);
+                        invalidateChat();
+                        invalidateActivity();
+                        redrawActiveViews();
+                        scheduleLightRefresh("dbRecovered", recoveredOrchId);
+                    }
+                })
+                .catch(() => {
+                    if (recoveredOrchId === activeOrchId) {
+                        startCmsPoller(recoveredOrchId);
+                        invalidateChat();
+                        invalidateActivity();
+                        redrawActiveViews();
+                    }
+                });
+        }
     }
     _dbOffline = false;
     _dbNextRetryAt = 0;

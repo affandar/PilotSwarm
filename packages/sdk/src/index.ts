@@ -31,8 +31,16 @@ export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
+export { PgFactStore, createFactStoreForUrl } from "./facts-store.js";
 export { PgSessionCatalogProvider } from "./cms.js";
 export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent } from "./cms.js";
+export type {
+    FactStore,
+    FactRecord,
+    StoreFactInput,
+    ReadFactsQuery,
+    DeleteFactInput,
+} from "./facts-store.js";
 export type { SessionStateStore, SessionMetadata, ArtifactStore } from "./session-store.js";
 export type {
     PilotSwarmClientOptions,
@@ -60,6 +68,8 @@ export { loadMcpConfig } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 // Sweeper Agent tools
 export { createSweeperTools } from "./sweeper-tools.js";
+// Fact tools
+export { createFactTools } from "./facts-tools.js";
 // Resource Manager Agent tools
 export { createResourceManagerTools } from "./resourcemgr-tools.js";
 // Model providers

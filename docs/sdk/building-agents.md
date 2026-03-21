@@ -43,6 +43,7 @@ You are a helpful assistant running in PilotSwarm.
 
 Always use `write_artifact` + `export_artifact` when you create a file the user should download.
 If you need to wait or poll, use the `wait` tool rather than bash sleep. For long waits, assume the next turn may resume on a different worker unless you intentionally pass `preserveWorkerAffinity: true` for worker-local work.
+Use `store_fact`, `read_facts`, and `delete_fact` for durable structured state rather than hiding important facts only in chat history. Treat facts as the authoritative memory layer for anything important.
 ```
 
 Important behavior:
@@ -77,6 +78,21 @@ How it works:
 - YAML frontmatter becomes runtime metadata
 - the markdown body becomes the agent prompt
 - `tools` limits the tools this agent may use
+
+PilotSwarm includes built-in facts tools on workers, and every agent session gets them automatically, including system agents. You may still list them in frontmatter if you want the dependency to be obvious in the agent file:
+
+```md
+---
+name: benchmark-analyst
+description: Stores and compares benchmark findings.
+tools:
+  - read_facts
+  - store_fact
+  - delete_fact
+---
+```
+
+Use facts for short structured memory, coordination state, baselines, checkpoints, and other data that should survive dehydration. Facts are session-scoped by default and are cleaned up automatically when the session is deleted. Set `shared=true` only for durable cross-session memory that should remain until explicitly deleted.
 
 ## Step 3: Register the tools on the worker
 
