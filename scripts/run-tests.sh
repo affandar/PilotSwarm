@@ -5,6 +5,7 @@
 #   ./scripts/test-local.sh                  # run all suites in parallel (default)
 #   ./scripts/test-local.sh --parallel       # run suites in parallel explicitly
 #   ./scripts/test-local.sh --suite=smoke    # run only matching suite(s)
+#   ./scripts/test-local.sh smoke            # same as --suite=smoke
 #   ./scripts/test-local.sh --sequential     # force suites one at a time
 #
 # Prerequisites:
@@ -20,6 +21,41 @@ if [ ! -f "$ENV_FILE" ]; then
     echo "ERROR: $ENV_FILE not found. Create it with DATABASE_URL and GITHUB_TOKEN."
     exit 1
 fi
+
+print_help() {
+        cat <<'EOF'
+Usage:
+    ./scripts/run-tests.sh                    Run all suites in parallel (default)
+    ./scripts/run-tests.sh --parallel         Run all suites in parallel explicitly
+    ./scripts/run-tests.sh --sequential       Run all suites sequentially
+    ./scripts/run-tests.sh --suite=<name>     Run matching suite(s)
+    ./scripts/run-tests.sh <name>             Same as --suite=<name>
+    ./scripts/run-tests.sh <name1> <name2>    Run multiple matching suites
+    ./scripts/run-tests.sh --help
+    ./scripts/run-tests.sh -h
+
+Examples:
+    ./scripts/run-tests.sh smoke
+    ./scripts/run-tests.sh wait-affinity
+    ./scripts/run-tests.sh session-policy
+    ./scripts/run-tests.sh sub-agents reliability
+    ./scripts/run-tests.sh --suite=contracts --suite=durability --sequential
+
+Notes:
+    - Positional suite names and --suite=<name> can be mixed.
+    - Suite names are substring matches against files under packages/sdk/test/local.
+    - Unknown options fail fast.
+EOF
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h)
+            print_help
+            exit 0
+            ;;
+    esac
+done
 
 # Build
 echo "🔨 Building TypeScript..."
@@ -44,6 +80,13 @@ for arg in "$@"; do
             ;;
         --parallel)
             VITEST_ARGS=(--run)
+            ;;
+        --*)
+            echo "ERROR: unknown option: $arg"
+            exit 1
+            ;;
+        *)
+            SUITE_FILTERS+=("$arg")
             ;;
     esac
 done
