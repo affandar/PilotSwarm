@@ -3,8 +3,9 @@
 #
 # Usage:
 #   ./scripts/test-local.sh                  # run all suites in parallel (default)
+#   ./scripts/test-local.sh --parallel       # run suites in parallel explicitly
 #   ./scripts/test-local.sh --suite=smoke    # run only matching suite(s)
-#   ./scripts/test-local.sh --sequential     # run suites one at a time
+#   ./scripts/test-local.sh --sequential     # force suites one at a time
 #
 # Prerequisites:
 #   - PostgreSQL running with DATABASE_URL in .env
@@ -30,15 +31,41 @@ export RUST_LOG="${RUST_LOG:-error}"
 # Load .env for vitest (vitest doesn't have --env-file)
 set -a; source "$ENV_FILE"; set +a
 
-# Build vitest args
+# Build vitest args.
+# Default mode runs with Vitest's normal parallelism. Use --sequential for a
+# deterministic one-at-a-time run when debugging contention or backend capacity issues.
 VITEST_ARGS=(--run)
+SUITE_FILTERS=()
 for arg in "$@"; do
     case "$arg" in
-        --suite=*) VITEST_ARGS+=(--testPathPattern "${arg#--suite=}") ;;
-        --sequential) VITEST_ARGS+=(--fileParallelism=false) ;;
+        --suite=*) SUITE_FILTERS+=("${arg#--suite=}") ;;
+        --sequential)
+            VITEST_ARGS=(--run --no-file-parallelism --maxConcurrency=1)
+            ;;
+        --parallel)
+            VITEST_ARGS=(--run)
+            ;;
     esac
 done
 
 # Run
 cd "$SDK_DIR"
-exec npx vitest "${VITEST_ARGS[@]}"
+TARGET_FILES=()
+if [ ${#SUITE_FILTERS[@]} -gt 0 ]; then
+    for filter in "${SUITE_FILTERS[@]}"; do
+        while IFS= read -r file; do
+            TARGET_FILES+=("$file")
+        done < <(find test/local -type f -name "*${filter}*.test.js" | sort)
+    done
+
+    if [ ${#TARGET_FILES[@]} -eq 0 ]; then
+        echo "ERROR: no test files matched suite filter(s): ${SUITE_FILTERS[*]}"
+        exit 1
+    fi
+fi
+
+if [ ${#TARGET_FILES[@]} -gt 0 ]; then
+    exec npx vitest "${VITEST_ARGS[@]}" "${TARGET_FILES[@]}"
+else
+    exec npx vitest "${VITEST_ARGS[@]}"
+fi
