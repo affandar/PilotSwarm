@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.8 — 2026-03-21
+
+### SDK
+
+- **Facts table descendants scope** — new `scope="descendants"` on `read_facts` for reading all sub-agent session-scoped facts at once. Parent agents can also pass `session_id=<child>` to read a specific descendant's private facts (lineage verified via CMS). orchId format (`session-<uuid>`) is auto-normalized.
+- **Facts row limit uncapped** — removed the 200-row hard cap on `read_facts`. Default remains 50; callers can raise `limit` as needed.
+- **Default agent prompt** — updated with descendants facts guidance and sub-agent fact retrieval rules.
+
+### CLI
+
+- **TUI inline spinner** — animated braille spinner (`⠋ Thinking…`) appears in the chat window when the agent is processing. Automatically removed when the response arrives.
+
+### Tests
+
+- **Facts descendants tests** — new tests for `scope="descendants"`, lineage-aware `session_id`, orchId normalization, multi-level hierarchy access, and `key_pattern` combos.
+
+### Docs
+
+- **Facts table design spec** — new `docs/facts-table.md` covering schema, tool API, scoping, and lifecycle.
+- **Facts table test spec** — new `docs/facts-table-tests.md` covering existing and recommended test coverage.
+
 ## 0.1.7 — 2026-03-20
 
 ### SDK

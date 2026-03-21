@@ -221,6 +221,258 @@ async function testNonPostgresStoreRejected() {
     assertEqual(threw, true, "createFactStoreForUrl should reject non-PostgreSQL stores");
 }
 
+async function testParentReadsChildFactsBySessionId(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+
+    try {
+        const mockGetDescendants = async (sessionId) => {
+            if (sessionId === "parent-session") return ["child-session"];
+            return [];
+        };
+        const [storeFact, readFacts] = createFactTools({
+            factStore,
+            getDescendantSessionIds: mockGetDescendants,
+        });
+
+        // Parent stores a session-scoped fact
+        await storeFact.handler(
+            { key: "parent/state", value: { step: 1 } },
+            { sessionId: "parent-session", agentId: "parent" },
+        );
+        // Child stores a session-scoped fact
+        await storeFact.handler(
+            { key: "child/result", value: { answer: 42 } },
+            { sessionId: "child-session", agentId: "child" },
+        );
+        // Unrelated session stores a session-scoped fact
+        await storeFact.handler(
+            { key: "other/secret", value: { hidden: true } },
+            { sessionId: "other-session", agentId: "other" },
+        );
+
+        // Parent reads child's facts via session_id filter
+        const result = await readFacts.handler(
+            { session_id: "child-session" },
+            { sessionId: "parent-session" },
+        );
+        console.log("  parent reads child facts:", result.count);
+        assertEqual(result.count, 1, "parent should see child's session-scoped fact");
+        assertEqual(result.facts[0].key, "child/result", "parent should see child's fact key");
+        assertEqual(result.facts[0].sessionId, "child-session", "fact should belong to child session");
+
+        // Parent cannot read unrelated session's facts via session_id
+        const unrelated = await readFacts.handler(
+            { session_id: "other-session" },
+            { sessionId: "parent-session" },
+        );
+        console.log("  parent reads unrelated session facts:", unrelated.count);
+        assertEqual(unrelated.count, 0, "parent should NOT see unrelated session's private facts");
+
+        // Parent reads child's facts via orchId format "session-<uuid>"
+        const orchIdResult = await readFacts.handler(
+            { session_id: "session-child-session" },
+            { sessionId: "parent-session" },
+        );
+        console.log("  parent reads child facts via orchId format:", orchIdResult.count);
+        assertEqual(orchIdResult.count, 1, "orchId format session_id should be normalized to raw UUID");
+        assertEqual(orchIdResult.facts[0].key, "child/result", "orchId format should resolve to child's fact");
+
+        // Parent reads child's facts via session_id + key_pattern combo
+        const withPattern = await readFacts.handler(
+            { session_id: "child-session", key_pattern: "child/%" },
+            { sessionId: "parent-session" },
+        );
+        console.log("  parent reads child facts with key_pattern:", withPattern.count);
+        assertEqual(withPattern.count, 1, "session_id + key_pattern should return child's matching fact");
+        assertEqual(withPattern.facts[0].key, "child/result", "key_pattern should filter correctly");
+
+        // Parent reads child's facts via session_id + non-matching key_pattern
+        const noMatch = await readFacts.handler(
+            { session_id: "child-session", key_pattern: "parent/%" },
+            { sessionId: "parent-session" },
+        );
+        console.log("  parent reads child facts with non-matching pattern:", noMatch.count);
+        assertEqual(noMatch.count, 0, "non-matching key_pattern should return 0 even for descendant");
+    } finally {
+        await factStore.close();
+    }
+}
+
+async function testMultiLevelDescendantFactsBySessionId(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+
+    try {
+        // Three-level hierarchy: grandparent → middle → leaf
+        const mockGetDescendants = async (sessionId) => {
+            if (sessionId === "grandparent") return ["middle", "leaf"];
+            if (sessionId === "middle") return ["leaf"];
+            return [];
+        };
+
+        // Create separate tool sets for each session level (each gets its own ctx)
+        const gpTools = createFactTools({ factStore, getDescendantSessionIds: mockGetDescendants });
+        const midTools = createFactTools({ factStore, getDescendantSessionIds: mockGetDescendants });
+        const leafTools = createFactTools({ factStore, getDescendantSessionIds: mockGetDescendants });
+
+        // Leaf stores a fact
+        await leafTools[0].handler(
+            { key: "leaf/random-fact", value: "taco-99-dragon" },
+            { sessionId: "leaf", agentId: "leaf-agent" },
+        );
+        // Middle stores a fact
+        await midTools[0].handler(
+            { key: "middle/random-fact", value: "pizza-42-unicorn" },
+            { sessionId: "middle", agentId: "middle-agent" },
+        );
+
+        // Middle reads leaf's fact via session_id
+        const midReadsLeaf = await midTools[1].handler(
+            { session_id: "leaf" },
+            { sessionId: "middle" },
+        );
+        console.log("  middle reads leaf via session_id:", midReadsLeaf.count);
+        assertEqual(midReadsLeaf.count, 1, "middle should see leaf's fact via session_id");
+        assertEqual(midReadsLeaf.facts[0].key, "leaf/random-fact", "middle sees leaf's fact key");
+
+        // Middle reads leaf's fact via orchId format
+        const midReadsLeafOrch = await midTools[1].handler(
+            { session_id: "session-leaf" },
+            { sessionId: "middle" },
+        );
+        console.log("  middle reads leaf via orchId session_id:", midReadsLeafOrch.count);
+        assertEqual(midReadsLeafOrch.count, 1, "middle should see leaf's fact via orchId format");
+
+        // Grandparent reads middle's fact via session_id
+        const gpReadsMid = await gpTools[1].handler(
+            { session_id: "middle" },
+            { sessionId: "grandparent" },
+        );
+        console.log("  grandparent reads middle via session_id:", gpReadsMid.count);
+        assertEqual(gpReadsMid.count, 1, "grandparent should see middle's fact via session_id");
+
+        // Grandparent reads leaf's fact via session_id
+        const gpReadsLeaf = await gpTools[1].handler(
+            { session_id: "leaf" },
+            { sessionId: "grandparent" },
+        );
+        console.log("  grandparent reads leaf via session_id:", gpReadsLeaf.count);
+        assertEqual(gpReadsLeaf.count, 1, "grandparent should see leaf's fact via session_id");
+
+        // Grandparent reads all via scope=descendants
+        const gpAll = await gpTools[1].handler(
+            { scope: "descendants" },
+            { sessionId: "grandparent" },
+        );
+        console.log("  grandparent reads all descendants:", gpAll.count);
+        assertEqual(gpAll.count, 2, "grandparent should see both middle and leaf facts via descendants scope");
+
+        // Middle cannot read grandparent's fact (not a descendant)
+        await gpTools[0].handler(
+            { key: "gp/secret", value: "top-secret" },
+            { sessionId: "grandparent", agentId: "gp-agent" },
+        );
+        const midReadsGp = await midTools[1].handler(
+            { session_id: "grandparent" },
+            { sessionId: "middle" },
+        );
+        console.log("  middle reads grandparent (should fail):", midReadsGp.count);
+        assertEqual(midReadsGp.count, 0, "middle should NOT see grandparent's private facts (not a descendant)");
+    } finally {
+        await factStore.close();
+    }
+}
+
+async function testParentReadsAllDescendantFacts(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+
+    try {
+        const mockGetDescendants = async (sessionId) => {
+            if (sessionId === "parent-session") return ["child-session", "grandchild-session"];
+            return [];
+        };
+        const [storeFact, readFacts] = createFactTools({
+            factStore,
+            getDescendantSessionIds: mockGetDescendants,
+        });
+
+        // Store facts across the hierarchy
+        await storeFact.handler(
+            { key: "parent/plan", value: { plan: "run tests" } },
+            { sessionId: "parent-session", agentId: "parent" },
+        );
+        await storeFact.handler(
+            { key: "child/finding", value: { issue: "flaky test" } },
+            { sessionId: "child-session", agentId: "child" },
+        );
+        await storeFact.handler(
+            { key: "grandchild/detail", value: { fix: "retry logic" } },
+            { sessionId: "grandchild-session", agentId: "grandchild" },
+        );
+        await storeFact.handler(
+            { key: "baseline/tps", value: { value: 1000 }, shared: true },
+            { sessionId: "parent-session", agentId: "parent" },
+        );
+        await storeFact.handler(
+            { key: "unrelated/data", value: { nope: true } },
+            { sessionId: "unrelated-session", agentId: "unrelated" },
+        );
+
+        // Parent reads with scope=descendants
+        const result = await readFacts.handler(
+            { scope: "descendants" },
+            { sessionId: "parent-session" },
+        );
+        console.log("  parent reads descendants facts:", result.count);
+        assertEqual(result.count, 4, "parent should see own + child + grandchild + shared facts");
+        assert(result.facts.some((f) => f.key === "parent/plan"), "parent's own fact included");
+        assert(result.facts.some((f) => f.key === "child/finding"), "child's fact included");
+        assert(result.facts.some((f) => f.key === "grandchild/detail"), "grandchild's fact included");
+        assert(result.facts.some((f) => f.key === "baseline/tps"), "shared fact included");
+        assert(!result.facts.some((f) => f.key === "unrelated/data"), "unrelated session's fact excluded");
+    } finally {
+        await factStore.close();
+    }
+}
+
+async function testDescendantsScopeWithNoSubAgents(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+
+    try {
+        const mockGetDescendants = async () => [];
+        const [storeFact, readFacts] = createFactTools({
+            factStore,
+            getDescendantSessionIds: mockGetDescendants,
+        });
+
+        await storeFact.handler(
+            { key: "my/state", value: { step: 1 } },
+            { sessionId: "solo-session", agentId: "solo" },
+        );
+        await storeFact.handler(
+            { key: "shared/info", value: { info: "global" }, shared: true },
+            { sessionId: "solo-session", agentId: "solo" },
+        );
+
+        const descendants = await readFacts.handler(
+            { scope: "descendants" },
+            { sessionId: "solo-session" },
+        );
+        const accessible = await readFacts.handler(
+            { scope: "accessible" },
+            { sessionId: "solo-session" },
+        );
+        console.log("  descendants vs accessible:", descendants.count, accessible.count);
+        assertEqual(descendants.count, accessible.count, "descendants with no children should equal accessible");
+        assertEqual(descendants.count, 2, "should see own fact and shared fact");
+    } finally {
+        await factStore.close();
+    }
+}
+
 describe.concurrent("Level 3/4: Facts", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -240,5 +492,25 @@ describe.concurrent("Level 3/4: Facts", () => {
 
     it("non-postgres stores are rejected for facts", async () => {
         await testNonPostgresStoreRejected();
+    });
+
+    it("parent reads child session facts via session_id lineage check", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("facts-child");
+        try { await testParentReadsChildFactsBySessionId(env); } finally { await env.cleanup(); }
+    });
+
+    it("multi-level descendant facts read via session_id at each level", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("facts-multi");
+        try { await testMultiLevelDescendantFactsBySessionId(env); } finally { await env.cleanup(); }
+    });
+
+    it("parent reads all descendants facts via scope=descendants", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("facts-desc");
+        try { await testParentReadsAllDescendantFacts(env); } finally { await env.cleanup(); }
+    });
+
+    it("scope=descendants with no sub-agents equals accessible", { timeout: TIMEOUT }, async () => {
+        const env = createTestEnv("facts-nodesc");
+        try { await testDescendantsScopeWithNoSubAgents(env); } finally { await env.cleanup(); }
     });
 });

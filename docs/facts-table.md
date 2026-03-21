@@ -134,18 +134,23 @@ Reads facts visible to the calling session.
 | `tags` | string[] | no | All listed tags must be present |
 | `session_id` | string | no | Provenance filter by source session |
 | `agent_id` | string | no | Provenance filter by source agent |
-| `limit` | number | no | Max rows (default: 50, max: 200) |
-| `scope` | string | no | `accessible` (default), `shared`, or `session` |
+| `limit` | number | no | Max rows (default: 50) |
+| `scope` | string | no | `accessible` (default), `shared`, `session`, or `descendants` |
 
 **Scope Semantics:**
 
 | Scope | Returns |
-|-------|---------|
+|-------|--------|
 | `accessible` | Caller's own session facts + all shared facts |
 | `shared` | Only shared facts |
 | `session` | Only the caller's own session-scoped facts |
+| `descendants` | Caller's own session facts + shared facts + all facts from descendant sessions (children, grandchildren, etc.) |
 
-**Visibility Rule:** The `session_id` parameter is a provenance filter, not an access override. When `scope=accessible`, the base visibility is `(shared = TRUE OR session_id = <caller>)`. Adding `session_id=<other>` narrows this further but does not grant access to another session's private facts.
+**Visibility Rules:**
+
+- The `session_id` parameter is lineage-aware. When a caller passes `session_id=<child>` and the child is a verified descendant (via the CMS `parent_session_id` tree), the child's session-scoped facts become visible. Non-descendant sessions' private facts remain inaccessible.
+- When `scope=descendants`, the handler resolves all descendant session IDs via `getDescendantSessionIds()` and includes them in the visibility set.
+- Lineage verification uses the same recursive CTE (`parent_session_id` tree) that the sweeper uses for cleanup.
 
 ### `delete_fact`
 
@@ -211,13 +216,14 @@ The `default.agent.md` includes a `## Facts Table` section that instructs the LL
 - Session-scoped by default, use `shared=true` only for cross-session knowledge.
 - Read relevant facts before resuming long-running or multi-agent work.
 - Respond to user "remember" / "forget" requests via facts tools immediately.
+- After sub-agents complete, use `read_facts(session_id=<child>)` or `scope=descendants` to pull their facts.
 
 ## Constraints
 
 - **PostgreSQL only.** The `createFactStoreForUrl()` factory rejects non-Postgres URLs. SQLite is not supported for facts.
 - **No SQLite fallback.** Unlike the CMS and duroxide stores which support SQLite for local development, facts are Postgres-exclusive.
-- **Max 200 rows per read.** `readFacts` enforces `LIMIT min(query.limit ?? 50, 200)`.
-- **No cross-session access for private facts.** A session cannot read another session's non-shared facts via the tool API. The `session_id` filter is a provenance filter, not an access bypass.
+- **No hard row cap.** `readFacts` defaults to 50 rows per query. Callers can raise the `limit` parameter as needed.
+- **No cross-session access for private facts (except descendants).** A session cannot read an unrelated session's non-shared facts. However, parent agents can read their descendants' session-scoped facts via `scope=descendants` or by passing `session_id=<child>` (lineage verified via CMS).
 
 ## Public API Exports
 

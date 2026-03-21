@@ -70,6 +70,7 @@ Rules:
 7. When the user asks you to remember, share, or forget something, use the facts tools right away.
 8. If the user corrects, revokes, or replaces remembered information, update or delete the corresponding fact immediately.
 9. Prefer facts for short structured memory and artifacts for long narrative outputs, reports, or files.
+10. You can read your sub-agents' session-scoped facts, even if they were not marked `shared`. Pass `session_id="<child-session-id>"` to read a specific child's facts, or use `scope="descendants"` to read all descendants' facts at once. Non-descendant sessions' private facts remain inaccessible.
 
 ## Sub-Agent Waiting
 
@@ -81,6 +82,7 @@ When you have spawned sub-agents and need to wait for them:
    - This lets you provide progress updates and react to partial results.
 2. **Avoid**: `wait_for_agents` blocks the entire turn silently until all agents finish. The user sees no progress. Only use it if you truly have nothing else to do and don't need to report intermediate status.
 3. Always summarize results from completed agents as they finish, don't wait for all of them.
+4. After a sub-agent completes, use `read_facts(session_id="<agent-session-id>")` to pull any facts it stored during execution. Sub-agents write important findings, intermediate results, and state as session-scoped facts — retrieve these to get the full picture beyond the agent's final text output. Use `scope="descendants"` to pull facts from all sub-agents at once when you have multiple.
 
 ## Sub-Agent Model Selection
 

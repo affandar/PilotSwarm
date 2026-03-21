@@ -33,7 +33,7 @@ export interface ReadFactsQuery {
     sessionId?: string;
     agentId?: string;
     limit?: number;
-    scope?: "accessible" | "shared" | "session";
+    scope?: "accessible" | "shared" | "session" | "descendants";
 }
 
 export interface DeleteFactInput {
@@ -49,7 +49,7 @@ export interface FactStore {
         shared: boolean;
         stored: true;
     }>;
-    readFacts(query: ReadFactsQuery, access?: { readerSessionId?: string | null }): Promise<{
+    readFacts(query: ReadFactsQuery, access?: { readerSessionId?: string | null; grantedSessionIds?: string[] }): Promise<{
         count: number;
         facts: FactRecord[];
     }>;
@@ -221,12 +221,13 @@ export class PgFactStore implements FactStore {
 
     async readFacts(
         query: ReadFactsQuery,
-        access?: { readerSessionId?: string | null },
+        access?: { readerSessionId?: string | null; grantedSessionIds?: string[] },
     ): Promise<{ count: number; facts: FactRecord[] }> {
         const conditions: string[] = [];
         const params: unknown[] = [];
         let idx = 1;
         const readerSessionId = access?.readerSessionId ?? null;
+        const grantedSessionIds = access?.grantedSessionIds ?? [];
         const scope = query.scope ?? "accessible";
 
         if (scope === "shared") {
@@ -238,8 +239,16 @@ export class PgFactStore implements FactStore {
             conditions.push(`shared = FALSE AND session_id = $${idx++}`);
             params.push(readerSessionId);
         } else if (readerSessionId) {
-            conditions.push(`(shared = TRUE OR (shared = FALSE AND session_id = $${idx++}))`);
+            // "accessible" or "descendants" — include reader's own facts + shared
+            const visibleParts = [`shared = TRUE`, `(shared = FALSE AND session_id = $${idx++})`];
             params.push(readerSessionId);
+            // Include granted descendant session IDs in the visibility set
+            if (grantedSessionIds.length > 0) {
+                const placeholders = grantedSessionIds.map(() => `$${idx++}`).join(", ");
+                visibleParts.push(`(shared = FALSE AND session_id IN (${placeholders}))`);
+                params.push(...grantedSessionIds);
+            }
+            conditions.push(`(${visibleParts.join(" OR ")})`);
         } else {
             conditions.push("shared = TRUE");
         }
@@ -262,7 +271,7 @@ export class PgFactStore implements FactStore {
             params.push(query.agentId);
         }
 
-        const maxRows = Math.min(query.limit ?? 50, 200);
+        const maxRows = query.limit ?? 50;
         const sql = `SELECT key, value, agent_id, session_id, shared, tags, created_at, updated_at
                      FROM ${this.sql.table}
                      WHERE ${conditions.join(" AND ")}

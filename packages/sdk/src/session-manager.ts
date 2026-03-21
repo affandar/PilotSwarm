@@ -67,6 +67,8 @@ export class SessionManager {
     private sessionStateDir: string;
     /** Shared facts store used to build always-on facts tools. */
     private factStore: FactStore | null = null;
+    /** Lineage lookup for descendant facts access. */
+    private _getDescendantSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
 
     constructor(
         private githubToken?: string,
@@ -123,6 +125,11 @@ export class SessionManager {
     /** Set the cluster facts store for always-on facts tools. */
     setFactStore(factStore: FactStore | null): void {
         this.factStore = factStore;
+    }
+
+    /** Set the lineage lookup for descendant facts access. */
+    setDescendantSessionLookup(fn: ((sessionId: string) => Promise<string[]>) | null): void {
+        this._getDescendantSessionIds = fn;
     }
 
     /** Ensure the CopilotClient is started. */
@@ -218,7 +225,10 @@ export class SessionManager {
         const userTools = config.tools ?? [];
         const systemTools = ManagedSession.systemToolDefs();
         const subAgentTools = ManagedSession.subAgentToolDefs();
-        const factTools = createFactTools({ factStore: this.factStore });
+        const factTools = createFactTools({
+            factStore: this.factStore,
+            getDescendantSessionIds: this._getDescendantSessionIds ?? undefined,
+        });
         const SYSTEM_TOOL_NAMES = new Set([...systemTools, ...subAgentTools, ...factTools].map((t: any) => t.name));
         const persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),

@@ -236,6 +236,11 @@ export class PilotSwarmWorker {
         this.factStore = await createFactStoreForUrl(store, this.config.factsSchema);
         await this.factStore.initialize();
         this.sessionManager.setFactStore(this.factStore);
+        if (this._catalog) {
+            this.sessionManager.setDescendantSessionLookup(
+                (sessionId) => this._catalog!.getDescendantSessionIds(sessionId),
+            );
+        }
 
         this.runtime = new Runtime(this._provider, {
             dispatcherPollIntervalMs: 10,

@@ -94,46 +94,113 @@ All tests use `vitest` (`describe`/`it`) and follow PilotSwarm test conventions:
 
 The following tests should be added to strengthen coverage of the facts feature:
 
-### Test 5: Upsert behavior — store_fact overwrites existing value
+### Test 5: Parent reads child's session-scoped facts via session_id
+
+**What to verify:**
+- A parent session can read a child's non-shared facts by passing `session_id=<child>` to `read_facts`.
+- Lineage is verified via `getDescendantSessionIds()` — if the target is a descendant, access is granted.
+- The parent sees the child's session-scoped facts alongside shared facts.
+
+**Setup:**
+- Creates a `PgFactStore` and `createFactTools` with a mock `getDescendantSessionIds` that returns `["child-session"]`.
+- Parent stores a session-scoped fact. Child stores a session-scoped fact.
+- Parent calls `read_facts({ session_id: "child-session" })`.
+
+**Assertions:**
+1. The parent sees the child's session-scoped fact.
+2. No error is thrown.
+
+---
+
+### Test 6: Parent reads all descendants' facts via scope=descendants
+
+**What to verify:**
+- `read_facts({ scope: "descendants" })` returns the parent's own facts, shared facts, and all descendants' session-scoped facts.
+- Works for grandchildren (depth 2+).
+
+**Setup:**
+- Creates facts for parent, child, and grandchild sessions.
+- Mock `getDescendantSessionIds("parent")` returns `["child", "grandchild"]`.
+- Parent calls `read_facts({ scope: "descendants" })`.
+
+**Assertions:**
+1. All three sessions' facts are returned plus any shared facts.
+2. Facts from an unrelated session are not returned.
+
+---
+
+### Test 7: Non-descendant session cannot read another session's private facts
+
+**What to verify:**
+- When `session_id=<other>` is passed but `<other>` is not a descendant of the caller, the caller still cannot see the other session's private facts.
+- Lineage check fails silently — no error, just no access.
+
+**Setup:**
+- Two unrelated sessions store session-scoped facts.
+- Session A calls `read_facts({ session_id: "session-b" })` with a mock `getDescendantSessionIds` that returns `[]`.
+
+**Assertions:**
+1. Session A does not see session B's private facts.
+2. Only shared facts (if any) are returned.
+
+---
+
+### Test 8: scope=descendants with no sub-agents
+
+**What to verify:**
+- When a session has no descendants, `scope=descendants` behaves identically to `scope=accessible` (own facts + shared).
+
+**Setup:**
+- Mock `getDescendantSessionIds` returns `[]`.
+- Session stores a session-scoped fact and a shared fact.
+- Session calls `read_facts({ scope: "descendants" })`.
+
+**Assertions:**
+1. Returns own session fact + shared fact.
+2. Count is identical to `scope=accessible`.
+
+---
+
+### Test 9: Upsert behavior — store_fact overwrites existing value
 
 **What to verify:**
 - Calling `store_fact` with the same key and same session updates the value in-place.
 - `updated_at` is refreshed.
 - The `scope_key` uniqueness constraint handles upserts correctly.
 
-### Test 6: Key pattern matching with wildcards
+### Test 10: Key pattern matching with wildcards
 
 **What to verify:**
 - `read_facts` with `key_pattern="build/%"` returns only facts whose key starts with `build/`.
 - `read_facts` with `key_pattern="*"` returns all visible facts.
 - Glob-style `*` is converted to SQL `%`.
 
-### Test 7: Tag-based filtering
+### Test 11: Tag-based filtering
 
 **What to verify:**
 - `read_facts` with `tags=["build"]` returns only facts tagged with `build`.
 - Multiple tags require all to match (array containment).
 
-### Test 8: Limit enforcement
+### Test 12: Limit enforcement
 
 **What to verify:**
 - `read_facts` respects the `limit` parameter.
-- `read_facts` caps at 200 even if a higher limit is requested.
+- The default limit is 50 rows when no limit is specified.
 
-### Test 9: Agent ID provenance filter
+### Test 13: Agent ID provenance filter
 
 **What to verify:**
 - `read_facts` with `agent_id="builder"` returns only facts stored by the `builder` agent.
 - Combined with scope filters, provenance narrows but doesn't widen visibility.
 
-### Test 10: Concurrent session isolation
+### Test 14: Concurrent session isolation
 
 **What to verify:**
 - Two sessions running concurrently cannot see each other's session-scoped facts.
 - Both can see the same shared facts.
 - Deleting one session's facts does not affect the other.
 
-### Test 11: Facts tools available in LLM session (e2e)
+### Test 15: Facts tools available in LLM session (e2e)
 
 **What to verify:**
 - A full LLM-driven session can successfully call `store_fact`, `read_facts`, and `delete_fact`.
@@ -142,7 +209,7 @@ The following tests should be added to strengthen coverage of the facts feature:
 
 This test would use `withClient()` with a real LLM turn similar to the smoke tests.
 
-### Test 12: Schema isolation between test runs
+### Test 16: Schema isolation between test runs
 
 **What to verify:**
 - `createTestEnv()` generates unique `factsSchema` names.

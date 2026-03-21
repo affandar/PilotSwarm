@@ -2,8 +2,11 @@ import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { FactStore } from "./facts-store.js";
 
-export function createFactTools(opts: { factStore: FactStore }): Tool<any>[] {
-    const { factStore } = opts;
+export function createFactTools(opts: {
+    factStore: FactStore;
+    getDescendantSessionIds?: (sessionId: string) => Promise<string[]>;
+}): Tool<any>[] {
+    const { factStore, getDescendantSessionIds } = opts;
 
     const storeTool = defineTool("store_fact", {
         description:
@@ -54,7 +57,8 @@ export function createFactTools(opts: { factStore: FactStore }): Tool<any>[] {
     const readTool = defineTool("read_facts", {
         description:
             "Read durable facts. By default this returns facts accessible to you now: your current session's facts plus shared facts. " +
-            "Use scope='shared' to read only shared facts.",
+            "Use scope='shared' to read only shared facts. " +
+            "Use scope='descendants' to also include facts from your sub-agent sessions (children, grandchildren, etc.).",
         parameters: {
             type: "object" as const,
             properties: {
@@ -70,7 +74,8 @@ export function createFactTools(opts: { factStore: FactStore }): Tool<any>[] {
                 },
                 session_id: {
                     type: "string",
-                    description: "Optional provenance filter for the session that stored the fact.",
+                    description:
+                        "Filter by source session. When targeting a descendant session, its private facts become visible automatically.",
                 },
                 agent_id: {
                     type: "string",
@@ -78,14 +83,16 @@ export function createFactTools(opts: { factStore: FactStore }): Tool<any>[] {
                 },
                 limit: {
                     type: "number",
-                    description: "Maximum number of rows to return. Default: 50, max: 200.",
+                    description: "Maximum number of rows to return. Default: 50.",
                 },
                 scope: {
                     type: "string",
-                    enum: ["accessible", "shared", "session"],
+                    enum: ["accessible", "shared", "session", "descendants"],
                     description:
                         "accessible = current session facts plus shared facts (default). " +
-                        "shared = shared facts only. session = current session facts only.",
+                        "shared = shared facts only. " +
+                        "session = current session facts only. " +
+                        "descendants = your session facts + shared facts + all facts from your sub-agent sessions (children, grandchildren, etc.).",
                 },
             },
         },
@@ -96,19 +103,48 @@ export function createFactTools(opts: { factStore: FactStore }): Tool<any>[] {
                 session_id?: string;
                 agent_id?: string;
                 limit?: number;
-                scope?: "accessible" | "shared" | "session";
+                scope?: "accessible" | "shared" | "session" | "descendants";
             },
             ctx?: { sessionId?: string },
         ) => {
+            // Normalize session_id: LLM may pass orchId format "session-<uuid>"
+            // but facts and CMS store raw UUIDs.
+            const targetSessionId = args.session_id?.startsWith("session-")
+                ? args.session_id.slice("session-".length)
+                : args.session_id;
+
+            let grantedSessionIds: string[] = [];
+
+            if (getDescendantSessionIds && ctx?.sessionId) {
+                if (args.scope === "descendants") {
+                    // Grant access to all descendant sessions
+                    grantedSessionIds = await getDescendantSessionIds(ctx.sessionId);
+                } else if (targetSessionId && targetSessionId !== ctx.sessionId) {
+                    // Targeted read: grant access if the target is a descendant
+                    const descendants = await getDescendantSessionIds(ctx.sessionId);
+                    if (descendants.includes(targetSessionId)) {
+                        grantedSessionIds = [targetSessionId];
+                    }
+                }
+            }
+
+            // Determine effective scope: if we've granted descendant access,
+            // force "accessible" so the visibility clause includes granted IDs.
+            let effectiveScope = args.scope;
+            if (effectiveScope === "descendants" || grantedSessionIds.length > 0) {
+                effectiveScope = "accessible";
+            }
+
             return factStore.readFacts({
                 keyPattern: args.key_pattern,
                 tags: args.tags,
-                sessionId: args.session_id,
+                sessionId: targetSessionId,
                 agentId: args.agent_id,
                 limit: args.limit,
-                scope: args.scope,
+                scope: effectiveScope,
             }, {
                 readerSessionId: ctx?.sessionId ?? null,
+                grantedSessionIds,
             });
         },
     });

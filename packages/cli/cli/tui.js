@@ -2683,6 +2683,7 @@ function recolorWorkerPanes() {
 
 function showCopilotMessage(raw, orchId) {
     const _ph = perfStart("showCopilotMessage");
+    stopChatSpinner(orchId);
 
     appendActivity(`{green-fg}[obs] showCopilotMessage called for ${orchId === activeOrchId ? "ACTIVE" : "background"} session, len=${raw?.length || 0}{/green-fg}`, orchId);
 
@@ -3543,6 +3544,60 @@ const sessionRecoveredTurnResult = new Map(); // orchId → normalized completed
 const sessionObservers = new Map(); // orchId → AbortController
 const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
 const sessionPendingTurns = new Set(); // orchIds with a locally-sent turn awaiting first live status
+
+// ─── Inline chat spinner ─────────────────────────────────────────
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const sessionSpinnerIndex = new Map(); // orchId → buffer line index where spinner lives
+let _spinnerFrame = 0;
+let _spinnerTimer = null;
+
+function startChatSpinner(orchId) {
+    const buf = sessionChatBuffers.get(orchId);
+    if (!buf) return;
+    // Remove existing spinner if any
+    stopChatSpinner(orchId);
+    const line = `{gray-fg}${SPINNER_FRAMES[0]} Thinking…{/gray-fg}`;
+    buf.push("");
+    buf.push(line);
+    sessionSpinnerIndex.set(orchId, buf.length - 1);
+    if (orchId === activeOrchId) invalidateChat("bottom");
+    // Start global animation timer if not running
+    if (!_spinnerTimer) {
+        _spinnerTimer = setInterval(() => {
+            _spinnerFrame = (_spinnerFrame + 1) % SPINNER_FRAMES.length;
+            let anyActive = false;
+            for (const [sid, idx] of sessionSpinnerIndex) {
+                const b = sessionChatBuffers.get(sid);
+                if (b && idx < b.length) {
+                    b[idx] = `{gray-fg}${SPINNER_FRAMES[_spinnerFrame]} Thinking…{/gray-fg}`;
+                    if (sid === activeOrchId) { invalidateChat(); anyActive = true; }
+                }
+            }
+            if (!anyActive && sessionSpinnerIndex.size === 0) {
+                clearInterval(_spinnerTimer);
+                _spinnerTimer = null;
+            }
+        }, 80);
+    }
+}
+
+function stopChatSpinner(orchId) {
+    const idx = sessionSpinnerIndex.get(orchId);
+    if (idx == null) return;
+    const buf = sessionChatBuffers.get(orchId);
+    if (buf && idx < buf.length) {
+        // Remove spinner line and the blank line before it
+        const startIdx = (idx > 0 && buf[idx - 1] === "") ? idx - 1 : idx;
+        buf.splice(startIdx, idx - startIdx + 1);
+    }
+    sessionSpinnerIndex.delete(orchId);
+    if (orchId === activeOrchId) invalidateChat();
+    // Stop global timer if no spinners remain
+    if (sessionSpinnerIndex.size === 0 && _spinnerTimer) {
+        clearInterval(_spinnerTimer);
+        _spinnerTimer = null;
+    }
+}
 const sessionPendingQuestions = new Map(); // orchId → latest input-required question awaiting a user answer
 const sessionLastSeenResponseVersion = new Map(); // orchId → latest KV-backed response version rendered
 const sessionLastSeenCommandVersion = new Map(); // orchId → latest KV-backed command response version rendered
@@ -5232,6 +5287,7 @@ function startObserver(orchId) {
 
     function renderResponsePayload(response, cs, source) {
         if (!response) return;
+        stopChatSpinner(orchId);
         if (response.type === "completed" && response.content) {
             appendActivity(`{green-fg}[obs] ✓ SHOWING ${source}: version=${response.version} type=completed content=${response.content.slice(0, 80)}{/green-fg}`, orchId);
             renderCompletedContent(response.content);
@@ -6148,6 +6204,7 @@ async function handleInput(text) {
     }
 
     appendChatRaw(`{white-fg}[${ts()}]{/white-fg} {white-fg}{bold}You:{/bold} ${trimmed}{/white-fg}`, targetOrchId);
+    startChatSpinner(targetOrchId);
     inputBar.clearValue();
     focusInput();
     setSessionPendingTurn(targetOrchId, true);

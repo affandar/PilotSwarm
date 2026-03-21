@@ -1,6 +1,6 @@
 {
   "name": "pilotswarm-cli",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Terminal UI for pilotswarm — interactive durable agent orchestration.",
   "type": "module",
   "bin": {
