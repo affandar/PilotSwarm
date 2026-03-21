@@ -22,6 +22,8 @@
     "test:local:chaos": "npm run test:local:chaos --workspace=packages/sdk",
     "lint": "npm run lint --workspace=packages/sdk",
     "clean": "npm run clean --workspaces",
+    "perf:spawn": "node --env-file=.env scripts/perf/run-sdk-spawn-perf.mjs",
+    "perf:spawn:raw": "npm run test:perf:spawn --workspace=packages/sdk",
     "chat": "node --env-file=.env packages/sdk/examples/chat.js",
     "tui": "npm run tui --workspace=packages/cli",
     "tui:remote": "npm run tui:remote --workspace=packages/cli",

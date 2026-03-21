@@ -344,15 +344,17 @@ export class PilotSwarmClient {
         if (this.started) return;
         const store = this.config.store;
         const _trace = this.config.traceWriter ?? (() => {});
+        const startedAt = Date.now();
+        const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
 
         // Create duroxide client
         let provider: any;
         if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
         else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
         else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            _trace("[client] connectWithSchema start...");
+            trace("[client] connectWithSchema start...");
             provider = await PostgresProvider.connectWithSchema(store, this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA);
-            _trace("[client] connectWithSchema done");
+            trace("[client] connectWithSchema done");
         } else {
             throw new Error(`Unsupported store URL: ${store}`);
         }
@@ -360,20 +362,21 @@ export class PilotSwarmClient {
 
         // Create CMS catalog
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            _trace("[client] CMS create start...");
+            trace("[client] CMS create start...");
             this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
-            _trace("[client] CMS initialize start...");
+            trace("[client] CMS initialize start...");
             await this._catalog.initialize();
-            _trace("[client] CMS initialize done");
+            trace("[client] CMS initialize done");
         }
 
-        _trace("[client] facts create start...");
+        trace("[client] facts create start...");
         this._factStore = await createFactStoreForUrl(store, this.config.factsSchema);
-        _trace("[client] facts initialize start...");
+        trace("[client] facts initialize start...");
         await this._factStore.initialize();
-        _trace("[client] facts initialize done");
+        trace("[client] facts initialize done");
 
         this.started = true;
+        trace("[client] start complete");
     }
 
     async stop(): Promise<void> {
@@ -397,6 +400,9 @@ export class PilotSwarmClient {
     /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
     private async _ensureOrchestrationAndSend(sessionId: string, prompt: string, opts?: { bootstrap?: boolean }): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
+        const _trace = this.config.traceWriter ?? (() => {});
+        const startedAt = Date.now();
+        const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
 
         const orchestrationId = `session-${sessionId}`;
         const fullConfig = this.sessionConfigs.get(sessionId);
@@ -418,6 +424,8 @@ export class PilotSwarmClient {
             toolNames: allNames.length ? allNames : undefined,
         };
 
+        trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
+
         if (!this.activeOrchestrations.has(sessionId)) {
             const parentSessionId = this.parentSessionIds.get(sessionId);
             const nestingLevel = this.nestingLevels.get(sessionId);
@@ -438,6 +446,7 @@ export class PilotSwarmClient {
                 ...(this._sessionPolicy ? { sessionPolicy: this._sessionPolicy } : {}),
                 ...(this._allowedAgentNames.length > 0 ? { allowedAgentNames: this._allowedAgentNames } : {}),
             };
+            const startAt = Date.now();
             await this.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,
                 DURABLE_SESSION_ORCHESTRATION_NAME,
@@ -445,20 +454,26 @@ export class PilotSwarmClient {
                 DURABLE_SESSION_LATEST_VERSION,
             );
             this.activeOrchestrations.set(sessionId, orchestrationId);
+            trace(`[client] startOrchestrationVersioned done (${Date.now() - startAt}ms)`);
         }
 
         // CMS: update state + orchestration ID
+        const updateAt = Date.now();
         await this._catalog.updateSession(sessionId, {
             orchestrationId,
             state: "running",
             lastActiveAt: new Date(),
         });
+        trace(`[client] updateSession running done (${Date.now() - updateAt}ms)`);
 
+        const enqueueAt = Date.now();
         await this.duroxideClient.enqueueEvent(
             orchestrationId,
             "messages",
             JSON.stringify({ prompt, ...(opts?.bootstrap ? { bootstrap: true } : {}) }),
         );
+        trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
+        trace("[client] ensureOrchestrationAndSend complete");
 
         return orchestrationId;
     }
