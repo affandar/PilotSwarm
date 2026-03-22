@@ -37,15 +37,6 @@ Common role definition GUIDs:
 Note: `az role assignment create` may report an error even when the assignment
 actually succeeds. A subsequent attempt returning `RoleAssignmentExists` confirms it worked.
 
-## PostgreSQL Flexible Server Region Restrictions
-
-Some Azure subscriptions restrict PostgreSQL Flexible Server provisioning to
-specific regions (or disallow new provisioning entirely). When this happens:
-- Check for existing servers: `az postgres flexible-server list --output table`
-- Create a database on an existing server instead of provisioning a new one
-- Document the actual server/resource-group in the env config
-- Always confirm with the user before reusing an existing server
-
 ## Azure Key Vault with Secrets Store CSI Driver
 
 When using AKV + Secrets Store CSI in AKS:
