@@ -89,16 +89,3 @@ cp -r ../pilotswarm/packages/cli pilotswarm-cli-local
 ```
 
 Add the local copies to `.gitignore`.
-
-## HorizonDB (Microsoft.OrionDB) Private Preview Quirks
-
-HorizonDB is in private preview under the `Microsoft.OrionDB` namespace. Several API
-behaviors differ from standard Azure resource patterns:
-
-1. **Firewall API path**: Must use `clusters/{name}/pools/DefaultPool/firewallRules/{ruleName}` — NOT the standard Flex Server firewall path. Pool name must be `DefaultPool` (case-sensitive).
-2. **Firewall rules require `description`**: The `description` field is mandatory. Omitting it causes a silent failure. Broad IP ranges are silently rejected.
-3. **Azure Monitor**: Only 9 metrics available, minimum granularity is `PT30M`. There is NO `iops` metric — do not request it.
-4. **API version**: `2025-08-01-preview` only. No stable version exists.
-5. **`publicNetworkAccess` / `allowedSourceRanges`**: Silently ignored in PUT/PATCH requests. Use the firewall rule API instead.
-6. **`administratorLogin` / `administratorLoginPassword`**: Required at creation time but not shown in GET responses. Omitting them causes a silent provisioning failure — the PUT returns 200/201 with `Provisioning` state but the cluster never reaches `Succeeded`.
-7. **Region availability**: Controlled by per-region feature flags under `Microsoft.OrionDB`. Check with `az feature list --namespace Microsoft.OrionDB`. Regions in `Pending` state need approval from the HorizonDB team.
