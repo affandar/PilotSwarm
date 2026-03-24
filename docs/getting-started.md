@@ -6,8 +6,8 @@ from scratch — the durable execution runtime for GitHub Copilot SDK agents.
 By the end you'll have:
 
 - A PostgreSQL database (local or Azure)
-- A GitHub Copilot token
-- A working `.env` file
+- LLM access via model providers (GitHub Copilot, Azure OpenAI, or any OpenAI-compatible endpoint)
+- A working `.env` and `.model_providers.json`
 - The TUI running with embedded workers (local mode)
 - Optionally: AKS workers + Azure Blob Storage for production
 
@@ -155,24 +155,34 @@ in `run.sh`, so you don't need to worry about expiry for local dev.
 
 ## Step 4: Create Your `.env` File
 
+PilotSwarm uses `.model_providers.json` for LLM configuration and `.env` for secrets (API keys, database URL).
+
+> **Easiest way to get started:** Set `GITHUB_TOKEN` — this gives you access to all models available through GitHub Copilot (Claude, GPT-4.1, etc.) with no additional setup. You can add BYOK providers later.
+
 ### For local PostgreSQL
 
-Create `.env` in the project root:
+Copy the example files:
 
 ```bash
-cat > .env << 'EOF'
-# Required
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/pilotswarm
-GITHUB_TOKEN=ghu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# Optional — defaults shown
-# WORKERS=4
-# COPILOT_MODEL=gpt-4.1
-# LOG_LEVEL=info
-EOF
+cp .env.example .env
+cp .model_providers.example.json .model_providers.json
 ```
 
-Replace the `GITHUB_TOKEN` value with your actual token from `gh auth token`.
+Then edit `.env` with your credentials:
+
+```bash
+# Required
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/durable_copilot
+
+# Option A: GitHub Copilot (easiest — gives access to Claude, GPT, etc.)
+GITHUB_TOKEN=ghu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Option B: Azure OpenAI / BYOK (no GitHub subscription needed)
+AZURE_OPENAI_KEY=your-azure-openai-key
+# Add more provider keys as needed — see .model_providers.json
+```
+
+> **Note:** You only need credentials for the providers you want to use. Providers without valid API keys are automatically hidden from the model picker and agent tools.
 
 ### For Azure PostgreSQL
 
@@ -182,7 +192,10 @@ Create `.env.remote`:
 cat > .env.remote << 'EOF'
 # Required
 DATABASE_URL=postgresql://copilotadmin:<password>@my-copilot-pg.postgres.database.azure.com:5432/postgres?sslmode=require
+
+# LLM provider keys (at least one required)
 GITHUB_TOKEN=ghu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# AZURE_OPENAI_KEY=your-azure-openai-key
 
 # Optional — Azure Blob Storage for session dehydration (multi-node)
 # AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
@@ -364,7 +377,6 @@ multiple independent deployments on the **same database**, set custom schema nam
 // Worker
 const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
-    githubToken: process.env.GITHUB_TOKEN,
     duroxideSchema: "team_alpha_duroxide",
     cmsSchema: "team_alpha_sessions",
 });
@@ -486,7 +498,14 @@ spec:
 ```bash
 # ─── Required ─────────────────────────────────────────────────────
 DATABASE_URL=postgresql://user:pass@host:5432/dbname
-GITHUB_TOKEN=ghu_...                    # only needed where workers run
+
+# ─── LLM Provider Keys (at least one required) ───────────────────
+GITHUB_TOKEN=ghu_...                    # GitHub Copilot (easiest to get started)
+AZURE_OPENAI_KEY=...                    # Azure OpenAI
+AZURE_MODEL_ROUTER_KEY=...              # Azure Model Router
+AZURE_FW_GLM5_KEY=...                   # Azure AI Services (GLM-5, etc.)
+AZURE_KIMI_K25_KEY=...                  # Azure AI Services (Kimi-K2.5, etc.)
+# Only set keys for providers you use. Others are auto-hidden.
 
 # ─── Optional: Blob Storage (multi-node) ──────────────────────────
 AZURE_STORAGE_CONNECTION_STRING=...     # enables session dehydration
@@ -494,7 +513,6 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 
 # ─── Optional: Workers ────────────────────────────────────────────
 WORKERS=4                               # embedded workers in TUI (0 = client-only)
-COPILOT_MODEL=gpt-4.1                   # default LLM model
 SYSTEM_MESSAGE="You are a helpful assistant."  # or path to .md file
 
 # ─── Optional: Plugin ─────────────────────────────────────────────

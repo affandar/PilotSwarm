@@ -2,15 +2,17 @@
 set -euo pipefail
 
 # ─────────────────────────────────────────────────────────────
-# reset-local.sh — Full local reset for PilotSwarm
+# reset-local.sh — Full reset for PilotSwarm
 #
 # Drops duroxide + CMS schemas, purges local session state
 # (tar archives, copilot session dirs), and optionally
 # cleans blob storage.
 #
 # Usage:
-#   ./scripts/reset-local.sh           # interactive
-#   ./scripts/reset-local.sh --yes     # skip confirmation
+#   ./scripts/reset-local.sh           # local reset (interactive)
+#   ./scripts/reset-local.sh --yes     # local reset (skip confirmation)
+#   ./scripts/reset-local.sh remote    # remote DB + blob reset
+#   ./scripts/reset-local.sh remote --yes
 # ─────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,8 +20,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SDK_PLUGINS_DIR="$REPO_ROOT/packages/sdk/plugins"
 export REPO_ROOT SDK_PLUGINS_DIR
 
-# Load .env
-ENV_FILE="${REPO_ROOT}/.env"
+# Parse args
+MODE="local"
+SKIP_CONFIRM=false
+for arg in "$@"; do
+    case "$arg" in
+        remote)    MODE="remote" ;;
+        --yes|-y)  SKIP_CONFIRM=true ;;
+    esac
+done
+
+# Load env file based on mode
+if [[ "$MODE" == "remote" ]]; then
+    ENV_FILE="${REPO_ROOT}/.env.remote"
+else
+    ENV_FILE="${REPO_ROOT}/.env"
+fi
 if [[ -f "$ENV_FILE" ]]; then
     set -a
     # shellcheck source=/dev/null
@@ -35,10 +51,6 @@ DEFAULT_ARTIFACT_DIR="$HOME/.copilot/artifacts"
 DUROXIDE_SCHEMA="${DUROXIDE_SCHEMA:-duroxide}"
 CMS_SCHEMA="${CMS_SCHEMA:-copilot_sessions}"
 FACTS_SCHEMA="${FACTS_SCHEMA:-pilotswarm_facts}"
-SKIP_CONFIRM=false
-if [[ "${1:-}" == "--yes" || "${1:-}" == "-y" ]]; then
-    SKIP_CONFIRM=true
-fi
 
 # ── Query CMS session IDs early (for summary + targeted cleanup) ─
 SESSION_IDS_FILE=$(mktemp)
@@ -205,24 +217,30 @@ fi
 # ── Summary ──────────────────────────────────────────────────
 STEP=1
 echo ""
-echo "🔄 PilotSwarm Local Reset"
+if [[ "$MODE" == "remote" ]]; then
+    echo "🔄 PilotSwarm Remote Reset (env: .env.remote)"
+else
+    echo "🔄 PilotSwarm Local Reset"
+fi
 echo ""
 echo "   This will:"
 echo "     ${STEP}. DROP database schemas: ${DUROXIDE_SCHEMA}, ${CMS_SCHEMA}, ${FACTS_SCHEMA}"
 STEP=$((STEP + 1))
 echo "     ${STEP}. Delete ${FACT_COUNT} fact row(s) from ${FACTS_SCHEMA}.facts"
-STEP=$((STEP + 1))
-echo "     ${STEP}. Delete ${LOCAL_MATCH_COUNT} local session dir(s) matching ${CMS_COUNT} CMS session(s)"
-echo "        (other Copilot sessions in ${SESSION_STATE_DIR} are kept)"
-STEP=$((STEP + 1))
-echo "     ${STEP}. Delete ${STORE_MATCH_COUNT} matching filesystem session-store archive(s)"
-if [[ "$STORE_MATCH_COUNT" -gt 0 || "$STORE_META_MATCH_COUNT" -gt 0 ]]; then
-    echo "        and ${STORE_META_MATCH_COUNT} matching metadata file(s) from local session-store dirs"
-else
-    echo "        from local session-store dirs (none currently matched)"
+if [[ "$MODE" != "remote" ]]; then
+    STEP=$((STEP + 1))
+    echo "     ${STEP}. Delete ${LOCAL_MATCH_COUNT} local session dir(s) matching ${CMS_COUNT} CMS session(s)"
+    echo "        (other Copilot sessions in ${SESSION_STATE_DIR} are kept)"
+    STEP=$((STEP + 1))
+    echo "     ${STEP}. Delete ${STORE_MATCH_COUNT} matching filesystem session-store archive(s)"
+    if [[ "$STORE_MATCH_COUNT" -gt 0 || "$STORE_META_MATCH_COUNT" -gt 0 ]]; then
+        echo "        and ${STORE_META_MATCH_COUNT} matching metadata file(s) from local session-store dirs"
+    else
+        echo "        from local session-store dirs (none currently matched)"
+    fi
+    STEP=$((STEP + 1))
+    echo "     ${STEP}. Delete ${ARTIFACT_MATCH_COUNT} local artifact dir(s) for cleaned-up sessions"
 fi
-STEP=$((STEP + 1))
-echo "     ${STEP}. Delete ${ARTIFACT_MATCH_COUNT} local artifact dir(s) for cleaned-up sessions"
 if [[ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]]; then
     STEP=$((STEP + 1))
     echo "     ${STEP}. Purge blob storage container: ${AZURE_STORAGE_CONTAINER:-copilot-sessions}"
@@ -268,6 +286,9 @@ await pool.end();
 fi
 
 # ── 2. Delete only local session dirs that were in the CMS ──
+if [[ "$MODE" == "remote" ]]; then
+    echo "   (skipping local filesystem cleanup — remote mode)"
+else
 if [[ -d "$SESSION_STATE_DIR" && -s "$SESSION_IDS_FILE" ]]; then
     DELETED=0
     while IFS= read -r sid; do
@@ -328,6 +349,8 @@ if [[ "$TAR_COUNT" -gt 0 ]]; then
     find "$REPO_ROOT" -maxdepth 3 \( -name "*.tar" -o -name "*.tar.gz" \) -delete
     echo "   ✅ Tar files removed"
 fi
+# end local-only cleanup
+fi
 
 # ── 6. Blob storage purge (if configured) ───────────────────
 if [[ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]]; then
@@ -345,4 +368,40 @@ fi
 
 echo ""
 echo "   Done. Everything is clean — schemas will be recreated on next start."
+
+# ── 7. Rebuild and redeploy AKS workers (remote mode only) ──
+if [[ "$MODE" == "remote" ]]; then
+    K8S_CTX="${K8S_CONTEXT:-toygres-aks}"
+    K8S_NS="${K8S_NAMESPACE:-copilot-runtime}"
+    echo ""
+    echo "   Rebuilding and redeploying AKS workers..."
+    echo "   (context: ${K8S_CTX}, namespace: ${K8S_NS})"
+    echo ""
+
+    # Build TypeScript
+    echo "   Building TypeScript..."
+    npm run build -w packages/sdk 2>/dev/null || { echo "   ⚠️  TypeScript build failed"; }
+
+    # Build and push Docker image
+    REGISTRY="${ACR_REGISTRY:-toygresaksacr.azurecr.io}"
+    IMAGE="${REGISTRY}/copilot-runtime-worker:latest"
+    echo "   Building and pushing Docker image..."
+    az acr login --name "${REGISTRY%%.*}" 2>/dev/null
+    docker build -t "$IMAGE" -f deploy/Dockerfile.worker --push . 2>/dev/null \
+        && echo "   ✅ Image pushed: ${IMAGE}" \
+        || { echo "   ⚠️  Docker build/push failed — falling back to pod restart only"; }
+
+    # Apply k8s manifests and restart
+    kubectl --context "$K8S_CTX" apply -f deploy/k8s/namespace.yaml 2>/dev/null
+    kubectl --context "$K8S_CTX" apply -f deploy/k8s/worker-deployment.yaml 2>/dev/null
+    kubectl --context "$K8S_CTX" -n "$K8S_NS" rollout restart deployment/copilot-runtime-worker 2>/dev/null
+
+    echo "   Waiting for rollout..."
+    if kubectl --context "$K8S_CTX" -n "$K8S_NS" rollout status deployment/copilot-runtime-worker --timeout=90s 2>/dev/null; then
+        echo "   ✅ Workers redeployed"
+    else
+        echo "   ⚠️  Rollout timed out — check with: kubectl --context $K8S_CTX -n $K8S_NS get pods"
+    fi
+fi
+
 echo ""

@@ -515,7 +515,7 @@ const getWeather = defineTool("get_weather", {
 });
 
 const client = new CopilotClient({
-    githubToken: process.env.GITHUB_TOKEN,
+    githubToken: process.env.GITHUB_TOKEN,  // standard Copilot SDK
 });
 
 const session = await client.createSession({
@@ -557,7 +557,6 @@ const getWeather = defineTool("get_weather", {
 });
 
 const client = new PilotSwarmClient({
-    githubToken: process.env.GITHUB_TOKEN,
     store: process.env.DATABASE_URL,        // ← the only new required option
 });
 
@@ -617,7 +616,6 @@ const sessions = await client.listSessions();
 // Scale to multiple workers
 const client = new PilotSwarmClient({
     store: process.env.DATABASE_URL,
-    githubToken: process.env.GITHUB_TOKEN,
     blobConnectionString: process.env.BLOB_CONN,  // enables relocation
     maxSessionsPerRuntime: 50,
 });

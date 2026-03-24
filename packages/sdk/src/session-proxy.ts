@@ -329,12 +329,14 @@ export function registerActivities(
     });
 
     // ── listModels ──────────────────────────────────────────
-    if (githubToken) {
-        runtime.registerActivity("listModels", async (
-            activityCtx: any,
-            _input: Record<string, unknown>,
-        ): Promise<string> => {
-            activityCtx.traceInfo("[listModels] fetching");
+    // Always register — the model registry is the authoritative source.
+    // Falls back to SDK listModels if a GitHub token is available.
+    runtime.registerActivity("listModels", async (
+        activityCtx: any,
+        _input: Record<string, unknown>,
+    ): Promise<string> => {
+        activityCtx.traceInfo("[listModels] fetching");
+        if (githubToken) {
             const { CopilotClient } = await import("@github/copilot-sdk");
             const sdk = new CopilotClient({ githubToken });
             try {
@@ -344,13 +346,15 @@ export function registerActivities(
             } finally {
                 try { await sdk.stop(); } catch {}
             }
-        });
-    }
+        }
+        // No GitHub token — return empty (registry models are injected by the tool handler)
+        return JSON.stringify([]);
+    });
 
     // ── summarizeSession ────────────────────────────────────
     // Fetches recent conversation from CMS, asks a lightweight LLM
     // for a 3-5 word title, and writes it back to CMS.
-    if (githubToken && catalog) {
+    if (catalog) {
         runtime.registerActivity("summarizeSession", async (
             activityCtx: any,
             input: { sessionId: string },
@@ -392,12 +396,28 @@ export function registerActivities(
                 "Return ONLY the summary, nothing else. No quotes, no punctuation at the end.\n\n" +
                 transcript;
 
-            // Use a one-shot CopilotSession to generate the title
+            // Use a one-shot CopilotSession to generate the title.
+            // Prefer the default provider from the registry (works without GitHub token).
             const { CopilotClient: SdkClient } = await import("@github/copilot-sdk");
-            const sdk = new SdkClient({ githubToken });
+            const sdk = new SdkClient({ ...(githubToken ? { githubToken } : {}) });
             try {
                 await sdk.start();
-                const tempSession = await sdk.createSession({ model: "gpt-4o-mini", onPermissionRequest: async () => ({ kind: "approved" as const }) });
+                // Resolve the default model + provider from the registry
+                const defaultProvider = sessionManager.resolveDefaultProvider();
+                const sessionOpts: any = {
+                    onPermissionRequest: async () => ({ kind: "approved" as const }),
+                };
+                if (defaultProvider) {
+                    sessionOpts.model = defaultProvider.modelName;
+                    sessionOpts.provider = defaultProvider.sdkProvider;
+                } else if (githubToken) {
+                    sessionOpts.model = "gpt-4o-mini";
+                } else {
+                    activityCtx.traceInfo("[summarizeSession] no provider and no GitHub token — skipping");
+                    await sdk.stop();
+                    return "";
+                }
+                const tempSession = await sdk.createSession(sessionOpts);
                 let title = "";
                 await new Promise<void>((resolve, reject) => {
                     tempSession.on("assistant.message", (event: any) => {

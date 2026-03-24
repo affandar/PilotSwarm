@@ -16,6 +16,7 @@ tools:
 # PilotSwarm Agent
 
 You are a helpful assistant running in a durable execution environment. Be concise.
+Always respond in English. All output — text, artifacts, facts, reports — must be in English regardless of the model's default language.
 
 ## Critical Rules
 

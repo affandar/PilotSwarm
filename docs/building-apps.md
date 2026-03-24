@@ -143,7 +143,6 @@ For programmatic control, bypass the plugin directory entirely:
 ```javascript
 const worker = new PilotSwarmWorker({
   store: process.env.DATABASE_URL,
-  githubToken: process.env.GITHUB_TOKEN,
   skillDirectories: ["/path/to/my-skills"],
   customAgents: [{ name: "reviewer", prompt: "You review code.", tools: null }],
   mcpServers: { "my-server": { command: "node", args: ["server.js"], tools: ["*"] } },
@@ -208,7 +207,6 @@ import { PilotSwarmWorker } from "pilotswarm-sdk";
 
 const worker = new PilotSwarmWorker({
   store: process.env.DATABASE_URL,
-  githubToken: process.env.GITHUB_TOKEN,
 });
 
 worker.registerTools([deployService, checkHealth, rollback]);
@@ -232,7 +230,7 @@ A bare-bones app needs exactly two secrets:
 | Secret | Purpose |
 |--------|---------|
 | `DATABASE_URL` | PostgreSQL connection string. Duroxide backend + CMS both use this. |
-| `GITHUB_TOKEN` | GitHub Copilot API token for LLM requests. |
+| `GITHUB_TOKEN` | GitHub Copilot API token (easiest way to get started — optional if using BYOK providers). |
 
 Optional for additional features:
 
@@ -276,7 +274,7 @@ Facts use the same database as the runtime and CMS. Facts are session-scoped by 
 │                                                  │
 │  .env:                                           │
 │    DATABASE_URL=postgresql://...                  │
-│    GITHUB_TOKEN=ghu_...                          │
+│    AZURE_OPENAI_KEY=...  (or GITHUB_TOKEN)       │
 └──────────────────────────────────────────────────┘
          │
          ▼
@@ -408,7 +406,7 @@ my-app/
 │   │   └── kubernetes/SKILL.md
 │   ├── .mcp.json
 │   └── system.md                    # System message (optional)
-├── .env                             # DATABASE_URL + GITHUB_TOKEN
+├── .env                             # DATABASE_URL + LLM provider keys
 └── package.json
 ```
 
@@ -482,7 +480,6 @@ import { deployService, checkHealth, rollback } from "./src/tools.js";
 
 const worker = new PilotSwarmWorker({
   store: process.env.DATABASE_URL,
-  githubToken: process.env.GITHUB_TOKEN,
   blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
   pluginDirs: ["./plugin"],
   systemMessage: "You are a release manager for production deployments.",

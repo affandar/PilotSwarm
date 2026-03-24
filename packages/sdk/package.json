@@ -55,7 +55,7 @@
   "dependencies": {
     "@azure/storage-blob": "^12.31.0",
     "@github/copilot": "^1.0.2",
-    "@github/copilot-sdk": "^0.1.32",
+    "@github/copilot-sdk": "^0.2.0",
     "duroxide": "^0.1.17",
     "pg": "^8.18.0"
   },

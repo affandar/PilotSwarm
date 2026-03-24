@@ -4,6 +4,8 @@
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
+**v0.1.9** — Web portal, BYOK model providers (no GitHub token required), TUI prompt editor with file attach, artifact picker improvements. See [CHANGELOG.md](CHANGELOG.md) for details.
+
 ## Builder Agents
 
 If you are building layered apps on top of PilotSwarm, this repo now ships distributable builder-agent templates you can copy into your own repository:
@@ -21,7 +23,9 @@ These are not active agents in this repo. They are templates intended to be copi
 ```bash
 npm install pilotswarm-sdk
 cp .env.example .env
-# edit .env with DATABASE_URL and GITHUB_TOKEN
+cp .model_providers.example.json .model_providers.json
+# edit .env: set DATABASE_URL and at least one LLM provider key
+# easiest: set GITHUB_TOKEN (gives access to Claude, GPT, etc. via GitHub Copilot)
 ```
 
 ```typescript
@@ -44,7 +48,6 @@ const getWeather = defineTool("get_weather", {
 // Start a worker (runs LLM turns, executes tools)
 const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,          // PostgreSQL connection string
-    githubToken: process.env.GITHUB_TOKEN,
 });
 worker.registerTools([getWeather]);           // register tools at the worker level
 await worker.start();

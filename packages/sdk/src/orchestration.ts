@@ -896,17 +896,23 @@ export function* durableSessionOrchestration_1_0_23(
                         if (waitPlan.shouldDehydrate && userPrompt) {
                             finalPrompt = wrapWithResumeContext(
                                 userPrompt,
-                                `Your timer was interrupted by a USER MESSAGE. You MUST respond to the user's message below before doing anything else. ` +
+                                `Your timer was interrupted by a USER MESSAGE. ` +
+                                `RESPONSE FORMAT: You MUST first output a text response addressing the user's message. ` +
+                                `Then call wait(${remainingSec}) to resume your timer. ` +
+                                `IMPORTANT: A turn that calls wait() without any preceding text output is WRONG. ` +
+                                `The user is waiting to see your reply. Always write text first, then call wait. ` +
                                 `Timer context: ${result.seconds}s timer (reason: "${result.reason}"), ` +
-                                `${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
-                                `After fully addressing the user's message, resume the wait for the remaining ${remainingSec} seconds.`,
+                                `${elapsedSec}s elapsed, ${remainingSec}s remain.`,
                             );
                         } else if (userPrompt) {
                             // Not dehydrated but still interrupted — give timing context
                             finalPrompt = `${userPrompt}\n\n` +
                                 `[SYSTEM: IMPORTANT — The above is a USER MESSAGE that interrupted your ${result.seconds}s timer (reason: "${result.reason}"). ` +
-                                `You MUST respond to the user's message FIRST. ${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
-                                `After fully answering the user, resume the wait for the remaining ${remainingSec} seconds.]`;
+                                `RESPONSE FORMAT: You MUST first output a text response addressing the user's message. ` +
+                                `Then call wait(${remainingSec}) to resume your timer. ` +
+                                `A turn that calls wait() without any preceding text output is WRONG. ` +
+                                `The user is waiting to see your reply. Always write text first, then call wait. ` +
+                                `${elapsedSec}s elapsed, ${remainingSec}s remain.]`;
                         } else {
                             finalPrompt = userPrompt;
                         }

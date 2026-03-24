@@ -27,6 +27,8 @@
     "chat": "node --env-file=.env packages/sdk/examples/chat.js",
     "tui": "npm run tui --workspace=packages/cli",
     "tui:remote": "npm run tui:remote --workspace=packages/cli",
+    "portal:start": "./scripts/portal-start.sh",
+    "portal:stop": "./scripts/portal-stop.sh",
     "worker": "node --env-file=.env.remote packages/sdk/examples/worker.js",
     "db:reset": "node --env-file=.env scripts/db-reset.js",
     "postinstall": "node scripts/postinstall.js"

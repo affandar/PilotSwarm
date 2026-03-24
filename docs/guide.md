@@ -2,7 +2,7 @@
 
 > This guide is now a legacy broad overview. If you are starting fresh, use [docs/README.md](./README.md) and then pick one of these paths: [Working On PilotSwarm](./contributors/working-on-pilotswarm.md), [Building SDK Apps](./sdk/building-apps.md), or [Building CLI Apps](./cli/building-cli-apps.md).
 
-> **New here?** Start with the [Getting Started](./getting-started.md) guide to set up PostgreSQL, get a GitHub token, and create your `.env` file.
+> **New here?** Start with the [Getting Started](./getting-started.md) guide to set up PostgreSQL, configure your model providers, and create your `.env` file.
 
 ## What is PilotSwarm?
 
@@ -30,7 +30,7 @@ const weather = defineTool("get_weather", {
     },
 });
 
-const client = new CopilotClient({ githubToken: process.env.GITHUB_TOKEN });
+const client = new CopilotClient({ githubToken: process.env.GITHUB_TOKEN }); // standard SDK
 const session = await client.createSession({
     tools: [weather],
     systemMessage: "You are a weather assistant.",
@@ -66,7 +66,6 @@ const weather = defineTool("get_weather", {
 // Worker runs LLM turns and executes tools
 const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
-    githubToken: process.env.GITHUB_TOKEN,
 });
 await worker.start();
 

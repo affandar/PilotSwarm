@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PilotSwarm</title>
+  <link rel="stylesheet" href="/xterm/css/xterm.css" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #0d0d1a; }
+    #terminal { width: 100%; height: 100%; }
+    #overlay {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: #0d0d1a; color: #aaa;
+      font-family: monospace; font-size: 14px;
+      z-index: 10; transition: opacity 0.3s;
+    }
+    #overlay.hidden { opacity: 0; pointer-events: none; }
+    .spinner { display: inline-block; width: 16px; text-align: center; }
+    #copy-hint {
+      position: fixed; bottom: 4px; right: 8px;
+      color: #555; font-family: monospace; font-size: 11px;
+      z-index: 5; pointer-events: none;
+    }
+    @keyframes dots { 0% { content: '.'; } 33% { content: '..'; } 66% { content: '...'; } }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <span>Connecting to PilotSwarm<span class="spinner" id="dots">...</span></span>
+  </div>
+  <div id="copy-hint">Select text to copy · ⌥Enter for multiline</div>
+  <div id="terminal"></div>
+
+  <script type="module">
+    import { Terminal } from "/xterm/lib/xterm.mjs";
+    import { FitAddon } from "/xterm-addon-fit/lib/addon-fit.mjs";
+    import { WebLinksAddon } from "/xterm-addon-web-links/lib/addon-web-links.mjs";
+
+    const term = new Terminal({
+      cursorBlink: true,
+      cursorStyle: "block",
+      fontFamily: "'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
+      fontSize: 13,
+      lineHeight: 1.1,
+      macOptionIsMeta: true,
+      allowProposedApi: true,
+      theme: {
+        background: "#0d0d1a",
+        foreground: "#e0e0e0",
+        cursor: "#00d4ff",
+        cursorAccent: "#0d0d1a",
+        selectionBackground: "rgba(0, 212, 255, 0.3)",
+        black: "#1a1a2e",
+        red: "#ff5555",
+        green: "#50fa7b",
+        yellow: "#f1fa8c",
+        blue: "#6272a4",
+        magenta: "#ff79c6",
+        cyan: "#00d4ff",
+        white: "#f8f8f2",
+        brightBlack: "#44475a",
+        brightRed: "#ff6e6e",
+        brightGreen: "#69ff94",
+        brightYellow: "#ffffa5",
+        brightBlue: "#d6acff",
+        brightMagenta: "#ff92df",
+        brightCyan: "#a4ffff",
+        brightWhite: "#ffffff",
+      },
+    });
+
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.loadAddon(new WebLinksAddon());
+
+    const container = document.getElementById("terminal");
+    term.open(container);
+    fitAddon.fit();
+
+    // ── WebSocket connection ──────────────────────────────────
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+    ws.onopen = () => {
+      document.getElementById("overlay").classList.add("hidden");
+      // Send initial terminal size
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    };
+
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "output") {
+          term.write(msg.data);
+        } else if (msg.type === "exit") {
+          term.write("\r\n\x1b[90m[Session ended]\x1b[0m\r\n");
+        }
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      term.write("\r\n\x1b[90m[Disconnected — reload to reconnect]\x1b[0m\r\n");
+    };
+
+    // ── Keyboard input → PTY ──────────────────────────────────
+    term.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data }));
+      }
+    });
+
+    // Handle binary data (some key combos on macOS)
+    term.onBinary((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data }));
+      }
+    });
+
+    // ── Resize → PTY ──────────────────────────────────────────
+    window.addEventListener("resize", () => {
+      fitAddon.fit();
+    });
+
+    term.onResize(({ cols, rows }) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", cols, rows }));
+      }
+    });
+
+    // ── Animated dots while connecting ────────────────────────
+    let dotCount = 0;
+    const dotInterval = setInterval(() => {
+      dotCount = (dotCount + 1) % 4;
+      const el = document.getElementById("dots");
+      if (el) el.textContent = ".".repeat(dotCount || 1);
+      if (ws.readyState === WebSocket.OPEN) clearInterval(dotInterval);
+    }, 400);
+  </script>
+</body>
+</html>
