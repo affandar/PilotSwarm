@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+/* ── Splash color classes (blessed tag → CSS) ─────────────── */
+.splash-cyan    { color: #00d4ff; }
+.splash-magenta { color: #ff00ff; }
+.splash-yellow  { color: #ffd700; }
+.splash-green   { color: #00ff88; }
+.splash-red     { color: #ff4444; }
+.splash-blue    { color: #0088ff; }
+.splash-white   { color: #ffffff; }
+.splash-gray    { color: #888888; }
+.splash-bold    { font-weight: 700; }

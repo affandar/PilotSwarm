@@ -118,8 +118,16 @@ export class ModelProviderRegistry {
     private _allDescriptors: ModelDescriptor[] = [];
 
     constructor(config: ModelProvidersFile) {
-        this.providers = config.providers;
         this._defaultModel = config.defaultModel;
+
+        // Filter to providers whose credentials are actually available.
+        // GitHub providers need a resolved githubToken; BYOK providers need a resolved apiKey.
+        this.providers = config.providers.filter(p => {
+            if (p.type === "github") {
+                return !!resolveEnvValue(p.githubToken);
+            }
+            return !!resolveEnvValue(p.apiKey);
+        });
 
         // Build lookups
         for (const p of this.providers) {
@@ -145,9 +153,11 @@ export class ModelProviderRegistry {
             }
         }
 
-        // If no defaultModel, use first model of first provider
-        if (!this._defaultModel && this._allDescriptors.length > 0) {
-            this._defaultModel = this._allDescriptors[0].qualifiedName;
+        // If defaultModel is missing or references a filtered-out provider, use first available
+        if (!this._defaultModel || !this.descriptors.has(this._defaultModel)) {
+            this._defaultModel = this._allDescriptors.length > 0
+                ? this._allDescriptors[0].qualifiedName
+                : undefined;
         }
     }
 
@@ -278,6 +288,15 @@ export function loadModelProviders(filePath?: string): ModelProviderRegistry | n
         path.join(process.cwd(), "model_providers.json"),
         "/app/model_providers.json",
     ];
+
+    // Also walk up from CWD to find repo-root config
+    let dir = process.cwd();
+    for (let i = 0; i < 5; i++) {
+        const parent = path.dirname(dir);
+        if (parent === dir) break; // hit filesystem root
+        searchPaths.push(path.join(parent, ".model_providers.json"));
+        dir = parent;
+    }
     for (const p of searchPaths) {
         if (fs.existsSync(p)) {
             const raw = fs.readFileSync(p, "utf-8");

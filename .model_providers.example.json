@@ -4,8 +4,28 @@
             "id": "github-copilot",
             "type": "github",
             "githubToken": "env:GITHUB_TOKEN",
-            "models": ["claude-sonnet-4-20250514", "gpt-4o", "o3-mini"],
-            "default": true
+            "models": [
+                {
+                    "name": "claude-opus-4.6",
+                    "description": "Claude Opus 4.6. Most capable model. Deep reasoning, complex multi-step tasks, nuanced analysis. Use for hard problems where quality matters most.",
+                    "cost": "high"
+                },
+                {
+                    "name": "claude-sonnet-4.6",
+                    "description": "Claude Sonnet 4.6. Strong all-rounder. Good balance of capability and speed. Use for general coding, analysis, and multi-step tasks.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "gpt-4.1",
+                    "description": "GPT-4.1 via GitHub Copilot. Strong reasoning, coding, and instruction following.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "gpt-5.1",
+                    "description": "GPT-5.1. Latest generation. Advanced reasoning and coding capabilities.",
+                    "cost": "high"
+                }
+            ]
         },
         {
             "id": "azure-openai",
@@ -13,22 +33,71 @@
             "baseUrl": "https://YOUR-RESOURCE.openai.azure.com/openai",
             "apiKey": "env:AZURE_OPENAI_KEY",
             "apiVersion": "2024-04-01-preview",
-            "models": ["gpt-4.1-mini", "gpt-4.1"]
+            "models": [
+                {
+                    "name": "gpt-4.1",
+                    "description": "Latest GPT-4.1 full model. Strong reasoning, coding, and instruction following. Good for complex tasks.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "gpt-4.1-mini",
+                    "description": "Fast, cost-effective GPT-4.1 variant. Good for simple tasks, drafts, and high-throughput workloads.",
+                    "cost": "low"
+                }
+            ]
         },
         {
-            "id": "openai",
+            "id": "azure-model-router",
             "type": "openai",
-            "baseUrl": "https://api.openai.com/v1",
-            "apiKey": "env:OPENAI_API_KEY",
-            "models": ["gpt-4o", "gpt-4o-mini"]
+            "baseUrl": "https://YOUR-RESOURCE.openai.azure.com/openai/v1",
+            "apiKey": "env:AZURE_MODEL_ROUTER_KEY",
+            "models": [
+                {
+                    "name": "model-router",
+                    "description": "Azure Model Router. Auto-selects the best model per request. Good default for diverse workloads.",
+                    "cost": "medium"
+                }
+            ]
         },
         {
-            "id": "anthropic",
-            "type": "anthropic",
-            "baseUrl": "https://api.anthropic.com",
-            "apiKey": "env:ANTHROPIC_API_KEY",
-            "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"]
+            "id": "azure-fw-glm-5",
+            "type": "openai",
+            "baseUrl": "https://YOUR-RESOURCE.services.ai.azure.com/models",
+            "apiKey": "env:AZURE_FW_GLM5_KEY",
+            "models": [
+                {
+                    "name": "FW-GLM-5",
+                    "description": "FW-GLM-5. Preview model via Azure AI. DataZoneStandard deployment, 100K TPM.",
+                    "cost": "medium"
+                }
+            ]
+        },
+        {
+            "id": "azure-kimi",
+            "type": "openai",
+            "baseUrl": "https://YOUR-RESOURCE.openai.azure.com/openai/v1",
+            "apiKey": "env:AZURE_KIMI_K25_KEY",
+            "models": [
+                {
+                    "name": "Kimi-K2.5",
+                    "description": "Kimi-K2.5. Strong reasoning and coding model via Azure AI.",
+                    "cost": "medium"
+                }
+            ]
+        },
+        {
+            "id": "azure-gpt-5.1",
+            "type": "openai",
+            "baseUrl": "https://YOUR-RESOURCE.openai.azure.com/openai/v1",
+            "apiKey": "env:AZURE_GPT51_KEY",
+            "models": [
+                {
+                    "name": "gpt-5.1-chat",
+                    "description": "GPT-5.1 via Azure OpenAI. Latest generation. Advanced reasoning, coding, and instruction following.",
+                    "cost": "high"
+                }
+            ]
         }
     ],
-    "defaultModel": "claude-sonnet-4-20250514"
+    "defaultModel": "azure-fw-glm-5:FW-GLM-5"
 }

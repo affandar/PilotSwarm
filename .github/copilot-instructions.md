@@ -133,6 +133,15 @@ When you add or materially change a user-facing or builder-facing feature, updat
 
 Do not treat proposal docs as sufficient once behavior ships. If the product changed, the canonical docs, sample app, and builder templates should reflect it too.
 
+## Agent Prompt Tuning & Model Compatibility
+
+When you change an agent prompt, tune timer interrupt wording, or test a new LLM model with PilotSwarm agents, update both:
+
+- **`/memories/repo/agent-tuning-log.md`** — Copilot repo memory (read by the `pilotswarm-agent-tuner` agent)
+- **`docs/agent-tuning-log.md`** — version-controlled copy for human reference
+
+Record: the model tested, which agent type, observed behavior, expected behavior, and whether the change worked. Keep the model compatibility matrix current. Use the `pilotswarm-agent-tuner` agent for structured tuning workflows.
+
 ## Duroxide Bugs
 
 When a bug is identified as originating in **duroxide** (the Rust-based durable orchestration runtime), do NOT attempt to work around it in the runtime or TUI layer. Instead:

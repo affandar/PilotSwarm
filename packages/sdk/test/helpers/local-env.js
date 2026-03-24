@@ -86,12 +86,14 @@ export function createTestEnv(suiteName = "test") {
 }
 
 /**
- * Preflight check: ensure PostgreSQL is reachable and GITHUB_TOKEN is set.
+ * Preflight check: ensure PostgreSQL is reachable and at least one LLM provider is configured.
  */
 export async function preflightChecks() {
-    if (!process.env.GITHUB_TOKEN) {
+    const { loadModelProviders } = await import("pilotswarm-sdk");
+    const registry = loadModelProviders();
+    if (!process.env.GITHUB_TOKEN && (!registry || registry.allModels.length === 0)) {
         throw new Error(
-            "Missing GITHUB_TOKEN. Copy .env.example to .env and set GITHUB_TOKEN before running tests.",
+            "No LLM provider available. Set GITHUB_TOKEN or configure .model_providers.json with valid API keys.",
         );
     }
 

@@ -6,7 +6,9 @@
 
 - **Node.js >= 24** (required for `--env-file` support)
 - **PostgreSQL** (local or managed — Azure Database for PostgreSQL, AWS RDS, etc.)
-- **GitHub Copilot access** — a valid `GITHUB_TOKEN` for the worker
+- **LLM provider credentials** — at least one of:
+  - `GITHUB_TOKEN` (easiest — gives access to Claude, GPT, etc. via GitHub Copilot)
+  - Azure OpenAI, Azure AI Services, or any OpenAI-compatible API key
 
 Optional:
 - **Azure Blob Storage** — for session dehydration/hydration across nodes
@@ -17,19 +19,27 @@ Start from the template:
 
 ```bash
 cp .env.example .env
+cp .model_providers.example.json .model_providers.json
 ```
 
-Then edit `.env`:
+Then edit `.env` with your credentials:
 
 ```bash
 # Required
 DATABASE_URL=postgresql://user:password@localhost:5432/pilotswarm
+
+# LLM provider keys (at least one required)
+# Easiest: use GITHUB_TOKEN for GitHub Copilot access
 GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+# Or: BYOK with Azure OpenAI / other providers
+# AZURE_OPENAI_KEY=your-key
 
 # Optional — session dehydration to blob storage
 AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
 AZURE_STORAGE_CONTAINER=copilot-sessions
 ```
+
+> **Model providers** are configured in `.model_providers.json`. API keys use `env:VAR_NAME` syntax to reference `.env` variables. Providers whose API key is not set are automatically excluded from the model list.
 
 ## PostgreSQL Setup
 
@@ -81,7 +91,6 @@ const store = process.env.DATABASE_URL;
 
 const worker = new PilotSwarmWorker({
     store,
-    githubToken: process.env.GITHUB_TOKEN,
 });
 await worker.start();
 
@@ -112,7 +121,6 @@ import { PilotSwarmWorker } from "pilotswarm-sdk";
 
 const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
-    githubToken: process.env.GITHUB_TOKEN,
     blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
     blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
 });
@@ -221,13 +229,19 @@ When a session needs to wait (durable timer) or goes idle:
 
 This enables true multi-node scaling — sessions can migrate between workers transparently.
 
-## GitHub Token
+## LLM Provider Configuration
 
-The `GITHUB_TOKEN` is used by the worker to authenticate with the Copilot API. You can get one via:
+PilotSwarm uses `.model_providers.json` to configure LLM providers. API keys are stored in `.env` and referenced via `env:VAR_NAME` syntax.
+
+> **Easiest way to get started:** Set `GITHUB_TOKEN` in `.env`. This gives you access to all models available through GitHub Copilot (Claude, GPT-4.1, GPT-5.1, etc.) with no additional configuration needed.
+
+For BYOK (bring-your-own-key) providers like Azure OpenAI, add the provider to `.model_providers.json` and set the corresponding API key in `.env`. See `.model_providers.example.json` for the full template.
+
+Providers whose API key env var is not set are **automatically excluded** from the model list — they won't appear in the TUI model picker or the `list_available_models` tool. This means you only need credentials for the providers you actually use.
 
 ```bash
-# Create a personal access token at https://github.com/settings/tokens
-# Or via GitHub CLI: gh auth token
+# Get a GitHub token (easiest path)
+gh auth token
 ```
 
 The token is only needed on the **worker** side. Clients don't need it.

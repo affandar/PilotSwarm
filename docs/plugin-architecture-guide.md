@@ -378,7 +378,9 @@ The worker resolves these names against its tool registry at execution time. Thi
 
 Model providers configure which LLMs are available and how to authenticate with them.
 
-### File Format (`model_providers.json`)
+### File Format (`.model_providers.json`)
+
+> **Easiest way to get started:** Add a `github-copilot` provider with your `GITHUB_TOKEN`. This gives you access to Claude, GPT-4.1, GPT-5.1, and more — no additional setup needed. Add BYOK providers later as needed.
 
 ```json
 {
@@ -388,9 +390,9 @@ Model providers configure which LLMs are available and how to authenticate with 
       "type": "github",
       "githubToken": "env:GITHUB_TOKEN",
       "models": [
-        { "name": "claude-opus-4", "description": "Best reasoning", "cost": "high" },
-        { "name": "claude-sonnet-4", "description": "Fast and capable", "cost": "medium" },
-        { "name": "gpt-4o", "description": "OpenAI flagship", "cost": "medium" }
+        { "name": "claude-opus-4.6", "description": "Most capable. Deep reasoning.", "cost": "high" },
+        { "name": "claude-sonnet-4.6", "description": "Strong all-rounder.", "cost": "medium" },
+        { "name": "gpt-4.1", "description": "GPT-4.1 via GitHub Copilot.", "cost": "medium" }
       ]
     },
     {
@@ -398,15 +400,18 @@ Model providers configure which LLMs are available and how to authenticate with 
       "type": "azure",
       "baseUrl": "https://my-resource.openai.azure.com/openai",
       "apiKey": "env:AZURE_OPENAI_KEY",
-      "apiVersion": "2024-10-21",
+      "apiVersion": "2024-04-01-preview",
       "models": [
-        { "name": "gpt-4.1-mini", "description": "Low-cost Azure deployment", "cost": "low" }
+        { "name": "gpt-4.1", "description": "GPT-4.1 full model.", "cost": "medium" },
+        { "name": "gpt-4.1-mini", "description": "Fast, cost-effective variant.", "cost": "low" }
       ]
     }
   ],
-  "defaultModel": "github-copilot:claude-opus-4"
+  "defaultModel": "github-copilot:claude-sonnet-4.6"
 }
 ```
+
+> **Automatic filtering:** Providers whose API key env var is not set are automatically excluded from the model list. Only providers with valid credentials appear in the TUI model picker and the `list_available_models` tool.
 
 ### Provider Types
 
@@ -437,8 +442,8 @@ Models are identified by `provider:model` strings (e.g. `github-copilot:claude-o
 ### Discovery Order
 
 1. **Explicit path** — `modelProvidersPath` option on `PilotSwarmWorker`
-2. **Auto-discover** — searches for `.model_providers.json` in the current working directory and `/app/`
-3. **Environment variable fallback** — builds a config from `LLM_ENDPOINT`, `LLM_API_KEY`, `GITHUB_TOKEN`, etc.
+2. **Auto-discover** — searches for `.model_providers.json` in the current working directory, parent directories (up to 5 levels), and `/app/`
+3. **Environment variable fallback** — builds a config from `LLM_ENDPOINT`, `LLM_API_KEY`, `GITHUB_TOKEN` (legacy, for backwards compatibility)
 
 ---
 

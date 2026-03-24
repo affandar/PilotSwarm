@@ -31,7 +31,7 @@ export const DURABLE_SESSION_LATEST_VERSION = CURRENT_ORCHESTRATION_VERSION;
 
 export const DURABLE_SESSION_ORCHESTRATION_REGISTRY: ReadonlyArray<{
     version: string;
-    handler: any;
+    handler: any;   
 }> = [
     { version: "1.0.0", handler: durableSessionOrchestration_1_0_0 },
     { version: "1.0.1", handler: durableSessionOrchestration_1_0_1 },

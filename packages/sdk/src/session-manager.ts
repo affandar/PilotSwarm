@@ -132,13 +132,26 @@ export class SessionManager {
         this._getDescendantSessionIds = fn;
     }
 
+    /**
+     * Resolve the default model's SDK provider config.
+     * Used by activities (e.g. summarizeSession) that need a lightweight LLM
+     * without requiring a GitHub token.
+     */
+    resolveDefaultProvider(): { modelName: string; sdkProvider: any } | undefined {
+        const registry = this.workerDefaults.modelProviders;
+        if (!registry?.defaultModel) return undefined;
+        const resolved = registry.resolve(registry.defaultModel);
+        if (!resolved?.sdkProvider) return undefined;
+        return { modelName: resolved.modelName, sdkProvider: resolved.sdkProvider };
+    }
+
     /** Ensure the CopilotClient is started. */
     private async ensureClient(): Promise<CopilotClient> {
         if (!this.client) {
-            // Resolve githubToken: explicit > registry (github provider) > none
+            // Resolve githubToken: explicit > registry (github provider) > none.
+            // The token is optional — BYOK providers work without it.
             let token = this.githubToken;
             if (!token && this.workerDefaults.modelProviders) {
-                // Check if any provider is type=github
                 for (const p of this.workerDefaults.modelProviders.allProviders) {
                     if (p.type === "github" && p.models.length > 0) {
                         const firstModel = typeof p.models[0] === "string" ? p.models[0] : p.models[0].name;
@@ -149,7 +162,7 @@ export class SessionManager {
                 }
             }
             this.client = new CopilotClient({
-                githubToken: token,
+                ...(token ? { githubToken: token } : {}),
                 logLevel: "error",
             });
         }

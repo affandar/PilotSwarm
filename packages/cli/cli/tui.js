@@ -401,6 +401,285 @@ async function downloadArtifact(sessionId, filename) {
     }
 }
 
+/**
+ * Gather all artifacts for the active session and its descendants.
+ */
+function gatherAllArtifacts(orchId) {
+    const all = [];
+    const visited = new Set();
+    const queue = [orchId];
+    while (queue.length) {
+        const id = queue.shift();
+        if (visited.has(id)) continue;
+        visited.add(id);
+        const arts = sessionArtifacts.get(id);
+        if (arts) all.push(...arts);
+        const children = orchChildrenOf.get(id) || [];
+        for (const child of children) queue.push(child);
+    }
+    return all;
+}
+
+/** Currently open artifact picker (so we can dismiss/reopen cleanly). */
+let _artifactPicker = null;
+
+function showArtifactPicker() {
+    // Close existing picker if open
+    if (_artifactPicker) {
+        _artifactPicker.detach();
+        _artifactPicker = null;
+    }
+
+    const artifacts = gatherAllArtifacts(activeOrchId);
+    if (artifacts.length === 0) {
+        setStatus("No artifacts for this session");
+        return;
+    }
+
+    const hasMultiple = artifacts.length > 1;
+    const buildItems = () => {
+        const items = artifacts.map(a => {
+            const icon = a.downloaded ? " ✓" : " ↓";
+            const sid = shortId(a.sessionId);
+            return `${icon} ${sid}/${a.filename}`;
+        });
+        if (hasMultiple) items.push(" ⬇  Download All");
+        return items;
+    };
+
+    const picker = blessed.list({
+        parent: screen,
+        label: " 📎 Artifacts — Enter download · Esc close ",
+        tags: true,
+        left: "center",
+        top: "center",
+        width: Math.min(65, screen.width - 4),
+        height: Math.min(artifacts.length + (hasMultiple ? 3 : 2), 18),
+        border: { type: "line" },
+        style: {
+            fg: "white",
+            bg: "black",
+            border: { fg: "cyan" },
+            label: { fg: "cyan" },
+            selected: { bg: "blue", fg: "white" },
+        },
+        keys: true,
+        vi: true,
+        mouse: false,
+        items: buildItems(),
+    });
+
+    _artifactPicker = picker;
+    picker.focus();
+    screen.render();
+
+    const closePicker = () => {
+        picker.detach();
+        _artifactPicker = null;
+        orchList.focus();
+        screen.render();
+    };
+
+    picker.key(["escape", "q"], closePicker);
+    // 'a' while picker is open → close (toggle behavior)
+    picker.key(["a"], closePicker);
+
+    picker.on("select", async (_el, idx) => {
+        // "Download All" option
+        if (hasMultiple && idx === artifacts.length) {
+            const pending = artifacts.filter(a => !a.downloaded);
+            if (pending.length === 0) {
+                setStatus("All artifacts already downloaded");
+                screen.render();
+                return;
+            }
+            setStatus(`Downloading ${pending.length} artifacts...`);
+            screen.render();
+            let ok = 0;
+            for (const art of pending) {
+                const localPath = await downloadArtifact(art.sessionId, art.filename);
+                if (localPath) { art.downloaded = true; art.localPath = localPath; ok++; }
+            }
+            picker.setItems(buildItems());
+            picker.select(idx);
+            setStatus(`Downloaded ${ok}/${pending.length} artifacts`);
+            screen.render();
+            return;
+        }
+
+        const art = artifacts[idx];
+        if (!art) return;
+
+        if (art.downloaded) {
+            // Already downloaded — open viewer at that file
+            closePicker();
+            mdViewActive = true;
+            refreshMarkdownViewer();
+            const files = scanExportFiles();
+            const matchIdx = files.findIndex(f => f.localPath === art.localPath);
+            if (matchIdx >= 0) {
+                mdViewerSelectedIdx = matchIdx;
+                mdFileListPane.select(matchIdx);
+                refreshMarkdownViewer();
+            }
+            screen.realloc();
+            relayoutAll();
+            setStatus("Markdown Viewer (v to exit)");
+            screen.render();
+            return;
+        }
+
+        setStatus(`Downloading ${art.filename}...`);
+        screen.render();
+        const localPath = await downloadArtifact(art.sessionId, art.filename);
+        if (localPath) {
+            art.downloaded = true;
+            art.localPath = localPath;
+            picker.setItems(buildItems());
+            picker.select(idx);
+            setStatus(`Downloaded ${art.filename}`);
+        } else {
+            setStatus("Download failed — check logs");
+        }
+        screen.render();
+    });
+}
+
+// ─── File attachment for prompt ──────────────────────────────────
+// Tracks file attachments embedded in the prompt. When the prompt is sent,
+// file contents are prepended to the message text.
+const _promptAttachments = []; // [{ path, displayName, sessionId }]
+
+let _fileAttachModal = false;
+
+function showFileAttachPrompt() {
+    _fileAttachModal = true;
+
+    // Save the current inputBar value so we can restore it after
+    const savedInput = inputBar.getValue() || "";
+    const savedCursor = inputCursorIndex;
+
+    // Modal overlay to block all other input
+    const overlay = blessed.box({
+        parent: screen,
+        left: 0, top: 0, width: "100%", height: "100%",
+        style: { bg: "black", transparent: true },
+    });
+
+    const pathInput = blessed.textbox({
+        parent: overlay,
+        label: " 📄 Attach file — paste path, Enter to attach, Esc to cancel ",
+        tags: true,
+        left: "center",
+        top: "center",
+        width: Math.min(70, screen.width - 4),
+        height: 3,
+        border: { type: "line" },
+        style: {
+            fg: "white",
+            bg: "black",
+            border: { fg: "yellow" },
+            label: { fg: "yellow" },
+        },
+        inputOnFocus: true,
+    });
+
+    pathInput.focus();
+    screen.render();
+
+    const closeModal = () => {
+        _fileAttachModal = false;
+        overlay.detach();
+        // Restore input bar state and refocus
+        setInputValue(savedInput, savedCursor);
+        focusInput();
+        screen.render();
+    };
+
+    pathInput.on("submit", async (filePath) => {
+        if (!filePath || !filePath.trim()) {
+            closeModal();
+            return;
+        }
+
+        const resolved = filePath.trim().replace(/^~/, os.homedir());
+        if (!fs.existsSync(resolved)) {
+            setStatus(`File not found: ${filePath.trim()}`);
+            closeModal();
+            return;
+        }
+
+        const displayName = path.basename(resolved);
+        const content = fs.readFileSync(resolved, "utf-8");
+
+        // Upload to artifact store under the active session
+        const orchId = activeOrchId;
+        const sessionId = orchId ? (orchId.startsWith("session-") ? orchId.slice(8) : orchId) : "local";
+        try {
+            const store = getTuiArtifactStore();
+            await store.uploadArtifact(sessionId, displayName, content);
+
+            // Register in artifact registry so it shows up in 'v' viewer and 'a' picker
+            const artKey = `${sessionId}/${displayName}`;
+            if (!_registeredArtifacts.has(artKey)) {
+                _registeredArtifacts.add(artKey);
+                if (!sessionArtifacts.has(orchId)) sessionArtifacts.set(orchId, []);
+                const localDir = path.join(EXPORTS_DIR, sessionId.slice(0, 8));
+                fs.mkdirSync(localDir, { recursive: true });
+                const localPath = path.join(localDir, displayName);
+                fs.writeFileSync(localPath, content, "utf-8");
+                sessionArtifacts.get(orchId).push({
+                    sessionId, filename: displayName, downloaded: true, localPath,
+                });
+            }
+
+            // Show a snipped preview in chat (first 3 lines)
+            const lines = content.split("\n");
+            const preview = lines.slice(0, 3).map(l => `  ${l.slice(0, 80)}`).join("\n");
+            const suffix = lines.length > 3 ? `\n  {gray-fg}… (${lines.length - 3} more lines){/gray-fg}` : "";
+            appendChatRaw(
+                `{yellow-fg}📄 Attached: ${displayName} (${(content.length / 1024).toFixed(1)}KB){/yellow-fg}\n${preview}${suffix}`,
+                orchId,
+            );
+        } catch (err) {
+            appendChatRaw(`{red-fg}Upload failed: ${err.message}{/red-fg}`, orchId);
+        }
+
+        _promptAttachments.push({ path: resolved, displayName, sessionId });
+
+        const token = ` 📎 ${displayName} `;
+        closeModal();
+        insertInputText(token);
+        setStatus(`Attached: ${displayName}`);
+        screen.render();
+    });
+
+    pathInput.on("cancel", closeModal);
+    pathInput.key(["escape"], closeModal);
+}
+
+/**
+ * Process prompt text before sending: expand attachment tokens into file content.
+ * Returns the final prompt string with artifact:// references.
+ */
+function expandAttachments(promptText) {
+    if (_promptAttachments.length === 0) return promptText;
+
+    const attachmentRefs = [];
+    for (const att of _promptAttachments) {
+        attachmentRefs.push(
+            `[Attached file: ${att.displayName} — artifact://${att.sessionId}/${att.displayName}]`
+        );
+    }
+
+    // Clear attachments after expanding
+    _promptAttachments.length = 0;
+
+    // Remove 📎 filename tokens from the prompt text
+    const cleaned = promptText.replace(/\s*📎\s*[^\s]+\s*/g, " ").trim();
+    return attachmentRefs.join("\n") + (cleaned ? "\n\n" + cleaned : "");
+}
+
 function ts() {
     return formatDisplayTime(Date.now());
 }
@@ -423,7 +702,7 @@ const screen = blessed.screen({
     title: BASE_TUI_TITLE,
     fullUnicode: true,
     forceUnicode: true,
-    mouse: true,
+    mouse: false,
 });
 process.stderr.write = _origStderr;
 applyWindowTitle(BASE_TUI_TITLE);
@@ -561,7 +840,15 @@ const MAX_PROMPT_EDITOR_ROWS = 8;
 let promptValueCache = "";
 
 function promptLineCount(text) {
-    return Math.max(1, String(text || "").split("\n").length);
+    const str = String(text || "");
+    if (!str) return 1;
+    // Count visual lines: each \n-delimited line may wrap across multiple visual rows
+    const width = Math.max(1, screen.width - 2); // input bar inner width (full width minus borders)
+    let visualLines = 0;
+    for (const line of str.split("\n")) {
+        visualLines += Math.max(1, Math.ceil((line.length + 1) / width));
+    }
+    return Math.max(1, visualLines);
 }
 
 function promptEditorRows() {
@@ -572,7 +859,7 @@ function inputBarHeight() {
     return promptEditorRows() + 2; // border + content rows
 }
 
-function bodyH() { return screen.height - inputBarHeight(); } // total body (minus input bar)
+function bodyH() { return screen.height - inputBarHeight() - 1; } // total body (minus input bar + status line)
 function sessH() { return Math.max(5, Math.floor(bodyH() * 0.25)); }
 function chatH() { return bodyH() - sessH(); }
 function activityH() { return Math.max(6, Math.floor(bodyH() * 0.28)); } // sticky Activity pane height
@@ -630,7 +917,7 @@ const orchList = blessed.list({
     scrollbar: { style: { bg: "yellow" } },
     keys: false,
     vi: false,
-    mouse: true,
+    mouse: false,
     interactive: true,
 });
 
@@ -704,7 +991,7 @@ const chatBox = blessed.log({
     scrollbar: { style: { bg: "cyan" } },
     keys: true,
     vi: true,
-    mouse: true,
+    mouse: false,
 });
 
 // ─── Clickable URLs in chat ──────────────────────────────────────
@@ -801,7 +1088,7 @@ const orchLogPane = blessed.log({
     scrollbar: { style: { bg: "cyan" } },
     keys: true,
     vi: true,
-    mouse: true,
+    mouse: false,
     hidden: true,
 });
 
@@ -856,7 +1143,7 @@ const nodeMapPane = blessed.box({
     scrollbar: { style: { bg: "yellow" } },
     keys: true,
     vi: true,
-    mouse: true,
+    mouse: false,
     hidden: true,
 });
 
@@ -887,7 +1174,7 @@ const mdFileListPane = blessed.list({
     },
     keys: false,
     vi: false,
-    mouse: true,
+    mouse: false,
     interactive: true,
     hidden: true,
 });
@@ -912,7 +1199,7 @@ const mdPreviewPane = blessed.box({
     scrollbar: { style: { bg: "green" } },
     keys: true,
     vi: true,
-    mouse: true,
+    mouse: false,
     hidden: true,
 });
 
@@ -1069,7 +1356,7 @@ const activityPane = blessed.log({
     scrollbar: { style: { bg: "gray" } },
     keys: true,
     vi: true,
-    mouse: true,
+    mouse: false,
 });
 
 // Per-session activity buffers
@@ -1320,7 +1607,7 @@ const seqPane = blessed.log({
     scrollbar: { style: { bg: "magenta" } },
     keys: true,
     vi: true,
-    mouse: true,
+    mouse: false,
     hidden: true,
 });
 
@@ -1848,7 +2135,7 @@ function switchLogMode() {
     // Reset focus to sessions list when panes change
     orchList.focus();
     // Force full repaint on next tick (same as pressing 'r')
-    setTimeout(() => { screen.realloc(); screen.render(); }, 0);
+    scheduleLightRefresh("switchLogMode");
 }
 
 /**
@@ -1975,7 +2262,7 @@ function getOrCreateWorkerPane(podName) {
         scrollbar: { style: { bg: color } },
         keys: true,
         vi: true,
-        mouse: true,
+        mouse: false,
     });
 
     workerPanes.set(podName, pane);
@@ -2025,7 +2312,7 @@ function relayoutAll() {
     if (typeof statusBar !== "undefined" && statusBar) {
         statusBar.left = 1;
         statusBar.width = lW - 2;
-        statusBar.bottom = iH - 1;
+        statusBar.bottom = iH;
     }
     if (typeof inputBar !== "undefined" && inputBar) {
         inputBar.left = 0;
@@ -2152,7 +2439,7 @@ const inputBar = blessed.textarea({
     },
     inputOnFocus: true,
     keys: true,
-    mouse: true,
+    mouse: false,
 });
 registerFocusRing(inputBar, "green");
 inputBar.on("focus", () => {
@@ -2252,6 +2539,36 @@ function moveCursorRight() {
     screen.render();
 }
 
+function moveCursorUp() {
+    const value = String(inputBar.getValue() || "");
+    // Find the start of the current line and the line above
+    const before = value.slice(0, inputCursorIndex);
+    const currentLineStart = before.lastIndexOf("\n") + 1;
+    if (currentLineStart === 0) return; // already on first line
+    const colInLine = inputCursorIndex - currentLineStart;
+    const prevLineEnd = currentLineStart - 1; // the \n before current line
+    const prevLineStart = value.lastIndexOf("\n", prevLineEnd - 1) + 1;
+    const prevLineLen = prevLineEnd - prevLineStart;
+    inputCursorIndex = clampInputCursor(prevLineStart + Math.min(colInLine, prevLineLen), value);
+    inputBar._updateCursor();
+    screen.render();
+}
+
+function moveCursorDown() {
+    const value = String(inputBar.getValue() || "");
+    // Find the end of the current line and the line below
+    const currentLineStart = value.lastIndexOf("\n", inputCursorIndex - 1) + 1;
+    const currentLineEnd = value.indexOf("\n", inputCursorIndex);
+    if (currentLineEnd === -1) return; // already on last line
+    const colInLine = inputCursorIndex - currentLineStart;
+    const nextLineStart = currentLineEnd + 1;
+    const nextLineEnd = value.indexOf("\n", nextLineStart);
+    const nextLineLen = (nextLineEnd === -1 ? value.length : nextLineEnd) - nextLineStart;
+    inputCursorIndex = clampInputCursor(nextLineStart + Math.min(colInLine, nextLineLen), value);
+    inputBar._updateCursor();
+    screen.render();
+}
+
 function getPreviousWordBoundary(value, fromIndex) {
     let index = clampInputCursor(fromIndex, value);
     while (index > 0 && /\s/.test(value[index - 1])) index -= 1;
@@ -2328,6 +2645,28 @@ inputBar._listener = function promptInputListener(ch, key) {
         || key.sequence === "\x1bf";
 
     if (key.name === "escape") {
+        // Alt+Enter (ESC + CR) → insert newline
+        if (key.sequence === "\x1b\r" || key.sequence === "\x1b\n") {
+            insertInputText("\n");
+            screen.render();
+            return;
+        }
+        // Alt+Backspace (ESC + DEL) → delete word backward
+        if (key.sequence === "\x1b\x7f") {
+            deleteInputWordBackward();
+            screen.render();
+            return;
+        }
+        // Alt+Left (ESC + b) → word left
+        if (key.sequence === "\x1bb") {
+            moveCursorWordLeft();
+            return;
+        }
+        // Alt+Right (ESC + f) → word right
+        if (key.sequence === "\x1bf") {
+            moveCursorWordRight();
+            return;
+        }
         inputBar._done(null, null);
         return;
     }
@@ -2338,6 +2677,12 @@ inputBar._listener = function promptInputListener(ch, key) {
             return;
         }
         inputBar._done(null, value);
+        return;
+    }
+    // Ctrl+J — insert newline (Unix standard line feed)
+    if (key.ctrl && key.name === "j") {
+        insertInputText("\n");
+        screen.render();
         return;
     }
     if (isWordLeft) {
@@ -2356,7 +2701,21 @@ inputBar._listener = function promptInputListener(ch, key) {
         moveCursorRight();
         return;
     }
+    if (key.name === "up") {
+        moveCursorUp();
+        return;
+    }
+    if (key.name === "down") {
+        moveCursorDown();
+        return;
+    }
     if (isMetaBackspace) {
+        deleteInputWordBackward();
+        screen.render();
+        return;
+    }
+    // Ctrl+W — delete word backward (Unix standard)
+    if (key.ctrl && key.name === "w") {
         deleteInputWordBackward();
         screen.render();
         return;
@@ -2368,6 +2727,28 @@ inputBar._listener = function promptInputListener(ch, key) {
     }
     if (key.name === "delete") {
         deleteInputForward();
+        screen.render();
+        return;
+    }
+    // Ctrl+A — attach file
+    if (key.ctrl && key.name === "a") {
+        // Set modal flag FIRST so subsequent keypresses in this listener are blocked
+        _fileAttachModal = true;
+        // Cancel inputBar's readInput cleanly — _done(null,null) triggers cancel
+        // which we handle with a no-op when _fileAttachModal is set
+        inputBar._done(null, null);
+        setImmediate(() => showFileAttachPrompt());
+        return;
+    }
+    if (key.ctrl && key.name === "e") {
+        inputCursorIndex = clampInputCursor(value.length);
+        inputBar._updateCursor();
+        screen.render();
+        return;
+    }
+    // Ctrl+U — kill line (clear input)
+    if (key.ctrl && key.name === "u") {
+        setInputValue("", 0);
         screen.render();
         return;
     }
@@ -2616,8 +2997,8 @@ function setNavigationStatusForPane(kind) {
         nodemap: "{yellow-fg}j/k scroll node map · g/G top/bottom · m cycle log mode · p prompt · ? help · Esc then q quit{/yellow-fg}",
         markdownList: "{yellow-fg}j/k choose file · Enter preview · d delete file · v exit viewer · ? help · Esc then q quit{/yellow-fg}",
         markdownPreview: "{yellow-fg}j/k scroll preview · g/G top/bottom · Ctrl+D/U page · o open · y copy path · v exit viewer · ? help{/yellow-fg}",
-        prompt: "{yellow-fg}Type a message · Opt+Enter newline · Opt+←/→ word move · Opt+Backspace word delete · Esc for navigation mode{/yellow-fg}",
-        answer: "{yellow-fg}Type your answer · Opt+Enter newline · Opt+←/→ word move · Opt+Backspace word delete · Esc for navigation mode{/yellow-fg}",
+        prompt: "{yellow-fg}Type a message · ^J newline · ^W word del · ^A attach file · Esc navigation mode{/yellow-fg}",
+        answer: "{yellow-fg}Type your answer · ^J newline · ^W word del · ^A attach file · Esc navigation mode{/yellow-fg}",
     };
     setStatus(hints[kind] || hints.chat);
 }
@@ -3570,7 +3951,22 @@ function startChatSpinner(orchId) {
                 const b = sessionChatBuffers.get(sid);
                 if (b && idx < b.length) {
                     b[idx] = `{gray-fg}${SPINNER_FRAMES[_spinnerFrame]} Thinking…{/gray-fg}`;
-                    if (sid === activeOrchId) { invalidateChat(); anyActive = true; }
+                    if (sid === activeOrchId) {
+                        anyActive = true;
+                        // Only repaint if the spinner line is visible in the
+                        // viewport — avoids fighting j/k and PgUp/PgDn scroll.
+                        const scrollTop = chatBox.childBase || 0;
+                        const visibleRows = chatBox.height - 2; // minus border
+                        if (idx >= scrollTop && idx < scrollTop + visibleRows) {
+                            // Update chatBox content in-place (no setContent
+                            // which resets scroll position).  Re-join the full
+                            // buffer but restore exact scroll afterward.
+                            const prevBase = chatBox.childBase || 0;
+                            chatBox.setContent(b.map(styleUrls).join("\n"));
+                            chatBox.childBase = prevBase;
+                            _screenDirty = true;
+                        }
+                    }
                 }
             }
             if (!anyActive && sessionSpinnerIndex.size === 0) {
@@ -4430,7 +4826,7 @@ orchList.key(["n"], async () => {
             items: agentChoices.map(a => `  ${a.name || "(generic)"}${a.description ? ` — ${a.description}` : ""}`),
             keys: true,
             vi: true,
-            mouse: true,
+            mouse: false,
             scrollable: true,
         });
 
@@ -4574,7 +4970,7 @@ orchList.key(["S-n"], async () => {
         items,
         keys: true,
         vi: true,
-        mouse: true,
+        mouse: false,
         scrollable: true,
     });
     picker.focus();
@@ -4638,7 +5034,7 @@ orchList.key(["t"], async () => {
         },
         keys: true,
         vi: true,
-        mouse: true,
+        mouse: false,
         items: [
             "  Type a custom title",
             "  Ask LLM to summarize",
@@ -5955,7 +6351,11 @@ async function ensureOrchestrationStarted(orchId = activeOrchId) {
 // ─── Input handling ──────────────────────────────────────────────
 
 async function handleInput(text) {
-    const trimmed = (text || "").trim();
+    // If file attach modal triggered cancellation, ignore this call
+    if (_fileAttachModal) return;
+    // Expand file attachments before trimming — replaces 📎tokens with file content
+    const expanded = expandAttachments(text || "");
+    const trimmed = expanded.trim();
     if (!trimmed) {
         inputBar.clearValue();
         focusInput();
@@ -6272,6 +6672,7 @@ async function handleInput(text) {
 
 inputBar.on("submit", handleInput);
 inputBar.key(["escape"], () => {
+    if (_fileAttachModal) return; // Modal is handling escape
     inputBar.clearValue();
     // Exit prompt — focus the sessions pane for navigation
     orchList.focus();
@@ -6298,6 +6699,7 @@ function showHelpOverlay() {
         "  {yellow-fg}r{/yellow-fg}           Force full screen redraw",
         "  {yellow-fg}u{/yellow-fg}           Dump active session to Markdown file",
         "  {yellow-fg}a{/yellow-fg}           Show artifact picker (download files)",
+        "  {yellow-fg}Ctrl+A{/yellow-fg}      Attach local file to prompt",
         "",
         "{bold}Sessions Pane{/bold}",
         "  {yellow-fg}j / k{/yellow-fg}       Navigate up / down",
@@ -6320,11 +6722,12 @@ function showHelpOverlay() {
         "",
         "{bold}Prompt Editor{/bold}",
         "  {yellow-fg}Enter{/yellow-fg}       Submit prompt",
-        "  {yellow-fg}Opt+Enter{/yellow-fg}   Insert newline and expand prompt",
+        "  {yellow-fg}Ctrl+J{/yellow-fg}      Insert newline and expand prompt",
         "  {yellow-fg}← / →{/yellow-fg}       Move cursor by character",
+        "  {yellow-fg}↑ / ↓{/yellow-fg}       Move cursor between lines (multiline)",
         "  {yellow-fg}Opt+← / →{/yellow-fg}   Move cursor by word",
         "  {yellow-fg}Backspace{/yellow-fg}   Delete backward by character",
-        "  {yellow-fg}Opt+Backspace{/yellow-fg} Delete backward by word",
+        "  {yellow-fg}Ctrl+W{/yellow-fg}      Delete backward by word",
         "  {yellow-fg}Esc{/yellow-fg}         Return to navigation mode",
         "",
         "{bold}Markdown Viewer{/bold}",
@@ -6365,7 +6768,7 @@ function showHelpOverlay() {
         scrollable: true,
         keys: true,
         vi: true,
-        mouse: true,
+        mouse: false,
         content: helpContent,
         label: " {bold}Help{/bold} ",
     });
@@ -6465,6 +6868,9 @@ let escPressedAt = 0;
 screen.on("keypress", (ch, key) => {
     if (!key) return;
 
+    // Block all keys when a modal dialog (file attach) is open
+    if (_fileAttachModal) return;
+
     if (startupLandingVisible) {
         startupLandingVisible = false;
         orchList.focus();
@@ -6485,6 +6891,7 @@ screen.on("keypress", (ch, key) => {
         orchList.focus();
         screen.realloc();
         relayoutAll();
+        scheduleLightRefresh("toggleMarkdownView");
         setStatus(mdViewActive ? "Markdown Viewer (v to exit)" : `Log mode: ${({ workers: "Per-Worker", orchestration: "Per-Orchestration", sequence: "Sequence Diagram", nodemap: "Node Map" })[logViewMode]}`);
         return;
     }
@@ -6520,94 +6927,7 @@ screen.on("keypress", (ch, key) => {
 
     // a: open artifact picker for current session — download on selection
     if (ch === "a" && screen.focused !== inputBar && !mdViewActive) {
-        const artifacts = sessionArtifacts.get(activeOrchId) || [];
-        if (artifacts.length === 0) {
-            setStatus("No artifacts for this session");
-            return;
-        }
-
-        const items = artifacts.map((a, i) => {
-            const icon = a.downloaded ? "✓" : "↓";
-            return ` ${icon} ${a.filename}`;
-        });
-
-        const picker = blessed.list({
-            parent: screen,
-            label: " 📎 Artifacts — Enter to download ",
-            tags: true,
-            left: "center",
-            top: "center",
-            width: Math.min(60, screen.width - 4),
-            height: Math.min(items.length + 2, 16),
-            border: { type: "line" },
-            style: {
-                fg: "white",
-                bg: "black",
-                border: { fg: "cyan" },
-                label: { fg: "cyan" },
-                selected: { bg: "blue", fg: "white" },
-            },
-            keys: true,
-            vi: true,
-            mouse: true,
-            items,
-        });
-
-        picker.focus();
-        screen.render();
-
-        const closePicker = () => {
-            picker.detach();
-            orchList.focus();
-            screen.render();
-        };
-
-        picker.key(["escape", "q", "a"], closePicker);
-
-        picker.on("select", async (_el, idx) => {
-            const art = artifacts[idx];
-            if (!art) return;
-
-            if (art.downloaded) {
-                // Already downloaded — close picker and open viewer
-                closePicker();
-                mdViewActive = true;
-                refreshMarkdownViewer();
-                const files = scanExportFiles();
-                const matchIdx = files.findIndex(f => f.localPath === art.localPath);
-                if (matchIdx >= 0) {
-                    mdViewerSelectedIdx = matchIdx;
-                    mdFileListPane.select(matchIdx);
-                    refreshMarkdownViewer();
-                }
-                screen.realloc();
-                relayoutAll();
-                setStatus("Markdown Viewer (v to exit)");
-                screen.render();
-                return;
-            }
-
-            setStatus(`Downloading ${art.filename}...`);
-            screen.render();
-            const localPath = await downloadArtifact(art.sessionId, art.filename);
-            if (localPath) {
-                art.downloaded = true;
-                art.localPath = localPath;
-
-                // Update picker item to show downloaded state
-                const updatedItems = artifacts.map((a) => {
-                    const icon = a.downloaded ? "✓" : "↓";
-                    return ` ${icon} ${a.filename}`;
-                });
-                picker.setItems(updatedItems);
-                picker.select(idx);
-                setStatus(`Downloaded ${art.filename}`);
-            } else {
-                setStatus("Download failed — check logs");
-            }
-            screen.render();
-        });
-
+        showArtifactPicker();
         return;
     }
 
@@ -6709,7 +7029,6 @@ screen.on("keypress", (ch, key) => {
     // p from any non-input pane → jump to prompt
     if (ch === "p" && screen.focused !== inputBar) {
         focusInput();
-        setStatus("Ready — type a message");
         screen.render();
         return;
     }
@@ -6854,6 +7173,9 @@ screen.on("resize", () => {
 
 // Initial orchestration refresh
 await refreshOrchestrations();
+
+// Trigger initial right-pane render (orch logs, sequence, etc.)
+redrawActiveViews();
 
 // ─── Auto-summarize all existing sessions on startup ─────────────
 async function summarizeSession(orchId) {
