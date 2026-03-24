@@ -2,11 +2,51 @@ import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { FactStore } from "./facts-store.js";
 
+// ─── Knowledge Pipeline Namespace Access Control ────────────────────────────
+const FACTS_MANAGER_AGENT_ID = "facts-manager";
+const RESERVED_WRITE_PREFIXES = ["skills/", "asks/", "config/facts-manager/"];
+const RESERVED_READ_PREFIXES = ["intake/"];
+const RESERVED_DELETE_PREFIXES = ["intake/", "skills/", "asks/", "config/facts-manager/"];
+
+function checkNamespaceWrite(key: string, agentIdentity?: string): string | null {
+    for (const prefix of RESERVED_WRITE_PREFIXES) {
+        if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
+            return `Error: the '${prefix}' key namespace is reserved for the Facts Manager. ` +
+                `Write observations to 'intake/<topic>/<your-session-id>' instead.`;
+        }
+    }
+    return null;
+}
+
+function checkNamespaceRead(keyPattern: string | undefined, agentIdentity?: string): string | null {
+    if (!keyPattern) return null;
+    // Normalize glob wildcards to SQL pattern for prefix check
+    const normalized = keyPattern.replace(/\*/g, "%");
+    for (const prefix of RESERVED_READ_PREFIXES) {
+        if ((normalized.startsWith(prefix) || normalized.startsWith(prefix.replace("/", "/%"))) &&
+            agentIdentity !== FACTS_MANAGER_AGENT_ID) {
+            return `Error: the '${prefix}' key namespace is not readable by task agents. ` +
+                `Read curated skills from 'skills/' or open asks from 'asks/' instead.`;
+        }
+    }
+    return null;
+}
+
+function checkNamespaceDelete(key: string, agentIdentity?: string): string | null {
+    for (const prefix of RESERVED_DELETE_PREFIXES) {
+        if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
+            return `Error: the '${prefix}' key namespace is reserved. Only the Facts Manager can delete from it.`;
+        }
+    }
+    return null;
+}
+
 export function createFactTools(opts: {
     factStore: FactStore;
     getDescendantSessionIds?: (sessionId: string) => Promise<string[]>;
+    agentIdentity?: string;
 }): Tool<any>[] {
-    const { factStore, getDescendantSessionIds } = opts;
+    const { factStore, getDescendantSessionIds, agentIdentity } = opts;
 
     const storeTool = defineTool("store_fact", {
         description:
@@ -39,6 +79,9 @@ export function createFactTools(opts: {
             args: { key: string; value: unknown; tags?: string[]; shared?: boolean },
             ctx?: { sessionId?: string; agentId?: string },
         ) => {
+            const nsError = checkNamespaceWrite(args.key, agentIdentity);
+            if (nsError) return { error: nsError };
+
             const result = await factStore.storeFact({
                 key: args.key,
                 value: args.value,
@@ -107,6 +150,9 @@ export function createFactTools(opts: {
             },
             ctx?: { sessionId?: string },
         ) => {
+            const nsError = checkNamespaceRead(args.key_pattern, agentIdentity);
+            if (nsError) return { error: nsError };
+
             // Normalize session_id: LLM may pass orchId format "session-<uuid>"
             // but facts and CMS store raw UUIDs.
             const targetSessionId = args.session_id?.startsWith("session-")
@@ -171,6 +217,9 @@ export function createFactTools(opts: {
             args: { key: string; shared?: boolean },
             ctx?: { sessionId?: string },
         ) => {
+            const nsError = checkNamespaceDelete(args.key, agentIdentity);
+            if (nsError) return { error: nsError };
+
             return factStore.deleteFact({
                 key: args.key,
                 shared: args.shared,

@@ -97,6 +97,14 @@ Anything that **changes the sequence of `yield` statements** must itself be dete
 ### Deployment note:
 Changing the orchestration code (adding/removing/reordering yields) creates a new version. Existing in-flight orchestrations were recorded with the old yield sequence and will fail on replay. **Always reset the database before redeploying** with orchestration changes — use `./scripts/deploy-aks.sh` which handles this automatically.
 
+### Docker / AKS Build Convention
+
+The AKS cluster runs on AMD64 Linux nodes. **All Docker image builds must use `docker buildx build --platform linux/amd64`** — not plain `docker build` — because development happens on macOS ARM64 (Apple Silicon). Without the platform flag, the pushed image has the wrong architecture and pods fail with `ImagePullBackOff` / `no match for platform in manifest`.
+
+Both `deploy-aks.sh` and `reset-local.sh remote` build and push images. Any script that builds Docker images for AKS must use `docker buildx build --platform linux/amd64`.
+
+The AKS deployment target is context `toygres-aks`, namespace `copilot-runtime` (not the local `pilotswarm` namespace).
+
 ## TUI Boundary Rule
 
 The TUI (`cli/tui.js`) must interact with PilotSwarm **exclusively through the public `PilotSwarmClient` and `PilotSwarmWorker` APIs**. It must never import or call internal modules (`session-manager.ts`, `managed-session.ts`, `cms.ts`, `session-proxy.ts`, `orchestration.ts`, etc.) directly. The only exception is **logging** (e.g. reading duroxide trace logs for display). If the TUI needs new data or capabilities, expose them through the client/worker API surface first.

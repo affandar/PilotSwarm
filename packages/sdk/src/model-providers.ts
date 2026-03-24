@@ -6,7 +6,7 @@
  * their own endpoints, API keys, and available models.
  *
  * Models are identified by normalized strings: `provider:model`
- * (e.g. `github-copilot:claude-opus-4`, `azure-openai:gpt-4.1-mini`).
+ * (e.g. `github-copilot:claude-opus-4`, `anthropic:claude-sonnet-4-6`).
  *
  * Secrets use the `env:VAR_NAME` syntax to reference environment variables
  * so keys stay in `.env` files while provider config stays in JSON.

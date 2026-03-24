@@ -79,11 +79,11 @@ kubectl create secret generic copilot-runtime-secrets \
     ${LLM_API_KEY:+--from-literal=LLM_API_KEY="$LLM_API_KEY"} \
     ${LLM_PROVIDER_TYPE:+--from-literal=LLM_PROVIDER_TYPE="$LLM_PROVIDER_TYPE"} \
     ${LLM_API_VERSION:+--from-literal=LLM_API_VERSION="$LLM_API_VERSION"} \
-    ${AZURE_OPENAI_KEY:+--from-literal=AZURE_OPENAI_KEY="$AZURE_OPENAI_KEY"} \
     ${AZURE_FW_GLM5_KEY:+--from-literal=AZURE_FW_GLM5_KEY="$AZURE_FW_GLM5_KEY"} \
     ${AZURE_KIMI_K25_KEY:+--from-literal=AZURE_KIMI_K25_KEY="$AZURE_KIMI_K25_KEY"} \
     ${AZURE_GPT51_KEY:+--from-literal=AZURE_GPT51_KEY="$AZURE_GPT51_KEY"} \
     ${AZURE_MODEL_ROUTER_KEY:+--from-literal=AZURE_MODEL_ROUTER_KEY="$AZURE_MODEL_ROUTER_KEY"} \
+    ${ANTHROPIC_API_KEY:+--from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"} \
     --dry-run=client -o yaml | kubectl apply -f -
 
 # ─── Step 0: Run local integration tests ─────────────────────────

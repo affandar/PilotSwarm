@@ -77,6 +77,12 @@ export interface SerializableSessionConfig {
      * names to actual Tool objects from its registry at activity execution time.
      */
     toolNames?: string[];
+    /**
+     * Internal: identity of the bound agent for namespace access control.
+     * Set from the agent definition's `id` field. Used by fact tool handlers
+     * to enforce knowledge pipeline namespace restrictions.
+     */
+    agentIdentity?: string;
 }
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */

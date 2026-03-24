@@ -123,6 +123,10 @@ export function createSessionManagerProxy(ctx: any) {
         getWorkerSessionPolicy() {
             return ctx.scheduleActivity("getWorkerSessionPolicy", {});
         },
+        /** Load curated skills and open asks from the knowledge pipeline. */
+        loadKnowledgeIndex(cap?: number) {
+            return ctx.scheduleActivity("loadKnowledgeIndex", { cap });
+        },
     };
 }
 
@@ -153,6 +157,8 @@ export function registerActivities(
     workerAllowedAgentNames?: string[],
     /** Loaded user-creatable agents — used by resolveAgentConfig activity. */
     userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; parent?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>,
+    /** Fact store instance for the loadKnowledgeIndex activity. */
+    factStore?: import("./facts-store.js").FactStore | null,
 ) {
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
@@ -559,6 +565,7 @@ export function registerActivities(
                 promptLayering: input.config.promptLayering,
                 toolNames: input.config.toolNames,
                 waitThreshold: input.config.waitThreshold,
+                agentId: input.agentId,
             });
             trace(`sdkClient.createSession done (${Date.now() - createSessionAt}ms)`);
 
@@ -847,4 +854,69 @@ export function registerActivities(
             allowedAgentNames: workerAllowedAgentNames ?? [],
         };
     });
+
+    // ── loadKnowledgeIndex ──────────────────────────────────
+    // Reads curated skills and open asks from the facts table for
+    // injection into agent context before each turn.
+    if (factStore) {
+        runtime.registerActivity("loadKnowledgeIndex", async (
+            activityCtx: any,
+            input: { cap?: number },
+        ): Promise<{ skills: Array<{ name: string; description: string; prompt: string; toolNames: string[] }>; asks: Array<{ key: string; summary: string }> }> => {
+            activityCtx.traceInfo("[loadKnowledgeIndex] loading curated skills and open asks");
+            const cap = input.cap ?? 50;
+
+            // Read curated skills (exclude aged-out)
+            const skillRows = await factStore.readFacts(
+                { keyPattern: "skills/%", scope: "shared", limit: cap },
+                { readerSessionId: null, grantedSessionIds: [] },
+            );
+            const skills: Array<{ name: string; description: string; prompt: string; toolNames: string[] }> = [];
+            if (Array.isArray(skillRows)) {
+                for (const row of skillRows) {
+                    const val = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
+                    if (val?.status === "aged-out") continue;
+                    skills.push({
+                        name: val?.name ?? row.key?.replace("skills/", "").replace(/\//g, "-") ?? "unknown",
+                        description: val?.description ?? "",
+                        prompt: val?.instructions ?? "",
+                        toolNames: val?.tools ?? [],
+                    });
+                }
+            }
+
+            // Read open asks
+            const askRows = await factStore.readFacts(
+                { keyPattern: "asks/%", scope: "shared", limit: cap },
+                { readerSessionId: null, grantedSessionIds: [] },
+            );
+            const asks: Array<{ key: string; summary: string }> = [];
+            if (Array.isArray(askRows)) {
+                for (const row of askRows) {
+                    const val = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
+                    if (val?.status !== "open") continue;
+                    asks.push({
+                        key: row.key,
+                        summary: val?.summary ?? "",
+                    });
+                }
+            }
+
+            // Apply combined cap — prioritize skills by confidence, then asks
+            const confidenceOrder: Record<string, number> = { high: 3, medium: 2, low: 1 };
+            skills.sort((a, b) => {
+                // Parse confidence from the prompt/description if needed — but we have the raw value
+                return 0; // already ordered by insertion; fine for now
+            });
+            if (skills.length + asks.length > cap) {
+                const skillCap = Math.min(skills.length, Math.floor(cap * 0.7));
+                const askCap = cap - skillCap;
+                skills.splice(skillCap);
+                asks.splice(askCap);
+            }
+
+            activityCtx.traceInfo(`[loadKnowledgeIndex] ${skills.length} skills, ${asks.length} asks`);
+            return { skills, asks };
+        });
+    }
 }

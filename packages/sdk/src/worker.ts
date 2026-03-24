@@ -269,6 +269,7 @@ export class PilotSwarmWorker {
             this._sessionPolicy,
             this.allowedAgentNames,
             this._rawLoadedAgents,
+            this.factStore,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
