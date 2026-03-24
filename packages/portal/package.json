@@ -5,6 +5,7 @@
   "description": "Web portal for PilotSwarm — hosts the full TUI in the browser via xterm.js + node-pty.",
   "type": "module",
   "scripts": {
+    "build": "echo 'pilotswarm-web: no build step'",
     "start": "node server.js",
     "dev": "node server.js"
   },

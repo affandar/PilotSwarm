@@ -160,7 +160,9 @@ Curated skills mirror the structure of file-based `SKILL.md` files. The Copilot 
     "intake/terraform/session-def456"
   ],
   "created": "2026-03-23T15:00:00Z",
-  "last_reviewed": "2026-03-23T15:00:00Z"
+  "last_reviewed": "2026-03-23T15:00:00Z",
+  "expires_at": "2026-04-22T15:00:00Z", // TTL expiry — set from config/facts-manager/skill-ttl
+  "last_corroborated": "2026-03-23T15:00:00Z" // last time new evidence confirmed this skill
 }
 ```
 
@@ -184,6 +186,22 @@ Confidence progression:
 - 4+ corroborating, no contradictions → `high`
 - Contradictory evidence → confidence stays or drops; instructions must note the disagreement
 - Repeated failures → skill revised or removed
+
+### Skill Expiry and Re-corroboration
+
+Every curated skill has a TTL controlled by `config/facts-manager/skill-ttl` (default: 30 days). When a skill is created or updated with new corroborating evidence, `expires_at` is set to `now + skill-ttl` and `last_corroborated` is updated.
+
+On each cycle, the Facts Manager checks for expired skills and follows a decay sequence:
+
+1. **Approaching expiry** (within 20% of TTL remaining) — Facts Manager opens an ask requesting re-corroboration. The ask references the existing skill and explains what evidence is needed. This surfaces the ask to all task agents, who may contribute intake if they encounter the relevant situation.
+
+2. **Expired, first cycle** — If `expires_at` has passed with no new corroborating intake since `last_corroborated`, the Facts Manager drops the skill's confidence by one level (`high` → `medium`, `medium` → `low`). It extends `expires_at` by one more TTL period to allow time for re-corroboration. The re-corroboration ask remains open.
+
+3. **Expired, second consecutive** — If the skill expires again with no new evidence and confidence is already `low`, the Facts Manager removes the skill from the active index (it no longer appears in agent context). The skill record is retained in the facts table with a `"status": "aged-out"` field for audit, but is excluded from `loadKnowledgeIndex` results.
+
+4. **Re-corroboration received** — If a task agent writes intake that corroborates an expiring or aged-out skill, the Facts Manager restores confidence, resets `expires_at`, updates `last_corroborated`, marks the re-corroboration ask as `satisfied`, and re-activates the skill if it was aged out.
+
+The decay sequence ensures that skills backed by ongoing operational experience stay active, while stale knowledge that no agent encounters anymore is gradually retired rather than silently trusted.
 
 ## Facts Manager
 
@@ -262,11 +280,23 @@ loop:
     - if sufficient linked evidence: promote to skill, mark satisfied
     - if stale: mark stale or abandon
   
-  // 5. Compact
+  // 5. Review skill expiry
+  for each skill:
+    - if approaching expiry and no open re-corroboration ask:
+        open ask referencing this skill
+    - if expired and no new corroboration since last_corroborated:
+        drop confidence one level
+        extend expires_at by one TTL period
+    - if expired again at low confidence:
+        mark skill as aged-out (exclude from index)
+    - if re-corroborating intake arrived:
+        restore confidence, reset expires_at, close ask
+  
+  // 6. Compact
   delete incorporated intakes
   delete satisfied/abandoned asks (after retention window)
   
-  // 6. Wait
+  // 7. Wait
   wait(300)  // 5 minutes
 ```
 
@@ -508,4 +538,82 @@ On bootstrap, the Facts Manager checks for each config key and inserts the defau
 config/facts-manager/retention-window  → { "value": -1, "unit": "seconds", "description": "Intake retention after incorporation. -1 = infinite." }
 config/facts-manager/index-cap         → { "value": 50, "description": "Max skills + asks surfaced to agents per turn." }
 config/facts-manager/cycle-interval    → { "value": 300, "unit": "seconds", "description": "Seconds between compaction cycles." }
+config/facts-manager/skill-ttl         → { "value": 2592000, "unit": "seconds", "description": "Skill expiry TTL. Default 30 days. Skills not re-corroborated within this window decay in confidence and eventually age out." }
 ```
+
+## Test Plan
+
+Tests live in `packages/sdk/test/local/knowledge-pipeline.test.js`. They use `withClient()` and the standard test helpers. Because the Facts Manager is a system agent that runs on a timer loop, most tests simulate its behavior by calling the fact tools directly with the appropriate `agentIdentity` rather than waiting for the real agent's cycle.
+
+### Level 1: Namespace Access Control
+
+These tests verify the hard enforcement boundary in the tool handlers. No LLM calls needed — they exercise the tool handlers directly through the SDK.
+
+| Test | What it verifies |
+|------|------------------|
+| Task agent can write to `intake/<topic>/<session-id>` | `store_fact` with `intake/` prefix succeeds for non-facts-manager agent |
+| Task agent cannot write to `skills/` | `store_fact` with `skills/` prefix returns error for non-facts-manager agent |
+| Task agent cannot write to `asks/` | `store_fact` with `asks/` prefix returns error for non-facts-manager agent |
+| Task agent can read from `skills/` | `read_facts` with `skills/%` pattern succeeds for non-facts-manager agent |
+| Task agent can read from `asks/` | `read_facts` with `asks/%` pattern succeeds for non-facts-manager agent |
+| Task agent cannot read from `intake/` | `read_facts` with `intake/%` pattern returns error for non-facts-manager agent |
+| Task agent cannot delete from `skills/` | `delete_fact` with `skills/` key returns error for non-facts-manager agent |
+| Facts Manager can write to all namespaces | `store_fact` succeeds for `agentIdentity="facts-manager"` on `intake/`, `skills/`, `asks/` |
+| Facts Manager can read from all namespaces | `read_facts` succeeds for `agentIdentity="facts-manager"` on all patterns |
+| Facts Manager can delete from all namespaces | `delete_fact` succeeds for `agentIdentity="facts-manager"` on all keys |
+| Config namespace restricted to Facts Manager | `store_fact` with `config/facts-manager/` prefix rejected for non-facts-manager agent |
+
+### Level 2: Intake → Ask → Skill Lifecycle
+
+These tests simulate the full pipeline by writing facts directly, then verifying state transitions.
+
+| Test | What it verifies |
+|------|------------------|
+| Single intake creates an ask | Write one intake, run triage logic, verify an ask is opened with `status: "open"` and the intake is linked |
+| Multiple corroborating intakes promote to skill | Write 4+ intakes for the same topic, run triage, verify a skill is created with `confidence: "high"` and all intakes are linked |
+| Contradicting intake lowers confidence | Create a high-confidence skill, write a contradicting intake, run triage, verify confidence drops and instructions note the disagreement |
+| Ask satisfaction closes ask and creates skill | Open an ask, write sufficient corroborating intakes, run review, verify ask status is `satisfied` and a skill exists |
+| Stale ask marked stale | Open an ask, simulate multiple cycles with no new intake, verify ask status transitions to `stale` |
+| Compaction deletes incorporated intakes | Write intakes, promote to skill, run compaction, verify intake facts are deleted |
+| Compaction deletes satisfied asks | Satisfy an ask, run compaction after retention window, verify ask is deleted |
+
+### Level 3: Skill Expiry and Re-corroboration
+
+| Test | What it verifies |
+|------|------------------|
+| New skill has `expires_at` set | Create a skill, verify `expires_at` is `created + skill-ttl` |
+| Approaching expiry opens re-corroboration ask | Create a skill with `expires_at` within 20% of TTL, run cycle, verify an ask is opened referencing the skill |
+| Expired skill drops confidence by one level | Create a high-confidence skill with `expires_at` in the past, run cycle, verify confidence is now `medium` and `expires_at` is extended |
+| Double-expired low-confidence skill is aged out | Create a low-confidence skill that has expired twice, run cycle, verify skill has `status: "aged-out"` and is excluded from `loadKnowledgeIndex` results |
+| Re-corroboration restores aged-out skill | Age out a skill, write a corroborating intake, run cycle, verify skill is restored to active with reset `expires_at` and updated `last_corroborated` |
+| Re-corroboration resets TTL on active skill | Create a skill nearing expiry, write corroborating intake, run cycle, verify `expires_at` and `last_corroborated` are reset |
+| Skill TTL config change applies to new skills | Update `config/facts-manager/skill-ttl`, create a new skill, verify its `expires_at` uses the new TTL |
+
+### Level 4: Context Injection
+
+| Test | What it verifies |
+|------|------------------|
+| `loadKnowledgeIndex` returns curated skills as `Skill` objects | Write skills to facts table, call activity, verify returned objects have `name`, `description`, `prompt`, `toolNames` |
+| `loadKnowledgeIndex` returns only open asks | Write asks with various statuses, call activity, verify only `open` asks are returned |
+| `loadKnowledgeIndex` excludes aged-out skills | Write an aged-out skill, call activity, verify it is not in results |
+| Index cap is respected | Write more skills than the configured cap, call activity, verify result count ≤ cap and highest-confidence/most-recent items are prioritized |
+| Facts Manager sessions skip knowledge injection | Verify the orchestration does not call `loadKnowledgeIndex` for sessions bound to the `facts-manager` agent |
+| Namespace rules appear in injected context | Verify the prompt contains the `[FACT NAMESPACE RULES]` block |
+
+### Level 5: Facts Manager Agent Integration
+
+These are end-to-end tests that start a real Facts Manager system agent and verify its behavior through the client API.
+
+| Test | What it verifies |
+|------|------------------|
+| Facts Manager auto-starts | Start a worker with Facts Manager registered, verify CMS shows a running facts-manager session |
+| Facts Manager processes intake on cycle | Write intake facts, wait for one cycle, verify asks or skills appear |
+| Facts Manager config bootstrap | Start Facts Manager, verify default config facts exist under `config/facts-manager/` |
+| User can adjust cycle interval via conversation | Send a message to the Facts Manager requesting a config change, verify the config fact is updated |
+
+### Level 6: Cross-deployment Portability
+
+| Test | What it verifies |
+|------|------------------|
+| Export produces a downloadable artifact | Ask Facts Manager to export, verify an artifact is created containing all skills and asks |
+| Import restores skills from artifact | Upload a previously exported artifact, ask Facts Manager to import, verify skills appear in the facts table |

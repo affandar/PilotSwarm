@@ -7,6 +7,12 @@
 > explicitly saying "commit", "push", or "deploy". Stage files and describe what
 > you'd commit, then ask. This applies to ALL agents including Squad members.
 
+## Sensitive Local Files
+
+**Do NOT modify `.model_providers.json` or `.env` without the user explicitly asking.** These files contain private API keys, endpoints, and credentials. Never read them to extract secrets, and never overwrite them with example/placeholder content.
+
+When changes are made to the structure or fields of `.model_providers.json` or `.env`, keep the corresponding example files (`.model_providers.example.json`, `.env.example`) in sync — but **strip all private keys, real endpoint URLs, and credential values** from the example files. Example files should use placeholders like `YOUR-RESOURCE`, `your-api-key-here`, or empty values.
+
 ## Project Overview
 
 pilotswarm is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide) (a Rust-based durable orchestration engine). It provides **crash recovery, durable timers, session dehydration, and multi-node scaling**.
