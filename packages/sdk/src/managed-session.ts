@@ -168,7 +168,7 @@ export class ManagedSession {
                     },
                     model: {
                         type: "string",
-                        description: "Optional exact provider:model override from list_available_models (e.g. 'azure-openai:gpt-4.1-mini'). Do not invent or shorten model names. If omitted, inherits parent's model.",
+                        description: "Optional exact provider:model override from list_available_models (e.g. 'anthropic:claude-sonnet-4-6'). Do not invent or shorten model names. If omitted, inherits parent's model.",
                     },
                     system_message: {
                         type: "string",

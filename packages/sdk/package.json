@@ -1,6 +1,6 @@
 {
   "name": "pilotswarm-sdk",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
   "type": "module",
   "main": "./dist/index.js",
@@ -28,6 +28,7 @@
     "test:local:system-agents": "vitest run --testPathPattern system-agents",
     "test:local:session-policy": "vitest run --testPathPattern session-policy",
     "test:local:reliability": "vitest run --testPathPattern reliability",
+    "test:local:knowledge-pipeline": "vitest run --testPathPattern knowledge-pipeline",
     "test:local": "vitest run",
     "test:perf": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run",
     "test:perf:spawn": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run test/perf/spawn.perf.test.js",

@@ -387,7 +387,7 @@ if [[ "$MODE" == "remote" ]]; then
     IMAGE="${REGISTRY}/copilot-runtime-worker:latest"
     echo "   Building and pushing Docker image..."
     az acr login --name "${REGISTRY%%.*}" 2>/dev/null
-    docker build -t "$IMAGE" -f deploy/Dockerfile.worker --push . 2>/dev/null \
+    docker buildx build --platform linux/amd64 -t "$IMAGE" -f deploy/Dockerfile.worker --push . 2>/dev/null \
         && echo "   ✅ Image pushed: ${IMAGE}" \
         || { echo "   ⚠️  Docker build/push failed — falling back to pod restart only"; }
 

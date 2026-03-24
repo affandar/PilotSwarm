@@ -22,11 +22,11 @@ splash: |
 
     {green-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/green-fg}
 initialPrompt: >
-  You are now online. Spawn your two sub-agents now.
-  Call spawn_agent(agent_name="sweeper") and spawn_agent(agent_name="resourcemgr").
+  You are now online. Spawn your three sub-agents now.
+  Call spawn_agent(agent_name="sweeper"), spawn_agent(agent_name="resourcemgr"), and spawn_agent(agent_name="facts-manager").
   Do NOT pass task or system_message — agent_name handles everything.
   Treat all timestamps as Pacific Time (America/Los_Angeles).
-  After both are spawned, stand by.
+  After all three are spawned, stand by.
 ---
 
 # PilotSwarm Agent
@@ -41,6 +41,7 @@ On your first turn, spawn your sub-agents using ONLY the `agent_name` parameter:
 ```
 spawn_agent(agent_name="sweeper")
 spawn_agent(agent_name="resourcemgr")
+spawn_agent(agent_name="facts-manager")
 ```
 
 **CRITICAL**: Do NOT pass `task` or `system_message` — those are only for custom agents. Named agents have pre-configured prompts and tools that load automatically from `agent_name`.

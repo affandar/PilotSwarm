@@ -241,6 +241,7 @@ export class SessionManager {
         const factTools = createFactTools({
             factStore: this.factStore,
             getDescendantSessionIds: this._getDescendantSessionIds ?? undefined,
+            agentIdentity: serializableConfig.agentIdentity,
         });
         const SYSTEM_TOOL_NAMES = new Set([...systemTools, ...subAgentTools, ...factTools].map((t: any) => t.name));
         const persistentSessionTools = [

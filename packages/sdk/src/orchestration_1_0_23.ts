@@ -49,7 +49,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.24";
+const FROZEN_VERSION = "1.0.23";
 
 /**
  * Long-lived durable session orchestration.
@@ -67,7 +67,7 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.24";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_24(
+export function* durableSessionOrchestration_1_0_23(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -256,7 +256,7 @@ export function* durableSessionOrchestration_1_0_24(
 
     /** Yield this to continueAsNew into the current (latest) orchestration version. */
     function versionedContinueAsNew(input: OrchestrationInput) {
-        return ctx.continueAsNewVersioned(input, CURRENT_ORCHESTRATION_VERSION);
+        return ctx.continueAsNewVersioned(input, FROZEN_VERSION);
     }
 
     function parseChildUpdate(promptText?: string): { sessionId: string; updateType: string; content: string } | null {
@@ -391,13 +391,6 @@ export function* durableSessionOrchestration_1_0_24(
             // Rebuild session proxy with updated config (tools now included)
             session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
         }
-    }
-
-    // ─── Set agent identity for namespace access control ─────────
-    // The agentId travels through the config so fact tool handlers can
-    // enforce knowledge pipeline namespace restrictions.
-    if (input.agentId) {
-        config.agentIdentity = input.agentId;
     }
 
     // ─── MAIN LOOP ──────────────────────────────────────────
@@ -635,45 +628,6 @@ export function* durableSessionOrchestration_1_0_24(
                     }
                 }
                 if (needsHydration) continue; // hydrate exhausted retries — go back to dequeue
-            }
-
-            // ②½ LOAD KNOWLEDGE PIPELINE CONTEXT ────────────────
-            // Inject curated skills and active asks before running the turn.
-            // Skip for facts-manager to avoid circular context injection.
-            if (config.agentIdentity !== "facts-manager") {
-                try {
-                    const knowledgeIndex: any = yield manager.loadKnowledgeIndex();
-                    if (knowledgeIndex) {
-                        // Inject active asks into the prompt
-                        if (knowledgeIndex.asks?.length > 0) {
-                            const askLines = knowledgeIndex.asks.map((a: any) => `- ${a.key}`).join("\n");
-                            const askBlock = `[ACTIVE FACT REQUESTS]\n` +
-                                `The Facts Manager is seeking corroboration on these topics.\n` +
-                                `If any are relevant to your current task, read the full ask\n` +
-                                `with read_facts and contribute intake evidence if you can.\n${askLines}\n\n` +
-                                `[FACT NAMESPACE RULES]\n` +
-                                `- You can WRITE to: intake/<topic>/<session-id> (shared observations)\n` +
-                                `- You can READ from: skills/*, asks/* (curated knowledge, open requests)\n` +
-                                `- You CANNOT write to skills/ or asks/ (Facts Manager only)\n` +
-                                `- You CANNOT read from intake/ (Facts Manager only)\n\n`;
-                            prompt = askBlock + prompt;
-                        }
-                        // Note: curated skills are returned as Skill objects but we
-                        // currently pass them via prompt context. Full SDK skill
-                        // merging can be added once the Copilot SDK exposes a
-                        // per-turn skill injection API.
-                        if (knowledgeIndex.skills?.length > 0) {
-                            const skillLines = knowledgeIndex.skills
-                                .map((s: any) => `- **${s.name}**: ${s.description}`)
-                                .join("\n");
-                            const skillBlock = `[CURATED SKILLS]\n` +
-                                `The following shared skills are available. Use read_facts to get full instructions.\n${skillLines}\n\n`;
-                            prompt = skillBlock + prompt;
-                        }
-                    }
-                } catch (knErr: any) {
-                    ctx.traceInfo(`[orch] loadKnowledgeIndex failed (non-fatal): ${knErr.message || knErr}`);
-                }
             }
 
             // ③ RUN TURN via SessionProxy (with retry on failure)

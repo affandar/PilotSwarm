@@ -28,25 +28,6 @@
             ]
         },
         {
-            "id": "azure-openai",
-            "type": "azure",
-            "baseUrl": "https://YOUR-RESOURCE.openai.azure.com/openai",
-            "apiKey": "env:AZURE_OPENAI_KEY",
-            "apiVersion": "2024-04-01-preview",
-            "models": [
-                {
-                    "name": "gpt-4.1",
-                    "description": "Latest GPT-4.1 full model. Strong reasoning, coding, and instruction following. Good for complex tasks.",
-                    "cost": "medium"
-                },
-                {
-                    "name": "gpt-4.1-mini",
-                    "description": "Fast, cost-effective GPT-4.1 variant. Good for simple tasks, drafts, and high-throughput workloads.",
-                    "cost": "low"
-                }
-            ]
-        },
-        {
             "id": "azure-model-router",
             "type": "openai",
             "baseUrl": "https://YOUR-RESOURCE.openai.azure.com/openai/v1",
@@ -97,7 +78,50 @@
                     "cost": "high"
                 }
             ]
+        },
+        {
+            "id": "anthropic",
+            "type": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "apiKey": "env:ANTHROPIC_API_KEY",
+            "models": [
+                {
+                    "name": "claude-opus-4-6",
+                    "description": "Claude Opus 4.6 (latest). Most capable. Deep reasoning, complex multi-step tasks.",
+                    "cost": "high"
+                },
+                {
+                    "name": "claude-opus-4-5-20251101",
+                    "description": "Claude Opus 4.5 (Nov 2025). Strong reasoning and analysis.",
+                    "cost": "high"
+                },
+                {
+                    "name": "claude-opus-4-1-20250805",
+                    "description": "Claude Opus 4.1 (Aug 2025). Reliable deep reasoning.",
+                    "cost": "high"
+                },
+                {
+                    "name": "claude-opus-4-20250514",
+                    "description": "Claude Opus 4.0 (May 2025). Original Opus 4 release.",
+                    "cost": "high"
+                },
+                {
+                    "name": "claude-sonnet-4-6",
+                    "description": "Claude Sonnet 4.6 (latest). Fast, capable all-rounder.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "claude-sonnet-4-5-20250929",
+                    "description": "Claude Sonnet 4.5 (Sep 2025). Good balance of speed and quality.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "claude-sonnet-4-20250514",
+                    "description": "Claude Sonnet 4.0 (May 2025). Original Sonnet 4 release.",
+                    "cost": "medium"
+                }
+            ]
         }
     ],
-    "defaultModel": "azure-fw-glm-5:FW-GLM-5"
+    "defaultModel": "azure-gpt-5.1:gpt-5.1-chat"
 }

@@ -2,14 +2,22 @@
 
 ## Model Compatibility Matrix
 
-| Model | System Agents | User Chat | Timer Interrupt Response | Tool Calling | Content Filter | Notes |
-|-------|:---:|:---:|:---:|:---:|:---:|-------|
-| FW-GLM-5 | ✅ | ✅ | ✅ | ✅ | None | Current default. Reliable across all agent types. |
-| gpt-5.1-chat | ⚠️ | ✅ | ❌ | ✅ | Strict (Azure default) | Tool-call bias: skips text response on timer interrupts. Content filter blocks some system agent prompts. |
-| Kimi-K2.5 | ? | ? | ? | ✅ | None | Untested as default. Available on Azure AI. |
-| model-router | ? | ? | ? | ? | Varies | Azure auto-router. Untested. Picks model per request. |
-| claude-opus-4.6 | ? | ? | ? | ? | N/A | Via GitHub Copilot. Not tested on AKS (no direct Azure endpoint). |
-| gpt-4.1 | ? | ? | ? | ? | N/A | Via GitHub Copilot. Not tested on AKS directly. |
+| Model | Provider | System Agents | User Chat | Timer Interrupt | Tool Calling | Content Filter | Eval Pass Rate | Avg Time | Notes |
+|-------|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|-------|
+| claude-opus-4-6 | Anthropic (BYOK) | ✅ | ✅ | ✅ | ✅ | None | **97% (174/180)** | 1175s | Tied best. Zero model-specific failures. |
+| claude-sonnet-4-6 | Anthropic (BYOK) | ✅ | ✅ | ✅ | ✅ | None | **97% (174/180)** | **1164s** | Tied best & fastest. Zero model-specific failures. |
+| FW-GLM-5 | Azure AI Foundry | ✅ | ✅ | ✅ | ✅ | None | **96% (173/180)** | 1237s | Reliable. Zero model-specific failures. |
+| gpt-5.1-chat | Azure AI Foundry | ⚠️ | ✅ | ❌ | ✅ | Strict | 96% (173/180) | 1294s | 1 model-specific failure (session-policy sub-agent). Latency spikes. |
+| model-router | Azure AI Foundry | ⚠️ | ✅ | ? | ✅ | Varies | 94% (170/180) | 1443s | 2 multi-worker failures. Slowest. |
+| Kimi-K2.5 | Azure AI Foundry | ⚠️ | ✅ | ? | ✅ | None | **93% (167/180)** | 1446s | 4 model-specific failures (multi-worker, policy). Slowest. |
+
+### Eval Details (2026-03-24)
+- **Suites**: 14 (smoke-basic, smoke-api, commands-user, management, durability, contracts, cms-events, cms-state, kv-transport, model-selection, session-policy-guards, session-policy-behavior, multi-worker, facts)
+- **Runs**: 2 per model per suite
+- **Total executions**: 2,160 (180 tests × 2 runs × 6 models)
+- **Universal failures** (all models, test/product bugs): contracts "LLM Sees Exact Always-On Tool" 0%, model-selection "Model Recorded in CMS After Turn" 0%, model-selection "Different Models on Same Worker" 0%
+- **Model-specific failures**: Kimi-K2.5 (multi-worker stale session tests 0%, policy title preserved 0%), model-router (same multi-worker tests 0%), gpt-5.1-chat (sub-agent blocking flaky 50%)
+- Full report: [`docs/models/eval-2026-03-24.md`](models/eval-2026-03-24.md)
 
 ## Known Model Quirks
 
@@ -58,5 +66,7 @@ Timer context: {seconds}s timer (reason: "{reason}"), {elapsed}s elapsed, {remai
 
 - Would a custom RAI content filter policy on GPT-5.1 fix the initial prompt blocking?
 - Is the tool-call bias a GPT-5.1 specific issue or also present in GPT-4.1?
-- Would `model-router` select GPT-5.1 for system agents and hit the same issues?
-- How does Kimi-K2.5 handle timer interrupt prompts?
+- ~~Would `model-router` select GPT-5.1 for system agents and hit the same issues?~~ **Answered 2026-03-24**: model-router has its own multi-worker issues (67% pass rate on multi-worker).
+- ~~How does Kimi-K2.5 handle timer interrupt prompts?~~ **Partially answered 2026-03-24**: Kimi passes basic tests but has multi-worker and policy failures. Timer interrupt not specifically tested yet.
+- Why do Kimi-K2.5 and model-router fail the "Turn 0 Resets Stale Stored Session" and "Turn 1+ Fails Without Stored" multi-worker tests?
+- Anthropic models (Opus/Sonnet 4.6) are now available via direct BYOK API — should these become the default for AKS deployments?
