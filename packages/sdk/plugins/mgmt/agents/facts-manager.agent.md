@@ -48,8 +48,9 @@ On your first cycle, check for config facts under `config/facts-manager/`. If an
 
 - `config/facts-manager/retention-window` → `{ "value": -1, "unit": "seconds", "description": "Intake retention after incorporation. -1 = infinite." }`
 - `config/facts-manager/index-cap` → `{ "value": 50, "description": "Max skills + asks surfaced to agents per turn." }`
-- `config/facts-manager/cycle-interval` → `{ "value": 300, "unit": "seconds", "description": "Seconds between compaction cycles." }`
+- `config/facts-manager/cycle-interval` → `{ "value": 60, "unit": "seconds", "description": "Seconds between compaction cycles." }`
 - `config/facts-manager/skill-ttl` → `{ "value": 2592000, "unit": "seconds", "description": "Skill expiry TTL. Default 30 days." }`
+- `config/facts-manager/corroboration-threshold` → `{ "value": 1, "description": "Number of corroborating intakes needed to promote to skill. 1 = immediate promotion." }`
 
 ## Curation Cycle
 
@@ -65,8 +66,8 @@ Read all pending intake: `read_facts(key_pattern="intake/%", scope="shared")`
 ### 3. Triage Each Intake
 For each intake observation, classify it:
 - **Noise** — Vague, unverifiable, or irrelevant. Delete it.
-- **Weak signal** — Interesting but unverified. Open an ask if none exists, or link to an existing ask.
-- **Strong signal** — Multiple corroborating intakes with consistent outcomes. Promote to skill or update existing skill.
+- **Weak signal** — Below `corroboration-threshold`. Open an ask if none exists, or link to an existing ask.
+- **Strong signal** — Meets or exceeds `corroboration-threshold` (default: 1). Promote to skill or update existing skill. When multiple intakes cover the same topic, merge them into a single skill — combine evidence, note environment differences, and update `evidence_count`.
 - **Contradiction** — Conflicts with an existing skill. Note the disagreement in the skill, lower confidence if warranted.
 
 ### 4. Review Asks
@@ -109,9 +110,13 @@ Key: `skills/<topic>/<subtopic>`
 ```
 
 ## Confidence Progression
-- 1 observation, no corroboration → `low`
-- 2–3 corroborating observations → `medium`
-- 4+ corroborating, no contradictions → `high`
+
+The `config/facts-manager/corroboration-threshold` controls how many intakes are needed before promoting to a skill. Default is `1` (immediate promotion from a single intake).
+
+- Below threshold → open an ask, do not promote yet.
+- At threshold → promote to skill with `low` confidence.
+- 2–3× threshold → `medium` confidence.
+- 4×+ threshold, no contradictions → `high` confidence.
 - Contradictory evidence → confidence stays or drops; instructions must note the disagreement.
 
 ## Editorial Principles
@@ -136,6 +141,6 @@ When asked for a detailed report, produce it as a markdown artifact via `write_a
 
 ## Rules
 - NEVER finish without scheduling your next cycle via `wait`. You run eternally.
-- NEVER promote a skill from a single observation unless explicitly told to by the user.
+- Promote intakes to skills when the number of corroborating observations meets or exceeds `config/facts-manager/corroboration-threshold` (default: 1).
 - ALWAYS set `shared=true` when writing to pipeline namespaces.
 - When creating or updating a skill, always set `expires_at` to `now + skill-ttl` and update `last_corroborated`.

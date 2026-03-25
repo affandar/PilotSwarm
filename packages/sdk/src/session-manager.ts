@@ -282,7 +282,7 @@ export class SessionManager {
             workingDirectory: config.workingDirectory,
             hooks: config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? (async () => ({ kind: "approved" as const })),
-            infiniteSessions: { enabled: false },
+            infiniteSessions: { enabled: true },
             // Exclude the Copilot SDK's built-in "task" tool — PilotSwarm provides
             // its own durable sub-agent mechanism via spawn_agent / check_agents.
             // The native "task" tool spawns in-process sub-agents that bypass the

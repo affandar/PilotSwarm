@@ -107,7 +107,12 @@ Before each turn, you receive a compact index of curated skills and open fact re
 
 ### Writing Observations (all agents)
 
-When you discover something operationally significant — a configuration requirement, a failure mode, a workaround, an environment quirk — write an intake observation:
+Write an intake observation when you discover something another agent would waste time rediscovering:
+- A required setting, flag, or env var that wasn't obvious
+- An error with a non-obvious root cause or workaround
+- A version/region/environment-specific behavior difference
+- A dependency ordering or timing constraint
+- A fix for a bug or API quirk in a tool or service
 
     store_fact(
       key="intake/<topic>/<your-session-id>",

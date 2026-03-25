@@ -658,16 +658,18 @@ export function* durableSessionOrchestration_1_0_24(
                                 `- You CANNOT read from intake/ (Facts Manager only)\n\n`;
                             prompt = askBlock + prompt;
                         }
-                        // Note: curated skills are returned as Skill objects but we
-                        // currently pass them via prompt context. Full SDK skill
-                        // merging can be added once the Copilot SDK exposes a
-                        // per-turn skill injection API.
+                        // Inject curated skills with full body — matches the
+                        // presentation format of file-based SKILL.md skills.
                         if (knowledgeIndex.skills?.length > 0) {
-                            const skillLines = knowledgeIndex.skills
-                                .map((s: any) => `- **${s.name}**: ${s.description}`)
-                                .join("\n");
+                            const skillBlocks = knowledgeIndex.skills.map((s: any) => {
+                                let block = `### ${s.name}\n${s.description}\n`;
+                                if (s.prompt) block += `\n${s.prompt}\n`;
+                                if (s.toolNames?.length) block += `\nTools: ${s.toolNames.join(", ")}\n`;
+                                return block;
+                            }).join("\n");
                             const skillBlock = `[CURATED SKILLS]\n` +
-                                `The following shared skills are available. Use read_facts to get full instructions.\n${skillLines}\n\n`;
+                                `The following shared skills have been curated from operational experience.\n` +
+                                `Apply them when relevant to your current task.\n\n${skillBlocks}\n`;
                             prompt = skillBlock + prompt;
                         }
                     }
