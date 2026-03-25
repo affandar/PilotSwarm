@@ -867,13 +867,13 @@ export function registerActivities(
             const cap = input.cap ?? 50;
 
             // Read curated skills (exclude aged-out)
-            const skillRows = await factStore.readFacts(
+            const skillResult = await factStore.readFacts(
                 { keyPattern: "skills/%", scope: "shared", limit: cap },
                 { readerSessionId: null, grantedSessionIds: [] },
             );
             const skills: Array<{ name: string; description: string; prompt: string; toolNames: string[] }> = [];
-            if (Array.isArray(skillRows)) {
-                for (const row of skillRows) {
+            if (skillResult?.facts?.length) {
+                for (const row of skillResult.facts) {
                     const val = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
                     if (val?.status === "aged-out") continue;
                     skills.push({
@@ -886,13 +886,13 @@ export function registerActivities(
             }
 
             // Read open asks
-            const askRows = await factStore.readFacts(
+            const askResult = await factStore.readFacts(
                 { keyPattern: "asks/%", scope: "shared", limit: cap },
                 { readerSessionId: null, grantedSessionIds: [] },
             );
             const asks: Array<{ key: string; summary: string }> = [];
-            if (Array.isArray(askRows)) {
-                for (const row of askRows) {
+            if (askResult?.facts?.length) {
+                for (const row of askResult.facts) {
                     const val = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
                     if (val?.status !== "open") continue;
                     asks.push({
