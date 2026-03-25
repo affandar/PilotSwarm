@@ -156,7 +156,12 @@ export class PgFactStore implements FactStore {
         await this.pool.query(this.sql.createSchema);
         await this.pool.query(this.sql.createTable);
         for (const idx of this.sql.createIndexes) {
-            await this.pool.query(idx);
+            try {
+                await this.pool.query(idx);
+            } catch (err: any) {
+                // Ignore race: two workers creating the same index concurrently
+                if (err?.code !== "23505") throw err;
+            }
         }
 
         try {

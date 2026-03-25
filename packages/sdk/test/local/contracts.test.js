@@ -60,6 +60,7 @@ const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     "read_bash",
     "report_intent",
     "skill",
+    "sql",
     "stop_bash",
     "view",
     "web_fetch",

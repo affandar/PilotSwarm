@@ -31,6 +31,7 @@ function makeWorker(env, nodeId) {
         githubToken: process.env.GITHUB_TOKEN,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
         sessionStateDir: env.sessionStateDir,
         workerNodeId: nodeId,
         disableManagementAgents: true,
@@ -42,6 +43,7 @@ function makeClient(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
     });
 }
 
