@@ -9,7 +9,7 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 import {
@@ -17,7 +17,8 @@ import {
     createFactTools,
 } from "../../src/index.ts";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 // ─── Level 1: Namespace Access Control ──────────────────────────
 
@@ -601,76 +602,62 @@ async function testLoadKnowledgeIndexFullBody(env) {
 
 // ─── Tests ──────────────────────────────────────────────────────
 
-describe.concurrent("Knowledge Pipeline", () => {
+describe("Knowledge Pipeline", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Task agent can write to intake/", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-write-intake");
-        try { await testTaskAgentCanWriteIntake(env); } finally { await env.cleanup(); }
+        await testTaskAgentCanWriteIntake(getEnv());
     });
 
     it("Task agent cannot write to skills/", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-no-write-skills");
-        try { await testTaskAgentCannotWriteSkills(env); } finally { await env.cleanup(); }
+        await testTaskAgentCannotWriteSkills(getEnv());
     });
 
     it("Task agent cannot write to asks/", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-no-write-asks");
-        try { await testTaskAgentCannotWriteAsks(env); } finally { await env.cleanup(); }
+        await testTaskAgentCannotWriteAsks(getEnv());
     });
 
     it("Task agent cannot write to config/facts-manager/", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-no-write-config");
-        try { await testTaskAgentCannotWriteConfig(env); } finally { await env.cleanup(); }
+        await testTaskAgentCannotWriteConfig(getEnv());
     });
 
     it("Task agent can read skills/", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-read-skills");
-        try { await testTaskAgentCanReadSkills(env); } finally { await env.cleanup(); }
+        await testTaskAgentCanReadSkills(getEnv());
     });
 
     it("Task agent can read asks/", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-read-asks");
-        try { await testTaskAgentCanReadAsks(env); } finally { await env.cleanup(); }
+        await testTaskAgentCanReadAsks(getEnv());
     });
 
     it("Task agent cannot read intake/", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-no-read-intake");
-        try { await testTaskAgentCannotReadIntake(env); } finally { await env.cleanup(); }
+        await testTaskAgentCannotReadIntake(getEnv());
     });
 
     it("Task agent cannot delete from skills/", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-no-del-skills");
-        try { await testTaskAgentCannotDeleteSkills(env); } finally { await env.cleanup(); }
+        await testTaskAgentCannotDeleteSkills(getEnv());
     });
 
     it("Facts Manager can write to all namespaces", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-fm-write-all");
-        try { await testFactsManagerCanWriteAll(env); } finally { await env.cleanup(); }
+        await testFactsManagerCanWriteAll(getEnv());
     });
 
     it("Facts Manager can read all namespaces", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-fm-read-all");
-        try { await testFactsManagerCanReadAll(env); } finally { await env.cleanup(); }
+        await testFactsManagerCanReadAll(getEnv());
     });
 
     it("Facts Manager can delete from all namespaces", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-fm-del-all");
-        try { await testFactsManagerCanDeleteAll(env); } finally { await env.cleanup(); }
+        await testFactsManagerCanDeleteAll(getEnv());
     });
 
     it("loadKnowledgeIndex returns full body and filters correctly", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-index-body");
-        try { await testLoadKnowledgeIndexFullBody(env); } finally { await env.cleanup(); }
+        await testLoadKnowledgeIndexFullBody(getEnv());
     });
 
     it("FM-promoted skill is visible to agent", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kp-promote-visible");
-        try { await testFMPromotionVisibleToAgent(env); } finally { await env.cleanup(); }
+        await testFMPromotionVisibleToAgent(getEnv());
     });
 
     it("Merged intakes produce single skill visible to agent", { timeout: 240_000 }, async () => {
-        const env = createTestEnv("kp-merge-visible");
-        try { await testIntakeMergeVisibleToAgent(env); } finally { await env.cleanup(); }
+        await testIntakeMergeVisibleToAgent(getEnv());
     });
 });

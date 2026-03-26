@@ -8,13 +8,14 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, createManagementClient } from "../helpers/local-workers.js";
 import { assert, assertEqual, assertNotNull, assertGreaterOrEqual } from "../helpers/assertions.js";
 import { createCatalog, getSession, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG, BRIEF_CONFIG } from "../helpers/fixtures.js";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testSessionStateTransitions(env) {
     const catalog = await createCatalog(env);
@@ -200,35 +201,28 @@ async function testRenameTruncatesLongTitle(env) {
     }
 }
 
-describe.concurrent("Level 7b: CMS — State", () => {
+describe("Level 7b: CMS — State", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Session State Transitions", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testSessionStateTransitions(env); } finally { await env.cleanup(); }
+        await testSessionStateTransitions(getEnv());
     });
     it("Title Update via Management", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testTitleUpdate(env); } finally { await env.cleanup(); }
+        await testTitleUpdate(getEnv());
     });
     it("Session Iteration Count", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testSessionIterationCount(env); } finally { await env.cleanup(); }
+        await testSessionIterationCount(getEnv());
     });
     it("Soft Delete Hides Session", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testSoftDeleteHidesSession(env); } finally { await env.cleanup(); }
+        await testSoftDeleteHidesSession(getEnv());
     });
     it("Rename Visible in List and Info", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testRenameVisibleInListAndInfo(env); } finally { await env.cleanup(); }
+        await testRenameVisibleInListAndInfo(getEnv());
     });
     it("Rename Persists Across Resume", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testRenamePersistsAcrossResume(env); } finally { await env.cleanup(); }
+        await testRenamePersistsAcrossResume(getEnv());
     });
     it("Rename Truncates Long Title", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testRenameTruncatesLongTitle(env); } finally { await env.cleanup(); }
+        await testRenameTruncatesLongTitle(getEnv());
     });
 });

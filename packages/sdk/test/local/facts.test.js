@@ -8,7 +8,7 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 import {
     PilotSwarmClient,
@@ -19,7 +19,8 @@ import {
     createSweeperTools,
 } from "../../src/index.ts";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function listFactRows(env) {
     const { default: pg } = await import("pg");
@@ -473,17 +474,15 @@ async function testDescendantsScopeWithNoSubAgents(env) {
     }
 }
 
-describe.concurrent("Level 3/4: Facts", () => {
+describe("Level 3/4: Facts", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("facts tools store, read, and delete with shared/session semantics", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("facts-tools");
-        try { await testFactToolsStoreReadDelete(env); } finally { await env.cleanup(); }
+        await testFactToolsStoreReadDelete(getEnv());
     });
 
     it("deleteSession removes session facts but keeps shared facts", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("facts-delete");
-        try { await testDeleteSessionCleansSessionFacts(env); } finally { await env.cleanup(); }
+        await testDeleteSessionCleansSessionFacts(getEnv());
     });
 
     it("sweeper cleanup removes session facts for descendants too", async () => {
@@ -495,22 +494,18 @@ describe.concurrent("Level 3/4: Facts", () => {
     });
 
     it("parent reads child session facts via session_id lineage check", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("facts-child");
-        try { await testParentReadsChildFactsBySessionId(env); } finally { await env.cleanup(); }
+        await testParentReadsChildFactsBySessionId(getEnv());
     });
 
     it("multi-level descendant facts read via session_id at each level", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("facts-multi");
-        try { await testMultiLevelDescendantFactsBySessionId(env); } finally { await env.cleanup(); }
+        await testMultiLevelDescendantFactsBySessionId(getEnv());
     });
 
     it("parent reads all descendants facts via scope=descendants", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("facts-desc");
-        try { await testParentReadsAllDescendantFacts(env); } finally { await env.cleanup(); }
+        await testParentReadsAllDescendantFacts(getEnv());
     });
 
     it("scope=descendants with no sub-agents equals accessible", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("facts-nodesc");
-        try { await testDescendantsScopeWithNoSubAgents(env); } finally { await env.cleanup(); }
+        await testDescendantsScopeWithNoSubAgents(getEnv());
     });
 });

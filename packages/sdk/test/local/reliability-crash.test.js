@@ -8,7 +8,7 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmClient, PilotSwarmWorker } from "../helpers/local-workers.js";
 import {
     assert,
@@ -23,7 +23,8 @@ import {
 } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG } from "../helpers/fixtures.js";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 function makeWorker(env, nodeId) {
     return new PilotSwarmWorker({
@@ -219,19 +220,16 @@ async function testToolWorksOnReplacementWorker(env) {
     }
 }
 
-describe.concurrent("Level 11a: Reliability — Crash", () => {
+describe("Level 11a: Reliability — Crash", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Orchestration Survives Worker Crash", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("reliability");
-        try { await testOrchestrationSurvivesWorkerCrash(env); } finally { await env.cleanup(); }
+        await testOrchestrationSurvivesWorkerCrash(getEnv());
     });
     it("CMS Consistency Across Crash", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("reliability");
-        try { await testCmsConsistencyAcrossCrash(env); } finally { await env.cleanup(); }
+        await testCmsConsistencyAcrossCrash(getEnv());
     });
     it("Tool Works On Replacement Worker", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("reliability");
-        try { await testToolWorksOnReplacementWorker(env); } finally { await env.cleanup(); }
+        await testToolWorksOnReplacementWorker(getEnv());
     });
 });

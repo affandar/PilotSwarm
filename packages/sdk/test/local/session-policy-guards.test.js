@@ -8,7 +8,7 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertEqual, assertIncludes, assertNotNull, assertThrows } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
@@ -19,7 +19,8 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const POLICY_PLUGIN = path.resolve(__dirname, "../fixtures/policy-plugin");
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testAgentNamespacing(env) {
     await withClient(env, { worker: { pluginDirs: [POLICY_PLUGIN] } }, async (client, worker) => {
@@ -173,39 +174,31 @@ async function testOrchRejectsGeneric(env) {
     }
 }
 
-describe.concurrent("Level 10a: Session Policy — Guards", () => {
+describe("Level 10a: Session Policy — Guards", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Agent Namespacing", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testAgentNamespacing(env); } finally { await env.cleanup(); }
+        await testAgentNamespacing(getEnv());
     });
     it("List Agents Omits System", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testListAgentsOmitsSystem(env); } finally { await env.cleanup(); }
+        await testListAgentsOmitsSystem(getEnv());
     });
     it("Client Rejects Generic When Disallowed", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testClientRejectsGeneric(env); } finally { await env.cleanup(); }
+        await testClientRejectsGeneric(getEnv());
     });
     it("Client Allows Named Agent", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testClientAllowsNamedAgent(env); } finally { await env.cleanup(); }
+        await testClientAllowsNamedAgent(getEnv());
     });
     it("Client Rejects Unknown Agent", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testClientRejectsUnknown(env); } finally { await env.cleanup(); }
+        await testClientRejectsUnknown(getEnv());
     });
     it("Client Rejects System Agent", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testClientRejectsSystemAgent(env); } finally { await env.cleanup(); }
+        await testClientRejectsSystemAgent(getEnv());
     });
     it("Orch Rejects Generic When Disallowed", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testOrchRejectsGeneric(env); } finally { await env.cleanup(); }
+        await testOrchRejectsGeneric(getEnv());
     });
     it("Deletion Protects System Sessions", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testDeletionProtectsSystem(env); } finally { await env.cleanup(); }
+        await testDeletionProtectsSystem(getEnv());
     });
 });

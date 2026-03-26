@@ -67,15 +67,30 @@
             ]
         },
         {
-            "id": "azure-gpt-5.1",
+            "id": "azure-openai",
             "type": "openai",
             "baseUrl": "https://YOUR-RESOURCE.openai.azure.com/openai/v1",
-            "apiKey": "env:AZURE_GPT51_KEY",
+            "apiKey": "env:AZURE_OAI_KEY",
             "models": [
                 {
                     "name": "gpt-5.1-chat",
                     "description": "GPT-5.1 via Azure OpenAI. Latest generation. Advanced reasoning, coding, and instruction following.",
                     "cost": "high"
+                },
+                {
+                    "name": "gpt-5.4",
+                    "description": "GPT-5.4 via Azure OpenAI. High reasoning effort, advanced multi-turn and coding tasks.",
+                    "cost": "high"
+                },
+                {
+                    "name": "gpt-5.4-mini",
+                    "description": "GPT-5.4 Mini via Azure OpenAI. Faster and cheaper than full GPT-5.4, with stronger general capability than nano for everyday coding and chat tasks.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "gpt-5.4-nano",
+                    "description": "GPT-5.4 Nano via Azure OpenAI. Lightweight, fast, cost-efficient for simpler tasks.",
+                    "cost": "low"
                 }
             ]
         },
@@ -123,5 +138,5 @@
             ]
         }
     ],
-    "defaultModel": "azure-gpt-5.1:gpt-5.1-chat"
+    "defaultModel": "azure-openai:gpt-5.4-mini"
 }

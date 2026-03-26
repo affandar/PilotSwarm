@@ -20,12 +20,13 @@
 import { describe, it, beforeAll } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createTestEnv, preflightChecks } from "../../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { assertGreaterOrEqual } from "../../helpers/assertions.js";
 import { createCatalog } from "../../helpers/cms-helpers.js";
 
 const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_DIR = path.resolve(__dirname, "../../fixtures/no-tools-agent-plugin");
 
@@ -108,16 +109,14 @@ async function testImplicitSpawn(env) {
     }
 }
 
-describe.concurrent("Sub-Agent: No-Tools Override", () => {
+describe("Sub-Agent: No-Tools Override", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("explicit: agent uses spawn_agent when told to", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("sub-agents");
-        try { await testExplicitSpawn(env); } finally { await env.cleanup(); }
+        await testExplicitSpawn(getEnv());
     });
 
     it("implicit: agent decides to use spawn_agent on its own", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("sub-agents");
-        try { await testImplicitSpawn(env); } finally { await env.cleanup(); }
+        await testImplicitSpawn(getEnv());
     });
 });

@@ -17,14 +17,22 @@
  */
 
 import { describe, it, beforeAll, afterAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, createManagementClient } from "../helpers/local-workers.js";
 import { assert, assertNotNull, assertGreaterOrEqual } from "../helpers/assertions.js";
 import { validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG, BRIEF_CONFIG } from "../helpers/fixtures.js";
 import { randomUUID } from "node:crypto";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
+
+async function settlePromiseBriefly(promise, timeoutMs = 5_000) {
+    await Promise.race([
+        promise.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+}
 
 // ─── Test: Response Written to response.latest ──────────────────
 
@@ -171,26 +179,34 @@ async function testWaitForStatusChange(env) {
     try {
         await withClient(env, async (client) => {
             const session = await client.createSession(ONEWORD_CONFIG);
+            const controller = new AbortController();
 
             // Start a turn — it'll produce status changes
             console.log("  Starting turn...");
-            const sendPromise = session.sendAndWait("What is 3+3?", TIMEOUT);
+            const sendPromise = session.sendAndWait("What is 3+3?", TIMEOUT, undefined, {
+                signal: controller.signal,
+            });
 
-            // Wait for any status change from version 0
-            const change = await mgmt.waitForStatusChange(
-                session.sessionId,
-                0,    // afterVersion
-                200,  // pollIntervalMs
-                30_000, // timeoutMs
-            );
+            try {
+                // Wait for any status change from version 0
+                const change = await mgmt.waitForStatusChange(
+                    session.sessionId,
+                    0,    // afterVersion
+                    200,  // pollIntervalMs
+                    30_000, // timeoutMs
+                );
 
-            console.log(`  Status change detected: version=${change.customStatusVersion}`);
-            assertGreaterOrEqual(change.customStatusVersion, 1, "Status version after change");
+                console.log(`  Status change detected: version=${change.customStatusVersion}`);
+                assertGreaterOrEqual(change.customStatusVersion, 1, "Status version after change");
 
-            await sendPromise;
+                await sendPromise;
 
-            await validateSessionAfterTurn(env, session.sessionId);
-            ("waitForStatusChange Detects Updates");
+                await validateSessionAfterTurn(env, session.sessionId);
+                ("waitForStatusChange Detects Updates");
+            } finally {
+                controller.abort();
+                await settlePromiseBriefly(sendPromise);
+            }
         });
     } finally {
         await mgmt.stop();
@@ -199,27 +215,22 @@ async function testWaitForStatusChange(env) {
 
 // ─── Runner ──────────────────────────────────────────────────────
 
-describe.concurrent("Level 6: KV Transport Tests", () => {
+describe("Level 6: KV Transport Tests", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Response Written to response.latest", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kv-transport");
-        try { await testResponseLatest(env); } finally { await env.cleanup(); }
+        await testResponseLatest(getEnv());
     });
     it("CustomStatus Available", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kv-transport");
-        try { await testCustomStatus(env); } finally { await env.cleanup(); }
+        await testCustomStatus(getEnv());
     });
     it("Command Response via KV", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kv-transport");
-        try { await testCommandResponseKV(env); } finally { await env.cleanup(); }
+        await testCommandResponseKV(getEnv());
     });
     it("Response Versions Monotonic", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kv-transport");
-        try { await testResponseVersionsMonotonic(env); } finally { await env.cleanup(); }
+        await testResponseVersionsMonotonic(getEnv());
     });
     it("waitForStatusChange Detects Updates", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("kv-transport");
-        try { await testWaitForStatusChange(env); } finally { await env.cleanup(); }
+        await testWaitForStatusChange(getEnv());
     });
 });

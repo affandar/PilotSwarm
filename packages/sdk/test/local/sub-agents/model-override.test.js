@@ -8,13 +8,14 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { assert, assertEqual, assertNotNull } from "../../helpers/assertions.js";
 import { createCatalog } from "../../helpers/cms-helpers.js";
 import { TEST_GPT_MODEL } from "../../helpers/fixtures.js";
 
 const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testChildInheritsParentModel(env) {
     await withClient(env, {}, async (client, worker) => {
@@ -53,11 +54,10 @@ async function testChildInheritsParentModel(env) {
     });
 }
 
-describe.concurrent("Sub-Agent: Model Override", () => {
+describe("Sub-Agent: Model Override", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Child Inherits Parent Model", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("sub-agents");
-        try { await testChildInheritsParentModel(env); } finally { await env.cleanup(); }
+        await testChildInheritsParentModel(getEnv());
     });
 });

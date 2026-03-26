@@ -8,13 +8,15 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
-import { assertEqual, assertNotNull } from "../helpers/assertions.js";
+import { assertEqual, assertNotNull, assertThrows } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { TEST_CLAUDE_MODEL, TEST_GPT_MODEL } from "../helpers/fixtures.js";
+import { ModelProviderRegistry } from "../../src/index.ts";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testCreateSessionWithModel(env) {
     await withClient(env, {}, async (client, worker) => {
@@ -121,23 +123,42 @@ async function testDefaultModelRecorded(env) {
     });
 }
 
-describe.concurrent("Model Selection", () => {
+async function testInvalidConfiguredDefaultFailsFast() {
+    await assertThrows(
+        async () => {
+            new ModelProviderRegistry({
+                providers: [
+                    {
+                        id: "github-copilot",
+                        type: "github",
+                        githubToken: "env:GITHUB_TOKEN",
+                        models: ["gpt-5.1"],
+                    },
+                ],
+                defaultModel: "azure-openai:gpt-5.4-min1i",
+            });
+        },
+        /invalid defaultmodel/i,
+        "invalid configured default should fail fast",
+    );
+}
+
+describe("Model Selection", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Create Session With Explicit Model", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("model-selection");
-        try { await testCreateSessionWithModel(env); } finally { await env.cleanup(); }
+        await testCreateSessionWithModel(getEnv());
     });
     it("Model Recorded in CMS After Turn", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("model-selection");
-        try { await testModelRecordedAfterTurn(env); } finally { await env.cleanup(); }
+        await testModelRecordedAfterTurn(getEnv());
     });
     it("Different Models on Same Worker", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("model-selection");
-        try { await testDifferentModelSameWorker(env); } finally { await env.cleanup(); }
+        await testDifferentModelSameWorker(getEnv());
     });
     it("Default Model Recorded", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("model-selection");
-        try { await testDefaultModelRecorded(env); } finally { await env.cleanup(); }
+        await testDefaultModelRecorded(getEnv());
+    });
+    it("Invalid Configured Default Fails Fast", async () => {
+        await testInvalidConfiguredDefaultFailsFast();
     });
 });

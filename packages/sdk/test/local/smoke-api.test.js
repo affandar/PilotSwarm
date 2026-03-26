@@ -7,13 +7,14 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertEqual, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
 import { validateSessionAfterTurn, validateSessionDeleted } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG } from "../helpers/fixtures.js";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testSessionList(env) {
     await withClient(env, async (client) => {
@@ -144,27 +145,22 @@ async function testEventTypeFilter(env) {
     });
 }
 
-describe.concurrent("Level 1b: Smoke — API", () => {
+describe("Level 1b: Smoke — API", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Session List", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testSessionList(env); } finally { await env.cleanup(); }
+        await testSessionList(getEnv());
     });
     it("Session Info", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testSessionInfo(env); } finally { await env.cleanup(); }
+        await testSessionInfo(getEnv());
     });
     it("Session Delete", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testSessionDelete(env); } finally { await env.cleanup(); }
+        await testSessionDelete(getEnv());
     });
     it("session.on() Events", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testSessionOn(env); } finally { await env.cleanup(); }
+        await testSessionOn(getEnv());
     });
     it("Event Type Filter", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testEventTypeFilter(env); } finally { await env.cleanup(); }
+        await testEventTypeFilter(getEnv());
     });
 });

@@ -20,7 +20,7 @@ import { markedTerminal } from "marked-terminal";
 import chalk from "chalk";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import os from "node:os";
@@ -77,6 +77,102 @@ function applyTerminalTitle(title) {
 function applyWindowTitle(title) {
     applyProcessTitle(title);
     applyTerminalTitle(title);
+}
+
+function enableMouseTracking(screenInstance) {
+    if (!screenInstance?.program?.input?.isTTY || !screenInstance?.program?.output?.isTTY) {
+        return;
+    }
+
+    try {
+        // neo-blessed only auto-enables mouse for a narrow set of TERM values.
+        // Request the common xterm-compatible modes explicitly so drag selection
+        // still works in newer terminals and IDE-integrated terminals.
+        screenInstance.enableMouse();
+        screenInstance.program.setMouse({
+            vt200Mouse: true,
+            utfMouse: true,
+            sgrMouse: true,
+            cellMotion: true,
+            allMotion: true,
+        }, true);
+    } catch {}
+}
+
+function openPathInDefaultApp(targetPath) {
+    if (!targetPath) return;
+
+    let command;
+    let args;
+
+    if (process.platform === "darwin") {
+        command = "open";
+        args = [targetPath];
+    } else if (process.platform === "win32") {
+        command = "cmd";
+        args = ["/c", "start", "", targetPath];
+    } else {
+        command = "xdg-open";
+        args = [targetPath];
+    }
+
+    try {
+        const child = spawn(command, args, { detached: true, stdio: "ignore" });
+        child.once("error", (err) => {
+            appendLog(`{red-fg}Open failed: ${err.message}{/red-fg}`);
+            setStatus("Open failed — check logs");
+            scheduleRender();
+        });
+        child.unref();
+        setStatus(`Opened: ${targetPath}`);
+    } catch (err) {
+        appendLog(`{red-fg}Open failed: ${err.message}{/red-fg}`);
+        setStatus("Open failed — check logs");
+    }
+}
+
+let suppressPaneClicksUntil = 0;
+
+function copyTextToClipboard(text, { onError } = {}) {
+    if (!text) return false;
+
+    let command;
+    let args;
+
+    if (process.platform === "darwin") {
+        command = "pbcopy";
+        args = [];
+    } else if (process.platform === "win32") {
+        command = "clip";
+        args = [];
+    } else if (process.env.WAYLAND_DISPLAY) {
+        command = "wl-copy";
+        args = [];
+    } else {
+        command = "xclip";
+        args = ["-selection", "clipboard"];
+    }
+
+    try {
+        const result = spawnSync(command, args, {
+            input: text,
+            encoding: "utf8",
+            stdio: ["pipe", "ignore", "pipe"],
+        });
+        if (result.error) throw result.error;
+        if (typeof result.status === "number" && result.status !== 0) {
+            throw new Error((result.stderr || "").trim() || `${command} exited with status ${result.status}`);
+        }
+        return true;
+    } catch (err) {
+        try {
+            if (screen?.copyToClipboard?.(text)) {
+                return true;
+            }
+        } catch {}
+        onError?.(err);
+        return false;
+    }
 }
 
 function hideTerminalCursor() {
@@ -137,6 +233,7 @@ const require = createRequire(import.meta.url);
 const _origStderr = process.stderr.write.bind(process.stderr);
 process.stderr.write = () => true;
 const blessed = require("neo-blessed");
+const blessedColors = require("neo-blessed/lib/colors");
 process.stderr.write = _origStderr;
 
 // ─── Monkey-patch neo-blessed emoji width ────────────────────────
@@ -333,6 +430,32 @@ function renderMarkdown(md) {
 // Format: artifact://sessionId/filename.md
 const ARTIFACT_URI_RE = /artifact:\/\/([a-f0-9-]+)\/([^\s"'{}]+)/g;
 
+function normalizeArtifactFilename(filename) {
+    if (!filename) return filename;
+
+    let normalized = filename;
+    while (true) {
+        const next = normalized
+            // Common markdown wrappers: **artifact://...**, _artifact://..._, `artifact://...`
+            .replace(/[*_`]+$/g, "")
+            // Common trailing punctuation when the URI appears in prose or markdown links
+            .replace(/[)\]}>!,;:?]+$/g, "")
+            // Sentence-ending periods: artifact://.../report.md.
+            .replace(/(\.[A-Za-z0-9]{1,16})\.+$/g, "$1");
+        if (next === normalized) return normalized;
+        normalized = next;
+    }
+}
+
+function renderArtifactLinks(text) {
+    if (!text) return text;
+    ARTIFACT_URI_RE.lastIndex = 0;
+    return text.replace(ARTIFACT_URI_RE, (_match, _sessionId, rawFilename) => {
+        const filename = normalizeArtifactFilename(rawFilename);
+        return `📎 **${filename}** _(press 'a' to download)_`;
+    });
+}
+
 /** Per-session artifact link registry. orchId → [{ sessionId, filename }] */
 const sessionArtifacts = new Map();
 
@@ -364,7 +487,9 @@ function detectArtifactLinks(text, orchId) {
     ARTIFACT_URI_RE.lastIndex = 0;
     const matches = [...text.matchAll(ARTIFACT_URI_RE)];
     for (const m of matches) {
-        const [, sessionId, filename] = m;
+        const [, sessionId, rawFilename] = m;
+        const filename = normalizeArtifactFilename(rawFilename);
+        if (!filename) continue;
         const key = `${sessionId}/${filename}`;
         if (_registeredArtifacts.has(key)) continue;
         _registeredArtifacts.add(key);
@@ -386,17 +511,18 @@ function detectArtifactLinks(text, orchId) {
  */
 async function downloadArtifact(sessionId, filename) {
     const store = getTuiArtifactStore();
+    const normalizedFilename = normalizeArtifactFilename(filename);
     const sessionDir = path.join(EXPORTS_DIR, sessionId.slice(0, 8));
     fs.mkdirSync(sessionDir, { recursive: true });
-    const localPath = path.join(sessionDir, filename);
+    const localPath = path.join(sessionDir, normalizedFilename);
 
     try {
-        const content = await store.downloadArtifact(sessionId, filename);
+        const content = await store.downloadArtifact(sessionId, normalizedFilename);
         fs.writeFileSync(localPath, content, "utf-8");
         appendLog(`{green-fg}📥 Downloaded: ~/${path.relative(os.homedir(), localPath)} (${(content.length / 1024).toFixed(1)}KB){/green-fg}`);
         return localPath;
     } catch (err) {
-        appendLog(`{red-fg}📥 Download error for ${filename}: ${err.message}{/red-fg}`);
+        appendLog(`{red-fg}📥 Download error for ${normalizedFilename}: ${err.message}{/red-fg}`);
         return null;
     }
 }
@@ -441,7 +567,7 @@ function showArtifactPicker() {
         const items = artifacts.map(a => {
             const icon = a.downloaded ? " ✓" : " ↓";
             const sid = shortId(a.sessionId);
-            return `${icon} ${sid}/${a.filename}`;
+            return `${icon} ${sid}/${normalizeArtifactFilename(a.filename)}`;
         });
         if (hasMultiple) items.push(" ⬇  Download All");
         return items;
@@ -702,10 +828,11 @@ const screen = blessed.screen({
     title: BASE_TUI_TITLE,
     fullUnicode: true,
     forceUnicode: true,
-    mouse: false,
+    mouse: true,
 });
 process.stderr.write = _origStderr;
 applyWindowTitle(BASE_TUI_TITLE);
+enableMouseTracking(screen);
 
 // ─── Coalescing render loop (Option B) ───────────────────────────
 // Instead of rendering on every screen.render() call (80+ sites),
@@ -817,6 +944,10 @@ setInterval(() => {
         _screenDirty = false;
         const t0 = performance.now();
         _origRender();
+        const selectionDrawRange = applyPaneSelectionOverlay();
+        if (selectionDrawRange) {
+            screen.draw(selectionDrawRange.startY, selectionDrawRange.endY);
+        }
         const dur = performance.now() - t0;
         _perfRenderCount++;
         _perfRenderTotalMs += dur;
@@ -917,7 +1048,7 @@ const orchList = blessed.list({
     scrollbar: { style: { bg: "yellow" } },
     keys: false,
     vi: false,
-    mouse: false,
+    mouse: true,
     interactive: true,
 });
 
@@ -991,7 +1122,7 @@ const chatBox = blessed.log({
     scrollbar: { style: { bg: "cyan" } },
     keys: true,
     vi: true,
-    mouse: false,
+    mouse: true,
 });
 
 // ─── Clickable URLs in chat ──────────────────────────────────────
@@ -1022,6 +1153,8 @@ function extractUrlFromLine(line) {
 
 // Mouse click → open URL in browser
 chatBox.on("click", function (_mouse) {
+    if (Date.now() < suppressPaneClicksUntil) return;
+    if (paneTextSelection.pane === this && paneTextSelection.active && paneTextSelection.dragging) return;
     // Calculate which content line was clicked
     // _mouse.y is absolute screen coordinate
     const absTop = this.atop != null ? this.atop : this.top;
@@ -1088,7 +1221,7 @@ const orchLogPane = blessed.log({
     scrollbar: { style: { bg: "cyan" } },
     keys: true,
     vi: true,
-    mouse: false,
+    mouse: true,
     hidden: true,
 });
 
@@ -1143,7 +1276,7 @@ const nodeMapPane = blessed.box({
     scrollbar: { style: { bg: "yellow" } },
     keys: true,
     vi: true,
-    mouse: false,
+    mouse: true,
     hidden: true,
 });
 
@@ -1174,7 +1307,7 @@ const mdFileListPane = blessed.list({
     },
     keys: false,
     vi: false,
-    mouse: false,
+    mouse: true,
     interactive: true,
     hidden: true,
 });
@@ -1199,7 +1332,7 @@ const mdPreviewPane = blessed.box({
     scrollbar: { style: { bg: "green" } },
     keys: true,
     vi: true,
-    mouse: false,
+    mouse: true,
     hidden: true,
 });
 
@@ -1301,7 +1434,7 @@ function toggleMdViewOff() {
 
 // ─── Vim keybindings for markdown preview ────────────────────────
 // g = top, G = bottom, Ctrl-d = page down, Ctrl-u = page up
-// o = open in $EDITOR, y = copy path
+// o = open in default app, y = copy path
 mdPreviewPane.key(["g"], () => { mdPreviewPane.scrollTo(0); scheduleRender(); });
 mdPreviewPane.key(["S-g"], () => { mdPreviewPane.setScrollPerc(100); scheduleRender(); });
 mdPreviewPane.key(["C-d"], () => {
@@ -1318,19 +1451,18 @@ mdPreviewPane.key(["o"], () => {
     const files = scanExportFiles();
     const f = files[mdViewerSelectedIdx];
     if (!f) return;
-    const editor = process.env.EDITOR || (process.platform === "darwin" ? "open" : "xdg-open");
-    spawn(editor, [f.localPath], { detached: true, stdio: "ignore" }).unref();
+    openPathInDefaultApp(f.localPath);
 });
 mdPreviewPane.key(["y"], () => {
     const files = scanExportFiles();
     const f = files[mdViewerSelectedIdx];
     if (!f) return;
-    // Copy path to clipboard (macOS pbcopy, Linux xclip)
-    const cmd = process.platform === "darwin" ? "pbcopy" : "xclip -selection clipboard";
-    const proc = spawn(process.platform === "darwin" ? "pbcopy" : "xclip", process.platform === "darwin" ? [] : ["-selection", "clipboard"], { stdio: ["pipe", "ignore", "ignore"] });
-    proc.stdin.write(f.localPath);
-    proc.stdin.end();
-    setStatus(`{green-fg}Copied: ${f.localPath}{/green-fg}`);
+    const copied = copyTextToClipboard(f.localPath, {
+        onError: (err) => appendLog(`{red-fg}Copy failed: ${err.message}{/red-fg}`),
+    });
+    setStatus(copied
+        ? `{green-fg}Copied: ${f.localPath}{/green-fg}`
+        : "Copy failed — check logs");
 });
 
 // ─── Activity pane (sticky, bottom-right) ────────────────────────
@@ -1356,7 +1488,7 @@ const activityPane = blessed.log({
     scrollbar: { style: { bg: "gray" } },
     keys: true,
     vi: true,
-    mouse: false,
+    mouse: true,
 });
 
 // Per-session activity buffers
@@ -1607,9 +1739,232 @@ const seqPane = blessed.log({
     scrollbar: { style: { bg: "magenta" } },
     keys: true,
     vi: true,
-    mouse: false,
+    mouse: true,
     hidden: true,
 });
+
+const selectablePaneLabels = new Map();
+const selectablePaneMouseBindings = new WeakSet();
+const SELECTION_BG = blessedColors.convert("yellow");
+const SELECTION_FG = blessedColors.convert("black");
+const paneTextSelection = {
+    pane: null,
+    anchor: null,
+    head: null,
+    active: false,
+    dragging: false,
+    visible: false,
+};
+
+function selectionInteractionBlocked() {
+    return Boolean(_fileAttachModal || startupLandingVisible || slashPicker);
+}
+
+function registerSelectablePane(pane, label) {
+    selectablePaneLabels.set(pane, label);
+    try {
+        pane.enableMouse?.();
+    } catch {}
+    if (!pane || selectablePaneMouseBindings.has(pane)) return;
+    selectablePaneMouseBindings.add(pane);
+    pane.on("mousedown", (data) => {
+        if (selectionInteractionBlocked()) return;
+        if (paneTextSelection.active && paneTextSelection.pane === pane) return;
+        beginPaneSelection(data, pane);
+    });
+    pane.onScreenEvent("mouse", (data) => {
+        if (selectionInteractionBlocked()) return;
+        if (paneTextSelection.pane !== pane || !paneTextSelection.active) return;
+        if (data.action === "mousemove" || data.action === "mousedown") {
+            updatePaneSelection(data);
+            return;
+        }
+        if (data.action === "mouseup") {
+            updatePaneSelection(data);
+            finalizePaneSelection();
+        }
+    });
+}
+
+function getSelectablePaneLabel(pane) {
+    return selectablePaneLabels.get(pane) || "pane";
+}
+
+function clearPaneSelection({ render = true } = {}) {
+    paneTextSelection.pane = null;
+    paneTextSelection.anchor = null;
+    paneTextSelection.head = null;
+    paneTextSelection.active = false;
+    paneTextSelection.dragging = false;
+    paneTextSelection.visible = false;
+    if (render) scheduleRender();
+}
+
+function getPaneInnerBounds(pane) {
+    if (!pane || pane.hidden || pane.visible === false || !pane.lpos) return null;
+
+    const xi = pane.lpos.xi + (pane.ileft || 0);
+    const xl = pane.lpos.xl - (pane.iright || 0) - 1;
+    const yi = pane.lpos.yi + (pane.itop || 0);
+    const yl = pane.lpos.yl - (pane.ibottom || 0) - 1;
+
+    if (xi > xl || yi > yl) return null;
+    return { xi, xl, yi, yl };
+}
+
+function clampSelectionPoint(bounds, x, y) {
+    return {
+        x: Math.max(bounds.xi, Math.min(bounds.xl, x)),
+        y: Math.max(bounds.yi, Math.min(bounds.yl, y)),
+    };
+}
+
+function normalizeSelectionRange(anchor, head) {
+    if (head.y < anchor.y || (head.y === anchor.y && head.x < anchor.x)) {
+        return { start: head, end: anchor };
+    }
+    return { start: anchor, end: head };
+}
+
+function extractPaneSelectionText(selection = paneTextSelection) {
+    if (!selection.pane || !selection.anchor || !selection.head) return "";
+
+    const bounds = getPaneInnerBounds(selection.pane);
+    if (!bounds) return "";
+
+    const anchor = clampSelectionPoint(bounds, selection.anchor.x, selection.anchor.y);
+    const head = clampSelectionPoint(bounds, selection.head.x, selection.head.y);
+    const { start, end } = normalizeSelectionRange(anchor, head);
+    const rows = [];
+
+    for (let y = start.y; y <= end.y; y++) {
+        const fromX = y === start.y ? start.x : bounds.xi;
+        const toX = y === end.y ? end.x : bounds.xl;
+        const line = screen.lines[y] || [];
+        let row = "";
+        for (let x = fromX; x <= toX; x++) {
+            const ch = line[x]?.[1];
+            row += ch && ch !== "\x00" ? ch : " ";
+        }
+        rows.push(row.replace(/[ \t]+$/u, ""));
+    }
+
+    return rows.join("\n").replace(/\n+$/u, "");
+}
+
+function applyPaneSelectionOverlay() {
+    if (!paneTextSelection.visible || !paneTextSelection.pane) return null;
+
+    const bounds = getPaneInnerBounds(paneTextSelection.pane);
+    if (!bounds) {
+        clearPaneSelection({ render: false });
+        return null;
+    }
+
+    const anchor = clampSelectionPoint(bounds, paneTextSelection.anchor.x, paneTextSelection.anchor.y);
+    const head = clampSelectionPoint(bounds, paneTextSelection.head.x, paneTextSelection.head.y);
+    const { start, end } = normalizeSelectionRange(anchor, head);
+
+    for (let y = start.y; y <= end.y; y++) {
+        const fromX = y === start.y ? start.x : bounds.xi;
+        const toX = y === end.y ? end.x : bounds.xl;
+        const line = screen.lines[y];
+        if (!line) continue;
+
+        for (let x = fromX; x <= toX; x++) {
+            if (!line[x]) continue;
+            const attr = line[x][0];
+            line[x][0] = (attr & ~((0x1ff << 9) | 0x1ff | (8 << 18)))
+                | (1 << 18)
+                | (SELECTION_FG << 9)
+                | SELECTION_BG;
+        }
+        line.dirty = true;
+    }
+
+    return { startY: start.y, endY: end.y };
+}
+
+function beginPaneSelection(mouse, pane) {
+    const bounds = getPaneInnerBounds(pane);
+    const hadVisibleSelection = paneTextSelection.visible;
+
+    clearPaneSelection({ render: false });
+
+    if (!bounds) {
+        if (hadVisibleSelection) scheduleRender();
+        return;
+    }
+
+    const point = clampSelectionPoint(bounds, mouse.x, mouse.y);
+    paneTextSelection.pane = pane;
+    paneTextSelection.anchor = point;
+    paneTextSelection.head = point;
+    paneTextSelection.active = true;
+    paneTextSelection.dragging = false;
+    paneTextSelection.visible = false;
+    if (typeof pane.focus === "function" && screen.focused !== pane) {
+        pane.focus();
+    }
+    hideTerminalCursor();
+    setStatus(`Drag to select text in ${getSelectablePaneLabel(pane)}...`);
+
+    scheduleRender();
+}
+
+function updatePaneSelection(mouse) {
+    if (!paneTextSelection.active || !paneTextSelection.pane || !paneTextSelection.anchor) return;
+
+    const bounds = getPaneInnerBounds(paneTextSelection.pane);
+    if (!bounds) {
+        clearPaneSelection();
+        return;
+    }
+
+    const next = clampSelectionPoint(bounds, mouse.x, mouse.y);
+    if (paneTextSelection.head
+        && paneTextSelection.head.x === next.x
+        && paneTextSelection.head.y === next.y) {
+        return;
+    }
+
+    paneTextSelection.head = next;
+    paneTextSelection.dragging = true;
+    paneTextSelection.visible = paneTextSelection.anchor.x !== next.x
+        || paneTextSelection.anchor.y !== next.y;
+    scheduleRender();
+}
+
+function finalizePaneSelection() {
+    if (!paneTextSelection.pane) return;
+    paneTextSelection.active = false;
+
+    if (!paneTextSelection.visible || !paneTextSelection.dragging) {
+        clearPaneSelection();
+        return;
+    }
+
+    const text = extractPaneSelectionText();
+    suppressPaneClicksUntil = Date.now() + 250;
+
+    if (!text) {
+        clearPaneSelection();
+        setStatus("Nothing to copy");
+        return;
+    }
+
+    const copied = copyTextToClipboard(text, {
+        onError: (err) => appendLog(`{red-fg}Copy failed: ${err.message}{/red-fg}`),
+    });
+    const paneLabel = getSelectablePaneLabel(paneTextSelection.pane);
+    const charCount = text.length;
+    paneTextSelection.dragging = false;
+    paneTextSelection.visible = true;
+    setStatus(copied
+        ? `Copied ${charCount} chars from ${paneLabel}`
+        : "Copy failed — check logs");
+    scheduleRender();
+}
 
 // ─── Register focus ring on all panes ────────────────────────────
 registerFocusRing(orchList, "yellow");
@@ -1628,6 +1983,16 @@ mdPreviewPane.on("focus", () => setNavigationStatusForPane("markdownPreview"));
 activityPane.on("focus", () => setNavigationStatusForPane("activity"));
 seqPane.on("focus", () => setNavigationStatusForPane("sequence"));
 // Worker panes are created dynamically — registered in getOrCreateWorkerPane()
+
+registerSelectablePane(orchList, "sessions");
+registerSelectablePane(chatBox, "chat");
+registerSelectablePane(orchLogPane, "orchestration logs");
+registerSelectablePane(seqHeaderBox, "sequence header");
+registerSelectablePane(seqPane, "sequence");
+registerSelectablePane(nodeMapPane, "node map");
+registerSelectablePane(mdFileListPane, "markdown file list");
+registerSelectablePane(mdPreviewPane, "markdown preview");
+registerSelectablePane(activityPane, "activity");
 
 function addSeqNode(podName) {
     const short = podName.slice(-5);
@@ -2262,11 +2627,12 @@ function getOrCreateWorkerPane(podName) {
         scrollbar: { style: { bg: color } },
         keys: true,
         vi: true,
-        mouse: false,
+        mouse: true,
     });
 
     workerPanes.set(podName, pane);
     workerPaneOrder.push(podName);
+    registerSelectablePane(pane, `worker ${shortName}`);
     registerFocusRing(pane, color);
     pane.on("focus", () => setNavigationStatusForPane("workers"));
 
@@ -3072,13 +3438,7 @@ function showCopilotMessage(raw, orchId) {
     detectArtifactLinks(raw, orchId);
 
     // Replace artifact:// URIs with highlighted display before markdown rendering
-    let displayRaw = raw;
-    if (displayRaw) {
-        displayRaw = displayRaw.replace(
-            /artifact:\/\/[a-f0-9-]+\/([^\s"'{}]+)/g,
-            "📎 **$1** _(press 'a' to download)_",
-        );
-    }
+    const displayRaw = renderArtifactLinks(raw);
 
     const rendered = renderMarkdown(displayRaw);
     const prefix = `{white-fg}[${ts()}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`;
@@ -3328,10 +3688,7 @@ async function loadCmsHistory(orchId, options = {}) {
                         const clipped = content.length > MAX_ASSISTANT_MESSAGE_CHARS
                             ? content.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + "\n\n[output truncated in TUI history view]"
                             : content;
-                        const displayClipped = clipped.replace(
-                            /artifact:\/\/[a-f0-9-]+\/([^\s"'{}]+)/g,
-                            "📎 **$1** _(press 'a' to download)_",
-                        );
+                        const displayClipped = renderArtifactLinks(clipped);
                         lines.push(`{white-fg}[${timeStr}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
                         const rendered = renderMarkdown(displayClipped);
                         renderedChars += clipped.length;
@@ -3441,7 +3798,19 @@ async function loadCmsHistory(orchId, options = {}) {
             } else {
                 sessionChatBuffers.set(orchId, lines);
             }
-            sessionActivityBuffers.set(orchId, activityLines);
+            // Guard: don't replace existing activity with an empty array.
+            // The observer may have already appended live entries; nuking
+            // them with an empty CMS result causes a blank Activity pane.
+            const existingActivity = sessionActivityBuffers.get(orchId);
+            const existingActivityHasContent = existingActivity && existingActivity.length > 0
+                && existingActivity.some(l => l && !/no recent/.test(l));
+            if (activityLines.length === 0 && existingActivityHasContent) {
+                // keep observer-written activity intact
+            } else if (activityLines.length === 0) {
+                sessionActivityBuffers.set(orchId, ["{gray-fg}(no recent activity yet){/gray-fg}"]);
+            } else {
+                sessionActivityBuffers.set(orchId, activityLines);
+            }
             sessionHistoryLoadedAt.set(orchId, Date.now());
             sessionRenderedCmsSeq.set(orchId, maxRenderedSeq);
 
@@ -6700,6 +7069,7 @@ function showHelpOverlay() {
         "  {yellow-fg}u{/yellow-fg}           Dump active session to Markdown file",
         "  {yellow-fg}a{/yellow-fg}           Show artifact picker (download files)",
         "  {yellow-fg}Ctrl+A{/yellow-fg}      Attach local file to prompt",
+        "  {yellow-fg}Mouse drag{/yellow-fg}  Select visible text inside one pane and copy on release",
         "",
         "{bold}Sessions Pane{/bold}",
         "  {yellow-fg}j / k{/yellow-fg}       Navigate up / down",
@@ -6736,7 +7106,7 @@ function showHelpOverlay() {
         "  {yellow-fg}d{/yellow-fg}           Delete selected exported file",
         "  {yellow-fg}g / G{/yellow-fg}       Preview top / bottom",
         "  {yellow-fg}Ctrl+D/U{/yellow-fg}    Preview page down / up",
-        "  {yellow-fg}o{/yellow-fg}           Open selected file in $EDITOR",
+        "  {yellow-fg}o{/yellow-fg}           Open selected file in default app",
         "  {yellow-fg}y{/yellow-fg}           Copy selected file path",
         "  {yellow-fg}v{/yellow-fg}           Exit markdown viewer",
         "",
@@ -6958,6 +7328,13 @@ screen.on("keypress", (ch, key) => {
             screen.render();
             return;
         }
+        if (ch === "o") {
+            const files = scanExportFiles();
+            const f = files[mdViewerSelectedIdx];
+            if (!f) return;
+            openPathInDefaultApp(f.localPath);
+            return;
+        }
         // d: delete the selected file
         if (ch === "d") {
             const files = scanExportFiles();
@@ -7166,6 +7543,7 @@ function buildFocusableList() {
 }
 
 screen.on("resize", () => {
+    clearPaneSelection({ render: false });
     relayoutAll();
     if (logViewMode === "sequence") refreshSeqPane();
     if (logViewMode === "nodemap") refreshNodeMap();

@@ -5,12 +5,13 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { assert, assertGreaterOrEqual } from "../../helpers/assertions.js";
 import { createCatalog } from "../../helpers/cms-helpers.js";
 
 const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testChildSessionMetadata(env) {
     const catalog = await createCatalog(env);
@@ -52,11 +53,10 @@ async function testChildSessionMetadata(env) {
     }
 }
 
-describe.concurrent("Sub-Agent: Child Metadata", () => {
+describe("Sub-Agent: Child Metadata", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Child Session CMS Metadata", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("sub-agents");
-        try { await testChildSessionMetadata(env); } finally { await env.cleanup(); }
+        await testChildSessionMetadata(getEnv());
     });
 });

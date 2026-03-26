@@ -12,12 +12,13 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, createManagementClient } from "../helpers/local-workers.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { assert } from "../helpers/assertions.js";
 
 const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 const INTERRUPT_MODEL = process.env.PS_INTERRUPT_TEST_MODEL || "";
 
 async function waitForSessionCustomStatus(mgmt, sessionId, predicate, timeoutMs, label) {
@@ -36,6 +37,38 @@ async function waitForSessionCustomStatus(mgmt, sessionId, predicate, timeoutMs,
         `Timed out waiting for ${label} for session ${sessionId.slice(0, 8)}. ` +
         `Last status: ${JSON.stringify(lastStatus)}`,
     );
+}
+
+async function waitForInterruptReply(mgmt, catalog, sessionId, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    let latestResponse = null;
+    let assistantContents = [];
+
+    while (Date.now() < deadline) {
+        latestResponse = await mgmt.getLatestResponse(sessionId);
+        const events = await catalog.getSessionEvents(sessionId);
+        const assistantMessages = events.filter((event) => event.eventType === "assistant.message");
+        assistantContents = assistantMessages.map((event) => event.data?.content ?? null);
+        const lastAssistantContent = assistantContents.at(-1);
+
+        if (
+            latestResponse?.iteration === 2 &&
+            typeof latestResponse?.content === "string" &&
+            latestResponse.content.trim().length > 0 &&
+            typeof lastAssistantContent === "string" &&
+            lastAssistantContent.trim().length > 0
+        ) {
+            return { latestResponse, assistantContents, lastAssistantContent };
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
+    return {
+        latestResponse,
+        assistantContents,
+        lastAssistantContent: assistantContents.at(-1),
+    };
 }
 
 async function testInterruptDuringWaitEmitsReply(env) {
@@ -85,13 +118,14 @@ async function testInterruptDuringWaitEmitsReply(env) {
             );
             console.log(`  Waiting status after interrupt: ${JSON.stringify(resumedWaiting.customStatus)}`);
 
-            const latestResponse = await mgmt.getLatestResponse(session.sessionId);
-            console.log(`  Latest response after interrupt: ${JSON.stringify(latestResponse)}`);
+            const { latestResponse, assistantContents, lastAssistantContent } = await waitForInterruptReply(
+                mgmt,
+                catalog,
+                session.sessionId,
+                20_000,
+            );
 
-            const events = await catalog.getSessionEvents(session.sessionId);
-            const assistantMessages = events.filter((event) => event.eventType === "assistant.message");
-            const assistantContents = assistantMessages.map((event) => event.data?.content ?? null);
-            const lastAssistantContent = assistantContents.at(-1);
+            console.log(`  Latest response after interrupt: ${JSON.stringify(latestResponse)}`);
 
             console.log(`  Assistant message contents: ${JSON.stringify(assistantContents)}`);
 
@@ -120,11 +154,6 @@ describe("Level 2b: Wait Interrupt Tests", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("interrupt during wait emits a user-visible reply before resuming wait", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("wait-interrupt");
-        try {
-            await testInterruptDuringWaitEmitsReply(env);
-        } finally {
-            await env.cleanup();
-        }
+        await testInterruptDuringWaitEmitsReply(getEnv());
     });
 });

@@ -11,12 +11,13 @@
 import { describe, it, beforeAll } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createTestEnv, preflightChecks } from "../../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { assertNotNull, assertGreaterOrEqual, assertEqual } from "../../helpers/assertions.js";
 import { createCatalog } from "../../helpers/cms-helpers.js";
 
 const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MGMT_PLUGIN_DIR = path.resolve(__dirname, "../../../plugins/mgmt");
 
@@ -83,11 +84,10 @@ async function testSpawnNamedAgents(env) {
     }
 }
 
-describe.concurrent("Sub-Agent: Named Agents", () => {
+describe("Sub-Agent: Named Agents", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Spawn Named Agents by agent_name", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("sub-agents");
-        try { await testSpawnNamedAgents(env); } finally { await env.cleanup(); }
+        await testSpawnNamedAgents(getEnv());
     });
 });

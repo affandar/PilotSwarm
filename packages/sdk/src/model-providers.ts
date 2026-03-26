@@ -118,7 +118,8 @@ export class ModelProviderRegistry {
     private _allDescriptors: ModelDescriptor[] = [];
 
     constructor(config: ModelProvidersFile) {
-        this._defaultModel = config.defaultModel;
+        const configuredDefaultModel = config.defaultModel;
+        this._defaultModel = configuredDefaultModel;
 
         // Filter to providers whose credentials are actually available.
         // GitHub providers need a resolved githubToken; BYOK providers need a resolved apiKey.
@@ -153,8 +154,19 @@ export class ModelProviderRegistry {
             }
         }
 
-        // If defaultModel is missing or references a filtered-out provider, use first available
-        if (!this._defaultModel || !this.descriptors.has(this._defaultModel)) {
+        if (configuredDefaultModel && !this.descriptors.has(configuredDefaultModel)) {
+            const availableModels = this._allDescriptors.map(d => d.qualifiedName);
+            const availableSummary = availableModels.length > 0
+                ? ` Available models: ${availableModels.join(", ")}`
+                : " No credentialed models are available after provider filtering.";
+            throw new Error(
+                `Invalid defaultModel ${JSON.stringify(configuredDefaultModel)} in model provider config.` +
+                availableSummary,
+            );
+        }
+
+        // If no defaultModel is configured, use first available.
+        if (!this._defaultModel) {
             this._defaultModel = this._allDescriptors.length > 0
                 ? this._allDescriptors[0].qualifiedName
                 : undefined;
@@ -274,8 +286,11 @@ export class ModelProviderRegistry {
  * Falls back to building a config from env vars for backwards compatibility.
  */
 export function loadModelProviders(filePath?: string): ModelProviderRegistry | null {
-    if (filePath && fs.existsSync(filePath)) {
-        const raw = fs.readFileSync(filePath, "utf-8");
+    const envOverridePath = process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH;
+    const resolvedPath = filePath || envOverridePath;
+
+    if (resolvedPath && fs.existsSync(resolvedPath)) {
+        const raw = fs.readFileSync(resolvedPath, "utf-8");
         return new ModelProviderRegistry(JSON.parse(raw));
     }
 

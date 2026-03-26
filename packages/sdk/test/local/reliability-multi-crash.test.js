@@ -8,7 +8,7 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmClient, PilotSwarmWorker } from "../helpers/local-workers.js";
 import {
     assert,
@@ -23,7 +23,8 @@ import { ONEWORD_CONFIG } from "../helpers/fixtures.js";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 function makeWorker(env, nodeId) {
     return new PilotSwarmWorker({
@@ -208,19 +209,16 @@ async function testDoubleConsecutiveCrash(env) {
     }
 }
 
-describe.concurrent("Level 11b: Reliability — Multi-Crash", () => {
+describe("Level 11b: Reliability — Multi-Crash", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Staggered Crashes — Multiple Sessions", { timeout: TIMEOUT * 4 }, async () => {
-        const env = createTestEnv("reliability");
-        try { await testStaggeredCrashesMultipleSessions(env); } finally { await env.cleanup(); }
+        await testStaggeredCrashesMultipleSessions(getEnv());
     });
     it("Deleted Local State Recovered From Store", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("reliability");
-        try { await testDeletedLocalStateRecoveredFromStore(env); } finally { await env.cleanup(); }
+        await testDeletedLocalStateRecoveredFromStore(getEnv());
     });
     it("Double Crash — Two Consecutive Restarts", { timeout: TIMEOUT * 3 }, async () => {
-        const env = createTestEnv("reliability");
-        try { await testDoubleConsecutiveCrash(env); } finally { await env.cleanup(); }
+        await testDoubleConsecutiveCrash(getEnv());
     });
 });

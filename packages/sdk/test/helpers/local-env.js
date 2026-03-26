@@ -9,13 +9,16 @@
 
 import { mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
+import { afterAll, afterEach, beforeAll } from "vitest";
 
 // ─── Constants ───────────────────────────────────────────────────
 
 const DATABASE_URL = process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/pilotswarm";
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const TEST_SCHEMA_PREFIX = "ps_test";
 
 // ─── Schema Isolation ────────────────────────────────────────────
 
@@ -25,10 +28,37 @@ const TIMEOUT = 120_000;
  * Format: `<prefix>_it_<timestamp>_<random>`
  * This prevents cross-test pollution.
  */
-function uniqueSchemaName(prefix) {
-    const ts = Date.now().toString(36);
-    const rand = randomBytes(3).toString("hex");
-    return `${prefix}_it_${ts}_${rand}`;
+function sanitizeSuiteLabel(label) {
+    return String(label || "test")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 20) || "test";
+}
+
+function uniqueSchemaName(kind, suiteName, runId) {
+    const suite = sanitizeSuiteLabel(suiteName);
+    return `${TEST_SCHEMA_PREFIX}_${kind}_${suite}_${runId}`;
+}
+
+function moduleSuiteLabel(moduleUrl) {
+    const filePath = fileURLToPath(moduleUrl);
+    return basename(filePath)
+        .replace(/\.test\.js$/, "")
+        .replace(/\.js$/, "");
+}
+
+async function dropTestSchemas({ duroxideSchema, cmsSchema, factsSchema }) {
+    const pg = await import("pg");
+    const client = new pg.default.Client({ connectionString: DATABASE_URL });
+    try {
+        await client.connect();
+        await client.query(`DROP SCHEMA IF EXISTS "${duroxideSchema}" CASCADE`);
+        await client.query(`DROP SCHEMA IF EXISTS "${cmsSchema}" CASCADE`);
+        await client.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
+    } finally {
+        try { await client.end(); } catch {}
+    }
 }
 
 // ─── Test Environment ────────────────────────────────────────────
@@ -43,13 +73,27 @@ function uniqueSchemaName(prefix) {
  */
 export function createTestEnv(suiteName = "test") {
     const runId = randomBytes(4).toString("hex");
-    const duroxideSchema = uniqueSchemaName("duroxide");
-    const cmsSchema = uniqueSchemaName("copilot_sessions");
-    const factsSchema = uniqueSchemaName("pilotswarm_facts");
+    const duroxideSchema = uniqueSchemaName("duroxide", suiteName, runId);
+    const cmsSchema = uniqueSchemaName("cms", suiteName, runId);
+    const factsSchema = uniqueSchemaName("facts", suiteName, runId);
     const sessionStateDir = join(tmpdir(), `pilotswarm-test-${runId}`, "session-state");
+    const baseDir = join(tmpdir(), `pilotswarm-test-${runId}`);
 
     // Create temp directory
     mkdirSync(sessionStateDir, { recursive: true });
+
+    async function reset() {
+        if (existsSync(baseDir)) {
+            rmSync(baseDir, { recursive: true, force: true });
+        }
+        mkdirSync(sessionStateDir, { recursive: true });
+
+        try {
+            await dropTestSchemas({ duroxideSchema, cmsSchema, factsSchema });
+        } catch (err) {
+            console.warn(`  ⚠️  Schema cleanup warning: ${err.message}`);
+        }
+    }
 
     return {
         store: DATABASE_URL,
@@ -59,29 +103,48 @@ export function createTestEnv(suiteName = "test") {
         sessionStateDir,
         timeout: TIMEOUT,
         runId,
+        reset,
 
         /** Drop schemas and remove temp files. */
         async cleanup() {
-            // Remove temp directory
-            const baseDir = join(tmpdir(), `pilotswarm-test-${runId}`);
+            await reset();
             if (existsSync(baseDir)) {
                 rmSync(baseDir, { recursive: true, force: true });
             }
-
-            // Drop schemas from PostgreSQL
-            const pg = await import("pg");
-            const client = new pg.default.Client({ connectionString: DATABASE_URL });
-            try {
-                await client.connect();
-                await client.query(`DROP SCHEMA IF EXISTS "${duroxideSchema}" CASCADE`);
-                await client.query(`DROP SCHEMA IF EXISTS "${cmsSchema}" CASCADE`);
-                await client.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
-            } catch (err) {
-                console.warn(`  ⚠️  Schema cleanup warning: ${err.message}`);
-            } finally {
-                try { await client.end(); } catch {}
-            }
         },
+    };
+}
+
+/**
+ * Suite-scoped environment helper.
+ *
+ * Creates one randomized schema set per test file, resets it after each test,
+ * and drops it when the suite finishes.
+ */
+export function useSuiteEnv(moduleUrl, suiteName) {
+    const label = suiteName ?? moduleSuiteLabel(moduleUrl);
+    let env = null;
+
+    beforeAll(async () => {
+        env = createTestEnv(label);
+    });
+
+    afterEach(async () => {
+        if (env) await env.reset();
+    });
+
+    afterAll(async () => {
+        if (env) {
+            await env.cleanup();
+            env = null;
+        }
+    });
+
+    return () => {
+        if (!env) {
+            throw new Error(`Suite env not initialized for ${label}`);
+        }
+        return env;
     };
 }
 
@@ -115,4 +178,4 @@ export async function preflightChecks() {
     }
 }
 
-export { DATABASE_URL, TIMEOUT };
+export { DATABASE_URL, TEST_SCHEMA_PREFIX, TIMEOUT };

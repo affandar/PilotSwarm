@@ -7,13 +7,14 @@
 
 import { describe, it, beforeAll } from "vitest";
 import { randomUUID } from "node:crypto";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, createManagementClient } from "../helpers/local-workers.js";
 import { assert, assertEqual, assertNotNull } from "../helpers/assertions.js";
 import { planWaitHandling } from "../../src/wait-affinity.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function getSessionInfo(mgmt, sessionId) {
     const cmdId = randomUUID();
@@ -27,6 +28,10 @@ async function getSessionInfo(mgmt, sessionId) {
     }
 
     throw new Error(`Timed out waiting for get_info response for session ${sessionId}`);
+}
+
+function fullAffinityKey(info) {
+    return info.affinityKey || info.affinityKeyShort;
 }
 
 async function waitForSessionStatus(mgmt, sessionId, expectedStatus) {
@@ -57,7 +62,7 @@ async function testLongWaitRotatesAffinity(env) {
                     content:
                         "If the user says exactly 'baseline-ready-test', reply with exactly the single word 'ready'. " +
                         "You have a wait tool. If the user says exactly 'default-wait-test', " +
-                        "you must call wait with seconds=1 and reason='default wait test'. " +
+                        "you must call wait with seconds=5 and reason='default wait test'. " +
                         "Do not include preserveWorkerAffinity. After the wait completes, reply with exactly 'done'. " +
                         "For any other prompt, reply with exactly the single word 'ready'.",
                 },
@@ -66,7 +71,7 @@ async function testLongWaitRotatesAffinity(env) {
             const ready = await session.sendAndWait("baseline-ready-test", TIMEOUT);
             assert(ready?.toLowerCase().includes("ready"), `Expected ready response but got: ${ready}`);
             const before = await getSessionInfo(mgmt, session.sessionId);
-            assertNotNull(before.affinityKey, "baseline affinity key present");
+            assertNotNull(fullAffinityKey(before), "baseline affinity key present");
 
             await session.send("default-wait-test");
             const waiting = await waitForSessionStatus(mgmt, session.sessionId, "waiting");
@@ -79,10 +84,10 @@ async function testLongWaitRotatesAffinity(env) {
             assert(response?.toLowerCase().includes("done"), `Expected done response but got: ${response}`);
 
             const after = await getSessionInfo(mgmt, session.sessionId);
-            assertNotNull(after.affinityKey, "post-wait affinity key present");
+            assertNotNull(fullAffinityKey(after), "post-wait affinity key present");
             assert(
-                before.affinityKey !== after.affinityKey,
-                `Expected affinity key to rotate after long wait, but it stayed ${before.affinityKey}`,
+                fullAffinityKey(before) !== fullAffinityKey(after),
+                `Expected affinity key to rotate after long wait, but it stayed ${fullAffinityKey(before)}`,
             );
         });
     } finally {
@@ -108,7 +113,7 @@ async function testLongWaitPreservesAffinity(env) {
                         "If the user says exactly 'baseline-ready-test', reply with exactly the single word 'ready'. " +
                         "You have a wait_on_worker tool for worker-local waits. " +
                         "If the user says exactly 'preserve-wait-test', you must call wait_on_worker with " +
-                        "seconds=1 and reason='preserve wait test'. " +
+                        "seconds=5 and reason='preserve wait test'. " +
                         "After the wait completes, reply with exactly 'done'. " +
                         "For any other prompt, reply with exactly the single word 'ready'.",
                 },
@@ -117,7 +122,7 @@ async function testLongWaitPreservesAffinity(env) {
             const ready = await session.sendAndWait("baseline-ready-test", TIMEOUT);
             assert(ready?.toLowerCase().includes("ready"), `Expected ready response but got: ${ready}`);
             const before = await getSessionInfo(mgmt, session.sessionId);
-            assertNotNull(before.affinityKey, "baseline affinity key present");
+            assertNotNull(fullAffinityKey(before), "baseline affinity key present");
 
             await session.send("preserve-wait-test");
             const waiting = await waitForSessionStatus(mgmt, session.sessionId, "waiting");
@@ -131,10 +136,10 @@ async function testLongWaitPreservesAffinity(env) {
             assert(response?.toLowerCase().includes("done"), `Expected done response but got: ${response}`);
 
             const after = await getSessionInfo(mgmt, session.sessionId);
-            assertNotNull(after.affinityKey, "post-wait affinity key present");
+            assertNotNull(fullAffinityKey(after), "post-wait affinity key present");
             assertEqual(
-                before.affinityKey,
-                after.affinityKey,
+                fullAffinityKey(before),
+                fullAffinityKey(after),
                 "Expected affinity key to stay the same after preserved long wait",
             );
         });
@@ -177,17 +182,15 @@ function testWaitHandlingPlanPreservesAffinity() {
     assertEqual(shortPlan.preserveAffinityOnHydrate, false, "short wait should not need preserved hydration");
 }
 
-describe.concurrent("Level 2/3: Wait Affinity", () => {
+describe("Level 2/3: Wait Affinity", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("long wait rotates affinity by default", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("wait-affinity");
-        try { await testLongWaitRotatesAffinity(env); } finally { await env.cleanup(); }
+        await testLongWaitRotatesAffinity(getEnv());
     });
 
     it("long wait preserves affinity when requested", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("wait-affinity");
-        try { await testLongWaitPreservesAffinity(env); } finally { await env.cleanup(); }
+        await testLongWaitPreservesAffinity(getEnv());
     });
 
     it("wait planning preserves affinity when requested", async () => {

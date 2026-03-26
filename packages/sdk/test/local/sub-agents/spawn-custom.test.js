@@ -5,12 +5,13 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { assertNotNull, assertGreaterOrEqual } from "../../helpers/assertions.js";
 import { createCatalog, validateSessionAfterTurn } from "../../helpers/cms-helpers.js";
 
 const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testSpawnCustomSubAgent(env) {
     const catalog = await createCatalog(env);
@@ -50,11 +51,10 @@ async function testSpawnCustomSubAgent(env) {
     }
 }
 
-describe.concurrent("Sub-Agent: Spawn Custom", () => {
+describe("Sub-Agent: Spawn Custom", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Spawn Custom Sub-Agent", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("sub-agents");
-        try { await testSpawnCustomSubAgent(env); } finally { await env.cleanup(); }
+        await testSpawnCustomSubAgent(getEnv());
     });
 });

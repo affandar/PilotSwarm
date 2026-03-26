@@ -34,6 +34,20 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
+const STATUS_WAIT_SLICE_MS = 1_000;
+
+function createAbortError(message: string, reason?: unknown): Error {
+    if (reason instanceof Error) return reason;
+    const error = new Error(typeof reason === "string" && reason ? reason : message);
+    error.name = "AbortError";
+    return error;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined, message: string): void {
+    if (signal?.aborted) {
+        throw createAbortError(message, signal.reason);
+    }
+}
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -105,6 +119,8 @@ export class PilotSwarmManagementClient {
     private _factStore: FactStore | null = null;
     private _duroxideClient: any = null;
     private _modelProviders: ModelProviderRegistry | null = null;
+    private _activeStatusWaitControllers = new Set<AbortController>();
+    private _activeStatusWaitPromises = new Set<Promise<unknown>>();
     private _started = false;
 
     constructor(options: PilotSwarmManagementClientOptions) {
@@ -156,6 +172,11 @@ export class PilotSwarmManagementClient {
     }
 
     async stop(): Promise<void> {
+        for (const controller of [...this._activeStatusWaitControllers]) {
+            controller.abort(createAbortError("PilotSwarmManagementClient stopped"));
+        }
+        await Promise.allSettled([...this._activeStatusWaitPromises]);
+
         if (this._factStore) {
             try { await this._factStore.close(); } catch {}
             this._factStore = null;
@@ -413,28 +434,65 @@ export class PilotSwarmManagementClient {
         afterVersion: number,
         pollIntervalMs?: number,
         timeoutMs?: number,
+        opts?: { signal?: AbortSignal },
     ): Promise<SessionStatusChange> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
-        const result = await this._duroxideClient.waitForStatusChange(
-            orchId,
-            afterVersion,
-            pollIntervalMs ?? 200,
-            timeoutMs ?? 30_000,
-        );
-        let customStatus: any = null;
-        if (result.customStatus) {
-            try {
-                customStatus = typeof result.customStatus === "string"
-                    ? JSON.parse(result.customStatus)
-                    : result.customStatus;
-            } catch {}
+        const controller = new AbortController();
+        this._activeStatusWaitControllers.add(controller);
+        const externalSignal = opts?.signal;
+        const onAbort = () => controller.abort(createAbortError("Management status wait aborted", externalSignal?.reason));
+        if (externalSignal) {
+            if (externalSignal.aborted) onAbort();
+            else externalSignal.addEventListener("abort", onAbort, { once: true });
         }
-        return {
-            customStatus,
-            customStatusVersion: result.customStatusVersion || 0,
-            orchestrationStatus: result.status,
-        };
+
+        const waitPromise = (async () => {
+            const deadline = Date.now() + (timeoutMs ?? 30_000);
+            while (Date.now() < deadline) {
+                throwIfAborted(controller.signal, `Management status wait aborted (${orchId})`);
+                const sliceMs = Math.min(deadline - Date.now(), STATUS_WAIT_SLICE_MS);
+                if (sliceMs <= 0) break;
+
+                const result = await this._duroxideClient.waitForStatusChange(
+                    orchId,
+                    afterVersion,
+                    pollIntervalMs ?? 200,
+                    sliceMs,
+                );
+                throwIfAborted(controller.signal, `Management status wait aborted (${orchId})`);
+
+                if ((result.customStatusVersion || 0) <= afterVersion) {
+                    continue;
+                }
+
+                let customStatus: any = null;
+                if (result.customStatus) {
+                    try {
+                        customStatus = typeof result.customStatus === "string"
+                            ? JSON.parse(result.customStatus)
+                            : result.customStatus;
+                    } catch {}
+                }
+                return {
+                    customStatus,
+                    customStatusVersion: result.customStatusVersion || 0,
+                    orchestrationStatus: result.status,
+                };
+            }
+
+            throwIfAborted(controller.signal, `Management status wait aborted (${orchId})`);
+            throw new Error(`Timed out waiting for session ${sessionId} status change after version ${afterVersion}`);
+        })();
+
+        this._activeStatusWaitPromises.add(waitPromise);
+        try {
+            return await waitPromise;
+        } finally {
+            this._activeStatusWaitPromises.delete(waitPromise);
+            this._activeStatusWaitControllers.delete(controller);
+            if (externalSignal) externalSignal.removeEventListener("abort", onAbort);
+        }
     }
 
     /**

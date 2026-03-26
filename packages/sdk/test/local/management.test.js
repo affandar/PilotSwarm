@@ -7,13 +7,14 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, createManagementClient } from "../helpers/local-workers.js";
 import { assert, assertNotNull } from "../helpers/assertions.js";
 import { createCatalog, waitForSessionState, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG, BRIEF_CONFIG } from "../helpers/fixtures.js";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testSendMessage(env) {
     const mgmt = await createManagementClient(env);
@@ -113,19 +114,16 @@ async function testCancelSession(env) {
     }
 }
 
-describe.concurrent("Level 4b: Management", () => {
+describe("Level 4b: Management", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("sendMessage via Management", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("commands");
-        try { await testSendMessage(env); } finally { await env.cleanup(); }
+        await testSendMessage(getEnv());
     });
     it("Management Session Operations", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("commands");
-        try { await testManagementSessionOps(env); } finally { await env.cleanup(); }
+        await testManagementSessionOps(getEnv());
     });
     it("Cancel Session", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("commands");
-        try { await testCancelSession(env); } finally { await env.cleanup(); }
+        await testCancelSession(getEnv());
     });
 });

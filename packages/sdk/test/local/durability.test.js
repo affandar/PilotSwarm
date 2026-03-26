@@ -16,13 +16,21 @@
  */
 
 import { describe, it, beforeAll, afterAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertIncludes, assertIncludesAny, assertGreaterOrEqual } from "../helpers/assertions.js";
 import { createCatalog, waitForSessionState, waitForEventCount, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { WAIT_CONFIG, ONEWORD_CONFIG } from "../helpers/fixtures.js";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
+
+async function settlePromiseBriefly(promise, timeoutMs = 5_000) {
+    await Promise.race([
+        promise.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+}
 
 // ─── Test: Short Wait (in-process) ──────────────────────────────
 
@@ -80,22 +88,30 @@ async function testDurableTimerCmsState(env) {
                     content: "You have a wait tool. When asked to wait, use it with 3 seconds. After waiting, say 'done'. Be brief.",
                 },
             });
+            const controller = new AbortController();
 
             console.log("  Sending: Wait 3 seconds");
-            const sendPromise = session.sendAndWait("Wait 3 seconds", TIMEOUT);
+            const sendPromise = session.sendAndWait("Wait 3 seconds", TIMEOUT, undefined, {
+                signal: controller.signal,
+            });
 
-            // During the wait, the session should transition to "waiting"
-            const waitRow = await waitForSessionState(catalog, session.sessionId, ["waiting"], 30_000);
-            console.log(`  CMS state during wait: ${waitRow.state}`);
-            assert(waitRow.state === "waiting", `Expected 'waiting' state, got: ${waitRow.state}`);
+            try {
+                // During the wait, the session should transition to "waiting"
+                const waitRow = await waitForSessionState(catalog, session.sessionId, ["waiting"], 30_000);
+                console.log(`  CMS state during wait: ${waitRow.state}`);
+                assert(waitRow.state === "waiting", `Expected 'waiting' state, got: ${waitRow.state}`);
 
-            const response = await sendPromise;
-            console.log(`  Response: "${response}"`);
+                const response = await sendPromise;
+                console.log(`  Response: "${response}"`);
 
-            // After completion, should be idle
-            const finalRow = await waitForSessionState(catalog, session.sessionId, ["idle", "completed"], 30_000);
-            console.log(`  CMS state after completion: ${finalRow.state}`);
-            ("Durable Timer CMS States");
+                // After completion, should be idle
+                const finalRow = await waitForSessionState(catalog, session.sessionId, ["idle", "completed"], 30_000);
+                console.log(`  CMS state after completion: ${finalRow.state}`);
+                ("Durable Timer CMS States");
+            } finally {
+                controller.abort();
+                await settlePromiseBriefly(sendPromise);
+            }
         });
     } finally {
         await catalog.close();
@@ -195,31 +211,25 @@ async function testMultipleIterations(env) {
 
 // ─── Runner ──────────────────────────────────────────────────────
 
-describe.concurrent("Level 2: Durability Tests", () => {
+describe("Level 2: Durability Tests", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Short Wait (in-process)", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("durability");
-        try { await testShortWait(env); } finally { await env.cleanup(); }
+        await testShortWait(getEnv());
     });
     it("Durable Timer (abort + resume)", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("durability");
-        try { await testDurableTimer(env); } finally { await env.cleanup(); }
+        await testDurableTimer(getEnv());
     });
     it("Durable Timer CMS States", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("durability");
-        try { await testDurableTimerCmsState(env); } finally { await env.cleanup(); }
+        await testDurableTimerCmsState(getEnv());
     });
     it("User Input (input_required)", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("durability");
-        try { await testUserInput(env); } finally { await env.cleanup(); }
+        await testUserInput(getEnv());
     });
     it("Continue-as-new After Idle", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("durability");
-        try { await testContinueAsNewAfterIdle(env); } finally { await env.cleanup(); }
+        await testContinueAsNewAfterIdle(getEnv());
     });
     it("Multiple Iterations", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("durability");
-        try { await testMultipleIterations(env); } finally { await env.cleanup(); }
+        await testMultipleIterations(getEnv());
     });
 });

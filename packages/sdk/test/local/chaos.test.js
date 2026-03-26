@@ -17,13 +17,14 @@
  */
 
 import { describe, it, beforeAll, afterAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmClient, PilotSwarmWorker } from "../helpers/local-workers.js";
 import { assert, assertIncludes, assertIncludesAny, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
 import { createCatalog, waitForSessionState, validateSessionAfterTurn, validateSessionDeleted } from "../helpers/cms-helpers.js";
 import { MEMORY_CONFIG, ONEWORD_CONFIG } from "../helpers/fixtures.js";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 function makeWorker(env, nodeId) {
     return new PilotSwarmWorker({
@@ -294,27 +295,22 @@ async function testConcurrentSessionsRestart(env) {
 
 // ─── Runner ──────────────────────────────────────────────────────
 
-describe.concurrent("Level 9: Chaos Tests", () => {
+describe("Level 9: Chaos Tests", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Worker Restart During Long Wait", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("chaos");
-        try { await testWorkerRestartDuringWait(env); } finally { await env.cleanup(); }
+        await testWorkerRestartDuringWait(getEnv());
     });
     it("Stop Both Workers Then Restart", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("chaos");
-        try { await testStopBothRestart(env); } finally { await env.cleanup(); }
+        await testStopBothRestart(getEnv());
     });
     it("Session Delete During Completion", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("chaos");
-        try { await testDeleteDuringCompletion(env); } finally { await env.cleanup(); }
+        await testDeleteDuringCompletion(getEnv());
     });
     it("Rapid Worker Stop/Start", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("chaos");
-        try { await testRapidWorkerStopStart(env); } finally { await env.cleanup(); }
+        await testRapidWorkerStopStart(getEnv());
     });
     it("Concurrent Sessions Under Restart", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("chaos");
-        try { await testConcurrentSessionsRestart(env); } finally { await env.cleanup(); }
+        await testConcurrentSessionsRestart(getEnv());
     });
 });

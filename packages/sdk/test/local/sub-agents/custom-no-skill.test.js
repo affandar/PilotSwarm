@@ -5,12 +5,13 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { assert, assertGreaterOrEqual } from "../../helpers/assertions.js";
 import { createCatalog } from "../../helpers/cms-helpers.js";
 
 const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testCustomAgentWithoutSkill(env) {
     const catalog = await createCatalog(env);
@@ -44,11 +45,10 @@ async function testCustomAgentWithoutSkill(env) {
     }
 }
 
-describe.concurrent("Sub-Agent: Custom No Skill", () => {
+describe("Sub-Agent: Custom No Skill", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Custom Agent Without Skill", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("sub-agents");
-        try { await testCustomAgentWithoutSkill(env); } finally { await env.cleanup(); }
+        await testCustomAgentWithoutSkill(getEnv());
     });
 });

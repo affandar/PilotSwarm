@@ -28,6 +28,20 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
+const WAIT_POLL_SLICE_MS = 1_000;
+
+function createAbortError(message: string, reason?: unknown): Error {
+    if (reason instanceof Error) return reason;
+    const error = new Error(typeof reason === "string" && reason ? reason : message);
+    error.name = "AbortError";
+    return error;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined, message: string): void {
+    if (signal?.aborted) {
+        throw createAbortError(message, signal.reason);
+    }
+}
 
 /**
  * PilotSwarmClient — pure client-side session handle.
@@ -55,6 +69,8 @@ export class PilotSwarmClient {
     private lastSeenStatusVersion = new Map<string, number>();
     private lastSeenIteration = new Map<string, number>();
     private lastSeenResponseVersion = new Map<string, number>();
+    private activeWaitControllers = new Set<AbortController>();
+    private activeWaitPromises = new Set<Promise<unknown>>();
     private started = false;
     /** Tracks agentId bound to each session (for policy and title prefixing). */
     private sessionAgentIds = new Map<string, string>();
@@ -380,6 +396,11 @@ export class PilotSwarmClient {
     }
 
     async stop(): Promise<void> {
+        for (const controller of [...this.activeWaitControllers]) {
+            controller.abort(createAbortError("PilotSwarmClient stopped"));
+        }
+        await Promise.allSettled([...this.activeWaitPromises]);
+
         if (this._factStore) {
             try { await this._factStore.close(); } catch {}
             this._factStore = null;
@@ -485,7 +506,7 @@ export class PilotSwarmClient {
         onUserInput: UserInputHandler | undefined,
         timeout?: number,
         onIntermediateContent?: (content: string) => void,
-        opts?: { bootstrap?: boolean },
+        opts?: { bootstrap?: boolean; signal?: AbortSignal },
     ): Promise<string | undefined> {
         const orchestrationId = await this._ensureOrchestrationAndSend(sessionId, prompt, opts);
 
@@ -495,6 +516,7 @@ export class PilotSwarmClient {
             onUserInput,
             timeout ?? 300_000,
             onIntermediateContent,
+            opts?.signal,
         );
     }
 
@@ -519,8 +541,39 @@ export class PilotSwarmClient {
         sessionId: string,
         onUserInput: UserInputHandler | undefined,
         timeout: number,
+        signal?: AbortSignal,
     ): Promise<string | undefined> {
-        return this._waitForTurnResult(orchestrationId, sessionId, onUserInput, timeout);
+        return this._waitForTurnResult(orchestrationId, sessionId, onUserInput, timeout, undefined, signal);
+    }
+
+    private _createWaitSignal(externalSignal?: AbortSignal): {
+        controller: AbortController;
+        signal: AbortSignal;
+        cleanup: () => void;
+    } {
+        const controller = new AbortController();
+        this.activeWaitControllers.add(controller);
+
+        const onAbort = () => {
+            controller.abort(createAbortError("PilotSwarmClient wait aborted", externalSignal?.reason));
+        };
+
+        if (externalSignal) {
+            if (externalSignal.aborted) {
+                onAbort();
+            } else {
+                externalSignal.addEventListener("abort", onAbort, { once: true });
+            }
+        }
+
+        return {
+            controller,
+            signal: controller.signal,
+            cleanup: () => {
+                if (externalSignal) externalSignal.removeEventListener("abort", onAbort);
+                this.activeWaitControllers.delete(controller);
+            },
+        };
     }
 
     /** @internal */
@@ -605,135 +658,164 @@ export class PilotSwarmClient {
         onUserInput: UserInputHandler | undefined,
         timeout: number,
         onIntermediateContent?: (content: string) => void,
+        externalSignal?: AbortSignal,
     ): Promise<string | undefined> {
-        const deadline = timeout > 0 ? Date.now() + timeout : Infinity;
-        let lastSeenVersion = this.lastSeenStatusVersion.get(orchestrationId) ?? 0;
-        let lastSeenIteration = this.lastSeenIteration.get(orchestrationId) ?? -1;
-        let lastSeenResponseVersion = this.lastSeenResponseVersion.get(orchestrationId) ?? 0;
+        const { signal, cleanup } = this._createWaitSignal(externalSignal);
+        const getDuroxideClient = () => {
+            const client = this.duroxideClient;
+            if (!client) {
+                throwIfAborted(signal, `PilotSwarmClient stopped while waiting for response (${orchestrationId})`);
+                throw new Error(`PilotSwarmClient stopped while waiting for response (${orchestrationId})`);
+            }
+            return client;
+        };
+        const waitPromise = (async () => {
+            const deadline = timeout > 0 ? Date.now() + timeout : Infinity;
+            let lastSeenVersion = this.lastSeenStatusVersion.get(orchestrationId) ?? 0;
+            let lastSeenIteration = this.lastSeenIteration.get(orchestrationId) ?? -1;
+            let lastSeenResponseVersion = this.lastSeenResponseVersion.get(orchestrationId) ?? 0;
 
-        while (Date.now() < deadline) {
-            const remaining = deadline === Infinity ? 30_000 : Math.min(deadline - Date.now(), 30_000);
-            if (remaining <= 0) break;
+            while (Date.now() < deadline) {
+                throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+                const remaining = deadline === Infinity
+                    ? WAIT_POLL_SLICE_MS
+                    : Math.min(deadline - Date.now(), WAIT_POLL_SLICE_MS);
+                if (remaining <= 0) break;
 
-            let statusResult: any;
-            try {
-                statusResult = await this.duroxideClient.waitForStatusChange(
-                    orchestrationId, lastSeenVersion, 200, remaining,
-                );
-            } catch {
-                await new Promise(r => setTimeout(r, 200));
-                const orchStatus = await this.duroxideClient.getStatus(orchestrationId);
-                if (orchStatus.status === "Failed") throw new Error(orchStatus.error ?? "Orchestration failed");
-                if (orchStatus.status === "Completed") return orchStatus.output;
-                const currentVersion = orchStatus.customStatusVersion || 0;
-                if (currentVersion < lastSeenVersion) {
-                    lastSeenVersion = 0;
+                let statusResult: any;
+                try {
+                    statusResult = await getDuroxideClient().waitForStatusChange(
+                        orchestrationId, lastSeenVersion, 200, remaining,
+                    );
+                } catch {
+                    throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+                    await new Promise(r => setTimeout(r, 200));
+                    throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+                    const orchStatus = await getDuroxideClient().getStatus(orchestrationId);
+                    if (orchStatus.status === "Failed") throw new Error(orchStatus.error ?? "Orchestration failed");
+                    if (orchStatus.status === "Completed") return orchStatus.output;
+                    const currentVersion = orchStatus.customStatusVersion || 0;
+                    if (currentVersion < lastSeenVersion) {
+                        lastSeenVersion = 0;
+                        lastSeenIteration = -1;
+                    }
+                    continue;
+                }
+
+                throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+
+                if (statusResult.customStatusVersion > lastSeenVersion) {
+                    lastSeenVersion = statusResult.customStatusVersion;
+                } else if (statusResult.customStatusVersion < lastSeenVersion) {
+                    lastSeenVersion = statusResult.customStatusVersion;
                     lastSeenIteration = -1;
                 }
-                continue;
-            }
 
-            if (statusResult.customStatusVersion > lastSeenVersion) {
-                lastSeenVersion = statusResult.customStatusVersion;
-            } else if (statusResult.customStatusVersion < lastSeenVersion) {
-                lastSeenVersion = statusResult.customStatusVersion;
-                lastSeenIteration = -1;
-            }
-
-            let customStatus: any = null;
-            if (statusResult.customStatus) {
-                try {
-                    customStatus = typeof statusResult.customStatus === "string"
-                        ? JSON.parse(statusResult.customStatus) : statusResult.customStatus;
-                } catch {}
-            }
-
-            if (customStatus) {
-                if (customStatus.intermediateContent && onIntermediateContent) {
-                    onIntermediateContent(customStatus.intermediateContent);
+                let customStatus: any = null;
+                if (statusResult.customStatus) {
+                    try {
+                        customStatus = typeof statusResult.customStatus === "string"
+                            ? JSON.parse(statusResult.customStatus) : statusResult.customStatus;
+                    } catch {}
                 }
 
-                if (customStatus.turnResult && customStatus.iteration > lastSeenIteration) {
-                    lastSeenIteration = customStatus.iteration;
-                    const result = customStatus.turnResult;
+                if (customStatus) {
+                    if (customStatus.intermediateContent && onIntermediateContent) {
+                        onIntermediateContent(customStatus.intermediateContent);
+                    }
 
-                    if (result.type === "completed") {
-                        if (customStatus.status === "idle") {
+                    if (customStatus.turnResult && customStatus.iteration > lastSeenIteration) {
+                        lastSeenIteration = customStatus.iteration;
+                        const result = customStatus.turnResult;
+
+                        if (result.type === "completed") {
+                            if (customStatus.status === "idle") {
+                                if (onIntermediateContent) onIntermediateContent(result.content);
+                                this.lastSeenStatusVersion.set(orchestrationId, lastSeenVersion);
+                                this.lastSeenIteration.set(orchestrationId, lastSeenIteration);
+                                return result.content;
+                            }
                             if (onIntermediateContent) onIntermediateContent(result.content);
-                            this.lastSeenStatusVersion.set(orchestrationId, lastSeenVersion);
-                            this.lastSeenIteration.set(orchestrationId, lastSeenIteration);
-                            return result.content;
-                        } else {
-                            if (onIntermediateContent) onIntermediateContent(result.content);
+                        }
+
+                        if (result.type === "input_required" && onUserInput) {
+                            const response = await onUserInput(
+                                {
+                                    question: result.question,
+                                    choices: result.choices,
+                                    allowFreeform: result.allowFreeform,
+                                },
+                                { sessionId },
+                            );
+                            throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+                            await getDuroxideClient().enqueueEvent(
+                                orchestrationId,
+                                "messages",
+                                JSON.stringify(response),
+                            );
+                            continue;
                         }
                     }
 
-                    if (result.type === "input_required" && onUserInput) {
-                        const response = await onUserInput(
-                            {
-                                question: result.question,
-                                choices: result.choices,
-                                allowFreeform: result.allowFreeform,
-                            },
-                            { sessionId },
+                    if (customStatus.responseVersion && customStatus.responseVersion > lastSeenResponseVersion) {
+                        const response = await this._getLatestResponse(orchestrationId);
+                        lastSeenResponseVersion = Math.max(
+                            lastSeenResponseVersion,
+                            response?.version ?? customStatus.responseVersion,
                         );
-                        await this.duroxideClient.enqueueEvent(
-                            orchestrationId,
-                            "messages",
-                            JSON.stringify(response),
-                        );
-                        continue;
-                    }
-                }
 
-                if (customStatus.responseVersion && customStatus.responseVersion > lastSeenResponseVersion) {
-                    const response = await this._getLatestResponse(orchestrationId);
-                    lastSeenResponseVersion = Math.max(
-                        lastSeenResponseVersion,
-                        response?.version ?? customStatus.responseVersion,
-                    );
-
-                    if (response?.type === "completed" && response.content) {
-                        if (customStatus.status === "idle" || customStatus.status === "completed") {
+                        if (response?.type === "completed" && response.content) {
+                            if (customStatus.status === "idle" || customStatus.status === "completed") {
+                                if (onIntermediateContent) onIntermediateContent(response.content);
+                                this.lastSeenStatusVersion.set(orchestrationId, lastSeenVersion);
+                                this.lastSeenIteration.set(orchestrationId, lastSeenIteration);
+                                this.lastSeenResponseVersion.set(orchestrationId, lastSeenResponseVersion);
+                                return response.content;
+                            }
                             if (onIntermediateContent) onIntermediateContent(response.content);
-                            this.lastSeenStatusVersion.set(orchestrationId, lastSeenVersion);
-                            this.lastSeenIteration.set(orchestrationId, lastSeenIteration);
-                            this.lastSeenResponseVersion.set(orchestrationId, lastSeenResponseVersion);
-                            return response.content;
                         }
-                        if (onIntermediateContent) onIntermediateContent(response.content);
-                    }
 
-                    if (response?.type === "wait" && response.content && onIntermediateContent) {
-                        onIntermediateContent(response.content);
-                    }
+                        if (response?.type === "wait" && response.content && onIntermediateContent) {
+                            onIntermediateContent(response.content);
+                        }
 
-                    if (response?.type === "input_required" && response.question && onUserInput) {
-                        const responseInput = await onUserInput(
-                            {
-                                question: response.question,
-                                choices: response.choices,
-                                allowFreeform: response.allowFreeform,
-                            },
-                            { sessionId },
-                        );
-                        await this.duroxideClient.enqueueEvent(
-                            orchestrationId,
-                            "messages",
-                            JSON.stringify(responseInput),
-                        );
-                        continue;
+                        if (response?.type === "input_required" && response.question && onUserInput) {
+                            const responseInput = await onUserInput(
+                                {
+                                    question: response.question,
+                                    choices: response.choices,
+                                    allowFreeform: response.allowFreeform,
+                                },
+                                { sessionId },
+                            );
+                            throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+                            await getDuroxideClient().enqueueEvent(
+                                orchestrationId,
+                                "messages",
+                                JSON.stringify(responseInput),
+                            );
+                            continue;
+                        }
                     }
                 }
+
+                const orchStatus = await getDuroxideClient().getStatus(orchestrationId);
+                if (orchStatus.status === "Failed") throw new Error(orchStatus.error ?? "Orchestration failed");
+                if (orchStatus.status === "Completed") return orchStatus.output;
             }
 
-            const orchStatus = await this.duroxideClient.getStatus(orchestrationId);
-            if (orchStatus.status === "Failed") throw new Error(orchStatus.error ?? "Orchestration failed");
-            if (orchStatus.status === "Completed") return orchStatus.output;
-        }
+            throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
+            this.lastSeenResponseVersion.set(orchestrationId, lastSeenResponseVersion);
+            throw new Error(`Timeout waiting for response (${timeout}ms)`);
+        })();
 
-        this.lastSeenResponseVersion.set(orchestrationId, lastSeenResponseVersion);
-        throw new Error(`Timeout waiting for response (${timeout}ms)`);
+        this.activeWaitPromises.add(waitPromise);
+        try {
+            return await waitPromise;
+        } finally {
+            this.activeWaitPromises.delete(waitPromise);
+            cleanup();
+        }
     }
 }
 
@@ -772,6 +854,7 @@ export class PilotSwarmSession {
         prompt: string,
         timeout?: number,
         onIntermediateContent?: (content: string) => void,
+        opts?: { signal?: AbortSignal },
     ): Promise<string | undefined> {
         return this.client._startAndWait(
             this.sessionId,
@@ -779,6 +862,7 @@ export class PilotSwarmSession {
             this.onUserInput,
             timeout,
             onIntermediateContent,
+            opts,
         );
     }
 
@@ -786,13 +870,14 @@ export class PilotSwarmSession {
         this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt, opts);
     }
 
-    async wait(timeout?: number): Promise<string | undefined> {
+    async wait(timeout?: number, opts?: { signal?: AbortSignal }): Promise<string | undefined> {
         if (!this.lastOrchestrationId) throw new Error("No pending turn. Call send() first.");
         return this.client._waitForTurnResult_external(
             this.lastOrchestrationId,
             this.sessionId,
             this.onUserInput,
             timeout ?? 300_000,
+            opts?.signal,
         );
     }
 

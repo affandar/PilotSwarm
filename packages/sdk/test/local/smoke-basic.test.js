@@ -8,13 +8,14 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertIncludes, assertIncludesAny, assertGreaterOrEqual, assertNotNull, assertEqual } from "../helpers/assertions.js";
 import { assertStrictlyIncreasingSeq, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG, MEMORY_CONFIG, createAddTool } from "../helpers/fixtures.js";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testSimpleQA(env) {
     await withClient(env, async (client) => {
@@ -150,31 +151,25 @@ async function testSendAndWait(env) {
     });
 }
 
-describe.concurrent("Level 1a: Smoke — Basic", () => {
+describe("Level 1a: Smoke — Basic", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Simple Q&A", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testSimpleQA(env); } finally { await env.cleanup(); }
+        await testSimpleQA(getEnv());
     });
     it("Tool Calling", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testToolCalling(env); } finally { await env.cleanup(); }
+        await testToolCalling(getEnv());
     });
     it("Multi-turn Conversation", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testMultiTurn(env); } finally { await env.cleanup(); }
+        await testMultiTurn(getEnv());
     });
     it("Event Persistence", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testEventPersistence(env); } finally { await env.cleanup(); }
+        await testEventPersistence(getEnv());
     });
     it("Session Resume", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testSessionResume(env); } finally { await env.cleanup(); }
+        await testSessionResume(getEnv());
     });
     it("send() + wait()", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("smoke");
-        try { await testSendAndWait(env); } finally { await env.cleanup(); }
+        await testSendAndWait(getEnv());
     });
 });

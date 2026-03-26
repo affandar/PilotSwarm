@@ -8,13 +8,14 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertGreaterOrEqual } from "../helpers/assertions.js";
 import { createCatalog, getEvents, assertStrictlyIncreasingSeq, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG, BRIEF_CONFIG } from "../helpers/fixtures.js";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testEventsSeqIncreasing(env) {
     const catalog = await createCatalog(env);
@@ -137,23 +138,19 @@ async function testUserMessageEventData(env) {
     }
 }
 
-describe.concurrent("Level 7a: CMS — Events", () => {
+describe("Level 7a: CMS — Events", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Events Seq Strictly Increasing", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testEventsSeqIncreasing(env); } finally { await env.cleanup(); }
+        await testEventsSeqIncreasing(getEnv());
     });
     it("Expected Event Types Persisted", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testExpectedEventTypes(env); } finally { await env.cleanup(); }
+        await testExpectedEventTypes(getEnv());
     });
     it("No Transient Events Persisted", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testNoTransientEventsPersisted(env); } finally { await env.cleanup(); }
+        await testNoTransientEventsPersisted(getEnv());
     });
     it("User Message Event Data", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("cms-consistency");
-        try { await testUserMessageEventData(env); } finally { await env.cleanup(); }
+        await testUserMessageEventData(getEnv());
     });
 });

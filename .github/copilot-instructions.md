@@ -243,6 +243,8 @@ Each test function should:
 
 **No hacks.** Do not paper over product bugs by weakening assertions, adding arbitrary sleeps, or swallowing errors. Tests exist to catch real problems.
 
+**Default-model by default.** Tests should use the repo's configured default model unless the test is explicitly about model selection, multi-model behavior, cross-model behavior, or an intentional per-model compatibility sweep. Do not pin a specific model in ordinary behavior tests just to make them pass.
+
 **No custom system prompts to compensate for product behavior.** Tests should use `client.createSession()` without overriding `systemMessage` unless the test is specifically testing custom system messages. The default agent prompt and tool schemas should be sufficient for the LLM to use tools correctly. If the LLM isn't calling a tool, that's a product bug in the default prompt or tool schema — fix it there, not in the test.
 
 **Raise failures loudly.** When a test fails, investigate and report the root cause. Do not silence it. Flag the issue to the user.

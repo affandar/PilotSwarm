@@ -8,7 +8,7 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertEqual, assertIncludes, assertNotNull } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
@@ -20,7 +20,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const POLICY_PLUGIN = path.resolve(__dirname, "../fixtures/policy-plugin");
 const OPEN_POLICY_PLUGIN = path.resolve(__dirname, "../fixtures/open-policy-plugin");
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testNoPolicyOpen(env) {
     await withClient(env, {}, async (client, worker) => {
@@ -274,55 +275,43 @@ async function testGenericSessionTitleNoPrefix(env) {
     });
 }
 
-describe.concurrent("Level 10b: Session Policy — Behavior", () => {
+describe("Level 10b: Session Policy — Behavior", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("No Policy = Open Behavior", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testNoPolicyOpen(env); } finally { await env.cleanup(); }
+        await testNoPolicyOpen(getEnv());
     });
     it("Open Policy Allows Generic", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testOpenPolicyAllowsGeneric(env); } finally { await env.cleanup(); }
+        await testOpenPolicyAllowsGeneric(getEnv());
     });
     it("Multiple Plugin Dirs Merge", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testMultiplePluginDirsMerge(env); } finally { await env.cleanup(); }
+        await testMultiplePluginDirsMerge(getEnv());
     });
     it("Last Policy Wins", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testLastPolicyWins(env); } finally { await env.cleanup(); }
+        await testLastPolicyWins(getEnv());
     });
     it("Named Agent Title Prefix", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testNamedAgentTitlePrefix(env); } finally { await env.cleanup(); }
+        await testNamedAgentTitlePrefix(getEnv());
     });
     it("System Agent Title Not Prefixed", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testSystemAgentTitleNotPrefixed(env); } finally { await env.cleanup(); }
+        await testSystemAgentTitleNotPrefixed(getEnv());
     });
     it("Generic Session Title Has No Prefix", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testGenericSessionTitleNoPrefix(env); } finally { await env.cleanup(); }
+        await testGenericSessionTitleNoPrefix(getEnv());
     });
     it("Orch Allows Valid Named Agent", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testOrchAllowsNamedAgent(env); } finally { await env.cleanup(); }
+        await testOrchAllowsNamedAgent(getEnv());
     });
     it("Orch Does Not Block Sub-Agent Spawns", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testOrchAllowsSubAgentSpawns(env); } finally { await env.cleanup(); }
+        await testOrchAllowsSubAgentSpawns(getEnv());
     });
     it("Qualified Name Resolution", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testQualifiedNameResolution(env); } finally { await env.cleanup(); }
+        await testQualifiedNameResolution(getEnv());
     });
     it("App System Agents Coexist with Built-In", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testAppSystemAgentsCoexist(env); } finally { await env.cleanup(); }
+        await testAppSystemAgentsCoexist(getEnv());
     });
     it("Named Agent Title Preserved After Summarization", { timeout: TIMEOUT * 3 }, async () => {
-        const env = createTestEnv("session-policy");
-        try { await testNamedAgentTitleAfterSummarization(env); } finally { await env.cleanup(); }
+        await testNamedAgentTitleAfterSummarization(getEnv());
     });
 });

@@ -9,12 +9,37 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { assert, assertEqual, assertGreaterOrEqual, assertNotNull } from "../../helpers/assertions.js";
 import { createCatalog } from "../../helpers/cms-helpers.js";
 
 const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
+
+async function waitForNestedSessions(catalog, rootSessionId, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const sessions = await catalog.listSessions();
+        const children = sessions.filter(s => s.parentSessionId === rootSessionId);
+        const grandchildren = [];
+        for (const child of children) {
+            grandchildren.push(...sessions.filter(s => s.parentSessionId === child.sessionId));
+        }
+        if (children.length >= 1 && grandchildren.length >= 1) {
+            return { sessions, children, grandchildren };
+        }
+        await new Promise(r => setTimeout(r, 500));
+    }
+
+    const sessions = await catalog.listSessions();
+    const children = sessions.filter(s => s.parentSessionId === rootSessionId);
+    const grandchildren = [];
+    for (const child of children) {
+        grandchildren.push(...sessions.filter(s => s.parentSessionId === child.sessionId));
+    }
+    return { sessions, children, grandchildren };
+}
 
 async function testDepthTwoNesting(env) {
     await withClient(env, {}, async (client, worker) => {
@@ -29,23 +54,12 @@ async function testDepthTwoNesting(env) {
         console.log(`  Response: "${response?.slice(0, 100)}"`);
         assertNotNull(response, "got root response");
 
-        // Wait for nested spawns to complete
-        await new Promise(r => setTimeout(r, 5000));
-
         const catalog = await createCatalog(env);
         try {
-            const sessions = await catalog.listSessions();
-            // Find child (depth 1)
-            const children = sessions.filter(s => s.parentSessionId === session.sessionId);
+            const { children, grandchildren } = await waitForNestedSessions(catalog, session.sessionId, 30_000);
             console.log(`  Children (depth 1): ${children.length}`);
             assertGreaterOrEqual(children.length, 1, "at least 1 child (depth 1)");
 
-            // Find grandchild (depth 2)
-            const grandchildren = [];
-            for (const child of children) {
-                const gc = sessions.filter(s => s.parentSessionId === child.sessionId);
-                grandchildren.push(...gc);
-            }
             console.log(`  Grandchildren (depth 2): ${grandchildren.length}`);
             assertGreaterOrEqual(grandchildren.length, 1, "at least 1 grandchild (depth 2)");
 
@@ -105,15 +119,13 @@ async function testDepthThreeDenied(env) {
     });
 }
 
-describe.concurrent("Sub-Agent: Nested Spawning", () => {
+describe("Sub-Agent: Nested Spawning", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Depth 2 Nesting (Grandchild)", { timeout: TIMEOUT * 4 }, async () => {
-        const env = createTestEnv("sub-agents");
-        try { await testDepthTwoNesting(env); } finally { await env.cleanup(); }
+        await testDepthTwoNesting(getEnv());
     });
     it("Depth 3 Denied (Max Nesting)", { timeout: TIMEOUT * 4 }, async () => {
-        const env = createTestEnv("sub-agents");
-        try { await testDepthThreeDenied(env); } finally { await env.cleanup(); }
+        await testDepthThreeDenied(getEnv());
     });
 });

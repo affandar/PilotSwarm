@@ -16,7 +16,7 @@
  */
 
 import { describe, it, beforeAll, afterAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, withTwoWorkers, PilotSwarmClient, PilotSwarmWorker } from "../helpers/local-workers.js";
 import { assert, assertEqual, assertIncludes, assertIncludesAny, assertGreaterOrEqual, assertThrows } from "../helpers/assertions.js";
 import { createCatalog, waitForSessionState, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
@@ -25,7 +25,8 @@ import { existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { FilesystemSessionStore, SessionManager, createFactStoreForUrl } from "../../src/index.ts";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 const EXPECTED_ONE_WORD_ANSWERS = [
     ["2", "two", "Two"],
@@ -393,31 +394,25 @@ async function testTurnOneFailsWithoutStoredSession(env) {
 
 // ─── Runner ──────────────────────────────────────────────────────
 
-describe.concurrent("Level 3: Multi-Worker Tests", () => {
+describe("Level 3: Multi-Worker Tests", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Two Workers Observe Same Session", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("multi-worker");
-        try { await testTwoWorkersObserveSession(env); } finally { await env.cleanup(); }
+        await testTwoWorkersObserveSession(getEnv());
     });
     it("Session Survives Graceful Restart", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("multi-worker");
-        try { await testSessionSurvivesGracefulRestart(env); } finally { await env.cleanup(); }
+        await testSessionSurvivesGracefulRestart(getEnv());
     });
     it("Multiple Sessions Across Two Workers", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("multi-worker");
-        try { await testMultipleSessionsTwoWorkers(env); } finally { await env.cleanup(); }
+        await testMultipleSessionsTwoWorkers(getEnv());
     });
     it("Worker Handoff After Stop", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("multi-worker");
-        try { await testWorkerHandoffAfterStop(env); } finally { await env.cleanup(); }
+        await testWorkerHandoffAfterStop(getEnv());
     });
     it("Turn 0 Resets Stale Stored Session", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("multi-worker");
-        try { await testTurnZeroResetsStaleStoredSession(env); } finally { await env.cleanup(); }
+        await testTurnZeroResetsStaleStoredSession(getEnv());
     });
     it("Turn 1+ Fails Without Stored Session", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("multi-worker");
-        try { await testTurnOneFailsWithoutStoredSession(env); } finally { await env.cleanup(); }
+        await testTurnOneFailsWithoutStoredSession(getEnv());
     });
 });

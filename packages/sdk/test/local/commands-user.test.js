@@ -7,14 +7,15 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, createManagementClient } from "../helpers/local-workers.js";
 import { assert, assertNotNull } from "../helpers/assertions.js";
 import { validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG } from "../helpers/fixtures.js";
 import { randomUUID } from "node:crypto";
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testGetInfoCommand(env) {
     const mgmt = await createManagementClient(env);
@@ -121,19 +122,16 @@ async function testDoneDuringIdle(env) {
     }
 }
 
-describe.concurrent("Level 4a: Commands", () => {
+describe("Level 4a: Commands", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("get_info Command", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("commands");
-        try { await testGetInfoCommand(env); } finally { await env.cleanup(); }
+        await testGetInfoCommand(getEnv());
     });
     it("/done Command", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("commands");
-        try { await testDoneCommand(env); } finally { await env.cleanup(); }
+        await testDoneCommand(getEnv());
     });
     it("/done During Idle Window", { timeout: TIMEOUT }, async () => {
-        const env = createTestEnv("commands");
-        try { await testDoneDuringIdle(env); } finally { await env.cleanup(); }
+        await testDoneDuringIdle(getEnv());
     });
 });

@@ -5,11 +5,12 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { createTestEnv, preflightChecks } from "../../helpers/local-env.js";
+import { createTestEnv, preflightChecks, useSuiteEnv } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { validateSessionAfterTurn } from "../../helpers/cms-helpers.js";
 
 const TIMEOUT = 180_000;
+const getEnv = useSuiteEnv(import.meta.url);
 
 async function testCheckAgents(env) {
     await withClient(env, async (client) => {
@@ -38,11 +39,10 @@ async function testCheckAgents(env) {
     });
 }
 
-describe.concurrent("Sub-Agent: Check Agents", () => {
+describe("Sub-Agent: Check Agents", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Check Agents Returns Status", { timeout: TIMEOUT * 2 }, async () => {
-        const env = createTestEnv("sub-agents");
-        try { await testCheckAgents(env); } finally { await env.cleanup(); }
+        await testCheckAgents(getEnv());
     });
 });
