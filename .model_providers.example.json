@@ -25,7 +25,7 @@
         {
             "id": "azure-model-router",
             "type": "openai",
-            "baseUrl": "https://adar-ps-eastus2-resource.openai.azure.com/openai/v1",
+            "baseUrl": "https://your-azure-openai-resource.openai.azure.com/openai/v1",
             "apiKey": "env:AZURE_MODEL_ROUTER_KEY",
             "models": [
                 {
@@ -38,7 +38,7 @@
         {
             "id": "azure-fw-glm-5",
             "type": "openai",
-            "baseUrl": "https://adar-ps-eastus2-resource.openai.azure.com/openai/v1",
+            "baseUrl": "https://your-azure-openai-resource.openai.azure.com/openai/v1",
             "apiKey": "env:AZURE_FW_GLM5_KEY",
             "models": [
                 {
@@ -51,7 +51,7 @@
         {
             "id": "azure-kimi",
             "type": "openai",
-            "baseUrl": "https://adar-ps-eastus2-resource.openai.azure.com/openai/v1",
+            "baseUrl": "https://your-azure-openai-resource.openai.azure.com/openai/v1",
             "apiKey": "env:AZURE_KIMI_K25_KEY",
             "models": [
                 {
@@ -64,7 +64,7 @@
         {
             "id": "azure-openai",
             "type": "openai",
-            "baseUrl": "https://adar-ps-eastus2-resource.openai.azure.com/openai/v1",
+            "baseUrl": "https://your-azure-openai-resource.openai.azure.com/openai/v1",
             "apiKey": "env:AZURE_OAI_KEY",
             "models": [
                 {

@@ -23,7 +23,8 @@ These are not active agents in this repo. They are templates intended to be copi
 ```bash
 npm install pilotswarm-sdk
 cp .env.example .env
-# review/edit the checked-in model catalog (no secrets inside)
+# copy the checked-in model catalog template, then edit the local file
+cp .model_providers.example.json .model_providers.json
 $EDITOR .model_providers.json
 # edit .env: set DATABASE_URL and at least one LLM provider key
 # easiest: set GITHUB_TOKEN (gives access to Claude, GPT, etc. via GitHub Copilot)

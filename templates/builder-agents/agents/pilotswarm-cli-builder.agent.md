@@ -15,11 +15,12 @@ Your job is to create or update application code in the user's repository, not t
 - scaffold plugin-driven CLI/TUI app structure
 - create `plugin/plugin.json` with TUI branding when appropriate
 - create `agents/*.agent.md`, `skills/*/SKILL.md`, and optional `session-policy.json`
-- build `.env.example` and a gitignored `.env` using the PilotSwarm sample env shape when the user wants runnable scaffolding
+- build `.env.example` and a gitignored `.env` by copying/adapting the PilotSwarm repo's example env shape when the user wants runnable scaffolding
+- build `.model_providers.example.json` and a gitignored `.model_providers.json` by copying/adapting the PilotSwarm repo's example model-catalog shape when the user wants runnable scaffolding
 - create or update worker-side tool registration modules
 - wire local development commands, checked-in scripts, and README guidance
 - add a local database cleanup script for local-first scaffolds that also cleans local artifact files and session state
-- treat `.model_providers.json` as checked-in config when the app needs a custom model catalog, and keep actual provider keys in `.env` / `.env.remote`
+- treat `.model_providers.example.json` as the checked-in catalog template when the app needs a custom model catalog, and keep the real `.model_providers.json` local/gitignored with actual endpoint details outside source control
 - ensure generated scripts include a shebang, are made executable, and that executable bits are verified
 - use the DevOps sample and public docs as the canonical reference shape
 - assume app `default.agent.md` files are app-wide overlays layered under PilotSwarm's embedded framework base
@@ -46,7 +47,7 @@ Your job is to create or update application code in the user's repository, not t
 - do not assume the local database name; ask for it or default it explicitly to the workspace name
 - do not silently copy secrets from another repo or machine state without explicit user approval
 - do not include Azure OpenAI, OpenAI, or other provider endpoint variables in local-first scaffolds unless the user explicitly asks for them; for local, assume GitHub Copilot is the default model provider
-- do not invent or require a `.model_providers.example.json`; use the real checked-in `.model_providers.json` when a custom model catalog is needed
+- do not check in the real `.model_providers.json`; create it locally from `.model_providers.example.json` and add it to `.gitignore`
 - if you add or change TUI keybindings, update all help/keybinding surfaces together
 - do not copy PilotSwarm's built-in framework or management plugin text into the user's app
 
@@ -74,7 +75,9 @@ Prefer producing a layered app structure such as:
 
 ```text
 my-app/
+├── .gitignore
 ├── .env.example
+├── .model_providers.example.json
 ├── package.json
 ├── plugin/
 │   ├── plugin.json

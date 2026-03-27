@@ -79,7 +79,7 @@ This creates the `copilot-runtime` namespace.
 
 ### Secrets
 
-PilotSwarm's model catalog is the checked-in [`.model_providers.json`](../.model_providers.json). The Kubernetes secret only needs the env vars referenced by that catalog and the worker runtime.
+PilotSwarm's checked-in model-catalog template is [`.model_providers.example.json`](../.model_providers.example.json). Workers actually load the local `.model_providers.json`, which is gitignored so teams can keep personal endpoint URLs and similar local details out of source control. The Kubernetes secret only needs the env vars referenced by that real runtime catalog and the worker runtime.
 
 Store your credentials as a Kubernetes secret:
 
@@ -92,7 +92,7 @@ kubectl create secret generic copilot-runtime-secrets \
     --from-literal=AZURE_STORAGE_CONTAINER="copilot-sessions"
 ```
 
-Provider availability in selectors is env-driven at worker startup. If you add or remove a provider key, refresh the secret and restart the workers; changing `.model_providers.json` alone is not enough.
+Provider availability in selectors is env-driven at worker startup. If you add or remove a provider key, refresh the secret and restart the workers; changing the checked-in template alone is not enough, and changing the real `.model_providers.json` only takes effect after the updated file is present in the runtime environment.
 
 ### Refresh GitHub Token
 

@@ -420,7 +420,7 @@ Azure Blob Storage container: `copilot-sessions`
 
 ## 10. Model Provider System
 
-The checked-in `.model_providers.json` configures multi-provider LLM access. Providers whose credentials are absent from the environment are filtered out at runtime, so the visible selector catalog is environment-dependent.
+The checked-in `.model_providers.example.json` documents the shared multi-provider LLM catalog shape. Real runtime resolution uses the local `.model_providers.json`, which is typically copied from that template and kept out of git so user-specific endpoints can stay private. Providers whose credentials are absent from the environment are filtered out at runtime, so the visible selector catalog is environment-dependent.
 
 ```json
 {
