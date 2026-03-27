@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .env.remote
+.model_providers.json
 *.tgz
 vendor/
 nohup.out

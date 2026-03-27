@@ -19,7 +19,8 @@ Start from the template:
 
 ```bash
 cp .env.example .env
-# review/edit the checked-in model catalog (keys stay in env files)
+cp .model_providers.example.json .model_providers.json
+# review/edit the local model catalog (keys stay in env files)
 $EDITOR .model_providers.json
 ```
 
@@ -40,7 +41,7 @@ AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
 AZURE_STORAGE_CONTAINER=copilot-sessions
 ```
 
-> **Model providers** are configured in `.model_providers.json`. API keys use `env:VAR_NAME` syntax to reference `.env` variables. Providers whose API key is not set are automatically excluded from the model list.
+> **Model providers** are configured in the local `.model_providers.json`, which is usually copied from the checked-in `.model_providers.example.json` template. API keys use `env:VAR_NAME` syntax to reference `.env` variables. Providers whose API key is not set are automatically excluded from the model list.
 
 ## PostgreSQL Setup
 
@@ -232,11 +233,11 @@ This enables true multi-node scaling — sessions can migrate between workers tr
 
 ## LLM Provider Configuration
 
-PilotSwarm uses `.model_providers.json` to configure LLM providers. API keys are stored in `.env` and referenced via `env:VAR_NAME` syntax.
+PilotSwarm uses the local `.model_providers.json` to configure LLM providers. Most setups copy that file from the checked-in `.model_providers.example.json` template first. API keys are stored in `.env` and referenced via `env:VAR_NAME` syntax.
 
 > **Easiest way to get started:** Set `GITHUB_TOKEN` in `.env`. This gives you access to all models available through GitHub Copilot (Claude, GPT-4.1, GPT-5.1, etc.) with no additional configuration needed.
 
-For BYOK (bring-your-own-key) providers like Azure OpenAI, edit `.model_providers.json` and set the corresponding API key in `.env`.
+For BYOK (bring-your-own-key) providers like Azure OpenAI, edit the local `.model_providers.json` and set the corresponding API key in `.env`.
 
 Providers whose API key env var is not set are **automatically excluded** from the model list — they won't appear in the TUI model picker or the `list_available_models` tool. This means you only need credentials for the providers you actually use.
 

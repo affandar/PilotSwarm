@@ -9,9 +9,9 @@
 
 ## Sensitive Local Files
 
-**Do NOT modify `.model_providers.json`, `.env`, or `.env.remote` without the user explicitly asking.** The checked-in `.model_providers.json` is part of the repo's real configuration surface, while the actual credentials live in `.env` / `.env.remote`. Never read env files to extract secrets, and never overwrite the real model catalog with placeholder content.
+**Do NOT modify `.model_providers.json`, `.env`, or `.env.remote` without the user explicitly asking.** The real `.model_providers.json` is a local gitignored config file that may contain personal service URLs, while `.env` / `.env.remote` hold credentials. Never read env files to extract secrets, never commit the real `.model_providers.json`, and never overwrite local config with placeholder content unless the user asked for that exact reset.
 
-When env shape changes, keep `.env.example` in sync with placeholder values. Do **not** recreate or require a `.model_providers.example.json` file — the checked-in `.model_providers.json` is the canonical catalog, and provider availability is controlled by env-backed keys.
+When env or model-catalog shape changes, keep `.env.example` and `.model_providers.example.json` in sync with placeholder values. The checked-in `.model_providers.example.json` is the shareable template; the real `.model_providers.json` stays local and gitignored. Provider availability is still controlled by env-backed keys.
 
 ## Project Overview
 
@@ -165,6 +165,8 @@ When a bug is identified as originating in **duroxide** (the Rust-based durable 
 3. Only implement a workaround if explicitly asked to by the user.
 
 Duroxide is the foundational runtime — papering over its bugs at higher layers creates fragile, hard-to-maintain code.
+
+For live runtime forensics — tracing orchestration/activity logs, session-affined `runTurn` placement, hydration/dehydration evidence, or crash-vs-affinity investigations — use [`.github/skills/investigate-duroxide-runtime/SKILL.md`](./skills/investigate-duroxide-runtime/SKILL.md).
 
 ## Testing
 

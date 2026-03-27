@@ -7,7 +7,7 @@ By the end you'll have:
 
 - A PostgreSQL database (local or Azure)
 - LLM access via model providers (GitHub Copilot, Azure OpenAI, or any OpenAI-compatible endpoint)
-- A working `.env` and `.model_providers.json`
+- A working `.env` and local `.model_providers.json` copied from `.model_providers.example.json`
 - The TUI running with embedded workers (local mode)
 - Optionally: AKS workers + Azure Blob Storage for production
 
@@ -155,7 +155,7 @@ in `run.sh`, so you don't need to worry about expiry for local dev.
 
 ## Step 4: Create Your `.env` File
 
-PilotSwarm uses `.model_providers.json` for LLM configuration and `.env` for secrets (API keys, database URL).
+PilotSwarm uses the local `.model_providers.json` for LLM configuration and `.env` for secrets (API keys, database URL). The repo checks in `.model_providers.example.json` as the template so personal endpoint URLs can stay out of git.
 
 > **Easiest way to get started:** Set `GITHUB_TOKEN` — this gives you access to all models available through GitHub Copilot (Claude, GPT-4.1, etc.) with no additional setup. You can add BYOK providers later.
 
@@ -165,7 +165,8 @@ Copy the example files:
 
 ```bash
 cp .env.example .env
-# review/edit the checked-in model catalog (keys stay in .env / .env.remote)
+cp .model_providers.example.json .model_providers.json
+# review/edit the local model catalog (keys stay in .env / .env.remote)
 $EDITOR .model_providers.json
 ```
 

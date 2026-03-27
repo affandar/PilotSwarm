@@ -66,8 +66,8 @@ Builder templates should assume:
 - npm packages are consumed as `pilotswarm-sdk` and `pilotswarm-cli`
 - PilotSwarm's built-in framework and management plugins are embedded in those packages
 - app `default.agent.md` files are overlays layered under the embedded PilotSwarm framework base
-- if an app needs a custom model catalog, `.model_providers.json` is checked in and secrets stay in `.env` / `.env.remote`
-- builder templates should not invent or require a `.model_providers.example.json`
+- if an app needs a custom model catalog, check in `.model_providers.example.json`, create a local gitignored `.model_providers.json` from it, and keep provider keys in `.env` / `.env.remote`
+- builder templates should scaffold both `.env.example` and `.model_providers.example.json` from PilotSwarm's own example-file shape, then create local `.env` / `.model_providers.json` copies and add those real files to `.gitignore`
 
 ## Maintenance Rule
 

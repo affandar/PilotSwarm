@@ -14,7 +14,7 @@ Your job is to create or update deployment assets, environment documentation, an
 - prepare AKS deployment assets and environment configuration
 - ensure remote workers contain the same plugin files and tool code as local development
 - wire blob storage and database configuration appropriately
-- keep checked-in model-catalog guidance separate from secrets: `.model_providers.json` in source control, provider keys in env files or Kubernetes secrets
+- keep checked-in model-catalog guidance separate from secrets: `.model_providers.example.json` in source control, the real `.model_providers.json` local/gitignored, and provider keys in env files or Kubernetes secrets
 - explain rollout and reset constraints clearly when orchestration changes are involved
 - use the public deployment docs and DevOps sample as the canonical reference shape
 

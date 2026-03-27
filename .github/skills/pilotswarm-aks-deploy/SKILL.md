@@ -24,14 +24,16 @@ Keep the workflow repo-specific and explicit. Prefer the repo-owned scripts, and
 - Worker manifest: `deploy/k8s/worker-deployment.yaml`
 - Namespace manifest: `deploy/k8s/namespace.yaml`
 - AKS guide: `docs/deploying-to-aks.md`
-- Model catalog: `.model_providers.json`
+- Model catalog template: `.model_providers.example.json`
+- Real runtime catalog: `.model_providers.json`
 
 ## Core Learnings
 
 - Use `docker buildx build --platform linux/amd64` for AKS images. Do not use a plain `docker build` from Apple Silicon for cluster deploys.
 - The deploy target is the AKS cluster, not the local namespace. Use `copilot-runtime`, not the local `pilotswarm` namespace.
 - The deploy script prefers `.env.remote`, then `.env`, and pushes env-backed provider keys into the Kubernetes secret.
-- `.model_providers.json` is the checked-in canonical model catalog. Do not expect or recreate a `.model_providers.example.json`; provider visibility is controlled by env-backed keys.
+- `.model_providers.example.json` is the checked-in shareable model-catalog template. The real `.model_providers.json` is local and gitignored so personal service URLs can stay out of source control.
+- Provider visibility is still controlled by env-backed keys at worker startup, not by which providers appear in the template.
 - Secret updates matter for model selectors. Workers load provider availability at startup, so removed keys do not take effect until the secret is refreshed and the pods restart.
 - When the active default model is an Azure OpenAI deployment, the Kubernetes secret must include the matching Azure OpenAI key. A missing `AZURE_OAI_KEY` can leave workers booting with an invalid default model.
 - If `ANTHROPIC_API_KEY` is intentionally removed from the deploy env, refresh the Kubernetes secret and restart workers, then verify Anthropic models disappeared from selectors or `list_available_models`.
@@ -42,7 +44,7 @@ Keep the workflow repo-specific and explicit. Prefer the repo-owned scripts, and
 
 1. Inspect the deploy surface.
    - Run `git status --short`.
-   - Review `.model_providers.json`, `scripts/deploy-aks.sh`, and `deploy/k8s/worker-deployment.yaml` if model/env/deploy behavior changed.
+   - Review `.model_providers.example.json`, the real `.model_providers.json` when the user has asked for local config changes, `scripts/deploy-aks.sh`, and `deploy/k8s/worker-deployment.yaml` if model/env/deploy behavior changed.
 
 2. Verify the target env and cluster assumptions.
    - Prefer `.env.remote` for AKS deploys.
