@@ -5,6 +5,8 @@ description: Diagnose and fix nondeterminism errors in the duroxide orchestratio
 
 # Debug Orchestration Nondeterminism
 
+If the issue is about live worker routing, session-affined activity placement, hydration/dehydration traces, or cross-pod runtime evidence rather than replay-safe code shape, use the sibling skill [`.github/skills/investigate-duroxide-runtime/SKILL.md`](../investigate-duroxide-runtime/SKILL.md).
+
 Duroxide replays the orchestration generator from the beginning on every new event. The generator must produce the **exact same sequence of yielded actions** during replay as during original execution. A mismatch causes:
 
 ```

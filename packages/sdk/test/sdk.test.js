@@ -8,9 +8,7 @@
  */
 
 import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "../dist/index.js";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createTempSessionLayout } from "./helpers/temp-session-layout.js";
 
 const TIMEOUT = 120_000;
 const STORE = process.env.DATABASE_URL;
@@ -49,8 +47,8 @@ async function preflightChecks() {
 // ─── Helpers ─────────────────────────────────────────────────────
 
 async function withClient(opts, fn) {
-    const baseDir = mkdtempSync(join(tmpdir(), "pilotswarm-sdk-test-"));
-    const sessionStateDir = join(baseDir, "session-state");
+    const tempLayout = createTempSessionLayout("pilotswarm-sdk-test-");
+    const { sessionStateDir } = tempLayout;
     const worker = new PilotSwarmWorker({
         store: STORE,
         githubToken: process.env.GITHUB_TOKEN,
@@ -77,7 +75,29 @@ async function withClient(opts, fn) {
     } finally {
         await client.stop();
         await worker.stop();
-        rmSync(baseDir, { recursive: true, force: true });
+        tempLayout.cleanup();
+    }
+}
+
+async function withTempWorkerClient(fn) {
+    const tempLayout = createTempSessionLayout("pilotswarm-sdk-test-");
+    const { sessionStateDir } = tempLayout;
+    const worker = new PilotSwarmWorker({
+        store: STORE,
+        githubToken: process.env.GITHUB_TOKEN,
+        sessionStateDir,
+    });
+    const client = new PilotSwarmClient({ store: STORE });
+
+    await worker.start();
+    await client.start();
+
+    try {
+        await fn({ client, worker, sessionStateDir });
+    } finally {
+        await client.stop();
+        await worker.stop();
+        tempLayout.cleanup();
     }
 }
 
@@ -401,16 +421,7 @@ async function testToolOnWorker() {
     });
 
     // Explicitly test the correct pattern: tools on worker, not client
-    const worker = new PilotSwarmWorker({
-        store: STORE,
-        githubToken: process.env.GITHUB_TOKEN,
-    });
-    await worker.start();
-
-    const client = new PilotSwarmClient({ store: STORE });
-    await client.start();
-
-    try {
+    await withTempWorkerClient(async ({ client, worker }) => {
         // Client creates session with serializable config only
         const session = await client.createSession({
             systemMessage: {
@@ -432,10 +443,7 @@ async function testToolOnWorker() {
             `Expected 42 but got: ${response}`,
         );
         pass("Tool Registration on Worker");
-    } finally {
-        await client.stop();
-        await worker.stop();
-    }
+    });
 }
 
 // ─── Test 11: Session Resume ─────────────────────────────────────
@@ -634,19 +642,12 @@ async function testWorkerRegisteredTools() {
 
     // Simulate remote mode: worker and client are independent processes.
     // Worker registers tools at startup time.
-    const worker = new PilotSwarmWorker({
-        store: STORE,
-        githubToken: process.env.GITHUB_TOKEN,
-    });
+    await withTempWorkerClient(async ({ client, worker }) => {
+        // Register tools BEFORE starting — this is what you'd do in worker.js
+        // For this standalone suite helper, the worker is already up, so register
+        // before the session is created.
+        worker.registerTools([calculator]);
 
-    // Register tools BEFORE starting — this is what you'd do in worker.js
-    worker.registerTools([calculator]);
-    await worker.start();
-
-    const client = new PilotSwarmClient({ store: STORE });
-    await client.start();
-
-    try {
         // Client references tool by NAME only — no Tool objects, no handlers.
         // The name travels through duroxide as a serializable string.
         const session = await client.createSession({
@@ -669,10 +670,7 @@ async function testWorkerRegisteredTools() {
             `Expected 300 but got: ${response}`,
         );
         pass("Worker-Registered Tools (Remote Pattern)");
-    } finally {
-        await client.stop();
-        await worker.stop();
-    }
+    });
 }
 
 // ─── Test 17: Worker Registry + Per-Session Tools Combined ──────
@@ -711,17 +709,9 @@ async function testRegistryPlusSessionTools() {
         },
     });
 
-    const worker = new PilotSwarmWorker({
-        store: STORE,
-        githubToken: process.env.GITHUB_TOKEN,
-    });
-    worker.registerTools([registryTool]);
-    await worker.start();
+    await withTempWorkerClient(async ({ client, worker }) => {
+        worker.registerTools([registryTool]);
 
-    const client = new PilotSwarmClient({ store: STORE });
-    await client.start();
-
-    try {
         // Client creates session with both: toolNames (registry) + per-session tool
         const session = await client.createSession({
             toolNames: ["lookup_capital"],
@@ -750,10 +740,7 @@ async function testRegistryPlusSessionTools() {
             `Expected Paris in response: ${response}`,
         );
         pass("Registry + Per-Session Tools Combined");
-    } finally {
-        await client.stop();
-        await worker.stop();
-    }
+    });
 }
 
 // ─── Test 18: Tool Update After Session Eviction ──────────────────────

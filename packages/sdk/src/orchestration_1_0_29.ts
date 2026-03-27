@@ -190,7 +190,7 @@ function updateContextUsageFromEvents(
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.30";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.29";
 
 /**
  * Long-lived durable session orchestration.
@@ -208,13 +208,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.30";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_30(
+export function* durableSessionOrchestration_1_0_29(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.30] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.29] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -436,26 +436,13 @@ export function* durableSessionOrchestration_1_0_30(
         if (pendingToolActions.length > 0) {
             return false;
         }
-        yield* versionedContinueAsNew(continueInputWithPrompt());
+        yield versionedContinueAsNew(continueInputWithPrompt());
         return true;
     }
 
-    function* ensureWarmResumeCheckpoint(): Generator<any, void, any> {
-        if (!blobEnabled) return;
-        try {
-            ctx.traceInfo(`[orch] checkpoint before warm continueAsNew (iteration=${iteration})`);
-            yield session.checkpoint();
-        } catch (err: any) {
-            ctx.traceInfo(`[orch] warm continueAsNew checkpoint failed: ${err.message ?? err}`);
-        }
-    }
-
     /** Yield this to continueAsNew into the current (latest) orchestration version. */
-    function* versionedContinueAsNew(input: OrchestrationInput): Generator<any, void, any> {
-        if (!input.needsHydration) {
-            yield* ensureWarmResumeCheckpoint();
-        }
-        yield ctx.continueAsNewVersioned(input, CURRENT_ORCHESTRATION_VERSION);
+    function versionedContinueAsNew(input: OrchestrationInput) {
+        return ctx.continueAsNewVersioned(input, CURRENT_ORCHESTRATION_VERSION);
     }
 
     function parseChildUpdate(promptText?: string): { sessionId: string; updateType: string; content: string } | null {
@@ -653,7 +640,7 @@ export function* durableSessionOrchestration_1_0_30(
                                 };
                                 yield* writeCommandResponse(resp);
                                 publishStatus("idle");
-                                yield* versionedContinueAsNew(continueInput());
+                                yield versionedContinueAsNew(continueInput());
                                 return "";
                             }
                             case "list_models": {
@@ -923,7 +910,7 @@ export function* durableSessionOrchestration_1_0_30(
                 }
 
                 yield ctx.scheduleTimer(retryDelay * 1000);
-                yield* versionedContinueAsNew(continueInput({
+                yield versionedContinueAsNew(continueInput({
                     prompt,
                     retryCount,
                     needsHydration: blobEnabled ? true : needsHydration,
@@ -1002,7 +989,7 @@ export function* durableSessionOrchestration_1_0_30(
                     if (runningAgents.length > 0 && !input.forgottenTimerNudged && !cronSchedule) {
                         const names = runningAgents.map(a => a.task?.slice(0, 40) || a.orchId).join(", ");
                         ctx.traceInfo(`[orch] forgotten-timer safety: ${runningAgents.length} agents still running, nudging LLM`);
-                        yield* versionedContinueAsNew(continueInputWithPrompt(
+                        yield versionedContinueAsNew(continueInputWithPrompt(
                             `[SYSTEM: You ended your turn without calling wait(), but you have ${runningAgents.length} sub-agent(s) still running: ${names}. ` +
                             `Without a wait() call, your monitoring/polling loop is DEAD — the orchestration will NOT wake you up automatically. ` +
                             `You MUST call wait() now to schedule your next check-in. Call wait() with an appropriate interval to continue your loop.]`,
@@ -1060,7 +1047,7 @@ export function* durableSessionOrchestration_1_0_30(
 
                             if (remainingSec > 60) {
                                 ctx.traceInfo(`[orch] child update during cron wait, ${remainingSec}s remain (>60s) — breaking timer`);
-                                yield* versionedContinueAsNew(continueInputWithPrompt(
+                                yield versionedContinueAsNew(continueInputWithPrompt(
                                     `[SYSTEM: A child update arrived while your recurring schedule was waiting for the next wake-up ("${activeCron.reason}"). ` +
                                     `Review the update and continue your task now. The recurring cron schedule remains active and will be re-armed automatically after this turn completes.]`,
                                     { needsHydration: shouldDehydrateForCron ? true : needsHydration },
@@ -1085,14 +1072,14 @@ export function* durableSessionOrchestration_1_0_30(
                                 ? `${userPrompt}\n\n[SYSTEM: ${cronResumeNote}]`
                                 : userPrompt;
 
-                        yield* versionedContinueAsNew(continueInputWithPrompt(
+                        yield versionedContinueAsNew(continueInputWithPrompt(
                             finalPrompt,
                             { needsHydration: shouldDehydrateForCron ? true : needsHydration },
                         ));
                         return "";
                     }
 
-                    yield* versionedContinueAsNew(continueInputWithPrompt(
+                    yield versionedContinueAsNew(continueInputWithPrompt(
                         `[SYSTEM: Scheduled cron wake-up for: "${activeCron.reason}". Resume your recurring task.]`,
                         { needsHydration: shouldDehydrateForCron ? true : needsHydration },
                     ));
@@ -1106,7 +1093,7 @@ export function* durableSessionOrchestration_1_0_30(
                     // duroxide can match the second yield session.runTurn()
                     // to the cached result of the first one.
                     yield* maybeCheckpoint();
-                    yield* versionedContinueAsNew(continueInput());
+                    yield versionedContinueAsNew(continueInput());
                     return "";
                 }
 
@@ -1135,7 +1122,7 @@ export function* durableSessionOrchestration_1_0_30(
 
                             ctx.traceInfo("[session] user responded within idle window");
                             pendingMessage = raceMsg;
-                            yield* versionedContinueAsNew(continueInput());
+                            yield versionedContinueAsNew(continueInput());
                             return "";
                         }
 
@@ -1147,7 +1134,7 @@ export function* durableSessionOrchestration_1_0_30(
                     yield* dehydrateForNextTurn("idle");
                     // Don't continueAsNew with a prompt — wait for the next user message,
                     // which will be wrapped with resume context because needsHydration=true.
-                    yield* versionedContinueAsNew(continueInput());
+                    yield versionedContinueAsNew(continueInput());
                     return "";
                 }
 
@@ -1243,7 +1230,7 @@ export function* durableSessionOrchestration_1_0_30(
                             if (remainingSec > 60) {
                                 // >1 min left — break and let the LLM re-issue the wait
                                 ctx.traceInfo(`[orch] child update during wait, ${remainingSec}s remain (>60s) — breaking timer`);
-                                yield* versionedContinueAsNew(continueInputWithPrompt(
+                                yield versionedContinueAsNew(continueInputWithPrompt(
                                     `The wait was partially completed (${Math.round(elapsedMs / 1000)}s elapsed, ${remainingSec}s remain). Resume the wait for the remaining ${remainingSec} seconds.`,
                                     { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
                                 ));
@@ -1286,7 +1273,7 @@ export function* durableSessionOrchestration_1_0_30(
                             finalPrompt = userPrompt;
                         }
 
-                        yield* versionedContinueAsNew(continueInputWithPrompt(
+                        yield versionedContinueAsNew(continueInputWithPrompt(
                             finalPrompt,
                             { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
                         ));
@@ -1294,7 +1281,7 @@ export function* durableSessionOrchestration_1_0_30(
                     }
 
                     const timerPrompt = `The ${result.seconds} second wait is now complete. Continue with your task.`;
-                    yield* versionedContinueAsNew(continueInputWithPrompt(
+                    yield versionedContinueAsNew(continueInputWithPrompt(
                         timerPrompt,
                         { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
                     ));
@@ -1318,7 +1305,7 @@ export function* durableSessionOrchestration_1_0_30(
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
-                    yield* versionedContinueAsNew(continueInputWithPrompt(
+                    yield versionedContinueAsNew(continueInputWithPrompt(
                         `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
                         { needsHydration: false },
                     ));
@@ -1331,7 +1318,7 @@ export function* durableSessionOrchestration_1_0_30(
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
-                    yield* versionedContinueAsNew(continueInputWithPrompt(
+                    yield versionedContinueAsNew(continueInputWithPrompt(
                         `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
                     ));
                     return "";
@@ -1347,7 +1334,7 @@ export function* durableSessionOrchestration_1_0_30(
                     if (raceResult.index === 0) {
                         const answerData = typeof raceResult.value === "string"
                             ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
-                        yield* versionedContinueAsNew(continueInputWithPrompt(
+                        yield versionedContinueAsNew(continueInputWithPrompt(
                             `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
                             { needsHydration: false },
                         ));
@@ -1358,7 +1345,7 @@ export function* durableSessionOrchestration_1_0_30(
                     const answerMsg: any = yield ctx.dequeueEvent("messages");
                     const answerData = typeof answerMsg === "string"
                         ? JSON.parse(answerMsg) : answerMsg;
-                    yield* versionedContinueAsNew(continueInputWithPrompt(
+                    yield versionedContinueAsNew(continueInputWithPrompt(
                         `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
                     ));
                     return "";
@@ -1743,7 +1730,7 @@ export function* durableSessionOrchestration_1_0_30(
                         // Not a child update — it's a user message interrupting the wait
                         if (msgData.prompt) {
                             ctx.traceInfo(`[orch] wait_for_agents interrupted by user: "${msgData.prompt.slice(0, 60)}"`);
-                            yield* versionedContinueAsNew(continueInputWithPrompt(msgData.prompt));
+                            yield versionedContinueAsNew(continueInputWithPrompt(msgData.prompt));
                             return "";
                         }
                     } else {
@@ -1946,7 +1933,7 @@ export function* durableSessionOrchestration_1_0_30(
                 }
 
                 yield ctx.scheduleTimer(errorRetryDelay * 1000);
-                yield* versionedContinueAsNew(continueInput({
+                yield versionedContinueAsNew(continueInput({
                     prompt,
                     retryCount,
                     needsHydration: blobEnabled ? true : needsHydration,
