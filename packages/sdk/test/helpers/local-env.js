@@ -8,11 +8,11 @@
  */
 
 import { mkdirSync, rmSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { afterAll, afterEach, beforeAll } from "vitest";
+import { createTempSessionLayout } from "./temp-session-layout.js";
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -76,8 +76,8 @@ export function createTestEnv(suiteName = "test") {
     const duroxideSchema = uniqueSchemaName("duroxide", suiteName, runId);
     const cmsSchema = uniqueSchemaName("cms", suiteName, runId);
     const factsSchema = uniqueSchemaName("facts", suiteName, runId);
-    const sessionStateDir = join(tmpdir(), `pilotswarm-test-${runId}`, "session-state");
-    const baseDir = join(tmpdir(), `pilotswarm-test-${runId}`);
+    const tempLayout = createTempSessionLayout(`pilotswarm-test-${runId}-`);
+    const { baseDir, sessionStateDir } = tempLayout;
 
     // Create temp directory
     mkdirSync(sessionStateDir, { recursive: true });
@@ -100,6 +100,7 @@ export function createTestEnv(suiteName = "test") {
         duroxideSchema,
         cmsSchema,
         factsSchema,
+        baseDir,
         sessionStateDir,
         timeout: TIMEOUT,
         runId,
@@ -108,9 +109,7 @@ export function createTestEnv(suiteName = "test") {
         /** Drop schemas and remove temp files. */
         async cleanup() {
             await reset();
-            if (existsSync(baseDir)) {
-                rmSync(baseDir, { recursive: true, force: true });
-            }
+            tempLayout.cleanup();
         },
     };
 }

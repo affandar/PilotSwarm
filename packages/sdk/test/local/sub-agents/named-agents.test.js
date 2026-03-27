@@ -13,7 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestEnv, preflightChecks, useSuiteEnv } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
-import { assertNotNull, assertGreaterOrEqual, assertEqual } from "../../helpers/assertions.js";
+import { assertNotNull, assertEqual } from "../../helpers/assertions.js";
 import { createCatalog } from "../../helpers/cms-helpers.js";
 
 const TIMEOUT = 180_000;
@@ -31,36 +31,29 @@ async function testSpawnNamedAgents(env) {
         }, async (client) => {
             const session = await client.createSession();
 
-            // Spawn sweeper by agent_name
-            console.log("  Spawning sweeper by agent_name...");
-            const r1 = await session.sendAndWait(
-                "Spawn the sweeper agent using agent_name=\"sweeper\"",
-                TIMEOUT,
+            // Send both spawn requests. We use send() (not sendAndWait) because
+            // the model may legitimately call wait_for_agents after spawning,
+            // putting the orchestration into "waiting" state. We only care that
+            // the child CMS rows appear with correct metadata.
+            console.log("  Spawning sweeper and resourcemgr by agent_name...");
+            await session.send(
+                'Spawn two agents: first spawn_agent(agent_name="sweeper"), then spawn_agent(agent_name="resourcemgr").',
             );
-            console.log(`  Response: "${r1?.slice(0, 80)}"`);
 
-            // Spawn resourcemgr by agent_name
-            console.log("  Spawning resourcemgr by agent_name...");
-            const r2 = await session.sendAndWait(
-                "Now spawn the resourcemgr agent using agent_name=\"resourcemgr\"",
-                TIMEOUT,
-            );
-            console.log(`  Response: "${r2?.slice(0, 80)}"`);
-
-            // Find children
-            const allSessions = await catalog.listSessions();
-            const children = allSessions.filter(
-                s => s.parentSessionId === session.sessionId,
-            );
-            console.log(`  Children found: ${children.length}`);
-            for (const c of children) {
-                console.log(`    - agentId=${c.agentId}, title="${c.title}", isSystem=${c.isSystem}`);
+            // Poll CMS until both children appear (or timeout)
+            const deadline = Date.now() + TIMEOUT;
+            let sweeper, resourcemgr;
+            while (Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, 3000));
+                const allSessions = await catalog.listSessions();
+                const children = allSessions.filter(
+                    s => s.parentSessionId === session.sessionId,
+                );
+                sweeper = children.find(c => c.agentId === "sweeper");
+                resourcemgr = children.find(c => c.agentId === "resourcemgr");
+                if (sweeper && resourcemgr) break;
+                console.log(`  [poll] children so far: ${children.map(c => c.agentId).join(", ") || "none"}`);
             }
-
-            assertGreaterOrEqual(children.length, 2, "Expected both sweeper and resourcemgr children");
-
-            const sweeper = children.find(c => c.agentId === "sweeper");
-            const resourcemgr = children.find(c => c.agentId === "resourcemgr");
 
             // ── Verify sweeper ──
             assertNotNull(sweeper, "Sweeper should be spawned with agentId='sweeper'");
