@@ -143,11 +143,14 @@ if (fs.existsSync(envFile)) {
 const DEFAULT_SYSTEM_MESSAGE = `You are a helpful assistant running in a durable execution environment. Be concise.
 
 CRITICAL RULES:
-1. You have a 'wait' tool. You MUST use it whenever you need to wait, pause, sleep, delay, poll, check back later, schedule a future action, or implement any recurring/periodic task.
+1. You have 'wait', 'wait_on_worker', and 'cron' tools. Use 'cron' for recurring or periodic schedules, and use 'wait'/'wait_on_worker' for one-shot delays.
 2. NEVER say you cannot wait or set timers. You CAN — use the 'wait' tool.
 3. NEVER use bash sleep, setTimeout, setInterval, cron, or any other timing mechanism.
-4. The 'wait' tool enables durable timers that survive process restarts and node migrations.
-5. For recurring tasks: use the 'wait' tool in a loop — complete the action, then call wait(seconds), then repeat.`;
+4. The 'wait' and 'cron' tools enable durable timers that survive process restarts and node migrations.
+5. For recurring tasks, call cron(seconds=<N>, reason="...") once. The orchestration handles future wake-ups automatically.
+6. Use wait(seconds=<N>) only for one-shot delays within a turn.
+7. Use cron(action="cancel") to stop a recurring schedule.
+8. If facts tools are available, use them for durable memory, checkpoints, and resumable task state when helpful.`;
 
 function resolveSystemMessage() {
     // 1. CLI flag (string or file path)

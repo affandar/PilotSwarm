@@ -34,6 +34,7 @@ const POLICY_PLUGIN_DIR = path.resolve(__dirname, "../fixtures/policy-plugin");
 const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "wait",
     "wait_on_worker",
+    "cron",
     "ask_user",
     "list_available_models",
     "spawn_agent",
@@ -92,9 +93,20 @@ function parseToolNameArray(response) {
 
 class FakeCopilotSession {
     registeredToolSnapshots = [];
+    registeredTools = [];
     listeners = new Map();
+    catchAllHandlers = [];
+    scriptedToolCalls = [];
+    assistantContent = "ok";
+    aborted = false;
 
     on(eventType, handler) {
+        if (typeof eventType === "function") {
+            this.catchAllHandlers.push(eventType);
+            return () => {
+                this.catchAllHandlers = this.catchAllHandlers.filter((candidate) => candidate !== eventType);
+            };
+        }
         const handlers = this.listeners.get(eventType) ?? [];
         handlers.push(handler);
         this.listeners.set(eventType, handlers);
@@ -105,10 +117,14 @@ class FakeCopilotSession {
     }
 
     registerTools(tools) {
+        this.registeredTools = tools;
         this.registeredToolSnapshots.push(tools.map((tool) => tool.name));
     }
 
     emit(eventType, payload = {}) {
+        for (const handler of this.catchAllHandlers) {
+            handler({ type: eventType, data: payload.data ?? payload });
+        }
         const handlers = this.listeners.get(eventType) ?? [];
         for (const handler of handlers) {
             handler(payload);
@@ -116,13 +132,24 @@ class FakeCopilotSession {
     }
 
     async send() {
-        queueMicrotask(() => {
-            this.emit("assistant.message_completed", { data: { content: "ok" } });
+        this.aborted = false;
+        queueMicrotask(async () => {
+            for (const call of this.scriptedToolCalls) {
+                if (this.aborted) break;
+                const tool = this.registeredTools.find((candidate) => candidate.name === call.name);
+                if (!tool) throw new Error(`Missing fake tool: ${call.name}`);
+                await tool.handler(call.args ?? {});
+            }
+            if (!this.aborted && this.assistantContent != null) {
+                this.emit("assistant.message", { data: { content: this.assistantContent } });
+            }
             this.emit("session.idle", { data: {} });
         });
     }
 
-    abort() {}
+    abort() {
+        this.aborted = true;
+    }
 }
 
 class FakeCopilotClient {

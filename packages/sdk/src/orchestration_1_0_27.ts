@@ -49,7 +49,7 @@ function setStatus(ctx: any, status: PilotSwarmSessionStatus, extra?: Record<str
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.22";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.27";
 
 /**
  * Long-lived durable session orchestration.
@@ -67,13 +67,13 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.22";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_22(
+export function* durableSessionOrchestration_1_0_27(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.22] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.27] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -90,6 +90,7 @@ export function* durableSessionOrchestration_1_0_22(
     let taskContext = input.taskContext;
     const baseSystemMessage = input.baseSystemMessage ?? config.systemMessage;
     const isSystem = input.isSystem ?? false;
+    let cronSchedule = input.cronSchedule ? { ...input.cronSchedule } : undefined;
     const MAX_RETRIES = 3;
     const MAX_SUB_AGENTS = 20;
     const MAX_NESTING_LEVEL = 2; // 0=root, 1=child, 2=grandchild — no deeper
@@ -152,6 +153,13 @@ export function* durableSessionOrchestration_1_0_22(
             ...(lastResponseVersion > 0 ? { responseVersion: lastResponseVersion } : {}),
             ...(lastCommandVersion > 0 ? { commandVersion: lastCommandVersion } : {}),
             ...(lastCommandId ? { commandId: lastCommandId } : {}),
+            ...(cronSchedule
+                ? {
+                    cronActive: true,
+                    cronInterval: cronSchedule.intervalSeconds,
+                    cronReason: cronSchedule.reason,
+                }
+                : { cronActive: false }),
             ...extra,
         };
         setStatus(ctx, status, signal);
@@ -207,6 +215,39 @@ export function* durableSessionOrchestration_1_0_22(
         return `${existingPrompt}\n\n${nextPrompt}`;
     }
 
+    function ensureTaskContext(sourcePrompt?: string): void {
+        if (taskContext || !sourcePrompt) return;
+        taskContext = sourcePrompt.slice(0, 2000);
+        const base = typeof baseSystemMessage === "string"
+            ? baseSystemMessage ?? ""
+            : (baseSystemMessage as any)?.content ?? "";
+        config.systemMessage = base + (base ? "\n\n" : "") +
+            "[RECURRING TASK]\n" +
+            "Original user request (always remember, even if conversation history is truncated):\n\"" +
+            taskContext + "\"";
+    }
+
+    function applyCronAction(action: Extract<TurnAction, { type: "cron" }>, sourcePrompt?: string): void {
+        if (action.action === "cancel") {
+            ctx.traceInfo("[orch] cron cancelled");
+            cronSchedule = undefined;
+            return;
+        }
+
+        ensureTaskContext(sourcePrompt);
+        cronSchedule = {
+            intervalSeconds: action.intervalSeconds,
+            reason: action.reason,
+        };
+        ctx.traceInfo(`[orch] cron scheduled: every ${action.intervalSeconds}s (${action.reason})`);
+    }
+
+    function drainLeadingQueuedCronActions(sourcePrompt?: string): void {
+        while (pendingToolActions[0]?.type === "cron") {
+            applyCronAction(pendingToolActions.shift() as Extract<TurnAction, { type: "cron" }>, sourcePrompt);
+        }
+    }
+
     // ─── Shared continueAsNew input builder ──────────────────
     function continueInput(overrides: Partial<OrchestrationInput> = {}): OrchestrationInput {
         return {
@@ -225,6 +266,7 @@ export function* durableSessionOrchestration_1_0_22(
             nextSummarizeAt,
             taskContext,
             baseSystemMessage,
+            ...(cronSchedule ? { cronSchedule } : {}),
             ...(pendingPrompt ? { bootstrapPrompt } : {}),
             subAgents,
             ...(pendingToolActions.length > 0 ? { pendingToolActions } : {}),
@@ -377,16 +419,27 @@ export function* durableSessionOrchestration_1_0_22(
     // the agent's tools/systemMessage from .agent.md need to be injected
     // into the session config. Sub-agents get this via spawn_agent resolution,
     // but top-level sessions need it here.
-    if (iteration === 0 && !parentSessionId && input.agentId && !config.toolNames) {
+    if (iteration === 0 && !parentSessionId && input.agentId) {
         const agentDef: any = yield manager.resolveAgentConfig(input.agentId);
         if (agentDef) {
-            if (agentDef.tools?.length) {
-                config.toolNames = agentDef.tools;
-                ctx.traceInfo(`[orch] injected agent tools for top-level ${input.agentId}: ${agentDef.tools.join(", ")}`);
+            const mergedToolNames = Array.from(new Set([
+                ...(agentDef.tools ?? []),
+                ...(config.toolNames ?? []),
+            ]));
+            if (mergedToolNames.length > 0) {
+                config.toolNames = mergedToolNames;
+                ctx.traceInfo(`[orch] merged top-level agent tools for ${input.agentId}: ${mergedToolNames.join(", ")}`);
             }
             // Rebuild session proxy with updated config (tools now included)
             session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
         }
+    }
+
+    // ─── Set agent identity for namespace access control ─────────
+    // The agentId travels through the config so fact tool handlers can
+    // enforce knowledge pipeline namespace restrictions.
+    if (input.agentId) {
+        config.agentIdentity = input.agentId;
     }
 
     // ─── MAIN LOOP ──────────────────────────────────────────
@@ -395,6 +448,8 @@ export function* durableSessionOrchestration_1_0_22(
         let prompt = "";
         let promptIsBootstrap = false;
         let replayingQueuedAction = false;
+
+        drainLeadingQueuedCronActions();
 
         if (pendingToolActions.length > 0) {
             result = pendingToolActions.shift()!;
@@ -477,7 +532,8 @@ export function* durableSessionOrchestration_1_0_22(
                                         model: config.model || "(default)",
                                         iteration,
                                         sessionId: input.sessionId,
-                                        affinityKey: affinityKey?.slice(0, 8),
+                                        affinityKey: affinityKey,
+                                        affinityKeyShort: affinityKey?.slice(0, 8),
                                         preserveAffinityOnHydrate,
                                         needsHydration,
                                         blobEnabled,
@@ -626,6 +682,44 @@ export function* durableSessionOrchestration_1_0_22(
                 if (needsHydration) continue; // hydrate exhausted retries — go back to dequeue
             }
 
+            // ②½ LOAD KNOWLEDGE PIPELINE CONTEXT ────────────────
+            // Inject curated skills and active asks before running the turn.
+            // Skip for facts-manager to avoid circular context injection.
+            if (config.agentIdentity !== "facts-manager") {
+                try {
+                    const knowledgeIndex: any = yield manager.loadKnowledgeIndex();
+                    if (knowledgeIndex) {
+                        // Inject active asks into the prompt
+                        if (knowledgeIndex.asks?.length > 0) {
+                            const askLines = knowledgeIndex.asks.map((a: any) => `- ${a.key}`).join("\n");
+                            const askBlock = `[ACTIVE FACT REQUESTS]\n` +
+                                `The Facts Manager is seeking corroboration on these topics.\n` +
+                                `If any are relevant to your current task, read the full ask\n` +
+                                `with read_facts and contribute intake evidence if you can.\n${askLines}\n\n` +
+                                `[FACT NAMESPACE RULES]\n` +
+                                `- You can WRITE to: intake/<topic>/<session-id> (shared observations)\n` +
+                                `- You can READ from: skills/*, asks/* (curated knowledge, open requests)\n` +
+                                `- You CANNOT write to skills/ or asks/ (Facts Manager only)\n` +
+                                `- You CANNOT read from intake/ (Facts Manager only)\n\n`;
+                            prompt = askBlock + prompt;
+                        }
+                        // Inject curated skills as a compact frontmatter index.
+                        // Agents call read_facts to load the full skill when relevant.
+                        if (knowledgeIndex.skills?.length > 0) {
+                            const skillLines = knowledgeIndex.skills.map((s: any) =>
+                                `- ${s.key} — ${s.name}: ${s.description}`
+                            ).join("\n");
+                            const skillBlock = `[CURATED SKILLS]\n` +
+                                `The following shared skills are available. If one is relevant to your current task,\n` +
+                                `call read_facts(key_pattern="<key>", scope="shared") to load the full instructions before applying.\n\n${skillLines}\n`;
+                            prompt = skillBlock + prompt;
+                        }
+                    }
+                } catch (knErr: any) {
+                    ctx.traceInfo(`[orch] loadKnowledgeIndex failed (non-fatal): ${knErr.message || knErr}`);
+                }
+            }
+
             // ③ RUN TURN via SessionProxy (with retry on failure)
             publishStatus("running");
             let turnResult: any;
@@ -695,6 +789,7 @@ export function* durableSessionOrchestration_1_0_22(
             pendingToolActions.push(...result.queuedActions);
             ctx.traceInfo(`[orch] queued ${result.queuedActions.length} extra action(s) from turn`);
         }
+        drainLeadingQueuedCronActions(prompt);
 
         // ④ HANDLE RESULT
         switch (result.type) {
@@ -717,23 +812,131 @@ export function* durableSessionOrchestration_1_0_22(
                         ctx.traceInfo(`[orch] sendToSession(parent) failed: ${err.message} (non-fatal)`);
                     }
 
-                    // System sub-agents (sweeper, resourcemgr) should keep running forever.
-                    // Non-system sub-agents auto-terminate after completing their task.
-                    if (input.isSystem) {
-                        ctx.traceInfo(`[orch] system sub-agent completed turn, continuing loop`);
-                        yield* maybeCheckpoint();
-                        continue;
+                    if (!cronSchedule) {
+                        // System sub-agents (sweeper, resourcemgr) should keep running forever.
+                        // Non-system sub-agents auto-terminate after completing their task.
+                        if (input.isSystem) {
+                            ctx.traceInfo(`[orch] system sub-agent completed turn, continuing loop`);
+                            yield* maybeCheckpoint();
+                            continue;
+                        }
+
+                        // Non-system sub-agents auto-terminate after completing their task and notifying
+                        // the parent. Without this, they sit in the idle loop forever (idleTimeout=-1)
+                        // and accumulate as zombie orchestrations.
+                        ctx.traceInfo(`[orch] sub-agent completed task, auto-terminating`);
+                        try {
+                            yield session.destroy();
+                        } catch {}
+                        publishStatus("completed");
+                        return "done";
+                    }
+                }
+
+                // ── Safety net: detect forgotten durable timer ──────────
+                // If the LLM completed a turn without calling wait() but has
+                // running sub-agents, it likely forgot. Nudge it once.
+                // Only fire if we haven't already nudged (prevents infinite loop).
+                {
+                    const runningAgents = subAgents.filter(a => a.status === "running");
+                    if (runningAgents.length > 0 && !input.forgottenTimerNudged && !cronSchedule) {
+                        const names = runningAgents.map(a => a.task?.slice(0, 40) || a.orchId).join(", ");
+                        ctx.traceInfo(`[orch] forgotten-timer safety: ${runningAgents.length} agents still running, nudging LLM`);
+                        yield versionedContinueAsNew(continueInputWithPrompt(
+                            `[SYSTEM: You ended your turn without calling wait(), but you have ${runningAgents.length} sub-agent(s) still running: ${names}. ` +
+                            `Without a wait() call, your monitoring/polling loop is DEAD — the orchestration will NOT wake you up automatically. ` +
+                            `You MUST call wait() now to schedule your next check-in. Call wait() with an appropriate interval to continue your loop.]`,
+                            { forgottenTimerNudged: true },
+                        ));
+                        return "";
+                    }
+                }
+
+                if (cronSchedule) {
+                    const activeCron = { ...cronSchedule };
+                    const shouldDehydrateForCron = blobEnabled;
+                    if (shouldDehydrateForCron) {
+                        // Cron schedules should be free to migrate between workers.
+                        // Always dehydrate and release affinity when blob-backed state exists.
+                        yield* dehydrateForNextTurn("cron", true);
                     }
 
-                    // Non-system sub-agents auto-terminate after completing their task and notifying
-                    // the parent. Without this, they sit in the idle loop forever (idleTimeout=-1)
-                    // and accumulate as zombie orchestrations.
-                    ctx.traceInfo(`[orch] sub-agent completed task, auto-terminating`);
-                    try {
-                        yield session.destroy();
-                    } catch {}
-                    publishStatus("completed");
-                    return "done";
+                    const cronStartedAt: number = yield ctx.utcNow();
+                    ctx.traceInfo(`[orch] cron timer: ${activeCron.intervalSeconds}s (${activeCron.reason})`);
+                    publishStatus("waiting", {
+                        waitSeconds: activeCron.intervalSeconds,
+                        waitReason: activeCron.reason,
+                        waitStartedAt: cronStartedAt,
+                    });
+
+                    if (!shouldDehydrateForCron) yield* maybeCheckpoint();
+
+                    let waitRemainingMs = activeCron.intervalSeconds * 1000;
+                    let waitTimerDone = false;
+                    while (!waitTimerDone && waitRemainingMs > 0) {
+                        const timerTask = ctx.scheduleTimer(waitRemainingMs);
+                        const interruptMsg = ctx.dequeueEvent("messages");
+                        const timerRace: any = yield ctx.race(timerTask, interruptMsg);
+
+                        if (timerRace.index === 0) {
+                            waitTimerDone = true;
+                            break;
+                        }
+
+                        const interruptData = typeof timerRace.value === "string"
+                            ? JSON.parse(timerRace.value) : (timerRace.value ?? {});
+                        const childUpdate = parseChildUpdate(interruptData.prompt);
+                        if (childUpdate) {
+                            yield* applyChildUpdate(childUpdate);
+                            const interruptedAt: number = yield ctx.utcNow();
+                            const elapsedMs = interruptedAt - cronStartedAt;
+                            waitRemainingMs = Math.max(0, activeCron.intervalSeconds * 1000 - elapsedMs);
+                            const remainingSec = Math.round(waitRemainingMs / 1000);
+
+                            if (waitRemainingMs === 0) {
+                                waitTimerDone = true;
+                                break;
+                            }
+
+                            if (remainingSec > 60) {
+                                ctx.traceInfo(`[orch] child update during cron wait, ${remainingSec}s remain (>60s) — breaking timer`);
+                                yield versionedContinueAsNew(continueInputWithPrompt(
+                                    `[SYSTEM: A child update arrived while your recurring schedule was waiting for the next wake-up ("${activeCron.reason}"). ` +
+                                    `Review the update and continue your task now. The recurring cron schedule remains active and will be re-armed automatically after this turn completes.]`,
+                                    { needsHydration: shouldDehydrateForCron ? true : needsHydration },
+                                ));
+                                return "";
+                            }
+
+                            ctx.traceInfo(`[orch] child update during cron wait, ${remainingSec}s remain (<=60s) — batching`);
+                            continue;
+                        }
+
+                        const userPrompt = interruptData.prompt || "";
+                        ctx.traceInfo(`[session] cron interrupted: "${userPrompt.slice(0, 60)}"`);
+
+                        const cronResumeNote =
+                            `There is an active recurring schedule every ${activeCron.intervalSeconds} seconds for "${activeCron.reason}". ` +
+                            `It remains active automatically after this turn completes, so do NOT call wait() just to keep the recurring loop alive. ` +
+                            `Call cron(action="cancel") only if you need to stop it.`;
+                        const finalPrompt = shouldDehydrateForCron && userPrompt
+                            ? wrapWithResumeContext(userPrompt, cronResumeNote)
+                            : userPrompt
+                                ? `${userPrompt}\n\n[SYSTEM: ${cronResumeNote}]`
+                                : userPrompt;
+
+                        yield versionedContinueAsNew(continueInputWithPrompt(
+                            finalPrompt,
+                            { needsHydration: shouldDehydrateForCron ? true : needsHydration },
+                        ));
+                        return "";
+                    }
+
+                    yield versionedContinueAsNew(continueInputWithPrompt(
+                        `[SYSTEM: Scheduled cron wake-up for: "${activeCron.reason}". Resume your recurring task.]`,
+                        { needsHydration: shouldDehydrateForCron ? true : needsHydration },
+                    ));
+                    return "";
                 }
 
                 if (!blobEnabled || idleTimeout < 0) {
@@ -788,19 +991,12 @@ export function* durableSessionOrchestration_1_0_22(
                     return "";
                 }
 
+            case "cron":
+                applyCronAction(result, prompt);
+                continue;
+
             case "wait":
-                // Capture original user prompt as task context for recurring tasks.
-                // This ensures the LLM remembers its task even after conversation truncation.
-                if (!taskContext) {
-                    taskContext = prompt.slice(0, 2000);
-                    const base = typeof baseSystemMessage === 'string'
-                        ? baseSystemMessage ?? ''
-                        : (baseSystemMessage as any)?.content ?? '';
-                    config.systemMessage = base + (base ? '\n\n' : '') +
-                        '[RECURRING TASK]\n' +
-                        'Original user request (always remember, even if conversation history is truncated):\n"' +
-                        taskContext + '"';
-                }
+                ensureTaskContext(prompt);
 
                 // If this is a child orchestration, notify the parent on every wait cycle
                 // via the SDK — sends a message to the parent's "messages" queue.
@@ -853,36 +1049,54 @@ export function* durableSessionOrchestration_1_0_22(
                     // Checkpoint before the blocking wait
                     if (!waitPlan.shouldDehydrate) yield* maybeCheckpoint();
 
-                    const timerTask = ctx.scheduleTimer(result.seconds * 1000);
-                    const interruptMsg = ctx.dequeueEvent("messages");
-                    const timerRace: any = yield ctx.race(timerTask, interruptMsg);
+                    // Wait loop: silently absorb child updates when <=60s remain,
+                    // only break the timer for child updates when >60s remain.
+                    // User messages always break the timer immediately.
+                    let waitRemainingMs = result.seconds * 1000;
+                    let waitTimerDone = false;
+                    while (!waitTimerDone && waitRemainingMs > 0) {
+                        const timerTask = ctx.scheduleTimer(waitRemainingMs);
+                        const interruptMsg = ctx.dequeueEvent("messages");
+                        const timerRace: any = yield ctx.race(timerTask, interruptMsg);
 
-                    if (timerRace.index === 1) {
+                        if (timerRace.index === 0) {
+                            waitTimerDone = true;
+                            break;
+                        }
+
+                        // Message won the race
                         const interruptData = typeof timerRace.value === "string"
                             ? JSON.parse(timerRace.value) : (timerRace.value ?? {});
                         const childUpdate = parseChildUpdate(interruptData.prompt);
                         if (childUpdate) {
                             yield* applyChildUpdate(childUpdate);
                             const interruptedAt: number = yield ctx.utcNow();
-                            const elapsedSec = Math.round((interruptedAt - waitStartedAt) / 1000);
-                            const remainingSec = Math.max(0, result.seconds - elapsedSec);
-                            if (remainingSec === 0) {
-                                const timerPrompt = `The ${result.seconds} second wait is now complete. Continue with your task.`;
-                                yield versionedContinueAsNew(continueInputWithPrompt(
-                                    timerPrompt,
-                                    { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
-                                ));
-                            } else {
-                                yield versionedContinueAsNew(continueInputWithPrompt(
-                                    `The wait was partially completed (${elapsedSec}s elapsed, ${remainingSec}s remain). Resume the wait for the remaining ${remainingSec} seconds.`,
-                                    { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
-                                ));
-                            }
-                            return "";
-                        }
-                        ctx.traceInfo(`[session] wait interrupted: "${(interruptData.prompt || "").slice(0, 60)}"`);
+                            const elapsedMs = interruptedAt - waitStartedAt;
+                            waitRemainingMs = Math.max(0, result.seconds * 1000 - elapsedMs);
+                            const remainingSec = Math.round(waitRemainingMs / 1000);
 
-                        // Calculate remaining time for resume context
+                            if (waitRemainingMs === 0) {
+                                waitTimerDone = true;
+                                break;
+                            }
+
+                            if (remainingSec > 60) {
+                                // >1 min left — break and let the LLM re-issue the wait
+                                ctx.traceInfo(`[orch] child update during wait, ${remainingSec}s remain (>60s) — breaking timer`);
+                                yield versionedContinueAsNew(continueInputWithPrompt(
+                                    `The wait was partially completed (${Math.round(elapsedMs / 1000)}s elapsed, ${remainingSec}s remain). Resume the wait for the remaining ${remainingSec} seconds.`,
+                                    { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
+                                ));
+                                return "";
+                            }
+
+                            // <=60s remaining — absorb silently, re-race with remaining time
+                            ctx.traceInfo(`[orch] child update during wait, ${remainingSec}s remain (<=60s) — batching`);
+                            continue;
+                        }
+
+                        // User message — always break
+                        ctx.traceInfo(`[session] wait interrupted: "${(interruptData.prompt || "").slice(0, 60)}"`);
                         const interruptedAt: number = yield ctx.utcNow();
                         const elapsedSec = Math.round((interruptedAt - waitStartedAt) / 1000);
                         const remainingSec = Math.max(0, result.seconds - elapsedSec);
@@ -892,17 +1106,22 @@ export function* durableSessionOrchestration_1_0_22(
                         if (waitPlan.shouldDehydrate && userPrompt) {
                             finalPrompt = wrapWithResumeContext(
                                 userPrompt,
-                                `Your timer was interrupted by a USER MESSAGE. You MUST respond to the user's message below before doing anything else. ` +
+                                `Your timer was interrupted by a USER MESSAGE. ` +
+                                `RESPONSE FORMAT: You MUST first output a text response addressing the user's message. ` +
+                                `Then call wait(${remainingSec}) to resume your timer. ` +
+                                `IMPORTANT: A turn that calls wait() without any preceding text output is WRONG. ` +
+                                `The user is waiting to see your reply. Always write text first, then call wait. ` +
                                 `Timer context: ${result.seconds}s timer (reason: "${result.reason}"), ` +
-                                `${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
-                                `After fully addressing the user's message, resume the wait for the remaining ${remainingSec} seconds.`,
+                                `${elapsedSec}s elapsed, ${remainingSec}s remain.`,
                             );
                         } else if (userPrompt) {
-                            // Not dehydrated but still interrupted — give timing context
                             finalPrompt = `${userPrompt}\n\n` +
                                 `[SYSTEM: IMPORTANT — The above is a USER MESSAGE that interrupted your ${result.seconds}s timer (reason: "${result.reason}"). ` +
-                                `You MUST respond to the user's message FIRST. ${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
-                                `After fully answering the user, resume the wait for the remaining ${remainingSec} seconds.]`;
+                                `RESPONSE FORMAT: You MUST first output a text response addressing the user's message. ` +
+                                `Then call wait(${remainingSec}) to resume your timer. ` +
+                                `A turn that calls wait() without any preceding text output is WRONG. ` +
+                                `The user is waiting to see your reply. Always write text first, then call wait. ` +
+                                `${elapsedSec}s elapsed, ${remainingSec}s remain.]`;
                         } else {
                             finalPrompt = userPrompt;
                         }
@@ -1130,6 +1349,15 @@ export function* durableSessionOrchestration_1_0_22(
                     ? childConfig.systemMessage
                     : (childConfig.systemMessage as any)?.content ?? "";
                 const canSpawnMore = childNestingLevel < MAX_NESTING_LEVEL;
+                const timingInstruction = agentIsSystem
+                    ? `- For recurring or periodic work, use the \`cron\` tool instead of ending every cycle with \`wait\`. ` +
+                      `Call \`cron(seconds=<N>, reason="...")\` to start or update the durable recurring schedule, ` +
+                      `then finish turns normally so the orchestration wakes you automatically on each cron cycle. ` +
+                      `Use \`wait\` only for one-shot delays inside a turn. ` +
+                      `Call \`cron(action="cancel")\` only when you intentionally want to stop the recurring loop.\n`
+                    : `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\` tool. ` +
+                      `NEVER use setTimeout, sleep, setInterval, cron, or any other timing mechanism. ` +
+                      `The wait tool is durable and survives process restarts.\n`;
                 const subAgentPreamble =
                     `[SUB-AGENT CONTEXT]\n` +
                     `You are a sub-agent spawned by a parent session (ID: session-${input.sessionId}).\n` +
@@ -1144,9 +1372,9 @@ export function* durableSessionOrchestration_1_0_22(
                     `- If you write any files with write_artifact, you MUST also call export_artifact and include the artifact:// link in your response.\n` +
                     `- If you override a sub-agent model, you MUST first call list_available_models in this session and use only an exact provider:model value returned there. ` +
                     `NEVER invent, guess, shorten, or reuse a stale model name.\n` +
-                    `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\` tool. ` +
-                    `NEVER use setTimeout, sleep, setInterval, cron, or any other timing mechanism. ` +
-                    `The wait tool is durable and survives process restarts.\n` +
+                    `- If a \`sql\` tool is available, do NOT use it as a scratchpad, todo list, memory store, queue, or coordination channel. ` +
+                    `Use facts for durable task state and memory. Use SQL only when the user explicitly asks for database/SQL work or the task clearly requires querying or changing application data.\n` +
+                    timingInstruction +
                     (canSpawnMore
                         ? `- You CAN spawn your own sub-agents (you have ${MAX_NESTING_LEVEL - childNestingLevel} level(s) remaining). ` +
                           `Use them for parallel independent tasks. After spawning, call wait_for_agents to block until they finish.\n`

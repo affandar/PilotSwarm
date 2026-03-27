@@ -9,9 +9,9 @@
 
 ## Sensitive Local Files
 
-**Do NOT modify `.model_providers.json` or `.env` without the user explicitly asking.** These files contain private API keys, endpoints, and credentials. Never read them to extract secrets, and never overwrite them with example/placeholder content.
+**Do NOT modify `.model_providers.json`, `.env`, or `.env.remote` without the user explicitly asking.** The checked-in `.model_providers.json` is part of the repo's real configuration surface, while the actual credentials live in `.env` / `.env.remote`. Never read env files to extract secrets, and never overwrite the real model catalog with placeholder content.
 
-When changes are made to the structure or fields of `.model_providers.json` or `.env`, keep the corresponding example files (`.model_providers.example.json`, `.env.example`) in sync — but **strip all private keys, real endpoint URLs, and credential values** from the example files. Example files should use placeholders like `YOUR-RESOURCE`, `your-api-key-here`, or empty values.
+When env shape changes, keep `.env.example` in sync with placeholder values. Do **not** recreate or require a `.model_providers.example.json` file — the checked-in `.model_providers.json` is the canonical catalog, and provider availability is controlled by env-backed keys.
 
 ## Project Overview
 

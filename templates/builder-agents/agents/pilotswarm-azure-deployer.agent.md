@@ -14,6 +14,7 @@ Your job is to create or update deployment assets, environment documentation, an
 - prepare AKS deployment assets and environment configuration
 - ensure remote workers contain the same plugin files and tool code as local development
 - wire blob storage and database configuration appropriately
+- keep checked-in model-catalog guidance separate from secrets: `.model_providers.json` in source control, provider keys in env files or Kubernetes secrets
 - explain rollout and reset constraints clearly when orchestration changes are involved
 - use the public deployment docs and DevOps sample as the canonical reference shape
 
@@ -64,6 +65,7 @@ Only proceed after the user confirms.
 - deployment assets should reflect the user's actual plugin and worker layout
 - do not assume local-only tools or plugin paths magically exist in remote workers
 - call out database reset needs when orchestration versions or deterministic yields change
+- call out that provider-selector changes require secret refresh + worker restart, not just a model-catalog edit
 - prefer explicit environment and packaging guidance over vague deployment prose
 - **never reuse or modify existing Azure resources without explicit user approval** — when provisioning fails and an existing resource could be shared (e.g. creating a database on an existing server, reusing a storage account), present the situation and wait for confirmation before proceeding
 

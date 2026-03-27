@@ -81,6 +81,7 @@ kubectl create secret generic copilot-runtime-secrets \
     ${LLM_API_VERSION:+--from-literal=LLM_API_VERSION="$LLM_API_VERSION"} \
     ${AZURE_FW_GLM5_KEY:+--from-literal=AZURE_FW_GLM5_KEY="$AZURE_FW_GLM5_KEY"} \
     ${AZURE_KIMI_K25_KEY:+--from-literal=AZURE_KIMI_K25_KEY="$AZURE_KIMI_K25_KEY"} \
+    ${AZURE_OAI_KEY:+--from-literal=AZURE_OAI_KEY="$AZURE_OAI_KEY"} \
     ${AZURE_GPT51_KEY:+--from-literal=AZURE_GPT51_KEY="$AZURE_GPT51_KEY"} \
     ${AZURE_MODEL_ROUTER_KEY:+--from-literal=AZURE_MODEL_ROUTER_KEY="$AZURE_MODEL_ROUTER_KEY"} \
     ${ANTHROPIC_API_KEY:+--from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"} \

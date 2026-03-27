@@ -604,14 +604,19 @@ session.on("assistant.message", handler, { after: savedCursor });
 // Name your sessions
 await client.renameSession(session.sessionId, "Weather Bot");
 
-// Agent can use durable waits (the wait tool is injected automatically)
+// Agents get durable timer tools automatically
 await session.send({ prompt: "Check the weather every hour and alert me if it rains" });
-// The agent calls wait(3600) → durable timer → process can die → wakes up an hour later
-// If the wait depends on worker-local state, the agent can call wait(..., preserveWorkerAffinity: true)
+// For recurring schedules, the agent should call cron(3600, "...") once and let the orchestration own the loop
+// For a one-shot durable delay, the agent calls wait(...)
+// If the wait depends on worker-local state, the agent can call wait_on_worker(...) or wait(..., preserveWorkerAffinity: true)
 
 // List all sessions with names and status
 const sessions = await client.listSessions();
 // → [{sessionId: "abc", name: "Weather Bot", state: "waiting", ...}]
+
+// Per-session info can include live cron/context-window metadata
+const info = await session.getInfo();
+// → { cronActive: true, cronInterval: 3600, contextUsage: { currentTokens, tokenLimit, ... } }
 
 // Scale to multiple workers
 const client = new PilotSwarmClient({

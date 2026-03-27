@@ -45,9 +45,10 @@ my-sdk-app/
 7. Keep client session config serializable.
 8. Add `session-policy.json` if the user does not want generic sessions. The policy is enforced in both local and remote modes.
 9. Build `.env.example` and a gitignored `.env` from the PilotSwarm sample env shape when the user wants runnable scaffolding.
-10. Add a checked-in cleanup script that drops database schemas and removes session state (handles both local and remote modes).
-11. Add a local example or test that exercises the intended app flow.
-12. When agents need durable structured memory or cross-agent shared state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`). They are available to every agent session by default, including system agents, and should be treated as the primary memory mechanism instead of inventing a one-off app-specific table.
+10. Add a checked-in `.model_providers.json` when the scaffold needs a custom model catalog.
+11. Add a checked-in cleanup script that drops database schemas and removes session state (handles both local and remote modes).
+12. Add a local example or test that exercises the intended app flow.
+13. When agents need durable structured memory or cross-agent shared state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`). They are available to every agent session by default, including system agents, and should be treated as the primary memory mechanism instead of inventing a one-off app-specific table.
 
 ## Guided Intake Questions
 
@@ -66,8 +67,10 @@ Do not guess these answers when the user has not provided them. Offer the standa
 ## Env File Guidance
 
 - Treat `DATABASE_URL` as the canonical PostgreSQL connection input.
+- If the app needs a non-default model catalog, check in `.model_providers.json` and keep provider keys in `.env` / `.env.remote`.
 - Do not generate redundant `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, or `PGDATABASE` entries unless the user explicitly needs them.
 - Prefer a checked-in `.env.example` plus a local gitignored `.env`.
+- Do not invent a `.model_providers.example.json`; the checked-in `.model_providers.json` is the source of truth when a custom catalog is needed.
 - Align the variable set with the PilotSwarm sample env shape, typically including:
 	- `DATABASE_URL`
 	- `GITHUB_TOKEN`

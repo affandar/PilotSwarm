@@ -31,7 +31,7 @@ deploy/
 1. Confirm the app's worker entrypoint, plugin paths, and required env vars.
 2. Ensure remote workers package the same plugin files and worker code used locally.
 3. Configure database and blob storage explicitly.
-4. Write manifests and rollout instructions that match the actual app layout.
+4. Write manifests, model-catalog/env guidance, and rollout instructions that match the actual app layout.
 5. Call out reset/versioning constraints when orchestration behavior changes.
 
 ## Environment And Azure Resource Checklist
@@ -39,6 +39,7 @@ deploy/
 When the app targets AKS, prefer a checked-in `.env.example` plus a local,
 gitignored `.env` copy. Document at least:
 
+- checked-in `.model_providers.json` when the app uses a custom model catalog
 - `GITHUB_TOKEN`
 - `DATABASE_URL`
 - app-specific schema names if the shared PostgreSQL server hosts other PilotSwarm apps
@@ -48,6 +49,12 @@ gitignored `.env` copy. Document at least:
 - storage account/container for session dehydration or artifacts
 - container registry and image names/tags
 - workload identity client ID, service account name/namespace, and federated credential name
+
+Model/provider guidance:
+
+- `.model_providers.json` can be checked in because it references env vars rather than storing raw secrets.
+- Provider keys belong in `.env`, `.env.remote`, or Kubernetes secrets, not inside the model catalog.
+- Removing a provider key from AKS only changes selectors after the secret is refreshed and the workers restart.
 
 Also call out the Azure resources the user must provision:
 
@@ -91,6 +98,7 @@ orchestration lifecycle events the TUI needs.
 - Do not assume local plugin directories magically exist in deployed workers.
 - Prefer explicit packaging and env configuration over vague operational guidance.
 - Call out orchestration determinism and database reset requirements when relevant.
+- Call out that clean AKS restarts will immediately recreate built-in system sessions, so a truly empty session list is transient.
 - Keep deployment docs aligned with the user's actual folder structure and commands.
 - If cluster access crosses AKS boundaries, consult the `pilotswarm-aks-identity` skill.
 - **Never reuse or modify existing Azure resources without explicit user approval.**

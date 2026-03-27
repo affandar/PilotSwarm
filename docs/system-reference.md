@@ -37,7 +37,7 @@ npm run db:reset       # Drop duroxide + CMS schemas
 | `types.ts` | All TypeScript interfaces | `TurnResult`, `OrchestrationInput`, `SubAgentEntry`, `SerializableSessionConfig`, `ManagedSessionConfig`, `PilotSwarmSessionStatus` |
 | `client.ts` | Client-side session lifecycle | `PilotSwarmClient`, `PilotSwarmSession` |
 | `worker.ts` | Worker runtime, activity registration | `PilotSwarmWorker` |
-| `orchestration.ts` | Duroxide orchestration generator (1,323 lines) | `durableSessionOrchestration_1_0_9`, `CURRENT_ORCHESTRATION_VERSION` |
+| `orchestration.ts` | Duroxide orchestration generator | `durableSessionOrchestration_1_0_29`, `CURRENT_ORCHESTRATION_VERSION` |
 | `session-proxy.ts` | Activity definitions (680 lines) | `registerActivities()`, `createSessionProxy()`, `createSessionManagerProxy()` |
 | `session-manager.ts` | CopilotSession lifecycle (warm cache) | `SessionManager` |
 | `managed-session.ts` | Single-turn LLM execution | `ManagedSession` |
@@ -83,7 +83,7 @@ npm run db:reset       # Drop duroxide + CMS schemas
 | `scripts/_debug_*.js` | Debug utilities (orchestrations, sessions, events) |
 | `scripts/_test_local_400.js` | Stress test: 400 concurrent local sessions |
 | `run.sh` | Dev quick-start launcher |
-| `deploy/deploy-aks.sh` | AKS deployment (ACR push + K8s rolling update) |
+| `scripts/deploy-aks.sh` | AKS deployment (image build/push + K8s rollout + secret refresh) |
 
 ### Plugin System
 
@@ -137,8 +137,9 @@ The orchestration's main loop dispatches on `result.type`:
 
 | Type | Meaning | Orchestration Action |
 |------|---------|---------------------|
-| `completed` | LLM finished, has response | Race idle timeout vs next message |
-| `wait` | LLM called `wait(seconds, reason)` | Schedule durable timer, race with interrupts |
+| `completed` | LLM finished, has response | Go idle, or arm the active cron schedule before waiting |
+| `wait` | LLM called `wait(seconds, reason, preserveWorkerAffinity?)` | One-shot durable wait; short waits may stay in-process |
+| `cron` | LLM called `cron(seconds, reason)` or `cron(action="cancel")` | Set/update/cancel recurring durable wake-up owned by orchestration |
 | `input_required` | LLM called `ask_user(question)` | Wait for user answer, race with grace period |
 | `spawn_agent` | LLM called `spawn_agent(task)` | Create child session + orchestration |
 | `message_agent` | LLM called `message_agent(id, msg)` | Forward to child orchestration |
@@ -175,6 +176,11 @@ Key fields:
 | `inputGracePeriod` | number | Keep warm for user input |
 | `checkpointInterval` | number | Periodic checkpoint (-1 disables) |
 | `retryCount` | number | Activity failure retries (resets on success) |
+
+Related session-view fields exposed through `PilotSwarmSessionInfo`, `PilotSwarmSessionView`, and orchestration custom status now include:
+
+- `cronActive` / `cronInterval` / `cronReason`
+- `contextUsage` (token limit, current tokens, utilization, and latest compaction snapshot)
 
 ### PilotSwarmSessionStatus — Session State Machine
 
@@ -232,7 +238,9 @@ ManagedSession injects these tools into every `CopilotSession.send()` call. They
 
 | Tool | Parameters | Behavior |
 |------|-----------|----------|
-| `wait` | seconds: number, reason: string | If seconds ≤ waitThreshold: sleep in-process. Otherwise: **abort turn**, return `{ type: "wait" }` to orchestration for durable timer. |
+| `wait` | seconds: number, reason?: string, preserveWorkerAffinity?: boolean | If seconds ≤ waitThreshold: sleep in-process. Otherwise: **abort turn**, return `{ type: "wait" }` to orchestration for a one-shot durable timer. Long waits may resume on another worker unless worker affinity is preserved. |
+| `wait_on_worker` | seconds: number, reason?: string | Durable one-shot wait that preserves the current worker affinity when possible. Equivalent to `wait(..., preserveWorkerAffinity=true)`. |
+| `cron` | seconds: number, reason: string, action?: "cancel" | **Aborts turn.** Returns `{ type: "cron" }` so the orchestration owns a recurring schedule. Use for monitors, forever-loops, and periodic digests. |
 | `ask_user` | question: string, choices?: string[], allowFreeform?: boolean | Always **aborts turn**, returns `{ type: "input_required" }`. Orchestration waits for user response. |
 | `list_available_models` | — | Inline response (no abort). Returns model summary. |
 
@@ -253,7 +261,7 @@ ManagedSession injects these tools into every `CopilotSession.send()` call. They
 
 ## 7. Orchestration Lifecycle — Complete Yield Map
 
-The orchestration generator (`durableSessionOrchestration_1_0_9`) is replayed from the beginning on every new event. Every `yield` is recorded in duroxide history and must be reproduced identically during replay.
+The orchestration generator (`durableSessionOrchestration_1_0_29`) is replayed from the beginning on every new event. Every `yield` is recorded in duroxide history and must be reproduced identically during replay.
 
 ### Main Loop Phases
 
@@ -276,7 +284,7 @@ The orchestration generator (`durableSessionOrchestration_1_0_9`) is replayed fr
 │     └─ /done: cascade to children, destroy, return        │
 │                                                           │
 │  ② HYDRATE — if needsHydration && blobEnabled             │
-│     ├─ yield ctx.newGuid() → new affinity key             │
+│     ├─ optionally keep or rotate affinity key             │
 │     ├─ yield session.hydrate()                            │
 │     └─ Retry up to 3x with exponential backoff            │
 │                                                           │
@@ -284,8 +292,9 @@ The orchestration generator (`durableSessionOrchestration_1_0_9`) is replayed fr
 │     └─ Retry up to 3x (15s/30s/60s backoff)              │
 │                                                           │
 │  ④ HANDLE RESULT — switch on result.type                  │
-│     ├─ completed: race idle timeout vs next message       │
+│     ├─ completed: idle, or arm active cron schedule       │
 │     ├─ wait: durable timer, race with interrupts          │
+│     ├─ cron: set/cancel recurring schedule                │
 │     ├─ input_required: wait for answer, race grace period │
 │     ├─ spawn_agent: create child, add to subAgents[]      │
 │     ├─ message/check/wait_for/complete/cancel/delete      │
@@ -374,8 +383,10 @@ Two tables in the `copilot_sessions` schema:
 | `assistant.reasoning_delta` | CopilotSession on() | **No** (ephemeral) | Reasoning tokens |
 | `tool.execution_start` | CopilotSession on() | Yes | Tool call begin |
 | `tool.execution_end` | CopilotSession on() | Yes | Tool call result |
-| `assistant.usage` | CopilotSession on() | Yes | Token usage stats |
-| `session.usage_info` | CopilotSession on() | Yes | Model billing info |
+| `assistant.usage` | CopilotSession on() | Yes | Per-turn input/output/cache token usage |
+| `session.usage_info` | CopilotSession on() | Yes | Current context-window usage snapshot |
+| `session.compaction_start` | CopilotSession on() | Yes | Infinite-session compaction started |
+| `session.compaction_complete` | CopilotSession on() | Yes | Compaction outcome and tokens/messages removed |
 
 ---
 
@@ -409,7 +420,7 @@ Azure Blob Storage container: `copilot-sessions`
 
 ## 10. Model Provider System
 
-`model_providers.json` configures multi-provider LLM access:
+The checked-in `.model_providers.json` configures multi-provider LLM access. Providers whose credentials are absent from the environment are filtered out at runtime, so the visible selector catalog is environment-dependent.
 
 ```json
 {
@@ -419,13 +430,13 @@ Azure Blob Storage container: `copilot-sessions`
     { "id": "anthropic", "type": "anthropic", "apiKey": "env:KEY", "models": [...] },
     { "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "models": [...] }
   ],
-  "defaultModel": "github-copilot:gpt-4-turbo"
+  "defaultModel": "azure-openai:gpt-5.4"
 }
 ```
 
 **Provider types:** `github`, `azure`, `openai`, `anthropic`, `ollama`
 
-**Model reference format:** `{providerId}:{modelName}` (e.g., `azure-openai:gpt-4-32k`)
+**Model reference format:** `{providerId}:{modelName}` (e.g., `azure-openai:gpt-5.4`)
 
 **Resolution:** `ModelProviderRegistry.resolve(qualifiedName)` → returns endpoint, API key, and headers for the requested model.
 
@@ -478,11 +489,10 @@ You are a maintenance agent. Your job is to...
 
 | Agent | Purpose | Tools | Behavior |
 |-------|---------|-------|----------|
-| `pilotswarm` | Master orchestrator | All | Spawns sweeper + resourcemgr on startup |
-| `sweeper` | Session cleanup | scan_completed_sessions, cleanup_session, prune_orchestrations | Runs forever, 60s between iterations |
-| `resourcemgr` | Infrastructure monitor | compute/storage/DB stats | Runs forever, 300s between checks |
-| `planner` | Task decomposition | view, grep, glob (read-only) | On-demand, no execution |
-| `monitor` | Health checks | wait, bash, view | Periodic with exponential backoff |
+| `pilotswarm` | Master orchestrator | Cluster stats, facts, and sub-agent controls | Spawns `sweeper`, `resourcemgr`, and `facts-manager` on startup |
+| `sweeper` | Session cleanup | scan/cleanup/prune tools | Permanent system agent. Uses `cron(seconds=60, ...)` |
+| `resourcemgr` | Infrastructure monitor | compute/storage/database/runtime tools | Permanent system agent. Uses `cron(seconds=300, ...)` |
+| `facts-manager` | Shared operational knowledge curator | facts + artifact tools | Permanent system agent. Uses `cron()` based on config facts |
 
 ### Skill Format (`SKILL.md`)
 
@@ -537,6 +547,7 @@ The TUI (`cli/tui.js`, 2,000+ lines) provides a terminal interface built with `n
 | **Session tracking** | `activeOrchId`, `orchIdOrder`, `sessionChatBuffers`, `orchHasChanges` |
 | **Live status** | Async `waitForStatusChange()` loops per session |
 | **Event streaming** | CMS poller via `session.on()` |
+| **Context visibility** | Active-header context meter, session-list warning badges, compaction activity lines |
 | **Rendering** | 100ms frame loop, coalesced via `_screenDirty` flag (10fps max) |
 | **Tree collapse** | `collapsedParents`, `orchChildrenOf`, `orchChildToParent` |
 | **Artifact system** | Detects `artifact://sessionId/filename` URIs, downloads to `~/pilotswarm-exports/` |
@@ -607,7 +618,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm install --omit=dev --force
 COPY dist/ ./dist/
-COPY examples/worker.js plugin/ model_providers.json* ./
+COPY examples/worker.js plugin/ .model_providers.json* ./
 USER node
 ENTRYPOINT ["node", "examples/worker.js"]
 ```
@@ -621,15 +632,20 @@ ENTRYPOINT ["node", "examples/worker.js"]
 | Method | Purpose |
 |--------|---------|
 | `start()` | Initialize duroxide client + CMS |
-| `listSessions()` | Merged CMS + duroxide view of all sessions |
-| `watchSessionStatus(id, timeout?)` | Block until session status changes |
+| `listSessions()` | CMS-backed fleet view for the session tree |
+| `getSession(id)` | Merged per-session CMS + orchestration view, including cron/context usage |
+| `getSessionStatus(id)` | Raw live orchestration status + parsed custom status |
+| `waitForStatusChange(id, afterVersion, ...)` | Block until custom status advances |
 | `deleteSession(id)` | Soft-delete + cancel orchestration |
 | `renameSession(id, title)` | Update session title in CMS |
-| `getModelSummary()` | List configured models |
+| `listModels()` / `getModelsByProvider()` | List configured models after env filtering |
+| `getDefaultModel()` | Read the configured default model |
 | `cancelSession(id)` | Cancel orchestration (leave CMS intact) |
-| `dumpSession(id, format?)` | Export session transcript |
+| `sendMessage(id, prompt)` / `sendAnswer(id, answer)` / `sendCommand(id, cmd)` | Drive a session administratively |
+| `getLatestResponse(id)` / `getCommandResponse(id, cmdId)` | Read KV-backed orchestration outputs |
+| `dumpSession(id)` | Export session transcript |
 
-**`PilotSwarmSessionView`**: Merged view combining CMS metadata (title, model, events) with duroxide orchestration state (customStatus, runtime status).
+**`PilotSwarmSessionView`**: Merged view combining CMS metadata (title, model, events) with duroxide orchestration state (customStatus, runtime status), including cron metadata and the latest `contextUsage` snapshot when available.
 
 ---
 
@@ -673,6 +689,8 @@ ENTRYPOINT ["node", "examples/worker.js"]
 10. next worker picks up → hydrate from blob → resume
 ```
 
+If the wait depends on node-local state, the agent can instead call `wait_on_worker(300, ...)` or `wait(..., preserveWorkerAffinity: true)` so the orchestration preserves the affinity key when possible.
+
 ### Scenario C: Session Dehydration/Rehydration
 
 ```
@@ -692,7 +710,20 @@ ENTRYPOINT ["node", "examples/worker.js"]
 9. resume with prompt
 ```
 
-### Scenario D: Sub-Agent Spawn
+### Scenario D: Recurring Cron Wake-Up
+
+```
+1. LLM calls cron(seconds: 60, reason: "refresh dashboard")
+2. managedSession aborts, returns { type: "cron", action: "set", intervalSeconds: 60, reason }
+3. orchestration stores cronSchedule in carried state
+4. turn completes normally
+5. orchestration enters waiting state and schedules a durable timer for 60s
+6. if a user message arrives first, it interrupts the wait and is delivered immediately
+7. if the timer fires, orchestration continueAsNew() with a synthetic system wake-up prompt
+8. the next completed turn re-arms cron automatically until the agent calls cron(action="cancel")
+```
+
+### Scenario E: Sub-Agent Spawn
 
 ```
 1. LLM calls spawn_agent(task: "Research the API", model: "gpt-4")
@@ -726,7 +757,13 @@ ENTRYPOINT ["node", "examples/worker.js"]
 | 1.0.6 | — | Checkpoint support |
 | 1.0.7 | — | Task context preservation |
 | 1.0.8 | — | Error retry improvements |
-| **1.0.9** | — | **Current** — Latest orchestration |
+| 1.0.9 | — | Early stable orchestration line |
+| 1.0.24 | — | Introduced cron scheduling primitives |
+| 1.0.25 | — | System-agent cron adoption and prompt guidance |
+| 1.0.26 | — | Cron waits reset affinity instead of pinning sessions |
+| 1.0.27 | — | Compatibility freeze during SQL prompt rollback follow-up |
+| 1.0.28 | — | Context-usage status plumbing prerequisites |
+| **1.0.29** | — | **Current** — surfaces `contextUsage` and compaction state in status |
 
 **Versioning rule:** Changing yield sequences requires a new version. Existing in-flight orchestrations replay against their recorded version. The database must be reset when deploying breaking orchestration changes.
 
@@ -741,6 +778,6 @@ ENTRYPOINT ["node", "examples/worker.js"]
 5. **`send()` + `on()` internally, never `sendAndWait()`.** Gives granular control over tool interception.
 6. **Tool names travel as strings.** Workers resolve to Tool objects at runtime.
 7. **Affinity keys pin sessions to workers.** Regenerated on dehydration for relocation.
-8. **System tools are always injected.** `wait`, `ask_user`, sub-agent tools — every session gets them.
+8. **System tools are always injected.** `wait`, `wait_on_worker`, `cron`, `ask_user`, and sub-agent tools are available in every session.
 9. **setCustomStatus order matters.** Recorded in history — must match between execution and replay.
 10. **Sub-agents max nesting: 2.** Root (0) → child (1) → grandchild (2).

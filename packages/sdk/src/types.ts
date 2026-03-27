@@ -8,6 +8,8 @@ export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
 export type TurnAction =
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] }
+    | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
+    | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
     | { type: "spawn_agent"; task: string; model?: string; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; content?: string; events?: CapturedEvent[] }
     | { type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] }
@@ -23,8 +25,10 @@ type QueuedTurnActionCarrier = {
 };
 
 export type TurnResult =
-    | { type: "completed"; content: string; events?: CapturedEvent[] }
+    | ({ type: "completed"; content: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "spawn_agent"; task: string; model?: string; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -105,6 +109,41 @@ export type PilotSwarmSessionStatus =
     | "failed"
     | "error";
 
+export interface SessionCompactionSnapshot {
+    state: "idle" | "running" | "succeeded" | "failed";
+    startedAt?: number;
+    completedAt?: number;
+    error?: string;
+    preCompactionTokens?: number;
+    postCompactionTokens?: number;
+    preCompactionMessagesLength?: number;
+    messagesRemoved?: number;
+    tokensRemoved?: number;
+    systemTokens?: number;
+    conversationTokens?: number;
+    toolDefinitionsTokens?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+}
+
+export interface SessionContextUsage {
+    tokenLimit: number;
+    currentTokens: number;
+    utilization: number;
+    messagesLength: number;
+    systemTokens?: number;
+    conversationTokens?: number;
+    toolDefinitionsTokens?: number;
+    isInitial?: boolean;
+    lastInputTokens?: number;
+    lastOutputTokens?: number;
+    lastCacheReadTokens?: number;
+    lastCacheWriteTokens?: number;
+    updatedAt?: number;
+    compaction?: SessionCompactionSnapshot;
+}
+
 // ─── Session Info ────────────────────────────────────────────────
 
 export interface PilotSwarmSessionInfo {
@@ -119,6 +158,9 @@ export interface PilotSwarmSessionInfo {
     pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean };
     waitingUntil?: Date;
     waitReason?: string;
+    cronActive?: boolean;
+    cronInterval?: number;
+    cronReason?: string;
     result?: string;
     error?: string;
     iterations: number;
@@ -130,6 +172,13 @@ export interface PilotSwarmSessionInfo {
     agentId?: string;
     /** Splash banner (blessed markup) from the agent definition. */
     splash?: string;
+    /** Latest known context-window usage snapshot for this session. */
+    contextUsage?: SessionContextUsage;
+}
+
+export interface CronSchedule {
+    intervalSeconds: number;
+    reason: string;
 }
 
 // ─── Orchestration Input ─────────────────────────────────────────
@@ -165,6 +214,12 @@ export interface OrchestrationInput {
     checkpointInterval?: number;
     /** Custom message prepended to the user prompt on rehydration (after worker death). */
     rehydrationMessage?: string;
+    /** Safety net: true if the previous turn was a forgotten-timer nudge. Prevents infinite nudge loops. */
+    forgottenTimerNudged?: boolean;
+    /** Active recurring schedule set by the cron tool. */
+    cronSchedule?: CronSchedule;
+    /** Latest known context-window usage snapshot captured from session events. */
+    contextUsage?: SessionContextUsage;
 
     // ─── Sub-agent state ─────────────────────────────────────
     /** Tracked sub-agents spawned by this orchestration. Carried across continueAsNew. */
@@ -497,6 +552,10 @@ export interface SessionStatusSignal {
     waitReason?: string;
     waitSeconds?: number;
     waitStartedAt?: number;
+    cronActive?: boolean;
+    cronInterval?: number;
+    cronReason?: string;
     error?: string;
     retriesExhausted?: boolean;
+    contextUsage?: SessionContextUsage;
 }

@@ -33,6 +33,8 @@ npm install pilotswarm-cli
 
 and that PilotSwarm's built-in framework and management plugins are embedded in those packages while app `default.agent.md` files act as app-wide overlays.
 
+If the target app needs a custom model catalog, treat `.model_providers.json` as a checked-in source file and keep actual credentials in `.env` / `.env.remote`. Do not generate or require a `.model_providers.example.json`.
+
 PilotSwarm includes built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) on workers, and they are available to every agent session by default, including system agents. Use them for durable structured memory and shared cross-agent state instead of inventing an app-specific facts table unless the app truly needs one.
 
 The CLI builder template also assumes runnable scaffolds should:

@@ -28,7 +28,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
-const WAIT_POLL_SLICE_MS = 1_000;
+const WAIT_POLL_SLICE_MS = 10_000;
 
 function createAbortError(message: string, reason?: unknown): Error {
     if (reason instanceof Error) return reason;
@@ -642,6 +642,12 @@ export class PilotSwarmClient {
                 ? new Date(Date.now() + customStatus.waitSeconds * 1000)
                 : undefined,
             waitReason: customStatus.waitReason,
+            cronActive: customStatus.cronActive === true,
+            cronInterval: typeof customStatus.cronInterval === "number" ? customStatus.cronInterval : undefined,
+            cronReason: typeof customStatus.cronReason === "string" ? customStatus.cronReason : undefined,
+            contextUsage: customStatus?.contextUsage && typeof customStatus.contextUsage === "object"
+                ? customStatus.contextUsage
+                : undefined,
             result: customStatus.turnResult?.type === "completed"
                 ? customStatus.turnResult.content
                 : latestResponse?.type === "completed"
@@ -685,11 +691,11 @@ export class PilotSwarmClient {
                 let statusResult: any;
                 try {
                     statusResult = await getDuroxideClient().waitForStatusChange(
-                        orchestrationId, lastSeenVersion, 200, remaining,
+                        orchestrationId, lastSeenVersion, 1_000, remaining,
                     );
                 } catch {
                     throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
-                    await new Promise(r => setTimeout(r, 200));
+                    await new Promise(r => setTimeout(r, 1_000));
                     throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
                     const orchStatus = await getDuroxideClient().getStatus(orchestrationId);
                     if (orchStatus.status === "Failed") throw new Error(orchStatus.error ?? "Orchestration failed");

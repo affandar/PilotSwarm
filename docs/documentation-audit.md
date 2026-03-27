@@ -37,7 +37,8 @@ The biggest requirement behind the restructure is that agent authoring must be o
 | [docs/blog-*.md](./blog-test-swarm-cli.md) | `examples` | Good worked examples, not canonical reference docs |
 | [docs/orchestration-hardening-plan.md](./orchestration-hardening-plan.md) | `internal` | Active engineering plan |
 | [docs/tui-cleanup-status.md](./tui-cleanup-status.md) | `internal` | Point-in-time cleanup notes |
-| [docs/proposals/*](./proposals/) | `internal` | Design notes, not primary user docs |
+| [docs/proposals/*](./proposals/) | `internal` | Open or still-in-flight design notes, not primary user docs |
+| [docs/proposals-impl/*](./proposals-impl/) | `internal/archive` | Implemented proposal writeups retained as historical design records |
 
 ## Why The Restructure Was Needed
 

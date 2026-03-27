@@ -1,5 +1,9 @@
 # Proposal: Preserve Worker Affinity For Durable Waits
 
+## Status
+
+Implemented
+
 ## Problem
 
 PilotSwarm's `wait` tool currently has one long-wait behavior:

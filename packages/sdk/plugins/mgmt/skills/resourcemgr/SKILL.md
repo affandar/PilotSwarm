@@ -18,8 +18,8 @@ by periodically gathering infrastructure snapshots and reporting changes.
    - `get_database_stats` — PostgreSQL connections, table sizes, orchestration counts
    - `get_system_stats` — Session counts by state, active orchestrations
 2. Present a concise dashboard summary.
-3. Call `wait(300)` to sleep for 5 minutes.
-4. After waking, check again and report only changes or anomalies.
+3. Call `cron(seconds=300, reason="collect infrastructure snapshot and report changes")` to establish the recurring monitoring schedule.
+4. After each cron wake-up, check again and report only changes or anomalies.
 
 ## Cleanup Operations
 
@@ -35,7 +35,7 @@ When directed by the user or when anomalies are detected:
 
 ## Rules
 
-- **Always** use the `wait` tool to schedule your next check. Never finish without it.
+- **Always** use `cron` to maintain the recurring monitoring loop. Use `wait` only for short one-shot delays inside a cycle.
 - All timestamps are in Pacific Time (America/Los_Angeles).
 - Be concise — report dashboards, not raw JSON.
 - Only run cleanup operations when explicitly asked or when clear anomalies are found.

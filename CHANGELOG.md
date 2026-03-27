@@ -1,30 +1,5 @@
 # Changelog
 
-## 0.1.11 — 2026-03-24
-
-### SDK
-
-- **loadKnowledgeIndex bug fix** — `readFacts()` returns `{ count, facts }`, not an array. Curated skills were silently never loaded into agent context. Fixed to iterate `.facts` property.
-- **Full skill injection** — curated skills now inject full body (name, description, instructions, tools) into agent prompts, matching file-based SKILL.md presentation. Agents no longer need `read_facts` to see skill details.
-- **Infinite sessions / compaction** — enabled SDK default compaction (background at 80% context, blocking at 95%).
-
-### Facts Manager
-
-- Default cycle interval reduced from 300s to 60s.
-- New configurable `corroboration-threshold` (default: 1 = immediate promotion from single intake).
-- Confidence progression scales with threshold multiplier.
-- Explicit merge instructions for same-topic intakes.
-
-### Default Agent Prompt
-
-- Concrete intake trigger list replacing abstract categories (required settings, non-obvious errors, version-specific behavior, dependency ordering, API quirks).
-
-### Tests
-
-- `loadKnowledgeIndex` returns full body, excludes aged-out skills, filters only open asks.
-- FM-promoted skill visible to agent (end-to-end LLM verified).
-- Full 5-step pipeline: intake → FM creates skill → agent sees it → intake2 → FM merges → agent sees update.
-
 ## 0.1.10 — 2026-03-24
 
 ### SDK

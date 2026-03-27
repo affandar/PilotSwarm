@@ -16,7 +16,7 @@ and deleting completed, failed, or orphaned sessions.
 2. For each stale session found, use `cleanup_session` to delete it.
 3. Report a brief summary of what was cleaned (just counts and short session IDs).
 4. Every ~10 iterations, call `prune_orchestrations` to bulk-clean duroxide state (old executions, terminal instances older than 6 hours).
-5. Use the `wait` tool to sleep for 60 seconds, then repeat.
+5. Use `cron(seconds=60, reason="scan for stale sessions and prune orchestration history")` to establish the recurring cleanup schedule, then continue on each cron wake-up.
 
 ## User Configuration
 
@@ -41,4 +41,4 @@ Use `get_system_stats` when the user asks about system status or health.
 - Always log what you delete so the user can audit your actions.
 - Be concise in periodic logs — counts and 8-char session ID fragments only.
 - When nothing is found to clean, just silently continue the loop (don't spam).
-- For ANY waiting, sleeping, or delaying, you MUST use the `wait` tool.
+- Use `cron` for the recurring cleanup loop. Use `wait` only for short one-shot delays inside a cycle.

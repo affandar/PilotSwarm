@@ -19,6 +19,7 @@ Build layered CLI/TUI apps on top of the shipped PilotSwarm interface.
 ```text
 my-app/
 ├── .env.example
+├── .model_providers.json
 ├── package.json
 ├── plugin/
 │   ├── plugin.json
@@ -44,10 +45,11 @@ my-app/
 7. Put runtime tool handlers in `worker-module.js`.
 8. Add `session-policy.json` if the user does not want generic sessions. The policy is enforced in both local and remote modes — the TUI reads it from the plugin directory even when there are no embedded workers.
 9. Build `.env.example` and a gitignored `.env` from the PilotSwarm sample env shape when the user wants runnable scaffolding.
-10. Add checked-in scripts for launch and database cleanup (both local and remote modes).
-11. Make generated scripts executable and verify the executable bit.
-12. Add a README with local run instructions.
-13. When agents need durable structured memory or shared coordination state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) as the primary memory layer. They are available to every agent session by default, including system agents, so do not build a separate fact table unless the app truly requires it.
+10. Add a checked-in `.model_providers.json` when the scaffold needs a custom model catalog.
+11. Add checked-in scripts for launch and database cleanup (both local and remote modes).
+12. Make generated scripts executable and verify the executable bit.
+13. Add a README with local run instructions.
+14. When agents need durable structured memory or shared coordination state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) as the primary memory layer. They are available to every agent session by default, including system agents, so do not build a separate fact table unless the app truly requires it.
 
 ## Guided Intake Questions
 
@@ -68,10 +70,12 @@ Do not guess these answers when the user has not provided them. Offer the standa
 ## Env File Guidance
 
 - Treat `DATABASE_URL` as the canonical PostgreSQL connection input.
+- If the app needs a non-default model catalog, check in `.model_providers.json` and keep provider keys in `.env` / `.env.remote`.
 - For local-first scaffolds, assume GitHub Copilot is the only model provider unless the user explicitly asks for another provider.
 - For local-first scaffolds, do not include `LLM_PROVIDER_TYPE`, `LLM_ENDPOINT`, `LLM_API_KEY`, or `LLM_API_VERSION` by default.
 - Do not generate redundant `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, or `PGDATABASE` entries unless the user explicitly needs them.
 - Prefer a checked-in `.env.example` plus a local gitignored `.env`.
+- Do not invent a `.model_providers.example.json`; the real `.model_providers.json` is the source of truth when a custom catalog is needed.
 - Align the variable set with the chosen topology rather than blindly copying every sample env field.
 - For local-first scaffolds, the default env surface should usually be:
   - `DATABASE_URL`

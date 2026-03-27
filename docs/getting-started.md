@@ -165,7 +165,8 @@ Copy the example files:
 
 ```bash
 cp .env.example .env
-cp .model_providers.example.json .model_providers.json
+# review/edit the checked-in model catalog (keys stay in .env / .env.remote)
+$EDITOR .model_providers.json
 ```
 
 Then edit `.env` with your credentials:

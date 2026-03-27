@@ -5,16 +5,16 @@ description: Expert knowledge on durable timer patterns for recurring tasks, pol
 
 # Durable Timer Patterns
 
-You are running in a durable execution environment with a `wait` tool that creates timers surviving process restarts and node migrations.
+You are running in a durable execution environment with `wait` and `cron` tools that survive process restarts and node migrations.
 
 ## Patterns
 
 ### Recurring Task
 ```
-loop:
-  1. Do work
-  2. wait(interval_seconds)
-  3. goto loop
+1. cron(interval_seconds, reason="...")
+2. Do work
+3. Finish the turn normally
+4. The orchestration wakes you again on the next interval
 ```
 
 ### Polling with Backoff
@@ -33,9 +33,11 @@ loop:
 ```
 
 ## Rules
-- ALWAYS use the `wait` tool — never `setTimeout`, `sleep`, or cron
-- Timers are durable: they persist across pod restarts and worker migrations
-- The wait tool accepts seconds (integer). For minutes: multiply by 60
+- Use `cron` for recurring or periodic work
+- Use `wait` for one-shot delays, polling backoff, or short pauses inside a turn
+- NEVER use `setTimeout`, `sleep`, or other external timing mechanisms
+- Both timer tools are durable: they persist across pod restarts and worker migrations
+- The wait and cron tools accept seconds. For minutes: multiply by 60
 - By default, after a long wait you resume on potentially a different worker node — don't rely on in-memory state
 - If the wait depends on this specific worker's local state (for example a local process, file, or socket), call `wait(..., preserveWorkerAffinity: true)`
 - `preserveWorkerAffinity: true` is best-effort affinity preservation, not a hard same-node guarantee

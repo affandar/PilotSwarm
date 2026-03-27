@@ -58,6 +58,8 @@ Timer context: {seconds}s timer (reason: "{reason}"), {elapsed}s elapsed, {remai
 
 **Result with FW-GLM-5:** Works correctly with both original and hardened prompts. The hardened prompt is kept as defense-in-depth.
 
+- 2026-03-26: Hardened the default agent and sub-agent skill prompts so models, including GPT-5.4-mini, are told explicitly that they can start indefinite recurring durable loops in the current turn, can delegate recurring work to sub-agents, and can send follow-up instructions to running sub-agents with `message_agent`. Added a regression test that asks for a recurring sub-agent loop, rejects "need another prompt/nudge" disclaimers, and verifies a child session enters a waiting state.
+
 ### Other Options Considered (not implemented)
 - **Option A (dual-action):** "You MUST do BOTH: 1. Reply with text. 2. Call wait." — Not tried, likely same result with GPT-5.1.
 - **Option C (role-based):** "You are in a conversation — respond naturally." — Not tried.

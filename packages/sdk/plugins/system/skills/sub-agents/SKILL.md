@@ -26,6 +26,8 @@ Start a new sub-agent with a task description. Returns an agent ID.
 
 ### `message_agent(agent_id, message)`
 Send additional instructions or context to a running sub-agent.
+- Use this whenever you need to ask a sub-agent a follow-up question, refine its scope, correct it, or request a status update.
+- Do not claim you cannot ask your sub-agents questions. That is exactly what `message_agent` is for.
 
 ### `check_agents()`
 Get the current status of ALL sub-agents — running, completed, or failed — with their latest output.
@@ -53,6 +55,14 @@ Block until sub-agents finish. Returns their final results.
 3. Periodically check_agents() to see updates
 ```
 
+### Durable Recurring Worker
+```
+1. spawn_agent("Monitor X every 30 seconds forever using durable waits until cancelled") → agent
+2. Tell the user the recurring worker is active now
+3. Optionally use message_agent(agent, "Also track Y") later to refine the task
+4. Use check_agents() or wait_for_agents() only when you need status or results
+```
+
 ### Specialized Delegation
 ```
 1. spawn_agent("Analyze the data", system_message="You are a data analyst")
@@ -67,6 +77,9 @@ Block until sub-agents finish. Returns their final results.
 - If you want a different model, call `list_available_models()` first and use only an exact `provider:model` value from that list
 - Never invent, guess, shorten, or reuse stale model names
 - Sub-agents are fully durable — they survive crashes and restarts
+- A sub-agent can run an indefinite recurring loop by doing work, then calling `wait`, then repeating on its own
+- Do not say a recurring sub-agent needs another user prompt, a cron job, or a manual nudge for the next cycle
+- You can send a running sub-agent new instructions with `message_agent` at any time
 - Sub-agents can use `wait` for durable timers but cannot spawn their own sub-agents (single level)
 - Always call `check_agents` or `wait_for_agents` to collect results — don't ignore your agents
 - Keep task descriptions clear and self-contained — the agent has no access to your conversation history

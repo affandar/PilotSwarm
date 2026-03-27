@@ -19,7 +19,8 @@ Start from the template:
 
 ```bash
 cp .env.example .env
-cp .model_providers.example.json .model_providers.json
+# review/edit the checked-in model catalog (keys stay in env files)
+$EDITOR .model_providers.json
 ```
 
 Then edit `.env` with your credentials:
@@ -235,7 +236,7 @@ PilotSwarm uses `.model_providers.json` to configure LLM providers. API keys are
 
 > **Easiest way to get started:** Set `GITHUB_TOKEN` in `.env`. This gives you access to all models available through GitHub Copilot (Claude, GPT-4.1, GPT-5.1, etc.) with no additional configuration needed.
 
-For BYOK (bring-your-own-key) providers like Azure OpenAI, add the provider to `.model_providers.json` and set the corresponding API key in `.env`. See `.model_providers.example.json` for the full template.
+For BYOK (bring-your-own-key) providers like Azure OpenAI, edit `.model_providers.json` and set the corresponding API key in `.env`.
 
 Providers whose API key env var is not set are **automatically excluded** from the model list — they won't appear in the TUI model picker or the `list_available_models` tool. This means you only need credentials for the providers you actually use.
 

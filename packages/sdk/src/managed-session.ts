@@ -7,6 +7,7 @@ import type { TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, Capture
  */
 interface TurnState {
     pendingActions: TurnAction[];
+    queuedActions: TurnAction[];
     session: CopilotSession | null;
     waitThreshold: number;
 }
@@ -48,12 +49,12 @@ export class ManagedSession {
     static systemToolDefs(): Tool<any>[] {
         const waitTool = defineTool("wait", {
             description:
-                "REQUIRED: The ONLY way to wait, pause, sleep, or delay. " +
+                "REQUIRED: The ONLY way to wait, pause, sleep, or delay inside a turn. " +
                 "You MUST call this tool whenever you need to wait, pause, delay, " +
-                "poll, check back later, schedule a future action, or implement " +
-                "any recurring/periodic task. NEVER use bash sleep, setTimeout, " +
-                "setInterval, cron, or any other timing mechanism. This tool " +
-                "enables durable waiting that survives process restarts. " +
+                "poll, check back later, or pause before retrying. " +
+                "For recurring or periodic schedules, use the cron tool instead. " +
+                "NEVER use bash sleep, setTimeout, setInterval, or any other external timing mechanism. " +
+                "This tool enables durable waiting that survives process restarts. " +
                 "Long waits may resume on a different worker unless you set " +
                 "`preserveWorkerAffinity: true` for node-local work.",
             parameters: {
@@ -88,6 +89,33 @@ export class ManagedSession {
                     reason: { type: "string", description: "Why you're waiting on worker-local state" },
                 },
                 required: ["seconds"],
+            },
+            handler: async () => "stub",
+        });
+
+        const cronTool = defineTool("cron", {
+            description:
+                "Declare a recurring durable schedule owned by the orchestration. " +
+                "Use this for periodic monitoring, polling loops, and scheduled digests so you do NOT need to call wait() at the end of every turn. " +
+                "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. " +
+                "Minimum interval is 15 seconds.",
+            parameters: {
+                type: "object",
+                properties: {
+                    seconds: {
+                        type: "number",
+                        description: "Interval between recurring wake-ups in seconds (minimum 15).",
+                    },
+                    reason: {
+                        type: "string",
+                        description: "What to do on each wake-up. Required when setting a schedule.",
+                    },
+                    action: {
+                        type: "string",
+                        enum: ["cancel"],
+                        description: "Use action='cancel' to clear the active recurring schedule.",
+                    },
+                },
             },
             handler: async () => "stub",
         });
@@ -131,7 +159,7 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [waitTool, waitOnWorkerTool, askUserTool, listModelsTool];
+        return [waitTool, waitOnWorkerTool, cronTool, askUserTool, listModelsTool];
     }
 
     /**
@@ -314,6 +342,7 @@ export class ManagedSession {
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
         const turnState: TurnState = {
             pendingActions: [],
+            queuedActions: [],
             session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
         };
@@ -321,12 +350,12 @@ export class ManagedSession {
         // Build system tools (wait tool + ask_user tool)
         const waitTool = defineTool("wait", {
             description:
-                "REQUIRED: The ONLY way to wait, pause, sleep, or delay. " +
+                "REQUIRED: The ONLY way to wait, pause, sleep, or delay inside a turn. " +
                 "You MUST call this tool whenever you need to wait, pause, delay, " +
-                "poll, check back later, schedule a future action, or implement " +
-                "any recurring/periodic task. NEVER use bash sleep, setTimeout, " +
-                "setInterval, cron, or any other timing mechanism. This tool " +
-                "enables durable waiting that survives process restarts. " +
+                "poll, check back later, or pause before retrying. " +
+                "For recurring or periodic schedules, use the cron tool instead. " +
+                "NEVER use bash sleep, setTimeout, setInterval, or any other external timing mechanism. " +
+                "This tool enables durable waiting that survives process restarts. " +
                 "Long waits may resume on a different worker unless you set " +
                 "`preserveWorkerAffinity: true` for node-local work.",
             parameters: {
@@ -390,6 +419,62 @@ export class ManagedSession {
                 });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
+            },
+        });
+
+        const cronTool = defineTool("cron", {
+            description:
+                "Declare a recurring durable schedule owned by the orchestration. " +
+                "Use this for periodic monitoring, polling loops, and scheduled digests so you do NOT need to call wait() at the end of every turn. " +
+                "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. " +
+                "Minimum interval is 15 seconds.",
+            parameters: {
+                type: "object",
+                properties: {
+                    seconds: {
+                        type: "number",
+                        description: "Interval between recurring wake-ups in seconds (minimum 15).",
+                    },
+                    reason: {
+                        type: "string",
+                        description: "What to do on each wake-up. Required when setting a schedule.",
+                    },
+                    action: {
+                        type: "string",
+                        enum: ["cancel"],
+                        description: "Use action='cancel' to clear the active recurring schedule.",
+                    },
+                },
+            },
+            handler: async (args: { seconds?: number; reason?: string; action?: "cancel" }) => {
+                if (args.action === "cancel") {
+                    turnState.queuedActions.push({
+                        type: "cron",
+                        action: "cancel",
+                    });
+                    return JSON.stringify({ status: "cancelled" });
+                }
+
+                const intervalSeconds = Number(args.seconds);
+                if (!Number.isFinite(intervalSeconds)) {
+                    return "Error: cron requires seconds or action='cancel'.";
+                }
+                if (intervalSeconds < 15) {
+                    return "Error: cron interval must be at least 15 seconds.";
+                }
+
+                const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+                if (!reason) {
+                    return "Error: cron reason is required when setting a schedule.";
+                }
+
+                turnState.queuedActions.push({
+                    type: "cron",
+                    action: "set",
+                    intervalSeconds,
+                    reason,
+                });
+                return JSON.stringify({ status: "scheduled", interval: intervalSeconds, reason });
             },
         });
 
@@ -636,7 +721,7 @@ export class ManagedSession {
             },
         });
 
-        const SYSTEM_TOOL_NAMES = new Set(["wait", "ask_user", "list_available_models", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+        const SYSTEM_TOOL_NAMES = new Set(["wait", "wait_on_worker", "cron", "ask_user", "list_available_models", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -665,6 +750,7 @@ export class ManagedSession {
             ...wrappedUserTools,
             waitTool,
             waitOnWorkerTool,
+            cronTool,
             askUserTool,
             listModelsTool,
             spawnAgentTool,
@@ -785,13 +871,16 @@ export class ManagedSession {
         // Check what ended the turn
         if (turnState.pendingActions.length > 0) {
             const [firstAction, ...remainingActions] = turnState.pendingActions;
-            const queuedActions = remainingActions.length > 0 ? remainingActions : undefined;
+            const combinedQueuedActions = [...turnState.queuedActions, ...remainingActions];
+            const queuedActions = combinedQueuedActions.length > 0 ? combinedQueuedActions : undefined;
 
             switch (firstAction.type) {
                 case "input_required":
                     return { ...firstAction, events: collectedEvents, queuedActions };
                 case "wait":
                     return { ...firstAction, content: finalContent, events: collectedEvents, queuedActions };
+                case "cron":
+                    return { ...firstAction, events: collectedEvents, queuedActions };
                 case "spawn_agent":
                     return { ...firstAction, content: finalContent, events: collectedEvents, queuedActions };
                 case "message_agent":
@@ -806,6 +895,8 @@ export class ManagedSession {
                     break;
             }
         }
+
+        const completedQueuedActions = turnState.queuedActions.length > 0 ? turnState.queuedActions : undefined;
 
         // Check if the SDK emitted a session.error — if so, treat as an error
         // even though session.idle fired (the SDK fires idle after retries exhaust).
@@ -824,6 +915,7 @@ export class ManagedSession {
             type: "completed",
             content: finalContent ?? "(no response)",
             events: collectedEvents,
+            queuedActions: completedQueuedActions,
         };
     }
 

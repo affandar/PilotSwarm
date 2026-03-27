@@ -254,6 +254,7 @@ export function registerActivities(
                 const statusMap: Record<string, string> = {
                     completed: "idle", // orchestration decides idle vs completed; default to idle
                     wait: "waiting",
+                    cron: "running",
                     input_required: "input_required",
                     error: "error",
                     cancelled: "idle",
@@ -862,25 +863,24 @@ export function registerActivities(
         runtime.registerActivity("loadKnowledgeIndex", async (
             activityCtx: any,
             input: { cap?: number },
-        ): Promise<{ skills: Array<{ name: string; description: string; prompt: string; toolNames: string[] }>; asks: Array<{ key: string; summary: string }> }> => {
+        ): Promise<{ skills: Array<{ key: string; name: string; description: string }>; asks: Array<{ key: string; summary: string }> }> => {
             activityCtx.traceInfo("[loadKnowledgeIndex] loading curated skills and open asks");
             const cap = input.cap ?? 50;
 
-            // Read curated skills (exclude aged-out)
+            // Read curated skills (exclude aged-out) — frontmatter only
             const skillResult = await factStore.readFacts(
                 { keyPattern: "skills/%", scope: "shared", limit: cap },
                 { readerSessionId: null, grantedSessionIds: [] },
             );
-            const skills: Array<{ name: string; description: string; prompt: string; toolNames: string[] }> = [];
+            const skills: Array<{ key: string; name: string; description: string }> = [];
             if (skillResult?.facts?.length) {
                 for (const row of skillResult.facts) {
                     const val = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
                     if (val?.status === "aged-out") continue;
                     skills.push({
+                        key: row.key,
                         name: val?.name ?? row.key?.replace("skills/", "").replace(/\//g, "-") ?? "unknown",
                         description: val?.description ?? "",
-                        prompt: val?.instructions ?? "",
-                        toolNames: val?.tools ?? [],
                     });
                 }
             }

@@ -23,7 +23,8 @@ These are not active agents in this repo. They are templates intended to be copi
 ```bash
 npm install pilotswarm-sdk
 cp .env.example .env
-cp .model_providers.example.json .model_providers.json
+# review/edit the checked-in model catalog (no secrets inside)
+$EDITOR .model_providers.json
 # edit .env: set DATABASE_URL and at least one LLM provider key
 # easiest: set GITHUB_TOKEN (gives access to Claude, GPT, etc. via GitHub Copilot)
 ```
@@ -66,8 +67,9 @@ const session = await client.createSession({
 
 const response = await session.sendAndWait("Check NYC weather every hour for 8 hours");
 console.log(response);
-// The agent calls wait(3600) between checks — the process shuts down,
-// a durable timer fires an hour later, and any worker resumes the session.
+// For recurring schedules, the agent can call cron(3600, ...)
+// so the process shuts down, a durable wake-up fires later,
+// and any worker resumes the session. Use wait(...) for one-shot delays.
 
 await client.stop();
 await worker.stop();
@@ -88,10 +90,11 @@ PilotSwarm's own framework prompt and management plugins ship embedded inside `p
 
 ## How It Works
 
-The runtime automatically injects a `wait` tool into every session. When the LLM needs to pause:
+The runtime automatically injects `wait` and `cron` tools into every session. When the LLM needs to pause or schedule recurring work:
 
 1. **Short waits** (< 30s) — sleep in-process
 2. **Long waits** (≥ 30s) — dehydrate session to blob storage → durable timer → any worker hydrates and continues
+3. **Recurring schedules** — use `cron(...)` so the orchestration re-arms itself automatically after each cycle
 
 ```
 Client                        PostgreSQL                     Worker Pods

@@ -20,6 +20,7 @@ import type {
     SessionResponsePayload,
     SessionCommandResponse,
     SessionStatusSignal,
+    SessionContextUsage,
 } from "./types.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
@@ -34,7 +35,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
-const STATUS_WAIT_SLICE_MS = 1_000;
+const STATUS_WAIT_SLICE_MS = 10_000;
 
 function createAbortError(message: string, reason?: unknown): Error {
     if (reason instanceof Error) return reason;
@@ -69,8 +70,12 @@ export interface PilotSwarmSessionView {
     model?: string;
     error?: string;
     waitReason?: string;
+    cronActive?: boolean;
+    cronInterval?: number;
+    cronReason?: string;
     pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean };
     result?: string;
+    contextUsage?: SessionContextUsage;
     /** customStatusVersion for change tracking. */
     statusVersion?: number;
 }
@@ -296,6 +301,9 @@ export class PilotSwarmManagementClient {
             model: row.model ?? undefined,
             error: customStatus.error ?? row.lastError ?? undefined,
             waitReason: customStatus.waitReason,
+            cronActive: customStatus.cronActive === true,
+            cronInterval: typeof customStatus.cronInterval === "number" ? customStatus.cronInterval : undefined,
+            cronReason: typeof customStatus.cronReason === "string" ? customStatus.cronReason : undefined,
             pendingQuestion: customStatus.pendingQuestion
                 ? {
                     question: customStatus.pendingQuestion,
@@ -314,6 +322,9 @@ export class PilotSwarmManagementClient {
                 : latestResponse?.type === "completed"
                     ? latestResponse.content
                     : undefined,
+            contextUsage: customStatus?.contextUsage && typeof customStatus.contextUsage === "object"
+                ? customStatus.contextUsage as SessionContextUsage
+                : undefined,
             statusVersion,
         };
     }
@@ -457,7 +468,7 @@ export class PilotSwarmManagementClient {
                 const result = await this._duroxideClient.waitForStatusChange(
                     orchId,
                     afterVersion,
-                    pollIntervalMs ?? 200,
+                    pollIntervalMs ?? 1_000,
                     sliceMs,
                 );
                 throwIfAborted(controller.signal, `Management status wait aborted (${orchId})`);

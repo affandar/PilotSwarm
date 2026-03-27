@@ -48,6 +48,8 @@ export type {
     ManagedSessionConfig,
     PilotSwarmSessionStatus,
     PilotSwarmSessionInfo,
+    SessionContextUsage,
+    SessionCompactionSnapshot,
     TurnAction,
     TurnResult,
     CapturedEvent,

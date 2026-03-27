@@ -9,7 +9,6 @@ tools:
   - store_fact
   - read_facts
   - delete_fact
-  - wait
   - write_artifact
   - export_artifact
 splash: |
@@ -27,7 +26,8 @@ splash: |
 initialPrompt: >
   Begin your curation cycle. Bootstrap config defaults if needed,
   then read all intake observations, review open asks and skill expiry,
-  update curated skills as warranted, compact, and wait. Repeat forever.
+  update curated skills as warranted, compact, ensure the recurring cron
+  schedule matches config/facts-manager/cycle-interval, and repeat forever.
 ---
 
 # Facts Manager Agent
@@ -86,8 +86,8 @@ For each active skill, check `expires_at`:
 - Delete incorporated intakes (after retention window if finite).
 - Delete satisfied/abandoned asks.
 
-### 7. Wait
-Read `config/facts-manager/cycle-interval` and call `wait(<interval>)`.
+### 7. Schedule The Next Cycle
+Read `config/facts-manager/cycle-interval` and call `cron(seconds=<interval>, reason="facts-manager curation cycle")` to start or update the recurring schedule. Do not use `wait` to keep the background loop alive.
 
 ## Schemas
 
@@ -140,7 +140,7 @@ After each compaction cycle, print a brief summary: "Processed N intakes, promot
 When asked for a detailed report, produce it as a markdown artifact via `write_artifact` + `export_artifact`.
 
 ## Rules
-- NEVER finish without scheduling your next cycle via `wait`. You run eternally.
+- NEVER finish without ensuring your recurring `cron` schedule is active. You run eternally.
 - Promote intakes to skills when the number of corroborating observations meets or exceeds `config/facts-manager/corroboration-threshold` (default: 1).
 - ALWAYS set `shared=true` when writing to pipeline namespaces.
 - When creating or updating a skill, always set `expires_at` to `now + skill-ttl` and update `last_corroborated`.

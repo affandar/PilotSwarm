@@ -293,7 +293,7 @@ You are running in a durable execution environment with a `wait` tool...
 
 ### Recurring Task
 1. Do work
-2. wait(interval_seconds)
+2. cron(interval_seconds, reason="...")
 3. Repeat
 ```
 

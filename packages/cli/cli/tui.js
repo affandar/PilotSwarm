@@ -24,6 +24,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import os from "node:os";
+import {
+    computeContextPercent,
+    formatTokenCount,
+    formatContextHeaderBadge,
+    formatContextListBadge,
+    formatContextCompactionBadge,
+    formatCompactionActivityMarkup,
+} from "./context-usage.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -761,7 +769,7 @@ function showFileAttachPrompt() {
 
             // Show a snipped preview in chat (first 3 lines)
             const lines = content.split("\n");
-            const preview = lines.slice(0, 3).map(l => `  ${l.slice(0, 80)}`).join("\n");
+            const preview = lines.slice(0, 3).map(l => `  ${safeSlice(l, 0, 80)}`).join("\n");
             const suffix = lines.length > 3 ? `\n  {gray-fg}… (${lines.length - 3} more lines){/gray-fg}` : "";
             appendChatRaw(
                 `{yellow-fg}📄 Attached: ${displayName} (${(content.length / 1024).toFixed(1)}KB){/yellow-fg}\n${preview}${suffix}`,
@@ -810,9 +818,29 @@ function ts() {
     return formatDisplayTime(Date.now());
 }
 
+function asDisplayText(value, fallback = "") {
+    if (typeof value === "string") return value;
+    if (value == null) return fallback;
+    return String(value);
+}
+
+function safeSlice(value, start, end, fallback = "") {
+    return asDisplayText(value, fallback).slice(start, end);
+}
+
+function safeTail(value, count, fallback = "") {
+    return safeSlice(value, -Math.abs(count), undefined, fallback);
+}
+
+function normalizePodName(podName) {
+    const normalized = asDisplayText(podName, "unknown").trim();
+    return normalized || "unknown";
+}
+
 /** Extract short display ID (last 8 chars of session UUID) from an orchId or sessionId. */
 function shortId(id) {
-    const sid = id.startsWith("session-") ? id.slice(8) : id;
+    const rawId = asDisplayText(id);
+    const sid = rawId.startsWith("session-") ? rawId.slice(8) : rawId;
     return sid.slice(-8);
 }
 
@@ -1540,6 +1568,14 @@ function formatToolArgsSummary(toolName, args) {
             : "";
         return ` ${seconds}${preserve}${reason}`;
     }
+    if (toolName === "cron") {
+        if (args.action === "cancel") return " cancel";
+        const seconds = args.seconds != null ? `${args.seconds}s` : "?";
+        const reason = typeof args.reason === "string" && args.reason
+            ? ` reason=${JSON.stringify(args.reason)}`
+            : "";
+        return ` ${seconds}${reason}`;
+    }
 
     const entries = Object.entries(args)
         .slice(0, 4)
@@ -1639,8 +1675,9 @@ function refreshNodeMap() {
 
     // Pad/clip text to column width (plain text, no tags)
     const fitCol = (text, w) => {
-        if (text.length > w) return text.slice(0, w);
-        return text + " ".repeat(w - text.length);
+        const displayText = asDisplayText(text);
+        if (displayText.length > w) return safeSlice(displayText, 0, w);
+        return displayText + " ".repeat(w - displayText.length);
     };
 
     // Render header row: node names
@@ -1706,6 +1743,7 @@ function refreshNodeMap() {
     lines.push("");
     lines.push(
         "{green-fg}* running{/green-fg}  " +
+        "{magenta-fg}~ cron{/magenta-fg}  " +
         "{yellow-fg}~ waiting{/yellow-fg}  " +
         "{white-fg}. idle{/white-fg}  " +
         "{cyan-fg}? input{/cyan-fg}  " +
@@ -1995,7 +2033,7 @@ registerSelectablePane(mdPreviewPane, "markdown preview");
 registerSelectablePane(activityPane, "activity");
 
 function addSeqNode(podName) {
-    const short = podName.slice(-5);
+    const short = safeTail(normalizePodName(podName), 5);
     if (seqNodeSet.has(short)) return short;
     seqNodeSet.add(short);
     seqNodes.push(short);
@@ -2062,9 +2100,10 @@ function displayWidth(str) {
 
 // Pad string to target display width
 function padToWidth(str, targetW) {
-    const w = displayWidth(str);
+    const text = asDisplayText(str);
+    const w = displayWidth(text);
     const need = Math.max(0, targetW - w);
-    return str + " ".repeat(need);
+    return text + " ".repeat(need);
 }
 
 // Build one swimlane line: place content in a specific column
@@ -2072,6 +2111,7 @@ function seqLine(time, colIdx, content, color) {
     const ncols = seqNodes.length || 1;
     const widths = seqColWidths();
     const timeStr = (time || "").padEnd(TIME_W);
+    const displayContent = asDisplayText(content);
     let line = `{white-fg}${timeStr}{/white-fg}`;
 
     for (let i = 0; i < ncols; i++) {
@@ -2079,7 +2119,9 @@ function seqLine(time, colIdx, content, color) {
         if (i === colIdx) {
             // Content cell — clip to fit
             const maxContent = w - 2; // 1 space padding each side
-            const clipped = content.length > maxContent ? content.slice(0, maxContent) : content;
+            const clipped = displayContent.length > maxContent
+                ? safeSlice(displayContent, 0, maxContent)
+                : displayContent;
             // Pad the clipped text to maxContent BEFORE applying color tags
             const padded = padToWidth(clipped, maxContent);
             const colored = color ? `{${color}-fg}${padded}{/${color}-fg}` : padded;
@@ -2212,11 +2254,19 @@ function parseSeqEvent(plain, podName) {
         return { orchId, time, type: "dehydrate", orchNode, actNode };
     }
     // explicit dehydrate log from orchestration
+    if (plain.includes("[orch] dehydrating session (reason=cron")) {
+        return { orchId, time, type: "cron_dehydrate", orchNode, actNode };
+    }
     if (plain.includes("[orch] dehydrating session")) {
         return { orchId, time, type: "dehydrate", orchNode, actNode };
     }
 
     // ─── Agent output events ──────────
+    if (plain.includes("[orch] cron timer:")) {
+        const sMatch = plain.match(/\[orch\] cron timer:\s*(\d+)s/);
+        return { orchId, time, type: "cron_wait", orchNode, actNode,
+            seconds: sMatch?.[1] || "?" };
+    }
     if (plain.includes("[durable-agent] Durable timer") || plain.includes("[orch] durable timer:")) {
         const sMatch = plain.match(/(?:Durable timer|durable timer):\s*(\d+)s/);
         return { orchId, time, type: "wait", orchNode, actNode,
@@ -2341,6 +2391,12 @@ function renderSeqEventLine(event, orchId) {
             break;
         }
 
+        case "cron_wait": {
+            const col = seqNodes.indexOf(lastAct || event.orchNode);
+            seqPane.log(seqLine(event.time, col, `cron ${event.seconds}s`, "magenta"));
+            break;
+        }
+
         case "timer_fired": {
             const col = seqNodes.indexOf(lastAct || event.orchNode);
             seqPane.log(seqLine(event.time, col, `${event.seconds}s up`, "yellow"));
@@ -2350,6 +2406,12 @@ function renderSeqEventLine(event, orchId) {
         case "dehydrate": {
             const col = seqNodes.indexOf(lastAct || event.orchNode);
             seqPane.log(seqLine(event.time, col, "ZZ dehydrate", "red"));
+            break;
+        }
+
+        case "cron_dehydrate": {
+            const col = seqNodes.indexOf(lastAct || event.orchNode);
+            seqPane.log(seqLine(event.time, col, "ZZ cron wait", "magenta"));
             break;
         }
 
@@ -2453,8 +2515,9 @@ function refreshSeqPane() {
 
 function appendOrchLog(orchId, podName, text) {
     if (!orchLogBuffers.has(orchId)) orchLogBuffers.set(orchId, []);
-    const color = getPodColor(podName);
-    const shortPod = podName.slice(-5);
+    const normalizedPodName = normalizePodName(podName);
+    const color = getPodColor(normalizedPodName);
+    const shortPod = safeTail(normalizedPodName, 5);
     const coloredLine = `{${color}-fg}[${shortPod}]{/${color}-fg} ${text}`;
     orchLogBuffers.get(orchId).push(coloredLine);
     // Cap buffer at 500 lines
@@ -2601,11 +2664,12 @@ function backfillOrchLogs(orchId) {
 }
 
 function getOrCreateWorkerPane(podName) {
+    podName = normalizePodName(podName);
     if (workerPanes.has(podName)) return workerPanes.get(podName);
 
     const color = paneColors[nextColorIdx++ % paneColors.length];
     // Short name: last 5 chars of pod name
-    const shortName = podName.slice(-5);
+    const shortName = safeTail(podName, 5);
 
     const pane = blessed.log({
         parent: screen,
@@ -3376,6 +3440,7 @@ function appendLog(text) {
 }
 
 function appendWorkerLog(podName, text, orchId) {
+    podName = normalizePodName(podName);
     const pane = getOrCreateWorkerPane(podName);
     // Buffer raw entry for recoloring on session switch
     if (!workerLogBuffers.has(podName)) workerLogBuffers.set(podName, []);
@@ -3563,6 +3628,8 @@ async function loadCmsHistory(orchId, options = {}) {
                         : liveStatus.customStatus;
                 } catch {}
             }
+            updateSessionCronSchedule(orchId, liveCustomStatus);
+            updateSessionContextUsageFromStatus(orchId, liveCustomStatus);
             if (liveCustomStatus?.responseVersion) {
                 liveResponsePayload = await fetchLatestResponsePayload(orchId, dc);
             }
@@ -3577,6 +3644,9 @@ async function loadCmsHistory(orchId, options = {}) {
             if (info?.model) {
                 sessionModels.set(orchId, info.model);
                 if (orchId === activeOrchId) updateChatLabel();
+            }
+            if (info?.contextUsage) {
+                noteSessionContextUsage(orchId, info.contextUsage);
             }
 
             if ((!events || events.length === 0) && !liveTurnContent) {
@@ -3615,7 +3685,10 @@ async function loadCmsHistory(orchId, options = {}) {
             const stripHostPrefix = (text) => text?.replace(/^\[SYSTEM: Running on host "[^"]*"\.\]\n\n/, "") || text;
 
             // Filter out internal timer continuation prompts — these aren't real user messages
-            const isTimerPrompt = (text) => /^The \d+ second wait is now complete\./i.test(text);
+            const isTimerPrompt = (text) =>
+                /^The \d+ second wait is now complete\./i.test(text)
+                || /^The wait was partially completed \(/i.test(text)
+                || /^Resume the wait for the remaining \d+/i.test(text);
 
             const lines = [];
             const fmtTime = (value) => {
@@ -3657,9 +3730,10 @@ async function loadCmsHistory(orchId, options = {}) {
                             const updateType = childMatch[2];
                             const body = (childMatch[4] || "").trim();
                             const childTitle = sessionHeadings.get(`session-${childMatch[1]}`) || `Agent ${childId}`;
-                            const typeColor = updateType === "completed" ? "green" : updateType === "error" ? "red" : "magenta";
+                            const typeIcon = updateType === "completed" ? "✅" : updateType === "error" ? "❌" : "📡";
+                            const typeColor = updateType === "completed" ? "green" : updateType === "error" ? "red" : "yellow";
                             lines.push(`{white-fg}[${timeStr}]{/white-fg}`);
-                            lines.push(`{${typeColor}-fg}┌─ {bold}${childTitle}{/bold} · ${updateType} ─┐{/${typeColor}-fg}`);
+                            lines.push(`{${typeColor}-fg}┌─ ${typeIcon} {bold}${childTitle}{/bold} · ${updateType} ${"─".repeat(Math.max(1, 30 - childTitle.length))}┐{/${typeColor}-fg}`);
                             if (body) {
                                 const bodyLines = body.split("\n");
                                 for (const bl of bodyLines.slice(0, 8)) {
@@ -3669,7 +3743,7 @@ async function loadCmsHistory(orchId, options = {}) {
                                     lines.push(`{${typeColor}-fg}│{/${typeColor}-fg}  {gray-fg}… ${bodyLines.length - 8} more lines{/gray-fg}`);
                                 }
                             }
-                            lines.push(`{${typeColor}-fg}└${"─".repeat(30)}┘{/${typeColor}-fg}`);
+                            lines.push(`{${typeColor}-fg}└${"─".repeat(40)}┘{/${typeColor}-fg}`);
                             lines.push("");
                         } else {
                             lines.push(`{white-fg}[${timeStr}]{/white-fg} {bold}You:{/bold} ${content}`);
@@ -3953,6 +4027,7 @@ if (!isRemote) {
     } : undefined;
 
     setStatus(`Starting ${numWorkers} workers...`);
+    const workerStartPromises = [];
     for (let i = 0; i < numWorkers; i++) {
         const w = new PilotSwarmWorker({
             store,
@@ -3978,10 +4053,12 @@ if (!isRemote) {
         if (workerTools?.length) {
             w.registerTools(workerTools);
         }
-        await w.start();
         workers.push(w);
-        appendLog(`Worker local-rt-${i} started ✓`);
+        workerStartPromises.push(
+            w.start().then(() => appendLog(`Worker local-rt-${i} started ✓`))
+        );
     }
+    await Promise.all(workerStartPromises);
 
     // Capture model provider registry from the first worker
     modelProviders = workers[0]?.modelProviders || null;
@@ -4222,7 +4299,7 @@ while (true) {
     }
 
     const msg = String(err?.message || err || "Unknown database error");
-    setStatus(`Database unavailable — retrying in 30s (${msg.slice(0, 80)})`);
+    setStatus(`Database unavailable — retrying in 30s (${safeSlice(msg, 0, 80)})`);
     chatBox.setContent(`${ACTIVE_STARTUP_SPLASH_CONTENT}\n\n  {yellow-fg}Database unavailable.{/yellow-fg}\n  {white-fg}${msg}{/white-fg}\n\n  {gray-fg}Retrying connection in 30 seconds... (press q or Ctrl+C to quit){/gray-fg}`);
     _origRender();
 
@@ -4293,6 +4370,8 @@ const sessionPromotedIntermediate = new Map(); // orchId → normalized intermed
 const sessionRecoveredTurnResult = new Map(); // orchId → normalized completed turn recovered from live status during CMS load
 const sessionObservers = new Map(); // orchId → AbortController
 const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
+const sessionCronSchedules = new Map(); // orchId → { interval: number, reason?: string }
+const sessionContextUsage = new Map(); // orchId → latest context usage snapshot
 const sessionPendingTurns = new Set(); // orchIds with a locally-sent turn awaiting first live status
 
 // ─── Inline chat spinner ─────────────────────────────────────────
@@ -4376,6 +4455,144 @@ function isTerminalSessionState(state) {
     return state === "completed" || state === "failed" || state === "error" || state === "terminated";
 }
 
+function updateSessionCronSchedule(orchId, customStatus) {
+    if (!orchId || !customStatus) return;
+    if (customStatus.cronActive === true && typeof customStatus.cronInterval === "number") {
+        const next = {
+            interval: customStatus.cronInterval,
+            reason: typeof customStatus.cronReason === "string" ? customStatus.cronReason : undefined,
+        };
+        const prev = sessionCronSchedules.get(orchId);
+        if (prev?.interval === next.interval && prev?.reason === next.reason) return;
+        sessionCronSchedules.set(orchId, next);
+        updateSessionListIcons();
+        return;
+    }
+    if (sessionCronSchedules.delete(orchId)) {
+        updateSessionListIcons();
+    }
+}
+
+function cloneContextUsageSnapshot(contextUsage) {
+    if (!contextUsage || typeof contextUsage !== "object") return null;
+    return {
+        ...contextUsage,
+        ...(contextUsage.compaction && typeof contextUsage.compaction === "object"
+            ? { compaction: { ...contextUsage.compaction } }
+            : {}),
+    };
+}
+
+function getContextHeaderBadge(orchId) {
+    return formatContextHeaderBadge(sessionContextUsage.get(orchId));
+}
+
+function getContextCompactionBadge(orchId) {
+    return formatContextCompactionBadge(sessionContextUsage.get(orchId));
+}
+
+function getSessionContextBadge(orchId) {
+    return formatContextListBadge(sessionContextUsage.get(orchId));
+}
+
+function noteSessionContextUsage(orchId, contextUsage) {
+    if (!orchId) return;
+    const snapshot = cloneContextUsageSnapshot(contextUsage);
+    if (!snapshot) return;
+    sessionContextUsage.set(orchId, snapshot);
+    if (orchId === activeOrchId) updateChatLabel();
+    updateSessionListIcons();
+}
+
+function updateSessionContextUsageFromStatus(orchId, customStatus) {
+    if (customStatus?.contextUsage && typeof customStatus.contextUsage === "object") {
+        noteSessionContextUsage(orchId, customStatus.contextUsage);
+    }
+}
+
+function applySessionUsageEvent(orchId, eventType, data) {
+    if (!orchId || !eventType || !data || typeof data !== "object") return;
+    const current = cloneContextUsageSnapshot(sessionContextUsage.get(orchId)) || {};
+
+    if (eventType === "session.usage_info") {
+        if (typeof data.tokenLimit !== "number" || typeof data.currentTokens !== "number" || typeof data.messagesLength !== "number") {
+            return;
+        }
+        current.tokenLimit = data.tokenLimit;
+        current.currentTokens = data.currentTokens;
+        current.messagesLength = data.messagesLength;
+        current.utilization = data.tokenLimit > 0 ? data.currentTokens / data.tokenLimit : 0;
+        if (typeof data.systemTokens === "number") current.systemTokens = data.systemTokens;
+        if (typeof data.conversationTokens === "number") current.conversationTokens = data.conversationTokens;
+        if (typeof data.toolDefinitionsTokens === "number") current.toolDefinitionsTokens = data.toolDefinitionsTokens;
+        if (typeof data.isInitial === "boolean") current.isInitial = data.isInitial;
+        noteSessionContextUsage(orchId, current);
+        return;
+    }
+
+    if (eventType === "assistant.usage") {
+        if (typeof data.inputTokens === "number") current.lastInputTokens = data.inputTokens;
+        if (typeof data.outputTokens === "number") current.lastOutputTokens = data.outputTokens;
+        if (typeof data.cacheReadTokens === "number") current.lastCacheReadTokens = data.cacheReadTokens;
+        if (typeof data.cacheWriteTokens === "number") current.lastCacheWriteTokens = data.cacheWriteTokens;
+        noteSessionContextUsage(orchId, current);
+        return;
+    }
+
+    if (eventType === "session.compaction_start") {
+        current.compaction = {
+            ...(current.compaction || {}),
+            state: "running",
+            startedAt: Date.now(),
+            completedAt: undefined,
+            error: undefined,
+        };
+        noteSessionContextUsage(orchId, current);
+        return;
+    }
+
+    if (eventType === "session.compaction_complete") {
+        current.compaction = {
+            ...(current.compaction || {}),
+            state: data.success === false ? "failed" : "succeeded",
+            completedAt: Date.now(),
+            error: typeof data.error === "string" ? data.error : undefined,
+            preCompactionTokens: typeof data.preCompactionTokens === "number" ? data.preCompactionTokens : undefined,
+            postCompactionTokens: typeof data.postCompactionTokens === "number" ? data.postCompactionTokens : undefined,
+            preCompactionMessagesLength: typeof data.preCompactionMessagesLength === "number" ? data.preCompactionMessagesLength : undefined,
+            messagesRemoved: typeof data.messagesRemoved === "number" ? data.messagesRemoved : undefined,
+            tokensRemoved: typeof data.tokensRemoved === "number" ? data.tokensRemoved : undefined,
+            systemTokens: typeof data.systemTokens === "number" ? data.systemTokens : undefined,
+            conversationTokens: typeof data.conversationTokens === "number" ? data.conversationTokens : undefined,
+            toolDefinitionsTokens: typeof data.toolDefinitionsTokens === "number" ? data.toolDefinitionsTokens : undefined,
+            inputTokens: typeof data.compactionTokensUsed?.input === "number" ? data.compactionTokensUsed.input : undefined,
+            outputTokens: typeof data.compactionTokensUsed?.output === "number" ? data.compactionTokensUsed.output : undefined,
+            cachedInputTokens: typeof data.compactionTokensUsed?.cachedInput === "number" ? data.compactionTokensUsed.cachedInput : undefined,
+        };
+        if (typeof data.postCompactionTokens === "number" && typeof current.tokenLimit === "number" && current.tokenLimit > 0) {
+            current.currentTokens = data.postCompactionTokens;
+            current.utilization = data.postCompactionTokens / current.tokenLimit;
+        }
+        if (typeof data.preCompactionMessagesLength === "number" && typeof data.messagesRemoved === "number") {
+            current.messagesLength = Math.max(0, data.preCompactionMessagesLength - data.messagesRemoved);
+        }
+        if (typeof data.systemTokens === "number") current.systemTokens = data.systemTokens;
+        if (typeof data.conversationTokens === "number") current.conversationTokens = data.conversationTokens;
+        if (typeof data.toolDefinitionsTokens === "number") current.toolDefinitionsTokens = data.toolDefinitionsTokens;
+        noteSessionContextUsage(orchId, current);
+    }
+}
+
+function formatCompactionActivityLine(t, evt) {
+    return formatCompactionActivityMarkup(t, evt.eventType, evt.data || {});
+}
+
+function getSessionCronBadge(orchId) {
+    const cron = sessionCronSchedules.get(orchId);
+    if (!cron) return "";
+    return ` {magenta-fg}[cron ${cron.interval}s]{/magenta-fg}`;
+}
+
 function shouldObserveSession(orchId, cached = orchStatusCache.get(orchId)) {
     if (!orchId || sessionObservers.has(orchId)) return false;
     const visualState = getSessionVisualState(orchId, cached);
@@ -4384,7 +4601,10 @@ function shouldObserveSession(orchId, cached = orchStatusCache.get(orchId)) {
 
 function getSessionVisualState(orchId, cached = orchStatusCache.get(orchId)) {
     const liveState = sessionLiveStatus.get(orchId) || cached?.liveState;
-    if (liveState) return liveState;
+    if (liveState) {
+        if (liveState === "waiting" && sessionCronSchedules.has(orchId)) return "cron_waiting";
+        return liveState;
+    }
     switch (cached?.status) {
         case "Completed": return "completed";
         case "Failed": return "failed";
@@ -4398,6 +4618,7 @@ function getSessionVisualState(orchId, cached = orchStatusCache.get(orchId)) {
 function getSessionStateColor(state) {
     switch (state) {
         case "running": return "green";
+        case "cron_waiting": return "magenta";
         case "waiting": return "yellow";
         case "idle": return "white";
         case "input_required": return "cyan";
@@ -4412,6 +4633,7 @@ function getSessionStateColor(state) {
 function getSessionStateIcon(state) {
     switch (state) {
         case "running": return "{green-fg}*{/green-fg}";
+        case "cron_waiting": return "{magenta-fg}~{/magenta-fg}";
         case "waiting": return "{yellow-fg}~{/yellow-fg}";
         case "idle": return "{white-fg}.{/white-fg}";
         case "input_required": return "{cyan-fg}?{/cyan-fg}";
@@ -4421,10 +4643,29 @@ function getSessionStateIcon(state) {
     }
 }
 
+function getSessionListStateColor(state) {
+    return state === "cron_waiting" ? "yellow" : getSessionStateColor(state);
+}
+
+function getSessionListStateIcon(state) {
+    return state === "cron_waiting"
+        ? "{yellow-fg}~{/yellow-fg}"
+        : getSessionStateIcon(state);
+}
+
 function setSessionPendingTurn(orchId, pending) {
     if (!orchId) return;
     if (pending) sessionPendingTurns.add(orchId);
     else sessionPendingTurns.delete(orchId);
+}
+
+function formatWaitingLabel(statusLike) {
+    const reason = statusLike?.cronActive === true
+        ? (statusLike?.cronReason || statusLike?.waitReason || "timer")
+        : (statusLike?.waitReason || "timer");
+    return statusLike?.cronActive === true
+        ? `Cron waiting (${reason})…`
+        : `Waiting (${reason})…`;
 }
 
 function isTurnInProgressForSession(orchId) {
@@ -4569,7 +4810,7 @@ function handleDbUnavailable(err) {
     if (!wasOffline || prevError !== msg) {
         appendLog(`{yellow-fg}Database unavailable — retrying in 30s.{/yellow-fg}`);
     }
-    setStatus(`Database unavailable — retrying in 30s (${msg.slice(0, 80)})`);
+    setStatus(`Database unavailable — retrying in 30s (${safeSlice(msg, 0, 80)})`);
 }
 
 function handleDbRecovered() {
@@ -4633,8 +4874,8 @@ function updateSessionListIcons() {
         const id = orchIdOrder[i];
         const cached = orchStatusCache.get(id);
         const visualState = getSessionVisualState(id, cached);
-        const statusIcon = getSessionStateIcon(visualState);
-        const color = getSessionStateColor(visualState);
+        const statusIcon = getSessionListStateIcon(visualState);
+        const color = getSessionListStateColor(visualState);
 
         // Rebuild just this item's label
         const uuid4 = shortId(id);
@@ -4647,11 +4888,10 @@ function updateSessionListIcons() {
             })
             : "";
 
-        const hasChanges = orchHasChanges.has(id);
         const isActive = id === activeOrchId;
         const marker = isActive ? "{bold}▸{/bold}" : " ";
-        const changeSuffix = hasChanges ? " {cyan-fg}{bold}●{/bold}{/cyan-fg}" : "";
         const statusIconSlot = statusIcon ? statusIcon + " " : "  ";
+        const badgeSuffix = formatSessionListSuffixes(id);
         const heading = sessionHeadings.get(id);
         // Use cached depth from last full refresh
         const depth = orchDepthMap?.get(id) ?? 0;
@@ -4659,16 +4899,14 @@ function updateSessionListIcons() {
 
         // System sessions get special rendering: yellow, ≋ icon
         if (systemSessionIds.has(id)) {
-            const collapseBadge = getCollapseBadge(id);
             const sysLabel = heading
-                ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`
-                : `System Agent (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`;
+                ? `${heading} (${uuid4}) ${timeStr}${badgeSuffix}`
+                : `System Agent (${uuid4}) ${timeStr}${badgeSuffix}`;
             orchList.setItem(i, `${indent}${marker}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
         } else {
-            const collapseBadge = getCollapseBadge(id);
             const label = heading
-                ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`
-                : `(${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`;
+                ? `${heading} (${uuid4}) ${timeStr}${badgeSuffix}`
+                : `(${uuid4}) ${timeStr}${badgeSuffix}`;
             orchList.setItem(i, `${indent}${marker}${statusIconSlot}{${color}-fg}${label}{/${color}-fg}`);
         }
     }
@@ -4698,6 +4936,15 @@ function getCollapseBadge(orchId) {
     }
     const hidden = orchCollapsedCount.get(orchId);
     return hidden ? ` {cyan-fg}[+${hidden}]{/cyan-fg}` : "";
+}
+
+function formatSessionListSuffixes(orchId) {
+    const cronBadge = getSessionCronBadge(orchId);
+    const contextBadge = getSessionContextBadge(orchId);
+    const collapseBadge = getCollapseBadge(orchId);
+    const changeSuffix = orchHasChanges.has(orchId) ? " {cyan-fg}{bold}●{/bold}{/cyan-fg}" : "";
+    // Keep badge ordering stable across lightweight updates and full refreshes.
+    return `${cronBadge}${contextBadge}${collapseBadge}${changeSuffix}`;
 }
 
 function canonicalSystemTitleFromSessionView(sv, orchId) {
@@ -4794,6 +5041,14 @@ async function refreshOrchestrations(force = false) {
         }
         if (sv.agentId) {
             sessionAgentIds.set(id, sv.agentId);
+        }
+        if (sv.cronActive === true && typeof sv.cronInterval === "number") {
+            sessionCronSchedules.set(id, {
+                interval: sv.cronInterval,
+                reason: typeof sv.cronReason === "string" ? sv.cronReason : undefined,
+            });
+        } else if (sv.cronActive === false) {
+            sessionCronSchedules.delete(id);
         }
 
         // Splash from CMS — store and pre-populate chat buffer on first discovery
@@ -4950,33 +5205,30 @@ async function refreshOrchestrations(force = false) {
                 })
                 : "";
             const visualState = getSessionVisualState(id, orchStatusCache.get(id) || { status, createdAt });
-            const color = getSessionStateColor(visualState);
+            const color = getSessionListStateColor(visualState);
 
             // Highlight sessions with unseen changes
-            const hasChanges = orchHasChanges.has(id);
             const isActive = id === activeOrchId;
             const marker = isActive ? "{bold}▸{/bold}" : " ";
-            const changeSuffix = hasChanges ? " {cyan-fg}{bold}●{/bold}{/cyan-fg}" : "";
 
             // Live status indicator
-            const statusIcon = getSessionStateIcon(visualState);
+            const statusIcon = getSessionListStateIcon(visualState);
 
             const statusIconSlot = statusIcon ? statusIcon + " " : "  ";
+            const badgeSuffix = formatSessionListSuffixes(id);
             const heading = sessionHeadings.get(id);
             const indent = depth > 0 ? "   ".repeat(depth - 1) + "  └ " : "";
 
             // System sessions get special rendering: yellow, ≋ icon
             if (systemSessionIds.has(id)) {
-                const collapseBadge = getCollapseBadge(id);
                 const sysLabel = heading
-                    ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`
-                    : `System Agent (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`;
+                    ? `${heading} (${uuid4}) ${timeStr}${badgeSuffix}`
+                    : `System Agent (${uuid4}) ${timeStr}${badgeSuffix}`;
                 orchList.addItem(`${indent}${marker}{bold}{yellow-fg}≋ ${sysLabel}{/yellow-fg}{/bold}`);
             } else {
-                const collapseBadge = getCollapseBadge(id);
                 const label = heading
-                    ? `${heading} (${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`
-                    : `(${uuid4}) ${timeStr}${collapseBadge}${changeSuffix}`;
+                    ? `${heading} (${uuid4}) ${timeStr}${badgeSuffix}`
+                    : `(${uuid4}) ${timeStr}${badgeSuffix}`;
                 orchList.addItem(`${indent}${marker}${statusIconSlot}{${color}-fg}${label}{/${color}-fg}`);
             }
         }
@@ -5118,6 +5370,7 @@ orchList.key(["d"], async () => {
             await mgmt.deleteSession(sessionId);
             knownOrchestrationIds.delete(id);
             orchStatusCache.delete(id);
+            sessionCronSchedules.delete(id);
             appendLog(`{yellow-fg}Deleted ${shortId(id)}{/yellow-fg}`);
             await refreshOrchestrations();
         } catch (err) {
@@ -5918,15 +6171,17 @@ function updateChatLabel() {
     const model = sessionModels.get(activeOrchId) || "";
     const shortModel = model.includes(":") ? model.split(":")[1] : model;
     const modelTag = shortModel ? ` {cyan-fg}${shortModel}{/cyan-fg}` : "";
+    const contextTag = getContextHeaderBadge(activeOrchId);
+    const compactionTag = getContextCompactionBadge(activeOrchId);
     const collapseBadge = getCollapseBadge(activeOrchId);
     const isSweeper = systemSessionIds.has(activeOrchId);
     if (isSweeper) {
         const sysTitle = sessionHeadings.get(activeOrchId) || "System Agent";
-        chatBox.setLabel(` {bold}{yellow-fg}≋ ${sysTitle}${collapseBadge}{/yellow-fg}{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
+        chatBox.setLabel(` {bold}{yellow-fg}≋ ${sysTitle}${collapseBadge}{/yellow-fg}{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag}${contextTag}${compactionTag} `);
         chatBox.style.border.fg = "yellow";
     } else {
         const title = sessionHeadings.get(activeOrchId) || "Chat";
-        chatBox.setLabel(` {bold}${title}${collapseBadge}{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag} `);
+        chatBox.setLabel(` {bold}${title}${collapseBadge}{/bold} {white-fg}[${activeSessionShort}]{/white-fg}${modelTag}${contextTag}${compactionTag} `);
         chatBox.style.border.fg = "cyan";
     }
     screen.render();
@@ -6026,10 +6281,14 @@ function startObserver(orchId) {
                     appendChatRaw("{bold}Session info:{/bold}", orchId);
                     appendChatRaw(`  Model:       {cyan-fg}${r.model}{/cyan-fg}`, orchId);
                     appendChatRaw(`  Iteration:   ${r.iteration}`, orchId);
-                    appendChatRaw(`  Session:     ${r.sessionId?.slice(0, 12)}…`, orchId);
+                    appendChatRaw(`  Session:     ${safeSlice(r.sessionId, 0, 12)}…`, orchId);
                     appendChatRaw(`  Affinity:    ${r.affinityKey}`, orchId);
                     appendChatRaw(`  Hydrated:    ${r.needsHydration ? "no (dehydrated)" : "yes"}`, orchId);
                     appendChatRaw(`  Blob:        ${r.blobEnabled ? "enabled" : "disabled"}`, orchId);
+                    if (r.contextUsage?.tokenLimit > 0 && typeof r.contextUsage?.currentTokens === "number") {
+                        const percent = computeContextPercent(r.contextUsage);
+                        appendChatRaw(`  Context:     ${formatTokenCount(r.contextUsage.currentTokens)}/${formatTokenCount(r.contextUsage.tokenLimit)}${percent != null ? ` (${percent}%)` : ""}`, orchId);
+                    }
                     break;
                 }
                 case "done": {
@@ -6054,7 +6313,7 @@ function startObserver(orchId) {
         if (!response) return;
         stopChatSpinner(orchId);
         if (response.type === "completed" && response.content) {
-            appendActivity(`{green-fg}[obs] ✓ SHOWING ${source}: version=${response.version} type=completed content=${response.content.slice(0, 80)}{/green-fg}`, orchId);
+            appendActivity(`{green-fg}[obs] ✓ SHOWING ${source}: version=${response.version} type=completed content=${safeSlice(response.content, 0, 80)}{/green-fg}`, orchId);
             renderCompletedContent(response.content);
             if (cs.status === "idle" || cs.status === "completed") {
                 setStatusIfActive(cs.status === "completed" ? "Session completed" : "Ready — type a message");
@@ -6065,11 +6324,15 @@ function startObserver(orchId) {
             return;
         }
         if (response.type === "wait" && response.content) {
-            appendActivity(`{green-fg}[obs] ✓ SHOWING ${source}: version=${response.version} type=wait content=${response.content.slice(0, 80)}{/green-fg}`, orchId);
+            appendActivity(`{green-fg}[obs] ✓ SHOWING ${source}: version=${response.version} type=wait content=${safeSlice(response.content, 0, 80)}{/green-fg}`, orchId);
             const preview = summarizeActivityPreview(response.content);
             appendActivity(`{white-fg}[${ts()}]{/white-fg} {gray-fg}[intermediate]{/gray-fg} ${preview}`, orchId);
             promoteIntermediateContent(response.content, orchId);
-            setStatusIfActive(`Waiting (${cs.waitReason || response.waitReason || "timer"})…`);
+            setStatusIfActive(formatWaitingLabel({
+                cronActive: cs?.cronActive === true,
+                cronReason: cs?.cronReason,
+                waitReason: cs?.waitReason || response.waitReason,
+            }));
             return;
         }
         if (response.type === "input_required") {
@@ -6092,6 +6355,8 @@ function startObserver(orchId) {
                     : statusSnapshot.customStatus;
             } catch {}
         }
+        updateSessionCronSchedule(orchId, cs);
+        updateSessionContextUsageFromStatus(orchId, cs);
         if (!cs) return null;
 
         lastVersion = Math.max(lastVersion, statusSnapshot.customStatusVersion || 0);
@@ -6186,6 +6451,8 @@ function startObserver(orchId) {
                         ? JSON.parse(currentStatus.customStatus) : currentStatus.customStatus;
                 } catch {}
                 if (cs) {
+                    updateSessionCronSchedule(orchId, cs);
+                    updateSessionContextUsageFromStatus(orchId, cs);
                     lastVersion = currentStatus.customStatusVersion || 0;
                     if (cs.turnResult && cs.turnResult.type === "completed") {
                         lastIteration = cs.iteration || 0;
@@ -6216,7 +6483,7 @@ function startObserver(orchId) {
                         setTurnInProgressIfActive(true);
                         updateLiveStatus("running");
                     } else if (cs.status === "waiting") {
-                        setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
+                        setStatusIfActive(formatWaitingLabel(cs));
                         updateLiveStatus("waiting");
                     } else if (cs.status === "input_required") {
                         if (cs.turnResult?.type === "input_required") {
@@ -6257,7 +6524,7 @@ function startObserver(orchId) {
                 const _obsPh = perfStart("observer.waitForStatusChange");
                 const _waitStart = Date.now();
                 const statusResult = await dc.waitForStatusChange(
-                    orchId, lastVersion, 200, 30_000
+                    orchId, lastVersion, 1_000, 60_000
                 );
                 const _waitMs = Date.now() - _waitStart;
                 perfEnd(_obsPh, { orchId: orchId.slice(0, 12), ver: statusResult.customStatusVersion });
@@ -6288,6 +6555,8 @@ function startObserver(orchId) {
                             ? JSON.parse(statusResult.customStatus) : statusResult.customStatus;
                     } catch {}
                 }
+                updateSessionCronSchedule(orchId, cs);
+                updateSessionContextUsageFromStatus(orchId, cs);
 
                 if (cs) {
                     // Log every status change with key fields
@@ -6348,7 +6617,7 @@ function startObserver(orchId) {
                     } else if (cs.turnResult && cs.iteration <= lastIteration) {
                         appendActivity(`{yellow-fg}[obs] ⚠ SKIPPED turnResult: iter=${cs.iteration} <= lastIter=${lastIteration} (already shown){/yellow-fg}`, orchId);
                         if (cs.status === "waiting") {
-                            setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
+                            setStatusIfActive(formatWaitingLabel(cs));
                         }
                     } else if (cs.responseVersion) {
                         const latestResponse = await consumeLatestResponsePayload(orchId, cs, dc);
@@ -6368,7 +6637,7 @@ function startObserver(orchId) {
                             setStatusIfActive("Running…");
                             setTurnInProgressIfActive(true);
                         } else if (cs.status === "waiting") {
-                            setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
+                            setStatusIfActive(formatWaitingLabel(cs));
                         } else if (cs.status === "input_required") {
                             setStatusIfActive("Waiting for your answer...");
                             updateLiveStatus("input_required");
@@ -6386,7 +6655,7 @@ function startObserver(orchId) {
                         setStatusIfActive("Running…");
                         setTurnInProgressIfActive(true);
                     } else if (cs.status === "waiting") {
-                        setStatusIfActive(`Waiting (${cs.waitReason || "timer"})…`);
+                        setStatusIfActive(formatWaitingLabel(cs));
                     }
 
                     // Mark session as having unseen changes if not active
@@ -6461,6 +6730,11 @@ function startCmsPoller(orchId) {
             const t = formatDisplayTime(Date.now());
             const type = evt.eventType;
 
+            if (type === "session.usage_info" || type === "assistant.usage"
+                || type === "session.compaction_start" || type === "session.compaction_complete") {
+                applySessionUsageEvent(orchId, type, evt.data);
+            }
+
             // Don't render events that the customStatus observer already handles
             if (type === "assistant.message") return;
             if (type === "user.message") return;
@@ -6477,6 +6751,8 @@ function startCmsPoller(orchId) {
                 appendActivity(`{white-fg}[${t}]{/white-fg} {gray-fg}[reasoning]{/gray-fg}`, orchId);
             } else if (type === "assistant.turn_start") {
                 appendActivity(`{white-fg}[${t}]{/white-fg} {gray-fg}[turn start]{/gray-fg}`, orchId);
+            } else if (type === "session.compaction_start" || type === "session.compaction_complete") {
+                appendActivity(formatCompactionActivityLine(t, evt), orchId);
             } else if (type === "assistant.usage" || type === "session.info" || type === "session.idle"
                 || type === "session.usage_info" || type === "pending_messages.modified" || type === "abort") {
                 // skip internal/noisy events
@@ -6522,6 +6798,8 @@ async function switchToOrchestration(orchId) {
             if (!sessionModels.has(orchId) && info?.customStatus) {
                 try {
                     const cs = typeof info.customStatus === "string" ? JSON.parse(info.customStatus) : info.customStatus;
+                    updateSessionCronSchedule(orchId, cs);
+                    updateSessionContextUsageFromStatus(orchId, cs);
                     const turnResult = cs.turnResult || cs.lastTurnResult;
                     if (turnResult?.model) {
                         sessionModels.set(orchId, turnResult.model);
@@ -6540,6 +6818,8 @@ async function switchToOrchestration(orchId) {
             if (info?.customStatus) {
                 try {
                     const cs = typeof info.customStatus === "string" ? JSON.parse(info.customStatus) : info.customStatus;
+                    updateSessionCronSchedule(orchId, cs);
+                    updateSessionContextUsageFromStatus(orchId, cs);
                     if (cs?.status) {
                         sessionLiveStatus.set(orchId, cs.status);
                         updateSessionListIcons();
@@ -7597,7 +7877,7 @@ async function summarizeSession(orchId) {
     let sawRunning = false;
     while (Date.now() < deadline) {
         try {
-            const result = await dc.waitForStatusChange(orchId, version, 200, 15_000);
+            const result = await dc.waitForStatusChange(orchId, version, 1_000, 60_000);
             if (result.customStatusVersion > version) {
                 version = result.customStatusVersion;
             }
@@ -7608,6 +7888,8 @@ async function summarizeSession(orchId) {
                         ? JSON.parse(result.customStatus) : result.customStatus;
                 } catch {}
             }
+            updateSessionCronSchedule(orchId, cs);
+            updateSessionContextUsageFromStatus(orchId, cs);
             if (cs?.status === "running") {
                 sawRunning = true;
                 continue; // wait for the completed result

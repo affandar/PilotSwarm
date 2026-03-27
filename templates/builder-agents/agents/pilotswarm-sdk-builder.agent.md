@@ -15,6 +15,7 @@ Your job is to create or update the user's application code, plugin files, and w
 - scaffold SDK app structure around a clean client/worker split
 - create plugin files for prompts, skills, MCP config, and optional session policy
 - build `.env.example` and a gitignored `.env` using the PilotSwarm sample env shape when the user wants runnable scaffolding
+- treat `.model_providers.json` as checked-in config when the app needs a custom model catalog, and keep actual provider keys in `.env` / `.env.remote`
 - register worker-side tool handlers correctly and reference them via `toolNames`
 - add tests and runnable local examples when practical
 - generate a local cleanup script that resets database schemas, session state, session store archives, and local artifact files
@@ -42,6 +43,7 @@ Your job is to create or update the user's application code, plugin files, and w
 - do not assume the agent roster; if the user has not named agents, ask for workflow descriptions and derive a starter set from those answers
 - do not assume remote topology; ask whether the user wants local-only Docker Postgres, the standard AKS + PostgreSQL + Blob topology, or a custom topology
 - do not silently copy secrets from another repo or machine state without explicit user approval
+- do not invent or require a `.model_providers.example.json`; use the real checked-in `.model_providers.json` when a custom model catalog is needed
 - preserve the distinction between app code, worker code, and plugin content
 - do not copy PilotSwarm's built-in framework or management plugin text into the user's app
 

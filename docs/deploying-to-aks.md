@@ -59,6 +59,16 @@ kubectl delete deployment copilot-runtime-worker -n <old-namespace>
 
 ## Step 1: Create Kubernetes Resources
 
+## Prefer The Repo Script
+
+For this repository, prefer the canonical deploy/reset path:
+
+```bash
+./scripts/deploy-aks.sh
+```
+
+That script refreshes the Kubernetes secret, optionally wipes remote state, builds the SDK, pushes the worker image, and waits for rollout completion.
+
 ### Namespace
 
 ```bash
@@ -68,6 +78,8 @@ kubectl apply -f deploy/k8s/namespace.yaml
 This creates the `copilot-runtime` namespace.
 
 ### Secrets
+
+PilotSwarm's model catalog is the checked-in [`.model_providers.json`](../.model_providers.json). The Kubernetes secret only needs the env vars referenced by that catalog and the worker runtime.
 
 Store your credentials as a Kubernetes secret:
 
@@ -79,6 +91,8 @@ kubectl create secret generic copilot-runtime-secrets \
     --from-literal=AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=..." \
     --from-literal=AZURE_STORAGE_CONTAINER="copilot-sessions"
 ```
+
+Provider availability in selectors is env-driven at worker startup. If you add or remove a provider key, refresh the secret and restart the workers; changing `.model_providers.json` alone is not enough.
 
 ### Refresh GitHub Token
 
@@ -93,6 +107,8 @@ kubectl create secret generic copilot-runtime-secrets \
     --from-literal=AZURE_STORAGE_CONTAINER="copilot-sessions" \
     --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+The same pattern applies to Azure/OpenAI or Anthropic BYOK keys. If a provider should disappear from selectors, make sure its env var is absent when the secret is reapplied, then restart the deployment and verify the live model surface.
 
 ## Step 2: Build and Push Docker Image
 
@@ -168,6 +184,28 @@ You should see:
 [pod/copilot-runtime-worker-xxxxx/worker] [worker] Pod: copilot-runtime-worker-xxxxx
 [pod/copilot-runtime-worker-xxxxx/worker] [worker] Started ✓ Polling for orchestrations...
 ```
+
+After a cold start or destructive reset, the workers will automatically recreate the built-in system sessions (`PilotSwarm Agent`, `Sweeper Agent`, `Resource Manager Agent`, `Facts Manager`). A truly empty session list is therefore temporary.
+
+## Reset Remote State For Reproduction Or Replay Cleanup
+
+When orchestration logic changed or you want a clean reproduction:
+
+```bash
+kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=0
+NODE_TLS_REJECT_UNAUTHORIZED=0 node --env-file=.env.remote scripts/db-reset.js --yes
+kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=6
+kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime --timeout=180s
+```
+
+This drops:
+
+- `duroxide`
+- `copilot_sessions`
+- `pilotswarm_facts`
+- all blobs in `copilot-sessions` when blob storage is configured
+
+After the workers come back, expect the built-in system sessions to be recreated immediately. For replay-sensitive testing, verify that the recreated root `PilotSwarm Agent` is healthy before starting new user sessions.
 
 ## Step 4: Connect Your Client
 
