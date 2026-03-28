@@ -49,6 +49,8 @@ my-sdk-app/
 11. Add a checked-in cleanup script that drops database schemas and removes session state (handles both local and remote modes).
 12. Add a local example or test that exercises the intended app flow.
 13. When agents need durable structured memory or cross-agent shared state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`). They are available to every agent session by default, including system agents, and should be treated as the primary memory mechanism instead of inventing a one-off app-specific table.
+14. When agents need recurring autonomous work (monitoring, polling, periodic cleanup), use the durable `cron` tool: `cron(seconds=N, reason="...")` to start, `cron(action="cancel")` to stop. Cron schedules survive process restarts and worker failovers. Prefer cron over `wait` loops for periodic tasks.
+15. Agents can read their context usage (current tokens, token limit) from the session status `contextUsage` field. Use this for agents that need to manage context window budgets or trigger compaction.
 
 ## Guided Intake Questions
 

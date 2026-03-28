@@ -51,6 +51,8 @@ my-app/
 12. Make generated scripts executable and verify the executable bit.
 13. Add a README with local run instructions.
 14. When agents need durable structured memory or shared coordination state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) as the primary memory layer. They are available to every agent session by default, including system agents, so do not build a separate fact table unless the app truly requires it.
+15. When agents need recurring autonomous work (monitoring, polling, periodic cleanup), use the durable `cron` tool: `cron(seconds=N, reason="...")` to start, `cron(action="cancel")` to stop. Cron schedules survive process restarts and worker failovers. Prefer cron over `wait` loops for periodic tasks.
+16. Agents can read their context usage (current tokens, token limit) from the session status. The TUI displays this in the status bar. Use this for agents that need to manage context window budgets or trigger compaction.
 
 ## Guided Intake Questions
 

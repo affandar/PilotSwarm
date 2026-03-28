@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.12 — 2026-03-28
+
+### SDK
+
+- **Durable cron scheduling** — new `cron` tool for recurring agent wakeups. Agents call `cron(seconds=N, reason="...")` to start durable recurring schedules that survive process restarts, `cron(action="cancel")` to stop. CMS events: `session.cron_started`, `session.cron_fired`, `session.cron_cancelled`.
+- **Context visibility** — token usage tracking via `contextUsage` field (currentTokens, tokenLimit). Compaction events surfaced in CMS. TUI status bar shows context usage percentage.
+- **Orchestration v1.0.31** — cron loop integration, context usage tracking, `ensureWarmResumeCheckpoint` for crash-safe continueAsNew, improved spawn_agent follow-up queueing.
+- **Orchestration versioning cleanup** — pruned 19 legacy frozen versions (v1.0.0–v1.0.25), retained v1.0.26–v1.0.30 for in-flight replay compatibility.
+- **KV response transport** — response payloads stored via durable key-value instead of inline customStatus, reducing orchestration history bloat.
+
+### CLI / TUI
+
+- **CMS-backed sequence diagram** — sequence view now driven by CMS events with worker-node tracking, replacing log-line parsing.
+- **Node Map view** — new visualization showing which worker pod runs each session. Lazy-loads CMS timelines for all sessions.
+- **Context usage display** — status bar shows token count and percentage for the active session.
+- **Preview→final in-place replacement** — assistant message transitions no longer cause scroll jumps or focus resets.
+- **Null guards** — `safeSlice`, `safeTail`, `normalizePodName` protect against null worker/session IDs in all render paths.
+
+### Tests
+
+- 7 new test suites: `cron-tool`, `context-usage` (3 suites), `cms-seq-nodemap`, `tui-null-guards`, `orchestration-warm-resume`, `system-agent-cron-contracts`, `temp-session-cleanup`.
+- Test stability fixes for parallel execution and model provider config.
+
+### Docs & Templates
+
+- CMS-derived sequence diagram & node map spec (`docs/proposals/`).
+- Cron tool implementation spec (`docs/proposals-impl/cron-tool.md`).
+- System reference updated with cron and context usage.
+- Builder template skills updated with cron/context-usage guidance.
+- New AKS deploy and reset skills.
+
 ## 0.1.10 — 2026-03-24
 
 ### SDK

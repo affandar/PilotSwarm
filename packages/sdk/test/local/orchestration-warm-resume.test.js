@@ -30,7 +30,7 @@ describe("orchestration warm resume durability", () => {
             return { effect: "spawnChildSession" };
         });
 
-        const { durableSessionOrchestration_1_0_30 } = await import("../../src/orchestration.ts");
+        const { durableSessionOrchestration_1_0_30 } = await import("../../src/orchestration_1_0_30.ts");
 
         const ctx = {
             traceInfo: () => {},

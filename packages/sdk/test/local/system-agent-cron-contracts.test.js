@@ -48,7 +48,7 @@ describe("system agent cron contracts", () => {
         assertIncludes(orchestration, 'yield* dehydrateForNextTurn("cron", true);', "cron waits should release worker affinity");
         assertIncludes(orchestration, "[orch] cron timer:", "cron waits should emit a dedicated trace event");
         assertIncludes(tui, 'case "cron_waiting": return "magenta";', "cron wait sessions should render in magenta");
-        assertIncludes(tui, '"ZZ cron wait"', "sequence view should show a cron-specific dehydration marker");
+        assertIncludes(tui, 'detail: `ZZ ${evt.data?.reason ?? ""}`', "sequence view should show a reason-prefixed dehydration marker");
         assertIncludes(tui, "{magenta-fg}~ cron{/magenta-fg}", "worker legend should include cron wait state");
     });
 
@@ -65,7 +65,7 @@ describe("system agent cron contracts", () => {
 
         assertIncludes(tui, 'return state === "cron_waiting" ? "yellow" : getSessionStateColor(state);', "session-list rows should treat cron waits like normal waiting rows");
         assertIncludes(tui, '? "{yellow-fg}~{/yellow-fg}"', "session-list cron icon should stay non-magenta");
-        assertIncludes(tui, 'return ` {magenta-fg}[cron ${cron.interval}s]{/magenta-fg}`;', "cron badge itself should stay magenta");
+        assertIncludes(tui, 'return ` {magenta-fg}[cron ${formatHumanDurationSeconds(cron.interval)}]{/magenta-fg}`;', "cron badge itself should stay magenta");
     });
 
 });
