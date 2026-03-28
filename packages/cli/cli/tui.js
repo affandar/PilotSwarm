@@ -64,6 +64,102 @@ const BASE_TUI_TITLE = (process.env._TUI_TITLE || "PilotSwarm").trim() || "Pilot
 const CUSTOM_TUI_SPLASH = process.env._TUI_SPLASH?.trim() || "";
 const ACTIVE_STARTUP_SPLASH_CONTENT = CUSTOM_TUI_SPLASH || STARTUP_SPLASH_CONTENT;
 const HAS_CUSTOM_TUI_BRANDING = BASE_TUI_TITLE !== "PilotSwarm" || Boolean(CUSTOM_TUI_SPLASH);
+const TERMINAL_RESET_ESCAPE = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h";
+const SIGNAL_EXIT_CODES = {
+    SIGINT: 130,
+    SIGTERM: 143,
+    SIGHUP: 129,
+};
+
+let localEmbeddedRuntimeLockPath = null;
+let shutdownInProgress = false;
+
+function isProcessAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (err) {
+        return err?.code === "EPERM";
+    }
+}
+
+function getLocalEmbeddedRuntimeLockPath() {
+    const sessionStateDir = process.env.SESSION_STATE_DIR || path.join(os.homedir(), ".copilot", "session-state");
+    return path.join(path.dirname(sessionStateDir), "embedded-local-runtime.lock.json");
+}
+
+function releaseLocalEmbeddedRuntimeLock() {
+    if (!localEmbeddedRuntimeLockPath) return;
+
+    try {
+        const raw = fs.readFileSync(localEmbeddedRuntimeLockPath, "utf-8");
+        const owner = JSON.parse(raw);
+        if (Number(owner?.pid) && Number(owner.pid) !== process.pid) {
+            return;
+        }
+    } catch {}
+
+    try {
+        fs.rmSync(localEmbeddedRuntimeLockPath, { force: true });
+    } catch {}
+    localEmbeddedRuntimeLockPath = null;
+}
+
+function acquireLocalEmbeddedRuntimeLock(store) {
+    const lockPath = getLocalEmbeddedRuntimeLockPath();
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+
+    const lockBody = JSON.stringify({
+        pid: process.pid,
+        mode: "local-embedded",
+        cwd: process.cwd(),
+        store,
+        acquiredAt: new Date().toISOString(),
+    }, null, 2);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const fd = fs.openSync(lockPath, "wx");
+            fs.writeFileSync(fd, lockBody, "utf-8");
+            fs.closeSync(fd);
+            localEmbeddedRuntimeLockPath = lockPath;
+            return;
+        } catch (err) {
+            if (err?.code !== "EEXIST") throw err;
+
+            let owner = null;
+            try {
+                owner = JSON.parse(fs.readFileSync(lockPath, "utf-8"));
+            } catch {}
+
+            const ownerPid = Number(owner?.pid);
+            if (ownerPid && ownerPid !== process.pid && isProcessAlive(ownerPid)) {
+                const ownerStore = owner?.store ? ` (${owner.store})` : "";
+                throw new Error(
+                    `Another embedded local PilotSwarm TUI is already running (pid ${ownerPid})${ownerStore}. ` +
+                    `Close it before starting a second local TUI. Remote mode still supports multiple windows.`,
+                );
+            }
+
+            try {
+                fs.rmSync(lockPath, { force: true });
+            } catch {}
+        }
+    }
+
+    throw new Error("Failed to acquire the embedded local runtime lock.");
+}
+
+function exitProcessNow(code) {
+    releaseLocalEmbeddedRuntimeLock();
+    try { fs.writeSync(1, Buffer.from(TERMINAL_RESET_ESCAPE)); } catch {}
+    process.exit(code);
+}
+
+process.on("exit", () => {
+    releaseLocalEmbeddedRuntimeLock();
+});
 
 function formatWindowTitle(detail) {
     return detail ? `${BASE_TUI_TITLE} (${detail})` : BASE_TUI_TITLE;
@@ -317,6 +413,234 @@ function isMarkdownTableLine(line) {
         || /^\s*\|?[:\- ]+\|[:\-| ]+\|?\s*$/.test(line);
 }
 
+function getRenderablePaneWidth(pane, fallbackWidth) {
+    const numericWidth = typeof pane?.width === "number" ? pane.width : fallbackWidth;
+    const innerWidth = numericWidth - (pane?.iwidth || 2) - (pane?.scrollbar ? 1 : 0);
+    return Math.max(20, innerWidth);
+}
+
+function splitMarkdownTableCells(line) {
+    const trimmed = String(line || "").trim().replace(/^\|/, "").replace(/\|$/, "");
+    const cells = [];
+    let current = "";
+    let escaping = false;
+
+    for (const ch of trimmed) {
+        if (escaping) {
+            current += ch;
+            escaping = false;
+            continue;
+        }
+        if (ch === "\\") {
+            escaping = true;
+            continue;
+        }
+        if (ch === "|") {
+            cells.push(current.trim());
+            current = "";
+            continue;
+        }
+        current += ch;
+    }
+    cells.push(current.trim());
+    return cells;
+}
+
+function isMarkdownTableSeparatorRow(cells) {
+    return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(String(cell || "").replace(/\s+/g, "")));
+}
+
+function sliceTextToDisplayWidth(text, maxWidth) {
+    if (maxWidth <= 0) return "";
+    let out = "";
+    let used = 0;
+    for (const ch of String(text || "")) {
+        const chWidth = Math.max(1, displayWidth(ch));
+        if (used + chWidth > maxWidth) break;
+        out += ch;
+        used += chWidth;
+    }
+    return out;
+}
+
+function wrapTableCellText(text, width) {
+    const normalized = String(text || "").replace(/\s+/g, " ").trim();
+    if (!normalized) return [""];
+
+    const words = normalized.split(" ");
+    const lines = [];
+    let current = "";
+
+    const appendWord = (word) => {
+        let remaining = word;
+        while (displayWidth(remaining) > width) {
+            const chunk = sliceTextToDisplayWidth(remaining, width);
+            if (!chunk) break;
+            if (current) {
+                lines.push(current);
+                current = "";
+            }
+            lines.push(chunk);
+            remaining = remaining.slice(chunk.length);
+        }
+        return remaining;
+    };
+
+    for (const word of words) {
+        const fittedWord = appendWord(word);
+        if (!fittedWord) continue;
+        if (!current) {
+            current = fittedWord;
+            continue;
+        }
+        const candidate = `${current} ${fittedWord}`;
+        if (displayWidth(candidate) <= width) {
+            current = candidate;
+        } else {
+            lines.push(current);
+            current = fittedWord;
+        }
+    }
+
+    if (current) lines.push(current);
+    return lines.length > 0 ? lines : [""];
+}
+
+function computeMarkdownTableColumnWidths(rows, maxWidth, separatorWidth) {
+    const columnCount = Math.max(1, ...rows.map(row => row.length));
+    const totalSeparatorWidth = typeof separatorWidth === "number"
+        ? separatorWidth
+        : (columnCount - 1) * 3;
+    const availableWidth = Math.max(columnCount * 3, maxWidth - totalSeparatorWidth);
+    const preferred = Array.from({ length: columnCount }, (_, index) => Math.max(
+        3,
+        ...rows.map(row => displayWidth(row[index] || "")),
+    ));
+    const minimum = Array.from({ length: columnCount }, (_, index) => Math.max(
+        3,
+        Math.min(displayWidth(rows[0]?.[index] || "") || 3, 18),
+    ));
+
+    if (columnCount === 2) {
+        const secondMinimum = Math.max(minimum[1], 16);
+        const firstCap = Math.max(minimum[0], Math.min(24, Math.floor(availableWidth * 0.32)));
+        let firstWidth = Math.min(preferred[0], firstCap);
+        let secondWidth = availableWidth - firstWidth;
+        if (secondWidth < secondMinimum) {
+            firstWidth = Math.max(minimum[0], availableWidth - secondMinimum);
+            secondWidth = availableWidth - firstWidth;
+        }
+        return [firstWidth, secondWidth];
+    }
+
+    const widths = minimum.slice();
+    let remaining = availableWidth - widths.reduce((sum, width) => sum + width, 0);
+    if (remaining < 0) {
+        const equalShare = Math.max(3, Math.floor(availableWidth / columnCount));
+        return widths.map((_, index) => index === columnCount - 1
+            ? Math.max(3, availableWidth - equalShare * (columnCount - 1))
+            : equalShare);
+    }
+
+    while (remaining > 0) {
+        let bestIndex = 0;
+        let bestNeed = -Infinity;
+        for (let index = 0; index < columnCount; index++) {
+            const need = preferred[index] - widths[index];
+            if (need > bestNeed) {
+                bestNeed = need;
+                bestIndex = index;
+            }
+        }
+        widths[bestIndex] += 1;
+        remaining -= 1;
+    }
+
+    return widths;
+}
+
+function estimateMarkdownTableWidth(rows) {
+    const columnCount = Math.max(1, ...rows.map(row => row.length));
+    const preferred = Array.from({ length: columnCount }, (_, index) => Math.max(
+        3,
+        ...rows.map(row => displayWidth(row[index] || "")),
+    ));
+    return preferred.reduce((sum, width) => sum + width, 0) + (columnCount * 3 + 1);
+}
+
+function renderPlainMarkdownTable(rows, maxWidth) {
+    if (!rows || rows.length === 0) return "";
+    const columnCount = Math.max(1, ...rows.map(row => row.length));
+    const normalizedRows = rows.map(row => Array.from({ length: columnCount }, (_, index) => row[index] || ""));
+    const borderOverhead = columnCount * 3 + 1; // | cell | cell |
+    const widths = computeMarkdownTableColumnWidths(normalizedRows, maxWidth, borderOverhead);
+    const out = [];
+
+    const topBorder = `┌${widths.map(width => "─".repeat(width + 2)).join("┬")}┐`;
+    const middleBorder = `├${widths.map(width => "─".repeat(width + 2)).join("┼")}┤`;
+    const bottomBorder = `└${widths.map(width => "─".repeat(width + 2)).join("┴")}┘`;
+
+    const renderRow = (cells) => {
+        const wrapped = cells.map((cell, index) => wrapTableCellText(cell, widths[index]));
+        const height = Math.max(...wrapped.map(lines => lines.length));
+        for (let lineIndex = 0; lineIndex < height; lineIndex++) {
+            const parts = wrapped.map((lines, index) => padToWidth(lines[lineIndex] || "", widths[index]));
+            out.push(`│ ${parts.join(" │ ")} │`);
+        }
+    };
+
+    out.push(topBorder);
+    renderRow(normalizedRows[0]);
+    out.push(middleBorder);
+    for (const row of normalizedRows.slice(1)) {
+        renderRow(row);
+    }
+    out.push(bottomBorder);
+    return out.join("\n");
+}
+
+function formatMarkdownTables(md, maxWidth) {
+    const lines = String(md || "").split("\n");
+    const out = [];
+
+    for (let index = 0; index < lines.length; index++) {
+        const line = lines[index];
+        const nextLine = lines[index + 1];
+        if (!isMarkdownTableLine(line) || !isMarkdownTableLine(nextLine)) {
+            out.push(line);
+            continue;
+        }
+
+        const headerCells = splitMarkdownTableCells(line);
+        const separatorCells = splitMarkdownTableCells(nextLine);
+        if (!isMarkdownTableSeparatorRow(separatorCells) || headerCells.length !== separatorCells.length) {
+            out.push(line);
+            continue;
+        }
+
+        const rows = [headerCells];
+        const tableLines = [line, nextLine];
+        index += 1;
+        while (index + 1 < lines.length && isMarkdownTableLine(lines[index + 1])) {
+            index += 1;
+            tableLines.push(lines[index]);
+            const rowCells = splitMarkdownTableCells(lines[index]);
+            if (isMarkdownTableSeparatorRow(rowCells)) continue;
+            rows.push(rowCells);
+        }
+
+        if (estimateMarkdownTableWidth(rows) <= maxWidth) {
+            out.push(...tableLines);
+            continue;
+        }
+
+        const renderedTable = renderPlainMarkdownTable(rows, maxWidth);
+        out.push("```text", renderedTable, "```");
+    }
+
+    return out.join("\n");
+}
+
 function isAsciiArtCandidateLine(line) {
     if (!line || !line.trim()) return false;
     if (isMarkdownTableLine(line)) return false;
@@ -401,14 +725,14 @@ function preserveAsciiArtBlocks(md) {
     return out.join("\n");
 }
 
-function renderMarkdown(md) {
+function renderMarkdown(md, widthOverride) {
     const _ph = perfStart("renderMarkdown");
     try {
-        // Dynamically set width to match chat pane (minus borders/padding)
-        const mdWidth = Math.max(40, leftW() - 4);
-            marked.use(markedTerminal({ reflowText: true, width: mdWidth, showSectionPrefix: false, tab: 2, blockquote: chalk.whiteBright.italic, html: chalk.white, codespan: chalk.yellowBright }, { theme: cliHighlightTheme }));
+        const fallbackWidth = Math.max(40, leftW() - 4);
+        const mdWidth = Math.max(40, widthOverride || getRenderablePaneWidth(typeof chatBox !== "undefined" ? chatBox : null, fallbackWidth));
+        marked.use(markedTerminal({ reflowText: true, width: mdWidth, showSectionPrefix: false, tab: 2, blockquote: chalk.whiteBright.italic, html: chalk.white, codespan: chalk.yellowBright }, { theme: cliHighlightTheme }));
         const unescaped = md.replace(/\\n/g, "\n");
-        const preprocessed = preserveAsciiArtBlocks(unescaped);
+        const preprocessed = preserveAsciiArtBlocks(formatMarkdownTables(unescaped, mdWidth));
         let rendered = marked(preprocessed).replace(/\n{3,}/g, "\n\n").trimEnd();
         // marked-terminal uses ANSI codes for styling, not blessed tags.
         // Strip curly braces so blessed doesn't misinterpret them as tags.
@@ -472,16 +796,18 @@ const _registeredArtifacts = new Set();
 const MAX_ARTIFACT_REGISTRY = 500;
 
 /** TUI-level artifact store for on-demand downloads. Created lazily.
- *  Uses Azure Blob when configured, otherwise falls back to local filesystem. */
+ *  Remote mode uses Azure Blob when configured; local mode stays on the
+ *  repo-local filesystem artifact store.
+ */
 let _tuiArtifactStore = null;
 function getTuiArtifactStore() {
     if (_tuiArtifactStore) return _tuiArtifactStore;
     const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING;
-    if (connStr) {
+    if (isRemote && connStr) {
         const container = process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions";
         _tuiArtifactStore = new SessionBlobStore(connStr, container);
     } else {
-        _tuiArtifactStore = new FilesystemArtifactStore();
+        _tuiArtifactStore = new FilesystemArtifactStore(process.env.ARTIFACT_DIR);
     }
     return _tuiArtifactStore;
 }
@@ -818,6 +1144,34 @@ function ts() {
     return formatDisplayTime(Date.now());
 }
 
+function formatHumanDurationSeconds(totalSeconds) {
+    const numeric = Number(totalSeconds);
+    if (!Number.isFinite(numeric)) {
+        return `${asDisplayText(totalSeconds, "?")}s`;
+    }
+
+    const roundedSeconds = Math.max(0, Math.round(numeric));
+    if (roundedSeconds >= 86400) {
+        const days = Math.floor(roundedSeconds / 86400);
+        const hours = Math.floor((roundedSeconds % 86400) / 3600);
+        const minutes = Math.floor((roundedSeconds % 3600) / 60);
+        const seconds = roundedSeconds % 60;
+        return `${days}d ${hours}h ${minutes}m ${seconds}s`;
+    }
+    if (roundedSeconds >= 3600) {
+        const hours = Math.floor(roundedSeconds / 3600);
+        const minutes = Math.floor((roundedSeconds % 3600) / 60);
+        const seconds = roundedSeconds % 60;
+        return `${hours}h ${minutes}m ${seconds}s`;
+    }
+    if (roundedSeconds >= 60) {
+        const minutes = Math.floor(roundedSeconds / 60);
+        const seconds = roundedSeconds % 60;
+        return `${minutes}m ${seconds}s`;
+    }
+    return `${roundedSeconds}s`;
+}
+
 function asDisplayText(value, fallback = "") {
     if (typeof value === "string") return value;
     if (value == null) return fallback;
@@ -991,23 +1345,35 @@ setInterval(() => {
 // ─── Layout calculations ─────────────────────────────────────────
 // Left column: sessions (top) + chat (bottom). Right column: full-height logs.
 
-let rightPaneAdjust = Math.floor(screen.width * 0.55 * 0.25); // start right pane at 3/4 of default
-function leftW() { return Math.floor(screen.width * 0.45) + rightPaneAdjust; }
-function rightW() { return screen.width - leftW(); }
+const DEFAULT_LEFT_PANE_RATIO = 0.70;
+const MIN_LEFT_PANE_WIDTH = 30;
+const MIN_RIGHT_PANE_WIDTH = 20;
+let rightPaneAdjust = 0;
+
+function baseLeftW() {
+    return Math.floor(screen.width * DEFAULT_LEFT_PANE_RATIO);
+}
+
+function leftW() {
+    const desired = baseLeftW() + rightPaneAdjust;
+    return Math.max(MIN_LEFT_PANE_WIDTH, Math.min(desired, screen.width - MIN_RIGHT_PANE_WIDTH));
+}
+
+function rightW() {
+    return Math.max(MIN_RIGHT_PANE_WIDTH, screen.width - leftW());
+}
 const MIN_PROMPT_EDITOR_ROWS = 1;
 const MAX_PROMPT_EDITOR_ROWS = 8;
 let promptValueCache = "";
+let inputBar = null;
 
 function promptLineCount(text) {
     const str = String(text || "");
     if (!str) return 1;
-    // Count visual lines: each \n-delimited line may wrap across multiple visual rows
-    const width = Math.max(1, screen.width - 2); // input bar inner width (full width minus borders)
-    let visualLines = 0;
-    for (const line of str.split("\n")) {
-        visualLines += Math.max(1, Math.ceil((line.length + 1) / width));
+    if (inputBar?._clines && inputBar._clines.content === str) {
+        return Math.max(1, inputBar._clines.length || 1);
     }
-    return Math.max(1, visualLines);
+    return Math.max(1, getCursorVisualPosition(str, str.length).row + 1);
 }
 
 function promptEditorRows() {
@@ -1210,7 +1576,7 @@ const paneColors = ["yellow", "magenta", "green", "blue"];
 let nextColorIdx = 0;
 
 // Log viewing mode: "workers" | "orchestration" | "sequence" | "nodemap"
-let logViewMode = "orchestration";
+let logViewMode = "sequence";
 // Markdown viewer overlay — toggled independently via 'v' key.
 // When active, replaces the entire right side (log panes + activity pane).
 let mdViewActive = false;
@@ -1255,18 +1621,13 @@ const orchLogPane = blessed.log({
 
 // ─── Sequence Diagram Mode (swimlane) ────────────────────────────
 // Vertical scrolling swimlane: one column per worker node.
-// Activity boxes stay in the same column (session affinity).
-// Migration arrows show when affinity resets after dehydrate.
+// Backed by CMS events (worker_node_id per event, seq-ordered).
 
 const TIME_W = 10; // "HH:MM:SS  " — time + trailing space
 
-const seqEventBuffers = new Map(); // orchId → [event]
 const seqNodes = [];               // ordered short node names
 const seqNodeSet = new Set();
 const MAX_SEQ_RENDER_EVENTS = 120;
-
-// Track per-session state for rendering
-const seqLastActivityNode = new Map(); // orchId → last node that ran activity
 
 const seqHeaderBox = blessed.box({
     parent: screen,
@@ -1422,7 +1783,7 @@ function refreshMarkdownViewer() {
         const f = files[mdViewerSelectedIdx];
         try {
             const raw = fs.readFileSync(f.localPath, "utf-8");
-            const rendered = renderMarkdown(raw);
+            const rendered = renderMarkdown(raw, getRenderablePaneWidth(mdPreviewPane, Math.max(40, leftW() - 4)));
             mdPreviewPane.setLabel(` ${f.filename} `);
             mdPreviewPane.setContent(rendered);
             mdPreviewPane.scrollTo(0);
@@ -1648,9 +2009,20 @@ function refreshNodeMap() {
     const UNASSIGNED = "(unknown)";
     nodeSessionMap.set(UNASSIGNED, []);
 
-    // Walk all known orchestrations and assign to their last-known node
+    // Walk all known orchestrations and assign to their last-known node (from CMS events).
     for (const orchId of knownOrchestrationIds) {
-        const node = seqLastActivityNode.get(orchId);
+        const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+        const cmsTimeline = cmsSeqTimelines.get(sid);
+        let node;
+        if (cmsTimeline && cmsTimeline.length > 0) {
+            for (let i = cmsTimeline.length - 1; i >= 0; i--) {
+                const nodeId = getSeqEventNodeId(cmsTimeline[i]);
+                if (nodeId && nodeId !== "(unknown)") {
+                    node = safeTail(nodeId, 5);
+                    break;
+                }
+            }
+        }
         const status = getSessionVisualState(orchId);
         const uuid4 = shortId(orchId);
         const title = sessionHeadings.get(orchId);
@@ -2032,18 +2404,6 @@ registerSelectablePane(mdFileListPane, "markdown file list");
 registerSelectablePane(mdPreviewPane, "markdown preview");
 registerSelectablePane(activityPane, "activity");
 
-function addSeqNode(podName) {
-    const short = safeTail(normalizePodName(podName), 5);
-    if (seqNodeSet.has(short)) return short;
-    seqNodeSet.add(short);
-    seqNodes.push(short);
-    // Update sticky header when a new node is discovered
-    if (logViewMode === "sequence") {
-        updateSeqHeader();
-    }
-    return short;
-}
-
 // Compute column width dynamically from pane inner width
 // Returns an array of per-column widths so remaining pixels are distributed
 // across the first N columns instead of leaving a gap at the right.
@@ -2058,13 +2418,6 @@ function seqColWidths() {
         widths.push(base + (i < remainder ? 1 : 0));
     }
     return widths;
-}
-
-// Legacy helper — returns the base column width (used in separator/header)
-function seqColW() {
-    const innerW = (seqPane.width || 60) - 4;
-    const ncols = seqNodes.length || 1;
-    return Math.max(8, Math.floor((innerW - TIME_W) / ncols));
 }
 
 // Measure display width of a string (emoji = 2 cells)
@@ -2107,11 +2460,12 @@ function padToWidth(str, targetW) {
 }
 
 // Build one swimlane line: place content in a specific column
-function seqLine(time, colIdx, content, color) {
+function seqLine(time, colIdx, content, color, options = {}) {
     const ncols = seqNodes.length || 1;
     const widths = seqColWidths();
     const timeStr = (time || "").padEnd(TIME_W);
     const displayContent = asDisplayText(content);
+    const underline = options.underline === true;
     let line = `{white-fg}${timeStr}{/white-fg}`;
 
     for (let i = 0; i < ncols; i++) {
@@ -2122,10 +2476,12 @@ function seqLine(time, colIdx, content, color) {
             const clipped = displayContent.length > maxContent
                 ? safeSlice(displayContent, 0, maxContent)
                 : displayContent;
-            // Pad the clipped text to maxContent BEFORE applying color tags
-            const padded = padToWidth(clipped, maxContent);
-            const colored = color ? `{${color}-fg}${padded}{/${color}-fg}` : padded;
-            line += ` ${colored} `;
+            const remaining = Math.max(0, maxContent - displayWidth(clipped));
+            const leftPadding = " ".repeat(Math.floor(remaining / 2));
+            const rightPadding = " ".repeat(remaining - Math.floor(remaining / 2));
+            let styled = color ? `{${color}-fg}${clipped}{/${color}-fg}` : clipped;
+            if (underline) styled = `{underline}${styled}{/underline}`;
+            line += ` ${leftPadding}${styled}${rightPadding} `;
         } else {
             // Empty cell — vertical bar for the swimlane (ASCII | avoids
             // ambiguous-width issues with Unicode box-drawing characters)
@@ -2134,17 +2490,6 @@ function seqLine(time, colIdx, content, color) {
         }
     }
     return line;
-}
-
-// Full-width separator line for CAN / migration events
-function seqSeparator(label, color) {
-    const widths = seqColWidths();
-    const totalW = TIME_W + widths.reduce((a, b) => a + b, 0);
-    const labelStr = ` ${label} `;
-    const dashCount = Math.max(0, totalW - labelStr.length);
-    const left = Math.floor(dashCount / 2);
-    const right = dashCount - left;
-    return `{${color}-fg}${"-".repeat(left)}${labelStr}${"-".repeat(right)}{/${color}-fg}`;
 }
 
 function seqHeader() {
@@ -2165,309 +2510,6 @@ function seqHeader() {
 }
 
 /**
- * Parse a raw log line into a sequence event.
- * Returns null if the line isn't relevant for the sequence diagram.
- */
-function parseSeqEvent(plain, podName) {
-    const iMatch = plain.match(/instance_id=(\S+)/);
-    if (!iMatch) return null;
-    const orchId = iMatch[1].replace(/,.*$/, "");
-    if (!orchId.startsWith("session-")) return null;
-
-    const tMatch = plain.match(/\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2})/);
-    const time = tMatch ? tMatch[1] : "";
-
-    const orchNode = addSeqNode(podName);
-
-    // Extract worker node from activity logs
-    // Try local-mode pattern first (local-rt-N), then remote pod pattern
-    const wMatch = plain.match(/worker_id=\S*?(local-rt-\d+)/)
-              || plain.match(/worker_id=work-\d+-(\S+)-rt-\d+/);
-    const actNode = wMatch ? addSeqNode(wMatch[1]) : orchNode;
-
-    // ─── Orchestration events (dots) ──────────
-    if (plain.includes("[turn ")) {
-        const turnMatch = plain.match(/\[turn (\d+)\]/);
-        const promptMatch = plain.match(/prompt="([^"]{0,30})/);
-        return { orchId, time, type: "turn", orchNode, actNode,
-            turn: turnMatch?.[1] || "?",
-            prompt: promptMatch?.[1] || "" };
-    }
-    if (plain.includes("execution start") || plain.includes("[orch] start:")) {
-        const iterMatch = plain.match(/iteration=(\d+)/) || plain.match(/iter=(\d+)/);
-        const hydrate = plain.includes("needsHydration=true") || plain.includes("hydrate=true");
-        return { orchId, time, type: "exec_start", orchNode, actNode,
-            iteration: parseInt(iterMatch?.[1] || "0", 10),
-            hydrate };
-    }
-    if (plain.includes("timer completed")) {
-        const sMatch = plain.match(/seconds=(\d+)/);
-        return { orchId, time, type: "timer_fired", orchNode, actNode,
-            seconds: sMatch?.[1] || "?" };
-    }
-    if (plain.includes("idle timeout")) {
-        return { orchId, time, type: "dehydrate", orchNode, actNode };
-    }
-    if (plain.includes("user responded within idle")) {
-        return { orchId, time, type: "user_idle", orchNode, actNode };
-    }
-    if (plain.includes("wait interrupted")) {
-        return { orchId, time, type: "interrupt", orchNode, actNode };
-    }
-
-    // ─── Activity events (boxes) ──────────
-    if (plain.includes("[activity]") && (plain.includes("activity_name=runAgentTurn") || plain.includes("activity_name=runTurn"))) {
-        if (plain.includes("resuming session")) {
-            return { orchId, time, type: "resume", orchNode, actNode };
-        }
-        if (plain.includes("re-hydrating")) {
-            return { orchId, time, type: "resume", orchNode, actNode };
-        }
-        return { orchId, time, type: "activity_start", orchNode, actNode };
-    }
-    if (plain.includes("activity_name=dehydrateSession")) {
-        return { orchId, time, type: "dehydrate_act", orchNode, actNode };
-    }
-    if (plain.includes("activity_name=hydrateSession")) {
-        return { orchId, time, type: "hydrate_act", orchNode, actNode };
-    }
-    if (plain.includes("activity_name=listModels")) {
-        return { orchId, time, type: "listmodels_act", orchNode, actNode };
-    }
-
-    // ─── Command dispatch events ──────────
-    if (plain.includes("[orch-cmd]")) {
-        const cmdMatch = plain.match(/received command: (\S+)/);
-        if (cmdMatch) {
-            return { orchId, time, type: "cmd_recv", orchNode, actNode,
-                cmd: cmdMatch[1] };
-        }
-        const modelMatch = plain.match(/model changed: (.+)/);
-        if (modelMatch) {
-            return { orchId, time, type: "cmd_done", orchNode, actNode,
-                detail: modelMatch[1] };
-        }
-    }
-
-    // ─── Grace period dehydration ──────────
-    if (plain.includes("Grace period elapsed, dehydrating")) {
-        return { orchId, time, type: "dehydrate", orchNode, actNode };
-    }
-    // explicit dehydrate log from orchestration
-    if (plain.includes("[orch] dehydrating session (reason=cron")) {
-        return { orchId, time, type: "cron_dehydrate", orchNode, actNode };
-    }
-    if (plain.includes("[orch] dehydrating session")) {
-        return { orchId, time, type: "dehydrate", orchNode, actNode };
-    }
-
-    // ─── Agent output events ──────────
-    if (plain.includes("[orch] cron timer:")) {
-        const sMatch = plain.match(/\[orch\] cron timer:\s*(\d+)s/);
-        return { orchId, time, type: "cron_wait", orchNode, actNode,
-            seconds: sMatch?.[1] || "?" };
-    }
-    if (plain.includes("[durable-agent] Durable timer") || plain.includes("[orch] durable timer:")) {
-        const sMatch = plain.match(/(?:Durable timer|durable timer):\s*(\d+)s/);
-        return { orchId, time, type: "wait", orchNode, actNode,
-            seconds: sMatch?.[1] || "?" };
-    }
-    if (plain.includes("[durable-agent] Intermediate content") || plain.includes("[orch] intermediate:")) {
-        const cMatch = plain.match(/(?:Intermediate content|intermediate):\s*(.{0,25})/);
-        return { orchId, time, type: "content", orchNode, actNode,
-            snippet: cMatch?.[1] || "…" };
-    }
-    if (plain.includes("[response]")) {
-        const rMatch = plain.match(/\[response\] (.{0,25})/);
-        return { orchId, time, type: "response", orchNode, actNode,
-            snippet: rMatch?.[1] || "" };
-    }
-    // [runTurn] activity log
-    if (plain.includes("[runTurn]")) {
-        return { orchId, time, type: "activity_start", orchNode, actNode };
-    }
-
-    return null;
-}
-
-/**
- * Inject a synthetic "user sent a message" marker into the sequence diagram.
- * Called from handleInput so the interaction is visible immediately,
- * without waiting for kubectl logs to stream back.
- */
-function injectSeqUserEvent(orchId, label) {
-    const now = formatDisplayTime(Date.now(), { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    // Find the last node that ran an activity for this session, or fall back to first node
-    const lastAct = seqLastActivityNode.get(orchId) || seqNodes[0];
-    if (!lastAct) return; // no nodes yet
-    const col = seqNodes.indexOf(lastAct);
-    if (col < 0) return;
-
-    const synth = { orchId, time: now, type: "user_msg_synth", orchNode: lastAct, actNode: lastAct, label };
-    appendSeqEvent(orchId, synth);
-}
-
-/**
- * Append a parsed event and render it if sequence mode is active.
- */
-function appendSeqEvent(orchId, event) {
-    if (!seqEventBuffers.has(orchId)) seqEventBuffers.set(orchId, []);
-    const buf = seqEventBuffers.get(orchId);
-    buf.push(event);
-    if (buf.length > 300) buf.splice(0, buf.length - 300);
-
-    // Always track which node each session is on (for node map view),
-    // not just when the sequence pane is rendering.
-    if (event.type === "activity_start" || event.type === "resume" || event.type === "hydrate_act") {
-        seqLastActivityNode.set(orchId, event.actNode);
-    } else if (event.actNode && !seqLastActivityNode.has(orchId)) {
-        // First event for this session — use whatever node we see
-        seqLastActivityNode.set(orchId, event.actNode);
-    }
-
-    if (logViewMode === "sequence" && orchId === activeOrchId) {
-        renderSeqEventLine(event, orchId);
-        screen.render();
-    }
-}
-
-/**
- * Render a single event into the sequence pane.
- */
-function renderSeqEventLine(event, orchId) {
-    const lastAct = seqLastActivityNode.get(orchId);
-
-    switch (event.type) {
-        case "exec_start":
-            // Suppress standalone exec_start — the turn event that always
-            // follows provides enough context. This halves the vertical
-            // density of the diagram.
-            break;
-
-        case "turn": {
-            const orchCol = seqNodes.indexOf(event.orchNode);
-            seqPane.log(seqLine(event.time, orchCol, `turn ${event.turn}`, "gray"));
-            break;
-        }
-
-        case "activity_start": {
-            const col = seqNodes.indexOf(event.actNode);
-            if (lastAct !== undefined && lastAct !== event.actNode) {
-                seqPane.log(seqLine(event.time, col, `> ${lastAct}->${event.actNode}`, "yellow"));
-            }
-            seqLastActivityNode.set(orchId, event.actNode);
-            seqPane.log(seqLine(event.time, col, "> agent", "cyan"));
-            break;
-        }
-
-        case "resume": {
-            const col = seqNodes.indexOf(event.actNode);
-            if (lastAct !== undefined && lastAct !== event.actNode) {
-                seqPane.log(seqLine(event.time, col, `> ${lastAct}->${event.actNode}`, "yellow"));
-            }
-            seqLastActivityNode.set(orchId, event.actNode);
-            seqPane.log(seqLine(event.time, col, "^ resume", "green"));
-            break;
-        }
-
-        case "content": {
-            // Skip verbose streaming-content rows in sequence mode to keep
-            // vertical density high; full content remains in chat pane.
-            break;
-        }
-
-        case "response": {
-            const col = seqNodes.indexOf(lastAct || event.orchNode);
-            const colW = seqColW();
-            const maxSnip = Math.max(3, colW - 8);
-            const snip = (event.snippet || "ok").slice(0, maxSnip);
-            seqPane.log(seqLine(event.time, col, `< ${snip}`, "green"));
-            break;
-        }
-
-        case "wait": {
-            const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, `wait ${event.seconds}s`, "yellow"));
-            break;
-        }
-
-        case "cron_wait": {
-            const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, `cron ${event.seconds}s`, "magenta"));
-            break;
-        }
-
-        case "timer_fired": {
-            const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, `${event.seconds}s up`, "yellow"));
-            break;
-        }
-
-        case "dehydrate": {
-            const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, "ZZ dehydrate", "red"));
-            break;
-        }
-
-        case "cron_dehydrate": {
-            const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, "ZZ cron wait", "magenta"));
-            break;
-        }
-
-        case "dehydrate_act": {
-            const col = seqNodes.indexOf(event.actNode);
-            seqPane.log(seqLine(event.time, col, "ZZ > blob", "red"));
-            break;
-        }
-
-        case "hydrate_act": {
-            const col = seqNodes.indexOf(event.actNode);
-            seqPane.log(seqLine(event.time, col, "^^ < blob", "green"));
-            break;
-        }
-
-        case "user_idle": {
-            const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, ">> user msg", "cyan"));
-            break;
-        }
-
-        case "interrupt": {
-            const col = seqNodes.indexOf(lastAct || event.orchNode);
-            seqPane.log(seqLine(event.time, col, ">> interrupt", "cyan"));
-            break;
-        }
-
-        case "user_msg_synth": {
-            const col = seqNodes.indexOf(event.orchNode);
-            const snip = event.label && event.label.length > 12 ? event.label.slice(0, 12) + "…" : (event.label || "msg");
-            seqPane.log(seqLine(event.time, col, `>> ${snip}`, "white"));
-            break;
-        }
-
-        case "cmd_recv": {
-            const col = seqNodes.indexOf(event.orchNode);
-            seqPane.log(seqLine(event.time, col, `>> /${event.cmd}`, "magenta"));
-            break;
-        }
-
-        case "cmd_done": {
-            const col = seqNodes.indexOf(event.orchNode);
-            seqPane.log(seqLine(event.time, col, `<< ${(event.detail || "ok").slice(0, 15)}`, "magenta"));
-            break;
-        }
-
-        case "listmodels_act": {
-            const col = seqNodes.indexOf(event.actNode);
-            seqPane.log(seqLine(event.time, col, "[= listModels]", "magenta"));
-            break;
-        }
-    }
-    // Don't render here — callers batch renders
-}
-
-/**
  * Update the sticky header box with current node columns.
  */
 function updateSeqHeader() {
@@ -2483,26 +2525,307 @@ function updateSeqHeader() {
  * Full re-render of the sequence pane for the active session.
  */
 function refreshSeqPane() {
+    refreshCmsSeqPane();
+}
+
+// ─── CMS-Backed Sequence Diagram ─────────────────────────────────
+// Replaces log-parsed sequence data with CMS events from the management client.
+// CMS events have: seq (ordering), created_at (display time), event_type, data, worker_node_id.
+
+const cmsSeqTimelines = new Map(); // sessionId → SeqEvent[]
+const cmsSeqLastSeq = new Map();   // sessionId → last seq seen (for incremental poll)
+const ORCHESTRATOR_SEQ_TYPES = new Set([
+    "wait",
+    "timer",
+    "cron_start",
+    "cron_fire",
+    "cron_cancel",
+    "spawn",
+    "cmd_recv",
+    "cmd_done",
+]);
+
+function isOrchestratorSeqEventType(type) {
+    return ORCHESTRATOR_SEQ_TYPES.has(type);
+}
+
+function getSeqEventNodeId(event) {
+    return event?.displayWorkerNodeId || event?.workerNodeId || "(unknown)";
+}
+
+function findPriorActivitySeqNodeId(timeline) {
+    for (let i = timeline.length - 1; i >= 0; i--) {
+        const candidate = timeline[i];
+        if (!candidate || isOrchestratorSeqEventType(candidate.type)) continue;
+        const nodeId = getSeqEventNodeId(candidate);
+        if (nodeId && nodeId !== "(unknown)") return nodeId;
+    }
+    return null;
+}
+
+function placeCmsSeqEvent(timeline, event) {
+    if (!event) return null;
+    const next = { ...event };
+    if (isOrchestratorSeqEventType(next.type)) {
+        const priorActivityNodeId = findPriorActivitySeqNodeId(timeline);
+        if (priorActivityNodeId) next.displayWorkerNodeId = priorActivityNodeId;
+        next.underline = true;
+    }
+    return next;
+}
+
+/**
+ * Map a CMS event to a sequence diagram event.
+ * Returns null for event types that shouldn't appear in the diagram.
+ */
+function cmsEventToSeqEvent(evt) {
+    const time = evt.createdAt instanceof Date
+        ? formatDisplayTime(evt.createdAt.getTime(), { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        : "";
+    const node = evt.workerNodeId || "(unknown)";
+    const base = { seq: evt.seq, time, workerNodeId: node };
+
+    switch (evt.eventType) {
+        case "session.turn_started":
+            return { ...base, type: "turn_start", detail: `turn ${evt.data?.iteration ?? "?"}` };
+        case "session.turn_completed":
+            return { ...base, type: "turn_end", detail: `turn ${evt.data?.iteration ?? "?"} done` };
+        case "user.message": {
+            const content = typeof evt.data?.content === "string" ? evt.data.content : "";
+            const snip = summarizeActivityPreview(content, 20);
+            return { ...base, type: "user_msg", detail: snip };
+        }
+        case "assistant.message": {
+            const content = typeof evt.data?.content === "string" ? evt.data.content : "";
+            const snip = summarizeActivityPreview(content, 20);
+            return { ...base, type: "response", detail: snip };
+        }
+        case "session.wait_started":
+            return { ...base, type: "wait", detail: `wait ${evt.data?.seconds ?? "?"}s` };
+        case "session.wait_completed":
+            return { ...base, type: "timer", detail: `${evt.data?.seconds ?? "?"}s up` };
+        case "session.dehydrated":
+            return { ...base, type: "dehydrate", detail: `ZZ ${evt.data?.reason ?? ""}` };
+        case "session.hydrated":
+            return { ...base, type: "hydrate", detail: "^^ rehydrated" };
+        case "session.agent_spawned": {
+            const who = evt.data?.agentId || evt.data?.childSessionId?.slice(0, 8) || "agent";
+            return { ...base, type: "spawn", detail: `spawn ${who}` };
+        }
+        case "session.cron_started":
+            return { ...base, type: "cron_start", detail: `cron ${formatHumanDurationSeconds(evt.data?.intervalSeconds ?? "?")}` };
+        case "session.cron_fired":
+            return { ...base, type: "cron_fire", detail: "cron fired" };
+        case "session.cron_cancelled":
+            return { ...base, type: "cron_cancel", detail: "cron off" };
+        case "session.command_received":
+            return { ...base, type: "cmd_recv", detail: `/${evt.data?.cmd ?? "?"}` };
+        case "session.command_completed":
+            return { ...base, type: "cmd_done", detail: `/${evt.data?.cmd ?? "?"} ok` };
+        case "session.compaction_start":
+            return { ...base, type: "compaction", detail: "compaction…" };
+        case "session.compaction_complete":
+            return { ...base, type: "compaction", detail: "compacted" };
+        case "session.error":
+            return { ...base, type: "error", detail: `err: ${(evt.data?.message || "").slice(0, 20)}` };
+        // Skip purely-data events that don't add visual value
+        case "assistant.usage":
+        case "session.usage_info":
+            return null;
+        default:
+            return null;
+    }
+}
+
+/**
+ * Render a CMS-derived SeqEvent into the sequence pane.
+ */
+function renderCmsSeqEventLine(event) {
+    const col = cmsSeqNodeIndex(getSeqEventNodeId(event));
+    const detail = event.detail || "";
+    const lineStyle = event.underline ? { underline: true } : undefined;
+
+    switch (event.type) {
+        case "turn_start":
+            seqPane.log(seqLine(event.time, col, detail, "gray", lineStyle));
+            break;
+        case "turn_end":
+            // Suppress — turn_start is enough (same as existing log-based behavior)
+            break;
+        case "user_msg":
+            seqPane.log(seqLine(event.time, col, `>> ${detail}`, "white", lineStyle));
+            break;
+        case "response":
+            seqPane.log(seqLine(event.time, col, `< ${detail}`, "green", lineStyle));
+            break;
+        case "wait":
+            seqPane.log(seqLine(event.time, col, detail, "yellow", lineStyle));
+            break;
+        case "timer":
+            seqPane.log(seqLine(event.time, col, detail, "yellow", lineStyle));
+            break;
+        case "dehydrate":
+            seqPane.log(seqLine(event.time, col, detail, "red", lineStyle));
+            break;
+        case "hydrate":
+            seqPane.log(seqLine(event.time, col, detail, "green", lineStyle));
+            break;
+        case "spawn":
+            seqPane.log(seqLine(event.time, col, detail, "cyan", lineStyle));
+            break;
+        case "cron_start":
+            seqPane.log(seqLine(event.time, col, detail, "magenta", lineStyle));
+            break;
+        case "cron_fire":
+            seqPane.log(seqLine(event.time, col, detail, "magenta", lineStyle));
+            break;
+        case "cron_cancel":
+            seqPane.log(seqLine(event.time, col, detail, "magenta", lineStyle));
+            break;
+        case "cmd_recv":
+            seqPane.log(seqLine(event.time, col, `>> ${detail}`, "magenta", lineStyle));
+            break;
+        case "cmd_done":
+            seqPane.log(seqLine(event.time, col, `<< ${detail}`, "magenta", lineStyle));
+            break;
+        case "compaction":
+            seqPane.log(seqLine(event.time, col, detail, "gray", lineStyle));
+            break;
+        case "error":
+            seqPane.log(seqLine(event.time, col, detail, "red", lineStyle));
+            break;
+    }
+}
+
+function getSeqAggregationKey(event) {
+    if (!event) return null;
+    const nodeId = getSeqEventNodeId(event);
+    if (event.type === "spawn") {
+        return `spawn:${nodeId}`;
+    }
+    if (isOrchestratorSeqEventType(event.type) && event.detail) {
+        return `${event.type}:${nodeId}:${event.detail}`;
+    }
+    return null;
+}
+
+function collapseSeqEventsForRender(events) {
+    const collapsed = [];
+    for (const event of events) {
+        const prev = collapsed[collapsed.length - 1];
+        const eventKey = getSeqAggregationKey(event);
+        const prevKey = getSeqAggregationKey(prev);
+
+        if (eventKey && prevKey && eventKey === prevKey) {
+            prev.aggregateCount = (prev.aggregateCount || 1) + 1;
+            if (prev.type === "spawn") {
+                prev.detail = `spawn ×${prev.aggregateCount}`;
+            } else {
+                prev.detail = `${prev.baseDetail || prev.detail} ×${prev.aggregateCount}`;
+            }
+            continue;
+        }
+
+        const next = { ...event, aggregateCount: 1, baseDetail: event.detail };
+        collapsed.push(next);
+    }
+    return collapsed;
+}
+
+/** Ensure a worker node is tracked in the sequence column list. Returns its index. */
+function cmsSeqNodeIndex(workerNodeId) {
+    const short = workerNodeId ? safeTail(workerNodeId, 5) : "(unk)";
+    if (!seqNodeSet.has(short)) {
+        seqNodeSet.add(short);
+        seqNodes.push(short);
+        if (logViewMode === "sequence") updateSeqHeader();
+    }
+    return seqNodes.indexOf(short);
+}
+
+/**
+ * Load the full CMS event timeline for a session.
+ * Called on session switch and TUI startup.
+ */
+async function loadCmsSeqTimeline(sessionId) {
+    try {
+        const events = await mgmt.getSessionEvents(sessionId);
+        const timeline = [];
+        for (const evt of events) {
+            const seqEvt = placeCmsSeqEvent(timeline, cmsEventToSeqEvent(evt));
+            if (seqEvt) timeline.push(seqEvt);
+        }
+        cmsSeqTimelines.set(sessionId, timeline);
+        cmsSeqLastSeq.set(sessionId, events.length > 0 ? events[events.length - 1].seq : 0);
+
+        // Discover worker nodes from events
+        for (const evt of timeline) {
+            const nodeId = getSeqEventNodeId(evt);
+            if (nodeId) cmsSeqNodeIndex(nodeId);
+        }
+    } catch (err) {
+        // CMS not available — the log-based path will still work as fallback
+    }
+}
+
+/**
+ * Incrementally poll for new CMS events for a session.
+ * Appends to existing timeline and renders if sequence mode is active.
+ */
+async function pollCmsSeqEvents(sessionId) {
+    try {
+        const afterSeq = cmsSeqLastSeq.get(sessionId) || 0;
+        const events = await mgmt.getSessionEvents(sessionId, afterSeq, 100);
+        if (events.length === 0) return;
+
+        const timeline = cmsSeqTimelines.get(sessionId) || [];
+        for (const evt of events) {
+            const seqEvt = placeCmsSeqEvent(timeline, cmsEventToSeqEvent(evt));
+            if (seqEvt) {
+                const nodeId = getSeqEventNodeId(seqEvt);
+                if (nodeId) cmsSeqNodeIndex(nodeId);
+                timeline.push(seqEvt);
+                // Render incrementally if this is the active session in sequence mode
+                const orchId = `session-${sessionId}`;
+                if (logViewMode === "sequence" && orchId === activeOrchId) {
+                    refreshCmsSeqPane();
+                }
+            }
+        }
+        cmsSeqTimelines.set(sessionId, timeline);
+        cmsSeqLastSeq.set(sessionId, events[events.length - 1].seq);
+
+        // Cap timeline at 300 events
+        if (timeline.length > 300) timeline.splice(0, timeline.length - 300);
+
+        if (logViewMode === "sequence" && `session-${sessionId}` === activeOrchId) {
+            screen.render();
+        }
+    } catch {}
+}
+
+/**
+ * Full re-render of the CMS-backed sequence pane for the active session.
+ */
+function refreshCmsSeqPane() {
     seqPane.setContent("");
     const seqShortId = shortId(activeOrchId);
     seqPane.setLabel(` Sequence: ${seqShortId} `);
-
-    // Update sticky header
     updateSeqHeader();
 
-    // Reset tracking state for this render pass
-    seqLastActivityNode.delete(activeOrchId);
+    const sessionId = activeOrchId?.replace("session-", "");
+    const timeline = sessionId ? cmsSeqTimelines.get(sessionId) : null;
 
-    const events = seqEventBuffers.get(activeOrchId);
-    if (events && events.length > 0) {
-        const renderEvents = events.length > MAX_SEQ_RENDER_EVENTS
-            ? events.slice(-MAX_SEQ_RENDER_EVENTS)
-            : events;
-        if (events.length > MAX_SEQ_RENDER_EVENTS) {
-            seqPane.log(`{gray-fg}… showing last ${MAX_SEQ_RENDER_EVENTS} of ${events.length} events …{/gray-fg}`);
+    if (timeline && timeline.length > 0) {
+        const renderEvents = timeline.length > MAX_SEQ_RENDER_EVENTS
+            ? timeline.slice(-MAX_SEQ_RENDER_EVENTS)
+            : timeline;
+        const collapsedEvents = collapseSeqEventsForRender(renderEvents);
+        if (timeline.length > MAX_SEQ_RENDER_EVENTS) {
+            seqPane.log(`{gray-fg}… showing last ${MAX_SEQ_RENDER_EVENTS} of ${timeline.length} events …{/gray-fg}`);
         }
-        for (const event of renderEvents) {
-            renderSeqEventLine(event, activeOrchId);
+        for (const event of collapsedEvents) {
+            renderCmsSeqEventLine(event);
         }
     } else {
         seqPane.log("{white-fg}No events yet — interact with this session to populate{/white-fg}");
@@ -2702,7 +3025,7 @@ function getOrCreateWorkerPane(podName) {
 
     // Register this pod as a sequence diagram column so all nodes
     // appear regardless of whether the active session has used them.
-    addSeqNode(podName);
+    cmsSeqNodeIndex(podName);
 
     relayoutAll();
     return pane;
@@ -2853,7 +3176,7 @@ function redrawActiveViews() {
 
 // ─── Input bar ───────────────────────────────────────────────────
 
-const inputBar = blessed.textarea({
+inputBar = blessed.textarea({
     parent: screen,
     label: " {bold}you:{/bold} ",
     tags: true,
@@ -2894,13 +3217,69 @@ function clampInputCursor(index, value = inputBar.getValue()) {
 }
 
 function getInputInnerWidth() {
+    if (!inputBar) return Math.max(1, screen.width - 2);
     const numericWidth = typeof inputBar.width === "number" ? inputBar.width : screen.width;
     return Math.max(1, numericWidth - (inputBar.iwidth || 2));
 }
 
+function getInputWrapWidth() {
+    // neo-blessed textarea reserves one extra cell of right margin for the
+    // cursor, so wrapping happens at innerWidth - 1 rather than innerWidth.
+    const margin = 1 + (inputBar?.scrollbar ? 1 : 0);
+    return Math.max(1, getInputInnerWidth() - margin);
+}
+
+function getInputStringWidth(text) {
+    if (typeof inputBar?.strWidth === "function") {
+        return inputBar.strWidth(String(text || ""));
+    }
+    return displayWidth(text);
+}
+
+function getRawInputCursorPosition(value, cursorIndex) {
+    const text = String(value || "");
+    const target = clampInputCursor(cursorIndex, text);
+    let line = 0;
+    let column = 0;
+
+    for (let i = 0; i < target; i++) {
+        if (text[i] === "\n") {
+            line += 1;
+            column = 0;
+            continue;
+        }
+        column += 1;
+    }
+
+    return { line, column };
+}
+
 function getCursorVisualPosition(value, cursorIndex) {
     const text = String(value || "");
-    const width = getInputInnerWidth();
+    const clines = inputBar?._clines;
+    if (clines?.ftor && clines.content === text) {
+        const { line: rawLineIndex, column: rawColumn } = getRawInputCursorPosition(text, cursorIndex);
+        const wrappedIndexes = clines.ftor[rawLineIndex] || [];
+
+        if (wrappedIndexes.length > 0) {
+            let remaining = rawColumn;
+            for (let index = 0; index < wrappedIndexes.length; index++) {
+                const wrappedLineIndex = wrappedIndexes[index];
+                const wrappedText = clines[wrappedLineIndex] || "";
+                const segmentLength = wrappedText.length;
+                const isLastSegment = index === wrappedIndexes.length - 1;
+
+                if (remaining <= segmentLength || isLastSegment) {
+                    const visiblePrefix = wrappedText.slice(0, Math.min(remaining, segmentLength));
+                    return { row: wrappedLineIndex, col: getInputStringWidth(visiblePrefix) };
+                }
+
+                remaining -= segmentLength;
+            }
+        }
+    }
+
+    const width = getInputWrapWidth();
     let row = 0;
     let col = 0;
 
@@ -2911,11 +3290,12 @@ function getCursorVisualPosition(value, cursorIndex) {
             col = 0;
             continue;
         }
-        col += 1;
-        if (col >= width) {
+        const chWidth = Math.max(1, displayWidth(ch));
+        if (col > 0 && col + chWidth > width) {
             row += 1;
             col = 0;
         }
+        col += chWidth;
     }
 
     return { row, col };
@@ -3495,30 +3875,148 @@ function recolorWorkerPanes() {
 
 function showCopilotMessage(raw, orchId) {
     const _ph = perfStart("showCopilotMessage");
+    clearPendingAssistantPreview(orchId, raw);
     stopChatSpinner(orchId);
-
-    appendActivity(`{green-fg}[obs] showCopilotMessage called for ${orchId === activeOrchId ? "ACTIVE" : "background"} session, len=${raw?.length || 0}{/green-fg}`, orchId);
-
-    // Detect and register artifact links before rendering
-    detectArtifactLinks(raw, orchId);
-
-    // Replace artifact:// URIs with highlighted display before markdown rendering
-    const displayRaw = renderArtifactLinks(raw);
-
-    const rendered = renderMarkdown(displayRaw);
     const prefix = `{white-fg}[${ts()}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`;
-    appendChatRaw(prefix, orchId);
-    // Always show on separate lines for readability
-    for (const line of rendered.split("\n")) {
+    const { lines } = buildAssistantChatLines(raw, orchId, prefix);
+    for (const line of lines) {
         appendChatRaw(line, orchId);
     }
-    appendChatRaw("", orchId); // blank line after each message
     perfEnd(_ph, { len: raw?.length || 0 });
+}
+
+function isRenderedTableLikeLine(line) {
+    const trimmed = String(line || "").trim();
+    if (!trimmed) return false;
+    if (isMarkdownTableLine(trimmed)) return true;
+    return /^[┌├└│+|]/.test(trimmed);
+}
+
+function buildPrefixedRenderedLines(prefix, rendered, options = {}) {
+    const trailingBlank = options.trailingBlank !== false;
+    const renderedLines = String(rendered || "").split("\n");
+    const firstContentLineIndex = renderedLines.findIndex((line) => line.trim() !== "");
+    const startsWithTable = firstContentLineIndex >= 0
+        && isRenderedTableLikeLine(renderedLines[firstContentLineIndex]);
+    const lines = startsWithTable
+        ? [prefix, ...renderedLines]
+        : (() => {
+            const [firstLine = "", ...rest] = renderedLines;
+            return [firstLine ? `${prefix} ${firstLine}` : prefix, ...rest];
+        })();
+    if (trailingBlank) lines.push("");
+    return lines;
+}
+
+function stripAssistantHeadingLine(text) {
+    return typeof text === "string"
+        ? text.replace(/^HEADING:.*\n?/m, "").trim()
+        : "";
 }
 
 function normalizeObserverChatText(text) {
     if (typeof text !== "string") return "";
     return text.replace(/\r\n/g, "\n").trim();
+}
+
+function normalizeAssistantPreviewText(text) {
+    return normalizeObserverChatText(stripAssistantHeadingLine(text));
+}
+
+function removeChatLineSequence(buffer, lines) {
+    if (!Array.isArray(buffer) || !Array.isArray(lines) || lines.length === 0) return false;
+    for (let start = buffer.length - lines.length; start >= 0; start--) {
+        let matches = true;
+        for (let offset = 0; offset < lines.length; offset++) {
+            if (buffer[start + offset] !== lines[offset]) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) {
+            buffer.splice(start, lines.length);
+            return true;
+        }
+    }
+    return false;
+}
+
+function stripRenderedChatFormatting(text) {
+    return String(text || "")
+        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+        .replace(/\x1b\[[0-9;]*m/g, "")
+        .replace(/\{[^}]*\}/g, "");
+}
+
+function prepareAssistantChatRender(raw, orchId, options = {}) {
+    const sourceText = typeof raw === "string" ? raw : "";
+    const bodyText = options.stripHeading === true
+        ? stripAssistantHeadingLine(sourceText)
+        : sourceText;
+
+    detectArtifactLinks(sourceText, orchId);
+
+    const renderedText = renderMarkdown(renderArtifactLinks(bodyText));
+    return {
+        sourceText,
+        bodyText,
+        renderedText: options.stripFormatting === true
+            ? stripRenderedChatFormatting(renderedText)
+            : renderedText,
+    };
+}
+
+function buildAssistantChatLines(raw, orchId, prefix, options = {}) {
+    const { trailingBlank, lineDecorator } = options;
+    const { bodyText, renderedText } = prepareAssistantChatRender(raw, orchId, options);
+    let lines = buildPrefixedRenderedLines(prefix, renderedText, { trailingBlank });
+    if (typeof lineDecorator === "function") {
+        lines = lines.map((line) => lineDecorator(line, bodyText));
+    }
+    return { bodyText, renderedText, lines };
+}
+
+function clearPendingAssistantPreview(orchId, matchingText) {
+    const preview = sessionPendingAssistantPreview.get(orchId);
+    if (!preview) return false;
+
+    // Final completed content only clears the preview when it is the same
+    // content; otherwise the preview remains as an earlier partial emission.
+    if (matchingText != null) {
+        const normalized = normalizeAssistantPreviewText(matchingText);
+        if (!normalized || normalized !== preview.normalized) return false;
+    }
+
+    const buffer = sessionChatBuffers.get(orchId);
+    if (buffer) {
+        removeChatLineSequence(buffer, preview.lines);
+    }
+    sessionPendingAssistantPreview.delete(orchId);
+    if (orchId === activeOrchId) invalidateChat();
+    return true;
+}
+
+function showLiveAssistantPreview(raw, orchId) {
+    const normalized = normalizeAssistantPreviewText(raw);
+    if (!normalized) return;
+    if (sessionPromotedIntermediate.get(orchId) === normalized) return;
+    if (sessionRecoveredTurnResult.get(orchId) === normalized) return;
+
+    const existing = sessionPendingAssistantPreview.get(orchId);
+    if (existing?.normalized === normalized) return;
+
+    clearPendingAssistantPreview(orchId);
+
+    const { lines: previewLines } = buildAssistantChatLines(raw, orchId, `[${ts()}] Copilot [preview]:`, {
+        stripHeading: true,
+        stripFormatting: true,
+        lineDecorator: (line) => line ? `{gray-fg}${line}{/gray-fg}` : "",
+    });
+
+    for (const line of previewLines) {
+        appendChatRaw(line, orchId);
+    }
+    sessionPendingAssistantPreview.set(orchId, { normalized, lines: previewLines });
 }
 
 function promoteIntermediateContent(raw, orchId) {
@@ -3531,6 +4029,7 @@ function promoteIntermediateContent(raw, orchId) {
 
 function shouldSkipCompletedTurnResult(raw, orchId) {
     const normalized = normalizeObserverChatText(raw);
+    clearPendingAssistantPreview(orchId);
     const promoted = sessionPromotedIntermediate.get(orchId);
     sessionPromotedIntermediate.delete(orchId);
     const recovered = sessionRecoveredTurnResult.get(orchId);
@@ -3555,8 +4054,7 @@ function isBootstrapPromptForSession(text, orchId) {
     });
 }
 
-// Track whether sequence view has been seeded from CMS for a session.
-const seqCmsSeededSessions = new Set();
+
 
 /**
  * Load conversation history from CMS and rebuild chat buffer for the session.
@@ -3753,7 +4251,6 @@ async function loadCmsHistory(orchId, options = {}) {
                     const content = evt.data?.content;
                     if (content) {
                         lastAssistantContent = content;
-                        detectArtifactLinks(content, orchId);
                         if (renderedChars >= MAX_TOTAL_RENDER_CHARS) {
                             lines.push(`{gray-fg}── additional assistant output omitted to keep session switching fast ──{/gray-fg}`);
                             lines.push("");
@@ -3762,14 +4259,12 @@ async function loadCmsHistory(orchId, options = {}) {
                         const clipped = content.length > MAX_ASSISTANT_MESSAGE_CHARS
                             ? content.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + "\n\n[output truncated in TUI history view]"
                             : content;
-                        const displayClipped = renderArtifactLinks(clipped);
-                        lines.push(`{white-fg}[${timeStr}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
-                        const rendered = renderMarkdown(displayClipped);
                         renderedChars += clipped.length;
-                        for (const line of rendered.split("\n")) {
-                            lines.push(line);
-                        }
-                        lines.push("");
+                        lines.push(...buildAssistantChatLines(
+                            clipped,
+                            orchId,
+                            `{white-fg}[${timeStr}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`,
+                        ).lines);
                     }
                 } else if (type === "tool.execution_start") {
                     activityLines.push(formatToolActivityLine(timeStr, evt, "start"));
@@ -3799,13 +4294,12 @@ async function loadCmsHistory(orchId, options = {}) {
                 const clippedLiveTurn = liveTurnContent.length > MAX_ASSISTANT_MESSAGE_CHARS
                     ? liveTurnContent.slice(0, MAX_ASSISTANT_MESSAGE_CHARS) + "\n\n[output truncated in TUI history view]"
                     : liveTurnContent;
-                lines.push(`{white-fg}[${fmtTime(Date.now())}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
-                const renderedLiveTurn = renderMarkdown(clippedLiveTurn);
                 renderedChars += clippedLiveTurn.length;
-                for (const line of renderedLiveTurn.split("\n")) {
-                    lines.push(line);
-                }
-                lines.push("");
+                lines.push(...buildAssistantChatLines(
+                    clippedLiveTurn,
+                    orchId,
+                    `{white-fg}[${fmtTime(Date.now())}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`,
+                ).lines);
                 sessionRecoveredTurnResult.set(orchId, normalizedLiveTurn);
                 noteSeenResponseVersion(orchId, liveResponsePayload?.version);
             } else {
@@ -3839,12 +4333,8 @@ async function loadCmsHistory(orchId, options = {}) {
             // replacement would nuke it without this check.
             const pendingQ = sessionPendingQuestions.get(orchId);
             if (pendingQ) {
-                lines.push(`{cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`);
                 const renderedQ = renderMarkdown(pendingQ);
-                for (const line of renderedQ.split("\n")) {
-                    lines.push(line);
-                }
-                lines.push("");
+                lines.push(...buildPrefixedRenderedLines(`{cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`, renderedQ));
             }
 
             // If CMS history produced no chat-visible lines (only the footer),
@@ -3893,33 +4383,6 @@ async function loadCmsHistory(orchId, options = {}) {
                 invalidateActivity();
             }
 
-            if (!seqCmsSeededSessions.has(orchId)) {
-                const existingSeq = seqEventBuffers.get(orchId) ?? [];
-                if (existingSeq.length === 0) {
-                    const cmsNode = addSeqNode("cms");
-                    const seeded = [];
-                    for (const evt of events) {
-                        const t = fmtTime(evt.createdAt);
-                        if (evt.eventType === "user.message") {
-                            const txt = stripHostPrefix(evt.data?.content || "");
-                            if (txt && !isTimerPrompt(txt)) {
-                                seeded.push({ type: "user_msg_synth", time: t, orchNode: cmsNode, actNode: cmsNode, label: txt });
-                            }
-                        } else if (evt.eventType === "assistant.message") {
-                            const txt = evt.data?.content || "";
-                            if (txt) {
-                                seeded.push({ type: "response", time: t, orchNode: cmsNode, actNode: cmsNode, snippet: txt.slice(0, 40) });
-                            }
-                        } else if (evt.eventType === "tool.execution_start") {
-                            seeded.push({ type: "activity_start", time: t, orchNode: cmsNode, actNode: cmsNode });
-                        }
-                    }
-                    if (seeded.length > 0) {
-                        seqEventBuffers.set(orchId, seeded);
-                    }
-                }
-                seqCmsSeededSessions.add(orchId);
-            }
         } catch (err) {
             loadFailed = true;
             appendLog(`{yellow-fg}CMS history load failed: ${err.message}{/yellow-fg}`);
@@ -3951,6 +4414,62 @@ const duroxideSchema = process.env.DUROXIDE_SCHEMA || undefined;
 const numWorkers = parseInt(process.env.WORKERS ?? "4", 10);
 const isRemote = numWorkers === 0;
 
+// Register startup quit handlers before any embedded worker startup so the
+// first local run can always be interrupted, even if worker boot blocks.
+let _startupQuit = false;
+let _startupPhase = true;
+let _embeddedWorkerStartupInProgress = false;
+screen.key(["C-c"], () => {
+    if (_startupPhase) { _startupQuit = true; exitProcessNow(0); }
+});
+const _startupQHandler = () => {
+    if (_startupPhase) { _startupQuit = true; exitProcessNow(0); }
+};
+screen.key(["q"], _startupQHandler);
+
+async function failStartupAndExit(message) {
+    console.error(`[PilotSwarm TUI] ${message}`);
+    setStatus(`{red-fg}${message}{/red-fg}`);
+    chatBox.setContent(
+        `${ACTIVE_STARTUP_SPLASH_CONTENT}\n\n  {red-fg}${message}{/red-fg}\n\n  ` +
+        `{gray-fg}Embedded local mode only supports one TUI per workspace at a time. ` +
+        `Use remote mode for multiple concurrent windows.{/gray-fg}`,
+    );
+    _origRender();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    exitProcessNow(1);
+}
+
+function handleTerminationSignal(signal) {
+    if (_startupPhase) {
+        _startupQuit = true;
+        exitProcessNow(SIGNAL_EXIT_CODES[signal] ?? 0);
+        return;
+    }
+    void requestQuit();
+}
+
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(signal, () => {
+        handleTerminationSignal(signal);
+    });
+}
+
+setStatus(isRemote ? "Connecting to remote DB..." : `Starting ${numWorkers} local workers...`);
+chatBox.setContent(
+    `${ACTIVE_STARTUP_SPLASH_CONTENT}\n\n  {white-fg}${isRemote ? "Connecting..." : `Starting ${numWorkers} embedded workers...`}{/white-fg}`,
+);
+_origRender();
+
+if (!isRemote) {
+    try {
+        acquireLocalEmbeddedRuntimeLock(store);
+    } catch (err) {
+        const message = err?.message || String(err);
+        await failStartupAndExit(message);
+    }
+}
+
 if (isRemote) {
     const title = formatWindowTitle("Scaled — Remote Workers");
     screen.title = title;
@@ -3972,6 +4491,7 @@ appendLog("");
 const workers = [];
 let modelProviders = null;
 let logTailInterval = null;
+let firstLocalWorkerStarted = Promise.resolve();
 // Default model — prefer registry defaultModel, env override, then empty (worker picks default).
 let currentModel = process.env.COPILOT_MODEL || "";
 if (!isRemote) {
@@ -3992,6 +4512,31 @@ if (!isRemote) {
     const origStderrWrite = process.stderr.write.bind(process.stderr);
     process.stdout.write = () => true;
     process.stderr.write = () => true;
+
+    const restoreBootstrapStdio = () => {
+        process.stdout.write = origStdoutWrite;
+        process.stderr.write = origStderrWrite;
+    };
+
+    let resolveFirstLocalWorkerStarted;
+    let rejectFirstLocalWorkerStarted;
+    let firstLocalWorkerSettled = false;
+    firstLocalWorkerStarted = new Promise((resolve, reject) => {
+        resolveFirstLocalWorkerStarted = resolve;
+        rejectFirstLocalWorkerStarted = reject;
+    });
+
+    const noteFirstLocalWorkerStarted = () => {
+        if (firstLocalWorkerSettled) return;
+        firstLocalWorkerSettled = true;
+        resolveFirstLocalWorkerStarted();
+    };
+
+    const noteAllLocalWorkersFailed = (err) => {
+        if (firstLocalWorkerSettled) return;
+        firstLocalWorkerSettled = true;
+        rejectFirstLocalWorkerStarted(err);
+    };
 
     // System message: env override > worker module > default agent (from plugin)
     const WORKER_SYSTEM_MESSAGE = process.env._TUI_SYSTEM_MESSAGE || undefined;
@@ -4026,72 +4571,106 @@ if (!isRemote) {
         }),
     } : undefined;
 
-    setStatus(`Starting ${numWorkers} workers...`);
-    const workerStartPromises = [];
-    for (let i = 0; i < numWorkers; i++) {
-        const w = new PilotSwarmWorker({
-            store,
-            ...(duroxideSchema ? { duroxideSchema } : {}),
-            ...(cmsSchema ? { cmsSchema } : {}),
-            githubToken: process.env.GITHUB_TOKEN,
-            logLevel: process.env.LOG_LEVEL || "error",
-            sessionStateDir: process.env.SESSION_STATE_DIR || path.join(os.homedir(), ".copilot", "session-state"),
-            blobConnectionString: workerModuleConfig.blobConnectionString || process.env.AZURE_STORAGE_CONNECTION_STRING,
-            blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
-            workerNodeId: `local-rt-${i}`,
-            systemMessage: workerModuleConfig.systemMessage || WORKER_SYSTEM_MESSAGE || undefined,
-            pluginDirs,
-            ...(llmProvider && { provider: llmProvider }),
-            ...(workerModuleConfig.skillDirectories && { skillDirectories: workerModuleConfig.skillDirectories }),
-            ...(workerModuleConfig.customAgents && { customAgents: workerModuleConfig.customAgents }),
-            ...(workerModuleConfig.mcpServers && { mcpServers: workerModuleConfig.mcpServers }),
-        });
-        // Register custom tools from worker module
-        const workerTools = typeof workerModuleConfig.createTools === "function"
-            ? await workerModuleConfig.createTools({ workerNodeId: `local-rt-${i}`, workerIndex: i })
-            : workerModuleConfig.tools;
-        if (workerTools?.length) {
-            w.registerTools(workerTools);
+    try {
+        setStatus(`Starting ${numWorkers} workers...`);
+        for (let i = 0; i < numWorkers; i++) {
+            const w = new PilotSwarmWorker({
+                store,
+                ...(duroxideSchema ? { duroxideSchema } : {}),
+                ...(cmsSchema ? { cmsSchema } : {}),
+                githubToken: process.env.GITHUB_TOKEN,
+                logLevel: process.env.LOG_LEVEL || "error",
+                sessionStateDir: process.env.SESSION_STATE_DIR || path.join(os.homedir(), ".copilot", "session-state"),
+                // Embedded local workers always use the filesystem-based session store.
+                // Do not inherit Azure blob config from the shell environment here.
+                workerNodeId: `local-rt-${i}`,
+                systemMessage: workerModuleConfig.systemMessage || WORKER_SYSTEM_MESSAGE || undefined,
+                pluginDirs,
+                ...(llmProvider && { provider: llmProvider }),
+                ...(workerModuleConfig.skillDirectories && { skillDirectories: workerModuleConfig.skillDirectories }),
+                ...(workerModuleConfig.customAgents && { customAgents: workerModuleConfig.customAgents }),
+                ...(workerModuleConfig.mcpServers && { mcpServers: workerModuleConfig.mcpServers }),
+            });
+            // Register custom tools from worker module
+            const workerTools = typeof workerModuleConfig.createTools === "function"
+                ? await workerModuleConfig.createTools({ workerNodeId: `local-rt-${i}`, workerIndex: i })
+                : workerModuleConfig.tools;
+            if (workerTools?.length) {
+                w.registerTools(workerTools);
+            }
+            workers.push(w);
         }
-        workers.push(w);
-        workerStartPromises.push(
-            w.start().then(() => appendLog(`Worker local-rt-${i} started ✓`))
-        );
+
+        // Capture model provider registry from the first worker
+        modelProviders = workers[0]?.modelProviders || null;
+        if (modelProviders) {
+            const byProvider = modelProviders.getModelsByProvider();
+            for (const g of byProvider) {
+                const names = g.models.map(m => m.qualifiedName).join(", ");
+                appendLog(`{bold}${g.providerId}{/bold} (${g.type}): ${names}`);
+            }
+            // Use default model from registry if no explicit override
+            if (modelProviders.defaultModel && !currentModel) {
+                currentModel = modelProviders.defaultModel;
+            }
+        }
+
+        // Restore stdout/stderr after all workers initialized
+        process.stdout.write = origStdoutWrite;
+        // Keep stderr intercepted — MCP subprocesses (filesystem server, etc.) write
+        // warnings (ExperimentalWarning: SQLite, etc.) that corrupt the TUI.
+        // Route them to the log file instead of the terminal.
+        const logFd = fs.openSync(logFile, "a");
+        process.stderr.write = (chunk, encoding, cb) => {
+            try { fs.appendFileSync(logFd, chunk); } catch {}
+            if (typeof cb === "function") cb();
+            return true;
+        };
+
+        const repaintAfterWorkerStartup = () => {
+            if (_embeddedWorkerStartupInProgress) {
+                process.stdout.write("\x1b[2J\x1b[H");
+                screen.realloc();
+            }
+            screen.render();
+        };
+
+        // Rust native code writes directly to fd 1/2 during init, bypassing Node
+        // and corrupting blessed's alt-screen buffer. Repaint after construction,
+        // then start workers one-by-one in the background to avoid Postgres schema races.
+        _embeddedWorkerStartupInProgress = true;
+        repaintAfterWorkerStartup();
+
+        const startWorkersSequentially = async () => {
+            let startedWorkers = 0;
+            try {
+                for (let i = 0; i < workers.length; i++) {
+                    appendLog(`Starting worker local-rt-${i}…`);
+                    screen.render();
+                    try {
+                        await workers[i].start();
+                        startedWorkers++;
+                        noteFirstLocalWorkerStarted();
+                        appendLog(`Worker local-rt-${i} started ✓`);
+                    } catch (err) {
+                        appendLog(`{red-fg}Worker local-rt-${i} failed: ${err?.message || err}{/red-fg}`);
+                    }
+                    repaintAfterWorkerStartup();
+                }
+            } finally {
+                repaintAfterWorkerStartup();
+                _embeddedWorkerStartupInProgress = false;
+            }
+            if (startedWorkers === 0) {
+                noteAllLocalWorkersFailed(new Error("All local workers failed to start."));
+            }
+        };
+
+        void startWorkersSequentially();
+    } catch (err) {
+        restoreBootstrapStdio();
+        throw err;
     }
-    await Promise.all(workerStartPromises);
-
-    // Capture model provider registry from the first worker
-    modelProviders = workers[0]?.modelProviders || null;
-    if (modelProviders) {
-        const byProvider = modelProviders.getModelsByProvider();
-        for (const g of byProvider) {
-            const names = g.models.map(m => m.qualifiedName).join(", ");
-            appendLog(`{bold}${g.providerId}{/bold} (${g.type}): ${names}`);
-        }
-        // Use default model from registry if no explicit override
-        if (modelProviders.defaultModel && !currentModel) {
-            currentModel = modelProviders.defaultModel;
-        }
-    }
-
-    // Restore stdout/stderr after all workers initialized
-    process.stdout.write = origStdoutWrite;
-    // Keep stderr intercepted — MCP subprocesses (filesystem server, etc.) write
-    // warnings (ExperimentalWarning: SQLite, etc.) that corrupt the TUI.
-    // Route them to the log file instead of the terminal.
-    const logFd = fs.openSync(logFile, "a");
-    process.stderr.write = (chunk, encoding, cb) => {
-        try { fs.appendFileSync(logFd, chunk); } catch {}
-        if (typeof cb === "function") cb();
-        return true;
-    };
-
-    // Rust native code writes directly to fd 1/2 during init, bypassing Node
-    // and corrupting blessed's alt-screen buffer. Wipe the terminal and force
-    // blessed to fully repaint from scratch.
-    process.stdout.write("\x1b[2J\x1b[H");
-    screen.realloc();
-    screen.render();
 
     // Tail the log file into per-worker panes
     let tailPos = 0;
@@ -4170,11 +4749,6 @@ if (!isRemote) {
                     appendOrchLog(orchId, paneName, formatted);
                 }
 
-                // Feed sequence diagram
-                const seqEvtLocal = parseSeqEvent(plain, paneName);
-                if (seqEvtLocal) {
-                    appendSeqEvent(seqEvtLocal.orchId, seqEvtLocal);
-                }
                 routed++;
             }
             tailReads++;
@@ -4245,21 +4819,24 @@ const mgmt = new PilotSwarmManagementClient({
 const STARTUP_DB_RETRY_MS = 30_000;
 const STARTUP_DB_CONNECT_TIMEOUT_MS = 10_000;
 
+async function withStartupTimeout(label, work) {
+    let timer = null;
+    try {
+        return await Promise.race([
+            work(),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(`${label} timed out (10s deadline)`)), STARTUP_DB_CONNECT_TIMEOUT_MS);
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 function isStartupTransientDbError(err) {
     const msg = String(err?.message || err || "");
     return /ENOTFOUND|ETIMEDOUT|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|socket hang up|getaddrinfo|timeout|network|pool timed out while waiting for an open connection/i.test(msg);
 }
-
-// Register quit handler BEFORE the connection loop so the user can always exit.
-let _startupQuit = false;
-let _startupPhase = true;
-screen.key(["C-c"], () => {
-    if (_startupPhase) { _startupQuit = true; process.exit(0); }
-});
-const _startupQHandler = () => {
-    if (_startupPhase) { _startupQuit = true; process.exit(0); }
-};
-screen.key(["q"], _startupQHandler);
 
 setStatus(isRemote ? "Connecting to remote DB..." : "Connecting client...");
 
@@ -4273,41 +4850,35 @@ _origRender();
 while (true) {
     const _startPh = perfStart("startup.clientConnect");
 
-    // Race the connection against a timeout so unreachable hosts don't block for minutes
-    const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Connection timed out (10s deadline)")), STARTUP_DB_CONNECT_TIMEOUT_MS)
-    );
-    const results = await Promise.allSettled([
-        Promise.race([client.start(), timeoutPromise]),
-        Promise.race([mgmt.start(), timeoutPromise]),
-    ]);
-    const failure = results.find(r => r.status === "rejected");
-
-    if (!failure) {
+    try {
+        if (!isRemote) {
+            await withStartupTimeout("First local worker start", () => firstLocalWorkerStarted);
+        }
+        await withStartupTimeout("Client start", () => client.start());
+        await withStartupTimeout("Management client start", () => mgmt.start());
         perfEnd(_startPh);
         break;
-    }
+    } catch (err) {
+        perfEnd(_startPh, { err: true });
 
-    const err = failure.reason;
-    perfEnd(_startPh, { err: true });
+        try { await client.stop(); } catch {}
+        try { await mgmt.stop(); } catch {}
 
-    try { await client.stop(); } catch {}
-    try { await mgmt.stop(); } catch {}
+        if (!isStartupTransientDbError(err)) {
+            throw err;
+        }
 
-    if (!isStartupTransientDbError(err)) {
-        throw err;
-    }
+        const msg = String(err?.message || err || "Unknown database error");
+        setStatus(`Database unavailable — retrying in 30s (${safeSlice(msg, 0, 80)})`);
+        chatBox.setContent(`${ACTIVE_STARTUP_SPLASH_CONTENT}\n\n  {yellow-fg}Database unavailable.{/yellow-fg}\n  {white-fg}${msg}{/white-fg}\n\n  {gray-fg}Retrying connection in 30 seconds... (press q or Ctrl+C to quit){/gray-fg}`);
+        _origRender();
 
-    const msg = String(err?.message || err || "Unknown database error");
-    setStatus(`Database unavailable — retrying in 30s (${safeSlice(msg, 0, 80)})`);
-    chatBox.setContent(`${ACTIVE_STARTUP_SPLASH_CONTENT}\n\n  {yellow-fg}Database unavailable.{/yellow-fg}\n  {white-fg}${msg}{/white-fg}\n\n  {gray-fg}Retrying connection in 30 seconds... (press q or Ctrl+C to quit){/gray-fg}`);
-    _origRender();
-
-    // Interruptible sleep — check every 500ms if the user pressed quit
-    const retryEnd = Date.now() + STARTUP_DB_RETRY_MS;
-    while (Date.now() < retryEnd) {
-        if (_startupQuit) process.exit(0);
-        await new Promise(r => setTimeout(r, 500));
+        // Interruptible sleep — check every 500ms if the user pressed quit
+        const retryEnd = Date.now() + STARTUP_DB_RETRY_MS;
+        while (Date.now() < retryEnd) {
+            if (_startupQuit) process.exit(0);
+            await new Promise(r => setTimeout(r, 500));
+        }
     }
 }
 
@@ -4367,8 +4938,10 @@ const sessionRenderedCmsSeq = new Map(); // orchId → highest CMS seq already i
 const sessionExpandLevel = new Map(); // orchId → 0 (default) | 1 | 2 (how many times user expanded history)
 const sessionSplashApplied = new Set(); // orchIds that have had splash prepended (idempotency guard)
 const sessionPromotedIntermediate = new Map(); // orchId → normalized intermediate content already promoted to Chat
+const sessionPendingAssistantPreview = new Map(); // orchId → { normalized: string, lines: string[] } for provisional assistant.message preview
 const sessionRecoveredTurnResult = new Map(); // orchId → normalized completed turn recovered from live status during CMS load
 const sessionObservers = new Map(); // orchId → AbortController
+const sessionObserverPollState = new Map(); // orchId → { version: number }
 const sessionLiveStatus = new Map(); // orchId → "idle"|"running"|"waiting"|"input_required"
 const sessionCronSchedules = new Map(); // orchId → { interval: number, reason?: string }
 const sessionContextUsage = new Map(); // orchId → latest context usage snapshot
@@ -4453,6 +5026,15 @@ function isTerminalOrchestrationStatus(status) {
 
 function isTerminalSessionState(state) {
     return state === "completed" || state === "failed" || state === "error" || state === "terminated";
+}
+
+function sessionStateFromOrchestrationStatus(status) {
+    switch (status) {
+        case "Completed": return "completed";
+        case "Failed": return "error";
+        case "Terminated": return "terminated";
+        default: return null;
+    }
 }
 
 function updateSessionCronSchedule(orchId, customStatus) {
@@ -4590,7 +5172,7 @@ function formatCompactionActivityLine(t, evt) {
 function getSessionCronBadge(orchId) {
     const cron = sessionCronSchedules.get(orchId);
     if (!cron) return "";
-    return ` {magenta-fg}[cron ${cron.interval}s]{/magenta-fg}`;
+    return ` {magenta-fg}[cron ${formatHumanDurationSeconds(cron.interval)}]{/magenta-fg}`;
 }
 
 function shouldObserveSession(orchId, cached = orchStatusCache.get(orchId)) {
@@ -4600,6 +5182,10 @@ function shouldObserveSession(orchId, cached = orchStatusCache.get(orchId)) {
 }
 
 function getSessionVisualState(orchId, cached = orchStatusCache.get(orchId)) {
+    const terminalState = sessionStateFromOrchestrationStatus(cached?.status);
+    if (terminalState) {
+        return terminalState;
+    }
     const liveState = sessionLiveStatus.get(orchId) || cached?.liveState;
     if (liveState) {
         if (liveState === "waiting" && sessionCronSchedules.has(orchId)) return "cron_waiting";
@@ -4625,7 +5211,7 @@ function getSessionStateColor(state) {
         case "completed": return "gray";
         case "failed":
         case "error": return "red";
-        case "terminated": return "yellow";
+        case "terminated": return "red";
         default: return "white";
     }
 }
@@ -4638,7 +5224,8 @@ function getSessionStateIcon(state) {
         case "idle": return "{white-fg}.{/white-fg}";
         case "input_required": return "{cyan-fg}?{/cyan-fg}";
         case "failed":
-        case "error": return "{red-fg}!{/red-fg}";
+        case "error":
+        case "terminated": return "{red-fg}!{/red-fg}";
         default: return "";
     }
 }
@@ -5067,7 +5654,12 @@ async function refreshOrchestrations(force = false) {
 
         // Seed sessionLiveStatus from CMS if no observer has set it yet.
         // This ensures status icons show correctly on initial load.
-        if (!sessionLiveStatus.has(id) && liveState && liveState !== "pending") {
+        const terminalState = sessionStateFromOrchestrationStatus(status);
+        if (terminalState) {
+            sessionLiveStatus.set(id, terminalState);
+            setSessionPendingTurn(id, false);
+            clearSessionPendingQuestion(id);
+        } else if (!sessionLiveStatus.has(id) && liveState && liveState !== "pending") {
             sessionLiveStatus.set(id, liveState);
         }
 
@@ -5281,6 +5873,14 @@ async function refreshOrchestrations(force = false) {
     perfEnd(_ph, { sessions: entries.length });
 }
 
+function renderWaitingForSessionsLanding() {
+    chatBox.setContent(
+        `${ACTIVE_STARTUP_SPLASH_CONTENT}\n\n  {white-fg}Waiting for local workers to publish sessions...{/white-fg}\n\n  {gray-fg}Press n to create a session immediately.{/gray-fg}`,
+    );
+    chatBox.setScrollPerc(0);
+    screen.render();
+}
+
 // Poll orchestrations every 10 seconds (observers handle live status updates, so
 // this only needs to catch new sessions and structural changes like title/parent).
 let orchPollTimer = setInterval(() => {
@@ -5298,7 +5898,7 @@ const perfSummaryInterval = setInterval(() => {
         for (const l of lines) totalBufferBytes += l.length;
     }
     let totalSeqEvents = 0;
-    for (const [, evts] of seqEventBuffers) totalSeqEvents += evts.length;
+    for (const [, evts] of cmsSeqTimelines) totalSeqEvents += evts.length;
     perfTrace("periodic_summary", {
         heapUsedMB: +(mem.heapUsed / 1024 / 1024).toFixed(1),
         heapTotalMB: +(mem.heapTotal / 1024 / 1024).toFixed(1),
@@ -5306,7 +5906,7 @@ const perfSummaryInterval = setInterval(() => {
         chatBuffers: sessionChatBuffers.size,
         chatBufferLines: totalBufferLines,
         chatBufferKB: +(totalBufferBytes / 1024).toFixed(1),
-        seqBuffers: seqEventBuffers.size,
+        seqBuffers: cmsSeqTimelines.size,
         seqEvents: totalSeqEvents,
         observers: sessionObservers.size,
         renders: _perfRenderCount,
@@ -5349,6 +5949,11 @@ orchList.key(["c"], async () => {
         const sessionId = id.startsWith("session-") ? id.slice(8) : id;
         try {
             await mgmt.cancelSession(sessionId);
+            sessionLiveStatus.set(id, "terminated");
+            setSessionPendingTurn(id, false);
+            clearSessionPendingQuestion(id);
+            sessionCronSchedules.delete(id);
+            updateSessionListIcons();
             appendLog(`{yellow-fg}Cancelled ${shortId(id)}{/yellow-fg}`);
             await refreshOrchestrations();
         } catch (err) {
@@ -5824,11 +6429,6 @@ function startLogStream() {
                     appendOrchLog(orchId, podName, formatted);
                 }
 
-                // Feed sequence diagram
-                const seqEvt = parseSeqEvent(plain, podName);
-                if (seqEvt) {
-                    appendSeqEvent(seqEvt.orchId, seqEvt);
-                }
             }
             screen.render();
         });
@@ -5902,7 +6502,6 @@ if (isRemote) {
 // Map sessionId → PilotSwarmSession object
 const sessions = new Map();
 const sessionModels = new Map(); // orchId → model name used for that session
-let shutdownInProgress = false;
 
 // currentModel is declared earlier (before model providers loading)
 
@@ -6187,6 +6786,29 @@ function updateChatLabel() {
     screen.render();
 }
 
+function setObserverPollState(orchId, version) {
+    if (!orchId) return;
+    sessionObserverPollState.set(orchId, { version: Math.max(0, version || 0) });
+    if (orchId === activeOrchId) updateActivityLabel();
+}
+
+function clearObserverPollState(orchId) {
+    if (!orchId) return;
+    if (sessionObserverPollState.delete(orchId) && orchId === activeOrchId) {
+        updateActivityLabel();
+    }
+}
+
+function updateActivityLabel() {
+    const pollState = activeOrchId ? sessionObserverPollState.get(activeOrchId) : null;
+    const isPollingActiveSession = Boolean(activeOrchId && sessionObservers.has(activeOrchId) && pollState);
+    const pollingTag = isPollingActiveSession
+        ? ` {gray-fg}[polling current session v${pollState.version}]{/gray-fg}`
+        : "";
+    activityPane.setLabel(` {bold}Activity{/bold}${pollingTag} `);
+    scheduleRender();
+}
+
 /**
  * Start observing an orchestration's custom status and pipe turn results
  * into the chat buffer. Runs until aborted or the orchestration completes.
@@ -6202,6 +6824,7 @@ function startObserver(orchId) {
 
     const ac = new AbortController();
     sessionObservers.set(orchId, ac);
+    setObserverPollState(orchId, 0);
     let lastVersion = 0;
     let lastIteration = -1;
 
@@ -6424,6 +7047,7 @@ function startObserver(orchId) {
         sessionLoggedTerminalStatus.set(orchId, terminalStatus);
         setSessionPendingTurn(orchId, false);
         setTurnInProgressIfActive(false);
+        clearObserverPollState(orchId);
         sessionObservers.delete(orchId);
         return true;
     }
@@ -6438,6 +7062,7 @@ function startObserver(orchId) {
         try {
             const currentStatus = await dc.getStatus(orchId);
             if (ac.signal.aborted) return;
+            setObserverPollState(orchId, currentStatus?.customStatusVersion || 0);
 
             // Check for terminal states FIRST — before inspecting customStatus
             if (await stopObserverForTerminalStatus(currentStatus, "terminal")) {
@@ -6543,10 +7168,8 @@ function startObserver(orchId) {
                     appendActivity(`{yellow-fg}🔄 [obs] continueAsNew detected in try: v${lastVersion}→v${statusResult.customStatusVersion}, resetting lastIter=${lastIteration}→-1 (${_waitMs}ms){/yellow-fg}`, orchId);
                     lastVersion = statusResult.customStatusVersion;
                     lastIteration = -1;
-                } else {
-                    // Same version — poll returned without change (shouldn't happen normally)
-                    appendActivity(`{gray-fg}[obs] poll returned same version v${lastVersion} (${_waitMs}ms){/gray-fg}`, orchId);
                 }
+                setObserverPollState(orchId, lastVersion);
 
                 let cs = null;
                 if (statusResult.customStatus) {
@@ -6667,20 +7290,23 @@ function startObserver(orchId) {
             } catch (err) {
                 // waitForStatusChange timed out or failed — check terminal state or continueAsNew
                 if (ac.signal.aborted) break;
-                appendActivity(`{yellow-fg}[obs] catch: ${err.message || "timeout"} lastVersion=${lastVersion} lastIteration=${lastIteration}{/yellow-fg}`, orchId);
+                const errMsg = err?.message || "timeout";
+                const isStatusTimeout = /timed out/i.test(errMsg);
+                if (!isStatusTimeout) {
+                    appendActivity(`{yellow-fg}[obs] catch: ${errMsg} lastVersion=${lastVersion} lastIteration=${lastIteration}{/yellow-fg}`, orchId);
+                }
                 try {
                     const info = await dc.getStatus(orchId);
+                    const currentVersion = info.customStatusVersion || 0;
+                    setObserverPollState(orchId, currentVersion);
                     if (await stopObserverForTerminalStatus(info, "terminal")) {
                         break;
                     }
                     // Detect continueAsNew: customStatusVersion went backwards
-                    const currentVersion = info.customStatusVersion || 0;
                     if (currentVersion < lastVersion) {
                         appendActivity(`{yellow-fg}🔄 [obs] continueAsNew in catch: v${lastVersion}→v${currentVersion}{/yellow-fg}`, orchId);
                         lastVersion = 0;
                         lastIteration = -1;
-                    } else {
-                        appendActivity(`{gray-fg}[obs] catch: no version reset (v${currentVersion} >= v${lastVersion}){/gray-fg}`, orchId);
                     }
                 } catch {}
                 await new Promise(r => setTimeout(r, 500));
@@ -6727,6 +7353,24 @@ function startCmsPoller(orchId) {
                 sessionRenderedCmsSeq.set(orchId, evt.seq);
             }
 
+            // ── Update CMS sequence timeline incrementally ────
+            if (evt.seq && evt.eventType) {
+                const timeline = cmsSeqTimelines.get(sid) || [];
+                const seqEvt = placeCmsSeqEvent(timeline, cmsEventToSeqEvent(evt));
+                if (seqEvt) {
+                    const nodeId = getSeqEventNodeId(seqEvt);
+                    if (nodeId) cmsSeqNodeIndex(nodeId);
+                    timeline.push(seqEvt);
+                    cmsSeqTimelines.set(sid, timeline);
+                    cmsSeqLastSeq.set(sid, evt.seq);
+                    if (timeline.length > 300) timeline.splice(0, timeline.length - 300);
+                    if (logViewMode === "sequence" && orchId === activeOrchId) {
+                        refreshCmsSeqPane();
+                        screen.render();
+                    }
+                }
+            }
+
             const t = formatDisplayTime(Date.now());
             const type = evt.eventType;
 
@@ -6735,8 +7379,16 @@ function startCmsPoller(orchId) {
                 applySessionUsageEvent(orchId, type, evt.data);
             }
 
-            // Don't render events that the customStatus observer already handles
-            if (type === "assistant.message") return;
+            // assistant.message is shown as a provisional gray chat entry.
+            // The completed turn result clears that provisional copy.
+            if (type === "assistant.message") {
+                if (typeof evt.data?.content === "string" && evt.data.content.trim()) {
+                    showLiveAssistantPreview(evt.data.content, orchId);
+                }
+                return;
+            }
+            // user.message is already reflected by the local send path and the
+            // history rebuild path, so keep the live CMS subscription quiet here.
             if (type === "user.message") return;
 
             if (type === "tool.execution_start") {
@@ -6842,6 +7494,7 @@ async function switchToOrchestration(orchId) {
     // Clear chat and show switch indicator (only when switching to a different session)
     if (!isSameSession) {
         updateChatLabel();
+        updateActivityLabel();
 
         // Show cached chat buffer instantly if available (no DB wait)
         const _cachePh = perfStart("switch.cachedRestore");
@@ -6897,6 +7550,14 @@ async function switchToOrchestration(orchId) {
             if (orchId === activeOrchId) startCmsPoller(orchId);
         });
 
+        // Load CMS event timeline for sequence diagram (background, non-blocking)
+        const sessionIdForSeq = orchId.replace("session-", "");
+        loadCmsSeqTimeline(sessionIdForSeq).then(() => {
+            if (orchId === activeOrchId && logViewMode === "sequence") {
+                refreshSeqPane();
+            }
+        }).catch(() => {});
+
         // Schedule list refresh in background too
         scheduleRefreshOrchestrations();
     } else {
@@ -6920,6 +7581,7 @@ async function switchToOrchestration(orchId) {
 }
 
 updateChatLabel();
+updateActivityLabel();
 const initialChatLines = ensureSessionSplashBuffer(activeOrchId) || sessionChatBuffers.get(activeOrchId) || [];
 if (initialChatLines.length > 0) {
     chatBox.setContent(initialChatLines.map(styleUrls).join("\n"));
@@ -7239,7 +7901,6 @@ async function handleInput(text) {
         appendActivity(`{cyan-fg}[send] interrupt: session busy, enqueuing to ${targetOrchId?.slice(0,20)}{/cyan-fg}`, targetOrchId);
         inputBar.clearValue();
         if (targetOrchId === activeOrchId) setStatus("Interrupting...");
-        injectSeqUserEvent(targetOrchId, trimmed);
         try {
             const dc = getDc();
             if (dc) await dc.enqueueEvent(targetOrchId, "messages", JSON.stringify({ prompt: trimmed }));
@@ -7258,7 +7919,6 @@ async function handleInput(text) {
     focusInput();
     setSessionPendingTurn(targetOrchId, true);
     if (targetOrchId === activeOrchId) setStatus("Thinking... (waiting for AKS worker)");
-    injectSeqUserEvent(targetOrchId, trimmed);
     screen.render();
 
     try {
@@ -7273,9 +7933,16 @@ async function handleInput(text) {
                             || orchStatus.output?.split("\n")[0]
                             || "Unknown error")
                         : orchStatus.status;
+                    const terminalState = sessionStateFromOrchestrationStatus(orchStatus.status);
+                    if (terminalState) {
+                        sessionLiveStatus.set(targetOrchId, terminalState);
+                    }
                     appendChatRaw(`{red-fg}❌ Cannot send — orchestration ${orchStatus.status}: ${reason}{/red-fg}`, targetOrchId);
                     appendChatRaw(`{white-fg}Create a new session with 'n' to continue.{/white-fg}`, targetOrchId);
+                    stopChatSpinner(targetOrchId);
                     setSessionPendingTurn(targetOrchId, false);
+                    clearSessionPendingQuestion(targetOrchId);
+                    updateSessionListIcons();
                     if (targetOrchId === activeOrchId) setStatus(`${orchStatus.status} — session is dead`);
                     screen.render();
                     return;
@@ -7467,8 +8134,8 @@ function showHelpOverlay() {
 async function cleanup() {
     // Force-exit after 15s — don't let a stuck shutdown hang forever
     const forceExitTimer = setTimeout(() => {
-        const buf = Buffer.from("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h");
-        try { fs.writeSync(1, buf); } catch {}
+        releaseLocalEmbeddedRuntimeLock();
+        try { fs.writeSync(1, Buffer.from(TERMINAL_RESET_ESCAPE)); } catch {}
         process.exit(0);
     }, 15000);
     forceExitTimer.unref();
@@ -7489,6 +8156,7 @@ async function cleanup() {
         client.stop(),
         mgmt.stop(),
     ]);
+    releaseLocalEmbeddedRuntimeLock();
 
     // Suppress ALL output before destroying — neo-blessed dumps terminfo
     // compilation junk (SetUlc) synchronously during destroy().
@@ -7497,8 +8165,7 @@ async function cleanup() {
     try { screen.destroy(); } catch {}
     // Write terminal reset directly to fd to bypass our suppression
     // Disable mouse tracking modes + exit alt-screen + show cursor
-    const buf = Buffer.from("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h");
-    try { fs.writeSync(1, buf); } catch {}
+    try { fs.writeSync(1, Buffer.from(TERMINAL_RESET_ESCAPE)); } catch {}
 }
 
 screen.key(["C-c"], async () => {
@@ -7650,10 +8317,10 @@ screen.on("keypress", (ch, key) => {
     // [ / ]: resize right pane by 8 chars
     } else if ((ch === "[" || ch === "]") && screen.focused !== inputBar) {
         if (ch === "[") rightPaneAdjust += 8;  // shrink right (grow left)
-        else rightPaneAdjust = Math.max(0, rightPaneAdjust - 8); // grow right (shrink left)
+        else rightPaneAdjust -= 8; // grow right (shrink left)
         // Clamp: right pane min 20 chars, left pane min 30 chars
-        const maxAdj = screen.width - 20 - Math.floor(screen.width * 0.45);
-        rightPaneAdjust = Math.max(-(Math.floor(screen.width * 0.45) - 30), Math.min(rightPaneAdjust, maxAdj));
+        const maxAdj = screen.width - MIN_RIGHT_PANE_WIDTH - baseLeftW();
+        rightPaneAdjust = Math.max(-(baseLeftW() - MIN_LEFT_PANE_WIDTH), Math.min(rightPaneAdjust, maxAdj));
         relayoutAll();
         redrawActiveViews();
         return;
@@ -7834,6 +8501,23 @@ await refreshOrchestrations();
 
 // Trigger initial right-pane render (orch logs, sequence, etc.)
 redrawActiveViews();
+
+if (!activeOrchId) {
+    renderWaitingForSessionsLanding();
+    if (!isRemote) {
+        // Lazy worker startup means the first session list refresh can race ahead
+        // of system-agent/session creation. Re-check quickly before the normal
+        // 10s poll so the TUI does not appear stuck on the startup splash.
+        for (const delay of [250, 750, 1500, 3000, 5000]) {
+            setTimeout(() => {
+                if (activeOrchId) return;
+                refreshOrchestrations().then(() => {
+                    if (!activeOrchId) renderWaitingForSessionsLanding();
+                }).catch(() => {});
+            }, delay);
+        }
+    }
+}
 
 // ─── Auto-summarize all existing sessions on startup ─────────────
 async function summarizeSession(orchId) {

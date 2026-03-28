@@ -190,7 +190,7 @@ function updateContextUsageFromEvents(
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.31";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.30";
 
 /**
  * Long-lived durable session orchestration.
@@ -208,7 +208,7 @@ export const CURRENT_ORCHESTRATION_VERSION = "1.0.31";
  *
  * @internal
  */
-export function* durableSessionOrchestration_1_0_31(
+export function* durableSessionOrchestration_1_0_30(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -338,10 +338,6 @@ export function* durableSessionOrchestration_1_0_31(
         writeJsonValue(commandResponseKey(response.id), payload);
         lastCommandVersion = version;
         lastCommandId = response.id;
-        yield manager.recordSessionEvent(input.sessionId, [{
-            eventType: "session.command_completed",
-            data: { cmd: response.cmd, id: response.id },
-        }]);
         return payload;
     }
 
@@ -644,11 +640,6 @@ export function* durableSessionOrchestration_1_0_31(
                     if (msgData.type === "cmd") {
                         const cmdMsg = msgData as CommandMessage;
                         ctx.traceInfo(`[orch-cmd] ${cmdMsg.cmd} id=${cmdMsg.id}`);
-
-                        yield manager.recordSessionEvent(input.sessionId, [{
-                            eventType: "session.command_received",
-                            data: { cmd: cmdMsg.cmd, id: cmdMsg.id },
-                        }]);
 
                         switch (cmdMsg.cmd) {
                             case "set_model": {
@@ -1030,11 +1021,6 @@ export function* durableSessionOrchestration_1_0_31(
                         yield* dehydrateForNextTurn("cron", true);
                     }
 
-                    yield manager.recordSessionEvent(input.sessionId, [{
-                        eventType: "session.cron_started",
-                        data: { intervalSeconds: activeCron.intervalSeconds, reason: activeCron.reason },
-                    }]);
-
                     const cronStartedAt: number = yield ctx.utcNow();
                     ctx.traceInfo(`[orch] cron timer: ${activeCron.intervalSeconds}s (${activeCron.reason})`);
                     publishStatus("waiting", {
@@ -1054,10 +1040,6 @@ export function* durableSessionOrchestration_1_0_31(
 
                         if (timerRace.index === 0) {
                             waitTimerDone = true;
-                            yield manager.recordSessionEvent(input.sessionId, [{
-                                eventType: "session.cron_fired",
-                                data: {},
-                            }]);
                             break;
                         }
 
@@ -1227,11 +1209,6 @@ export function* durableSessionOrchestration_1_0_31(
                     // Checkpoint before the blocking wait
                     if (!waitPlan.shouldDehydrate) yield* maybeCheckpoint();
 
-                    yield manager.recordSessionEvent(input.sessionId, [{
-                        eventType: "session.wait_started",
-                        data: { seconds: result.seconds, reason: result.reason, preserveAffinity: waitPlan.preserveAffinityOnHydrate },
-                    }]);
-
                     // Wait loop: silently absorb child updates when <=60s remain,
                     // only break the timer for child updates when >60s remain.
                     // User messages always break the timer immediately.
@@ -1317,10 +1294,6 @@ export function* durableSessionOrchestration_1_0_31(
                     }
 
                     const timerPrompt = `The ${result.seconds} second wait is now complete. Continue with your task.`;
-                    yield manager.recordSessionEvent(input.sessionId, [{
-                        eventType: "session.wait_completed",
-                        data: { seconds: result.seconds },
-                    }]);
                     yield* versionedContinueAsNew(continueInputWithPrompt(
                         timerPrompt,
                         { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
@@ -1582,11 +1555,6 @@ export function* durableSessionOrchestration_1_0_31(
                 }
 
                 const childOrchId = `session-${childSessionId}`;
-
-                yield manager.recordSessionEvent(input.sessionId, [{
-                    eventType: "session.agent_spawned",
-                    data: { childSessionId, agentId: agentId || undefined, task: agentTask.slice(0, 500) },
-                }]);
 
                 // Track the sub-agent
                 subAgents.push({

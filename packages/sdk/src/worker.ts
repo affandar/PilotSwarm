@@ -270,6 +270,7 @@ export class PilotSwarmWorker {
             this.allowedAgentNames,
             this._rawLoadedAgents,
             this.factStore,
+            this.config.workerNodeId,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
@@ -372,8 +373,12 @@ export class PilotSwarmWorker {
 
         await new Promise(r => setTimeout(r, 200));
 
-        // Auto-start system agents defined in plugins (idempotent)
-        await this._startSystemAgents();
+        // Auto-start system agents defined in plugins (idempotent), but do not
+        // block worker.start() on the bootstrap race. The TUI should become
+        // interactive even if first-run system-agent startup is slow.
+        void this._startSystemAgents().catch((err: any) => {
+            console.warn(`[PilotSwarmWorker] background system agent startup failed: ${err?.message ?? err}`);
+        });
     }
 
     async stop(): Promise<void> {
@@ -652,7 +657,8 @@ export class PilotSwarmWorker {
                     );
                 }
 
-                console.log(`[PilotSwarmWorker] System agent started: ${agent.name} (${sessionId.slice(0, 8)})`);
+                // Use stderr so background startup logs do not corrupt the TUI's stdout.
+                console.error(`[PilotSwarmWorker] System agent started: ${agent.name} (${sessionId.slice(0, 8)})`);
             } catch (err: any) {
                 // Likely already exists (race with another worker) — not an error
                 if (err.message?.includes("already exists") || err.message?.includes("duplicate")) {

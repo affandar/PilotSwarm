@@ -394,6 +394,17 @@ export class PilotSwarmManagementClient {
         } catch {}
     }
 
+    // ─── Session Events ──────────────────────────────────────
+
+    /**
+     * Get CMS events for a session, ordered by seq.
+     * Optionally filter by afterSeq for incremental polling.
+     */
+    async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<import("./cms.js").SessionEvent[]> {
+        this._ensureStarted();
+        return this._catalog!.getSessionEvents(sessionId, afterSeq, limit);
+    }
+
     // ─── Status Watching ─────────────────────────────────────
 
     /**

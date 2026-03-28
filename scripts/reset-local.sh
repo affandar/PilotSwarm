@@ -4,9 +4,10 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────
 # reset-local.sh — Full reset for PilotSwarm
 #
-# Drops duroxide + CMS schemas, purges local session state
-# (tar archives, copilot session dirs), and optionally
-# cleans blob storage.
+# Drops duroxide + CMS schemas, deletes .tmp/ session state,
+# and optionally cleans blob storage. For local Postgres resets, the
+# script also terminates other backends connected to the same database
+# before dropping schemas to avoid DDL deadlocks with still-running workers.
 #
 # Usage:
 #   ./scripts/reset-local.sh           # local reset (interactive)
@@ -17,8 +18,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SDK_PLUGINS_DIR="$REPO_ROOT/packages/sdk/plugins"
-export REPO_ROOT SDK_PLUGINS_DIR
 
 # Parse args
 MODE="local"
@@ -43,34 +42,19 @@ if [[ -f "$ENV_FILE" ]]; then
     set +a
 fi
 
-SESSION_STATE_DIR="${SESSION_STATE_DIR:-$HOME/.copilot/session-state}"
-SESSION_STORE_DIR="${SESSION_STORE_DIR:-$(dirname "$SESSION_STATE_DIR")/session-store}"
-ARTIFACT_DIR="${ARTIFACT_DIR:-$(dirname "$SESSION_STATE_DIR")/artifacts}"
-DEFAULT_SESSION_STORE_DIR="$HOME/.copilot/session-store"
-DEFAULT_ARTIFACT_DIR="$HOME/.copilot/artifacts"
+# Local runs may use either the Copilot SDK defaults under ~/.copilot or the
+# legacy repo-local .tmp layout from older PilotSwarm builds.
+LOCAL_TMP="${REPO_ROOT}/.tmp"
+SESSION_STATE_DIR="${SESSION_STATE_DIR:-${LOCAL_TMP}/session-state}"
+SESSION_STORE_DIR="${SESSION_STORE_DIR:-${LOCAL_TMP}/session-store}"
+ARTIFACT_DIR="${ARTIFACT_DIR:-${LOCAL_TMP}/artifacts}"
 DUROXIDE_SCHEMA="${DUROXIDE_SCHEMA:-duroxide}"
 CMS_SCHEMA="${CMS_SCHEMA:-copilot_sessions}"
 FACTS_SCHEMA="${FACTS_SCHEMA:-pilotswarm_facts}"
 
-# ── Query CMS session IDs early (for summary + targeted cleanup) ─
+# ── Query CMS for summary counts ─────────────────────────────────
 SESSION_IDS_FILE=$(mktemp)
-STORE_ARCHIVE_PATHS_FILE=$(mktemp)
-STORE_META_PATHS_FILE=$(mktemp)
-trap 'rm -f "$SESSION_IDS_FILE" "$STORE_ARCHIVE_PATHS_FILE" "$STORE_META_PATHS_FILE"' EXIT
-
-STORE_DIRS=()
-add_store_dir() {
-    local dir="$1"
-    [[ -z "$dir" ]] && return
-    for existing in "${STORE_DIRS[@]:-}"; do
-        [[ "$existing" == "$dir" ]] && return
-    done
-    STORE_DIRS+=("$dir")
-}
-
-add_store_dir "$SESSION_STORE_DIR"
-add_store_dir "$(dirname "$SESSION_STATE_DIR")/session-store"
-add_store_dir "$DEFAULT_SESSION_STORE_DIR"
+trap 'rm -f "$SESSION_IDS_FILE"' EXIT
 
 CMS_COUNT=0
 FACT_COUNT=0
@@ -109,111 +93,6 @@ await pool.end();
 " 2>/dev/null || echo "0")
 fi
 
-# Add deterministic system-agent IDs from built-in and configured plugins.
-node --input-type=module - <<'EOF' >> "$SESSION_IDS_FILE" 2>/dev/null || true
-import fs from 'node:fs';
-import path from 'node:path';
-import { loadAgentFiles, systemAgentUUID, systemChildAgentUUID } from '../packages/sdk/dist/agent-loader.js';
-
-const repoRoot = process.env.REPO_ROOT;
-const sdkPluginsDir = process.env.SDK_PLUGINS_DIR;
-const pluginDirsEnv = process.env.PLUGIN_DIRS || '';
-
-const candidatePluginDirs = [
-    path.join(sdkPluginsDir, 'system'),
-    path.join(sdkPluginsDir, 'mgmt'),
-    ...pluginDirsEnv.split(path.delimiter).filter(Boolean).map(p => path.resolve(repoRoot, p)),
-];
-
-const allAgents = [];
-for (const dir of candidatePluginDirs) {
-    const agentsDir = path.join(dir, 'agents');
-    if (!fs.existsSync(agentsDir)) continue;
-    try {
-        allAgents.push(...loadAgentFiles(agentsDir).filter(a => a.system));
-    } catch {}
-}
-
-const byId = new Map(allAgents.filter(a => a.id).map(a => [a.id, a]));
-
-function emitAgent(id, parentSessionId = null, seen = new Set()) {
-    const key = `${parentSessionId || 'root'}:${id}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-
-    const sessionId = parentSessionId ? systemChildAgentUUID(parentSessionId, id) : systemAgentUUID(id);
-    console.log(sessionId);
-
-    for (const agent of allAgents) {
-        if (agent.parent === id && agent.id) {
-            emitAgent(agent.id, sessionId, seen);
-        }
-    }
-}
-
-for (const agent of allAgents) {
-    if (agent.id && !agent.parent) emitAgent(agent.id);
-}
-EOF
-
-# Deduplicate the collected session IDs.
-if [[ -s "$SESSION_IDS_FILE" ]]; then
-        sort -u "$SESSION_IDS_FILE" -o "$SESSION_IDS_FILE"
-fi
-
-# Count how many CMS sessions have a matching local dir
-LOCAL_MATCH_COUNT=0
-if [[ -d "$SESSION_STATE_DIR" && -s "$SESSION_IDS_FILE" ]]; then
-    while IFS= read -r sid; do
-        [[ -d "${SESSION_STATE_DIR}/${sid}" ]] && LOCAL_MATCH_COUNT=$((LOCAL_MATCH_COUNT + 1))
-    done < "$SESSION_IDS_FILE"
-fi
-
-# Count matching filesystem session-store archives/meta across relevant local dirs
-STORE_MATCH_COUNT=0
-STORE_META_MATCH_COUNT=0
-if [[ -s "$SESSION_IDS_FILE" ]]; then
-    for store_dir in "${STORE_DIRS[@]}"; do
-        [[ -d "$store_dir" ]] || continue
-        while IFS= read -r sid; do
-            [[ -f "${store_dir}/${sid}.tar.gz" ]] && echo "${store_dir}/${sid}.tar.gz" >> "$STORE_ARCHIVE_PATHS_FILE"
-            [[ -f "${store_dir}/${sid}.meta.json" ]] && echo "${store_dir}/${sid}.meta.json" >> "$STORE_META_PATHS_FILE"
-        done < "$SESSION_IDS_FILE"
-    done
-fi
-
-if [[ -s "$STORE_ARCHIVE_PATHS_FILE" ]]; then
-    sort -u "$STORE_ARCHIVE_PATHS_FILE" -o "$STORE_ARCHIVE_PATHS_FILE"
-    STORE_MATCH_COUNT=$(wc -l < "$STORE_ARCHIVE_PATHS_FILE" | tr -d ' ')
-fi
-if [[ -s "$STORE_META_PATHS_FILE" ]]; then
-    sort -u "$STORE_META_PATHS_FILE" -o "$STORE_META_PATHS_FILE"
-    STORE_META_MATCH_COUNT=$(wc -l < "$STORE_META_PATHS_FILE" | tr -d ' ')
-fi
-
-# Count matching local artifact dirs
-ARTIFACT_DIRS=()
-add_artifact_dir() {
-    local dir="$1"
-    [[ -z "$dir" ]] && return
-    for existing in "${ARTIFACT_DIRS[@]:-}"; do
-        [[ "$existing" == "$dir" ]] && return
-    done
-    ARTIFACT_DIRS+=("$dir")
-}
-add_artifact_dir "$ARTIFACT_DIR"
-add_artifact_dir "$DEFAULT_ARTIFACT_DIR"
-
-ARTIFACT_MATCH_COUNT=0
-if [[ -s "$SESSION_IDS_FILE" ]]; then
-    for art_dir in "${ARTIFACT_DIRS[@]}"; do
-        [[ -d "$art_dir" ]] || continue
-        while IFS= read -r sid; do
-            [[ -d "${art_dir}/${sid}" ]] && ARTIFACT_MATCH_COUNT=$((ARTIFACT_MATCH_COUNT + 1))
-        done < "$SESSION_IDS_FILE"
-    done
-fi
-
 # ── Summary ──────────────────────────────────────────────────
 STEP=1
 echo ""
@@ -229,17 +108,9 @@ STEP=$((STEP + 1))
 echo "     ${STEP}. Delete ${FACT_COUNT} fact row(s) from ${FACTS_SCHEMA}.facts"
 if [[ "$MODE" != "remote" ]]; then
     STEP=$((STEP + 1))
-    echo "     ${STEP}. Delete ${LOCAL_MATCH_COUNT} local session dir(s) matching ${CMS_COUNT} CMS session(s)"
-    echo "        (other Copilot sessions in ${SESSION_STATE_DIR} are kept)"
+    echo "     ${STEP}. Delete local session files under ${SESSION_STATE_DIR}, ${SESSION_STORE_DIR}, ${ARTIFACT_DIR} for ${CMS_COUNT} known session(s)"
     STEP=$((STEP + 1))
-    echo "     ${STEP}. Delete ${STORE_MATCH_COUNT} matching filesystem session-store archive(s)"
-    if [[ "$STORE_MATCH_COUNT" -gt 0 || "$STORE_META_MATCH_COUNT" -gt 0 ]]; then
-        echo "        and ${STORE_META_MATCH_COUNT} matching metadata file(s) from local session-store dirs"
-    else
-        echo "        from local session-store dirs (none currently matched)"
-    fi
-    STEP=$((STEP + 1))
-    echo "     ${STEP}. Delete ${ARTIFACT_MATCH_COUNT} local artifact dir(s) for cleaned-up sessions"
+    echo "     ${STEP}. Delete legacy .tmp/ (session-state, session-store, artifacts)"
 fi
 if [[ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]]; then
     STEP=$((STEP + 1))
@@ -271,88 +142,90 @@ const url = new URL(process.env.DATABASE_URL);
 const quoteIdent = (value) => '\"' + String(value).replace(/\"/g, '\"\"') + '\"';
 const ssl = ['require','prefer','verify-ca','verify-full'].includes(url.searchParams.get('sslmode') ?? '');
 url.searchParams.delete('sslmode');
-const pool = new pg.Pool({ connectionString: url.toString(), ...(ssl ? { ssl: { rejectUnauthorized: false } } : {}) });
+const client = new pg.Client({ connectionString: url.toString(), ...(ssl ? { ssl: { rejectUnauthorized: false } } : {}) });
 const duroxideSchema = process.env.DUROXIDE_SCHEMA || 'duroxide';
 const cmsSchema = process.env.CMS_SCHEMA || 'copilot_sessions';
 const factsSchema = process.env.FACTS_SCHEMA || 'pilotswarm_facts';
-await pool.query('DROP SCHEMA IF EXISTS ' + quoteIdent(duroxideSchema) + ' CASCADE');
-console.log('   ✅ ' + duroxideSchema + ' schema dropped');
-await pool.query('DROP SCHEMA IF EXISTS ' + quoteIdent(cmsSchema) + ' CASCADE');
-console.log('   ✅ ' + cmsSchema + ' schema dropped');
-await pool.query('DROP SCHEMA IF EXISTS ' + quoteIdent(factsSchema) + ' CASCADE');
-console.log('   ✅ ' + factsSchema + ' schema dropped');
-await pool.end();
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function terminateOtherBackends() {
+    const { rows } = await client.query(
+        'SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()'
+    );
+    if (!rows.length) return 0;
+
+    await client.query(
+        'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()'
+    );
+    return rows.length;
+}
+
+async function dropSchema(schemaName) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            await client.query('DROP SCHEMA IF EXISTS ' + quoteIdent(schemaName) + ' CASCADE');
+            console.log('   ✅ ' + schemaName + ' schema dropped');
+            return;
+        } catch (err) {
+            const retriable = err?.code === '40P01' || err?.code === '55P03';
+            if (!retriable || attempt === 3) throw err;
+
+            const terminated = await terminateOtherBackends();
+            console.log(
+                '   ⚠️  Retrying ' + schemaName + ' schema drop after ' + err.code +
+                ' (' + terminated + ' backend(s) terminated)'
+            );
+            await sleep(250 * attempt);
+        }
+    }
+}
+
+await client.connect();
+const terminated = await terminateOtherBackends();
+if (terminated > 0) {
+    console.log('   ✅ Terminated ' + terminated + ' other PostgreSQL backend(s) on current database');
+}
+await dropSchema(duroxideSchema);
+await dropSchema(cmsSchema);
+await dropSchema(factsSchema);
+await client.end();
 "
 fi
 
-# ── 2. Delete only local session dirs that were in the CMS ──
+# ── 2. Delete local session state ───────────────────────────
 if [[ "$MODE" == "remote" ]]; then
     echo "   (skipping local filesystem cleanup — remote mode)"
 else
-if [[ -d "$SESSION_STATE_DIR" && -s "$SESSION_IDS_FILE" ]]; then
-    DELETED=0
-    while IFS= read -r sid; do
-        if [[ -d "${SESSION_STATE_DIR}/${sid}" ]]; then
-            rm -rf "${SESSION_STATE_DIR:?}/${sid}"
-            DELETED=$((DELETED + 1))
-        fi
-    done < "$SESSION_IDS_FILE"
-    echo "   ✅ Deleted ${DELETED} local session dir(s) (kept non-PilotSwarm sessions)"
-elif [[ ! -s "$SESSION_IDS_FILE" ]]; then
-    echo "   ✅ No CMS sessions found — local session state untouched"
-else
-    echo "   ✅ No local session state dir to clean"
-fi
-
-# ── 3. Delete matching local session-store archives ─────────
-if [[ -s "$STORE_ARCHIVE_PATHS_FILE" || -s "$STORE_META_PATHS_FILE" ]]; then
-    DELETED_STORE=0
-    DELETED_STORE_META=0
-    if [[ -s "$STORE_ARCHIVE_PATHS_FILE" ]]; then
-        while IFS= read -r archive_path; do
-            rm -f "$archive_path"
-            DELETED_STORE=$((DELETED_STORE + 1))
-        done < "$STORE_ARCHIVE_PATHS_FILE"
-    fi
-    if [[ -s "$STORE_META_PATHS_FILE" ]]; then
-        while IFS= read -r meta_path; do
-            rm -f "$meta_path"
-            DELETED_STORE_META=$((DELETED_STORE_META + 1))
-        done < "$STORE_META_PATHS_FILE"
-    fi
-    echo "   ✅ Deleted ${DELETED_STORE} local session-store archive(s) and ${DELETED_STORE_META} metadata file(s)"
-else
-    echo "   ✅ No matching local session-store archives to clean"
-fi
-
-# ── 4. Delete local artifact dirs matching CMS sessions ─────
+SESSION_FILE_CLEAN_COUNT=0
 if [[ -s "$SESSION_IDS_FILE" ]]; then
-    DELETED_ARTIFACTS=0
-    for art_dir in "${ARTIFACT_DIRS[@]}"; do
-        [[ -d "$art_dir" ]] || continue
-        while IFS= read -r sid; do
-            if [[ -d "${art_dir}/${sid}" ]]; then
-                rm -rf "${art_dir:?}/${sid}"
-                DELETED_ARTIFACTS=$((DELETED_ARTIFACTS + 1))
-            fi
-        done < "$SESSION_IDS_FILE"
-    done
-    echo "   ✅ Deleted ${DELETED_ARTIFACTS} local artifact dir(s)"
-else
-    echo "   ✅ No artifact dirs to clean"
+    while IFS= read -r session_id; do
+        [[ -z "$session_id" ]] && continue
+
+        rm -rf "${SESSION_STATE_DIR}/${session_id}"
+        rm -f "${SESSION_STORE_DIR}/${session_id}.tar.gz"
+        rm -f "${SESSION_STORE_DIR}/${session_id}.meta.json"
+        rm -rf "${ARTIFACT_DIR}/${session_id}"
+        SESSION_FILE_CLEAN_COUNT=$((SESSION_FILE_CLEAN_COUNT + 1))
+    done < "$SESSION_IDS_FILE"
 fi
 
-# ── 5. Clean up any stray .tar files ────────────────────────
-TAR_COUNT=$(find "$REPO_ROOT" -maxdepth 3 -name "*.tar" -o -name "*.tar.gz" 2>/dev/null | wc -l | tr -d ' ')
-if [[ "$TAR_COUNT" -gt 0 ]]; then
-    echo "   Removing ${TAR_COUNT} tar file(s) under repo root..."
-    find "$REPO_ROOT" -maxdepth 3 \( -name "*.tar" -o -name "*.tar.gz" \) -delete
-    echo "   ✅ Tar files removed"
+if [[ "$SESSION_FILE_CLEAN_COUNT" -gt 0 ]]; then
+    echo "   ✅ Deleted local session files for ${SESSION_FILE_CLEAN_COUNT} known session(s)"
+else
+    echo "   ✅ No local session files matched known session IDs"
 fi
+
+if [[ -d "$LOCAL_TMP" ]]; then
+    rm -rf "${LOCAL_TMP:?}"
+    echo "   ✅ Deleted legacy .tmp/ (session-state, session-store, artifacts)"
+else
+    echo "   ✅ No legacy .tmp/ directory to clean"
+fi
+
 # end local-only cleanup
 fi
 
-# ── 6. Blob storage purge (if configured) ───────────────────
+# ── 3. Blob storage purge (if configured) ───────────────────
 if [[ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]]; then
     echo "   Purging blob storage..."
     node --env-file="$ENV_FILE" -e "

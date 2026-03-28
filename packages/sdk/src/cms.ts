@@ -17,6 +17,7 @@ export interface SessionEvent {
     eventType: string;
     data: unknown;
     createdAt: Date;
+    workerNodeId?: string;
 }
 
 /** A row in the sessions table. */
@@ -99,7 +100,7 @@ export interface SessionCatalogProvider {
     // ── Events (written from worker, read from client) ───────
 
     /** Record a batch of events for a session. */
-    recordEvents(sessionId: string, events: { eventType: string; data: unknown }[]): Promise<void>;
+    recordEvents(sessionId: string, events: { eventType: string; data: unknown }[], workerNodeId?: string): Promise<void>;
 
     /** Get events for a session, optionally after a sequence number. */
     getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<SessionEvent[]>;
@@ -235,6 +236,12 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         try {
             await this.pool.query(
                 `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS splash TEXT`
+            );
+        } catch {}
+        // Migration: add worker_node_id to events table if missing
+        try {
+            await this.pool.query(
+                `ALTER TABLE ${this.sql.eventsTable} ADD COLUMN IF NOT EXISTS worker_node_id TEXT`
             );
         } catch {}
         this.initialized = true;
@@ -385,7 +392,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
 
     // ── Events ───────────────────────────────────────────────
 
-    async recordEvents(sessionId: string, events: { eventType: string; data: unknown }[]): Promise<void> {
+    async recordEvents(sessionId: string, events: { eventType: string; data: unknown }[], workerNodeId?: string): Promise<void> {
         if (events.length === 0) return;
 
         // Batch insert with a single multi-row INSERT
@@ -393,12 +400,12 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         const values: unknown[] = [];
         let idx = 1;
         for (const evt of events) {
-            valuePlaceholders.push(`($${idx++}, $${idx++}, $${idx++})`);
-            values.push(sessionId, evt.eventType, JSON.stringify(evt.data));
+            valuePlaceholders.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+            values.push(sessionId, evt.eventType, JSON.stringify(evt.data), workerNodeId ?? null);
         }
 
         await this.pool.query(
-            `INSERT INTO ${this.sql.eventsTable} (session_id, event_type, data)
+            `INSERT INTO ${this.sql.eventsTable} (session_id, event_type, data, worker_node_id)
              VALUES ${valuePlaceholders.join(", ")}`,
             values,
         );
@@ -468,5 +475,6 @@ function rowToSessionEvent(row: any): SessionEvent {
         eventType: row.event_type,
         data: row.data,
         createdAt: new Date(row.created_at),
+        workerNodeId: row.worker_node_id ?? undefined,
     };
 }

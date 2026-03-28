@@ -234,10 +234,21 @@ If the session is already failed or completed and later logs show:
 
 that usually means children or other senders kept enqueueing to a dead parent after the parent became terminal.
 
+### Benign `completion from different execution` warnings
+
+If runtime logs show:
+
+`completion from different execution`
+
+do not treat that warning alone as an incident.
+
+This commonly appears when a session has already continued-as-new or moved to a newer execution and a late completion from the prior execution arrives afterward. It is useful context for timing analysis, but it is usually benign unless it is paired with dropped work, a failed execution, or a user-visible regression.
+
 ## Rules
 
 - Do not infer affinity failure from orchestration-start placement.
 - Do not infer crash from an unrelated pod restart elsewhere in the deployment.
 - Do not claim explicit dehydrate without direct evidence.
+- Do not alarm on `completion from different execution` by itself; explain it as late prior-execution completion noise unless stronger evidence says otherwise.
 - Prefer exact session IDs, execution IDs, and pod names in the write-up.
 - If evidence is incomplete, say exactly what is proven and what remains inference.

@@ -47,19 +47,26 @@ fi
 
 MODE="${1:-local}"
 
+# Local runs use a project-local tmp dir for Copilot session state
+# so PilotSwarm does not touch the user's real ~/.copilot sessions.
+LOCAL_TMP="$(pwd)/.tmp"
+export SESSION_STATE_DIR="${LOCAL_TMP}/session-state"
+export SESSION_STORE_DIR="${LOCAL_TMP}/session-store"
+export ARTIFACT_DIR="${LOCAL_TMP}/artifacts"
+
 case "$MODE" in
     local)
         if [[ "${2:-}" == "--db" ]]; then
             echo "🚀 Starting TUI — 4 local workers, local PG (Ctrl+C to quit)"
-            node packages/cli/bin/tui.js local --env .env
+            exec node packages/cli/bin/tui.js local --env .env
         else
             echo "🚀 Starting TUI — 4 local workers, remote PG (Ctrl+C to quit)"
-            node packages/cli/bin/tui.js local --env .env.remote
+            exec node packages/cli/bin/tui.js local --env .env.remote
         fi
         ;;
     remote|scaled)
         echo "🚀 Starting TUI — AKS workers, client-only (Ctrl+C to quit)"
-        node packages/cli/bin/tui.js remote --env .env.remote
+        exec node packages/cli/bin/tui.js remote --env .env.remote
         ;;
     *)
         echo "Usage: $0 [local|remote] [--db]"

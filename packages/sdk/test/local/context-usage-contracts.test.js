@@ -25,10 +25,10 @@ describe("context usage contracts", () => {
         const orchestration = readRepoFile("packages/sdk/src/orchestration.ts");
         const registry = readRepoFile("packages/sdk/src/orchestration-registry.ts");
 
-        assertIncludes(orchestration, 'export const CURRENT_ORCHESTRATION_VERSION = "1.0.30";', "latest orchestration should be versioned for context usage changes");
+        assertIncludes(orchestration, 'export const CURRENT_ORCHESTRATION_VERSION = "1.0.31";', "latest orchestration should be versioned for context usage changes");
         assertIncludes(orchestration, "function updateContextUsageFromEvents(", "orchestration should derive context usage from turn events");
         assertIncludes(orchestration, "...(contextUsage ? { contextUsage } : {}),", "context usage should be carried into status and continueAsNew state");
-        assertIncludes(registry, '{ version: "1.0.29", handler: durableSessionOrchestration_1_0_29 },', "previous orchestration version should stay frozen");
+        assertIncludes(registry, '{ version: "1.0.30", handler: durableSessionOrchestration_1_0_30 },', "previous orchestration version should stay frozen");
     });
 
     it("renders context usage in the TUI header and warning badge in the session list", () => {

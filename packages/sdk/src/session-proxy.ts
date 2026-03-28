@@ -127,6 +127,10 @@ export function createSessionManagerProxy(ctx: any) {
         loadKnowledgeIndex(cap?: number) {
             return ctx.scheduleActivity("loadKnowledgeIndex", { cap });
         },
+        /** Record CMS lifecycle events from the orchestration (waits, spawns, cron, commands). */
+        recordSessionEvent(sessionId: string, events: { eventType: string; data: unknown }[]) {
+            return ctx.scheduleActivity("recordSessionEvent", { sessionId, events });
+        },
     };
 }
 
@@ -159,6 +163,8 @@ export function registerActivities(
     userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; parent?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>,
     /** Fact store instance for the loadKnowledgeIndex activity. */
     factStore?: import("./facts-store.js").FactStore | null,
+    /** Worker node identifier — written on every CMS event for worker tracking. */
+    workerNodeId?: string,
 ) {
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
@@ -210,7 +216,7 @@ export function registerActivities(
             const onEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
                     if (EPHEMERAL_TYPES.has(event.eventType)) return;
-                    catalog.recordEvents(input.sessionId, [event]).catch((err: any) => {
+                    catalog.recordEvents(input.sessionId, [event], workerNodeId).catch((err: any) => {
                         activityCtx.traceInfo(`[runTurn] CMS recordEvent failed: ${err}`);
                     });
                 }
@@ -223,7 +229,7 @@ export function registerActivities(
                 catalog.recordEvents(input.sessionId, [{
                     eventType: "user.message",
                     data: { content: input.prompt },
-                }]).catch((err: any) => {
+                }], workerNodeId).catch((err: any) => {
                     activityCtx.traceInfo(`[runTurn] CMS recordEvent (user) failed: ${err}`);
                 });
             }
@@ -239,12 +245,34 @@ export function registerActivities(
             }
 
             activityCtx.traceInfo(`[runTurn] invoking ManagedSession.runTurn for ${input.sessionId}`);
+
+            // Record turn_started CMS event
+            if (catalog) {
+                catalog.recordEvents(input.sessionId, [{
+                    eventType: "session.turn_started",
+                    data: { iteration: input.turnIndex ?? 0 },
+                }], workerNodeId).catch((err: any) => {
+                    activityCtx.traceInfo(`[runTurn] CMS turn_started event failed: ${err}`);
+                });
+            }
+
             const result = await session.runTurn(enrichedPrompt, {
                 onEvent,
                 modelSummary: sessionManager.getModelSummary(),
                 bootstrap: input.bootstrap,
             });
             activityCtx.traceInfo(`[runTurn] ManagedSession.runTurn completed for ${input.sessionId} type=${result.type}`);
+
+            // Record turn_completed CMS event
+            if (catalog) {
+                catalog.recordEvents(input.sessionId, [{
+                    eventType: "session.turn_completed",
+                    data: { iteration: input.turnIndex ?? 0 },
+                }], workerNodeId).catch((err: any) => {
+                    activityCtx.traceInfo(`[runTurn] CMS turn_completed event failed: ${err}`);
+                });
+            }
+
             if (cancelled) return { type: "cancelled" };
 
             // ── Activity-level writeback: sync turn result → CMS ──
@@ -302,6 +330,12 @@ export function registerActivities(
         input: { sessionId: string; reason?: string },
     ): Promise<void> => {
         await sessionManager.dehydrate(input.sessionId, input.reason ?? "unknown");
+        if (catalog) {
+            catalog.recordEvents(input.sessionId, [{
+                eventType: "session.dehydrated",
+                data: { reason: input.reason ?? "unknown" },
+            }], workerNodeId).catch(() => {});
+        }
     });
 
     runtime.registerActivity("needsHydrationSession", async (
@@ -317,6 +351,12 @@ export function registerActivities(
         input: { sessionId: string },
     ): Promise<void> => {
         await sessionManager.hydrate(input.sessionId);
+        if (catalog) {
+            catalog.recordEvents(input.sessionId, [{
+                eventType: "session.hydrated",
+                data: {},
+            }], workerNodeId).catch(() => {});
+        }
     });
 
     // ── destroySession ──────────────────────────────────────
@@ -919,4 +959,15 @@ export function registerActivities(
             return { skills, asks };
         });
     }
+
+    // ── recordSessionEvent ──────────────────────────────────
+    // Lightweight CMS event recording for orchestration-level lifecycle events
+    // (waits, spawns, cron, commands) that don't happen inside an existing activity.
+    runtime.registerActivity("recordSessionEvent", async (
+        _activityCtx: any,
+        input: { sessionId: string; events: { eventType: string; data: unknown }[] },
+    ): Promise<void> => {
+        if (!catalog) return;
+        await catalog.recordEvents(input.sessionId, input.events, workerNodeId);
+    });
 }
