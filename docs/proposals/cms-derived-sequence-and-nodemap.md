@@ -15,339 +15,303 @@ The TUI's sequence diagram and node map currently derive all data by **parsing r
 
 ## Solution
 
-Replace log parsing with **CMS events + orchestration customStatus** as the single source of truth for both the sequence diagram and the node map. The SDK already persists all the data needed — it's just not being used.
+Replace log parsing with **CMS events** as the single source of truth for both the sequence diagram and the node map.
 
-## Data Sources (Already Exist)
+### Core Design Decisions
 
-### CMS Events (per session, seq-ordered)
+1. **`worker_node_id` column on CMS events table** — every event write carries the worker that produced it. Activities have access to `workerNodeId` via the Runtime config / SessionManager. No orchestration changes needed for basic worker tracking.
 
-| Event type | Data | Source |
+2. **New CMS event types for operational lifecycle** — waits, timers, spawns, dehydration, cron, commands. Events inside existing activities (turns, dehydrate, hydrate) are recorded inline with zero yield changes. Events at orchestration level (waits, spawns, cron, commands) use a new lightweight `recordSessionEvent` activity.
+
+3. **Ordering uses `seq`, not `created_at`** — CMS events use a `BIGSERIAL` primary key (`seq`) that is monotonically increasing within a single PostgreSQL instance. This is immune to clock skew between worker nodes. `created_at` is used only for display timestamps in the sequence diagram.
+
+4. **Orchestration version bump required for Phase 1c only** — the new `recordSessionEvent` activity adds yields to the orchestration generator. Phases 1a and 1b don't touch orchestration yields.
+
+## Phase 1: Enrich CMS Events (SDK)
+
+### 1a. Add `worker_node_id` column to CMS events table
+
+**Schema change** in `cms.ts`:
+
+```sql
+-- Migration in initialize(), same pattern as existing column additions
+ALTER TABLE {eventsTable} ADD COLUMN IF NOT EXISTS worker_node_id TEXT;
+```
+
+`recordEvents()` accepts an optional `workerNodeId` parameter and writes it on every insert.
+
+**Activity-side**: `session-proxy.ts` passes `workerNodeId` (from `sessionManager.workerNodeId`) to every `catalog.recordEvents()` call. This covers:
+- `user.message` (recorded before `runTurn()`)
+- All Copilot SDK events forwarded through `onEvent` callback (`assistant.message`, `assistant.usage`, `session.usage_info`, `session.compaction_*`, `session.error`)
+
+**No orchestration changes. No version bump.**
+
+### 1b. New CMS events inside existing activities
+
+Recorded inline in activities that already exist. **No new yields, no version bump.**
+
+| Event type | Where recorded | Data |
 |---|---|---|
-| `user.message` | `{ content }` | Recorded in `session-proxy.ts` before `runTurn()` |
-| `assistant.message` | `{ content }` | Copilot SDK `on("assistant.message")` → `recordEvents()` |
-| `assistant.usage` | `{ promptTokens, completionTokens, totalTokens }` | Copilot SDK |
-| `session.usage_info` | `{ currentTokens, tokenLimit }` | Copilot SDK |
-| `session.compaction_start` | `{}` | Copilot SDK |
-| `session.compaction_complete` | `{ removedMessages }` | Copilot SDK |
-| `session.error` | `{ message }` | Copilot SDK |
+| `session.turn_started` | `session-proxy.ts` → `runTurn`, before `managedSession.runTurn()` | `{ iteration }` |
+| `session.turn_completed` | `session-proxy.ts` → `runTurn`, after `managedSession.runTurn()` | `{ iteration }` |
+| `session.dehydrated` | `session-proxy.ts` → `dehydrateSession` activity | `{ reason }` |
+| `session.hydrated` | `session-proxy.ts` → `hydrateSession` activity | `{}` |
 
-### Orchestration CustomStatus (live, per session)
+All of these get `worker_node_id` automatically from Phase 1a.
+
+### 1c. New `recordSessionEvent` activity + orchestration-level events
+
+Events that happen between yields in the orchestration generator need a new activity to write to CMS.
+
+**New activity** in `session-proxy.ts`:
 
 ```ts
-interface SessionStatusSignal {
-    status: PilotSwarmSessionStatus;  // idle | running | waiting | completed | failed | error | input_required
-    iteration: number;
-    responseVersion?: number;
-    commandVersion?: number;
-    waitReason?: string;
-    waitSeconds?: number;
-    waitStartedAt?: number;
-    cronActive?: boolean;
-    cronInterval?: number;
-    cronReason?: string;
-    error?: string;
-    contextUsage?: SessionContextUsage;
-}
+runtime.registerActivity("recordSessionEvent", async (actCtx, input) => {
+    const { sessionId, events } = input;
+    await catalog.recordEvents(sessionId, events, workerNodeId);
+});
 ```
 
-### Management Client Session View (merged CMS + orchestration)
+**Orchestration proxy** in `session-proxy.ts`:
 
 ```ts
-interface PilotSwarmSessionView {
-    sessionId: string;
-    title?: string;
-    agentId?: string;
-    status: PilotSwarmSessionStatus;
-    orchestrationStatus?: string;  // Running | Completed | Failed | Terminated
-    iterations?: number;
-    parentSessionId?: string;
-    isSystem?: boolean;
-    model?: string;
-    waitReason?: string;
-    cronActive?: boolean;
-    cronInterval?: number;
-    statusVersion?: number;        // for change detection
-    contextUsage?: SessionContextUsage;
-}
+proxy.recordSessionEvent = (sessionId, events) =>
+    proxy.callActivity("recordSessionEvent", { sessionId, events });
 ```
 
-### What's Missing (Must Be Added)
+**Orchestration-level events** — each `yield` below is a new activity call:
 
-| Gap | Where to add | Details |
+| Event type | Where in orchestration | Data |
 |---|---|---|
-| **`workerNodeId` in customStatus** | `session-proxy.ts` activity return value → `orchestration.ts` `publishStatus()` | The orchestration generator does NOT have access to `workerNodeId` — only activities do (via the Runtime's worker config). The `runTurn` activity must return `workerNodeId` alongside the turn result, and the orchestration reads it from the activity return value to include in `publishStatus()`. |
-| **Tool call events** | `session-proxy.ts` `onEvent` | The Copilot SDK fires `tool.call` and `tool.result` events but they may be filtered. Need to verify they reach CMS. If not, add them. |
-| **Wait/timer events** | `session-proxy.ts` or `orchestration.ts` | Record CMS events for `session.wait_started`, `session.wait_completed`, `session.dehydrated`, `session.hydrated`. Currently these only appear in logs. |
-| **Spawn events** | `orchestration.ts` | Record a `session.agent_spawned` CMS event with `{ childSessionId, agentId, task }` when `spawn_agent` fires. Currently only logged. |
-| **Worker handoff events** | `orchestration.ts` | Record `session.worker_changed` when the activity runs on a different worker than previous turn. |
+| `session.wait_started` | Before `ctx.scheduleTimer()` | `{ seconds, reason, preserveAffinity? }` |
+| `session.wait_completed` | After timer yield returns | `{ seconds }` |
+| `session.agent_spawned` | After `spawn_agent` processed | `{ childSessionId, agentId?, task }` |
+| `session.cron_started` | When cron schedule set | `{ intervalSeconds, reason }` |
+| `session.cron_fired` | When cron timer fires | `{}` |
+| `session.cron_cancelled` | When cron cancelled | `{}` |
+| `session.command_received` | When command dequeued | `{ cmd, id }` |
+| `session.command_completed` | After command processed | `{ cmd, id }` |
 
-## Design
-
-### Phase 1: Enrich CMS Events (SDK changes)
-
-Add new CMS event types that capture the same information currently scraped from logs:
-
-```
-session.turn_started      { iteration, workerNodeId }
-session.turn_completed    { iteration, workerNodeId, tokenUsage? }
-session.wait_started      { seconds, reason, preserveAffinity }
-session.wait_completed    { seconds }
-session.timer_fired       { seconds }
-session.dehydrated        { reason }
-session.hydrated          { workerNodeId }
-session.agent_spawned     { childSessionId, agentId, task }
-session.worker_changed    { fromWorker, toWorker }
-session.cron_started      { intervalSeconds, reason }
-session.cron_fired        {}
-session.cron_cancelled    {}
-session.command_received  { cmd, id }
-session.command_completed { cmd, id }
+**Example** (wait):
+```ts
+yield sessionProxy.recordSessionEvent(sessionId, [
+    { eventType: "session.wait_started", data: { seconds, reason } },
+]);
+yield ctx.scheduleTimer(seconds * 1000);
+yield sessionProxy.recordSessionEvent(sessionId, [
+    { eventType: "session.wait_completed", data: { seconds } },
+]);
 ```
 
-Plus: add `workerNodeId` to orchestration `customStatus`. Since the orchestration generator doesn't have access to `workerNodeId` (only activities do, via the Runtime's worker config), the `runTurn` activity must return `workerNodeId` in its result. The orchestration then reads it from the activity return value and includes it in `publishStatus()`.
+Events can be batched (array) to minimize yields where multiple events occur at the same point.
 
-These are fire-and-forget CMS writes — same as existing event recording. No new activities, no yield sequence changes (no orchestration version bump needed for the events — they're recorded inside activities).
+### 1d. Orchestration version bump
 
-### Phase 2: Sequence Diagram from CMS Events (TUI changes)
+Phase 1c adds yields → freeze `orchestration.ts` to `orchestration_1_0_30.ts`, register in `orchestration-registry.ts`, bump to `1.0.31`.
 
-Replace `parseSeqEvent()` + log scraping with a CMS-backed event model:
+## Phase 2: Sequence Diagram from CMS Events (TUI)
 
-#### Data Model
+### Data Model
 
 ```js
 // Replaces seqEventBuffers (Map<orchId, parsedLogEvent[]>)
-// Now populated from CMS events, not log parsing.
-const seqTimeline = new Map();  // orchId → SeqEvent[]
+const seqTimeline = new Map();  // sessionId → SeqEvent[]
 
 // SeqEvent — normalized from CMS events
 // {
-//   seq: number,           // CMS event seq (total ordering)
-//   time: string,          // formatted timestamp
-//   type: string,          // "turn" | "response" | "wait" | "timer" | "dehydrate" | "hydrate" | "spawn" | "user_msg" | "cmd" | "cron" | "compaction" | "error"
-//   workerNodeId?: string, // which worker ran this
-//   detail?: string,       // turn number, wait reason, spawn agentId, etc.
+//   seq: number,           // CMS event seq — source of truth for ordering
+//   time: string,          // created_at formatted for display (cosmetic only)
+//   type: string,          // mapped from eventType
+//   workerNodeId?: string, // from worker_node_id column
+//   detail?: string,       // iteration number, wait reason, agentId, etc.
 // }
 ```
 
-#### Backfill on Session Switch
+### Backfill on Session Switch
 
-When the user switches to a session (or on TUI startup for the active session), load the full CMS event history:
+Load full CMS event history when the user selects a session:
 
 ```js
 async function loadSeqTimeline(sessionId) {
     const events = await catalog.getEvents(sessionId);
-    const timeline = events.map(evt => cmsEventToSeqEvent(evt)).filter(Boolean);
+    const timeline = events.map(cmsEventToSeqEvent).filter(Boolean);
     seqTimeline.set(sessionId, timeline);
     if (logViewMode === "sequence") refreshSeqPane();
 }
 ```
 
-#### Live Updates
+This solves "no history before TUI connected."
 
-Subscribe to new CMS events via the existing `session.on()` mechanism. When a new event arrives, append it to the timeline and render incrementally (same as current `appendSeqEvent`).
+### Live Updates
 
-#### Rendering
+New CMS events arrive via `session.on()` → append to timeline, render incrementally.
 
-The existing `renderSeqEventLine()` and `seqLine()` helpers stay — they just take the new `SeqEvent` shape instead of the old log-parsed shape. The column layout (worker nodes as columns) uses `workerNodeId` from the event data instead of regex-extracted pod names.
+### Column Layout
 
-### Phase 3: Node Map from Management Client (TUI changes)
+Worker columns derived from distinct `workerNodeId` values in the timeline. Handoffs are visible where consecutive events have different `workerNodeId`.
 
-Replace the log-derived `seqLastActivityNode` tracking with management client data:
+### Rendering
+
+Reuse existing `seqLine()` column-based rendering with new `SeqEvent` shape. Same visual output.
+
+## Phase 3: Node Map from CMS Events (TUI)
+
+**Worker assignment**: last `worker_node_id` from that session's CMS events.  
+**Session status**: `mgmt.getSessionStatus()` (already used).
 
 ```js
 async function refreshNodeMap() {
     const sessions = await mgmt.listSessions();
-    
-    // Build node → sessions mapping from customStatus.workerNodeId
-    // (available after Phase 1 adds workerNodeId to customStatus)
     const nodeMap = new Map();
+
     for (const session of sessions) {
-        const status = await mgmt.getSessionStatus(session.sessionId);
-        const node = status?.customStatus?.workerNodeId || "(unknown)";
-        if (!nodeMap.has(node)) nodeMap.set(node, []);
-        nodeMap.get(node).push({
-            sessionId: session.sessionId,
-            title: session.title,
-            status: session.status,
-            agentId: session.agentId,
-            isSystem: session.isSystem,
-            iterations: session.iterations,
-        });
+        const events = await catalog.getEvents(session.sessionId, { limit: 1, order: "desc" });
+        const lastWorker = events[0]?.workerNodeId || "(unknown)";
+        if (!nodeMap.has(lastWorker)) nodeMap.set(lastWorker, []);
+        nodeMap.get(lastWorker).push({ ...session });
     }
-    
     renderNodeMapColumns(nodeMap);
 }
 ```
 
-This replaces the `seqLastActivityNode` map entirely. No more log-derived worker tracking.
+Replaces `seqLastActivityNode` map.
 
-### Phase 4: Remove Log Parsing (Cleanup)
+## Phase 4: Remove Log Parsing (Cleanup)
 
-Once Phases 1-3 are working:
-
-1. Delete `parseSeqEvent()` (~100 lines of regex parsing)
-2. Delete `appendSeqEvent()` / `injectSeqUserEvent()` log-based injection
+1. Delete `parseSeqEvent()` (~100 lines of regex)
+2. Delete `appendSeqEvent()` / `injectSeqUserEvent()`
 3. Delete `seqLastActivityNode`, `seqEventBuffers` maps
-4. Remove the `appendLogLine → parseSeqEvent → appendSeqEvent` pipeline from the log processor
-5. The sequence/nodemap modes no longer depend on log streaming at all
+4. Remove `appendLogLine → parseSeqEvent → appendSeqEvent` pipeline
+5. Sequence/nodemap modes no longer depend on log streaming
 
-Log streaming continues for the "Workers" and "Orchestration" log views — those are raw log viewers and should stay log-based.
+Log streaming stays for "Workers" and "Orchestration" raw log views.
 
 ## Implementation Order
 
-| Phase | Scope | Files | Risk |
+| Phase | Scope | Files | Version bump? |
 |---|---|---|---|
-| **1a** | Add `workerNodeId` to activity return → `publishStatus()` | `session-proxy.ts`, `orchestration.ts` | Low — activity returns extra field, orchestration reads it. Adds a field to customStatus, no yield change |
-| **1b** | Add new CMS event types | `session-proxy.ts`, `orchestration.ts` | Low — fire-and-forget writes inside existing activities |
-| **2** | Sequence diagram from CMS events | `tui.js` (or extract to `tui-sequence.js`) | Medium — rendering refactor |
-| **3** | Node map from management client | `tui.js` (or extract to `tui-nodemap.js`) | Low — simpler than sequence |
-| **4** | Remove log parsing for seq/nodemap | `tui.js` | Low — deletion only |
+| **1a** | `worker_node_id` column + write on every event | `cms.ts`, `session-proxy.ts` | No |
+| **1b** | Turn/dehydrate/hydrate events (inline in activities) | `session-proxy.ts` | No |
+| **1c** | `recordSessionEvent` activity + orch-level events | `session-proxy.ts`, `orchestration.ts` | **Yes** |
+| **1d** | Freeze orchestration, register, bump version | `orchestration-registry.ts` | — |
+| **2** | Sequence diagram from CMS | `tui.js` or new `tui-sequence.js` | No |
+| **3** | Node map from CMS | `tui.js` or new `tui-nodemap.js` | No |
+| **4** | Delete log parsing for seq/nodemap | `tui.js` | No |
 
-Phases 1a and 1b can ship independently. Phases 2-4 are one logical change.
-
-## What Changes for the Portal
-
-Once CMS-derived sequence and node map are working in the TUI, the **portal web experience** can use the exact same data sources (management client `listSessions()`, `getSessionStatus()`, CMS `getEvents()`) to render SVG sequence diagrams and card-based node maps. No log access needed.
+Phases 1a–1b ship independently. Phase 1c–1d ship together. Phases 2–4 are one logical TUI change.
 
 ---
 
 ## Test Plan
 
-### Phase 1: CMS Event Enrichment
+### Phase 1a: `worker_node_id` column
 
-#### 1a. `workerNodeId` in customStatus
+**Schema migration test** (integration):
+- Call `catalog.initialize()` → assert `worker_node_id` column exists on events table
+- Call `catalog.initialize()` again → idempotent, no error
 
-**Contract test** (static, no LLM):
-- Read `orchestration.ts` source
-- Assert `publishStatus` includes `workerNodeId` in the signal object
-- Assert `SessionStatusSignal` type in `types.ts` includes `workerNodeId?: string`
-
-**Integration test** (1 LLM turn):
+**Column written on every event** (integration):
 - `withClient(env, ...)` → create session → `sendAndWait("What is 1+1?")`
-- `mgmt.getSessionStatus(sessionId)` → assert `customStatus.workerNodeId` is a non-empty string
-- Assert `customStatus.workerNodeId` matches the worker's configured `workerNodeId`
+- `catalog.getEvents(sessionId)` → assert every event has `workerNodeId` as non-empty string
+- Assert `workerNodeId` matches the worker's configured `workerNodeId`
 
-**Multi-worker test** (2 workers):
-- Start worker A (nodeId="alpha") and worker B (nodeId="beta")
-- Create session, do a turn → check `workerNodeId` is "alpha" or "beta"
-- Stop worker A, do another turn → check `workerNodeId` is "beta"
-- Assert `workerNodeId` changed between turns
+**Multi-worker column test** (integration):
+- Worker A (nodeId="alpha"), create session, do a turn
+- Stop A, start worker B (nodeId="beta"), resume session, do a turn
+- Turn-1 events have `workerNodeId === "alpha"`, turn-2 events have `workerNodeId === "beta"`
 
-#### 1b. New CMS event types
+**Contract test** (static):
+- Read `cms.ts` → assert `worker_node_id` in schema DDL
+- Read `cms.ts` → assert `recordEvents()` writes `workerNodeId`
+- Read `session-proxy.ts` → assert all `recordEvents()` calls pass `workerNodeId`
 
-**Turn events test**:
+### Phase 1b: Events inside activities
+
+**Turn events** (integration):
 - Create session → `sendAndWait("Hello")`
 - `catalog.getEvents(sessionId)` → find `session.turn_started` and `session.turn_completed`
 - Assert `turn_started.data.iteration === 1`
-- Assert `turn_started.data.workerNodeId` is non-empty
-- Assert `turn_completed` seq > `turn_started` seq
+- Assert `turn_completed.seq > turn_started.seq`
 
-**Wait events test**:
-- Create session with system prompt that instructs calling `wait(seconds=5)`
-- `sendAndWait(...)` (or `send` + poll for completion)
-- `catalog.getEvents(sessionId)` → find `session.wait_started` and `session.wait_completed`
-- Assert `wait_started.data.seconds === 5`
-- Assert `wait_started.data.reason` is a string
+**Dehydrate/hydrate events** (integration, requires blob):
+- Session with blob enabled, trigger long wait → dehydration
+- Find `session.dehydrated` and `session.hydrated` in events
+- Assert `dehydrated.data.reason` is a string
 
-**Spawn events test**:
-- Create session → `send("Spawn a sub-agent with task: 'Say hello'")`
-- Poll CMS for child session
-- `catalog.getEvents(parentSessionId)` → find `session.agent_spawned`
+**Event ordering** (integration):
+- One turn → events in order: `turn_started` → `user.message` → `assistant.message` → `turn_completed`
+- Assert `seq` values strictly increasing
+
+### Phase 1c: `recordSessionEvent` activity + orch-level events
+
+**Wait events** (integration):
+- System prompt instructs `wait(seconds=5)` → `send()` + poll
+- Find `session.wait_started` and `session.wait_completed`
+- Assert `wait_started.data.seconds === 5`, `wait_started.data.reason` is a string
+- Assert `wait_completed.seq > wait_started.seq`
+
+**Spawn events** (integration):
+- `send("Spawn a sub-agent with task: 'Say hello'")` → poll for child
+- Find `session.agent_spawned` on parent
 - Assert `agent_spawned.data.childSessionId === child.sessionId`
 
-**Dehydrate/hydrate events test** (requires blob):
-- Create session with `blobEnabled: true, waitThreshold: 0, dehydrateThreshold: 0`
-- Trigger a long wait → orchestration dehydrates
-- `catalog.getEvents(sessionId)` → find `session.dehydrated` and `session.hydrated`
+**Cron events** (integration):
+- Session sets up cron, wait for one fire
+- Find `session.cron_started` and `session.cron_fired`
+- Assert `cron_started.data.intervalSeconds > 0`
 
-**Cron events test**:
-- Create session that sets up a cron schedule
-- Wait for at least one cron fire
-- `catalog.getEvents(sessionId)` → find `session.cron_started` and `session.cron_fired`
+**Command events** (integration):
+- Session at idle → `mgmt.sendCommand(sessionId, { cmd: "get_info", id })`
+- Find `session.command_received` and `session.command_completed`
 
-**Command events test**:
-- Create session → do a turn → `mgmt.sendCommand(sessionId, { cmd: "get_info", id })`
-- `catalog.getEvents(sessionId)` → find `session.command_received` and `session.command_completed`
+**Activity contract test** (static):
+- Read `session-proxy.ts` → assert `recordSessionEvent` activity registered
+- Assert it calls `catalog.recordEvents()`
 
-**Event ordering contract test** (static):
-- Read `session-proxy.ts` source
-- Assert all new event types are recorded via `catalog.recordEvents()`
-- Assert none of the new types are in `EPHEMERAL_TYPES`
+### Phase 1d: Version bump
 
-### Phase 2: CMS-Derived Sequence Diagram
+**Registry test** (static):
+- Previous version frozen in `orchestration_1_0_30.ts`
+- Registry includes `{ version: "1.0.30", handler: ... }`
+- `CURRENT_ORCHESTRATION_VERSION === "1.0.31"`
 
-**Unit test — `cmsEventToSeqEvent` mapping**:
-- For each CMS event type, construct a sample event object
-- Call `cmsEventToSeqEvent(event)` → assert the returned `SeqEvent` has correct `type`, `detail`, `workerNodeId`
-- Assert unmapped event types return `null`
+### Phase 2: Sequence diagram from CMS
 
-**Backfill test** (integration):
-- Create session → do 3 turns → wait → do another turn
-- Create a fresh TUI sequence state (simulated)
-- Call `loadSeqTimeline(sessionId)` from CMS
-- Assert timeline has ≥ 8 events (3× turn_started + 3× turn_completed + wait_started + wait_completed)
-- Assert events are in seq order
-- Assert workerNodeId is populated on turn events
+**`cmsEventToSeqEvent` mapping** (unit):
+- Sample event per type → assert correct `SeqEvent.type`, `detail`, `workerNodeId`
+- Unknown event types → `null`
 
-**Live update test** (integration):
-- Create session, subscribe to events via `session.on()`
-- Do a turn
-- Assert the sequence timeline was updated incrementally (event appended, not full reload)
+**Backfill** (integration):
+- 3 turns → `loadSeqTimeline()` → timeline ≥ 6 entries
+- Events in `seq` order
+- `workerNodeId` populated
 
-**Column layout test** (unit):
-- Given a timeline with events from 2 different workerNodeIds
-- Assert `seqNodes` contains both worker names
-- Assert events render in the correct column
+**Column layout** (unit):
+- Events from 2 workers → 2 columns rendered, events in correct column
 
-**Rendering regression test** (visual/contract):
-- For each `SeqEvent.type` value, call `renderSeqEventLine()` with a mock pane
-- Assert the pane received a log line matching expected format (turn number, wait seconds, etc.)
+### Phase 3: Node map from CMS
 
-### Phase 3: CMS-Derived Node Map
+**Single-worker** (integration):
+- 2 sessions on 1 worker → both in same column
 
-**Node map from management client test** (integration):
-- Create 2 sessions on 1 worker
-- Call `refreshNodeMap()`
-- Assert both sessions appear under the worker's node column
-- Assert session status colors match expected
+**Multi-worker** (integration):
+- 2 workers → correct column assignment
 
-**Multi-worker node map test** (integration):
-- Start 2 workers with different nodeIds
-- Create sessions on each
-- Assert node map shows 2 columns with correct session assignment
+**No events yet** → "(unknown)" column
 
-**Unknown worker column test**:
-- Create a session that hasn't done any turns (no `workerNodeId` in status)
-- Assert it appears in "(unknown)" column
+### Phase 4: Deletion
 
-**Session status update test**:
-- Create session → do a turn (running → idle)
-- Refresh node map
-- Assert session shows correct status indicator
+**Contract test** (static):
+- `parseSeqEvent`, `seqLastActivityNode`, `seqEventBuffers`, `injectSeqUserEvent` do not exist in `tui.js`
 
-### Phase 4: Log Parsing Removal
+**Manual E2E**:
+- Sequence diagram backfills on session switch
+- Node map shows correct workers
+- Workers/Orchestration log views unaffected
+- `m` key cycling works
 
-**Deletion contract test** (static):
-- Assert `parseSeqEvent` function does not exist in `tui.js`
-- Assert `seqLastActivityNode` Map does not exist
-- Assert `seqEventBuffers` Map does not exist
-- Assert `injectSeqUserEvent` does not exist
+### Cross-Cutting: Clock Skew
 
-**Sequence diagram still works test** (manual/E2E):
-- Start TUI → create session → do turns → switch to sequence view
-- Assert diagram populates from CMS (not logs)
-- Assert switching sessions loads historical timeline
-
-**Node map still works test** (manual/E2E):
-- Start TUI with 2 workers → create sessions → switch to node map
-- Assert sessions are assigned to correct worker columns
-
-**Log views unaffected test** (manual/E2E):
-- Workers and Orchestration log views still stream and display raw logs
-- Verify `m` key cycling still works for all 4 modes
-
-### Cross-Cutting
-
-**No orchestration version bump needed** for Phase 1 events: All new CMS writes happen inside existing activities (`runTurn`, `dehydrateSession`, `hydrateSession`). They don't add yields to the orchestration generator. The only yield-visible change is adding `workerNodeId` to `publishStatus()` — but `setCustomStatus()` is fire-and-forget (no yield), so this doesn't change the yield sequence.
-
-**Exception**: If `workerNodeId` is added to `OrchestrationInput` (carried across `continueAsNew`), that DOES require a version bump because the `continueAsNew` payload shape changes. But we can avoid this by reading `workerNodeId` from the activity context at runtime rather than carrying it in state.
+**Ordering immunity** (integration):
+- Multi-worker → events from different workers → assert `seq` strictly monotonic regardless of `created_at` order
+- Diagram renders in `seq` order
