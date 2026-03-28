@@ -21,16 +21,22 @@ async function testChildSessionMetadata(env) {
             const session = await client.createSession();
 
             console.log("  Spawning sub-agent...");
-            await session.sendAndWait(
+            await session.send(
                 "Spawn a sub-agent with the task: 'Count to 3 and report back'",
-                TIMEOUT,
             );
 
-            // Find child sessions
-            const allSessions = await catalog.listSessions();
-            const children = allSessions.filter(
-                s => s.parentSessionId === session.sessionId,
-            );
+            // Poll CMS until child session appears
+            let children;
+            const deadline = Date.now() + TIMEOUT;
+            while (Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, 3000));
+                const allSessions = await catalog.listSessions();
+                children = allSessions.filter(
+                    s => s.parentSessionId === session.sessionId,
+                );
+                if (children.length >= 1) break;
+                console.log(`  [poll] children so far: ${children.length}`);
+            }
             assertGreaterOrEqual(children.length, 1, "Expected at least 1 child");
 
             const child = children[0];

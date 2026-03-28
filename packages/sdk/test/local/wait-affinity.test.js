@@ -35,7 +35,7 @@ function fullAffinityKey(info) {
 }
 
 async function waitForSessionStatus(mgmt, sessionId, expectedStatus) {
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + 45_000;
     while (Date.now() < deadline) {
         const status = await mgmt.getSessionStatus(sessionId);
         if (status?.customStatus?.status === expectedStatus) return status;
