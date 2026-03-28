@@ -43,16 +43,22 @@ async function testExplicitSpawn(env) {
 
             // Explicit: user tells the agent to use spawn_agent
             console.log("  [explicit] Sending: Use spawn_agent to spawn a sub-agent");
-            const response = await session.sendAndWait(
+            await session.send(
                 'Use spawn_agent to spawn a sub-agent with the task: "Say hello world and nothing else."',
-                TIMEOUT,
             );
-            console.log(`  [explicit] Response: "${response?.slice(0, 120)}"`);
 
-            const allSessions = await catalog.listSessions();
-            const children = allSessions.filter(
-                s => s.parentSessionId === session.sessionId,
-            );
+            // Poll CMS until child session appears
+            let children;
+            const deadline = Date.now() + TIMEOUT;
+            while (Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, 3000));
+                const allSessions = await catalog.listSessions();
+                children = allSessions.filter(
+                    s => s.parentSessionId === session.sessionId,
+                );
+                if (children.length >= 1) break;
+                console.log(`  [explicit] [poll] children so far: ${children.length}`);
+            }
             console.log(`  [explicit] Child sessions found: ${children.length}`);
 
             assertGreaterOrEqual(
@@ -82,16 +88,22 @@ async function testImplicitSpawn(env) {
             // Implicit: user just asks to delegate — the agent should decide
             // on its own to use spawn_agent based on its role + framework
             console.log("  [implicit] Sending: Delegate a task to a sub-agent");
-            const response = await session.sendAndWait(
+            await session.send(
                 'I need you to delegate this task to a sub-agent: have it write a short haiku about databases. Do not do it yourself — spawn a sub-agent.',
-                TIMEOUT,
             );
-            console.log(`  [implicit] Response: "${response?.slice(0, 120)}"`);
 
-            const allSessions = await catalog.listSessions();
-            const children = allSessions.filter(
-                s => s.parentSessionId === session.sessionId,
-            );
+            // Poll CMS until child session appears
+            let children;
+            const deadline = Date.now() + TIMEOUT;
+            while (Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, 3000));
+                const allSessions = await catalog.listSessions();
+                children = allSessions.filter(
+                    s => s.parentSessionId === session.sessionId,
+                );
+                if (children.length >= 1) break;
+                console.log(`  [implicit] [poll] children so far: ${children.length}`);
+            }
             console.log(`  [implicit] Child sessions found: ${children.length}`);
 
             assertGreaterOrEqual(

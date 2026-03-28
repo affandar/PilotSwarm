@@ -23,16 +23,22 @@ async function testChildInheritsParentModel(env) {
         assertNotNull(session, "session created");
 
         console.log(`  Asking parent (${TEST_GPT_MODEL}) to spawn sub-agent without model override...`);
-        const response = await session.sendAndWait(
+        await session.send(
             "Spawn a sub-agent with the task: 'Say hello world and nothing else'",
-            TIMEOUT,
         );
-        console.log(`  Response: "${response?.slice(0, 80)}"`);
 
         const catalog = await createCatalog(env);
         try {
-            const sessions = await catalog.listSessions();
-            const children = sessions.filter(s => s.parentSessionId === session.sessionId);
+            // Poll CMS until child session appears
+            let children;
+            const deadline = Date.now() + TIMEOUT;
+            while (Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, 3000));
+                const sessions = await catalog.listSessions();
+                children = sessions.filter(s => s.parentSessionId === session.sessionId);
+                if (children.length >= 1) break;
+                console.log(`  [poll] children so far: ${children.length}`);
+            }
             console.log(`  Child sessions: ${children.length}`);
             assert(children.length >= 1, "at least 1 child spawned");
 

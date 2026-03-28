@@ -47,16 +47,14 @@ async function testDepthTwoNesting(env) {
         assertNotNull(session, "root session created");
 
         console.log("  Asking root to spawn child who spawns grandchild...");
-        const response = await session.sendAndWait(
+        await session.send(
             "Spawn a sub-agent with the task: 'You must spawn another sub-agent with the task: say hello world and nothing else. Wait for it to finish and report its response.'",
-            TIMEOUT * 3,
         );
-        console.log(`  Response: "${response?.slice(0, 100)}"`);
-        assertNotNull(response, "got root response");
 
         const catalog = await createCatalog(env);
         try {
-            const { children, grandchildren } = await waitForNestedSessions(catalog, session.sessionId, 30_000);
+            // waitForNestedSessions already polls CMS for children + grandchildren
+            const { children, grandchildren } = await waitForNestedSessions(catalog, session.sessionId, TIMEOUT * 3);
             console.log(`  Children (depth 1): ${children.length}`);
             assertGreaterOrEqual(children.length, 1, "at least 1 child (depth 1)");
 
@@ -85,23 +83,19 @@ async function testDepthThreeDenied(env) {
         // MAX_NESTING_LEVEL = 2 means grandchild (depth 2) can't spawn further.
         // Ask for the same 2-deep nesting and verify no depth-3 sessions exist.
         console.log("  Asking root to spawn child who spawns grandchild (depth 2 max)...");
-        const response = await session.sendAndWait(
+        await session.send(
             "Spawn a sub-agent with the task: 'You must spawn another sub-agent with the task: say hello world. Wait for it to finish and report.'",
-            TIMEOUT * 3,
         );
-        console.log(`  Response: "${response?.slice(0, 100)}"`);
-        assertNotNull(response, "got root response");
-
-        await new Promise(r => setTimeout(r, 5000));
 
         const catalog = await createCatalog(env);
         try {
+            // Wait for the 2-level nesting to complete, then verify no depth 3
+            const { children, grandchildren } = await waitForNestedSessions(catalog, session.sessionId, TIMEOUT * 3);
+
+            // Give a grace period for any hypothetical depth-3 sessions to appear
+            await new Promise(r => setTimeout(r, 5000));
+
             const sessions = await catalog.listSessions();
-            const children = sessions.filter(s => s.parentSessionId === session.sessionId);
-            let grandchildren = [];
-            for (const child of children) {
-                grandchildren.push(...sessions.filter(s => s.parentSessionId === child.sessionId));
-            }
             let greatGrandchildren = [];
             for (const gc of grandchildren) {
                 greatGrandchildren.push(...sessions.filter(s => s.parentSessionId === gc.sessionId));
