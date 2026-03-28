@@ -42,7 +42,7 @@ describe("TUI null guards", () => {
         const tui = readRepoFile("packages/cli/cli/tui.js");
 
         assertIncludes(tui, "function safeSlice(value, start, end, fallback = \"\")", "TUI should define a shared null-safe slicer");
-        assertIncludes(tui, "const short = safeTail(normalizePodName(podName), 5);", "sequence nodes should normalize nullable pod names");
+        assertIncludes(tui, "const short = workerNodeId ? safeTail(workerNodeId, 5) : \"(unk)\"", "sequence nodes should null-safe pod names");
         assertIncludes(tui, "const normalizedPodName = normalizePodName(podName);", "orchestration logs should normalize pod names before rendering");
         assertIncludes(tui, "podName = normalizePodName(podName);", "worker panes should normalize pod names before use");
         assertIncludes(tui, "content=${safeSlice(response.content, 0, 80)}", "response previews should use null-safe slicing");

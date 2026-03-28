@@ -1985,9 +1985,29 @@ function ensureSessionSplashBuffer(orchId) {
  * Refresh the node map pane — vertical columns, one per worker node,
  * with sessions stacked underneath, color-coded by live status.
  */
+let _nodeMapTimelineLoadPending = false;
+
 function refreshNodeMap() {
     const lines = [];
     nodeMapPane.setContent("");
+
+    // Ensure CMS timelines are loaded for all sessions so we can map them to
+    // worker columns.  Only the active session's timeline is loaded eagerly;
+    // kick off background loads for every other session the first time the
+    // Node Map is opened (and whenever new sessions appear).
+    const missingTimelines = [];
+    for (const orchId of knownOrchestrationIds) {
+        const sid = orchId.startsWith("session-") ? orchId.slice(8) : orchId;
+        if (!cmsSeqTimelines.has(sid)) missingTimelines.push(sid);
+    }
+    if (missingTimelines.length > 0 && !_nodeMapTimelineLoadPending) {
+        _nodeMapTimelineLoadPending = true;
+        Promise.allSettled(missingTimelines.map(sid => loadCmsSeqTimeline(sid)))
+            .then(() => {
+                _nodeMapTimelineLoadPending = false;
+                if (logViewMode === "nodemap") refreshNodeMap();
+            });
+    }
 
     // Gather all known nodes from seqNodes (worker pane names)
     // Filter out synthetic nodes like "cms" that aren't real workers.
@@ -3875,12 +3895,19 @@ function recolorWorkerPanes() {
 
 function showCopilotMessage(raw, orchId) {
     const _ph = perfStart("showCopilotMessage");
-    clearPendingAssistantPreview(orchId, raw);
     stopChatSpinner(orchId);
     const prefix = `{white-fg}[${ts()}]{/white-fg} {cyan-fg}{bold}Copilot:{/bold}{/cyan-fg}`;
     const { lines } = buildAssistantChatLines(raw, orchId, prefix);
-    for (const line of lines) {
-        appendChatRaw(line, orchId);
+
+    // Try to replace the preview lines in-place so the frame loop sees a
+    // single buffer mutation instead of a shrink-then-grow.  This avoids
+    // the scroll-position jump that setContent() causes when the total
+    // line count changes between frames.
+    if (!replaceAssistantPreviewInPlace(orchId, raw, lines)) {
+        // No matching preview — append normally.
+        for (const line of lines) {
+            appendChatRaw(line, orchId);
+        }
     }
     perfEnd(_ph, { len: raw?.length || 0 });
 }
@@ -3923,7 +3950,7 @@ function normalizeAssistantPreviewText(text) {
     return normalizeObserverChatText(stripAssistantHeadingLine(text));
 }
 
-function removeChatLineSequence(buffer, lines) {
+function removeChatLineSequence(buffer, lines, replacementLines) {
     if (!Array.isArray(buffer) || !Array.isArray(lines) || lines.length === 0) return false;
     for (let start = buffer.length - lines.length; start >= 0; start--) {
         let matches = true;
@@ -3934,7 +3961,11 @@ function removeChatLineSequence(buffer, lines) {
             }
         }
         if (matches) {
-            buffer.splice(start, lines.length);
+            if (replacementLines) {
+                buffer.splice(start, lines.length, ...replacementLines);
+            } else {
+                buffer.splice(start, lines.length);
+            }
             return true;
         }
     }
@@ -3976,24 +4007,26 @@ function buildAssistantChatLines(raw, orchId, prefix, options = {}) {
     return { bodyText, renderedText, lines };
 }
 
-function clearPendingAssistantPreview(orchId, matchingText) {
+function replaceAssistantPreviewInPlace(orchId, matchingText, replacementLines) {
     const preview = sessionPendingAssistantPreview.get(orchId);
     if (!preview) return false;
 
-    // Final completed content only clears the preview when it is the same
-    // content; otherwise the preview remains as an earlier partial emission.
     if (matchingText != null) {
         const normalized = normalizeAssistantPreviewText(matchingText);
         if (!normalized || normalized !== preview.normalized) return false;
     }
 
     const buffer = sessionChatBuffers.get(orchId);
-    if (buffer) {
-        removeChatLineSequence(buffer, preview.lines);
-    }
+    if (!buffer) return false;
+
+    const spliced = removeChatLineSequence(buffer, preview.lines, replacementLines);
     sessionPendingAssistantPreview.delete(orchId);
-    if (orchId === activeOrchId) invalidateChat();
-    return true;
+    if (spliced && orchId === activeOrchId) invalidateChat();
+    return spliced;
+}
+
+function clearPendingAssistantPreview(orchId, matchingText) {
+    return replaceAssistantPreviewInPlace(orchId, matchingText, null);
 }
 
 function showLiveAssistantPreview(raw, orchId) {
