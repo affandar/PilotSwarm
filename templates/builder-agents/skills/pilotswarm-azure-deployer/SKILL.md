@@ -56,6 +56,7 @@ Model/provider guidance:
 - `.model_providers.example.json` is the checked-in shareable template.
 - The real `.model_providers.json` should stay local and gitignored because it may contain user-specific endpoint URLs even when keys remain env-backed.
 - Provider keys belong in `.env`, `.env.remote`, or Kubernetes secrets, not inside the model catalog.
+- For AKS deployments, keep the live Kubernetes secret exactly in sync with local `.env.remote` for worker-facing vars: not more, not less. If a key is present locally, it should be present in AKS; if it is absent locally, it should be absent in AKS.
 - Removing a provider key from AKS only changes selectors after the secret is refreshed and the workers restart.
 
 Also call out the Azure resources the user must provision:
@@ -70,9 +71,34 @@ Also call out the Azure resources the user must provision:
 
 ## Worker Observability
 
-PilotSwarm's TUI Node Map and Sequence Diagram views depend on parsing
-orchestration log lines (`[orch]`, `[turn N]`, `[activity]`, `[runTurn]`)
-emitted by the duroxide runtime at `INFO` level via `ctx.traceInfo()`.
+PilotSwarm's TUI Node Map and Sequence Diagram views depend on two things:
+
+### 1. Worker Node ID
+
+The worker entrypoint must pass `workerNodeId` to `PilotSwarmWorker` so CMS
+events are tagged with the node that processed them. Without this, the TUI
+Node Map shows all sessions under `(unknown)`.
+
+In AKS, use the pod hostname:
+
+```js
+import os from "node:os";
+
+const worker = new PilotSwarmWorker({
+    store: STORE,
+    workerNodeId: os.hostname(),
+    // ... other options
+});
+```
+
+`os.hostname()` returns the pod name in Kubernetes (e.g.
+`myapp-worker-749f4fb8b8-5nh7h`). The TUI truncates this to the last 5
+characters for the column header.
+
+### 2. RUST_LOG level
+
+Orchestration log lines (`[orch]`, `[turn N]`, `[activity]`, `[runTurn]`)
+are emitted by the duroxide runtime at `INFO` level via `ctx.traceInfo()`.
 
 **If `RUST_LOG` is not set, duroxide defaults to `warn`, and these logs
 are silently dropped.** The TUI will show empty node columns and sessions

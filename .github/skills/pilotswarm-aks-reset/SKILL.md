@@ -66,8 +66,11 @@ That means:
    - This handles Azure/Postgres SSL quirks and also purges blobs when blob storage is configured.
 
 5. Redeploy or restart workers after the reset.
-   - Prefer the full deploy script if new code or secrets also need to ship.
-   - Otherwise reapply/restart the deployment and wait for rollout completion.
+   - If new code or secrets need to ship, build and push the image while workers are still at zero replicas.
+   - Apply manifest changes if any: `kubectl apply -f deploy/k8s/worker-deployment.yaml`
+   - Scale back up: `kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=6`
+   - **Do not use `kubectl rollout restart`** — it does a rolling replacement that mixes old and new pods, which can cause session-state-not-found failures when in-flight orchestrations cross the old/new boundary.
+   - Wait for rollout completion: `kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime --timeout=180s`
 
 6. Verify the cluster is truly clean.
    - Pods should come back healthy.
@@ -82,12 +85,32 @@ That means:
   ```bash
   ./scripts/deploy-aks.sh
   ```
-- Reset only, then manually redeploy:
+- Reset with image update (the safe order matters):
+  ```bash
+  # 1. Scale workers to zero — no pods should be running during reset
+  kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=0
+  kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime --timeout=60s
+
+  # 2. Wipe remote state (DB schemas + blob storage)
+  NODE_TLS_REJECT_UNAUTHORIZED=0 node --env-file=.env.remote scripts/db-reset.js --yes
+
+  # 3. Build and push new image (if code changed)
+  az acr login --name toygresaksacr
+  docker buildx build --platform linux/amd64 -f deploy/Dockerfile.worker \
+    -t toygresaksacr.azurecr.io/copilot-runtime-worker:latest --push .
+
+  # 4. Apply any manifest changes, then scale back up
+  kubectl apply -f deploy/k8s/worker-deployment.yaml
+  kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=6
+  kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime --timeout=180s
+  ```
+- Reset only (no image change, same code):
   ```bash
   kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=0
+  kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime --timeout=60s
   NODE_TLS_REJECT_UNAUTHORIZED=0 node --env-file=.env.remote scripts/db-reset.js --yes
-  kubectl rollout restart deployment/copilot-runtime-worker -n copilot-runtime
-  kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime --timeout=120s
+  kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=6
+  kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime --timeout=180s
   ```
 
 ## Learnings To Preserve
@@ -96,6 +119,7 @@ That means:
 - Blob purge is part of the reset story. If blob storage is configured, wiping only PostgreSQL is not a full reset.
 - Namespace drift is a real failure mode. Old workers in an old namespace can keep polling the same database and poison new deploys.
 - Scaling workers to zero before reset is not optional if you want a clean wipe.
+- **Never use `rollout restart` as a substitute for scale-down/scale-up.** A rolling restart replaces pods one at a time, meaning old pods with stale in-memory session state coexist with new pods pulling from a freshly-wiped database. This causes "expected resumable Copilot session state ... but none was found" failures when a session's `continueAsNew` execution lands on a new pod that has no local disk state from the old pod's checkpoint. Always: scale to 0 → reset DB → (push image if needed) → scale back up.
 - An empty post-reset catalog is temporary. Healthy workers will immediately recreate the built-in system sessions.
 - If local `kubectl` auth is unreliable, verify or operate through a cluster-side path instead of guessing whether the reset worked.
 

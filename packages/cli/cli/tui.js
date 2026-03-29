@@ -4527,6 +4527,8 @@ let logTailInterval = null;
 let firstLocalWorkerStarted = Promise.resolve();
 // Default model — prefer registry defaultModel, env override, then empty (worker picks default).
 let currentModel = process.env.COPILOT_MODEL || "";
+// Temporary override set by Shift+N model picker, consumed by 'n' handler
+let _modelOverrideForNewSession = null;
 if (!isRemote) {
     // Redirect Rust tracing to a log file so it doesn't corrupt the TUI
     const logFile = "/tmp/duroxide-tui.log";
@@ -6146,14 +6148,18 @@ orchList.key(["n"], async () => {
             modal.detach();
             screen.render();
 
+            const override = _modelOverrideForNewSession;
+            _modelOverrideForNewSession = null;
+            const modelTag = override ? ` (${override.qualified})` : "";
+
             try {
                 let sess;
                 if (choice?.name) {
                     sess = await createNewSessionForAgent(choice.name, choice.initialPrompt, buildAgentPickerSplash(choice), choice.title);
-                    appendLog(`{green-fg}New ${choice.name} session: ${shortId(sess.sessionId)}…{/green-fg}`);
+                    appendLog(`{green-fg}New ${choice.name} session${modelTag}: ${shortId(sess.sessionId)}…{/green-fg}`);
                 } else {
                     sess = await createNewSession();
-                    appendLog(`{green-fg}New session: ${shortId(sess.sessionId)}…{/green-fg}`);
+                    appendLog(`{green-fg}New session${modelTag}: ${shortId(sess.sessionId)}…{/green-fg}`);
                 }
                 const orchId = `session-${sess.sessionId}`;
                 knownOrchestrationIds.add(orchId);
@@ -6163,10 +6169,15 @@ orchList.key(["n"], async () => {
                 screen.render();
             } catch (err) {
                 appendLog(`{red-fg}Create failed: ${err.message}{/red-fg}`);
+            } finally {
+                if (override) currentModel = override.prevModel;
             }
         });
 
         picker.key(["escape", "q"], () => {
+            const override = _modelOverrideForNewSession;
+            _modelOverrideForNewSession = null;
+            if (override) currentModel = override.prevModel;
             modal.detach();
             orchList.focus();
             screen.render();
@@ -6175,11 +6186,14 @@ orchList.key(["n"], async () => {
     }
 
     // No agents loaded — create generic session directly
+    const override = _modelOverrideForNewSession;
+    _modelOverrideForNewSession = null;
+    const modelTag = override ? ` (${override.qualified})` : "";
     try {
         const sess = await createNewSession();
         const orchId = `session-${sess.sessionId}`;
         knownOrchestrationIds.add(orchId);
-        appendLog(`{green-fg}New session: ${shortId(sess.sessionId)}…{/green-fg}`);
+        appendLog(`{green-fg}New session${modelTag}: ${shortId(sess.sessionId)}…{/green-fg}`);
         await switchToOrchestration(orchId);
         await refreshOrchestrations();
         // Focus prompt so user can type immediately
@@ -6187,6 +6201,8 @@ orchList.key(["n"], async () => {
         screen.render();
     } catch (err) {
         appendLog(`{red-fg}Create failed: ${err.message}{/red-fg}`);
+    } finally {
+        if (override) currentModel = override.prevModel;
     }
 });
 
@@ -6242,22 +6258,11 @@ orchList.key(["S-n"], async () => {
         screen.render();
         if (!qualified) return; // header row selected
 
-        try {
-            // Temporarily override currentModel for this session
-            const prevModel = currentModel;
-            currentModel = qualified;
-            const sess = await createNewSession();
-            currentModel = prevModel; // restore default
-            const orchId = `session-${sess.sessionId}`;
-            knownOrchestrationIds.add(orchId);
-            appendLog(`{green-fg}New session (${qualified}): ${shortId(sess.sessionId)}…{/green-fg}`);
-            await switchToOrchestration(orchId);
-            await refreshOrchestrations();
-            focusInput();
-            screen.render();
-        } catch (err) {
-            appendLog(`{red-fg}Create failed: ${err.message}{/red-fg}`);
-        }
+        // Set the model override, then chain into the agent picker (same as 'n')
+        const prevModel = currentModel;
+        currentModel = qualified;
+        _modelOverrideForNewSession = { qualified, prevModel };
+        orchList.emit("keypress", "n", { name: "n" });
     });
 
     picker.key(["escape", "q"], () => {
