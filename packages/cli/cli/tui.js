@@ -292,8 +292,13 @@ function showTerminalCursor() {
 process.on('uncaughtException', (err) => {
     // Write to perf trace if available, otherwise stderr
     const msg = `[uncaughtException] ${err.message}`;
-    try { _perfStream?.write(JSON.stringify({ ts: Date.now(), op: 'uncaughtException', err: err.message }) + '\n'); } catch {}
-    process.stderr.write(msg + '\n');
+    const stack = err.stack || msg;
+    try { _perfStream?.write(JSON.stringify({ ts: Date.now(), op: 'uncaughtException', err: err.message, stack }) + '\n'); } catch {}
+    // Print full stack the first time, then just the message
+    if (!process._sliceErrorLogged) {
+        process._sliceErrorLogged = true;
+        process.stderr.write(stack + '\n');
+    }
 });
 process.on('unhandledRejection', (reason) => {
     const msg = reason instanceof Error ? reason.message : String(reason);
@@ -315,6 +320,7 @@ function perfTrace(op, meta) {
     const entry = { ts: Date.now(), op, ...(meta || {}) };
     _perfStream.write(JSON.stringify(entry) + "\n");
 }
+const perfLog = perfTrace;
 
 function perfStart(op) {
     return { op, t0: performance.now() };
@@ -1279,10 +1285,16 @@ setInterval(() => {
             try { currentActive = activeOrchId; } catch { currentActive = undefined; }
             const lines = currentActive && sessionChatBuffers?.get(currentActive);
             if (lines) {
+                const contentStr = lines.map(styleUrls).join("\n");
+                // Diagnostic: trace when content is suspiciously short
+                if (contentStr.length < 20 || lines.length <= 1) {
+                    perfTrace("frameLoop.chatSuspect", { orchId: currentActive?.slice(0, 20), lines: lines.length, contentLen: contentStr.length, first: (lines[0] || "").slice(0, 40) });
+                }
                 // Save scroll state before setContent (which resets scroll to top)
                 const wasAtBottom = chatBox.getScrollPerc() >= 95;
                 const prevScrollTop = chatBox.childBase || 0;
-                chatBox.setContent(lines.map(styleUrls).join("\n"));
+                chatBox.setContent(contentStr);
+                const maxScroll = chatBox.getScrollHeight() - (chatBox.height - 2);
                 if (_chatScrollIntent === "bottom") {
                     chatBox.setScrollPerc(100);
                 } else if (_chatScrollIntent === "top") {
@@ -1290,9 +1302,15 @@ setInterval(() => {
                 } else if (wasAtBottom) {
                     chatBox.setScrollPerc(100);
                 } else {
-                    // Restore previous scroll position
-                    chatBox.scrollTo(prevScrollTop);
+                    // Clamp scroll to valid range after buffer replacement
+                    if (prevScrollTop > maxScroll && maxScroll > 0) {
+                        chatBox.setScrollPerc(100);
+                    } else {
+                        chatBox.scrollTo(prevScrollTop);
+                    }
                 }
+            } else if (currentActive) {
+                perfTrace("frameLoop.chatNoBuffer", { orchId: currentActive?.slice(0, 20) });
             }
         }
         _chatScrollIntent = null;
@@ -1636,6 +1654,7 @@ const seqHeaderBox = blessed.box({
     top: 0,
     width: 10,
     height: 3,
+    content: "{bold}TIME      (no nodes discovered yet){/bold}",
     style: {
         fg: "white",
         bg: "black",
@@ -1907,16 +1926,21 @@ function appendActivity(text, orchId) {
     }
 }
 
+function escapeBlessedText(value) {
+    return asDisplayText(value).replace(/\{/g, "(").replace(/\}/g, ")");
+}
+
 function formatToolArgValue(value) {
-    if (typeof value === "string") return JSON.stringify(value);
-    if (typeof value === "number" || typeof value === "boolean") return String(value);
-    if (value === null) return "null";
-    if (Array.isArray(value)) return `[${value.map(formatToolArgValue).join(", ")}]`;
-    try {
-        return JSON.stringify(value);
-    } catch {
-        return String(value);
+    let raw;
+    if (typeof value === "string") raw = JSON.stringify(value);
+    else if (typeof value === "number" || typeof value === "boolean") raw = String(value);
+    else if (value === null) raw = "null";
+    else if (Array.isArray(value)) raw = `[${value.map(formatToolArgValue).join(", ")}]`;
+    else {
+        try { raw = JSON.stringify(value); } catch { raw = String(value); }
     }
+    // Escape curly braces so blessed doesn't misinterpret them as tags
+    return escapeBlessedText(raw);
 }
 
 function formatToolArgsSummary(toolName, args) {
@@ -1925,7 +1949,7 @@ function formatToolArgsSummary(toolName, args) {
         const seconds = args.seconds != null ? `${args.seconds}s` : "?";
         const preserve = args.preserveWorkerAffinity === true ? " preserve=true" : "";
         const reason = typeof args.reason === "string" && args.reason
-            ? ` reason=${JSON.stringify(args.reason)}`
+            ? ` reason=${escapeBlessedText(JSON.stringify(args.reason))}`
             : "";
         return ` ${seconds}${preserve}${reason}`;
     }
@@ -1933,7 +1957,7 @@ function formatToolArgsSummary(toolName, args) {
         if (args.action === "cancel") return " cancel";
         const seconds = args.seconds != null ? `${args.seconds}s` : "?";
         const reason = typeof args.reason === "string" && args.reason
-            ? ` reason=${JSON.stringify(args.reason)}`
+            ? ` reason=${escapeBlessedText(JSON.stringify(args.reason))}`
             : "";
         return ` ${seconds}${reason}`;
     }
@@ -4105,14 +4129,15 @@ async function loadCmsHistory(orchId, options = {}) {
     // so reloading on every session switch just adds latency.
     const cached = sessionChatBuffers.get(orchId);
     const loadedAt = sessionHistoryLoadedAt.get(orchId) ?? 0;
-    if (!force && cached && cached.length > 1 && (Date.now() - loadedAt) < 30_000 && !orchHasChanges.has(orchId)) {
-        perfEnd(_ph, { orchId: orchId.slice(0, 12), cached: true });
+    const cachedIsPlaceholder = cached && cached.length === 1 && /Loading/.test(cached[0]);
+    if (!force && !cachedIsPlaceholder && cached && cached.length > 1 && (Date.now() - loadedAt) < 30_000 && !orchHasChanges.has(orchId)) {
+        perfEnd(_ph, { orchId: orchId.slice(0, 12), cached: true, cachedLines: cached.length });
         return;
     }
 
     const inFlight = sessionHistoryLoadPromises.get(orchId);
     if (inFlight && !force) {
-        perfEnd(_ph, { orchId: orchId.slice(0, 12), deduped: true });
+        perfEnd(_ph, { orchId: orchId.slice(0, 12), deduped: true, cachedLines: cached?.length });
         return inFlight;
     }
 
@@ -4252,8 +4277,15 @@ async function loadCmsHistory(orchId, options = {}) {
                 const type = evt.eventType;
                 const timeStr = fmtTime(evt.createdAt);
                 if (type === "user.message") {
-                    const content = stripHostPrefix(evt.data?.content);
+                    let content = stripHostPrefix(evt.data?.content);
                     if (content && !content.startsWith("[SYSTEM:") && !isTimerPrompt(content) && !isBootstrapPromptForSession(content, orchId)) {
+                        // Extract embedded [SYSTEM: ...] blocks and render separately
+                        let systemBlock = null;
+                        const sysMatch = content.match(/\n*\[SYSTEM:\s*([\s\S]*?)\]\s*$/);
+                        if (sysMatch) {
+                            systemBlock = sysMatch[1].trim();
+                            content = content.slice(0, sysMatch.index).trim();
+                        }
                         // Format CHILD_UPDATE messages as distinct cards
                         const childMatch = content.match(/^\[CHILD_UPDATE from=(\S+) type=(\S+)(?:\s+iter=(\d+))?\]\n?(.*)$/s);
                         if (childMatch) {
@@ -4276,8 +4308,17 @@ async function loadCmsHistory(orchId, options = {}) {
                             }
                             lines.push(`{${typeColor}-fg}└${"─".repeat(40)}┘{/${typeColor}-fg}`);
                             lines.push("");
-                        } else {
+                        } else if (content) {
                             lines.push(`{white-fg}[${timeStr}]{/white-fg} {bold}You:{/bold} ${content}`);
+                        }
+                        // Render extracted system block as a distinct card
+                        if (systemBlock) {
+                            lines.push(`{gray-fg}┌─ ⚙ SYSTEM ${"─".repeat(30)}┐{/gray-fg}`);
+                            for (const sl of systemBlock.split("\n").slice(0, 4).map(escapeBlessedText)) {
+                                lines.push(`{gray-fg}│{/gray-fg}  {white-fg}${sl}{/white-fg}`);
+                            }
+                            lines.push(`{gray-fg}└${"─".repeat(42)}┘{/gray-fg}`);
+                            lines.push("");
                         }
                     }
                 } else if (type === "assistant.message") {
@@ -4385,6 +4426,7 @@ async function loadCmsHistory(orchId, options = {}) {
             if (chatContentLines.length === 0 && existingHasContent) {
                 // CMS has no chat-worthy content but observer buffer does —
                 // append the footer to the existing buffer instead of replacing.
+                perfTrace("loadCmsHistory.keepExisting", { orchId: orchId.slice(0, 12), existingLines: existing.length, cmsEvents: eventCount });
                 if (eventCount > 0) {
                     const footerIdx = lines.findIndex(l => /recent history loaded/.test(l));
                     if (footerIdx >= 0) {
@@ -4393,6 +4435,7 @@ async function loadCmsHistory(orchId, options = {}) {
                     }
                 }
             } else {
+                perfTrace("loadCmsHistory.setBuffer", { orchId: orchId.slice(0, 12), newLines: lines.length, chatContentLines: chatContentLines.length, cmsEvents: eventCount });
                 sessionChatBuffers.set(orchId, lines);
             }
             // Guard: don't replace existing activity with an empty array.
@@ -4527,8 +4570,6 @@ let logTailInterval = null;
 let firstLocalWorkerStarted = Promise.resolve();
 // Default model — prefer registry defaultModel, env override, then empty (worker picks default).
 let currentModel = process.env.COPILOT_MODEL || "";
-// Temporary override set by Shift+N model picker, consumed by 'n' handler
-let _modelOverrideForNewSession = null;
 if (!isRemote) {
     // Redirect Rust tracing to a log file so it doesn't corrupt the TUI
     const logFile = "/tmp/duroxide-tui.log";
@@ -4834,10 +4875,14 @@ if (_workerAllowedAgentNames.length > 0) {
     appendLog(`Available agents: ${_workerAllowedAgentNames.join(", ")}`);
 }
 
+// SDK trace writer — routes internal timing to perf log
+const _sdkTraceWriter = (msg) => perfLog("sdk.trace", { msg });
+
 // 2. Start the thin client (for creating orchestrations / reading status)
 const client = new PilotSwarmClient({
     store,
     blobEnabled: true,
+    traceWriter: _sdkTraceWriter,
     ...(duroxideSchema ? { duroxideSchema } : {}),
     ...(cmsSchema ? { cmsSchema } : {}),
     ...(_workerSessionPolicy ? { sessionPolicy: _workerSessionPolicy } : {}),
@@ -4847,6 +4892,7 @@ const client = new PilotSwarmClient({
 // 3. Start the management client (for session listing, admin, models)
 const mgmt = new PilotSwarmManagementClient({
     store,
+    traceWriter: _sdkTraceWriter,
     ...(duroxideSchema ? { duroxideSchema } : {}),
     ...(cmsSchema ? { cmsSchema } : {}),
 });
@@ -4887,10 +4933,17 @@ while (true) {
 
     try {
         if (!isRemote) {
+            const _ph1 = perfStart("startup.waitFirstWorker");
             await withStartupTimeout("First local worker start", () => firstLocalWorkerStarted);
+            perfEnd(_ph1);
         }
+        const _ph2 = perfStart("startup.client.start");
+        const _ph3 = perfStart("startup.mgmt.start");
         await withStartupTimeout("Client start", () => client.start());
+        perfEnd(_ph2);
         await withStartupTimeout("Management client start", () => mgmt.start());
+        perfEnd(_ph3);
+
         perfEnd(_startPh);
         break;
     } catch (err) {
@@ -4919,7 +4972,9 @@ while (true) {
 
 // Populate model info from management client
 if (!modelProviders) {
+    const _phModels = perfStart("startup.loadModels");
     const mgmtModels = mgmt.getModelsByProvider();
+    perfEnd(_phModels, { count: mgmtModels.length });
     if (mgmtModels.length > 0) {
         // Create a lightweight modelProviders-compatible object for existing TUI code
         modelProviders = {
@@ -5664,6 +5719,10 @@ async function refreshOrchestrations(force = false) {
         if (sv.agentId) {
             sessionAgentIds.set(id, sv.agentId);
         }
+        // Populate model from CMS if not already set by a turn result
+        if (sv.model && !sessionModels.has(id)) {
+            sessionModels.set(id, sv.model);
+        }
         if (sv.cronActive === true && typeof sv.cronInterval === "number") {
             sessionCronSchedules.set(id, {
                 interval: sv.cronInterval,
@@ -6032,7 +6091,8 @@ orchList.key(["enter"], async () => {
     }
 });
 
-orchList.key(["n"], async () => {
+// Shared session creation logic — used by both 'n' and 'Shift+N'
+async function startNewSessionFlow(modelOverride) {
     // If agents are available, show an agent picker
     const policy = _workerSessionPolicy;
     const agents = _workerLoadedAgents;
@@ -6148,17 +6208,15 @@ orchList.key(["n"], async () => {
             modal.detach();
             screen.render();
 
-            const override = _modelOverrideForNewSession;
-            _modelOverrideForNewSession = null;
-            const modelTag = override ? ` (${override.qualified})` : "";
+            const modelTag = modelOverride ? ` (${modelOverride})` : "";
 
             try {
                 let sess;
                 if (choice?.name) {
-                    sess = await createNewSessionForAgent(choice.name, choice.initialPrompt, buildAgentPickerSplash(choice), choice.title);
+                    sess = await createNewSessionForAgent(choice.name, choice.initialPrompt, buildAgentPickerSplash(choice), choice.title, modelOverride);
                     appendLog(`{green-fg}New ${choice.name} session${modelTag}: ${shortId(sess.sessionId)}…{/green-fg}`);
                 } else {
-                    sess = await createNewSession();
+                    sess = await createNewSession(modelOverride);
                     appendLog(`{green-fg}New session${modelTag}: ${shortId(sess.sessionId)}…{/green-fg}`);
                 }
                 const orchId = `session-${sess.sessionId}`;
@@ -6169,15 +6227,10 @@ orchList.key(["n"], async () => {
                 screen.render();
             } catch (err) {
                 appendLog(`{red-fg}Create failed: ${err.message}{/red-fg}`);
-            } finally {
-                if (override) currentModel = override.prevModel;
             }
         });
 
         picker.key(["escape", "q"], () => {
-            const override = _modelOverrideForNewSession;
-            _modelOverrideForNewSession = null;
-            if (override) currentModel = override.prevModel;
             modal.detach();
             orchList.focus();
             screen.render();
@@ -6186,11 +6239,9 @@ orchList.key(["n"], async () => {
     }
 
     // No agents loaded — create generic session directly
-    const override = _modelOverrideForNewSession;
-    _modelOverrideForNewSession = null;
-    const modelTag = override ? ` (${override.qualified})` : "";
+    const modelTag = modelOverride ? ` (${modelOverride})` : "";
     try {
-        const sess = await createNewSession();
+        const sess = await createNewSession(modelOverride);
         const orchId = `session-${sess.sessionId}`;
         knownOrchestrationIds.add(orchId);
         appendLog(`{green-fg}New session${modelTag}: ${shortId(sess.sessionId)}…{/green-fg}`);
@@ -6201,16 +6252,16 @@ orchList.key(["n"], async () => {
         screen.render();
     } catch (err) {
         appendLog(`{red-fg}Create failed: ${err.message}{/red-fg}`);
-    } finally {
-        if (override) currentModel = override.prevModel;
     }
-});
+}
+
+orchList.key(["n"], () => startNewSessionFlow());
 
 // ── New session with model picker (Shift+N) ──────────────────────
 orchList.key(["S-n"], async () => {
     if (!modelProviders) {
         appendLog("{yellow-fg}No model providers configured — using default.{/yellow-fg}");
-        orchList.emit("keypress", "n", { name: "n" });
+        startNewSessionFlow();
         return;
     }
 
@@ -6223,7 +6274,7 @@ orchList.key(["S-n"], async () => {
         modelMap.set(items.length - 1, null); // header row
         for (const m of group.models) {
             const costTag = m.cost ? ` [${m.cost}]` : "";
-            const marker = m.qualifiedName === currentModel ? " ← default" : "";
+            const marker = m.qualifiedName === currentModel ? " ← current default" : "";
             items.push(`  ${m.modelName}${costTag}${marker}`);
             modelMap.set(items.length - 1, m.qualifiedName);
         }
@@ -6258,11 +6309,8 @@ orchList.key(["S-n"], async () => {
         screen.render();
         if (!qualified) return; // header row selected
 
-        // Set the model override, then chain into the agent picker (same as 'n')
-        const prevModel = currentModel;
-        currentModel = qualified;
-        _modelOverrideForNewSession = { qualified, prevModel };
-        orchList.emit("keypress", "n", { name: "n" });
+        // Directly create a new session with the selected model
+        startNewSessionFlow(qualified);
     });
 
     picker.key(["escape", "q"], () => {
@@ -6584,10 +6632,11 @@ function resolvePendingDoneCommand(orchId, error) {
     return false;
 }
 
-async function createNewSessionForAgent(agentName, initialPrompt, splash, title) {
+async function createNewSessionForAgent(agentName, initialPrompt, splash, title, modelOverride) {
+    const model = modelOverride || currentModel;
     let sessionOrchId = null;
     const sess = await client.createSessionForAgent(agentName, {
-        ...(currentModel ? { model: currentModel } : {}),
+        ...(model ? { model } : {}),
         toolNames: ["write_artifact", "export_artifact", "read_artifact"],
         ...(title ? { title } : {}),
         ...(splash ? { splash } : {}),
@@ -6614,7 +6663,8 @@ async function createNewSessionForAgent(agentName, initialPrompt, splash, title)
     });
     sessionOrchId = `session-${sess.sessionId}`;
     sessions.set(sess.sessionId, sess);
-    sessionModels.set(sessionOrchId, currentModel || "default");
+    if (model) sessionModels.set(sessionOrchId, model);
+    else sessionModels.delete(sessionOrchId);
     if (splash) {
         systemSplashText.set(sessionOrchId, splash);
         if (!sessionChatBuffers.has(sessionOrchId) || sessionChatBuffers.get(sessionOrchId).length === 0) {
@@ -6677,10 +6727,11 @@ function buildAgentPickerSplash(choice) {
     }
 }
 
-async function createNewSession() {
+async function createNewSession(modelOverride) {
+    const model = modelOverride || currentModel;
     let sessionOrchId = null;
     const sess = await client.createSession({
-        ...(currentModel ? { model: currentModel } : {}),
+        ...(model ? { model } : {}),
         toolNames: ["write_artifact", "export_artifact", "read_artifact"],
         onUserInputRequest: async (request) => {
             return new Promise((resolve, reject) => {
@@ -6704,7 +6755,8 @@ async function createNewSession() {
     });
     sessionOrchId = `session-${sess.sessionId}`;
     sessions.set(sess.sessionId, sess);
-    sessionModels.set(sessionOrchId, currentModel || "default");
+    if (model) sessionModels.set(sessionOrchId, model);
+    else sessionModels.delete(sessionOrchId);
     return sess;
 }
 
@@ -6805,7 +6857,7 @@ activeSessionShort = activeOrchId
 let orchSelectFollowActive = true; // when true, next refresh snaps selection to activeOrchId
 
 function updateChatLabel() {
-    const model = sessionModels.get(activeOrchId) || "";
+    const model = sessionModels.get(activeOrchId) || "unknown model";
     const shortModel = model.includes(":") ? model.split(":")[1] : model;
     const modelTag = shortModel ? ` {cyan-fg}${shortModel}{/cyan-fg}` : "";
     const contextTag = getContextHeaderBadge(activeOrchId);
@@ -7537,6 +7589,7 @@ async function switchToOrchestration(orchId) {
         // Show cached chat buffer instantly if available (no DB wait)
         const _cachePh = perfStart("switch.cachedRestore");
         const cachedLines = sessionChatBuffers.get(orchId) || ensureSessionSplashBuffer(orchId);
+        perfTrace("switch.cacheState", { orchId: orchId.slice(0, 12), cachedLines: cachedLines?.length || 0, hasLoadedAt: !!sessionHistoryLoadedAt.get(orchId) });
         if (cachedLines && cachedLines.length > 0) {
             sessionChatBuffers.set(orchId, cachedLines);
         } else {
@@ -7580,8 +7633,11 @@ async function switchToOrchestration(orchId) {
             // Only refresh if still the active session when the load completes
             if (orchId === activeOrchId) {
                 startCmsPoller(orchId);
-                invalidateChat();
-                invalidateActivity();
+                // Scroll to bottom after buffer replacement — the cached buffer may
+                // have been longer than the fresh CMS buffer, leaving the scroll
+                // position past the end of the new content (blank screen).
+                invalidateChat("bottom");
+                invalidateActivity("bottom");
                 scheduleLightRefresh("sessionHistoryLoaded", orchId);
             }
         }).catch(() => {
@@ -7599,12 +7655,16 @@ async function switchToOrchestration(orchId) {
         // Schedule list refresh in background too
         scheduleRefreshOrchestrations();
     } else {
-        if (!sessionHistoryLoadedAt.has(orchId)) {
-            loadCmsHistory(orchId).then(() => {
+        // Same session re-selected — ensure history is loaded
+        const existingBuf = sessionChatBuffers.get(orchId);
+        const bufferIsPlaceholder = !existingBuf || existingBuf.length <= 1
+            || (existingBuf.length === 1 && /Loading/.test(existingBuf[0]));
+        if (!sessionHistoryLoadedAt.has(orchId) || bufferIsPlaceholder) {
+            loadCmsHistory(orchId, bufferIsPlaceholder ? { force: true } : {}).then(() => {
                 if (orchId === activeOrchId) {
                     startCmsPoller(orchId);
-                    invalidateChat();
-                    invalidateActivity();
+                    invalidateChat("bottom");
+                    invalidateActivity("bottom");
                     scheduleLightRefresh("sessionHistoryLoaded", orchId);
                 }
             }).catch(() => {
@@ -7634,8 +7694,8 @@ if (activeOrchId) {
     loadCmsHistory(activeOrchId).then(() => {
         if (activeOrchId) {
             startCmsPoller(activeOrchId);
-            invalidateChat();
-            invalidateActivity();
+            invalidateChat("bottom");
+            invalidateActivity("bottom");
             scheduleLightRefresh("initialSessionHistoryLoaded", activeOrchId);
         }
     }).catch(() => {
@@ -8535,11 +8595,16 @@ screen.on("resize", () => {
 });
 
 // Initial orchestration refresh
+const _phInitRefresh = perfStart("startup.initialRefreshOrchestrations");
 await refreshOrchestrations();
+perfEnd(_phInitRefresh);
 
 // Trigger initial right-pane render (orch logs, sequence, etc.)
+const _phInitRedraw = perfStart("startup.initialRedrawActiveViews");
 redrawActiveViews();
+perfEnd(_phInitRedraw);
 
+perfTrace("startup.complete");
 if (!activeOrchId) {
     renderWaitingForSessionsLanding();
     if (!isRemote) {
