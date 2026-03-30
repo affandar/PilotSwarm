@@ -1930,6 +1930,19 @@ function escapeBlessedText(value) {
     return asDisplayText(value).replace(/\{/g, "(").replace(/\}/g, ")");
 }
 
+function buildSystemCardLines(content) {
+    const safeLines = asDisplayText(content || "")
+        .split("\n")
+        .slice(0, 4)
+        .map(escapeBlessedText);
+    return [
+        `{gray-fg}┌─ ⚙ SYSTEM ${"─".repeat(30)}┐{/gray-fg}`,
+        ...safeLines.map((line) => `{gray-fg}│{/gray-fg}  {white-fg}${line}{/white-fg}`),
+        `{gray-fg}└${"─".repeat(42)}┘{/gray-fg}`,
+        "",
+    ];
+}
+
 function formatToolArgValue(value) {
     let raw;
     if (typeof value === "string") raw = JSON.stringify(value);
@@ -4313,13 +4326,13 @@ async function loadCmsHistory(orchId, options = {}) {
                         }
                         // Render extracted system block as a distinct card
                         if (systemBlock) {
-                            lines.push(`{gray-fg}┌─ ⚙ SYSTEM ${"─".repeat(30)}┐{/gray-fg}`);
-                            for (const sl of systemBlock.split("\n").slice(0, 4).map(escapeBlessedText)) {
-                                lines.push(`{gray-fg}│{/gray-fg}  {white-fg}${sl}{/white-fg}`);
-                            }
-                            lines.push(`{gray-fg}└${"─".repeat(42)}┘{/gray-fg}`);
-                            lines.push("");
+                            lines.push(...buildSystemCardLines(systemBlock));
                         }
+                    }
+                } else if (type === "system.message") {
+                    const content = evt.data?.content;
+                    if (content) {
+                        lines.push(...buildSystemCardLines(content));
                     }
                 } else if (type === "assistant.message") {
                     const content = evt.data?.content;
@@ -7474,6 +7487,12 @@ function startCmsPoller(orchId) {
             if (type === "assistant.message") {
                 if (typeof evt.data?.content === "string" && evt.data.content.trim()) {
                     showLiveAssistantPreview(evt.data.content, orchId);
+                }
+                return;
+            }
+            if (type === "system.message") {
+                if (typeof evt.data?.content === "string" && evt.data.content.trim()) {
+                    appendChatRaw(buildSystemCardLines(evt.data.content).join("\n"), orchId);
                 }
                 return;
             }
