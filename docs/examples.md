@@ -39,6 +39,12 @@ cd examples/devops-command-center
 node --env-file=../../.env sdk-app.js
 ```
 
+Or from the repo root:
+
+```bash
+./scripts/run-devops-sdk-sample.sh
+```
+
 Alternate SDK scenarios:
 
 ```bash
