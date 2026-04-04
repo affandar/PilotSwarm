@@ -13,7 +13,7 @@ A complete source-level map of the PilotSwarm codebase. Complements `architectur
 | **Runtime** | Node.js 24+ |
 | **Language** | TypeScript (src), plain JS (tests, examples, CLI) |
 | **Build** | `tsc` → `dist/`, ES2022 target, NodeNext resolution |
-| **Key deps** | `@github/copilot-sdk` v0.1.32, `duroxide` v0.1.14, `pg` v8.18, `@azure/storage-blob` v12.31 |
+| **Key deps** | `@github/copilot-sdk` v0.1.32, `duroxide` v0.1.18, `pg` v8.18, `@azure/storage-blob` v12.31 |
 
 ### Build & Run
 
@@ -647,6 +647,7 @@ ENTRYPOINT ["node", "examples/worker.js"]
 | `getDefaultModel()` | Read the configured default model |
 | `cancelSession(id)` | Cancel orchestration (leave CMS intact) |
 | `sendMessage(id, prompt)` / `sendAnswer(id, answer)` / `sendCommand(id, cmd)` | Drive a session administratively |
+| `getOrchestrationStats(id)` | Fetch duroxide orchestration runtime stats (history size, queue depth, KV usage) |
 | `getLatestResponse(id)` / `getCommandResponse(id, cmdId)` | Read KV-backed orchestration outputs |
 | `dumpSession(id)` | Export session transcript |
 

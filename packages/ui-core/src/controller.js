@@ -25,6 +25,8 @@ import {
     selectVisibleSessionRows,
 } from "./selectors.js";
 
+const ORCHESTRATION_STATS_REFRESH_MS = 20_000;
+
 function groupModelsByProvider(models = []) {
     const groups = [];
     const byProvider = new Map();
@@ -509,6 +511,7 @@ export class PilotSwarmUiController {
         this.sessionRefreshTimer = null;
         this.sessionHistoryLoads = new Map();
         this.sessionHistoryExpansionLoads = new Map();
+        this.sessionOrchestrationStatsLoads = new Map();
         this.logUnsubscribe = null;
     }
 
@@ -578,6 +581,7 @@ export class PilotSwarmUiController {
         if (this.sessionRefreshTimer) clearTimeout(this.sessionRefreshTimer);
         this.sessionRefreshTimer = null;
         this.sessionHistoryExpansionLoads.clear();
+        this.sessionOrchestrationStatsLoads.clear();
         this.detachActiveSession();
         this.detachLogStream();
         await this.transport.stop();
@@ -619,6 +623,10 @@ export class PilotSwarmUiController {
             if (selected !== previousActive) {
                 await this.loadSession(selected);
                 return;
+            }
+            const existingHistory = this.getState().history.bySessionId.get(selected);
+            if (!existingHistory?.events?.length) {
+                await this.ensureSessionHistory(selected, { force: true }).catch(() => {});
             }
             if (this.activeSessionSubscriptionId !== selected) {
                 this.attachActiveSession(selected);
@@ -718,11 +726,62 @@ export class PilotSwarmUiController {
             const sessionIds = Object.keys(this.getState().sessions.byId);
             if (sessionIds.length === 0) return;
             await Promise.allSettled(sessionIds.map((sessionId) => this.ensureSessionHistory(sessionId)));
+            if (targetTab === "sequence") {
+                const activeSessionId = this.getState().sessions.activeSessionId;
+                if (activeSessionId) {
+                    await this.ensureOrchestrationStats(activeSessionId).catch(() => {});
+                }
+            }
             return;
         }
         if (targetTab === "files") {
             await this.ensureFilesForScope(selectFilesScope(this.getState()));
         }
+    }
+
+    async ensureOrchestrationStats(sessionId, { force = false } = {}) {
+        if (!sessionId || typeof this.transport.getOrchestrationStats !== "function") return null;
+
+        const current = this.getState().orchestration.bySessionId?.[sessionId] || null;
+        const now = Date.now();
+        if (!force && current?.loading) return current;
+        if (
+            !force
+            && current
+            && Number.isFinite(current.fetchedAt)
+            && (now - current.fetchedAt) < ORCHESTRATION_STATS_REFRESH_MS
+        ) {
+            return current;
+        }
+        if (!force && this.sessionOrchestrationStatsLoads.has(sessionId)) {
+            return this.sessionOrchestrationStatsLoads.get(sessionId);
+        }
+
+        this.dispatch({ type: "orchestration/statsLoading", sessionId });
+        const loadPromise = (async () => {
+            try {
+                const stats = await this.transport.getOrchestrationStats(sessionId);
+                this.dispatch({
+                    type: "orchestration/statsLoaded",
+                    sessionId,
+                    stats,
+                    fetchedAt: Date.now(),
+                });
+                return this.getState().orchestration.bySessionId?.[sessionId] || null;
+            } catch (error) {
+                this.dispatch({
+                    type: "orchestration/statsError",
+                    sessionId,
+                    error: error?.message || String(error),
+                    fetchedAt: Date.now(),
+                });
+                return null;
+            }
+        })().finally(() => {
+            this.sessionOrchestrationStatsLoads.delete(sessionId);
+        });
+        this.sessionOrchestrationStatsLoads.set(sessionId, loadPromise);
+        return loadPromise;
     }
 
     async ensureFilesForScope(scope = selectFilesScope(this.getState()), { force = false } = {}) {

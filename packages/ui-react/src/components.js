@@ -329,21 +329,14 @@ const InspectorPane = React.memo(function InspectorPane({ controller, width, hei
         inspectorScroll: state.ui.scroll.inspector,
         focused: state.ui.focusRegion === "inspector",
     }), shallowEqualObject);
-    if (inspectorMeta.inspectorTab === "files") {
-        return React.createElement(FilesBrowser, {
-            controller,
-            width,
-            height,
-            focused: inspectorMeta.focused,
-            frame,
-        });
-    }
-
     const contentWidth = Math.max(20, width - 4);
     const inspectorState = useControllerSelector(controller, (state) => ({
         branding: state.branding,
         activeSessionId: state.sessions.activeSessionId,
         activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+        activeOrchestration: state.sessions.activeSessionId
+            ? state.orchestration.bySessionId?.[state.sessions.activeSessionId] || null
+            : null,
         sessionsById: state.sessions.byId,
         sessionsFlat: state.sessions.flat,
         histories: state.history.bySessionId,
@@ -360,12 +353,26 @@ const InspectorPane = React.memo(function InspectorPane({ controller, width, hei
         history: {
             bySessionId: inspectorState.histories,
         },
+        orchestration: {
+            bySessionId: inspectorState.activeSessionId && inspectorState.activeOrchestration
+                ? { [inspectorState.activeSessionId]: inspectorState.activeOrchestration }
+                : {},
+        },
         logs: inspectorState.logs,
         ui: {
             inspectorTab: inspectorState.inspectorTab,
         },
     }), [inspectorState]);
     const inspector = React.useMemo(() => selectInspector(selectorState, { width: contentWidth }), [contentWidth, selectorState]);
+    if (inspectorMeta.inspectorTab === "files") {
+        return React.createElement(FilesBrowser, {
+            controller,
+            width,
+            height,
+            focused: inspectorMeta.focused,
+            frame,
+        });
+    }
     const tabLine = inspector.tabs.map((tab) => ({
         text: tab === inspector.activeTab ? `[${tab}] ` : `${tab} `,
         color: tab === inspector.activeTab ? "magenta" : "gray",

@@ -154,6 +154,15 @@ export interface SessionStatusChange {
     orchestrationStatus?: string;
 }
 
+/** Per-orchestration runtime stats from duroxide. */
+export interface SessionOrchestrationStats {
+    historyEventCount: number;
+    historySizeBytes: number;
+    queuePendingCount: number;
+    kvUserKeyCount: number;
+    kvTotalValueBytes: number;
+}
+
 /** Options for PilotSwarmManagementClient. */
 export interface PilotSwarmManagementClientOptions {
     /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
@@ -583,6 +592,27 @@ export class PilotSwarmManagementClient {
             customStatusVersion: status.customStatusVersion || 0,
             orchestrationStatus: status.status,
         };
+    }
+
+    /**
+     * Get per-orchestration runtime stats for a session, when supported by the provider.
+     */
+    async getOrchestrationStats(sessionId: string): Promise<SessionOrchestrationStats | null> {
+        this._ensureStarted();
+        const orchId = `session-${sessionId}`;
+        try {
+            const stats = await this._duroxideClient.getOrchestrationStats(orchId);
+            if (!stats || typeof stats !== "object") return null;
+            return {
+                historyEventCount: Number(stats.historyEventCount) || 0,
+                historySizeBytes: Number(stats.historySizeBytes) || 0,
+                queuePendingCount: Number(stats.queuePendingCount) || 0,
+                kvUserKeyCount: Number(stats.kvUserKeyCount) || 0,
+                kvTotalValueBytes: Number(stats.kvTotalValueBytes) || 0,
+            };
+        } catch {
+            return null;
+        }
     }
 
     /**

@@ -17,6 +17,10 @@ function cloneFilesBySessionId(bySessionId) {
     return { ...(bySessionId || {}) };
 }
 
+function cloneOrchestrationBySessionId(bySessionId) {
+    return { ...(bySessionId || {}) };
+}
+
 function normalizeFilesFilter(filter) {
     return {
         scope: filter?.scope === "allSessions" ? "allSessions" : "selectedSession",
@@ -391,6 +395,56 @@ export function appReducer(state, action) {
                         },
                     }
                     : state.ui,
+            };
+        }
+
+        case "orchestration/statsLoading": {
+            const bySessionId = cloneOrchestrationBySessionId(state.orchestration.bySessionId);
+            bySessionId[action.sessionId] = {
+                ...(bySessionId[action.sessionId] || {}),
+                loading: true,
+                error: null,
+            };
+            return {
+                ...state,
+                orchestration: {
+                    ...state.orchestration,
+                    bySessionId,
+                },
+            };
+        }
+
+        case "orchestration/statsLoaded": {
+            const bySessionId = cloneOrchestrationBySessionId(state.orchestration.bySessionId);
+            bySessionId[action.sessionId] = {
+                loading: false,
+                error: null,
+                fetchedAt: action.fetchedAt || Date.now(),
+                stats: action.stats || null,
+            };
+            return {
+                ...state,
+                orchestration: {
+                    ...state.orchestration,
+                    bySessionId,
+                },
+            };
+        }
+
+        case "orchestration/statsError": {
+            const bySessionId = cloneOrchestrationBySessionId(state.orchestration.bySessionId);
+            bySessionId[action.sessionId] = {
+                ...(bySessionId[action.sessionId] || {}),
+                loading: false,
+                error: action.error || "Failed to load orchestration stats",
+                fetchedAt: action.fetchedAt || Date.now(),
+            };
+            return {
+                ...state,
+                orchestration: {
+                    ...state.orchestration,
+                    bySessionId,
+                },
             };
         }
 

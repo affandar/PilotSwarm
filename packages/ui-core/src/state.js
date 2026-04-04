@@ -43,6 +43,9 @@ export function createInitialState({ mode = "local", branding = null } = {}) {
         history: {
             bySessionId: new Map(),
         },
+        orchestration: {
+            bySessionId: {},
+        },
         files: {
             bySessionId: {},
             fullscreen: false,
