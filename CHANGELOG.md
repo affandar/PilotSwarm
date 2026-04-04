@@ -7,6 +7,7 @@
 - **Single TUI cutover** — removed the old blessed implementation and the temporary split between terminal UI stacks. PilotSwarm now ships one terminal UI built from [`packages/cli/`](packages/cli), [`packages/ui-core/`](packages/ui-core), and [`packages/ui-react/`](packages/ui-react).
 - **Shared UI architecture** — session tree, chat, activity, sequence, node map, files inspector, prompt editor, and modal flows now live in shared layers instead of a monolithic host file. This includes artifact upload/open/filter flows, rename dialogs, multiline prompt editing, mouse copy, sticky inspector headers, and terminal rendering cleanup.
 - **TUI performance pass** — session-list rendering now slices visible rows before building view models, and the React host subscribes to narrower state slices so typing latency and large session-list scrolling stay snappy.
+- **Word-level text wrapping** — message cards, question cards, and all rich-text rendering now wrap at word boundaries instead of breaking mid-word.
 - **DevOps sample migration** — the layered DevOps sample now runs on the shipped terminal UI rather than the removed blessed-only path.
 
 ### SDK / Orchestration
@@ -16,12 +17,14 @@
 - **Autonomy and cron hardening** — default/system prompts now explicitly tell autonomous agents to use durable waits/cron for ambiguous long-running work, ask the user when intent is unclear, and avoid wasting tokens in in-turn polling loops.
 - **Session/tooling fixes** — generic sessions now inherit default tool layers correctly, manual title locking prevents later auto-retitling, and cascading cancel/done plus terminal child status handling are more consistent.
 - **Monitoring compatibility fix** — resource-manager monitoring now uses Duroxide management APIs for system metrics and queue depths instead of querying Duroxide internal tables directly.
+- **Orchestration stats API** — new `getOrchestrationStats(sessionId)` on `PilotSwarmManagementClient` exposes duroxide history size, queue depth, and KV usage per session. Wired through the CLI transport and visible in the TUI sequence pane.
 
 ### Tests / Ops
 
 - **Recovery and control contracts** — added regression coverage for inline control tools, session recovery/failures, terminal child states, resource-manager monitoring, and orchestration prompt/tool contracts.
 - **Test hygiene** — [`scripts/run-tests.sh`](scripts/run-tests.sh) now cleans stale local test schemas and temp session layouts before and after runs to reduce environmental contamination.
 - **Reset/deploy cleanup** — stale legacy queue-table assumptions were removed from reset helpers and resource monitoring paths.
+- **Deploy script hardening** — `deploy-aks.sh` now waits for all worker pods to fully terminate before dropping schemas during destructive resets, preventing `cached plan must not change result type` errors. ACR pull-secret refresh is now part of the deploy workflow.
 
 ### Recommended Reading
 

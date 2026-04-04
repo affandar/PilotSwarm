@@ -1298,6 +1298,18 @@ function plainInspectorLine(text, color = "white", extra = {}) {
     };
 }
 
+function formatCompactBytes(value) {
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes < 0) return "?";
+    if (bytes < 1024) return `${Math.round(bytes)} B`;
+    if (bytes < 1024 * 1024) {
+        const kb = bytes / 1024;
+        return `${kb >= 10 ? Math.round(kb) : kb.toFixed(1)} KB`;
+    }
+    const mb = bytes / (1024 * 1024);
+    return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
+}
+
 function summarizeEventPreview(text, maxLength = 18) {
     const normalized = String(text || "")
         .replace(/\s+/g, " ")
@@ -1616,6 +1628,35 @@ function buildSequenceDividerLine(nodeLabels, timeWidth, colWidth) {
     );
 }
 
+function buildSequenceStatsLines(state, session, maxWidth) {
+    const statsEntry = state?.orchestration?.bySessionId?.[session?.sessionId] || null;
+    let body = "loading orchestration stats...";
+    if (!statsEntry) {
+    } else if (statsEntry.loading && !statsEntry.stats) {
+        body = "loading orchestration stats...";
+    } else if (!statsEntry.stats) {
+        body = statsEntry.error ? "orchestration stats unavailable" : "loading orchestration stats...";
+    } else {
+        const stats = statsEntry.stats;
+        body = [
+            `hist ${Number(stats.historyEventCount) || 0} ev`,
+            formatCompactBytes(stats.historySizeBytes),
+            `q ${Number(stats.queuePendingCount) || 0}`,
+            `kv ${Number(stats.kvUserKeyCount) || 0} keys`,
+            formatCompactBytes(stats.kvTotalValueBytes),
+        ].join(" | ");
+    }
+
+    return buildMessageCardLines({
+        title: "Stats",
+        body,
+        width: Math.max(24, maxWidth),
+        titleColor: "cyan",
+        borderColor: "gray",
+        fitToContent: true,
+    }).slice(0, -1);
+}
+
 function buildSequenceEventLine(entry, nodeLabels, timeWidth, colWidth) {
     const targetNode = nodeLabels.includes(entry.nodeLabel)
         ? entry.nodeLabel
@@ -1655,6 +1696,7 @@ function buildNodeMapHeaderLine(nodeLabels, colWidth) {
 }
 
 function buildSequenceViewForSession(state, session, maxWidth) {
+    const statsLines = buildSequenceStatsLines(state, session, maxWidth);
     const history = state.history.bySessionId.get(session.sessionId);
     const entries = appendCurrentSessionStatusEntry(
         collapseContiguousSpawnEntries(buildSequenceEntries(history?.events || [])),
@@ -1662,7 +1704,7 @@ function buildSequenceViewForSession(state, session, maxWidth) {
     );
     if (entries.length === 0) {
         return {
-            stickyLines: [],
+            stickyLines: statsLines,
             lines: [plainInspectorLine("No events yet - interact with this session to populate the sequence diagram.")],
         };
     }
@@ -1695,6 +1737,7 @@ function buildSequenceViewForSession(state, session, maxWidth) {
 
     return {
         stickyLines: [
+            ...statsLines,
             plainInspectorLine(`Window: ${recentWindow.label}`, "gray"),
             buildSequenceHeaderLine(nodeLabels, timeWidth, colWidth),
             buildSequenceDividerLine(nodeLabels, timeWidth, colWidth),

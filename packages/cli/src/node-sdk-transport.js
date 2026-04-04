@@ -331,6 +331,10 @@ export class NodeSdkTransport {
         return this.mgmt.getSession(sessionId);
     }
 
+    async getOrchestrationStats(sessionId) {
+        return this.mgmt.getOrchestrationStats(sessionId);
+    }
+
     async createSession({ model } = {}) {
         const effectiveModel = model || this.mgmt.getDefaultModel();
         const session = await this.client.createSession(effectiveModel ? { model: effectiveModel } : undefined);

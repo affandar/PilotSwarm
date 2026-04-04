@@ -250,18 +250,34 @@ function wrapRunsToDisplayWidth(runs, width) {
 
         while (remainingText.length > 0) {
             const spaceLeft = Math.max(1, safeWidth - currentWidth);
-            const chunk = sliceTextToDisplayWidth(remainingText, spaceLeft);
-            if (!chunk) break;
+            const hardChunk = sliceTextToDisplayWidth(remainingText, spaceLeft);
+            if (!hardChunk) break;
 
-            currentRuns.push({
-                ...run,
-                text: chunk,
-            });
-            currentWidth += displayWidth(chunk);
-            remainingText = remainingText.slice(chunk.length);
+            // If the hard slice fits the entire remaining text, or it ends
+            // at a natural break, just use it as-is.
+            if (hardChunk.length === remainingText.length || displayWidth(hardChunk) < spaceLeft) {
+                currentRuns.push({ ...run, text: hardChunk });
+                currentWidth += displayWidth(hardChunk);
+                remainingText = remainingText.slice(hardChunk.length);
+                if (currentWidth >= safeWidth) flushCurrentLine();
+                continue;
+            }
 
-            if (currentWidth >= safeWidth) {
+            // The chunk fills the line — try to find a word boundary to break at.
+            const lastSpace = hardChunk.lastIndexOf(" ");
+            if (lastSpace > 0 && (currentWidth > 0 || lastSpace > 0)) {
+                // Break at the last space: include the space on this line, then wrap.
+                const softChunk = hardChunk.slice(0, lastSpace + 1);
+                currentRuns.push({ ...run, text: softChunk });
+                currentWidth += displayWidth(softChunk);
+                remainingText = remainingText.slice(softChunk.length);
                 flushCurrentLine();
+            } else {
+                // No space found (single long word) — fall back to hard break.
+                currentRuns.push({ ...run, text: hardChunk });
+                currentWidth += displayWidth(hardChunk);
+                remainingText = remainingText.slice(hardChunk.length);
+                if (currentWidth >= safeWidth) flushCurrentLine();
             }
         }
     }

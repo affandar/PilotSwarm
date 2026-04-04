@@ -35,6 +35,8 @@ Keep the workflow repo-specific and explicit. Prefer the repo-owned scripts, and
 - `.model_providers.example.json` is the checked-in shareable model-catalog template. The real `.model_providers.json` is local and gitignored so personal service URLs can stay out of source control.
 - Provider visibility is still controlled by env-backed keys at worker startup, not by which providers appear in the template.
 - Secret updates matter for model selectors. Workers load provider availability at startup, so removed keys do not take effect until the secret is refreshed and the pods restart.
+- The AKS rollout needs a valid `acr-pull` registry secret wired into the worker deployment. Refresh that pull secret as part of deployment, not only the env secret.
+- During destructive resets, do not drop the `duroxide` schema immediately after scaling the deployment to `0`. Wait until the worker pods are actually gone, or old prepared statements can trip Postgres errors like `cached plan must not change result type`.
 - When the active default model is an Azure OpenAI deployment, the Kubernetes secret must include the matching Azure OpenAI key. A missing `AZURE_OAI_KEY` can leave workers booting with an invalid default model.
 - If `ANTHROPIC_API_KEY` is intentionally removed from the deploy env, refresh the Kubernetes secret and restart workers, then verify Anthropic models disappeared from selectors or `list_available_models`.
 - Old worker pods in another namespace can still poll the same database and cause nondeterminism. Check all namespaces if behavior looks impossible.
@@ -71,7 +73,9 @@ Keep the workflow repo-specific and explicit. Prefer the repo-owned scripts, and
 
 4. If a manual deploy is needed, follow the same order as the script.
    - Refresh the Kubernetes secret from the current env.
+   - Refresh the `acr-pull` image-pull secret from ACR credentials/token.
    - Run the local test gate unless explicitly skipped.
+   - If doing a destructive reset, scale workers to `0` and wait for the pods to be fully terminated before dropping schemas.
    - Build the SDK:
      ```bash
      npm run build -w packages/sdk
@@ -104,6 +108,7 @@ Keep the workflow repo-specific and explicit. Prefer the repo-owned scripts, and
      kubectl logs -n copilot-runtime -l app.kubernetes.io/component=worker --prefix --tail=50
      ```
    - If image correctness matters, inspect the running image IDs from the pods.
+   - If the rollout stalls in `ErrImagePull` or `ImagePullBackOff`, inspect the pod events first; a stale `acr-pull` secret is a likely cause.
 
 6. Verify model-surface changes when env keys changed.
    - If a provider key was added or removed, do not stop at "pods are Running".
