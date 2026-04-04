@@ -87,6 +87,16 @@ kubectl create secret generic copilot-runtime-secrets \
     ${ANTHROPIC_API_KEY:+--from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"} \
     --dry-run=client -o yaml | kubectl apply -f -
 
+echo "🔐 Refreshing ACR pull secret..."
+ACR_SERVER="${ACR_NAME}.azurecr.io"
+ACR_REFRESH_TOKEN="$(az acr login --name "$ACR_NAME" --expose-token --output tsv --query accessToken)"
+kubectl create secret docker-registry acr-pull \
+    -n "$NAMESPACE" \
+    --docker-server="$ACR_SERVER" \
+    --docker-username="00000000-0000-0000-0000-000000000000" \
+    --docker-password="$ACR_REFRESH_TOKEN" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
 # ─── Step 0: Run local integration tests ─────────────────────────
 
 if [ "$SKIP_TESTS" = false ]; then
