@@ -18,6 +18,8 @@ spec:
         app.kubernetes.io/name: pilotswarm
         app.kubernetes.io/component: worker
     spec:
+      imagePullSecrets:
+        - name: acr-pull
       tolerations:
         - key: "kubernetes.azure.com/scalesetpriority"
           operator: "Equal"
