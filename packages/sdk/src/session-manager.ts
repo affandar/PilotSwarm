@@ -1,11 +1,12 @@
-import { CopilotClient, type CopilotSession, type Tool } from "@github/copilot-sdk";
+import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
 import type { FactStore } from "./facts-store.js";
-import { composeSystemPrompt, extractPromptContent } from "./prompt-layering.js";
+import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
+import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -15,7 +16,9 @@ const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-s
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
     frameworkBasePrompt?: string;
+    frameworkBaseToolNames?: string[];
     appDefaultPrompt?: string;
+    appDefaultToolNames?: string[];
     /** Backward-compatible alias for older code paths/tests. */
     systemMessage?: string;
     /** Raw prompt lookup for named and system agents bound directly to sessions. */
@@ -101,7 +104,16 @@ export class SessionManager {
         if (!registry) return model;
 
         const ref = model || registry.defaultModel;
-        if (!ref) return undefined;
+        if (!ref) {
+            if (model) {
+                throw new Error(
+                    `Unknown model "${model}". Call list_available_models and choose an exact configured provider:model value.`,
+                );
+            }
+            throw new Error(
+                "No default model is configured. Set defaultModel in model_providers.json or specify an explicit provider:model when creating the session.",
+            );
+        }
 
         const normalized = registry.normalize(ref);
         if (!normalized) {
@@ -213,17 +225,26 @@ export class SessionManager {
         options?: { turnIndex?: number },
     ): Promise<ManagedSession> {
         const turnIndex = options?.turnIndex;
+        const inheritedToolNames = Array.from(new Set([
+            ...(this.workerDefaults.frameworkBaseToolNames ?? []),
+            ...(this.workerDefaults.appDefaultToolNames ?? []),
+            ...(serializableConfig.toolNames ?? []),
+        ]));
+        const effectiveSerializableConfig: SerializableSessionConfig = inheritedToolNames.length > 0
+            ? { ...serializableConfig, toolNames: inheritedToolNames }
+            : serializableConfig;
         // Resolve tools: merge per-session (setConfig) + registry (toolNames)
         const storedConfig = this.sessionConfigs.get(sessionId);
-        const resolvedTools = this._resolveTools(storedConfig, serializableConfig);
+        const resolvedTools = this._resolveTools(storedConfig, effectiveSerializableConfig);
 
         const config: ManagedSessionConfig = {
             ...storedConfig,
-            ...serializableConfig,
+            ...effectiveSerializableConfig,
             tools: resolvedTools.length > 0 ? resolvedTools : undefined,
             hooks: storedConfig?.hooks,
             turnTimeoutMs: this.workerDefaults.turnTimeoutMs,
         };
+        this.sessionConfigs.set(sessionId, config);
 
         const client = await this.ensureClient();
         const sessionDir = path.join(this.sessionStateDir, sessionId);
@@ -241,7 +262,7 @@ export class SessionManager {
         const factTools = createFactTools({
             factStore: this.factStore,
             getDescendantSessionIds: this._getDescendantSessionIds ?? undefined,
-            agentIdentity: serializableConfig.agentIdentity,
+            agentIdentity: effectiveSerializableConfig.agentIdentity,
         });
         const SYSTEM_TOOL_NAMES = new Set([...systemTools, ...subAgentTools, ...factTools].map((t: any) => t.name));
         const persistentSessionTools = [
@@ -257,7 +278,7 @@ export class SessionManager {
         config.tools = persistentSessionTools;
 
         // Build system message: worker base + client override
-        const systemMessage = this._buildSystemMessage(config);
+        const systemMessage = this._buildSystemMessage(sessionId, config);
 
         // Resolve model: config.model may be qualified (provider:model) or bare.
         // The SDK needs the bare model name; the provider config is separate.
@@ -489,6 +510,20 @@ export class SessionManager {
     }
 
     /**
+     * Drop the warm in-memory session handle without deleting any persisted
+     * local/session-store state. Used when the underlying Copilot session
+     * becomes invalid and we want the next getOrCreate() to resume/hydrate it.
+     */
+    async invalidateWarmSession(sessionId: string): Promise<void> {
+        const session = this.sessions.get(sessionId);
+        if (!session) return;
+        try {
+            await session.destroy();
+        } catch {}
+        this.sessions.delete(sessionId);
+    }
+
+    /**
      * Checkpoint session state without destroying the session or
      * releasing affinity. Used for crash resilience — session stays warm.
      */
@@ -592,32 +627,57 @@ export class SessionManager {
      * 3. bound agent prompt (for named/system sessions)
      * 4. caller/runtime context
      */
+    private _buildKnowledgeToolInstructionsSection(agentIdentity?: string): SectionOverride | undefined {
+        if (!this.factStore || agentIdentity === "facts-manager") return undefined;
+
+        return {
+            action: async (currentContent: string) => {
+                const knowledgeIndex = await loadKnowledgeIndexFromFactStore(this.factStore!, 50);
+                const { askBlock, skillBlock } = buildKnowledgePromptBlocks(knowledgeIndex);
+                return mergePromptSections([currentContent, askBlock, skillBlock]) ?? currentContent;
+            },
+        };
+    }
+
+    private _buildLastInstructionsSection(
+        sessionId: string,
+        initialConfig: SerializableSessionConfig,
+    ): SectionOverride {
+        return {
+            action: async (currentContent: string) => {
+                const latest = this.sessionConfigs.get(sessionId) ?? initialConfig;
+                const runtimeContext = extractPromptContent(latest.systemMessage);
+                const activeAgentPrompt = latest.boundAgentName
+                    ? this.workerDefaults.agentPromptLookup?.[latest.boundAgentName]?.prompt
+                    : undefined;
+                const overlay = mergePromptSections([
+                    activeAgentPrompt,
+                    runtimeContext,
+                    latest.turnSystemPrompt,
+                ]);
+                return mergePromptSections([currentContent, overlay]) ?? currentContent;
+            },
+        };
+    }
+
     private _buildSystemMessage(
+        sessionId: string,
         config: SerializableSessionConfig,
-    ): string | undefined {
+    ): SystemMessageConfig | undefined {
         const frameworkBase = this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage;
-        const runtimeContext = extractPromptContent(config.systemMessage);
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
-        const activeAgentPrompt = boundAgentName
-            ? this.workerDefaults.agentPromptLookup?.[boundAgentName]?.prompt
-            : undefined;
-
-        if (!layerKind || !activeAgentPrompt) {
-            return composeSystemPrompt({
-                frameworkBase,
-                appDefault: this.workerDefaults.appDefaultPrompt,
-                runtimeContext,
-            });
-        }
-
-        return composeSystemPrompt({
+        const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(config.agentIdentity);
+        const lastInstructions = this._buildLastInstructionsSection(sessionId, config);
+        const additionalSections = knowledgeToolInstructions
+            ? { tool_instructions: knowledgeToolInstructions, last_instructions: lastInstructions }
+            : { last_instructions: lastInstructions };
+        return composeStructuredSystemMessage({
             frameworkBase,
             appDefault: layerKind === "pilotswarm-system-agent"
                 ? undefined
                 : this.workerDefaults.appDefaultPrompt,
-            activeAgentPrompt,
-            runtimeContext,
+            additionalSections,
         });
     }
 }

@@ -51,7 +51,6 @@ async function testLongWaitRotatesAffinity(env) {
     try {
         await withClient(env, {
             client: {
-                blobEnabled: true,
                 waitThreshold: 0,
                 dehydrateThreshold: 0,
             },
@@ -101,7 +100,6 @@ async function testLongWaitPreservesAffinity(env) {
     try {
         await withClient(env, {
             client: {
-                blobEnabled: true,
                 waitThreshold: 0,
                 dehydrateThreshold: 0,
             },

@@ -107,17 +107,44 @@ The AKS deployment target is context `toygres-aks`, namespace `copilot-runtime` 
 
 ## TUI Boundary Rule
 
-The TUI (`cli/tui.js`) must interact with PilotSwarm **exclusively through the public `PilotSwarmClient` and `PilotSwarmWorker` APIs**. It must never import or call internal modules (`session-manager.ts`, `managed-session.ts`, `cms.ts`, `session-proxy.ts`, `orchestration.ts`, etc.) directly. The only exception is **logging** (e.g. reading duroxide trace logs for display). If the TUI needs new data or capabilities, expose them through the client/worker API surface first.
+The TUI (`packages/cli/`) must interact with PilotSwarm **exclusively through the public `PilotSwarmClient`, `PilotSwarmWorker`, and management APIs**. It must never import or call internal runtime modules (`session-manager.ts`, `managed-session.ts`, `cms.ts`, `session-proxy.ts`, `orchestration.ts`, etc.) directly. The only exception is logging/diagnostics (for example reading duroxide trace logs for display). If the TUI needs new data or capabilities, expose them through the client/worker API surface first.
 
 ### TUI Keybindings
 
 If you add or change a TUI keybinding, you must update all user-facing keybinding surfaces together:
 
-- the startup keybinding hint/splash content
-- the help dialog/modal content
-- any contextual status hints that mention that key
+- the actual binding in host input handling
+- the contextual status hints that mention that key
+- prompt placeholder or prompt-affordance copy when send/newline behavior changes
+- modal, footer, detail, or inline pane-title copy that references that key
+- the startup keybinding hint/splash content or help dialog/modal content, if that host has them
 
 Do not change a TUI keybinding in code without keeping those surfaces in sync.
+
+Current overlap to preserve unless intentionally changed:
+
+- `n` opens a new-session flow; in apps with named creatable agents it should open the agent picker rather than blindly creating a generic session
+- `Shift+N` opens the model picker, and model selection should flow into the same new-session/agent-picker path
+- `t` in the sessions pane opens the rename-title dialog
+- `t` in the logs inspector toggles log tailing
+- `Ctrl+A` in the prompt opens the attach-file dialog
+- `o` in the files inspector opens the selected file in the OS default app
+- `f` in the logs inspector opens the log-filter dialog, and `f` in the files inspector opens the files-filter dialog
+
+## TUI Maintenance
+
+The shared terminal UI is a maintained product surface, not an experiment.
+
+When you change the terminal/shared UI stack in:
+
+- `packages/ui-core/`
+- `packages/ui-react/`
+- `packages/cli/`
+- `run.sh`
+
+you must also keep [`.github/skills/pilotswarm-tui/SKILL.md`](./skills/pilotswarm-tui/SKILL.md) current if the change affects architecture, layout, visual conventions, status semantics, prompt/question behavior, message-card behavior, or keybinding expectations.
+
+Use the `pilotswarm-tui` agent/skill for TUI-specific work. Treat it as the canonical short-form memory for the current TUI design choices and maintenance preferences.
 
 ## Builder Agent Templates
 

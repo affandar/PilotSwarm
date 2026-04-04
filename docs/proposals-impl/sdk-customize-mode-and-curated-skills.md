@@ -2,7 +2,13 @@
 
 ## Status
 
-Proposed
+Implemented for stable session layering, curated-skills injection, and
+current-orchestration turn-local system overlays.
+
+The latest orchestration now routes runtime-generated `[SYSTEM: ...]` follow-up
+guidance through a per-turn `last_instructions` overlay instead of baking it
+into user prompt text. Frozen historical orchestration versions still preserve
+their original prompt-text behavior.
 
 ## Summary
 

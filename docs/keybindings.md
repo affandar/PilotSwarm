@@ -1,26 +1,28 @@
-# PilotSwarm TUI — Keybinding Cheat Sheet
+# PilotSwarm TUI — Keybinding Reference
 
-This document matches the current shipped TUI behavior.
+This document matches the current terminal UI behavior in [`run.sh`](/Users/affandar/workshop/drox/pilotswarm/run.sh) and [`packages/cli/src/app.js`](/Users/affandar/workshop/drox/pilotswarm/packages/cli/src/app.js).
 
-## Global Navigation Mode
+## Global Navigation
 
-These keys work when focus is not in the prompt editor.
+These keys work whenever focus is not in the prompt editor.
 
 | Key | Action |
 |-----|--------|
-| `?` | Open the keybinding help modal |
-| `Esc` | Return to the Sessions pane and arm the quit sequence |
-| `Esc` → `q` | Quit within 1 second |
+| `q` | Quit |
 | `Ctrl+C` | Quit immediately |
-| `p` | Jump to the prompt editor |
+| `Esc` | Return focus to Sessions |
 | `Tab` / `Shift+Tab` | Cycle focus between panes |
 | `h` / `l` | Move focus left / right |
-| `m` | Cycle log mode: Workers → Orchestration → Sequence → Node Map |
-| `v` | Toggle markdown viewer |
-| `[` / `]` | Resize the right column |
-| `r` | Force a full redraw |
-| `u` | Dump the active session to `dumps/` |
-| `a` | Open artifact picker for the active session |
+| `p` | Focus the prompt editor |
+| `n` | Create a new session |
+| `Shift+N` | Open the model picker before creating a session |
+| `r` | Refresh sessions and visible data |
+| `a` | Open the linked-artifact download picker |
+| `m` | Cycle inspector tab (`sequence` → `logs` → `nodes` → `files`) |
+| `[` / `]` | Resize the main split |
+| `c` | Cancel the selected session |
+| `d` | Mark the selected session done |
+| `Shift+D` | Delete the selected session |
 
 ## Sessions Pane
 
@@ -28,91 +30,82 @@ These keys work when focus is not in the prompt editor.
 |-----|--------|
 | `j` / `↓` | Move selection down |
 | `k` / `↑` | Move selection up |
-| `Enter` | Switch to selected session |
-| `n` | Create a new session |
-| `Shift+N` | Create a new session with the model picker |
-| `t` | Rename session (typed title or LLM summary) |
-| `+` / `=` | Expand sub-agent tree |
-| `-` | Collapse sub-agent tree |
-| `c` | Cancel selected session |
-| `d` | Delete selected session |
-| `r` | Refresh session list |
+| `Ctrl+D` / `PageDown` | Page down |
+| `Ctrl+U` / `PageUp` | Page up |
+| `+` / `=` | Expand the selected parent session |
+| `-` | Collapse the selected session |
+| `t` | Rename the selected session |
 
-## Chat, Activity, Logs, and Node Map
-
-These apply to the chat pane, activity pane, orchestration logs, worker logs, sequence view, and node map.
+## Chat, Activity, Sequence, Logs, and Node Map
 
 | Key | Action |
 |-----|--------|
 | `j` / `↓` | Scroll down |
 | `k` / `↑` | Scroll up |
-| `Ctrl+D` | Page down |
-| `Ctrl+U` | Page up |
+| `Ctrl+D` / `PageDown` | Page down |
+| `Ctrl+U` / `PageUp` | Page up |
 | `g` | Jump to top |
 | `G` | Jump to bottom |
-| `e` | Expand history for the active session |
+| `e` | Expand older chat history (chat pane only) |
 | mouse wheel | Scroll the focused pane |
+| drag with mouse | Select text and copy it to the clipboard |
 
-## Prompt Editor
+### Logs-only
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Submit prompt |
-| `Option+Enter` | Insert newline and expand the prompt editor |
-| `Esc` | Exit prompt mode and return to navigation |
-| `/` | Open slash-command picker when the prompt is empty |
-| `←` / `→` | Move by character |
-| `Option+←` / `Option+→` | Move by word |
-| `Backspace` | Delete backward by character |
-| `Option+Backspace` | Delete backward by word |
-| `Delete` | Delete forward by character |
+| `t` | Toggle tail mode |
+| `f` | Open the log-filter dialog |
 
-## Markdown Viewer
+## Files Inspector
 
 ### File list
 
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Move file selection |
-| `Enter` | Open selected file in preview pane |
-| `d` | Delete selected exported file |
-| `v` | Exit markdown viewer |
+| `f` | Open the files-filter dialog (`Selected session` vs `All sessions`) |
+| `v` | Toggle fullscreen files mode |
+| `o` | Open the selected file in the OS default app |
 
-### Preview pane
+### Preview
 
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Scroll preview |
-| `g` / `G` | Jump to top / bottom |
-| `Ctrl+D` / `Ctrl+U` | Page down / up |
-| `o` | Open current file in `$EDITOR` |
-| `y` | Copy current file path |
-| `v` | Exit markdown viewer |
+| `Ctrl+D` / `Ctrl+U` | Page preview down / up |
+| `g` / `G` | Jump to preview top / bottom |
+| `v` | Toggle fullscreen files mode |
+| `Esc` | Exit fullscreen files mode |
+| `o` | Open the selected file in the OS default app |
 
-## Slash Command Picker
+## Prompt Editor
 
 | Key | Action |
 |-----|--------|
-| `↑` / `↓` | Navigate commands |
-| `Enter` | Select command |
-| `Esc` | Dismiss picker |
+| `Enter` | Send the current message |
+| `Option+Enter` / `Alt+Enter` | Insert a newline |
+| `Ctrl+J` | Insert a newline |
+| `Ctrl+A` | Attach a local file to the draft |
+| `Esc` | Leave prompt mode and return to Sessions |
+| `←` / `→` | Move cursor by character |
+| `↑` / `↓` | Move cursor vertically across prompt lines |
+| `Option+←` / `Option+→` | Move cursor by word |
+| `Backspace` / `Delete` | Delete one character |
+| `Option+Backspace` / `Option+Delete` | Delete the previous word |
 
-## Slash Commands
+Notes:
 
-| Command | Action |
-|---------|--------|
-| `/models` | List all available models across providers |
-| `/model <name>` | Switch model for this session |
-| `/info` | Show session info |
-| `/done` | Complete and close this session |
-| `/new` | Create a new session |
-| `/help` | Show command list in chat |
+- The prompt grows to a three-line viewport and then scrolls as you keep adding lines.
+- Attached files are uploaded immediately and inserted into the outgoing prompt as `artifact://...` references when the message is sent.
 
-## Modal Pickers and Dialogs
+## Modals and Dialogs
 
 | Context | Keys |
 |---------|------|
-| help modal | `j/k`, arrows, `Ctrl+D/U`, `g/G`, mouse wheel, `Esc`, `?`, `q` |
-| model picker | `j/k`, arrows, `Enter`, `Esc`, `q` |
-| rename dialog | arrows, `Enter`, `Esc`, `q` |
-| artifact picker | arrows, `Enter`, `Esc`, `q`, `a` |
+| model picker | `j/k`, arrows, `Enter`, `Esc` |
+| session agent picker | `j/k`, arrows, `Enter`, `Esc` |
+| linked-artifact picker | `j/k`, arrows, `Enter`, `Esc`, `a` |
+| log/files filters | `Tab` / `Shift+Tab`, `j/k`, arrows, `Enter`, `Esc` |
+| rename dialog | type text, `←/→`, `Home`, `End`, `Backspace`, `Enter`, `Esc` |
+| attach-file dialog | type path, `←/→`, `Home`, `End`, `Backspace`, `Enter`, `Esc` |

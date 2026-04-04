@@ -13,7 +13,7 @@ It demonstrates:
 - skills and session policy
 - worker-registered tools
 - affinity-aware local-vs-remote build monitoring
-- CLI/TUI usage and SDK/programmatic usage from the same app
+- TUI usage and SDK/programmatic usage from the same app
 
 Key files:
 
@@ -23,13 +23,13 @@ Key files:
 - [examples/devops-command-center/sdk-app.js](../examples/devops-command-center/sdk-app.js)
 - [examples/devops-command-center/worker-module.js](../examples/devops-command-center/worker-module.js)
 
-Run the CLI/TUI version:
+Run the TUI version:
 
 ```bash
-npx pilotswarm \
+npx pilotswarm local \
+   --env .env \
    --plugin ./examples/devops-command-center/plugin \
-   --worker ./examples/devops-command-center/worker-module.js \
-   --env .env
+   --worker ./examples/devops-command-center/worker-module.js
 ```
 
 Run the SDK/programmatic version:
@@ -101,7 +101,7 @@ Why don't scientists trust atoms? Because they make up everything!
 // Worker + Client in same process
 const worker = new PilotSwarmWorker({ store, githubToken });
 await worker.start();
-const client = new PilotSwarmClient({ store, blobEnabled: true });
+const client = new PilotSwarmClient({ store });
 await client.start();
 
 // Create session with user input handler
@@ -118,7 +118,7 @@ const response = await session.sendAndWait(input, 300_000);
 
 ---
 
-## TUI (`cli/tui.js`)
+## TUI (`packages/cli/`)
 
 A full-featured terminal UI for managing multiple concurrent durable sessions, with real-time log visualization and a sequence diagram view.
 

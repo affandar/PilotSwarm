@@ -8,7 +8,7 @@
 
 ## Overview
 
-The Portal is a browser-based companion to the TUI that provides the **exact same capabilities** — session management, real-time chat, agent splash screens, sequence diagrams, node maps, artifact downloads, and observability — rendered in a modern web interface. The main chat window uses a **terminal-in-browser** (xterm.js) to preserve the TUI's aesthetic: colored output, ASCII splash art, spinner animations, and blessed-style formatting.
+The Portal is a browser-based companion to the TUI that provides the **exact same capabilities** — session management, real-time chat, agent splash screens, sequence diagrams, node maps, artifact downloads, and observability — rendered in a modern web interface. The main chat window uses a **terminal-in-browser** (xterm.js) to preserve the TUI's aesthetic: colored output, ASCII splash art, spinner animations, and terminal-markup formatting.
 
 **Same backend. Same APIs. Different surface.**
 
@@ -68,7 +68,7 @@ packages/portal/
       useSession.ts          — Session state + event subscription
       useWebSocket.ts        — WS connection management
     lib/
-      ansi.ts                — Convert blessed tags → ANSI for xterm.js
+      ansi.ts                — Convert terminal markup tags → ANSI for xterm.js
       theme.ts               — Color constants matching TUI palette
 ```
 
@@ -441,7 +441,7 @@ These come naturally from being in a browser — no extra effort beyond using we
 ### Phase 1: Core Shell (MVP)
 - Express + WS server bridging `PilotSwarmClient`
 - React app with xterm.js chat terminal
-- Startup splash rendering (blessed tags → ANSI)
+- Startup splash rendering (terminal markup tags → ANSI)
 - Single session: create, send, receive, display
 - Input bar with Enter to send
 

@@ -74,14 +74,30 @@ try {
     await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdent(FACTS_SCHEMA)} CASCADE`);
     console.log(`   ✅ ${FACTS_SCHEMA}`);
 
-    // Also clean up any leftover duroxide tables in public schema (from before schema migration)
+    // Also clean up any leftover duroxide tables in public schema (from before schema migration).
+    // Keep this defensive: the public-schema cleanup is only for old legacy installs, and
+    // duroxide's internal queue table names are not a stable contract.
     const { rows } = await pool.query(`
         SELECT tablename FROM pg_tables
         WHERE schemaname = 'public'
-        AND tablename IN (
-            'instances', 'executions', 'history',
-            'orchestrator_queue', 'worker_queue', 'timer_queue',
-            'instance_locks', 'sessions', '_duroxide_migrations'
+        AND (
+            tablename IN (
+                'instances',
+                'executions',
+                'history',
+                'instance_locks',
+                'sessions',
+                '_duroxide_migrations'
+            )
+            OR (
+                tablename LIKE '%\\_queue' ESCAPE '\\'
+                AND EXISTS (
+                    SELECT 1
+                    FROM pg_tables legacy
+                    WHERE legacy.schemaname = 'public'
+                      AND legacy.tablename = '_duroxide_migrations'
+                )
+            )
         )
     `);
     if (rows.length > 0) {

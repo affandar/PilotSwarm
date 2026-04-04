@@ -51,6 +51,15 @@ function extractSessionArchive(sessionStateDir: string, tarPath: string): void {
     execSync(`tar xzf "${tarPath}" -C "${sessionStateDir}"`);
 }
 
+async function waitForPath(pathToCheck: string, timeoutMs = 5_000, pollMs = 100): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (fs.existsSync(pathToCheck)) return true;
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+    return fs.existsSync(pathToCheck);
+}
+
 export class FilesystemSessionStore implements SessionStateStore {
     private storeDir: string;
     private sessionStateDir: string;
@@ -71,10 +80,18 @@ export class FilesystemSessionStore implements SessionStateStore {
 
     async dehydrate(sessionId: string, meta?: Record<string, unknown>): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
-        if (!fs.existsSync(sessionDir)) return;
+        const sessionDirReady = await waitForPath(sessionDir);
+        if (!sessionDirReady) {
+            throw new Error(
+                `Session state directory not found during dehydrate: ${sessionId} (${sessionDir})`,
+            );
+        }
 
         const tarPath = this.tarPath(sessionId);
         archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
+        if (!fs.existsSync(tarPath)) {
+            throw new Error(`Session archive was not created during dehydrate: ${sessionId} (${tarPath})`);
+        }
         const metadata = buildMetadata(tarPath, sessionId, meta);
         fs.writeFileSync(this.metaPath(sessionId), JSON.stringify(metadata));
         fs.rmSync(sessionDir, { recursive: true, force: true });

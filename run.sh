@@ -1,8 +1,8 @@
 #!/bin/bash
-# Run pilotswarm TUI
+# Run the PilotSwarm TUI
 #
 # Usage:
-#   ./run.sh              # local mode — 4 workers inside TUI, remote PG
+#   ./run.sh              # local mode — 4 workers inside the TUI, remote PG
 #   ./run.sh local        # same as above
 #   ./run.sh local --db   # local mode — 4 workers inside TUI, local PG
 #   ./run.sh remote       # remote mode — AKS workers, TUI client-only, remote PG
@@ -13,6 +13,20 @@
 
 set -euo pipefail
 cd "$(dirname "$0")"
+
+upsert_env_var() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+
+    [ -f "$file" ] || return 0
+
+    if grep -Eq "^[[:space:]]*${key}=" "$file"; then
+        sed -i '' "s|^[[:space:]]*${key}=.*|${key}=${value}|" "$file"
+    else
+        printf "\n%s=%s\n" "$key" "$value" >> "$file"
+    fi
+}
 
 # Ensure .env exists (for local DB mode)
 if [ ! -f .env ]; then
@@ -28,8 +42,8 @@ fi
 if command -v gh &>/dev/null; then
     FRESH_TOKEN=$(gh auth token 2>/dev/null || true)
     if [ -n "$FRESH_TOKEN" ]; then
-        sed -i '' "s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=$FRESH_TOKEN|" .env
-        [ -f .env.remote ] && sed -i '' "s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=$FRESH_TOKEN|" .env.remote
+        upsert_env_var .env GITHUB_TOKEN "$FRESH_TOKEN"
+        upsert_env_var .env.remote GITHUB_TOKEN "$FRESH_TOKEN"
     fi
 fi
 
@@ -53,6 +67,7 @@ LOCAL_TMP="$(pwd)/.tmp"
 export SESSION_STATE_DIR="${LOCAL_TMP}/session-state"
 export SESSION_STORE_DIR="${LOCAL_TMP}/session-store"
 export ARTIFACT_DIR="${LOCAL_TMP}/artifacts"
+export PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS="${PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS:-1000}"
 
 case "$MODE" in
     local)
@@ -70,10 +85,6 @@ case "$MODE" in
         ;;
     *)
         echo "Usage: $0 [local|remote] [--db]"
-        echo ""
-        echo "  local        4 embedded workers + TUI, remote PG (default)"
-        echo "  local --db   4 embedded workers + TUI, local PG"
-        echo "  remote       AKS workers, TUI client-only, remote PG"
         exit 1
         ;;
 esac

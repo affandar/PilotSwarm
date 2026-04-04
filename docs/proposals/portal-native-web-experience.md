@@ -260,11 +260,11 @@ When a session opens with an agent, the splash renders as the **same ASCII art f
 
 | Agent | Card border | Text color source |
 |-------|-------------|-------------------|
-| Generic | `#888` (gray) | blessed tags → CSS |
-| Investigator | `#ff4444` (red) | blessed `{red-fg}` → `.splash-red` |
-| Deployer | `#0088ff` (blue) | blessed `{blue-fg}` → `.splash-blue` |
-| Reporter | `#00ff88` (green) | blessed `{green-fg}` → `.splash-green` |
-| System agents | `#ffd700` (yellow) | blessed `{yellow-fg}` → `.splash-yellow` |
+| Generic | `#888` (gray) | terminal markup → CSS |
+| Investigator | `#ff4444` (red) | `{red-fg}` → `.splash-red` |
+| Deployer | `#0088ff` (blue) | `{blue-fg}` → `.splash-blue` |
+| Reporter | `#00ff88` (green) | `{green-fg}` → `.splash-green` |
+| System agents | `#ffd700` (yellow) | `{yellow-fg}` → `.splash-yellow` |
 
 ---
 
@@ -499,12 +499,12 @@ The sidebar is more than a flat list — it's a structured, interactive tree:
 
 ---
 
-## Comparison: TUI vs Native Web
+## Comparison: Terminal UI vs Native Web
 
-| Aspect | TUI (blessed) | Native Web |
+| Aspect | TUI | Native Web |
 |--------|--------------|------------|
 | **Splash screen** | ASCII art with ANSI color codes | Same ASCII art, monospace `<pre>` with CSS colors |
-| **Chat messages** | Monospace, blessed tags, manual line wrapping | Rich HTML, full Markdown, syntax highlighting |
+| **Chat messages** | Monospace, terminal markup, manual line wrapping | Rich HTML, full Markdown, syntax highlighting |
 | **Tool calls** | Inline text `▶ tool_name ✓` | Collapsible accordion with arguments + result |
 | **Thinking indicator** | ASCII spinner `⠋⠙⠹` | CSS pulsing dots or skeleton animation |
 | **URLs** | ANSI color + underline, terminal click handler | Real `<a href>` tags, native browser behavior |
@@ -572,7 +572,7 @@ packages/portal/
         StartupSplash.tsx    — ASCII art landing (shared splash source)
         AgentSplash.tsx      — ASCII art agent card (shared splash source)
         AgentPicker.tsx      — New session card grid
-        blessedToHtml.ts     — Convert blessed tags → CSS-colored <span>s
+        terminalMarkupToHtml.ts — Convert terminal markup tags → CSS-colored <span>s
 
       inspector/
         ActivityPane.tsx     — Tool execution timeline

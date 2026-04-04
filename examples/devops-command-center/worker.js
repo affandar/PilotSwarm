@@ -1,8 +1,8 @@
 /**
- * DevOps Command Center — Worker module for the PilotSwarm CLI.
+ * DevOps Command Center — Legacy worker-module alias.
  *
  * Usage:
- *   npx pilotswarm --plugin ./plugin --worker ./worker.js
+ *   npx pilotswarm local --env ../../.env --plugin ./plugin --worker ./worker.js
  */
 import { createDevopsTools } from "./tools.js";
 

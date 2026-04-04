@@ -1,0 +1,22 @@
+{
+  "name": "pilotswarm-ui-react",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared React screens and panes for PilotSwarm hosts.",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "dependencies": {
+    "pilotswarm-ui-core": "0.1.0",
+    "react": "^19.2.4"
+  },
+  "scripts": {
+    "build": "echo 'pilotswarm-ui-react: no build step (plain JS)'",
+    "clean": "true"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

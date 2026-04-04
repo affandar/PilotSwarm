@@ -165,12 +165,6 @@ export class ModelProviderRegistry {
             );
         }
 
-        // If no defaultModel is configured, use first available.
-        if (!this._defaultModel) {
-            this._defaultModel = this._allDescriptors.length > 0
-                ? this._allDescriptors[0].qualifiedName
-                : undefined;
-        }
     }
 
     /** Default model in `provider:model` format. */

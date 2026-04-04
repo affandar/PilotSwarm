@@ -27,8 +27,8 @@ export const theme = {
 } as const;
 
 /**
- * Splash color classes — map blessed color tag names to CSS color values.
- * Used by blessedToHtml.ts (the CSS classes) and for inline styles.
+ * Splash color classes — map terminal markup color tag names to CSS color values.
+ * Used by terminalMarkupToHtml.ts (the CSS classes) and for inline styles.
  */
 export const splashColors: Record<string, string> = {
   "splash-cyan": theme.cyan,

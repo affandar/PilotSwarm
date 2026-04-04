@@ -4,6 +4,8 @@
 
 import { defineTool, loadModelProviders } from "../../src/index.ts";
 
+const FORCED_TEST_MODEL = process.env.PS_TEST_FORCE_MODEL || process.env.TEST_FORCE_MODEL || "";
+
 // ─── Common Tools ────────────────────────────────────────────────
 
 /**
@@ -108,6 +110,7 @@ export const WAIT_CONFIG = {
 const modelRegistry = loadModelProviders();
 
 function firstKnownModel(candidates) {
+    if (FORCED_TEST_MODEL) return FORCED_TEST_MODEL;
     if (!modelRegistry) return candidates[0];
     for (const candidate of candidates) {
         const normalized = modelRegistry.normalize(candidate);

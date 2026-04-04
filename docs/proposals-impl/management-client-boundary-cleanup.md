@@ -33,7 +33,7 @@ Everything else should move behind supported PilotSwarm APIs.
 
 ## Problem
 
-Today [packages/cli/cli/tui.js](../../packages/cli/cli/tui.js) is not just a UI.
+Today the terminal UI is intentionally split across [packages/cli/](../../packages/cli), [packages/ui-core/](../../packages/ui-core), and [packages/ui-react/](../../packages/ui-react) rather than being a monolithic UI file.
 It also acts as a:
 
 - duroxide client

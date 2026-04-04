@@ -109,7 +109,7 @@ Add `cronActive: boolean` and `cronInterval: number` to the custom status so the
 | `src/managed-session.ts` | Add `cron` tool definition + result type |
 | `src/orchestration.ts` | Add `case "cron"` handler + cron-aware idle logic in `case "completed"` |
 | `plugins/system/agents/default.agent.md` | Add `cron` to tools list + update rules |
-| `packages/cli/cli/tui.js` | Show cron state indicator in session list |
+| `packages/ui-core/src/selectors.js` | Show cron state indicator in the session list and related status surfaces |
 
 ## Agent Prompt Changes
 

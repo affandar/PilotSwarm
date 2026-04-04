@@ -1,3 +1,9 @@
+import type {
+    SectionOverride,
+    SystemMessageConfig,
+    SystemMessageCustomizeConfig,
+    SystemPromptSection,
+} from "@github/copilot-sdk";
 import type { SerializableSessionConfig } from "./types.js";
 
 export type PromptLayeringKind = NonNullable<SerializableSessionConfig["promptLayering"]>["kind"];
@@ -8,6 +14,11 @@ export interface ComposeSystemPromptOptions {
     activeAgentPrompt?: string | null;
     runtimeContext?: string | null;
     includeAppDefault?: boolean;
+}
+
+export interface ComposeStructuredSystemMessageOptions extends ComposeSystemPromptOptions {
+    additionalSections?: Partial<Record<SystemPromptSection, SectionOverride>>;
+    additionalContent?: string | null;
 }
 
 const FRAMEWORK_HEADER = [
@@ -53,6 +64,49 @@ export function extractPromptContent(
     if (!message) return undefined;
     if (typeof message === "string") return normalizeSection(message);
     return normalizeSection(message.content);
+}
+
+export function buildPromptLayerSections(
+    options: ComposeSystemPromptOptions,
+): Partial<Record<SystemPromptSection, SectionOverride>> {
+    const sections: Partial<Record<SystemPromptSection, SectionOverride>> = {};
+    const frameworkBase = normalizeSection(options.frameworkBase);
+    const appDefault = options.includeAppDefault === false ? undefined : normalizeSection(options.appDefault);
+    const activeAgentPrompt = normalizeSection(options.activeAgentPrompt);
+    const runtimeContext = normalizeSection(options.runtimeContext);
+    const lastInstructions = mergePromptSections([activeAgentPrompt, runtimeContext]);
+
+    if (frameworkBase) {
+        sections.custom_instructions = { action: "replace", content: frameworkBase };
+    }
+    if (appDefault) {
+        sections.guidelines = { action: "append", content: appDefault };
+    }
+    if (lastInstructions) {
+        sections.last_instructions = { action: "replace", content: lastInstructions };
+    }
+
+    return sections;
+}
+
+export function composeStructuredSystemMessage(
+    options: ComposeStructuredSystemMessageOptions,
+): SystemMessageConfig | undefined {
+    const sections = {
+        ...buildPromptLayerSections(options),
+        ...(options.additionalSections ?? {}),
+    };
+    const hasSections = Object.keys(sections).length > 0;
+    const additionalContent = normalizeSection(options.additionalContent);
+
+    if (!hasSections && !additionalContent) return undefined;
+
+    const message: SystemMessageCustomizeConfig = {
+        mode: "customize",
+        ...(hasSections ? { sections } : {}),
+        ...(additionalContent ? { content: additionalContent } : {}),
+    };
+    return message;
 }
 
 export function composeSystemPrompt(options: ComposeSystemPromptOptions): string | undefined {

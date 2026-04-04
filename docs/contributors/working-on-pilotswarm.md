@@ -52,7 +52,9 @@ Touch `packages/cli/` when you are changing:
 
 Files that matter most:
 
-- [`packages/cli/cli/tui.js`](../../packages/cli/cli/tui.js)
+- [`packages/cli/src/app.js`](../../packages/cli/src/app.js)
+- [`packages/cli/src/platform.js`](../../packages/cli/src/platform.js)
+- [`packages/cli/src/index.js`](../../packages/cli/src/index.js)
 - [`packages/cli/bin/tui.js`](../../packages/cli/bin/tui.js)
 - [`packages/cli/package.json`](../../packages/cli/package.json)
 
@@ -90,19 +92,23 @@ If the change affects replay behavior, `continueAsNew`, KV state, or command/eve
 
 ### Changing the TUI
 
-The TUI is still a large single file, so regressions often come from:
+The TUI is a shared stack across:
 
-- two paths writing to the same pane
-- observers restarting after a session is already terminal
-- mixing CMS history with live updates
-- global state that really needs to be session-scoped
+- `packages/ui-core/` — controller, reducer, selectors, shared formatting
+- `packages/ui-react/` — shared React component tree
+- `packages/cli/` — terminal host, input handling, platform adapter, boot flow
+
+Start with:
+
+- [TUI Architecture](../tui-architecture.md)
+- [TUI Design And Implementor Guide](../tui-implementor-guide.md)
 
 Before changing rendering behavior:
 
-- identify the render owner for the pane
-- check session-switch paths
-- check observer lifecycle and terminal-state shutdown
-- check whether the bug is really data-flow vs paint/repaint
+- identify whether the issue lives in shared state/view models vs terminal-host rendering
+- check session-switch paths and observer lifecycle
+- check whether the change also affects portal/shared rendering helpers
+- keep keybinding docs and TUI maintenance notes in sync
 
 ### Changing prompts, tool contracts, or agent behavior
 
@@ -150,7 +156,7 @@ npm run build --workspace=packages/sdk
 ./scripts/run-tests.sh                         # full test suite (vitest)
 ./scripts/run-tests.sh --suite=smoke           # just smoke tests
 cd packages/sdk && npx vitest run test/local/smoke-basic.test.js  # single file
-node --check packages/cli/cli/tui.js
+node --check packages/cli/bin/tui.js
 ```
 
 For the broader local-only runtime test matrix, see [Local Integration Test Plan](./local-integration-test-plan.md).

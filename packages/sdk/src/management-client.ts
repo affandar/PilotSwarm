@@ -28,6 +28,7 @@ import type { FactStore } from "./facts-store.js";
 import { createFactStoreForUrl } from "./facts-store.js";
 import { SessionDumper } from "./session-dumper.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor } from "./model-providers.js";
+import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -36,12 +37,68 @@ const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 const STATUS_WAIT_SLICE_MS = 10_000;
+const MAX_SESSION_TITLE_LENGTH = 60;
+
+function isTerminalOrchestrationStatus(status?: string | null): boolean {
+    return status === "Completed" || status === "Failed" || status === "Terminated";
+}
+
+function cloneContextUsage(contextUsage?: SessionContextUsage): SessionContextUsage | undefined {
+    if (!contextUsage || typeof contextUsage !== "object") return undefined;
+    return {
+        ...contextUsage,
+        ...(contextUsage.compaction && typeof contextUsage.compaction === "object"
+            ? { compaction: { ...contextUsage.compaction } }
+            : {}),
+    };
+}
+
+function stripRunningCompaction(contextUsage?: SessionContextUsage): SessionContextUsage | undefined {
+    const cloned = cloneContextUsage(contextUsage);
+    if (!cloned?.compaction || cloned.compaction.state !== "running") return cloned;
+    delete cloned.compaction;
+    return cloned;
+}
+
+function isIgnorableCancelError(error: unknown): boolean {
+    const message = String((error as any)?.message || error || "");
+    return /instance is terminal|already (?:completed|terminated|cancelled)|not found|no such instance|missing/i.test(message);
+}
 
 function createAbortError(message: string, reason?: unknown): Error {
     if (reason instanceof Error) return reason;
     const error = new Error(typeof reason === "string" && reason ? reason : message);
     error.name = "AbortError";
     return error;
+}
+
+function normalizeSessionTitleInput(title: string, maxLength = MAX_SESSION_TITLE_LENGTH): string {
+    return String(title || "").trim().slice(0, maxLength);
+}
+
+function getNamedAgentTitlePrefix(session: { agentId?: string | null; title?: string | null } | null | undefined): string | null {
+    if (!session?.agentId) return null;
+    const currentTitle = String(session.title || "").trim();
+    if (!currentTitle) return null;
+    const separatorIndex = currentTitle.indexOf(": ");
+    if (separatorIndex > 0) {
+        return currentTitle.slice(0, separatorIndex).trim() || null;
+    }
+    return currentTitle || null;
+}
+
+function buildStoredSessionTitle(
+    session: { agentId?: string | null; title?: string | null } | null | undefined,
+    requestedTitle: string,
+): string {
+    const normalizedTitle = normalizeSessionTitleInput(requestedTitle);
+    const prefix = getNamedAgentTitlePrefix(session);
+    if (!prefix) return normalizedTitle;
+
+    const prefixLabel = `${prefix}: `;
+    const maxSuffixLength = Math.max(0, MAX_SESSION_TITLE_LENGTH - prefixLabel.length);
+    if (maxSuffixLength <= 0) return prefix.slice(0, MAX_SESSION_TITLE_LENGTH);
+    return `${prefixLabel}${normalizedTitle.slice(0, maxSuffixLength)}`;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined, message: string): void {
@@ -266,7 +323,6 @@ export class PilotSwarmManagementClient {
                 this._duroxideClient.getStatus(orchId),
             ]);
             orchStatus = info?.status || "Unknown";
-            if (info?.createdAt) createdAt = info.createdAt;
             statusVersion = status?.customStatusVersion || 0;
             if (status?.customStatus) {
                 try {
@@ -280,11 +336,80 @@ export class PilotSwarmManagementClient {
             }
         } catch {}
 
-        let liveStatus: PilotSwarmSessionStatus = customStatus.status
-            ?? (row.state as PilotSwarmSessionStatus)
-            ?? "pending";
-        if (orchStatus === "Completed") liveStatus = "completed";
-        if (orchStatus === "Failed") liveStatus = "failed";
+        const terminalOrchestration = isTerminalOrchestrationStatus(orchStatus);
+        const rawCronActive = customStatus.cronActive === true;
+        const rawCronInterval = typeof customStatus.cronInterval === "number" ? customStatus.cronInterval : undefined;
+        const cronActive = terminalOrchestration ? false : rawCronActive;
+        const cronInterval = terminalOrchestration ? undefined : rawCronInterval;
+        const normalizedCustomStatus = {
+            ...customStatus,
+            cronActive,
+            cronInterval,
+            contextUsage: customStatus?.contextUsage,
+        };
+        const normalizedContextUsage = terminalOrchestration
+            ? stripRunningCompaction(normalizedCustomStatus.contextUsage as SessionContextUsage | undefined)
+            : cloneContextUsage(normalizedCustomStatus.contextUsage as SessionContextUsage | undefined);
+        normalizedCustomStatus.contextUsage = normalizedContextUsage;
+        const liveStatus = deriveStatusFromCmsAndRuntime({
+            row,
+            customStatus: normalizedCustomStatus,
+            latestResponse,
+            orchestrationStatus: orchStatus,
+        });
+
+        const terminalStatusInput = {
+            parentSessionId: row.parentSessionId,
+            isSystem: row.isSystem,
+            rowState: row.state,
+            status: normalizedCustomStatus?.status,
+            orchestrationStatus: orchStatus,
+            cronActive,
+            cronInterval,
+            turnResultType: normalizedCustomStatus?.turnResult?.type,
+            latestResponseType: latestResponse?.type,
+        };
+
+        if (shouldSyncCompletedStatus(terminalStatusInput)) {
+            await this._catalog!.updateSession(sessionId, {
+                state: "completed",
+                lastError: null,
+                waitReason: null,
+            }).catch(() => {});
+        } else if (shouldSyncFailedStatus(terminalStatusInput)) {
+            const failureMessage =
+                (typeof customStatus?.error === "string" && customStatus.error.trim())
+                    ? customStatus.error.trim()
+                    : (typeof row.lastError === "string" && row.lastError.trim())
+                        ? row.lastError.trim()
+                        : null;
+            await this._catalog!.updateSession(sessionId, {
+                state: "failed",
+                waitReason: null,
+                ...(failureMessage ? { lastError: failureMessage } : {}),
+            }).catch(() => {});
+        } else if (
+            orchStatus === "Running"
+            && (row.state === "error" || row.state === "failed")
+        ) {
+            const recoveredState =
+                typeof customStatus?.status === "string"
+                    && customStatus.status !== "error"
+                    && customStatus.status !== "failed"
+                    ? customStatus.status
+                    : "running";
+            await this._catalog!.updateSession(sessionId, {
+                state: recoveredState,
+                lastError: null,
+                ...(recoveredState === "waiting" || recoveredState === "input_required"
+                    ? {}
+                    : { waitReason: null }),
+            }).catch(() => {});
+        }
+
+        const effectiveError = (liveStatus === "error" || liveStatus === "failed")
+            ? (customStatus.error ?? row.lastError ?? undefined)
+            : undefined;
 
         return {
             sessionId: row.sessionId,
@@ -299,32 +424,32 @@ export class PilotSwarmManagementClient {
             parentSessionId: row.parentSessionId ?? undefined,
             isSystem: row.isSystem || undefined,
             model: row.model ?? undefined,
-            error: customStatus.error ?? row.lastError ?? undefined,
-            waitReason: customStatus.waitReason,
-            cronActive: customStatus.cronActive === true,
-            cronInterval: typeof customStatus.cronInterval === "number" ? customStatus.cronInterval : undefined,
-            cronReason: typeof customStatus.cronReason === "string" ? customStatus.cronReason : undefined,
-            pendingQuestion: customStatus.pendingQuestion
+            error: effectiveError,
+            waitReason: normalizedCustomStatus.waitReason,
+            cronActive,
+            cronInterval,
+            cronReason: cronActive && typeof normalizedCustomStatus.cronReason === "string"
+                ? normalizedCustomStatus.cronReason
+                : undefined,
+            pendingQuestion: normalizedCustomStatus.pendingQuestion
                 ? {
-                    question: customStatus.pendingQuestion,
-                    choices: customStatus.choices,
-                    allowFreeform: customStatus.allowFreeform,
+                    question: normalizedCustomStatus.pendingQuestion,
+                    choices: normalizedCustomStatus.choices,
+                    allowFreeform: normalizedCustomStatus.allowFreeform,
                 }
-                : latestResponse?.type === "input_required" && latestResponse.question
+                    : latestResponse?.type === "input_required" && latestResponse.question
                     ? {
                         question: latestResponse.question,
                         choices: latestResponse.choices,
                         allowFreeform: latestResponse.allowFreeform,
                     }
                     : undefined,
-            result: customStatus.turnResult?.type === "completed"
-                ? customStatus.turnResult.content
+            result: normalizedCustomStatus.turnResult?.type === "completed"
+                ? normalizedCustomStatus.turnResult.content
                 : latestResponse?.type === "completed"
                     ? latestResponse.content
                     : undefined,
-            contextUsage: customStatus?.contextUsage && typeof customStatus.contextUsage === "object"
-                ? customStatus.contextUsage as SessionContextUsage
-                : undefined,
+            contextUsage: normalizedContextUsage,
             statusVersion,
         };
     }
@@ -336,7 +461,23 @@ export class PilotSwarmManagementClient {
      */
     async renameSession(sessionId: string, title: string): Promise<void> {
         this._ensureStarted();
-        await this._catalog!.updateSession(sessionId, { title: title.slice(0, 60) });
+        const session = await this._catalog!.getSession(sessionId);
+        if (!session) {
+            throw new Error(`Session ${sessionId.slice(0, 8)} was not found.`);
+        }
+        if (session.isSystem) {
+            throw new Error("System session titles are fixed");
+        }
+
+        const storedTitle = buildStoredSessionTitle(session, title);
+        if (!storedTitle) {
+            throw new Error("Title cannot be empty");
+        }
+
+        await this._catalog!.updateSession(sessionId, {
+            title: storedTitle,
+            titleLocked: true,
+        });
     }
 
     /**
@@ -349,14 +490,23 @@ export class PilotSwarmManagementClient {
         if (session?.isSystem) {
             throw new Error("Cannot cancel system session");
         }
-        const orchId = `session-${sessionId}`;
-        await this._duroxideClient.cancelInstance(orchId, reason ?? "Cancelled by management client");
-        // Sync terminal state to CMS so listSessions() (CMS-only) reflects it
-        await this._catalog!.updateSession(sessionId, {
-            state: "failed",
-            lastError: reason ?? "Cancelled by management client",
-            waitReason: null,
-        });
+        const cancelReason = reason ?? "Cancelled by management client";
+        const descendantIds = await this._catalog!.getDescendantSessionIds(sessionId).catch(() => []);
+        const targetIds = [...descendantIds, sessionId];
+
+        for (const targetSessionId of targetIds) {
+            try {
+                await this._duroxideClient.cancelInstance(`session-${targetSessionId}`, cancelReason);
+            } catch (error) {
+                if (!isIgnorableCancelError(error)) throw error;
+            }
+
+            await this._catalog!.updateSession(targetSessionId, {
+                state: "cancelled",
+                lastError: cancelReason,
+                waitReason: null,
+            }).catch(() => {});
+        }
     }
 
     /**
@@ -403,6 +553,11 @@ export class PilotSwarmManagementClient {
     async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<import("./cms.js").SessionEvent[]> {
         this._ensureStarted();
         return this._catalog!.getSessionEvents(sessionId, afterSeq, limit);
+    }
+
+    async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<import("./cms.js").SessionEvent[]> {
+        this._ensureStarted();
+        return this._catalog!.getSessionEventsBefore(sessionId, beforeSeq, limit);
     }
 
     // ─── Status Watching ─────────────────────────────────────
@@ -522,7 +677,33 @@ export class PilotSwarmManagementClient {
      */
     async sendMessage(sessionId: string, prompt: string): Promise<void> {
         this._ensureStarted();
+        const session = await this.getSession(sessionId);
+        if (!session) {
+            throw new Error(`Session ${sessionId.slice(0, 8)} was not found.`);
+        }
+        if (session.status === "failed") {
+            throw new Error(
+                `Session ${sessionId.slice(0, 8)} is a failed terminal orchestration and cannot accept new messages.`,
+            );
+        }
+        if (
+            session.status === "completed"
+            && session.parentSessionId
+            && !session.isSystem
+            && !session.cronActive
+            && !session.cronInterval
+        ) {
+            throw new Error(
+                `Session ${sessionId.slice(0, 8)} is a completed terminal orchestration and cannot accept new messages.`,
+            );
+        }
         const orchId = `session-${sessionId}`;
+        await this._catalog!.updateSession(sessionId, {
+            state: "running",
+            lastError: null,
+            waitReason: null,
+            lastActiveAt: new Date(),
+        }).catch(() => {});
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",

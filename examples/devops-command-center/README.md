@@ -54,24 +54,33 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/pilotswarm
 GITHUB_TOKEN=your-token-here
 ```
 
-## Running with TUI
+## Running with the TUI
 
 From the repo root:
 
 ```bash
-npx pilotswarm \
+npx pilotswarm local \
+  --env .env \
   --plugin ./examples/devops-command-center/plugin \
-  --worker ./examples/devops-command-center/worker-module.js \
-  --env .env
+  --worker ./examples/devops-command-center/worker-module.js
+```
+
+Or use the helper script:
+
+```bash
+./scripts/run-devops-cli-sample.sh
 ```
 
 The TUI title and startup splash are loaded automatically from the plugin metadata.
 
 This launches the full TUI with:
-- Agent picker showing Investigator, Deployer, Reporter, and Builder (press `n`)
+- Agent picker showing Investigator, Deployer, Reporter, and Builder when you press `n`
+- `Shift+N` opening the model picker first, then the same agent picker
 - Watchdog + Janitor running as system agents in the sidebar
 - Sequence diagram showing sub-agent spawning
-- Session rename with `t`, cancel with `c`, delete with `d`
+- Session rename with `t`, cancel with `c`, done with `d`, delete with `D`
+
+Because this sample uses an allowlist session policy, generic sessions are blocked. `n` will offer only the named DevOps agents instead of a generic-session choice.
 
 Try the Builder agent in the TUI with prompts like:
 - `Start a new build from the devops-command-center repo on this worker and monitor it until complete.`
@@ -172,4 +181,5 @@ devops-command-center/
 | Affinity-aware waits | Builder preserves worker affinity only for worker-local builds |
 | `ask_user` | Deployer asks for human approval before deploying |
 | Title prefixing | Sessions show "Investigator: CPU Spike Analysis" |
+| TUI layering | Sample plugin branding, named-agent session picker, and worker-module tools all run on the shipped terminal UI host |
 | Management client | Rename sessions, cancel, delete |

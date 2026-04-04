@@ -52,7 +52,9 @@ export class ManagedSession {
                 "REQUIRED: The ONLY way to wait, pause, sleep, or delay inside a turn. " +
                 "You MUST call this tool whenever you need to wait, pause, delay, " +
                 "poll, check back later, or pause before retrying. " +
+                "Do NOT keep burning tokens in an in-turn polling loop; after one brief immediate re-check at most, yield with a durable timer. " +
                 "For recurring or periodic schedules, use the cron tool instead. " +
+                "If it is genuinely ambiguous whether the task should become an ongoing monitor, clarify before choosing a recurring schedule. " +
                 "NEVER use bash sleep, setTimeout, setInterval, or any other external timing mechanism. " +
                 "This tool enables durable waiting that survives process restarts. " +
                 "Long waits may resume on a different worker unless you set " +
@@ -97,6 +99,8 @@ export class ManagedSession {
             description:
                 "Declare a recurring durable schedule owned by the orchestration. " +
                 "Use this for periodic monitoring, polling loops, and scheduled digests so you do NOT need to call wait() at the end of every turn. " +
+                "Use this when you should keep pursuing a goal autonomously until it is done. " +
+                "If it is genuinely ambiguous whether the task should become an ongoing recurring workflow, clarify that intent before setting cron. " +
                 "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. " +
                 "Minimum interval is 15 seconds.",
             parameters: {
@@ -173,13 +177,13 @@ export class ManagedSession {
                 "Spawn an autonomous sub-agent to work on a task in parallel. " +
                 "The sub-agent is a full Copilot session with its own conversation and tools. " +
                 "Returns an agent ID you can use to check status, send messages, or wait for completion. " +
-                "IMPORTANT: Only spawn agents for tasks that MUST run independently and in parallel " +
-                "(e.g. separate data sources to monitor, independent work streams). " +
-                "Do NOT spawn agents for summarization, reporting, or coordination \u2014 handle those yourself. " +
-                "Each agent adds cost, so minimize the number of agents. " +
-                "For KNOWN agents, pass agent_name (e.g. agent_name=\"sweeper\"). The agent's prompt, tools, and task load automatically. " +
+                "If the user explicitly asks you to use sub-agents, delegation, fan-out, or parallel processing, you should comply within runtime limits instead of collapsing the work into a direct answer. " +
+                "If the user did not explicitly ask for delegation, use your judgment about whether parallel work is actually helpful. " +
+                "Each agent adds cost, so avoid unnecessary fan-out when delegation was not requested. " +
+                "For KNOWN user-creatable agents, pass agent_name. The agent's prompt, tools, and task load automatically. " +
+                "Worker-managed system agents are NOT valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
                 "For CUSTOM agents (ad-hoc tasks), pass task instead. " +
-                "Call list_agents to see all available named agents. " +
+                "Call list_agents to see all available named agents you CAN spawn. " +
                 "By default, sub-agents inherit the parent's model. " +
                 "If you want to override the model, call list_available_models first and use only an exact provider:model value returned there. " +
                 "Never invent, guess, or shorten model names.",
@@ -188,7 +192,7 @@ export class ManagedSession {
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known agent to spawn (from list_agents). The agent's system message, tools, and initial prompt are loaded automatically. Do NOT also pass task or system_message.",
+                        description: "Name of a known user-creatable agent to spawn (from list_agents). The agent's system message, tools, and initial prompt are loaded automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
                     },
                     task: {
                         type: "string",
@@ -229,8 +233,9 @@ export class ManagedSession {
 
         const checkAgentsTool = defineTool("check_agents", {
             description:
-                "Check the current status and latest output of all sub-agents. " +
-                "Returns each agent's ID, task, status (running/completed/failed), and result.",
+                "Check the current status and latest output of your RUNNING sub-agents (spawned with spawn_agent). " +
+                "Returns each sub-agent's ID, task, status (running/completed/failed), and result. " +
+                "This is NOT the same as list_agents — list_agents shows available agent blueprints, check_agents shows your live sub-agent instances.",
             parameters: {
                 type: "object",
                 properties: {},
@@ -346,6 +351,7 @@ export class ManagedSession {
             session: this.copilotSession,
             waitThreshold: this.config.waitThreshold ?? 30,
         };
+        const controlBridge = opts?.controlToolBridge;
 
         // Build system tools (wait tool + ask_user tool)
         const waitTool = defineTool("wait", {
@@ -353,7 +359,9 @@ export class ManagedSession {
                 "REQUIRED: The ONLY way to wait, pause, sleep, or delay inside a turn. " +
                 "You MUST call this tool whenever you need to wait, pause, delay, " +
                 "poll, check back later, or pause before retrying. " +
+                "Do NOT keep burning tokens in an in-turn polling loop; after one brief immediate re-check at most, yield with a durable timer. " +
                 "For recurring or periodic schedules, use the cron tool instead. " +
+                "If it is genuinely ambiguous whether the task should become an ongoing monitor, clarify before choosing a recurring schedule. " +
                 "NEVER use bash sleep, setTimeout, setInterval, or any other external timing mechanism. " +
                 "This tool enables durable waiting that survives process restarts. " +
                 "Long waits may resume on a different worker unless you set " +
@@ -378,6 +386,18 @@ export class ManagedSession {
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
                     return `Waited for ${args.seconds} seconds. The wait is complete, you may continue.`;
+                }
+                if (opts?.onEvent) {
+                    try {
+                        opts.onEvent({
+                            eventType: "session.wait_started",
+                            data: {
+                                seconds: args.seconds,
+                                reason,
+                                preserveWorkerAffinity: args.preserveWorkerAffinity ?? false,
+                            },
+                        });
+                    } catch {}
                 }
                 turnState.pendingActions.push({
                     type: "wait",
@@ -411,6 +431,18 @@ export class ManagedSession {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
                     return `Waited for ${args.seconds} seconds on the current worker. The wait is complete, you may continue.`;
                 }
+                if (opts?.onEvent) {
+                    try {
+                        opts.onEvent({
+                            eventType: "session.wait_started",
+                            data: {
+                                seconds: args.seconds,
+                                reason,
+                                preserveWorkerAffinity: true,
+                            },
+                        });
+                    } catch {}
+                }
                 turnState.pendingActions.push({
                     type: "wait",
                     seconds: args.seconds,
@@ -426,6 +458,8 @@ export class ManagedSession {
             description:
                 "Declare a recurring durable schedule owned by the orchestration. " +
                 "Use this for periodic monitoring, polling loops, and scheduled digests so you do NOT need to call wait() at the end of every turn. " +
+                "Use this when you should keep pursuing a goal autonomously until it is done. " +
+                "If it is genuinely ambiguous whether the task should become an ongoing recurring workflow, clarify that intent before setting cron. " +
                 "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. " +
                 "Minimum interval is 15 seconds.",
             parameters: {
@@ -499,6 +533,18 @@ export class ManagedSession {
                 required: ["question"],
             },
             handler: async (args: { question: string; choices?: string[]; allowFreeform?: boolean }) => {
+                if (opts?.onEvent) {
+                    try {
+                        opts.onEvent({
+                            eventType: "session.input_required_started",
+                            data: {
+                                question: args.question,
+                                choices: args.choices,
+                                allowFreeform: args.allowFreeform ?? true,
+                            },
+                        });
+                    } catch {}
+                }
                 turnState.pendingActions.push({
                     type: "input_required",
                     question: args.question,
@@ -532,10 +578,12 @@ export class ManagedSession {
         // Build sub-agent tools
         const spawnAgentTool = defineTool("spawn_agent", {
             description:
-                "Spawn a sub-agent. For KNOWN agents, pass agent_name ONLY (e.g. agent_name=\"sweeper\"). " +
+                "Spawn a sub-agent. For KNOWN user-creatable agents, pass agent_name ONLY. " +
                 "The agent's system message, tools, and initial prompt are loaded automatically from agent_name. " +
                 "Do NOT pass task or system_message when using agent_name. " +
-                "Call list_agents to see all available named agents. " +
+                "Calling spawn_agent does NOT finish your turn. After it succeeds, continue executing the rest of your workflow in the SAME turn unless you intentionally call wait, wait_for_agents, ask_user, or give your final answer. " +
+                "Call list_agents to see all available named agents you CAN spawn. " +
+                "Worker-managed system agents are not valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
                 "For CUSTOM agents (ad-hoc tasks), pass task instead — no agent_name is needed. " +
                 "Any task you can describe can be spawned as a custom agent; you do not need a skill or pre-configured definition. " +
                 "If you want a different model, call list_available_models first and use only an exact provider:model value from that list. " +
@@ -545,7 +593,7 @@ export class ManagedSession {
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known agent to spawn (from list_agents). The agent's prompt, tools, and task load automatically. Do NOT also pass task or system_message.",
+                        description: "Name of a known user-creatable agent to spawn (from list_agents). The agent's prompt, tools, and task load automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
                     },
                     task: {
                         type: "string",
@@ -570,6 +618,9 @@ export class ManagedSession {
                 if (!args.agent_name && !args.task) {
                     return "Error: either agent_name or task is required.";
                 }
+                if (controlBridge) {
+                    return await controlBridge.spawnAgent(args);
+                }
                 turnState.pendingActions.push({
                     type: "spawn_agent",
                     task: args.task || "",
@@ -586,7 +637,8 @@ export class ManagedSession {
         const messageAgentTool = defineTool("message_agent", {
             description:
                 "Send a message to a running sub-agent. " +
-                "The message is enqueued as a prompt for the sub-agent's next turn.",
+                "The message is enqueued as a prompt for the sub-agent's next turn. " +
+                "Calling message_agent does NOT finish your turn. After it succeeds, continue with the remaining workflow in the SAME turn unless you intentionally call wait, wait_for_agents, ask_user, or give your final answer.",
             parameters: {
                 type: "object",
                 properties: {
@@ -596,6 +648,9 @@ export class ManagedSession {
                 required: ["agent_id", "message"],
             },
             handler: async (args: { agent_id: string; message: string }) => {
+                if (controlBridge) {
+                    return await controlBridge.messageAgent(args);
+                }
                 turnState.pendingActions.push({
                     type: "message_agent",
                     agentId: args.agent_id,
@@ -608,13 +663,17 @@ export class ManagedSession {
 
         const checkAgentsTool = defineTool("check_agents", {
             description:
-                "Check the current status and latest output of all sub-agents. " +
-                "Returns each agent's ID, task, status (running/completed/failed), and result.",
+                "Check the current status and latest output of your RUNNING sub-agents (spawned with spawn_agent). " +
+                "Returns each sub-agent's ID, task, status (running/completed/failed), and result. " +
+                "This is NOT the same as list_agents — list_agents shows available agent blueprints, check_agents shows your live sub-agent instances.",
             parameters: {
                 type: "object",
                 properties: {},
             },
             handler: async () => {
+                if (controlBridge) {
+                    return await controlBridge.checkAgents();
+                }
                 turnState.pendingActions.push({ type: "check_agents" });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
@@ -637,6 +696,19 @@ export class ManagedSession {
                 },
             },
             handler: async (args: { agent_ids?: string[] }) => {
+                if (controlBridge) {
+                    const resolvedAgentIds = await controlBridge.resolveWaitForAgents(args.agent_ids);
+                    const normalizedAgentIds = Array.isArray(resolvedAgentIds)
+                        ? resolvedAgentIds
+                        : (args.agent_ids ?? []);
+                    turnState.pendingActions.push({
+                        type: "wait_for_agents",
+                        agentIds: normalizedAgentIds,
+                    });
+                    return `[SYSTEM: wait_for_agents acknowledged for ${normalizedAgentIds.length} agent(s). ` +
+                        `Continue any remaining work in this SAME turn. Once your current turn naturally ends, ` +
+                        `the runtime will suspend until those agents complete.]`;
+                }
                 turnState.pendingActions.push({
                     type: "wait_for_agents",
                     agentIds: args.agent_ids ?? [],
@@ -656,6 +728,9 @@ export class ManagedSession {
                 properties: {},
             },
             handler: async () => {
+                if (controlBridge) {
+                    return await controlBridge.listSessions();
+                }
                 turnState.pendingActions.push({ type: "list_sessions" });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
@@ -675,6 +750,9 @@ export class ManagedSession {
                 required: ["agent_id"],
             },
             handler: async (args: { agent_id: string }) => {
+                if (controlBridge) {
+                    return await controlBridge.completeAgent(args);
+                }
                 turnState.pendingActions.push({ type: "complete_agent", agentId: args.agent_id });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
@@ -695,6 +773,9 @@ export class ManagedSession {
                 required: ["agent_id"],
             },
             handler: async (args: { agent_id: string; reason?: string }) => {
+                if (controlBridge) {
+                    return await controlBridge.cancelAgent(args);
+                }
                 turnState.pendingActions.push({ type: "cancel_agent", agentId: args.agent_id, reason: args.reason });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
@@ -715,6 +796,9 @@ export class ManagedSession {
                 required: ["agent_id"],
             },
             handler: async (args: { agent_id: string; reason?: string }) => {
+                if (controlBridge) {
+                    return await controlBridge.deleteAgent(args);
+                }
                 turnState.pendingActions.push({ type: "delete_agent", agentId: args.agent_id, reason: args.reason });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
@@ -839,9 +923,23 @@ export class ManagedSession {
             })
             : null;
 
+        const effectivePrompt = opts?.requiredTool
+            ? [
+                `[SYSTEM: For this request, you MUST invoke the tool "${opts.requiredTool}" before giving your answer.`,
+                `Do not answer from memory, estimation, or mental math.`,
+                `If the tool is available, calling it is mandatory for this turn.]`,
+                "",
+                prompt,
+            ].join("\n")
+            : prompt;
+
         try {
             // Fire the prompt — non-blocking
-            await this.copilotSession.send({ prompt });
+            await this.copilotSession.send({
+                prompt: effectivePrompt,
+                ...(effectivePrompt !== prompt ? { displayPrompt: prompt } : {}),
+                ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
+            });
 
             // Wait for session.idle, or timeout if explicitly enabled.
             if (timeoutPromise) {
@@ -948,6 +1046,7 @@ export class ManagedSession {
         if (config.model !== undefined) this.config.model = config.model;
         if (config.tools !== undefined) this.config.tools = config.tools;
         if (config.systemMessage !== undefined) this.config.systemMessage = config.systemMessage;
+        if (config.turnSystemPrompt !== undefined) this.config.turnSystemPrompt = config.turnSystemPrompt;
         if (config.waitThreshold !== undefined) this.config.waitThreshold = config.waitThreshold;
     }
 

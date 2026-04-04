@@ -1,11 +1,11 @@
 /**
- * Convert blessed-style color tags to HTML <span> elements with CSS classes.
+ * Convert terminal-style color tags to HTML <span> elements with CSS classes.
  *
- * Blessed tags:  {cyan-fg}text{/cyan-fg}  {bold}text{/bold}
- * Output:        <span class="splash-cyan">text</span>  <span class="splash-bold">text</span>
+ * Markup tags:  {cyan-fg}text{/cyan-fg}  {bold}text{/bold}
+ * Output:       <span class="splash-cyan">text</span>  <span class="splash-bold">text</span>
  *
- * This allows the same splash content to be shared between the TUI (blessed)
- * and the web portal (HTML).
+ * This allows the same splash content to be shared between the terminal UI
+ * and the web portal.
  */
 
 const TAG_MAP: Record<string, string> = {
@@ -21,23 +21,20 @@ const TAG_MAP: Record<string, string> = {
 };
 
 /**
- * Convert a blessed-tagged string to HTML with CSS classes.
+ * Convert tagged terminal markup to HTML with CSS classes.
  * Handles nested tags. Unknown tags are stripped.
  */
-export function blessedToHtml(input: string): string {
-  // Escape HTML entities first
+export function terminalMarkupToHtml(input: string): string {
   let html = input
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
-  // Replace opening tags: {cyan-fg} → <span class="splash-cyan">
   html = html.replace(/\{([a-z-]+)\}/g, (_match, tag: string) => {
     const cls = TAG_MAP[tag];
     return cls ? `<span class="${cls}">` : "";
   });
 
-  // Replace closing tags: {/cyan-fg} → </span>
   html = html.replace(/\{\/([a-z-]+)\}/g, (_match, tag: string) => {
     const cls = TAG_MAP[tag];
     return cls ? "</span>" : "";

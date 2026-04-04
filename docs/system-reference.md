@@ -57,7 +57,9 @@ npm run db:reset       # Drop duroxide + CMS schemas
 | File | Responsibility |
 |------|---------------|
 | `bin/tui.js` | CLI entry point, argument parsing, env loading |
-| `cli/tui.js` | Main TUI (2,000+ lines), neo-blessed UI, session management |
+| `src/index.js` | Terminal host bootstrap, render lifecycle, controller wiring |
+| `src/app.js` | Input handling, shortcut routing, mouse/prompt behavior |
+| `src/platform.js` | Terminal platform adapter and panel rendering |
 
 ### Examples
 
@@ -66,7 +68,6 @@ npm run db:reset       # Drop duroxide + CMS schemas
 | `examples/chat.js` | Interactive console chat with full orchestration |
 | `examples/worker.js` | Headless K8s worker (standalone deployment) |
 | `examples/test-models.js` | Batch model verification |
-| `examples/tui.js` | Deprecated (superseded by `cli/tui.js`) |
 
 ### Tests
 
@@ -513,7 +514,11 @@ Skills are loaded via `loadSkills()` and injected into CopilotSession system mes
 
 ## 12. TUI Architecture
 
-The TUI (`cli/tui.js`, 2,000+ lines) provides a terminal interface built with `neo-blessed`.
+The TUI is a shared three-layer stack:
+
+- `packages/ui-core/` for state, reducers, selectors, history shaping, and view models
+- `packages/ui-react/` for shared React components/layout
+- `packages/cli/` for the terminal host
 
 ### Layout
 

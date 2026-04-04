@@ -31,6 +31,11 @@ const LAYERED_PLUGIN_DIR = path.resolve(__dirname, "../fixtures/prompt-layering-
 const AGENT_TOOL_MERGE_PLUGIN_DIR = path.resolve(__dirname, "../fixtures/agent-tool-merge-plugin");
 const NO_TOOLS_AGENT_PLUGIN_DIR = path.resolve(__dirname, "../fixtures/no-tools-agent-plugin");
 const POLICY_PLUGIN_DIR = path.resolve(__dirname, "../fixtures/policy-plugin");
+const EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES = [
+    "write_artifact",
+    "read_artifact",
+    "export_artifact",
+];
 const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "wait",
     "wait_on_worker",
@@ -49,8 +54,12 @@ const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "read_facts",
     "delete_fact",
 ];
-const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
+const EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES = [
     ...EXPECTED_ALWAYS_ON_TOOL_NAMES,
+    ...EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES,
+];
+const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
+    ...EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES,
     "bash",
     "create",
     "edit",
@@ -68,6 +77,25 @@ const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     "web_fetch",
     "write_bash",
 ];
+
+function createNoopFactStore() {
+    return {
+        async initialize() {},
+        async storeFact(input) {
+            return { key: input.key, shared: input.shared === true, stored: true };
+        },
+        async readFacts() {
+            return { count: 0, facts: [] };
+        },
+        async deleteFact(input) {
+            return { key: input.key, shared: input.shared === true, deleted: true };
+        },
+        async deleteSessionFactsForSession() {
+            return 0;
+        },
+        async close() {},
+    };
+}
 
 function parseToolNameArray(response) {
     const trimmed = (response ?? "").trim();
@@ -186,7 +214,12 @@ async function testWorkerToolByName(env) {
         });
 
         console.log("  Sending: What is 100 + 200?");
-        const response = await session.sendAndWait("What is 100 + 200?", TIMEOUT);
+        const response = await session.sendAndWait(
+            "What is 100 + 200?",
+            TIMEOUT,
+            undefined,
+            { requiredTool: "test_add" },
+        );
 
         console.log(`  Response: "${response}"`);
         assert(tracker.called, "Worker-registered tool was not called");
@@ -530,22 +563,7 @@ async function testAlwaysOnToolsRegisteredAcrossTurns(env) {
     );
     const fakeClient = new FakeCopilotClient();
     manager.client = fakeClient;
-    manager.setFactStore({
-        async initialize() {},
-        async storeFact(input) {
-            return { key: input.key, shared: input.shared === true, stored: true };
-        },
-        async readFacts() {
-            return { count: 0, facts: [] };
-        },
-        async deleteFact(input) {
-            return { key: input.key, shared: input.shared === true, deleted: true };
-        },
-        async deleteSessionFactsForSession() {
-            return 0;
-        },
-        async close() {},
-    });
+    manager.setFactStore(createNoopFactStore());
 
     const managed = await manager.getOrCreate("always-on-system-tools-session", {
         boundAgentName: "coordinator",
@@ -569,10 +587,51 @@ async function testAlwaysOnToolsRegisteredAcrossTurns(env) {
     }
 }
 
+// ─── Test: Generic Sessions Inherit Framework Default Tool Names ────────────
+
+async function testGenericSessionsInheritFrameworkDefaultToolNames(env) {
+    const manager = new SessionManager(
+        process.env.GITHUB_TOKEN,
+        null,
+        {
+            frameworkBasePrompt: "Framework base prompt",
+            frameworkBaseToolNames: EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES,
+        },
+        env.sessionStateDir,
+    );
+    const fakeClient = new FakeCopilotClient();
+    manager.client = fakeClient;
+    manager.setFactStore(createNoopFactStore());
+    manager.setToolRegistry(new Map(
+        EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES.map((toolName) => [
+            toolName,
+            defineTool(toolName, {
+                description: `${toolName} test tool`,
+                parameters: { type: "object", properties: {} },
+                handler: async () => ({ ok: true, toolName }),
+            }),
+        ]),
+    ));
+
+    await manager.getOrCreate("generic-framework-tools-session", {
+        toolNames: [],
+    }, { turnIndex: 0 });
+
+    const createdToolNames = (fakeClient.createdSessionConfigs[0]?.tools ?? []).map((tool) => tool.name);
+    for (const toolName of EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES) {
+        assertIncludes(
+            JSON.stringify(createdToolNames),
+            toolName,
+            `${toolName} should be present for generic sessions via framework default tools`,
+        );
+    }
+}
+
 // ─── Test: LLM Sees Exact Always-On Toolset ─────────────────────
 
 async function testLlmSeesExactAlwaysOnTools(env) {
     const expectedSorted = [...EXPECTED_LLM_VISIBLE_TOOL_NAMES].sort();
+    const normalizeReportedToolNames = (response) => [...new Set(parseToolNameArray(response))].sort();
 
     await withClient(env, {
         worker: { pluginDirs: [NO_TOOLS_AGENT_PLUGIN_DIR] },
@@ -594,7 +653,7 @@ async function testLlmSeesExactAlwaysOnTools(env) {
             "Return exactly one JSON array of the tool names you can call in this session.",
             TIMEOUT,
         );
-        const parsed1 = parseToolNameArray(response1).slice().sort();
+        const parsed1 = normalizeReportedToolNames(response1);
         assertEqual(
             JSON.stringify(parsed1),
             JSON.stringify(expectedSorted),
@@ -605,13 +664,181 @@ async function testLlmSeesExactAlwaysOnTools(env) {
             "Again, return exactly one JSON array of the tool names you can call in this session.",
             TIMEOUT,
         );
-        const parsed2 = parseToolNameArray(response2).slice().sort();
+        const parsed2 = normalizeReportedToolNames(response2);
         assertEqual(
             JSON.stringify(parsed2),
             JSON.stringify(expectedSorted),
             "LLM-visible tool list should exactly match the expected always-on tools on turn 2",
         );
     });
+}
+
+// ─── Test: SessionManager Uses Customize Mode For Layering ──────
+
+async function testSessionManagerUsesCustomizeMode(env) {
+    const manager = new SessionManager(
+        process.env.GITHUB_TOKEN,
+        null,
+        {
+            frameworkBasePrompt: "Framework base prompt",
+            appDefaultPrompt: "App default prompt",
+            agentPromptLookup: {
+                coordinator: {
+                    prompt: "Coordinator agent prompt",
+                    kind: "app-agent",
+                },
+            },
+        },
+        env.sessionStateDir,
+    );
+    const fakeClient = new FakeCopilotClient();
+    manager.client = fakeClient;
+    manager.setFactStore({
+        async initialize() {},
+        async storeFact(input) {
+            return { key: input.key, shared: input.shared === true, stored: true };
+        },
+        async readFacts(query) {
+            if (query.keyPattern === "skills/%") {
+                return {
+                    count: 1,
+                    facts: [{
+                        key: "skills/pilotswarm/prompt-layering",
+                        value: {
+                            name: "Prompt layering",
+                            description: "Use structured prompt sections.",
+                        },
+                        agentId: null,
+                        sessionId: null,
+                        shared: true,
+                        tags: [],
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
+                    }],
+                };
+            }
+            if (query.keyPattern === "asks/%") {
+                return {
+                    count: 1,
+                    facts: [{
+                        key: "asks/prompt-layering",
+                        value: {
+                            status: "open",
+                            summary: "Confirm prompt-section migration coverage.",
+                        },
+                        agentId: null,
+                        sessionId: null,
+                        shared: true,
+                        tags: [],
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
+                    }],
+                };
+            }
+            return { count: 0, facts: [] };
+        },
+        async deleteFact(input) {
+            return { key: input.key, shared: input.shared === true, deleted: true };
+        },
+        async deleteSessionFactsForSession() {
+            return 0;
+        },
+        async close() {},
+    });
+
+    await manager.getOrCreate("customize-mode-session", {
+        boundAgentName: "coordinator",
+        promptLayering: { kind: "app-agent" },
+        systemMessage: "Runtime context prompt",
+        agentIdentity: "coordinator",
+        toolNames: [],
+    }, { turnIndex: 0 });
+
+    const systemMessage = fakeClient.createdSessionConfigs[0]?.systemMessage;
+    assertNotNull(systemMessage, "session config should include a system message");
+    assertEqual(systemMessage.mode, "customize", "session manager should use SDK customize mode");
+    assertEqual(systemMessage.sections.custom_instructions.action, "replace", "framework base should replace custom_instructions");
+    assertIncludes(systemMessage.sections.custom_instructions.content, "Framework base prompt", "framework base prompt should populate custom_instructions");
+    assertEqual(systemMessage.sections.guidelines.action, "append", "app default should append to guidelines");
+    assertIncludes(systemMessage.sections.guidelines.content, "App default prompt", "app default prompt should populate guidelines");
+    assertEqual(typeof systemMessage.sections.last_instructions.action, "function", "last_instructions should be generated dynamically");
+    const lastInstructions = await systemMessage.sections.last_instructions.action("SDK last instructions");
+    assertIncludes(lastInstructions, "SDK last instructions", "last_instructions should preserve existing SDK content");
+    assertIncludes(lastInstructions, "Coordinator agent prompt", "last_instructions should include the agent prompt");
+    assertIncludes(lastInstructions, "Runtime context prompt", "last_instructions should include runtime context");
+    assertEqual(typeof systemMessage.sections.tool_instructions.action, "function", "knowledge pipeline should be injected via a tool_instructions transform");
+
+    const transformed = await systemMessage.sections.tool_instructions.action("Base tool instructions");
+    assertIncludes(transformed, "Base tool instructions", "tool_instructions transform should preserve existing SDK content");
+    assertIncludes(transformed, "[ACTIVE FACT REQUESTS]", "tool_instructions should include active asks");
+    assertIncludes(transformed, "asks/prompt-layering", "tool_instructions should include ask keys");
+    assertIncludes(transformed, "[CURATED SKILLS]", "tool_instructions should include curated skills");
+    assertIncludes(transformed, "skills/pilotswarm/prompt-layering", "tool_instructions should include skill keys");
+
+    await manager.getOrCreate("customize-mode-session", {
+        boundAgentName: "coordinator",
+        promptLayering: { kind: "app-agent" },
+        systemMessage: "Runtime context prompt",
+        turnSystemPrompt: "Queued system follow-up",
+        agentIdentity: "coordinator",
+        toolNames: [],
+    }, { turnIndex: 1 });
+
+    const updatedLastInstructions = await systemMessage.sections.last_instructions.action("SDK last instructions");
+    assertIncludes(updatedLastInstructions, "Queued system follow-up", "dynamic last_instructions should pick up per-turn system overlays");
+}
+
+// ─── Test: Replace Mode Still Layers Base Prompt ────────────────
+
+async function testReplaceSystemMessageKeepsLayering(env) {
+    const manager = new SessionManager(
+        process.env.GITHUB_TOKEN,
+        null,
+        {
+            frameworkBasePrompt: "Framework base prompt",
+            appDefaultPrompt: "App default prompt",
+            agentPromptLookup: {
+                coordinator: {
+                    prompt: "Coordinator agent prompt",
+                    kind: "app-agent",
+                },
+            },
+        },
+        env.sessionStateDir,
+    );
+    const fakeClient = new FakeCopilotClient();
+    manager.client = fakeClient;
+    manager.setFactStore({
+        async initialize() {},
+        async storeFact(input) {
+            return { key: input.key, shared: input.shared === true, stored: true };
+        },
+        async readFacts() {
+            return { count: 0, facts: [] };
+        },
+        async deleteFact(input) {
+            return { key: input.key, shared: input.shared === true, deleted: true };
+        },
+        async deleteSessionFactsForSession() {
+            return 0;
+        },
+        async close() {},
+    });
+
+    await manager.getOrCreate("replace-mode-session", {
+        boundAgentName: "coordinator",
+        promptLayering: { kind: "app-agent" },
+        systemMessage: { mode: "replace", content: "Answer in one word only." },
+        toolNames: [],
+    }, { turnIndex: 0 });
+
+    const systemMessage = fakeClient.createdSessionConfigs[0]?.systemMessage;
+    assertNotNull(systemMessage, "replace-mode config should be forwarded");
+    assertEqual(systemMessage.mode, "customize", "replace-mode caller content should still be layered into SDK customize mode");
+    assertIncludes(systemMessage.sections.custom_instructions.content, "Framework base prompt", "framework prompt should still be present");
+    const lastInstructions = await systemMessage.sections.last_instructions.action("SDK last instructions");
+    assertIncludes(lastInstructions, "Coordinator agent prompt", "agent prompt should still be present");
+    assertIncludes(lastInstructions, "Answer in one word only.", "replace-mode caller content should still become the runtime instructions layer");
 }
 
 // ─── Runner ──────────────────────────────────────────────────────
@@ -654,6 +881,15 @@ describe("Level 8: Contract Tests", () => {
     });
     it("Always-On Tools Persist Across Turns", { timeout: TIMEOUT }, async () => {
         await testAlwaysOnToolsRegisteredAcrossTurns(getEnv());
+    });
+    it("Generic Sessions Inherit Framework Default Tool Names", { timeout: TIMEOUT }, async () => {
+        await testGenericSessionsInheritFrameworkDefaultToolNames(getEnv());
+    });
+    it("SessionManager Uses Customize Mode For Layering", { timeout: TIMEOUT }, async () => {
+        await testSessionManagerUsesCustomizeMode(getEnv());
+    });
+    it("Replace Mode Still Layers Base Prompt", { timeout: TIMEOUT }, async () => {
+        await testReplaceSystemMessageKeepsLayering(getEnv());
     });
     it("LLM Sees Exact Always-On Toolset", { timeout: TIMEOUT }, async () => {
         await testLlmSeesExactAlwaysOnTools(getEnv());

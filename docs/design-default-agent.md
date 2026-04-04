@@ -272,7 +272,7 @@ sweeper.send("Begin your maintenance loop. Scan every 60 seconds, clean up sessi
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    TUI (cli/tui.js)                  │
+│                    TUI (`packages/cli/`)             │
 │                                                      │
 │  ⚙ Sweeper (abc123) — yellow, top of list           │
 │  ● Session A (def456)                                │
