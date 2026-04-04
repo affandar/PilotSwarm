@@ -2,7 +2,7 @@
  * Portal server — Hosts the PilotSwarm TUI in the browser.
  *
  * Architecture:
- *   Browser (xterm.js) ↔ WebSocket ↔ node-pty (pseudo-terminal) ↔ TUI (neo-blessed)
+ *   Browser (xterm.js) ↔ WebSocket ↔ node-pty (pseudo-terminal) ↔ terminal UI
  *
  * Each browser tab gets its own PTY + TUI process. The TUI runs exactly
  * as it does in a real terminal — same keybindings, layout, colors.

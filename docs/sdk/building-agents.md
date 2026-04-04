@@ -31,6 +31,8 @@ plugin/
 
 `default.agent.md` is your app-wide overlay for every session on the worker. PilotSwarm layers it underneath the embedded framework base prompt.
 
+This does not change your plugin file structure. You still author `default.agent.md`, named `*.agent.md` files, and `skills/**/SKILL.md` the same way. The runtime now maps those layers into the Copilot SDK's structured system-prompt sections instead of concatenating one large prompt blob.
+
 ```md
 ---
 name: default
@@ -193,6 +195,7 @@ The worker supplies the actual agent definitions and tool handlers. The client o
 - not a tool filter
 - should contain app-wide rules you always want
 - is wrapped beneath the embedded PilotSwarm framework base prompt
+- is applied through SDK prompt sections rather than raw string concatenation
 
 ### `*.agent.md`
 

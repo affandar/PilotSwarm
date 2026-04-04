@@ -50,6 +50,10 @@ function optionalBoolean(value: unknown): boolean | undefined {
     return typeof value === "boolean" ? value : undefined;
 }
 
+function isSubAgentTerminalStatus(status?: string): boolean {
+    return status === "completed" || status === "failed" || status === "cancelled";
+}
+
 function updateContextUsageFromEvents(
     previous: SessionContextUsage | undefined,
     events: Array<{ eventType?: string; data?: any }> | undefined,
@@ -175,51 +179,27 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Long-lived durable session orchestration.
+ * Flat event loop durable session orchestration (v1.0.33).
  *
- * One orchestration per copilot session. Uses:
- *   - SessionProxy for session-scoped operations (runTurn, dehydrate, hydrate, destroy)
- *   - SessionManagerProxy for global operations (listModels)
- *   - A single FIFO event queue ("messages") for all client→orchestration communication
- *
- * Main loop:
- *   1. Dequeue message from "messages" queue
- *   2. session.hydrate() if needed
- *   3. session.runTurn(prompt) — returns TurnResult
- *   4. Handle result: completed → idle wait, wait → timer, input → wait for answer
+ * Replaces the nested while loops of v1.0.31 with a single
+ * drain → decide → process loop backed by a KV FIFO work buffer.
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.31";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.33";
 
-/**
- * Long-lived durable session orchestration.
- *
- * One orchestration per copilot session. Uses:
- *   - SessionProxy for session-scoped operations (runTurn, dehydrate, hydrate, destroy)
- *   - SessionManagerProxy for global operations (listModels)
- *   - A single FIFO event queue ("messages") for all client→orchestration communication
- *
- * Main loop:
- *   1. Dequeue message from "messages" queue
- *   2. session.hydrate() if needed
- *   3. session.runTurn(prompt) — returns TurnResult
- *   4. Handle result: completed → idle wait, wait → timer, input → wait for answer
- *
- * @internal
- */
-export function* durableSessionOrchestration_1_0_31(
+export function* durableSessionOrchestration_1_0_33(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.30] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.33] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
     const inputGracePeriod = input.inputGracePeriod ?? 30;
-    const checkpointInterval = input.checkpointInterval ?? -1; // seconds, -1 = disabled
+    const checkpointInterval = input.checkpointInterval ?? -1;
     const rehydrationMessage = input.rehydrationMessage;
     const blobEnabled = input.blobEnabled ?? false;
     let needsHydration = input.needsHydration ?? false;
@@ -235,19 +215,15 @@ export function* durableSessionOrchestration_1_0_31(
     let contextUsage = cloneContextUsage(input.contextUsage);
     const MAX_RETRIES = 3;
     const MAX_SUB_AGENTS = 20;
-    const MAX_NESTING_LEVEL = 2; // 0=root, 1=child, 2=grandchild — no deeper
+    const MAX_NESTING_LEVEL = 2;
 
     // ─── Sub-agent tracking ──────────────────────────────────
     let subAgents: SubAgentEntry[] = input.subAgents ? [...input.subAgents] : [];
     let pendingToolActions: TurnAction[] = input.pendingToolActions ? [...input.pendingToolActions] : [];
-    let pendingMessage: any = input.pendingMessage;
-    // parentSessionId: prefer new field, fall back to old parentOrchId for backward compat
     const parentSessionId = input.parentSessionId
         ?? (input.parentOrchId ? input.parentOrchId.replace(/^session-/, '') : undefined);
     const nestingLevel = input.nestingLevel ?? 0;
 
-    // If we have a captured task context, inject it into the system message
-    // so it survives LLM conversation truncation (BasicTruncator never drops system messages).
     if (taskContext) {
         const base = typeof baseSystemMessage === 'string'
             ? baseSystemMessage ?? ''
@@ -259,9 +235,6 @@ export function* durableSessionOrchestration_1_0_31(
     }
 
     // ─── Title summarization timer ───────────────────────────
-    // First summarize at iteration 0 + 60s, then every 300s.
-    // We track the target timestamp (epoch ms) across continueAsNew.
-    // 0 means "schedule on first turn completion".
     let nextSummarizeAt = input.nextSummarizeAt ?? 0;
 
     // ─── Create proxies ──────────────────────────────────────
@@ -362,6 +335,31 @@ export function* durableSessionOrchestration_1_0_31(
         return `${existingPrompt}\n\n${nextPrompt}`;
     }
 
+    const INTERNAL_SYSTEM_TURN_PROMPT = "Continue with the latest system instructions.";
+
+    function extractPromptSystemContext(rawPrompt?: string): { prompt?: string; systemPrompt?: string } {
+        if (!rawPrompt) return {};
+
+        const trimmed = rawPrompt.trim();
+        if (trimmed.startsWith("[SYSTEM:") && trimmed.endsWith("]")) {
+            return {
+                systemPrompt: trimmed.slice("[SYSTEM:".length, -1).trim(),
+            };
+        }
+
+        const marker = rawPrompt.lastIndexOf("\n\n[SYSTEM:");
+        if (marker >= 0 && rawPrompt.trimEnd().endsWith("]")) {
+            const prompt = rawPrompt.slice(0, marker).trim();
+            const systemPrompt = rawPrompt.slice(marker + 2).trim();
+            return {
+                ...(prompt ? { prompt } : {}),
+                systemPrompt: systemPrompt.slice("[SYSTEM:".length, -1).trim(),
+            };
+        }
+
+        return { prompt: rawPrompt };
+    }
+
     function ensureTaskContext(sourcePrompt?: string): void {
         if (taskContext || !sourcePrompt) return;
         taskContext = sourcePrompt.slice(0, 2000);
@@ -397,6 +395,19 @@ export function* durableSessionOrchestration_1_0_31(
 
     // ─── Shared continueAsNew input builder ──────────────────
     function continueInput(overrides: Partial<OrchestrationInput> = {}): OrchestrationInput {
+        const {
+            prompt: overridePrompt,
+            requiredTool: overrideRequiredTool,
+            systemPrompt: overrideSystemPrompt,
+            bootstrapPrompt: overrideBootstrapPrompt,
+            ...restOverrides
+        } = overrides;
+        const carriedPrompt = overridePrompt ?? pendingPrompt;
+        const carriedRequiredTool = overrideRequiredTool ?? pendingRequiredTool;
+        const carriedSystemPrompt = overrideSystemPrompt ?? pendingSystemPrompt;
+        const promptForInput = carriedPrompt ?? (carriedSystemPrompt ? INTERNAL_SYSTEM_TURN_PROMPT : undefined);
+        const bootstrapForInput = overrideBootstrapPrompt
+            ?? (carriedPrompt ? bootstrapPrompt : carriedSystemPrompt ? true : undefined);
         return {
             sessionId: input.sessionId,
             config,
@@ -415,33 +426,47 @@ export function* durableSessionOrchestration_1_0_31(
             baseSystemMessage,
             ...(cronSchedule ? { cronSchedule } : {}),
             ...(contextUsage ? { contextUsage } : {}),
-            ...(pendingPrompt ? { bootstrapPrompt } : {}),
+            ...(carriedSystemPrompt ? { systemPrompt: carriedSystemPrompt } : {}),
+            ...(promptForInput ? { prompt: promptForInput } : {}),
+            ...(carriedRequiredTool ? { requiredTool: carriedRequiredTool } : {}),
+            ...(promptForInput && bootstrapForInput !== undefined ? { bootstrapPrompt: bootstrapForInput } : {}),
             subAgents,
             ...(pendingToolActions.length > 0 ? { pendingToolActions } : {}),
-            ...(pendingMessage !== undefined ? { pendingMessage } : {}),
             parentSessionId,
             nestingLevel,
             ...(isSystem ? { isSystem: true } : {}),
-            retryCount: 0, // reset by default; overrides can set it
-            ...overrides,
+            retryCount: 0,
+            ...(pendingInputQuestion ? { pendingInputQuestion } : {}),
+            ...(waitingForAgentIds ? { waitingForAgentIds } : {}),
+            ...(interruptedWaitTimer ? { interruptedWaitTimer } : {}),
+            ...restOverrides,
         };
     }
 
     function continueInputWithPrompt(nextPrompt?: string, overrides: Partial<OrchestrationInput> = {}): OrchestrationInput {
-        const mergedPrompt = mergePrompt(pendingPrompt, nextPrompt);
+        const extracted = extractPromptSystemContext(nextPrompt);
+        const mergedPrompt = mergePrompt(pendingPrompt, extracted.prompt);
+        const mergedSystemPrompt = mergePrompt(pendingSystemPrompt, extracted.systemPrompt);
         return continueInput({
             ...(mergedPrompt ? { prompt: mergedPrompt } : {}),
+            ...(mergedSystemPrompt ? { systemPrompt: mergedSystemPrompt } : {}),
             ...overrides,
         });
     }
 
-    function* queueFollowupAndMaybeContinue(nextPrompt: string): Generator<any, boolean, any> {
-        pendingPrompt = mergePrompt(pendingPrompt, nextPrompt);
-        if (pendingToolActions.length > 0) {
-            return false;
+    /** Queue a followup prompt for the LLM. In the flat loop, never CANs.
+     *  Unlike CAN carry-forward, followups go directly into pendingPrompt
+     *  as user-visible text. The [SYSTEM: ...] wrapper is stripped so
+     *  processPrompt doesn't extract it into turnSystemPrompt (which would
+     *  create a "Continue with system instructions" prompt that loops). */
+    function queueFollowup(nextPrompt: string): void {
+        // Strip [SYSTEM: ...] wrapper — tool results should be visible prompt text
+        let text = nextPrompt;
+        const trimmed = text.trim();
+        if (trimmed.startsWith("[SYSTEM:") && trimmed.endsWith("]")) {
+            text = trimmed.slice("[SYSTEM:".length, -1).trim();
         }
-        yield* versionedContinueAsNew(continueInputWithPrompt());
-        return true;
+        pendingPrompt = mergePrompt(pendingPrompt, text);
     }
 
     function* ensureWarmResumeCheckpoint(): Generator<any, void, any> {
@@ -455,11 +480,29 @@ export function* durableSessionOrchestration_1_0_31(
     }
 
     /** Yield this to continueAsNew into the current (latest) orchestration version. */
-    function* versionedContinueAsNew(input: OrchestrationInput): Generator<any, void, any> {
-        if (!input.needsHydration) {
+    function* versionedContinueAsNew(canInput: OrchestrationInput): Generator<any, void, any> {
+        // Carry active timer state across CAN
+        if (activeTimer) {
+            const now: number = yield ctx.utcNow();
+            const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
+            canInput.activeTimerState = {
+                remainingMs,
+                reason: activeTimer.reason,
+                type: activeTimer.type,
+                originalDurationMs: activeTimer.originalDurationMs,
+                ...(activeTimer.shouldRehydrate ? { shouldRehydrate: true } : {}),
+                ...(activeTimer.waitPlan ? { waitPlan: activeTimer.waitPlan } : {}),
+                ...(activeTimer.content ? { content: activeTimer.content } : {}),
+                ...(activeTimer.question ? { question: activeTimer.question } : {}),
+                ...(activeTimer.choices ? { choices: activeTimer.choices } : {}),
+                ...(activeTimer.allowFreeform !== undefined ? { allowFreeform: activeTimer.allowFreeform } : {}),
+                ...(activeTimer.agentIds ? { agentIds: activeTimer.agentIds } : {}),
+            };
+        }
+        if (!canInput.needsHydration) {
             yield* ensureWarmResumeCheckpoint();
         }
-        yield ctx.continueAsNewVersioned(input, CURRENT_ORCHESTRATION_VERSION);
+        yield ctx.continueAsNewVersioned(canInput, CURRENT_ORCHESTRATION_VERSION);
     }
 
     function parseChildUpdate(promptText?: string): { sessionId: string; updateType: string; content: string } | null {
@@ -489,13 +532,84 @@ export function* durableSessionOrchestration_1_0_31(
         try {
             const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
             const parsed = JSON.parse(rawStatus);
-            if (parsed.status === "completed" || parsed.status === "failed" || parsed.status === "idle") {
-                agent.status = parsed.status === "failed" ? "failed" : "completed";
+            if (parsed.status === "failed") {
+                agent.status = "failed";
+            } else if (parsed.status === "completed") {
+                agent.status = "completed";
+            } else if (parsed.status === "cancelled") {
+                agent.status = "cancelled";
+            } else if (parsed.status === "waiting") {
+                agent.status = "waiting";
             }
             if (parsed.result && parsed.result !== "done") {
                 agent.result = parsed.result.slice(0, 2000);
             }
         } catch {}
+    }
+
+    function* refreshTrackedSubAgents(): Generator<any, void, any> {
+        try {
+            const rawChildren: string = yield manager.listChildSessions(input.sessionId);
+            const directChildren = JSON.parse(rawChildren) as Array<{
+                orchId: string;
+                sessionId: string;
+                title?: string;
+                status?: string;
+                iterations?: number;
+                parentSessionId?: string;
+                isSystem?: boolean;
+                agentId?: string;
+                result?: string;
+                error?: string;
+            }>;
+
+            const refreshed = directChildren
+                .filter(child => !child.isSystem)
+                .map((child) => {
+                    const existing = subAgents.find(agent => agent.sessionId === child.sessionId || agent.orchId === child.orchId);
+                    const rawStatus = child.status ?? existing?.status ?? "running";
+                    const normalizedStatus =
+                        rawStatus === "failed" ? "failed"
+                            : rawStatus === "cancelled" ? "cancelled"
+                                : rawStatus === "waiting" ? "waiting"
+                                : rawStatus === "completed" ? "completed"
+                                    : "running";
+                    return {
+                        orchId: child.orchId,
+                        sessionId: child.sessionId,
+                        task: existing?.task ?? child.title ?? "(spawned sub-agent)",
+                        status: normalizedStatus,
+                        result: child.result ?? existing?.result,
+                        agentId: child.agentId ?? existing?.agentId,
+                    } satisfies SubAgentEntry;
+                });
+
+            subAgents = refreshed;
+        } catch (err: any) {
+            ctx.traceInfo(`[orch] refreshTrackedSubAgents failed (non-fatal): ${err.message ?? err}`);
+        }
+    }
+
+    function buildWaitForAgentsFollowup(targetIds: string[]): string {
+        const summaries = targetIds
+            .map((targetId) => subAgents.find((agent) => agent.orchId === targetId))
+            .filter((agent): agent is SubAgentEntry => Boolean(agent))
+            .map((agent) =>
+                `  - Agent ${agent.orchId}\n` +
+                `    Task: "${agent.task.slice(0, 120)}"\n` +
+                `    Status: ${agent.status}\n` +
+                `    Result: ${agent.result ?? "(no result)"}`,
+            );
+
+        if (summaries.length === 0) {
+            return `[SYSTEM: No tracked sub-agents produced a completion summary.]`;
+        }
+
+        if (summaries.length === 1) {
+            return `[SYSTEM: Sub-agent completed. If the user asked you to relay the child's final output, return the single sub-agent Result text verbatim.\n${summaries[0]}]`;
+        }
+
+        return `[SYSTEM: Sub-agents completed:\n${summaries.join("\n")}]`;
     }
 
     // ─── Helper: dehydrate and optionally release affinity ───
@@ -522,19 +636,16 @@ export function* durableSessionOrchestration_1_0_31(
     }
 
     // ─── Helper: summarize session title if due ──────────────
-    const FIRST_SUMMARIZE_DELAY = 60_000;    // 1 minute
-    const REPEAT_SUMMARIZE_DELAY = 300_000;  // 5 minutes
+    const FIRST_SUMMARIZE_DELAY = 60_000;
+    const REPEAT_SUMMARIZE_DELAY = 300_000;
     function* maybeSummarize(): Generator<any, void, any> {
-        // System sessions have fixed titles — never summarize
         if (isSystem) return;
         const now: number = yield ctx.utcNow();
-        // Schedule first summarize 60s after session start
         if (nextSummarizeAt === 0) {
             nextSummarizeAt = now + FIRST_SUMMARIZE_DELAY;
             return;
         }
         if (now < nextSummarizeAt) return;
-        // Time to summarize — fire and forget (best effort)
         try {
             ctx.traceInfo(`[orch] summarizing session title`);
             yield manager.summarizeSession(input.sessionId);
@@ -546,15 +657,139 @@ export function* durableSessionOrchestration_1_0_31(
 
     // ─── Prompt carried from continueAsNew ───────────────────
     let pendingPrompt: string | undefined = input.prompt;
+    let pendingRequiredTool: string | undefined = input.requiredTool;
+    let pendingSystemPrompt: string | undefined = input.systemPrompt;
     let bootstrapPrompt = input.bootstrapPrompt ?? false;
 
-    ctx.traceInfo(`[orch] start: iter=${iteration} pending=${pendingPrompt ? `"${pendingPrompt.slice(0, 40)}"` : 'NONE'} queued=${pendingToolActions.length} hydrate=${needsHydration} blob=${blobEnabled}`);
+    // ─── Active timer state (flat event loop) ────────────────
+    interface ActiveTimer {
+        deadlineMs: number;
+        originalDurationMs: number;
+        reason: string;
+        type: "wait" | "cron" | "idle" | "agent-poll" | "input-grace";
+        shouldRehydrate?: boolean;
+        waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
+        content?: string;
+        question?: string;
+        choices?: string[];
+        allowFreeform?: boolean;
+        agentIds?: string[];
+    }
+
+    let activeTimer: ActiveTimer | null = null;
+    let waitingForAgentIds: string[] | null = input.waitingForAgentIds ?? null;
+    let pendingInputQuestion: { question: string; choices?: string[]; allowFreeform?: boolean } | null =
+        input.pendingInputQuestion ?? null;
+    let orchestrationResult: string | null = null;
+
+    /** Saved when a user message interrupts an active wait timer.
+     *  After the LLM's response turn completes, the orchestration
+     *  automatically re-arms the remaining wait — no LLM action needed. */
+    let interruptedWaitTimer: {
+        remainingSec: number;
+        reason: string;
+        shouldRehydrate: boolean;
+        waitPlan?: ActiveTimer["waitPlan"];
+    } | null = input.interruptedWaitTimer ?? null;
+
+    // Reconstruct active timer from CAN input
+    if (input.activeTimerState) {
+        const initNow: number = yield ctx.utcNow();
+        activeTimer = {
+            deadlineMs: initNow + (input.activeTimerState.remainingMs ?? 0),
+            originalDurationMs: input.activeTimerState.originalDurationMs ?? input.activeTimerState.remainingMs ?? 0,
+            reason: input.activeTimerState.reason,
+            type: input.activeTimerState.type,
+            ...(input.activeTimerState.shouldRehydrate ? { shouldRehydrate: true } : {}),
+            ...(input.activeTimerState.waitPlan ? { waitPlan: input.activeTimerState.waitPlan } : {}),
+            ...(input.activeTimerState.content ? { content: input.activeTimerState.content } : {}),
+            ...(input.activeTimerState.question ? { question: input.activeTimerState.question } : {}),
+            ...(input.activeTimerState.choices ? { choices: input.activeTimerState.choices } : {}),
+            ...(input.activeTimerState.allowFreeform !== undefined ? { allowFreeform: input.activeTimerState.allowFreeform } : {}),
+            ...(input.activeTimerState.agentIds ? { agentIds: input.activeTimerState.agentIds } : {}),
+        };
+    }
+
+    // Handle legacy pendingMessage from older versions
+    if (input.pendingMessage) {
+        const legacyMsg = input.pendingMessage as any;
+        if (legacyMsg.prompt && !pendingPrompt) {
+            pendingPrompt = legacyMsg.prompt;
+            bootstrapPrompt = Boolean(legacyMsg.bootstrap);
+            pendingRequiredTool = legacyMsg.requiredTool;
+        }
+    }
+
+    // ─── KV FIFO Work Buffer ────────────────────────────────
+    const FIFO_BUCKET_COUNT = 20;
+    const MAX_BUCKET_BYTES = 14 * 1024;
+    const MAX_DRAIN_PER_TURN = 50;
+    const MAX_ITERATIONS_PER_EXECUTION = 100;
+    const NON_BLOCKING_TIMER_MS = 10;
+
+    function fifoBucketKey(i: number): string { return `fifo.${i}`; }
+
+    function readFifoBucket(i: number): any[] {
+        const raw = ctx.getValue(fifoBucketKey(i));
+        if (!raw) return [];
+        try { return JSON.parse(raw); } catch { return []; }
+    }
+
+    function writeFifoBucket(i: number, items: any[]): void {
+        if (items.length === 0) {
+            ctx.clearValue(fifoBucketKey(i));
+        } else {
+            ctx.setValue(fifoBucketKey(i), JSON.stringify(items));
+        }
+    }
+
+    function appendToFifo(newItems: any[]): void {
+        let writeBucketIdx = 0;
+        for (let i = FIFO_BUCKET_COUNT - 1; i >= 0; i--) {
+            if (readFifoBucket(i).length > 0) { writeBucketIdx = i; break; }
+        }
+        for (const item of newItems) {
+            const bucket = readFifoBucket(writeBucketIdx);
+            bucket.push(item);
+            const serialized = JSON.stringify(bucket);
+            if (serialized.length > MAX_BUCKET_BYTES) {
+                bucket.pop();
+                writeFifoBucket(writeBucketIdx, bucket);
+                writeBucketIdx++;
+                if (writeBucketIdx >= FIFO_BUCKET_COUNT) {
+                    ctx.traceInfo(`[fifo] overflow — ${newItems.length} item(s) may rely on carry-forward`);
+                    return;
+                }
+                writeFifoBucket(writeBucketIdx, [item]);
+            } else {
+                writeFifoBucket(writeBucketIdx, bucket);
+            }
+        }
+    }
+
+    function popFifoItem(): any | null {
+        for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
+            const items = readFifoBucket(i);
+            if (items.length > 0) {
+                const [first, ...rest] = items;
+                writeFifoBucket(i, rest);
+                return first;
+            }
+        }
+        return null;
+    }
+
+    function hasFifoItems(): boolean {
+        for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
+            if (readFifoBucket(i).length > 0) return true;
+        }
+        return false;
+    }
+
+    ctx.traceInfo(`[orch] start: iter=${iteration} pending=${pendingPrompt ? `"${pendingPrompt.slice(0, 40)}"` : 'NONE'} queued=${pendingToolActions.length} hydrate=${needsHydration} blob=${blobEnabled} timer=${activeTimer?.type ?? 'none'}`);
 
     // ─── Policy enforcement (orchestration-side) ─────────────
-    // Only check on the very first start (iteration 0, no parentSessionId — top-level only).
-    // Sub-agent spawns are internal and not subject to top-level policy.
     if (iteration === 0 && !parentSessionId && !isSystem) {
-        // Fetch the WORKER's authoritative policy (not the client's — can't trust client input).
         const workerPolicy: { policy: any; allowedAgentNames: string[] } = yield manager.getWorkerSessionPolicy();
         const policy = workerPolicy.policy;
         if (policy && policy.creation?.mode === "allowlist") {
@@ -576,12 +811,17 @@ export function* durableSessionOrchestration_1_0_31(
     }
 
     // ─── Resolve agent config for top-level named-agent sessions ───
-    // When a session is created via createSessionForAgent("investigator"),
-    // the agent's tools/systemMessage from .agent.md need to be injected
-    // into the session config. Sub-agents get this via spawn_agent resolution,
-    // but top-level sessions need it here.
-    if (iteration === 0 && !parentSessionId && input.agentId) {
+    if (iteration === 0 && !parentSessionId && input.agentId && !isSystem) {
         const agentDef: any = yield manager.resolveAgentConfig(input.agentId);
+        if (agentDef?.system && agentDef?.creatable === false) {
+            const message =
+                `Agent "${input.agentId}" is a worker-managed system agent and cannot be started manually. ` +
+                `If it is missing, the workers likely need to be restarted.`;
+            ctx.traceInfo(`[orch] top-level named session denied: ${message}`);
+            publishStatus("failed", { workerManagedAgent: true });
+            yield manager.updateCmsState(input.sessionId, "failed", message);
+            return `[SYSTEM: ${message}]`;
+        }
         if (agentDef) {
             const mergedToolNames = Array.from(new Set([
                 ...(agentDef.tools ?? []),
@@ -591,368 +831,505 @@ export function* durableSessionOrchestration_1_0_31(
                 config.toolNames = mergedToolNames;
                 ctx.traceInfo(`[orch] merged top-level agent tools for ${input.agentId}: ${mergedToolNames.join(", ")}`);
             }
-            // Rebuild session proxy with updated config (tools now included)
             session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
         }
     }
 
-    // ─── Set agent identity for namespace access control ─────────
-    // The agentId travels through the config so fact tool handlers can
-    // enforce knowledge pipeline namespace restrictions.
     if (input.agentId) {
         config.agentIdentity = input.agentId;
     }
 
-    // ─── MAIN LOOP ──────────────────────────────────────────
-    while (true) {
-        let result: TurnResult;
-        let prompt = "";
-        let promptIsBootstrap = false;
-        let replayingQueuedAction = false;
+    // ═══════════════════════════════════════════════════════════
+    // ═══ HANDLE COMMAND (extracted from main loop) ════════════
+    // ═══════════════════════════════════════════════════════════
 
-        drainLeadingQueuedCronActions();
+    function* handleCommand(cmdMsg: CommandMessage): Generator<any, void, any> {
+        ctx.traceInfo(`[orch-cmd] ${cmdMsg.cmd} id=${cmdMsg.id}`);
+        yield manager.recordSessionEvent(input.sessionId, [{
+            eventType: "session.command_received",
+            data: { cmd: cmdMsg.cmd, id: cmdMsg.id },
+        }]);
 
-        if (pendingToolActions.length > 0) {
-            result = pendingToolActions.shift()!;
-            replayingQueuedAction = true;
-            ctx.traceInfo(`[orch] replaying queued action: ${result.type} remaining=${pendingToolActions.length}`);
-        } else {
-        // ① GET NEXT PROMPT
-            if (pendingPrompt) {
-                prompt = pendingPrompt;
-                pendingPrompt = undefined;
-                promptIsBootstrap = bootstrapPrompt;
-                bootstrapPrompt = false;
-            } else {
+        switch (cmdMsg.cmd) {
+            case "set_model": {
+                const newModel = String(cmdMsg.args?.model || "");
+                const oldModel = config.model || "(default)";
+                config = { ...config, model: newModel };
+                const resp: CommandResponse = {
+                    id: cmdMsg.id,
+                    cmd: cmdMsg.cmd,
+                    result: { ok: true, oldModel, newModel },
+                };
+                yield* writeCommandResponse(resp);
                 publishStatus("idle");
-
-                let gotPrompt = false;
-                while (!gotPrompt) {
-                    // All messages (from users and child agents) arrive on the "messages" queue.
-                    // Child agents communicate via the SDK (sendToSession), which enqueues
-                    // to the same "messages" queue as user prompts.
-                    let msgData: any;
-                    if (pendingMessage !== undefined) {
-                        msgData = pendingMessage;
-                        pendingMessage = undefined;
-                    } else {
-                        const msg: any = yield ctx.dequeueEvent("messages");
-                        msgData = typeof msg === "string" ? JSON.parse(msg) : msg;
-                    }
-
-                    // ── Command dispatch ─────────────────────────
-                    if (msgData.type === "cmd") {
-                        const cmdMsg = msgData as CommandMessage;
-                        ctx.traceInfo(`[orch-cmd] ${cmdMsg.cmd} id=${cmdMsg.id}`);
-
-                        yield manager.recordSessionEvent(input.sessionId, [{
-                            eventType: "session.command_received",
-                            data: { cmd: cmdMsg.cmd, id: cmdMsg.id },
-                        }]);
-
-                        switch (cmdMsg.cmd) {
-                            case "set_model": {
-                                const newModel = String(cmdMsg.args?.model || "");
-                                const oldModel = config.model || "(default)";
-                                config = { ...config, model: newModel };
-                                const resp: CommandResponse = {
-                                    id: cmdMsg.id,
-                                    cmd: cmdMsg.cmd,
-                                    result: { ok: true, oldModel, newModel },
-                                };
-                                yield* writeCommandResponse(resp);
-                                publishStatus("idle");
-                                yield* versionedContinueAsNew(continueInput());
-                                return "";
-                            }
-                            case "list_models": {
-                                publishStatus("idle", { cmdProcessing: cmdMsg.id });
-                                let models: unknown;
-                                try {
-                                    const raw: any = yield manager.listModels();
-                                    models = typeof raw === "string" ? JSON.parse(raw) : raw;
-                                } catch (err: any) {
-                                    const resp: CommandResponse = {
-                                        id: cmdMsg.id,
-                                        cmd: cmdMsg.cmd,
-                                        error: err.message || String(err),
-                                    };
-                                    yield* writeCommandResponse(resp);
-                                    publishStatus("idle");
-                                    continue;
-                                }
-                                const resp: CommandResponse = {
-                                    id: cmdMsg.id,
-                                    cmd: cmdMsg.cmd,
-                                    result: { models, currentModel: config.model },
-                                };
-                                yield* writeCommandResponse(resp);
-                                publishStatus("idle");
-                                continue;
-                            }
-                            case "get_info": {
-                                const resp: CommandResponse = {
-                                    id: cmdMsg.id,
-                                    cmd: cmdMsg.cmd,
-                                    result: {
-                                        model: config.model || "(default)",
-                                        iteration,
-                                        sessionId: input.sessionId,
-                                        affinityKey: affinityKey,
-                                        affinityKeyShort: affinityKey?.slice(0, 8),
-                                        preserveAffinityOnHydrate,
-                                        needsHydration,
-                                        blobEnabled,
-                                        contextUsage,
-                                    },
-                                };
-                                yield* writeCommandResponse(resp);
-                                publishStatus("idle");
-                                continue;
-                            }
-                            case "done": {
-                                ctx.traceInfo(`[orch] /done command received — completing session`);
-
-                                // Cascade: complete all sub-agents whose orchestrations may still be alive.
-                                // Include "running" AND "completed" — a child that sent CHILD_UPDATE
-                                // may still have a live orchestration waiting in its idle loop.
-                                const liveChildren = subAgents.filter(a => a.status === "running" || a.status === "completed");
-                                if (liveChildren.length > 0) {
-                                    ctx.traceInfo(`[orch] /done: completing ${liveChildren.length} sub-agent(s)`);
-                                    for (const child of liveChildren) {
-                                        try {
-                                            const childCmdId = `done-cascade-${iteration}-${child.sessionId.slice(0, 8)}`;
-                                            yield manager.sendCommandToSession(child.sessionId,
-                                                { type: "cmd", cmd: "done", id: childCmdId, args: { reason: "Parent session completing" } });
-                                            child.status = "completed";
-                                            ctx.traceInfo(`[orch] /done: completed child ${child.sessionId}`);
-                                        } catch (err: any) {
-                                            ctx.traceInfo(`[orch] /done: failed to complete child ${child.sessionId}: ${err.message} (non-fatal)`);
-                                        }
-                                    }
-                                }
-
-                                // If this is a child orchestration, send final result to parent
-                                if (parentSessionId) {
-                                    try {
-                                        const doneReason = String(cmdMsg.args?.reason || "Session completed by user");
-                                        yield manager.sendToSession(parentSessionId,
-                                            `[CHILD_UPDATE from=${input.sessionId} type=completed iter=${iteration}]\n${doneReason}`);
-                                    } catch (err: any) {
-                                        ctx.traceInfo(`[orch] sendToSession(parent) on /done failed: ${err.message} (non-fatal)`);
-                                    }
-                                }
-
-                                // Destroy the in-memory session
-                                try {
-                                    yield session.destroy();
-                                } catch {}
-
-                                const resp: CommandResponse = {
-                                    id: cmdMsg.id,
-                                    cmd: cmdMsg.cmd,
-                                    result: { ok: true, message: "Session completed" },
-                                };
-                                yield* writeCommandResponse(resp);
-                                publishStatus("completed");
-                                return "done";
-                            }
-                            default: {
-                                const resp: CommandResponse = {
-                                    id: cmdMsg.id,
-                                    cmd: cmdMsg.cmd,
-                                    error: `Unknown command: ${cmdMsg.cmd}`,
-                                };
-                                yield* writeCommandResponse(resp);
-                                publishStatus("idle");
-                                continue;
-                            }
-                        }
-                    }
-
-                    const childUpdate = parseChildUpdate(msgData.prompt);
-                    if (childUpdate) {
-                        yield* applyChildUpdate(childUpdate);
-                        continue;
-                    }
-
-                    if (!msgData.prompt) {
-                        ctx.traceInfo(`[orch] ignoring non-prompt message while idle: ${JSON.stringify(msgData).slice(0, 120)}`);
-                        continue;
-                    }
-
-                    prompt = msgData.prompt;
-                    promptIsBootstrap = Boolean(msgData.bootstrap);
-                    gotPrompt = true;
-                }
+                yield* versionedContinueAsNew(continueInput());
+                return; // unreachable after CAN
             }
-
-            // Detect archived state even when dehydration happened outside the orchestration,
-            // such as abrupt worker loss or direct worker-side shutdown dehydration.
-            if (blobEnabled && !needsHydration) {
+            case "list_models": {
+                publishStatus("idle", { cmdProcessing: cmdMsg.id });
+                let models: unknown;
                 try {
-                    needsHydration = yield session.needsHydration();
+                    const raw: any = yield manager.listModels();
+                    models = typeof raw === "string" ? JSON.parse(raw) : raw;
                 } catch (err: any) {
-                    ctx.traceInfo(`[orch] needsHydration probe failed: ${err.message ?? err}`);
+                    const resp: CommandResponse = {
+                        id: cmdMsg.id,
+                        cmd: cmdMsg.cmd,
+                        error: err.message || String(err),
+                    };
+                    yield* writeCommandResponse(resp);
+                    publishStatus("idle");
+                    return;
                 }
+                const resp: CommandResponse = {
+                    id: cmdMsg.id,
+                    cmd: cmdMsg.cmd,
+                    result: { models, currentModel: config.model },
+                };
+                yield* writeCommandResponse(resp);
+                publishStatus("idle");
+                return;
             }
-
-            // If the session needs hydration, the LLM lost in-memory context.
-            // Wrap the user's prompt with resume instructions so the LLM picks up where it left off.
-            if (needsHydration && blobEnabled && prompt) {
-                prompt = wrapWithResumeContext(prompt);
+            case "get_info": {
+                const resp: CommandResponse = {
+                    id: cmdMsg.id,
+                    cmd: cmdMsg.cmd,
+                    result: {
+                        model: config.model || "(default)",
+                        iteration,
+                        sessionId: input.sessionId,
+                        affinityKey: affinityKey,
+                        affinityKeyShort: affinityKey?.slice(0, 8),
+                        preserveAffinityOnHydrate,
+                        needsHydration,
+                        blobEnabled,
+                        contextUsage,
+                    },
+                };
+                yield* writeCommandResponse(resp);
+                publishStatus("idle");
+                return;
             }
+            case "done": {
+                ctx.traceInfo(`[orch] /done command received — completing session`);
 
-            ctx.traceInfo(`[turn ${iteration}] session=${input.sessionId} prompt="${prompt.slice(0, 80)}"`);
+                const liveChildren = subAgents.filter((agent) => !isSubAgentTerminalStatus(agent.status));
+                if (liveChildren.length > 0) {
+                    ctx.traceInfo(`[orch] /done: completing ${liveChildren.length} sub-agent(s)`);
+                    for (const child of liveChildren) {
+                        try {
+                            const childCmdId = `done-cascade-${iteration}-${child.sessionId.slice(0, 8)}`;
+                            yield manager.sendCommandToSession(child.sessionId,
+                                { type: "cmd", cmd: "done", id: childCmdId, args: { reason: "Parent session completing" } });
+                            child.status = "completed";
+                            ctx.traceInfo(`[orch] /done: completed child ${child.sessionId}`);
+                        } catch (err: any) {
+                            ctx.traceInfo(`[orch] /done: failed to complete child ${child.sessionId}: ${err.message} (non-fatal)`);
+                        }
+                    }
+                }
 
-            // ② HYDRATE if session was dehydrated (with retry)
-            if (needsHydration && blobEnabled) {
-                let hydrateAttempts = 0;
-                while (true) {
+                if (parentSessionId) {
                     try {
-                        if (!preserveAffinityOnHydrate) {
-                            affinityKey = yield ctx.newGuid();
-                        }
-                        session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
-                        yield session.hydrate();
-                        needsHydration = false;
-                        preserveAffinityOnHydrate = false;
-                        break;
-                    } catch (hydrateErr: any) {
-                        const hMsg = hydrateErr.message || String(hydrateErr);
-
-                        // Blob was deleted (e.g. after a reset) — skip hydration, start fresh
-                        if (hMsg.includes("blob does not exist") || hMsg.includes("BlobNotFound") || hMsg.includes("404")) {
-                            ctx.traceInfo(`[orch] hydrate skipped — blob not found, starting fresh session`);
-                            needsHydration = false;
-                            preserveAffinityOnHydrate = false;
-                            break;
-                        }
-
-                        hydrateAttempts++;
-                        ctx.traceInfo(`[orch] hydrate FAILED (attempt ${hydrateAttempts}/${MAX_RETRIES}): ${hMsg}`);
-                        if (hydrateAttempts >= MAX_RETRIES) {
-                            publishStatus("error", {
-                                error: `Hydrate failed after ${MAX_RETRIES} attempts: ${hMsg}`,
-                                retriesExhausted: true,
-                            });
-                            // Can't proceed without hydration — wait for next user message to retry
-                            break;
-                        }
-                        const hydrateDelay = 10 * Math.pow(2, hydrateAttempts - 1);
-                        publishStatus("error", {
-                            error: `Hydrate failed: ${hMsg} (retry ${hydrateAttempts}/${MAX_RETRIES} in ${hydrateDelay}s)`,
-                        });
-                        yield ctx.scheduleTimer(hydrateDelay * 1000);
+                        const doneReason = String(cmdMsg.args?.reason || "Session completed by user");
+                        yield manager.sendToSession(parentSessionId,
+                            `[CHILD_UPDATE from=${input.sessionId} type=completed iter=${iteration}]\n${doneReason}`);
+                    } catch (err: any) {
+                        ctx.traceInfo(`[orch] sendToSession(parent) on /done failed: ${err.message} (non-fatal)`);
                     }
                 }
-                if (needsHydration) continue; // hydrate exhausted retries — go back to dequeue
-            }
 
-            // ②½ LOAD KNOWLEDGE PIPELINE CONTEXT ────────────────
-            // Inject curated skills and active asks before running the turn.
-            // Skip for facts-manager to avoid circular context injection.
-            if (config.agentIdentity !== "facts-manager") {
                 try {
-                    const knowledgeIndex: any = yield manager.loadKnowledgeIndex();
-                    if (knowledgeIndex) {
-                        // Inject active asks into the prompt
-                        if (knowledgeIndex.asks?.length > 0) {
-                            const askLines = knowledgeIndex.asks.map((a: any) => `- ${a.key}`).join("\n");
-                            const askBlock = `[ACTIVE FACT REQUESTS]\n` +
-                                `The Facts Manager is seeking corroboration on these topics.\n` +
-                                `If any are relevant to your current task, read the full ask\n` +
-                                `with read_facts and contribute intake evidence if you can.\n${askLines}\n\n` +
-                                `[FACT NAMESPACE RULES]\n` +
-                                `- You can WRITE to: intake/<topic>/<session-id> (shared observations)\n` +
-                                `- You can READ from: skills/*, asks/* (curated knowledge, open requests)\n` +
-                                `- You CANNOT write to skills/ or asks/ (Facts Manager only)\n` +
-                                `- You CANNOT read from intake/ (Facts Manager only)\n\n`;
-                            prompt = askBlock + prompt;
-                        }
-                        // Inject curated skills as a compact frontmatter index.
-                        // Agents call read_facts to load the full skill when relevant.
-                        if (knowledgeIndex.skills?.length > 0) {
-                            const skillLines = knowledgeIndex.skills.map((s: any) =>
-                                `- ${s.key} — ${s.name}: ${s.description}`
-                            ).join("\n");
-                            const skillBlock = `[CURATED SKILLS]\n` +
-                                `The following shared skills are available. If one is relevant to your current task,\n` +
-                                `call read_facts(key_pattern="<key>", scope="shared") to load the full instructions before applying.\n\n${skillLines}\n`;
-                            prompt = skillBlock + prompt;
-                        }
-                    }
-                } catch (knErr: any) {
-                    ctx.traceInfo(`[orch] loadKnowledgeIndex failed (non-fatal): ${knErr.message || knErr}`);
-                }
+                    yield session.destroy();
+                } catch {}
+
+                const resp: CommandResponse = {
+                    id: cmdMsg.id,
+                    cmd: cmdMsg.cmd,
+                    result: { ok: true, message: "Session completed" },
+                };
+                yield* writeCommandResponse(resp);
+                publishStatus("completed");
+                orchestrationResult = "done";
+                return;
             }
+            default: {
+                const resp: CommandResponse = {
+                    id: cmdMsg.id,
+                    cmd: cmdMsg.cmd,
+                    error: `Unknown command: ${cmdMsg.cmd}`,
+                };
+                yield* writeCommandResponse(resp);
+                publishStatus("idle");
+                return;
+            }
+        }
+    }
 
-            // ③ RUN TURN via SessionProxy (with retry on failure)
-            publishStatus("running");
-            let turnResult: any;
-            try {
-                turnResult = yield session.runTurn(prompt, promptIsBootstrap, iteration);
-            } catch (err: any) {
-                // Activity failed (e.g. Copilot timeout, network error).
-                const errorMsg = err.message || String(err);
-                const missingStateIndex = errorMsg.indexOf(SESSION_STATE_MISSING_PREFIX);
-                if (missingStateIndex >= 0) {
-                    const fatalError = errorMsg.slice(missingStateIndex + SESSION_STATE_MISSING_PREFIX.length).trim();
-                    ctx.traceInfo(`[orch] fatal missing session state: ${fatalError}`);
-                    publishStatus("failed", { error: fatalError, fatal: true });
-                    yield manager.updateCmsState(input.sessionId, "failed", fatalError);
-                    throw new Error(fatalError);
-                }
-                retryCount++;
-                ctx.traceInfo(`[orch] runTurn FAILED (attempt ${retryCount}/${MAX_RETRIES}): ${errorMsg}`);
+    // ═══════════════════════════════════════════════════════════
+    // ═══ DRAIN — greedily move queue + timer into KV FIFO ════
+    // ═══════════════════════════════════════════════════════════
 
-                if (retryCount >= MAX_RETRIES) {
-                    // Exhausted retries — park in error state but don't crash.
-                    // The orchestration stays alive and will retry on the next user message.
-                    ctx.traceInfo(`[orch] max retries exhausted, waiting for user input`);
-                    publishStatus("error", {
-                        error: `Failed after ${MAX_RETRIES} attempts: ${errorMsg}`,
-                        retriesExhausted: true,
-                    });
-                    // Reset retry count and wait for next user message
-                    retryCount = 0;
+    function needsBlockingDequeue(): boolean {
+        return (
+            !activeTimer &&
+            pendingToolActions.length === 0 &&
+            !pendingPrompt &&
+            !hasFifoItems()
+        );
+    }
+
+    function* drain(): Generator<any, void, any> {
+        const stash: any[] = [];
+        const seenChildUpdates = new Set<string>();
+
+        for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
+            let msg: any = null;
+
+            // ─── Mode 1: Active Timer — race dequeue vs timer ───
+            if (activeTimer) {
+                const now: number = yield ctx.utcNow();
+                const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
+
+                if (remainingMs === 0) {
+                    stash.push({ kind: "timer", timer: { ...activeTimer }, firedAtMs: now });
+                    activeTimer = null;
                     continue;
                 }
 
-                publishStatus("error", {
-                    error: `${errorMsg} (retry ${retryCount}/${MAX_RETRIES} in 15s)`,
-                });
+                const msgTask = ctx.dequeueEvent("messages");
+                const timerTask = ctx.scheduleTimer(remainingMs);
+                const race: any = yield ctx.race(msgTask, timerTask);
 
-                // Exponential backoff: 15s, 30s, 60s
-                const retryDelay = 15 * Math.pow(2, retryCount - 1);
-                ctx.traceInfo(`[orch] retrying in ${retryDelay}s`);
-
-                if (blobEnabled) {
-                    yield* dehydrateForNextTurn("error");
+                if (race.index === 1) {
+                    const firedAt: number = yield ctx.utcNow();
+                    stash.push({ kind: "timer", timer: { ...activeTimer }, firedAtMs: firedAt });
+                    activeTimer = null;
+                    continue; // keep draining — pick up queued msgs in mode 3
                 }
 
-                yield ctx.scheduleTimer(retryDelay * 1000);
-                yield* versionedContinueAsNew(continueInput({
-                    prompt,
-                    retryCount,
-                    needsHydration: blobEnabled ? true : needsHydration,
-                }));
-                return "";
+                msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
+                // activeTimer stays set — deadline unchanged
+
+            // ─── Mode 2: Blocking Dequeue — nothing to process ──
+            } else if (needsBlockingDequeue()) {
+                if (i > 0) break; // only block on first iteration
+                publishStatus(pendingInputQuestion ? "input_required" : "idle");
+                const rawMsg: any = yield ctx.dequeueEvent("messages");
+                msg = typeof rawMsg === "string" ? JSON.parse(rawMsg) : rawMsg;
+
+            // ─── Mode 3: Non-blocking Dequeue — opportunistic ───
+            } else {
+                const msgTask = ctx.dequeueEvent("messages");
+                const timerTask = ctx.scheduleTimer(NON_BLOCKING_TIMER_MS);
+                const race: any = yield ctx.race(msgTask, timerTask);
+                if (race.index === 1) break; // queue empty
+                msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
             }
-            // Successful activity — reset retry counter
-            retryCount = 0;
 
-            result = typeof turnResult === "string"
-                ? JSON.parse(turnResult) : turnResult;
-            const observedAt: number = yield ctx.utcNow();
-            contextUsage = updateContextUsageFromEvents(contextUsage, (result as any)?.events, observedAt);
-        }
-        if (!replayingQueuedAction) {
-            iteration++;
+            if (!msg) continue;
 
-            // ── Summarize title if due ──────────────────────────
-            yield* maybeSummarize();
+            // ─── Route: Commands → handle immediately ───────────
+            if (msg.type === "cmd") {
+                // Flush anything already stashed before handling the command
+                if (stash.length > 0) { appendToFifo(stash); stash.length = 0; }
+                yield* handleCommand(msg as CommandMessage);
+                if (orchestrationResult !== null) return;
+                continue;
+            }
+
+            // ─── Route: Child updates → apply immediately ───────
+            const childUpdate = parseChildUpdate(msg.prompt);
+            if (childUpdate) {
+                const key = `${childUpdate.sessionId}|${childUpdate.updateType}`;
+                if (!seenChildUpdates.has(key)) {
+                    seenChildUpdates.add(key);
+                    yield* applyChildUpdate(childUpdate);
+
+                    // Break active wait timer if >60s remaining
+                    if (activeTimer?.type === "wait") {
+                        const now: number = yield ctx.utcNow();
+                        const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
+                        const remainingSec = Math.round(remainingMs / 1000);
+                        if (remainingSec > 60) {
+                            const elapsedMs = activeTimer.originalDurationMs - remainingMs;
+                            const elapsedSec = Math.round(elapsedMs / 1000);
+                            ctx.traceInfo(`[drain] child update during wait, ${remainingSec}s remain (>60s) — breaking timer`);
+                            stash.push({
+                                kind: "prompt",
+                                prompt: `The wait was partially completed (${elapsedSec}s elapsed, ${remainingSec}s remain). Resume the wait for the remaining ${remainingSec} seconds.`,
+                                bootstrap: true,
+                            });
+                            activeTimer = null;
+                        }
+                    }
+
+                    // Break active cron timer if >60s remaining
+                    if (activeTimer?.type === "cron") {
+                        const now: number = yield ctx.utcNow();
+                        const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
+                        if (Math.round(remainingMs / 1000) > 60) {
+                            ctx.traceInfo(`[drain] child update during cron wait, >60s remain — breaking timer`);
+                            const activeCron = cronSchedule;
+                            stash.push({
+                                kind: "prompt",
+                                prompt: `[SYSTEM: A child update arrived while your recurring schedule was waiting for the next wake-up${activeCron ? ` ("${activeCron.reason}")` : ""}. ` +
+                                    `Review the update and continue your task now. The recurring cron schedule remains active and will be re-armed automatically after this turn completes.]`,
+                                bootstrap: true,
+                            });
+                            activeTimer = null;
+                        }
+                    }
+
+                    // Check if all waited-for agents are now done
+                    if (waitingForAgentIds) {
+                        const allDone = waitingForAgentIds.every(id => {
+                            const agent = subAgents.find(a => a.orchId === id);
+                            return agent && isSubAgentTerminalStatus(agent.status);
+                        });
+                        if (allDone) {
+                            // Merge directly into pendingPrompt (not FIFO) so it
+                            // combines with accumulated tool action confirmations
+                            // and produces a single LLM turn, matching v1.0.31 behavior.
+                            queueFollowup(buildWaitForAgentsFollowup(waitingForAgentIds));
+                            waitingForAgentIds = null;
+                            activeTimer = null;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // ─── Route: Answers → stash ─────────────────────────
+            if (msg.answer !== undefined) {
+                stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform });
+                continue;
+            }
+
+            // ─── Route: User prompts → stash ────────────────────
+            if (msg.prompt) {
+                let userPrompt = msg.prompt;
+
+                // If a wait/cron timer is active, cancel it and augment the prompt
+                // with timer-interrupt context (matches v1.0.31 wait-loop behavior).
+                if (activeTimer?.type === "wait") {
+                    const now: number = yield ctx.utcNow();
+                    const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
+                    const remainingSec = Math.round(remainingMs / 1000);
+                    const elapsedMs = activeTimer.originalDurationMs - remainingMs;
+                    const elapsedSec = Math.round(elapsedMs / 1000);
+                    const totalSec = Math.round(activeTimer.originalDurationMs / 1000);
+                    ctx.traceInfo(`[drain] user prompt interrupted wait timer, ${remainingSec}s remain — orchestration will auto-resume`);
+
+                    // Save the interrupted timer. The orchestration will automatically
+                    // re-arm it after the LLM's response turn completes. This avoids
+                    // conflicting "call wait(N) to resume" instructions that clash
+                    // with agent-specific prompts.
+                    interruptedWaitTimer = {
+                        remainingSec,
+                        reason: activeTimer.reason,
+                        shouldRehydrate: activeTimer.shouldRehydrate ?? false,
+                        waitPlan: activeTimer.waitPlan,
+                    };
+
+                    // Just tell the LLM about the context, not what to do next
+                    if (activeTimer.shouldRehydrate && userPrompt) {
+                        userPrompt = wrapWithResumeContext(
+                            userPrompt,
+                            `Your ${totalSec}s timer (reason: "${activeTimer.reason}") was interrupted by the above message. ` +
+                            `${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
+                            `Reply to the message. The timer will be automatically resumed after your reply.`,
+                        );
+                    } else if (userPrompt) {
+                        userPrompt = `${userPrompt}\n\n` +
+                            `[SYSTEM: The above is a message that interrupted your ${totalSec}s timer (reason: "${activeTimer.reason}"). ` +
+                            `${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
+                            `Reply to the message. The timer will be automatically resumed after your reply.]`;
+                    }
+                    activeTimer = null;
+                } else if (activeTimer?.type === "cron") {
+                    const activeCron = cronSchedule;
+                    const cronResumeNote =
+                        `There is an active recurring schedule every ${activeCron?.intervalSeconds ?? "?"} seconds for "${activeCron?.reason ?? activeTimer.reason}". ` +
+                        `It remains active automatically after this turn completes, so do NOT call wait() just to keep the recurring loop alive. ` +
+                        `Call cron(action="cancel") only if you need to stop it.`;
+                    if (activeTimer.shouldRehydrate && userPrompt) {
+                        userPrompt = wrapWithResumeContext(userPrompt, cronResumeNote);
+                    } else if (userPrompt) {
+                        userPrompt = `${userPrompt}\n\n[SYSTEM: ${cronResumeNote}]`;
+                    }
+                    ctx.traceInfo(`[drain] user prompt interrupted cron timer`);
+                    activeTimer = null;
+                } else if (activeTimer?.type === "idle") {
+                    ctx.traceInfo(`[drain] user prompt within idle window, cancelling idle timer`);
+                    activeTimer = null;
+                } else if (activeTimer?.type === "agent-poll") {
+                    ctx.traceInfo(`[drain] user prompt interrupted agent wait`);
+                    waitingForAgentIds = null;
+                    activeTimer = null;
+                }
+
+                stash.push({
+                    kind: "prompt",
+                    prompt: userPrompt,
+                    bootstrap: Boolean(msg.bootstrap),
+                    ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
+                });
+                continue;
+            }
+
+            ctx.traceInfo(`[drain] skipping unknown: ${JSON.stringify(msg).slice(0, 120)}`);
         }
+
+        if (stash.length > 0) appendToFifo(stash);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ═══ PROCESS PROMPT — hydrate + runTurn + handleResult ═══
+    // ═══════════════════════════════════════════════════════════
+
+    function* processPrompt(promptText: string, isBootstrap: boolean, requiredTool?: string): Generator<any, void, any> {
+        let prompt = promptText;
+        let promptIsBootstrap = isBootstrap;
+
+        if (blobEnabled && !needsHydration) {
+            try {
+                needsHydration = yield session.needsHydration();
+            } catch (err: any) {
+                ctx.traceInfo(`[orch] needsHydration probe failed: ${err.message ?? err}`);
+            }
+        }
+
+        if (needsHydration && blobEnabled && prompt) {
+            prompt = wrapWithResumeContext(prompt);
+        }
+
+        let turnSystemPrompt = pendingSystemPrompt;
+        pendingSystemPrompt = undefined;
+        const extractedPrompt = extractPromptSystemContext(prompt);
+        prompt = extractedPrompt.prompt ?? "";
+        turnSystemPrompt = mergePrompt(turnSystemPrompt, extractedPrompt.systemPrompt);
+        const systemOnlyTurn = !prompt && !!turnSystemPrompt;
+        if (systemOnlyTurn) {
+            prompt = "Continue with the latest system instructions.";
+            promptIsBootstrap = true;
+        }
+        config.turnSystemPrompt = turnSystemPrompt;
+
+        ctx.traceInfo(`[turn ${iteration}] session=${input.sessionId} prompt="${prompt.slice(0, 80)}"`);
+
+        // Hydrate if needed (with retry)
+        if (needsHydration && blobEnabled) {
+            let hydrateAttempts = 0;
+            while (true) {
+                try {
+                    if (!preserveAffinityOnHydrate) {
+                        affinityKey = yield ctx.newGuid();
+                    }
+                    session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
+                    yield session.hydrate();
+                    needsHydration = false;
+                    preserveAffinityOnHydrate = false;
+                    break;
+                } catch (hydrateErr: any) {
+                    const hMsg = hydrateErr.message || String(hydrateErr);
+                    if (hMsg.includes("blob does not exist") || hMsg.includes("BlobNotFound") || hMsg.includes("404")) {
+                        ctx.traceInfo(`[orch] hydrate skipped — blob not found, starting fresh session`);
+                        needsHydration = false;
+                        preserveAffinityOnHydrate = false;
+                        break;
+                    }
+                    hydrateAttempts++;
+                    ctx.traceInfo(`[orch] hydrate FAILED (attempt ${hydrateAttempts}/${MAX_RETRIES}): ${hMsg}`);
+                    if (hydrateAttempts >= MAX_RETRIES) {
+                        publishStatus("error", {
+                            error: `Hydrate failed after ${MAX_RETRIES} attempts: ${hMsg}`,
+                            retriesExhausted: true,
+                        });
+                        break;
+                    }
+                    const hydrateDelay = 10 * Math.pow(2, hydrateAttempts - 1);
+                    publishStatus("error", {
+                        error: `Hydrate failed: ${hMsg} (retry ${hydrateAttempts}/${MAX_RETRIES} in ${hydrateDelay}s)`,
+                    });
+                    yield ctx.scheduleTimer(hydrateDelay * 1000);
+                }
+            }
+            if (needsHydration) return;
+        }
+
+        // Load knowledge index
+        if (config.agentIdentity !== "facts-manager") {
+            try {
+                yield manager.loadKnowledgeIndex();
+            } catch (knErr: any) {
+                ctx.traceInfo(`[orch] loadKnowledgeIndex failed (non-fatal): ${knErr.message || knErr}`);
+            }
+        }
+
+        // Run turn
+        publishStatus("running", { iteration: iteration + 1 });
+        let turnResult: any;
+        try {
+            turnResult = yield session.runTurn(prompt, promptIsBootstrap, iteration, {
+                ...(parentSessionId ? { parentSessionId } : {}),
+                nestingLevel,
+                ...(requiredTool ? { requiredTool } : {}),
+                retryCount,
+            });
+        } catch (err: any) {
+            config.turnSystemPrompt = undefined;
+            const errorMsg = err.message || String(err);
+            const missingStateIndex = errorMsg.indexOf(SESSION_STATE_MISSING_PREFIX);
+            if (missingStateIndex >= 0) {
+                const fatalError = errorMsg.slice(missingStateIndex + SESSION_STATE_MISSING_PREFIX.length).trim();
+                ctx.traceInfo(`[orch] fatal missing session state: ${fatalError}`);
+                publishStatus("failed", { error: fatalError, fatal: true });
+                yield manager.updateCmsState(input.sessionId, "failed", fatalError);
+                throw new Error(fatalError);
+            }
+            retryCount++;
+            ctx.traceInfo(`[orch] runTurn FAILED (attempt ${retryCount}/${MAX_RETRIES}): ${errorMsg}`);
+
+            if (retryCount >= MAX_RETRIES) {
+                ctx.traceInfo(`[orch] max retries exhausted, waiting for user input`);
+                publishStatus("error", {
+                    error: `Failed after ${MAX_RETRIES} attempts: ${errorMsg}`,
+                    retriesExhausted: true,
+                });
+                retryCount = 0;
+                return;
+            }
+
+            publishStatus("error", {
+                error: `${errorMsg} (retry ${retryCount}/${MAX_RETRIES} in 15s)`,
+            });
+            const retryDelay = 15 * Math.pow(2, retryCount - 1);
+            ctx.traceInfo(`[orch] retrying in ${retryDelay}s`);
+
+            if (blobEnabled) {
+                yield* dehydrateForNextTurn("error");
+            }
+            yield ctx.scheduleTimer(retryDelay * 1000);
+            yield* versionedContinueAsNew(continueInput({
+                ...(systemOnlyTurn ? {} : { prompt }),
+                ...(requiredTool ? { requiredTool } : {}),
+                ...(turnSystemPrompt ? { systemPrompt: turnSystemPrompt } : {}),
+                retryCount,
+                needsHydration: blobEnabled ? true : needsHydration,
+            }));
+            return;
+        }
+        config.turnSystemPrompt = undefined;
+        retryCount = 0;
+
+        const result: TurnResult = typeof turnResult === "string" ? JSON.parse(turnResult) : turnResult;
+        const observedAt: number = yield ctx.utcNow();
+        contextUsage = updateContextUsageFromEvents(contextUsage, (result as any)?.events, observedAt);
+
+        iteration++;
+        yield* maybeSummarize();
+        yield* refreshTrackedSubAgents();
 
         if ("queuedActions" in result && Array.isArray(result.queuedActions) && result.queuedActions.length > 0) {
             pendingToolActions.push(...result.queuedActions);
@@ -960,9 +1337,32 @@ export function* durableSessionOrchestration_1_0_31(
         }
         drainLeadingQueuedCronActions(prompt);
 
-        // ④ HANDLE RESULT
+        yield* handleTurnResult(result, prompt);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ═══ HANDLE TURN RESULT — sets timer instead of loops ════
+    // ═══════════════════════════════════════════════════════════
+
+    function* handleTurnResult(result: TurnResult, sourcePrompt: string): Generator<any, void, any> {
+        if (
+            result.type === "completed"
+            && parentSessionId
+            && typeof result.content === "string"
+            && /^QUESTION FOR PARENT:/i.test(result.content.trim())
+        ) {
+            ctx.traceInfo("[orch] coercing child QUESTION FOR PARENT result into durable wait");
+            result = {
+                type: "wait",
+                seconds: 60,
+                reason: "waiting for parent answer",
+                content: result.content.trim(),
+                model: (result as any).model,
+            } as TurnResult;
+        }
+
         switch (result.type) {
-            case "completed":
+            case "completed": {
                 ctx.traceInfo(`[response] ${result.content}`);
                 yield* writeLatestResponse({
                     iteration,
@@ -971,8 +1371,7 @@ export function* durableSessionOrchestration_1_0_31(
                     model: (result as any).model,
                 });
 
-                // If this is a child orchestration, notify the parent about our completion
-                // via the SDK — sends to the parent's "messages" queue like any other message.
+                // Notify parent if sub-agent
                 if (parentSessionId) {
                     try {
                         yield manager.sendToSession(parentSessionId,
@@ -982,30 +1381,20 @@ export function* durableSessionOrchestration_1_0_31(
                     }
 
                     if (!cronSchedule) {
-                        // System sub-agents (sweeper, resourcemgr) should keep running forever.
-                        // Non-system sub-agents auto-terminate after completing their task.
                         if (input.isSystem) {
                             ctx.traceInfo(`[orch] system sub-agent completed turn, continuing loop`);
                             yield* maybeCheckpoint();
-                            continue;
+                            return;
                         }
-
-                        // Non-system sub-agents auto-terminate after completing their task and notifying
-                        // the parent. Without this, they sit in the idle loop forever (idleTimeout=-1)
-                        // and accumulate as zombie orchestrations.
                         ctx.traceInfo(`[orch] sub-agent completed task, auto-terminating`);
-                        try {
-                            yield session.destroy();
-                        } catch {}
+                        try { yield session.destroy(); } catch {}
                         publishStatus("completed");
-                        return "done";
+                        orchestrationResult = "done";
+                        return;
                     }
                 }
 
-                // ── Safety net: detect forgotten durable timer ──────────
-                // If the LLM completed a turn without calling wait() but has
-                // running sub-agents, it likely forgot. Nudge it once.
-                // Only fire if we haven't already nudged (prevents infinite loop).
+                // Forgotten-timer safety net
                 {
                     const runningAgents = subAgents.filter(a => a.status === "running");
                     if (runningAgents.length > 0 && !input.forgottenTimerNudged && !cronSchedule) {
@@ -1017,24 +1406,53 @@ export function* durableSessionOrchestration_1_0_31(
                             `You MUST call wait() now to schedule your next check-in. Call wait() with an appropriate interval to continue your loop.]`,
                             { forgottenTimerNudged: true },
                         ));
-                        return "";
+                        return;
                     }
+                }
+
+                // Auto-resume interrupted wait timer. If the LLM's turn completed
+                // without re-issuing wait() itself, the orchestration re-arms the
+                // remaining time automatically. This avoids conflicting "call wait(N)"
+                // instructions that clash with agent-specific prompts.
+                if (interruptedWaitTimer && interruptedWaitTimer.remainingSec > 0) {
+                    const saved = interruptedWaitTimer;
+                    interruptedWaitTimer = null;
+                    ctx.traceInfo(`[orch] auto-resuming interrupted wait: ${saved.remainingSec}s (${saved.reason})`);
+
+                    if (saved.shouldRehydrate) {
+                        yield* dehydrateForNextTurn("timer", saved.waitPlan?.resetAffinityOnDehydrate ?? true);
+                    }
+
+                    const resumeNow: number = yield ctx.utcNow();
+                    publishStatus("waiting", {
+                        waitSeconds: saved.remainingSec,
+                        waitReason: saved.reason,
+                        waitStartedAt: resumeNow,
+                    });
+
+                    if (!saved.shouldRehydrate) yield* maybeCheckpoint();
+
+                    activeTimer = {
+                        deadlineMs: resumeNow + saved.remainingSec * 1000,
+                        originalDurationMs: saved.remainingSec * 1000,
+                        reason: saved.reason,
+                        type: "wait",
+                        shouldRehydrate: saved.shouldRehydrate,
+                        waitPlan: saved.waitPlan,
+                    };
+                    return;
                 }
 
                 if (cronSchedule) {
                     const activeCron = { ...cronSchedule };
-                    const shouldDehydrateForCron = blobEnabled;
-                    if (shouldDehydrateForCron) {
-                        // Cron schedules should be free to migrate between workers.
-                        // Always dehydrate and release affinity when blob-backed state exists.
+                    const shouldDehydrate = blobEnabled;
+                    if (shouldDehydrate) {
                         yield* dehydrateForNextTurn("cron", true);
                     }
-
                     yield manager.recordSessionEvent(input.sessionId, [{
                         eventType: "session.cron_started",
                         data: { intervalSeconds: activeCron.intervalSeconds, reason: activeCron.reason },
                     }]);
-
                     const cronStartedAt: number = yield ctx.utcNow();
                     ctx.traceInfo(`[orch] cron timer: ${activeCron.intervalSeconds}s (${activeCron.reason})`);
                     publishStatus("waiting", {
@@ -1042,142 +1460,45 @@ export function* durableSessionOrchestration_1_0_31(
                         waitReason: activeCron.reason,
                         waitStartedAt: cronStartedAt,
                     });
+                    if (!shouldDehydrate) yield* maybeCheckpoint();
 
-                    if (!shouldDehydrateForCron) yield* maybeCheckpoint();
-
-                    let waitRemainingMs = activeCron.intervalSeconds * 1000;
-                    let waitTimerDone = false;
-                    while (!waitTimerDone && waitRemainingMs > 0) {
-                        const timerTask = ctx.scheduleTimer(waitRemainingMs);
-                        const interruptMsg = ctx.dequeueEvent("messages");
-                        const timerRace: any = yield ctx.race(timerTask, interruptMsg);
-
-                        if (timerRace.index === 0) {
-                            waitTimerDone = true;
-                            yield manager.recordSessionEvent(input.sessionId, [{
-                                eventType: "session.cron_fired",
-                                data: {},
-                            }]);
-                            break;
-                        }
-
-                        const interruptData = typeof timerRace.value === "string"
-                            ? JSON.parse(timerRace.value) : (timerRace.value ?? {});
-                        const childUpdate = parseChildUpdate(interruptData.prompt);
-                        if (childUpdate) {
-                            yield* applyChildUpdate(childUpdate);
-                            const interruptedAt: number = yield ctx.utcNow();
-                            const elapsedMs = interruptedAt - cronStartedAt;
-                            waitRemainingMs = Math.max(0, activeCron.intervalSeconds * 1000 - elapsedMs);
-                            const remainingSec = Math.round(waitRemainingMs / 1000);
-
-                            if (waitRemainingMs === 0) {
-                                waitTimerDone = true;
-                                break;
-                            }
-
-                            if (remainingSec > 60) {
-                                ctx.traceInfo(`[orch] child update during cron wait, ${remainingSec}s remain (>60s) — breaking timer`);
-                                yield* versionedContinueAsNew(continueInputWithPrompt(
-                                    `[SYSTEM: A child update arrived while your recurring schedule was waiting for the next wake-up ("${activeCron.reason}"). ` +
-                                    `Review the update and continue your task now. The recurring cron schedule remains active and will be re-armed automatically after this turn completes.]`,
-                                    { needsHydration: shouldDehydrateForCron ? true : needsHydration },
-                                ));
-                                return "";
-                            }
-
-                            ctx.traceInfo(`[orch] child update during cron wait, ${remainingSec}s remain (<=60s) — batching`);
-                            continue;
-                        }
-
-                        const userPrompt = interruptData.prompt || "";
-                        ctx.traceInfo(`[session] cron interrupted: "${userPrompt.slice(0, 60)}"`);
-
-                        const cronResumeNote =
-                            `There is an active recurring schedule every ${activeCron.intervalSeconds} seconds for "${activeCron.reason}". ` +
-                            `It remains active automatically after this turn completes, so do NOT call wait() just to keep the recurring loop alive. ` +
-                            `Call cron(action="cancel") only if you need to stop it.`;
-                        const finalPrompt = shouldDehydrateForCron && userPrompt
-                            ? wrapWithResumeContext(userPrompt, cronResumeNote)
-                            : userPrompt
-                                ? `${userPrompt}\n\n[SYSTEM: ${cronResumeNote}]`
-                                : userPrompt;
-
-                        yield* versionedContinueAsNew(continueInputWithPrompt(
-                            finalPrompt,
-                            { needsHydration: shouldDehydrateForCron ? true : needsHydration },
-                        ));
-                        return "";
-                    }
-
-                    yield* versionedContinueAsNew(continueInputWithPrompt(
-                        `[SYSTEM: Scheduled cron wake-up for: "${activeCron.reason}". Resume your recurring task.]`,
-                        { needsHydration: shouldDehydrateForCron ? true : needsHydration },
-                    ));
-                    return "";
+                    activeTimer = {
+                        deadlineMs: cronStartedAt + activeCron.intervalSeconds * 1000,
+                        originalDurationMs: activeCron.intervalSeconds * 1000,
+                        reason: activeCron.reason,
+                        type: "cron",
+                        shouldRehydrate: shouldDehydrate,
+                    };
+                    return;
                 }
 
                 if (!blobEnabled || idleTimeout < 0) {
-                    // continueAsNew after each completed turn to reset history.
-                    // Without this, the same execution accumulates unbounded
-                    // history which breaks replay after a worker restart —
-                    // duroxide can match the second yield session.runTurn()
-                    // to the cached result of the first one.
                     yield* maybeCheckpoint();
-                    yield* versionedContinueAsNew(continueInput());
-                    return "";
+                    return; // no timer — main loop will CAN
                 }
 
-                // Race: next message vs idle timeout
-                {
-                    publishStatus("idle");
-                    yield* maybeCheckpoint();
-                    const idleDeadline: number = (yield ctx.utcNow()) + idleTimeout * 1000;
-                    while (true) {
-                        const now: number = yield ctx.utcNow();
-                        const remainingMs = Math.max(0, idleDeadline - now);
-                        if (remainingMs === 0) break;
-
-                        const nextMsg = ctx.dequeueEvent("messages");
-                        const idleTimer = ctx.scheduleTimer(remainingMs);
-                        const raceResult: any = yield ctx.race(nextMsg, idleTimer);
-
-                        if (raceResult.index === 0) {
-                            const raceMsg = typeof raceResult.value === "string"
-                                ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
-                            const childUpdate = parseChildUpdate(raceMsg.prompt);
-                            if (childUpdate) {
-                                yield* applyChildUpdate(childUpdate);
-                                continue;
-                            }
-
-                            ctx.traceInfo("[session] user responded within idle window");
-                            pendingMessage = raceMsg;
-                            yield* versionedContinueAsNew(continueInput());
-                            return "";
-                        }
-
-                        break;
-                    }
-
-                    // Idle timeout → dehydrate. Next message will need resume context.
-                    ctx.traceInfo("[session] idle timeout, dehydrating");
-                    yield* dehydrateForNextTurn("idle");
-                    // Don't continueAsNew with a prompt — wait for the next user message,
-                    // which will be wrapped with resume context because needsHydration=true.
-                    yield* versionedContinueAsNew(continueInput());
-                    return "";
-                }
+                // Set idle timer
+                publishStatus("idle");
+                yield* maybeCheckpoint();
+                const idleNow: number = yield ctx.utcNow();
+                activeTimer = {
+                    deadlineMs: idleNow + idleTimeout * 1000,
+                    originalDurationMs: idleTimeout * 1000,
+                    reason: "idle timeout",
+                    type: "idle",
+                };
+                return;
+            }
 
             case "cron":
-                applyCronAction(result, prompt);
-                continue;
+                applyCronAction(result, sourcePrompt);
+                return;
 
-            case "wait":
-                ensureTaskContext(prompt);
+            case "wait": {
+                // LLM re-issued wait itself — clear any saved interrupted timer
+                interruptedWaitTimer = null;
+                ensureTaskContext(sourcePrompt);
 
-                // If this is a child orchestration, notify the parent on every wait cycle
-                // via the SDK — sends a message to the parent's "messages" queue.
                 if (parentSessionId) {
                     try {
                         const notifyContent = result.content
@@ -1192,143 +1513,57 @@ export function* durableSessionOrchestration_1_0_31(
 
                 ctx.traceInfo(`[orch] durable timer: ${result.seconds}s (${result.reason})`);
 
-                {
-                    const waitPlan = planWaitHandling({
-                        blobEnabled,
-                        seconds: result.seconds,
-                        dehydrateThreshold,
-                        preserveWorkerAffinity: result.preserveWorkerAffinity,
-                    });
-                    if (waitPlan.shouldDehydrate) {
-                        yield* dehydrateForNextTurn("timer", waitPlan.resetAffinityOnDehydrate);
-                    }
-
-                    const waitStartedAt: number = yield ctx.utcNow();
-                    if (result.content) {
-                        yield* writeLatestResponse({
-                            iteration,
-                            type: "wait",
-                            content: result.content,
-                            waitReason: result.reason,
-                            waitSeconds: result.seconds,
-                            waitStartedAt,
-                            model: (result as any).model,
-                        });
-                        ctx.traceInfo(`[orch] intermediate: ${result.content.slice(0, 80)}`);
-                    }
-
-                    publishStatus("waiting", {
-                        waitSeconds: result.seconds,
-                        waitReason: result.reason,
-                        waitStartedAt,
-                        preserveWorkerAffinity: waitPlan.preserveAffinityOnHydrate,
-                    });
-
-                    // Checkpoint before the blocking wait
-                    if (!waitPlan.shouldDehydrate) yield* maybeCheckpoint();
-
-                    yield manager.recordSessionEvent(input.sessionId, [{
-                        eventType: "session.wait_started",
-                        data: { seconds: result.seconds, reason: result.reason, preserveAffinity: waitPlan.preserveAffinityOnHydrate },
-                    }]);
-
-                    // Wait loop: silently absorb child updates when <=60s remain,
-                    // only break the timer for child updates when >60s remain.
-                    // User messages always break the timer immediately.
-                    let waitRemainingMs = result.seconds * 1000;
-                    let waitTimerDone = false;
-                    while (!waitTimerDone && waitRemainingMs > 0) {
-                        const timerTask = ctx.scheduleTimer(waitRemainingMs);
-                        const interruptMsg = ctx.dequeueEvent("messages");
-                        const timerRace: any = yield ctx.race(timerTask, interruptMsg);
-
-                        if (timerRace.index === 0) {
-                            waitTimerDone = true;
-                            break;
-                        }
-
-                        // Message won the race
-                        const interruptData = typeof timerRace.value === "string"
-                            ? JSON.parse(timerRace.value) : (timerRace.value ?? {});
-                        const childUpdate = parseChildUpdate(interruptData.prompt);
-                        if (childUpdate) {
-                            yield* applyChildUpdate(childUpdate);
-                            const interruptedAt: number = yield ctx.utcNow();
-                            const elapsedMs = interruptedAt - waitStartedAt;
-                            waitRemainingMs = Math.max(0, result.seconds * 1000 - elapsedMs);
-                            const remainingSec = Math.round(waitRemainingMs / 1000);
-
-                            if (waitRemainingMs === 0) {
-                                waitTimerDone = true;
-                                break;
-                            }
-
-                            if (remainingSec > 60) {
-                                // >1 min left — break and let the LLM re-issue the wait
-                                ctx.traceInfo(`[orch] child update during wait, ${remainingSec}s remain (>60s) — breaking timer`);
-                                yield* versionedContinueAsNew(continueInputWithPrompt(
-                                    `The wait was partially completed (${Math.round(elapsedMs / 1000)}s elapsed, ${remainingSec}s remain). Resume the wait for the remaining ${remainingSec} seconds.`,
-                                    { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
-                                ));
-                                return "";
-                            }
-
-                            // <=60s remaining — absorb silently, re-race with remaining time
-                            ctx.traceInfo(`[orch] child update during wait, ${remainingSec}s remain (<=60s) — batching`);
-                            continue;
-                        }
-
-                        // User message — always break
-                        ctx.traceInfo(`[session] wait interrupted: "${(interruptData.prompt || "").slice(0, 60)}"`);
-                        const interruptedAt: number = yield ctx.utcNow();
-                        const elapsedSec = Math.round((interruptedAt - waitStartedAt) / 1000);
-                        const remainingSec = Math.max(0, result.seconds - elapsedSec);
-                        const userPrompt = interruptData.prompt || "";
-
-                        let finalPrompt: string;
-                        if (waitPlan.shouldDehydrate && userPrompt) {
-                            finalPrompt = wrapWithResumeContext(
-                                userPrompt,
-                                `Your timer was interrupted by a USER MESSAGE. ` +
-                                `RESPONSE FORMAT: You MUST first output a text response addressing the user's message. ` +
-                                `Then call wait(${remainingSec}) to resume your timer. ` +
-                                `IMPORTANT: A turn that calls wait() without any preceding text output is WRONG. ` +
-                                `The user is waiting to see your reply. Always write text first, then call wait. ` +
-                                `Timer context: ${result.seconds}s timer (reason: "${result.reason}"), ` +
-                                `${elapsedSec}s elapsed, ${remainingSec}s remain.`,
-                            );
-                        } else if (userPrompt) {
-                            finalPrompt = `${userPrompt}\n\n` +
-                                `[SYSTEM: IMPORTANT — The above is a USER MESSAGE that interrupted your ${result.seconds}s timer (reason: "${result.reason}"). ` +
-                                `RESPONSE FORMAT: You MUST first output a text response addressing the user's message. ` +
-                                `Then call wait(${remainingSec}) to resume your timer. ` +
-                                `A turn that calls wait() without any preceding text output is WRONG. ` +
-                                `The user is waiting to see your reply. Always write text first, then call wait. ` +
-                                `${elapsedSec}s elapsed, ${remainingSec}s remain.]`;
-                        } else {
-                            finalPrompt = userPrompt;
-                        }
-
-                        yield* versionedContinueAsNew(continueInputWithPrompt(
-                            finalPrompt,
-                            { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
-                        ));
-                        return "";
-                    }
-
-                    const timerPrompt = `The ${result.seconds} second wait is now complete. Continue with your task.`;
-                    yield manager.recordSessionEvent(input.sessionId, [{
-                        eventType: "session.wait_completed",
-                        data: { seconds: result.seconds },
-                    }]);
-                    yield* versionedContinueAsNew(continueInputWithPrompt(
-                        timerPrompt,
-                        { needsHydration: waitPlan.shouldDehydrate ? true : needsHydration },
-                    ));
-                    return "";
+                const waitPlan = planWaitHandling({
+                    blobEnabled,
+                    seconds: result.seconds,
+                    dehydrateThreshold,
+                    preserveWorkerAffinity: result.preserveWorkerAffinity,
+                });
+                if (waitPlan.shouldDehydrate) {
+                    yield* dehydrateForNextTurn("timer", waitPlan.resetAffinityOnDehydrate);
                 }
 
-            case "input_required":
+                const waitStartedAt: number = yield ctx.utcNow();
+                if (result.content) {
+                    yield* writeLatestResponse({
+                        iteration,
+                        type: "wait",
+                        content: result.content,
+                        waitReason: result.reason,
+                        waitSeconds: result.seconds,
+                        waitStartedAt,
+                        model: (result as any).model,
+                    });
+                    ctx.traceInfo(`[orch] intermediate: ${result.content.slice(0, 80)}`);
+                }
+
+                publishStatus("waiting", {
+                    waitSeconds: result.seconds,
+                    waitReason: result.reason,
+                    waitStartedAt,
+                    preserveWorkerAffinity: waitPlan.preserveAffinityOnHydrate,
+                });
+
+                if (!waitPlan.shouldDehydrate) yield* maybeCheckpoint();
+
+                yield manager.recordSessionEvent(input.sessionId, [{
+                    eventType: "session.wait_started",
+                    data: { seconds: result.seconds, reason: result.reason, preserveAffinity: waitPlan.preserveAffinityOnHydrate },
+                }]);
+
+                activeTimer = {
+                    deadlineMs: waitStartedAt + result.seconds * 1000,
+                    originalDurationMs: result.seconds * 1000,
+                    reason: result.reason,
+                    type: "wait",
+                    shouldRehydrate: waitPlan.shouldDehydrate,
+                    waitPlan,
+                    content: result.content,
+                };
+                return;
+            }
+
+            case "input_required": {
                 ctx.traceInfo(`[orch] waiting for user input: ${result.question}`);
                 yield* writeLatestResponse({
                     iteration,
@@ -1339,88 +1574,64 @@ export function* durableSessionOrchestration_1_0_31(
                     model: (result as any).model,
                 });
 
+                pendingInputQuestion = {
+                    question: result.question,
+                    choices: result.choices,
+                    allowFreeform: result.allowFreeform,
+                };
+                publishStatus("input_required");
+
                 if (!blobEnabled || inputGracePeriod < 0) {
-                    publishStatus("input_required");
                     yield* maybeCheckpoint();
-                    const answerMsg: any = yield ctx.dequeueEvent("messages");
-                    const answerData = typeof answerMsg === "string"
-                        ? JSON.parse(answerMsg) : answerMsg;
-                    yield* versionedContinueAsNew(continueInputWithPrompt(
-                        `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
-                        { needsHydration: false },
-                    ));
-                    return "";
+                    // No timer — drain will block on dequeue (mode 2) for the answer
+                    return;
                 }
 
                 if (inputGracePeriod === 0) {
-                    publishStatus("input_required");
                     yield* dehydrateForNextTurn("input_required");
-                    const answerMsg: any = yield ctx.dequeueEvent("messages");
-                    const answerData = typeof answerMsg === "string"
-                        ? JSON.parse(answerMsg) : answerMsg;
-                    yield* versionedContinueAsNew(continueInputWithPrompt(
-                        `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
-                    ));
-                    return "";
+                    // No timer — drain will block on dequeue for the answer
+                    return;
                 }
 
-                // Race: user answer vs grace period
-                {
-                    publishStatus("input_required");
-                    const answerEvt = ctx.dequeueEvent("messages");
-                    const graceTimer = ctx.scheduleTimer(inputGracePeriod * 1000);
-                    const raceResult: any = yield ctx.race(answerEvt, graceTimer);
-
-                    if (raceResult.index === 0) {
-                        const answerData = typeof raceResult.value === "string"
-                            ? JSON.parse(raceResult.value) : (raceResult.value ?? {});
-                        yield* versionedContinueAsNew(continueInputWithPrompt(
-                            `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
-                            { needsHydration: false },
-                        ));
-                        return "";
-                    }
-
-                    yield* dehydrateForNextTurn("input_required");
-                    const answerMsg: any = yield ctx.dequeueEvent("messages");
-                    const answerData = typeof answerMsg === "string"
-                        ? JSON.parse(answerMsg) : answerMsg;
-                    yield* versionedContinueAsNew(continueInputWithPrompt(
-                        `The user was asked: "${result.question}"\nThe user responded: "${answerData.answer}"`,
-                    ));
-                    return "";
-                }
+                // Set grace period timer
+                const graceNow: number = yield ctx.utcNow();
+                activeTimer = {
+                    deadlineMs: graceNow + inputGracePeriod * 1000,
+                    originalDurationMs: inputGracePeriod * 1000,
+                    reason: "input grace period",
+                    type: "input-grace",
+                    question: result.question,
+                    choices: result.choices,
+                    allowFreeform: result.allowFreeform,
+                };
+                return;
+            }
 
             case "cancelled":
                 ctx.traceInfo("[session] turn cancelled");
-                continue;
+                return;
 
             // ─── Sub-Agent Result Handlers ───────────────────
 
             case "spawn_agent": {
-                // Enforce nesting depth limit
                 const childNestingLevel = nestingLevel + 1;
                 if (childNestingLevel > MAX_NESTING_LEVEL) {
                     ctx.traceInfo(`[orch] spawn_agent denied: nesting level ${nestingLevel} is at max (${MAX_NESTING_LEVEL})`);
-                    if (yield* queueFollowupAndMaybeContinue(
+                    queueFollowup(
                         `[SYSTEM: spawn_agent failed — you are already at nesting level ${nestingLevel} (max ${MAX_NESTING_LEVEL}). ` +
-                        `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`,
-                    )) return "";
-                    continue;
+                        `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`);
+                    return;
                 }
 
-                // Enforce max sub-agents
                 const activeCount = subAgents.filter(a => a.status === "running").length;
                 if (activeCount >= MAX_SUB_AGENTS) {
                     ctx.traceInfo(`[orch] spawn_agent denied: ${activeCount}/${MAX_SUB_AGENTS} agents running`);
-                    if (yield* queueFollowupAndMaybeContinue(
+                    queueFollowup(
                         `[SYSTEM: spawn_agent failed — you already have ${activeCount} running sub-agents (max ${MAX_SUB_AGENTS}). ` +
-                        `Wait for some to complete before spawning more.]`,
-                    )) return "";
-                    continue;
+                        `Wait for some to complete before spawning more.]`);
+                    return;
                 }
 
-                // ─── Resolve agent config if agent_name is provided ───
                 let agentTask = result.task;
                 let agentSystemMessage = result.systemMessage;
                 let agentToolNames = result.toolNames;
@@ -1454,57 +1665,48 @@ export function* durableSessionOrchestration_1_0_31(
                             : "app-agent");
                 };
 
-                if (!resolvedAgentName && input.isSystem && agentTask) {
-                    const compactTask = agentTask.trim();
-                    const titleMatch = agentTask.match(/You are the \*{0,2}([^*\n]+?Agent)\*{0,2}/i);
-                    const inferredLookup = (
-                        compactTask && compactTask.length <= 80 && !compactTask.includes("\n")
-                            ? compactTask
-                            : titleMatch?.[1]?.trim()
-                    );
-                    if (inferredLookup) {
-                        const inferredDef = yield manager.resolveAgentConfig(inferredLookup);
-                        if (inferredDef?.system && inferredDef?.parent) {
-                            resolvedAgentName = inferredDef.id ?? inferredDef.name;
-                            ctx.traceInfo(`[orch] normalized custom system spawn to named agent: ${resolvedAgentName} (from "${inferredLookup}")`);
-                            applyAgentDef(inferredDef, true);
-                        }
-                    }
-                }
-
                 if (resolvedAgentName) {
                     ctx.traceInfo(`[orch] resolving agent config for: ${resolvedAgentName}`);
                     const agentDef = yield manager.resolveAgentConfig(resolvedAgentName);
                     if (!agentDef) {
-                        if (yield* queueFollowupAndMaybeContinue(
-                            `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use list_agents to see available agents.]`,
-                        )) return "";
-                        continue;
+                        queueFollowup(`[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use list_agents to see available agents.]`);
+                        return;
+                    }
+                    if (agentDef.system && agentDef.creatable === false) {
+                        queueFollowup(
+                            `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" is a worker-managed system agent and cannot be spawned from a session. ` +
+                            `If it is missing, the workers likely need to be restarted.]`,
+                        );
+                        return;
                     }
                     applyAgentDef(agentDef, resolvedAgentName !== result.agentName);
                 }
 
                 if (agentModel && !agentModel.includes(":")) {
                     ctx.traceInfo(`[orch] spawn_agent denied: unqualified model override "${agentModel}"`);
-                    if (yield* queueFollowupAndMaybeContinue(
+                    queueFollowup(
                         `[SYSTEM: spawn_agent failed — model "${agentModel}" is not allowed. ` +
                         `When overriding a sub-agent model, first call list_available_models and then use the exact provider:model value from that list. ` +
-                        `If you are unsure, omit model so the sub-agent inherits your current model.]`,
-                    )) return "";
-                    continue;
+                        `If you are unsure, omit model so the sub-agent inherits your current model.]`);
+                    return;
                 }
 
-                // If the parent is a system session, propagate isSystem to children
-                if (input.isSystem) {
-                    agentIsSystem = true;
+                // Dedup guard: prevent re-spawning a named agent that already exists
+                // as a child of this session. This catches post-rehydration re-spawns
+                // when the LLM loses context that children are already running.
+                if (agentId) {
+                    const existingChild = subAgents.find(a => a.agentId === agentId && a.status === "running");
+                    if (existingChild) {
+                        ctx.traceInfo(`[orch] spawn_agent deduplicated: agent "${agentId}" already running as ${existingChild.orchId}`);
+                        queueFollowup(
+                            `[SYSTEM: Agent "${resolvedAgentName || agentId}" is already running as sub-agent ${existingChild.orchId.slice(0, 16)}. ` +
+                            `Use check_agents to see its status, or message_agent to communicate with it.]`);
+                        return;
+                    }
                 }
 
-                // Auto-detect title for custom spawns by system sessions:
-                // If the LLM didn't use agent_name, try to extract a reasonable title
-                // from the task or system_message rather than showing "System Agent".
                 if (!agentTitle && agentIsSystem) {
                     const text = agentTask || "";
-                    // Look for "You are the **XYZ Agent**" or "You are the XYZ Agent" patterns
                     const titleMatch = text.match(/You are the \*{0,2}([^*\n]+?)\*{0,2}\s*[—–-]/i)
                         || text.match(/You are the \*{0,2}([^*\n]+?Agent)\*{0,2}/i);
                     if (titleMatch) {
@@ -1514,7 +1716,6 @@ export function* durableSessionOrchestration_1_0_31(
 
                 ctx.traceInfo(`[orch] spawning sub-agent via SDK: task="${agentTask.slice(0, 80)}" model=${agentModel || "inherit"} agent=${resolvedAgentName || "custom"} nestingLevel=${childNestingLevel}`);
 
-                // Build child config — inherit parent's config with optional overrides
                 const {
                     boundAgentName: _parentBoundAgentName,
                     promptLayering: _parentPromptLayering,
@@ -1529,9 +1730,6 @@ export function* durableSessionOrchestration_1_0_31(
                     ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                 };
 
-                // Inject sub-agent identity into the child's system message so the LLM
-                // knows it's a sub-agent, what its task is, and that its output will be
-                // forwarded to the parent automatically.
                 const parentSystemMsg = typeof childConfig.systemMessage === "string"
                     ? childConfig.systemMessage
                     : (childConfig.systemMessage as any)?.content ?? "";
@@ -1542,9 +1740,11 @@ export function* durableSessionOrchestration_1_0_31(
                       `then finish turns normally so the orchestration wakes you automatically on each cron cycle. ` +
                       `Use \`wait\` only for one-shot delays inside a turn. ` +
                       `Call \`cron(action="cancel")\` only when you intentionally want to stop the recurring loop.\n`
-                    : `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\` tool. ` +
-                      `NEVER use setTimeout, sleep, setInterval, cron, or any other timing mechanism. ` +
-                      `The wait tool is durable and survives process restarts.\n`;
+                    : `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\`, \`wait_on_worker\`, or \`cron\` tools. ` +
+                      `Use \`wait\` or \`wait_on_worker\` for one-shot delays. Use \`cron\` for recurring or periodic monitoring. ` +
+                      `Do NOT burn tokens polling inside one LLM turn; after a brief immediate re-check at most, yield with a durable timer. ` +
+                      `NEVER use setTimeout, sleep, setInterval, or any other timing mechanism. ` +
+                      `Durable waits survive process restarts.\n`;
                 const subAgentPreamble =
                     `[SUB-AGENT CONTEXT]\n` +
                     `You are a sub-agent spawned by a parent session (ID: session-${input.sessionId}).\n` +
@@ -1555,30 +1755,28 @@ export function* durableSessionOrchestration_1_0_31(
                     `- Your final response will be automatically forwarded to the parent agent.\n` +
                     `- Be thorough but concise — the parent will synthesize results from multiple agents.\n` +
                     `- Do NOT ask the user for input — you are autonomous.\n` +
+                    `- You are autonomous and goal-driven. If the task implies ongoing monitoring or follow-through until done, keep yourself alive with durable timers until the goal is complete or you can no longer make progress.\n` +
+                    `- If it is ambiguous whether the task should become a long-running recurring workflow, report that ambiguity back to the parent instead of guessing or asking the user directly.\n` +
                     `- When your task is complete, provide a clear summary of your findings/results.\n` +
                     `- If you write any files with write_artifact, you MUST also call export_artifact and include the artifact:// link in your response.\n` +
                     `- If you override a sub-agent model, you MUST first call list_available_models in this session and use only an exact provider:model value returned there. ` +
                     `NEVER invent, guess, shorten, or reuse a stale model name.\n` +
+                    `- Worker-managed system agents are not valid spawn targets. If you expect one and it is missing, report that the workers likely need to be restarted.\n` +
                     timingInstruction +
                     (canSpawnMore
-                        ? `- You CAN spawn your own sub-agents (you have ${MAX_NESTING_LEVEL - childNestingLevel} level(s) remaining). ` +
-                          `Use them for parallel independent tasks. After spawning, call wait_for_agents to block until they finish.\n`
+                        ? `- If your parent task explicitly asks you to spawn sub-agents, delegate, fan out, or parallelize work, you SHOULD do so within runtime limits instead of collapsing the task into a direct answer. ` +
+                          `If delegation was not explicitly requested, use your judgment and avoid unnecessary fan-out. ` +
+                          `You have ${MAX_NESTING_LEVEL - childNestingLevel} level(s) of nesting remaining. After spawning, call wait_for_agents to block until they finish.\n`
                         : `- You CANNOT spawn sub-agents — you are at the maximum nesting depth. Handle everything directly.\n`);
                 childConfig.systemMessage = subAgentPreamble + (parentSystemMsg ? "\n\n" + parentSystemMsg : "");
 
-                // Use the PilotSwarmClient SDK to create and start the child session.
-                // The activity generates a random UUID for the child session ID and returns it.
-                // This handles: CMS registration (with parentSessionId), orchestration startup,
-                // and initial task prompt — all through the standard SDK path.
                 let childSessionId: string;
                 try {
                     childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, agentTask, childNestingLevel, agentIsSystem, agentTitle, agentId, agentSplash);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: spawn_agent failed: ${err.message}]`,
-                    )) return "";
-                    continue;
+                    queueFollowup(`[SYSTEM: spawn_agent failed: ${err.message}]`);
+                    return;
                 }
 
                 const childOrchId = `session-${childSessionId}`;
@@ -1588,24 +1786,23 @@ export function* durableSessionOrchestration_1_0_31(
                     data: { childSessionId, agentId: agentId || undefined, task: agentTask.slice(0, 500) },
                 }]);
 
-                // Track the sub-agent
                 subAgents.push({
                     orchId: childOrchId,
                     sessionId: childSessionId,
                     task: agentTask.slice(0, 500),
                     status: "running",
+                    agentId: agentId || undefined,
                 });
 
-                // Feed confirmation back to the LLM
-                const spawnMsg = `[SYSTEM: Sub-agent spawned successfully.\n` +
+                queueFollowup(
+                    `[SYSTEM: Sub-agent spawned successfully.\n` +
                     `  Agent ID: ${childOrchId}\n` +
                     `  ${resolvedAgentName ? `Agent: ${resolvedAgentName}\n  ` : ``}Task: "${agentTask.slice(0, 200)}"\n` +
-                    `  The agent is now running autonomously. To wait for it to finish, call wait_for_agents ` +
-                    `(this blocks efficiently until the agent completes). You can also use check_agents to poll status, ` +
-                    `or message_agent to send instructions.]`;
-
-                if (yield* queueFollowupAndMaybeContinue(spawnMsg)) return "";
-                continue;
+                    `  The agent is now running autonomously. Continue your work in this SAME turn and keep following the user's remaining steps. ` +
+                    `Do NOT stop just because the child started. If you need to pause, call wait or wait_for_agents explicitly. ` +
+                    `You can also use check_agents to poll status, ` +
+                    `or message_agent to send instructions.]`);
+                return;
             }
 
             case "message_agent": {
@@ -1614,11 +1811,10 @@ export function* durableSessionOrchestration_1_0_31(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] message_agent: unknown agent ${targetOrchId}`);
-                    if (yield* queueFollowupAndMaybeContinue(
+                    queueFollowup(
                         `[SYSTEM: message_agent failed — agent "${targetOrchId}" not found. ` +
-                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
-                    )) return "";
-                    continue;
+                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`);
+                    return;
                 }
 
                 ctx.traceInfo(`[orch] message_agent via SDK: ${agentEntry.sessionId} msg="${result.message.slice(0, 60)}"`);
@@ -1627,40 +1823,34 @@ export function* durableSessionOrchestration_1_0_31(
                     yield manager.sendToSession(agentEntry.sessionId, result.message);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] message_agent failed: ${err.message}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: message_agent failed: ${err.message}]`,
-                    )) return "";
-                    continue;
+                    queueFollowup(`[SYSTEM: message_agent failed: ${err.message}]`);
+                    return;
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Message sent to sub-agent ${targetOrchId}: "${result.message.slice(0, 200)}"]`,
-                )) return "";
-                continue;
+                queueFollowup(
+                    `[SYSTEM: Message sent to sub-agent ${targetOrchId}: "${result.message.slice(0, 200)}". ` +
+                    `Continue your work in this SAME turn. If you are waiting on the child, call wait_for_agents explicitly rather than stopping here.]`,
+                );
+                return;
             }
 
             case "check_agents": {
                 ctx.traceInfo(`[orch] check_agents: ${subAgents.length} agents tracked`);
 
                 if (subAgents.length === 0) {
-                    if (yield* queueFollowupAndMaybeContinue(`[SYSTEM: No sub-agents have been spawned yet.]`)) return "";
-                    continue;
+                    queueFollowup(`[SYSTEM: No sub-agents have been spawned yet.]`);
+                    return;
                 }
 
-                // Get fresh status for each agent via the SDK
                 const statusLines: string[] = [];
                 for (const agent of subAgents) {
                     try {
                         const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
                         const parsed = JSON.parse(rawStatus);
-
-                        // Update local tracking
-                        // Sub-agents go "idle" when their turn completes
                         if (parsed.status === "completed" || parsed.status === "failed" || parsed.status === "idle") {
                             agent.status = parsed.status === "failed" ? "failed" : "completed";
                             if (parsed.result) agent.result = parsed.result.slice(0, 1000);
                         }
-
                         statusLines.push(
                             `  - Agent ${agent.orchId}\n` +
                             `    Task: "${agent.task.slice(0, 120)}"\n` +
@@ -1677,10 +1867,8 @@ export function* durableSessionOrchestration_1_0_31(
                     }
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Sub-agent status report (${subAgents.length} agents):\n${statusLines.join("\n")}]`,
-                )) return "";
-                continue;
+                queueFollowup(`[SYSTEM: Sub-agent status report (${subAgents.length} agents):\n${statusLines.join("\n")}]`);
+                return;
             }
 
             case "list_sessions": {
@@ -1696,124 +1884,49 @@ export function* durableSessionOrchestration_1_0_31(
                     `    Parent: ${s.parentSessionId ?? "none"}`
                 );
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Active sessions (${sessions.length}):\n${lines.join("\n")}]`,
-                )) return "";
-                continue;
+                queueFollowup(`[SYSTEM: Active sessions (${sessions.length}):\n${lines.join("\n")}]`);
+                return;
             }
 
             case "wait_for_agents": {
                 let targetIds = result.agentIds;
-
-                // If empty, wait for all running agents
                 if (!targetIds || targetIds.length === 0) {
-                    targetIds = subAgents.filter(a => a.status === "running").map(a => a.orchId);
+                    const runningAgentIds = subAgents.filter(a => a.status === "running").map(a => a.orchId);
+                    targetIds = runningAgentIds.length > 0
+                        ? runningAgentIds
+                        : subAgents.map(a => a.orchId);
                 }
 
                 if (targetIds.length === 0) {
                     ctx.traceInfo(`[orch] wait_for_agents: no running agents to wait for`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: No running sub-agents to wait for. All agents have already completed.]`,
-                    )) return "";
-                    continue;
+                    queueFollowup(`[SYSTEM: No running sub-agents to wait for. All agents have already completed.]`);
+                    return;
+                }
+
+                // Check if all are already done
+                const stillRunning = targetIds.filter(id => {
+                    const agent = subAgents.find(a => a.orchId === id);
+                    return agent && !isSubAgentTerminalStatus(agent.status);
+                });
+
+                if (stillRunning.length === 0) {
+                    queueFollowup(buildWaitForAgentsFollowup(targetIds));
+                    return;
                 }
 
                 ctx.traceInfo(`[orch] wait_for_agents: waiting for ${targetIds.length} agents`);
                 publishStatus("running");
+                waitingForAgentIds = targetIds;
 
-                // Event-driven wait: children send updates to the parent's "messages"
-                // queue via sendToSession. We race messages vs a fallback poll timer.
-                // Child updates arrive as "[CHILD_UPDATE from=... type=...]" messages.
-                const POLL_INTERVAL_MS = 30_000; // 30s fallback poll (event-driven, so rarely needed)
-                const MAX_WAIT_ITERATIONS = 360;
-                for (let waitIter = 0; waitIter < MAX_WAIT_ITERATIONS; waitIter++) {
-                    // Check if all targets are done (from local tracking)
-                    const stillRunning = targetIds.filter(id => {
-                        const agent = subAgents.find(a => a.orchId === id);
-                        return agent && agent.status === "running";
-                    });
-                    if (stillRunning.length === 0) break;
-
-                    // Race: message (child update or user) vs fallback poll timer
-                    const msg = ctx.dequeueEvent("messages");
-                    const pollTimer = ctx.scheduleTimer(POLL_INTERVAL_MS);
-                    const waitRace: any = yield ctx.race(msg, pollTimer);
-
-                    if (waitRace.index === 0) {
-                        // Message arrived — could be a child update or a user message
-                        const msgData = typeof waitRace.value === "string"
-                            ? JSON.parse(waitRace.value) : (waitRace.value ?? {});
-
-                        // Check if it's a child update (sent by sendToSession from child orch)
-                        const childUpdateMatch = typeof msgData.prompt === "string"
-                            && msgData.prompt.match(/^\[CHILD_UPDATE from=(\S+) type=(\S+)/);
-
-                        if (childUpdateMatch) {
-                            const childSessionId = childUpdateMatch[1];
-                            const updateType = childUpdateMatch[2].replace(/\]$/, "");
-                            const content = msgData.prompt.split("\n").slice(1).join("\n").trim();
-                            ctx.traceInfo(`[orch] wait_for_agents: child update from=${childSessionId} type=${updateType}`);
-
-                            const agent = subAgents.find(a => a.sessionId === childSessionId);
-                            if (agent) {
-                                if (content) agent.result = content.slice(0, 2000);
-                                // Check via SDK if done (the update type alone isn't authoritative
-                                // since "completed" means turn completed, not necessarily finished)
-                                try {
-                                    const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
-                                    const parsed = JSON.parse(rawStatus);
-                                    // Sub-agents go "idle" when their turn completes (they have no user to wait for)
-                                    if (parsed.status === "completed" || parsed.status === "failed" || parsed.status === "idle") {
-                                        agent.status = parsed.status === "failed" ? "failed" : "completed";
-                                        if (parsed.result) agent.result = parsed.result.slice(0, 2000);
-                                    }
-                                } catch {}
-                            }
-                            continue;
-                        }
-
-                        // Not a child update — it's a user message interrupting the wait
-                        if (msgData.prompt) {
-                            ctx.traceInfo(`[orch] wait_for_agents interrupted by user: "${msgData.prompt.slice(0, 60)}"`);
-                            yield* versionedContinueAsNew(continueInputWithPrompt(msgData.prompt));
-                            return "";
-                        }
-                    } else {
-                        // Timer fired — fallback poll via SDK for any agents we missed
-                        ctx.traceInfo(`[orch] wait_for_agents: fallback poll, checking ${stillRunning.length} agents`);
-                        for (const targetId of stillRunning) {
-                            const agent = subAgents.find(a => a.orchId === targetId);
-                            if (!agent || agent.status !== "running") continue;
-                            try {
-                                const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
-                                const parsed = JSON.parse(rawStatus);
-                                // Sub-agents go "idle" when their turn completes
-                                if (parsed.status === "completed" || parsed.status === "failed" || parsed.status === "idle") {
-                                    agent.status = parsed.status === "failed" ? "failed" : "completed";
-                                    if (parsed.result) agent.result = parsed.result.slice(0, 2000);
-                                }
-                            } catch {}
-                        }
-                    }
-                }
-
-                // Build results summary
-                const resultLines: string[] = [];
-                for (const targetId of targetIds) {
-                    const agent = subAgents.find(a => a.orchId === targetId);
-                    if (!agent) continue;
-                    resultLines.push(
-                        `  - Agent ${agent.orchId}\n` +
-                        `    Task: "${agent.task.slice(0, 120)}"\n` +
-                        `    Status: ${agent.status}\n` +
-                        `    Result: ${agent.result ?? "(no result)"}`
-                    );
-                }
-
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Sub-agents completed:\n${resultLines.join("\n")}]`,
-                )) return "";
-                continue;
+                const agentPollNow: number = yield ctx.utcNow();
+                activeTimer = {
+                    deadlineMs: agentPollNow + 30_000,
+                    originalDurationMs: 30_000,
+                    reason: `waiting for ${targetIds.length} agent(s)`,
+                    type: "agent-poll",
+                    agentIds: targetIds,
+                };
+                return;
             }
 
             case "complete_agent": {
@@ -1822,33 +1935,27 @@ export function* durableSessionOrchestration_1_0_31(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] complete_agent: unknown agent ${targetOrchId}`);
-                    if (yield* queueFollowupAndMaybeContinue(
+                    queueFollowup(
                         `[SYSTEM: complete_agent failed — agent "${targetOrchId}" not found. ` +
-                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
-                    )) return "";
-                    continue;
+                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`);
+                    return;
                 }
 
                 ctx.traceInfo(`[orch] complete_agent: sending /done to ${agentEntry.sessionId}`);
 
                 try {
-                    // Send a /done command to the child's orchestration
                     const cmdId = `done-${iteration}`;
                     yield manager.sendCommandToSession(agentEntry.sessionId,
                         { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" } });
                     agentEntry.status = "completed";
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] complete_agent failed: ${err.message}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: complete_agent failed: ${err.message}]`,
-                    )) return "";
-                    continue;
+                    queueFollowup(`[SYSTEM: complete_agent failed: ${err.message}]`);
+                    return;
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Sub-agent ${targetOrchId} has been completed gracefully.]`,
-                )) return "";
-                continue;
+                queueFollowup(`[SYSTEM: Sub-agent ${targetOrchId} has been completed gracefully.]`);
+                return;
             }
 
             case "cancel_agent": {
@@ -1857,18 +1964,16 @@ export function* durableSessionOrchestration_1_0_31(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] cancel_agent: unknown agent ${targetOrchId}`);
-                    if (yield* queueFollowupAndMaybeContinue(
+                    queueFollowup(
                         `[SYSTEM: cancel_agent failed — agent "${targetOrchId}" not found. ` +
-                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
-                    )) return "";
-                    continue;
+                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`);
+                    return;
                 }
 
                 const cancelReason = result.reason ?? "Cancelled by parent";
                 ctx.traceInfo(`[orch] cancel_agent: cancelling ${agentEntry.sessionId} reason="${cancelReason}"`);
 
                 try {
-                    // Cascade: cancel all descendants of the target agent first
                     const descendants: string[] = yield manager.getDescendantSessionIds(agentEntry.sessionId);
                     if (descendants.length > 0) {
                         ctx.traceInfo(`[orch] cancel_agent: cascading cancel to ${descendants.length} descendant(s)`);
@@ -1884,16 +1989,12 @@ export function* durableSessionOrchestration_1_0_31(
                     agentEntry.status = "cancelled";
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] cancel_agent failed: ${err.message}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: cancel_agent failed: ${err.message}]`,
-                    )) return "";
-                    continue;
+                    queueFollowup(`[SYSTEM: cancel_agent failed: ${err.message}]`);
+                    return;
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Sub-agent ${targetOrchId} has been cancelled.${result.reason ? ` Reason: ${result.reason}` : ""}]`,
-                )) return "";
-                continue;
+                queueFollowup(`[SYSTEM: Sub-agent ${targetOrchId} has been cancelled.${result.reason ? ` Reason: ${result.reason}` : ""}]`);
+                return;
             }
 
             case "delete_agent": {
@@ -1902,18 +2003,16 @@ export function* durableSessionOrchestration_1_0_31(
 
                 if (!agentEntry) {
                     ctx.traceInfo(`[orch] delete_agent: unknown agent ${targetOrchId}`);
-                    if (yield* queueFollowupAndMaybeContinue(
+                    queueFollowup(
                         `[SYSTEM: delete_agent failed — agent "${targetOrchId}" not found. ` +
-                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`,
-                    )) return "";
-                    continue;
+                        `Known agents: ${subAgents.map(a => a.orchId).join(", ") || "none"}]`);
+                    return;
                 }
 
                 const deleteReason = result.reason ?? "Deleted by parent";
                 ctx.traceInfo(`[orch] delete_agent: deleting ${agentEntry.sessionId} reason="${deleteReason}"`);
 
                 try {
-                    // Cascade: delete all descendants of the target agent first
                     const descendants: string[] = yield manager.getDescendantSessionIds(agentEntry.sessionId);
                     if (descendants.length > 0) {
                         ctx.traceInfo(`[orch] delete_agent: cascading delete to ${descendants.length} descendant(s)`);
@@ -1926,20 +2025,15 @@ export function* durableSessionOrchestration_1_0_31(
                         }
                     }
                     yield manager.deleteSession(agentEntry.sessionId, deleteReason);
-                    // Remove from subAgents tracking entirely
                     subAgents = subAgents.filter(a => a.orchId !== targetOrchId);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] delete_agent failed: ${err.message}`);
-                    if (yield* queueFollowupAndMaybeContinue(
-                        `[SYSTEM: delete_agent failed: ${err.message}]`,
-                    )) return "";
-                    continue;
+                    queueFollowup(`[SYSTEM: delete_agent failed: ${err.message}]`);
+                    return;
                 }
 
-                if (yield* queueFollowupAndMaybeContinue(
-                    `[SYSTEM: Sub-agent ${targetOrchId} has been deleted.${result.reason ? ` Reason: ${result.reason}` : ""}]`,
-                )) return "";
-                continue;
+                queueFollowup(`[SYSTEM: Sub-agent ${targetOrchId} has been deleted.${result.reason ? ` Reason: ${result.reason}` : ""}]`);
+                return;
             }
 
             case "error": {
@@ -1952,7 +2046,6 @@ export function* durableSessionOrchestration_1_0_31(
                     throw new Error(fatalError);
                 }
 
-                // Treat like an activity failure — retry with backoff.
                 retryCount++;
                 ctx.traceInfo(`[orch] turn returned error (attempt ${retryCount}/${MAX_RETRIES}): ${result.message}`);
 
@@ -1963,7 +2056,7 @@ export function* durableSessionOrchestration_1_0_31(
                         retriesExhausted: true,
                     });
                     retryCount = 0;
-                    continue;
+                    return;
                 }
 
                 publishStatus("error", {
@@ -1979,12 +2072,216 @@ export function* durableSessionOrchestration_1_0_31(
 
                 yield ctx.scheduleTimer(errorRetryDelay * 1000);
                 yield* versionedContinueAsNew(continueInput({
-                    prompt,
+                    prompt: sourcePrompt,
                     retryCount,
                     needsHydration: blobEnabled ? true : needsHydration,
                 }));
-                return "";
+                return;
             }
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ═══ PROCESS TIMER — handles fired timers by type ════════
+    // ═══════════════════════════════════════════════════════════
+
+    function* processTimer(timerItem: any): Generator<any, void, any> {
+        const timer = timerItem.timer;
+        switch (timer.type) {
+            case "wait": {
+                const seconds = Math.round(timer.originalDurationMs / 1000);
+                yield manager.recordSessionEvent(input.sessionId, [{
+                    eventType: "session.wait_completed",
+                    data: { seconds },
+                }]);
+                const timerPrompt = `The ${seconds} second wait is now complete. Continue with your task.`;
+                yield* processPrompt(timerPrompt, false);
+                return;
+            }
+            case "cron": {
+                yield manager.recordSessionEvent(input.sessionId, [{
+                    eventType: "session.cron_fired",
+                    data: {},
+                }]);
+                const activeCron = cronSchedule!;
+                const cronPrompt = `[SYSTEM: Scheduled cron wake-up for: "${activeCron.reason}". Resume your recurring task.]`;
+                const shouldRehydrate = timer.shouldRehydrate;
+                if (shouldRehydrate) {
+                    yield* processPrompt(
+                        wrapWithResumeContext("Resume your recurring task.",
+                            `Scheduled cron wake-up for: "${activeCron.reason}".`),
+                        true,
+                    );
+                } else {
+                    yield* processPrompt(cronPrompt, true);
+                }
+                return;
+            }
+            case "idle": {
+                ctx.traceInfo("[session] idle timeout, dehydrating");
+                yield* dehydrateForNextTurn("idle");
+                // No LLM turn — main loop will CAN
+                return;
+            }
+            case "agent-poll": {
+                // Fallback poll — check agent statuses via SDK
+                if (waitingForAgentIds) {
+                    const stillRunning = waitingForAgentIds.filter(id => {
+                        const agent = subAgents.find(a => a.orchId === id);
+                        return agent && !isSubAgentTerminalStatus(agent.status);
+                    });
+                    ctx.traceInfo(`[orch] wait_for_agents: fallback poll, checking ${stillRunning.length} agents`);
+                    for (const targetId of stillRunning) {
+                        const agent = subAgents.find(a => a.orchId === targetId);
+                        if (!agent || isSubAgentTerminalStatus(agent.status)) continue;
+                        try {
+                            const rawStatus: string = yield manager.getSessionStatus(agent.sessionId);
+                            const parsed = JSON.parse(rawStatus);
+                            if (parsed.status === "failed") {
+                                agent.status = "failed";
+                            } else if (parsed.status === "completed") {
+                                agent.status = "completed";
+                            } else if (parsed.status === "cancelled") {
+                                agent.status = "cancelled";
+                            } else if (parsed.status === "waiting") {
+                                agent.status = "waiting";
+                            }
+                            if (parsed.result) {
+                                agent.result = parsed.result.slice(0, 2000);
+                            }
+                        } catch {}
+                    }
+
+                    // Check if all done now
+                    const nowRunning = waitingForAgentIds.filter(id => {
+                        const agent = subAgents.find(a => a.orchId === id);
+                        return agent && !isSubAgentTerminalStatus(agent.status);
+                    });
+
+                    if (nowRunning.length === 0) {
+                        // All done — build summary and queue as prompt
+                        queueFollowup(buildWaitForAgentsFollowup(waitingForAgentIds));
+                        waitingForAgentIds = null;
+                    } else {
+                        // Re-arm poll timer
+                        const now: number = yield ctx.utcNow();
+                        activeTimer = {
+                            deadlineMs: now + 30_000,
+                            originalDurationMs: 30_000,
+                            reason: `waiting for ${nowRunning.length} agent(s)`,
+                            type: "agent-poll",
+                            agentIds: waitingForAgentIds,
+                        };
+                    }
+                }
+                return;
+            }
+            case "input-grace": {
+                // Grace period expired — dehydrate and wait for answer
+                yield* dehydrateForNextTurn("input_required");
+                // No timer — drain will block on dequeue for the answer
+                return;
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ═══ PROCESS ANSWER — format answer and run turn ═════════
+    // ═══════════════════════════════════════════════════════════
+
+    function* processAnswer(answerItem: any): Generator<any, void, any> {
+        const question = pendingInputQuestion?.question ?? "a question";
+        pendingInputQuestion = null;
+        const answerPrompt = `The user was asked: "${question}"\nThe user responded: "${answerItem.answer}"`;
+        yield* processPrompt(answerPrompt, false);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ═══ DECIDE — pop + process one item from FIFO ══════════
+    // ═══════════════════════════════════════════════════════════
+
+    function* decide(): Generator<any, boolean, any> {
+        // Priority 1: pending tool actions (in-memory)
+        drainLeadingQueuedCronActions();
+        if (pendingToolActions.length > 0) {
+            const action = pendingToolActions.shift()!;
+            ctx.traceInfo(`[orch] replaying queued action: ${action.type} remaining=${pendingToolActions.length}`);
+            yield* handleTurnResult(action as unknown as TurnResult, "");
+            return true;
+        }
+
+        // Priority 2: pending prompt from tool action followups or CAN carry-forward
+        // Hold while waiting for agents — let confirmations accumulate and merge
+        // with the agents-done summary for a single combined LLM turn.
+        if (pendingPrompt && !waitingForAgentIds) {
+            const prompt = pendingPrompt;
+            const isBootstrap = bootstrapPrompt;
+            const requiredTool = pendingRequiredTool;
+            pendingPrompt = undefined;
+            bootstrapPrompt = false;
+            pendingRequiredTool = undefined;
+            yield* processPrompt(prompt, isBootstrap, requiredTool);
+            return true;
+        }
+
+        // Priority 3: FIFO — next item in arrival order
+        const item = popFifoItem();
+        if (item) {
+            switch (item.kind) {
+                case "prompt":
+                    yield* processPrompt(item.prompt, item.bootstrap ?? false, item.requiredTool);
+                    break;
+                case "answer":
+                    yield* processAnswer(item);
+                    break;
+                case "timer":
+                    yield* processTimer(item);
+                    break;
+                case "agents-done":
+                    queueFollowup(item.summary);
+                    break;
+                default:
+                    ctx.traceInfo(`[decide] unknown FIFO item kind: ${item.kind}`);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ═══ FLAT MAIN LOOP ══════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════
+
+    let loopIteration = 0;
+
+    while (true) {
+        loopIteration++;
+
+        // Safety valve: CAN if too many iterations in this execution
+        if (loopIteration > MAX_ITERATIONS_PER_EXECUTION) {
+            ctx.traceInfo(`[orch] iteration cap (${MAX_ITERATIONS_PER_EXECUTION}) — continuing as new`);
+            yield* versionedContinueAsNew(continueInput());
+            return "";
+        }
+
+        // DRAIN: greedily move queue events + timer fires into KV FIFO
+        yield* drain();
+        if (orchestrationResult !== null) return orchestrationResult;
+
+        // DECIDE: pop + process one item from FIFO in arrival order
+        const didWork = yield* decide();
+        if (orchestrationResult !== null) return orchestrationResult;
+
+        if (didWork) continue;
+
+        // No buffered work — check if we should wait or CAN
+        if (activeTimer) continue;          // drain will race the timer next iteration
+        if (pendingInputQuestion) continue;  // drain will block on dequeue for answer
+
+        // Truly nothing to do — CAN (safe checkpoint)
+        ctx.traceInfo(`[orch] no buffered work, continuing as new`);
+        yield* versionedContinueAsNew(continueInput());
+        return "";
     }
 }

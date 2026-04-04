@@ -64,11 +64,15 @@ Either way, import from `pilotswarm-sdk`:
 import { PilotSwarmClient, PilotSwarmWorker } from "pilotswarm-sdk";
 ```
 
-If you want the shipped TUI in your app as well:
+If you want the published terminal UI package as well:
 
 ```bash
 npm install pilotswarm-cli
 ```
+
+Inside this repo, the recommended terminal UI path is
+[`run.sh`](/Users/affandar/workshop/drox/pilotswarm/run.sh) or
+[`packages/cli/bin/tui.js`](/Users/affandar/workshop/drox/pilotswarm/packages/cli/bin/tui.js).
 
 ---
 
@@ -222,32 +226,38 @@ node --env-file=.env examples/chat.js
 
 This runs one worker + one client in a single process. Type a message and get a response.
 
-### Full TUI (embedded workers, local PG)
+### TUI (embedded workers, local PG)
 
 ```bash
 ./run.sh local --db
 # or
-node bin/tui.js local --env .env
+node packages/cli/bin/tui.js local --env .env
 ```
 
-### Full TUI (embedded workers, Azure PG)
+### TUI (embedded workers, remote PG)
 
 ```bash
 ./run.sh local
 # or
-node bin/tui.js local --env .env.remote
+node packages/cli/bin/tui.js local --env .env.remote
 ```
 
-You should see the TUI with a sessions list, chat pane, and worker log panes.
-Press `n` to create a new session, type a message, and hit Enter.
+You should see the TUI with:
+
+- a sessions tree
+- chat and activity panes
+- an inspector with sequence, logs, node map, and files tabs
+
+Press `n` to create a new session, `p` to focus the prompt, and `Enter` to send.
 
 ### What happens on first run
 
 1. The duroxide runtime connects to PostgreSQL and creates the `duroxide` schema
    (orchestration state, execution history, task queues).
-2. The CMS creates the `copilot_sessions` schema (session records, event log).
-3. Workers start polling for orchestrations.
-4. You're ready to chat.
+2. The CMS creates the `copilot_sessions` schema (session records, titles, event log).
+3. The facts store creates the `pilotswarm_facts` schema.
+4. Embedded workers start polling for orchestrations.
+5. You're ready to chat.
 
 ---
 
@@ -353,11 +363,11 @@ kubectl get pods -n copilot-runtime -l app.kubernetes.io/component=worker
 ```bash
 ./run.sh remote
 # or
-node bin/tui.js remote --env .env.remote
+node packages/cli/bin/tui.js remote --env .env.remote
 ```
 
-The TUI connects to the same PostgreSQL as the AKS workers. No `GITHUB_TOKEN` needed
-on the client side — workers handle all LLM calls.
+The TUI connects to the same PostgreSQL as the AKS workers. No `GITHUB_TOKEN`
+is needed on the client side because workers handle all LLM calls.
 
 ---
 
@@ -465,10 +475,10 @@ Then deploy:
 kubectl apply -f deploy/k8s/worker-deployment-alpha.yaml
 ```
 
-### Connect TUI to a Specific Namespace
+### Connect the TUI to a Specific Namespace
 
 ```bash
-node bin/tui.js remote \
+node packages/cli/bin/tui.js remote \
     --env .env.alpha \
     --namespace copilot-alpha \
     --label app.kubernetes.io/component=worker

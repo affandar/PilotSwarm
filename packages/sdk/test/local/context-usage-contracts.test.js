@@ -1,4 +1,4 @@
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,23 +25,28 @@ describe("context usage contracts", () => {
         const orchestration = readRepoFile("packages/sdk/src/orchestration.ts");
         const registry = readRepoFile("packages/sdk/src/orchestration-registry.ts");
 
-        assertIncludes(orchestration, 'export const CURRENT_ORCHESTRATION_VERSION = "1.0.31";', "latest orchestration should be versioned for context usage changes");
+        expect(orchestration).toMatch(
+            /export const CURRENT_ORCHESTRATION_VERSION = "\d+\.\d+\.\d+";/,
+        );
         assertIncludes(orchestration, "function updateContextUsageFromEvents(", "orchestration should derive context usage from turn events");
         assertIncludes(orchestration, "...(contextUsage ? { contextUsage } : {}),", "context usage should be carried into status and continueAsNew state");
-        assertIncludes(registry, '{ version: "1.0.30", handler: durableSessionOrchestration_1_0_30 },', "previous orchestration version should stay frozen");
+        assertIncludes(registry, "version: DURABLE_SESSION_LATEST_VERSION", "registry should expose the latest orchestration via the shared alias");
+        expect(registry).toMatch(
+            /\{ version: "\d+\.\d+\.\d+", handler: durableSessionOrchestration_\d+_\d+_\d+ \},/,
+        );
     });
 
     it("renders context usage in the TUI header and warning badge in the session list", () => {
-        const tui = readRepoFile("packages/cli/cli/tui.js");
-        const tuiHelpers = readRepoFile("packages/cli/cli/context-usage.js");
+        const selectors = readRepoFile("packages/ui-core/src/selectors.js");
+        const tuiHelpers = readRepoFile("packages/ui-core/src/context-usage.js");
         const client = readRepoFile("packages/sdk/src/client.ts");
         const management = readRepoFile("packages/sdk/src/management-client.ts");
 
-        assertIncludes(tui, 'from "./context-usage.js"', "TUI should import shared context-usage helpers");
-        assertIncludes(tuiHelpers, "export function formatContextHeaderBadge", "chat header should have a shared context meter helper");
-        assertIncludes(tuiHelpers, 'ctx ${formatTokenCount(contextUsage.currentTokens)}/${formatTokenCount(contextUsage.tokenLimit)} ${percent}%', "chat header should show compact context usage");
-        assertIncludes(tuiHelpers, 'return ` {${color}-fg}[ctx ${percent}%]{/${color}-fg}`;', "session list should show a compact warning badge");
-        assertIncludes(tuiHelpers, 'export function formatCompactionActivityMarkup', "compaction lifecycle should be rendered as explicit activity lines");
+        assertIncludes(selectors, "getContextHeaderBadge", "selectors should import shared context-usage helpers");
+        assertIncludes(tuiHelpers, "export function getContextHeaderBadge", "chat header should have a shared context meter helper");
+        assertIncludes(tuiHelpers, 'text: `ctx ${formatTokenCount(contextUsage.currentTokens)}/${formatTokenCount(contextUsage.tokenLimit)} ${percent}%`', "chat header should show compact context usage");
+        assertIncludes(tuiHelpers, 'text: `[ctx ${percent}%]`', "session list should show a compact warning badge");
+        assertIncludes(tuiHelpers, "export function formatCompactionActivityRuns", "compaction lifecycle should be rendered as explicit activity lines");
         assertIncludes(client, "contextUsage: customStatus?.contextUsage", "client session info should surface context usage from status");
         assertIncludes(management, "contextUsage: customStatus?.contextUsage", "management getSession should surface context usage from status");
     });

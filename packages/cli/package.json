@@ -1,16 +1,21 @@
 {
   "name": "pilotswarm-cli",
   "version": "0.1.12",
-  "description": "Terminal UI for pilotswarm — interactive durable agent orchestration.",
+  "description": "Terminal UI for PilotSwarm.",
   "type": "module",
   "bin": {
     "pilotswarm": "./bin/tui.js",
     "pilotswarm-cli": "./bin/tui.js"
   },
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
   "scripts": {
     "build": "echo 'pilotswarm-cli: no build step (plain JS)'",
-    "tui": "node bin/tui.js local --env ../../.env.remote",
-    "tui:remote": "node bin/tui.js remote --env ../../.env.remote"
+    "start": "node ./bin/tui.js local --env ../../.env.remote",
+    "start:remote": "node ./bin/tui.js remote --env ../../.env.remote",
+    "clean": "true"
   },
   "keywords": [
     "copilot",
@@ -30,20 +35,19 @@
     "url": "https://github.com/affandar/PilotSwarm/issues"
   },
   "dependencies": {
-    "pilotswarm-sdk": "^0.1.9",
-    "@bradygaster/squad-cli": "^0.8.25",
-    "chalk": "^5.6.2",
-    "marked": "^15.0.12",
-    "marked-terminal": "^7.3.0",
-    "neo-blessed": "^0.1.81"
+    "ink": "^6.8.0",
+    "pilotswarm-sdk": "^0.1.12",
+    "pilotswarm-ui-core": "0.1.0",
+    "pilotswarm-ui-react": "0.1.0",
+    "react": "^19.2.4"
   },
   "engines": {
     "node": ">=24.0.0"
   },
   "files": [
     "bin/**/*",
-    "cli/tui.js",
-    "cli/context-usage.js",
+    "src/**/*",
+    "tui-splash.txt",
     "plugins/**/*",
     "README.md"
   ]

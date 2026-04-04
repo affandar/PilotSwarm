@@ -79,7 +79,7 @@ export interface AgentConfig {
     title?: string;
     /** Parent system agent ID slug (e.g. "pilotswarm"). Makes this a sub-agent of the parent. */
     parent?: string;
-    /** Splash banner (blessed markup) shown in the TUI when the session is selected. */
+    /** Splash banner (terminal markup) shown in the TUI when the session is selected. */
     splash?: string;
     /** Initial prompt to send when the system agent is first created. */
     initialPrompt?: string;

@@ -12,7 +12,7 @@ Draft
 
 ## Non-Goals
 
-- This is not an implementation design for blessed, CMS, duroxide, or Kubernetes log plumbing.
+- This is not an implementation design for the current host implementation, CMS, duroxide, or Kubernetes log plumbing.
 - This is not a complete internal architecture spec for management APIs or orchestration internals.
 - This does not require preserving the current monolithic code structure or exact pane implementation.
 - This does not treat every current debug surface as permanently required; it defines the user value those surfaces must provide.

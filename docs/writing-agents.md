@@ -259,7 +259,7 @@ initialPrompt: >
 | `id` | string | No | Deterministic UUID slug (system agents only). |
 | `title` | string | No | Display name in session list. Falls back to `Name Agent`. |
 | `parent` | string | No | Parent system agent `id`. Makes this a child system agent. |
-| `splash` | string | No | TUI banner (blessed markup). Use YAML `|` block syntax. |
+| `splash` | string | No | TUI banner (terminal markup). Use YAML `|` block syntax. |
 | `initialPrompt` | string | No | First user message. Use YAML `>` folded syntax for multi-line. |
 
 ---

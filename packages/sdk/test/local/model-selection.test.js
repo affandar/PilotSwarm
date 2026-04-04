@@ -17,6 +17,8 @@ import { ModelProviderRegistry } from "../../src/index.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
+const FORCE_SINGLE_MODEL = Boolean(process.env.PS_TEST_FORCE_MODEL || process.env.TEST_FORCE_MODEL);
+const describeModelSelection = FORCE_SINGLE_MODEL ? describe.skip : describe;
 
 async function testCreateSessionWithModel(env) {
     await withClient(env, {}, async (client, worker) => {
@@ -143,7 +145,31 @@ async function testInvalidConfiguredDefaultFailsFast() {
     );
 }
 
-describe("Model Selection", () => {
+async function testMissingConfiguredDefaultDoesNotFallback() {
+    const registry = new ModelProviderRegistry({
+        providers: [
+            {
+                id: "github-copilot",
+                type: "github",
+                githubToken: "env:GITHUB_TOKEN",
+                models: ["gpt-5.1"],
+            },
+        ],
+    });
+
+    assertEqual(
+        registry.defaultModel,
+        undefined,
+        "registry should not silently choose the first available model as default",
+    );
+    assertEqual(
+        registry.normalize(),
+        undefined,
+        "normalizing an unspecified model should stay undefined when no defaultModel is configured",
+    );
+}
+
+describeModelSelection("Model Selection", () => {
     beforeAll(async () => { await preflightChecks(); });
 
     it("Create Session With Explicit Model", { timeout: TIMEOUT }, async () => {
@@ -160,5 +186,8 @@ describe("Model Selection", () => {
     });
     it("Invalid Configured Default Fails Fast", async () => {
         await testInvalidConfiguredDefaultFailsFast();
+    });
+    it("Missing Configured Default Does Not Fallback", async () => {
+        await testMissingConfiguredDefaultDoesNotFallback();
     });
 });

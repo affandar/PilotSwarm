@@ -11,6 +11,8 @@ PilotSwarm is a **transparent durability layer underneath the GitHub Copilot SDK
 
 The API surface mirrors the Copilot SDK exactly. Internally, each SDK call is "remoted" through a duroxide orchestration to a worker node where a real `CopilotSession` runs. The developer never sees orchestrations, activities, event queues, or blob stores.
 
+For the main session state machine itself, see [Main Orchestration Loop](./orchestration-loop.md). For the terminal UI architecture, see [TUI Architecture](./tui-architecture.md).
+
 ### Core Principles
 
 1. **Close SDK semantics with durable additions** — Core chat flow mirrors Copilot SDK (`createSession`, `send`, `sendAndWait`, `on`, `abort`), with durability-oriented behavior differences (`destroy` maps to client delete flow, orchestration-backed state, CMS-backed event replay).

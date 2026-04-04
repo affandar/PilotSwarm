@@ -84,5 +84,7 @@ Block until sub-agents finish. Returns their final results.
 - Always call `check_agents` or `wait_for_agents` to collect results — don't ignore your agents
 - Keep task descriptions clear and self-contained — the agent has no access to your conversation history
 - Sub-agents run on potentially different worker nodes — they cannot share in-memory state
+- If the user explicitly asks you to use sub-agents, delegation, fan-out, or parallel processing, do it within runtime limits instead of silently collapsing the task into a single-agent answer
+- If the user did not explicitly ask for delegation, you may decide whether sub-agents are actually useful
 
 ````

@@ -67,6 +67,14 @@ export RUST_LOG="${RUST_LOG:-error}"
 # Load .env for vitest (vitest doesn't have --env-file)
 set -a; source "$ENV_FILE"; set +a
 
+cleanup_test_state() {
+    echo "🧹 Cleaning stale local test state..."
+    node scripts/cleanup-test-schemas.js
+}
+
+cleanup_test_state
+trap cleanup_test_state EXIT
+
 # Build vitest args.
 # Default mode runs with Vitest's normal parallelism. Use --sequential for a
 # deterministic one-at-a-time run when debugging contention or backend capacity issues.

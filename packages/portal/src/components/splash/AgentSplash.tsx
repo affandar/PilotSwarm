@@ -1,7 +1,7 @@
-import { blessedToHtml } from "./blessedToHtml";
+import { terminalMarkupToHtml } from "./terminalMarkupToHtml";
 
 interface AgentSplashProps {
-  /** Raw blessed-tagged splash content (same source as TUI) */
+  /** Raw terminal-markup splash content (same source as the terminal UI) */
   splashContent: string;
   /** Agent accent color for the card border */
   accentColor?: string;
@@ -15,7 +15,7 @@ export default function AgentSplash({ splashContent, accentColor = "#888" }: Age
     >
       <pre
         className="font-mono text-sm leading-snug whitespace-pre"
-        dangerouslySetInnerHTML={{ __html: blessedToHtml(splashContent) }}
+        dangerouslySetInnerHTML={{ __html: terminalMarkupToHtml(splashContent) }}
       />
     </div>
   );

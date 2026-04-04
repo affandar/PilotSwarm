@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.13 — 2026-04-04
+
+### Terminal UI
+
+- **Single TUI cutover** — removed the old blessed implementation and the temporary split between terminal UI stacks. PilotSwarm now ships one terminal UI built from [`packages/cli/`](packages/cli), [`packages/ui-core/`](packages/ui-core), and [`packages/ui-react/`](packages/ui-react).
+- **Shared UI architecture** — session tree, chat, activity, sequence, node map, files inspector, prompt editor, and modal flows now live in shared layers instead of a monolithic host file. This includes artifact upload/open/filter flows, rename dialogs, multiline prompt editing, mouse copy, sticky inspector headers, and terminal rendering cleanup.
+- **TUI performance pass** — session-list rendering now slices visible rows before building view models, and the React host subscribes to narrower state slices so typing latency and large session-list scrolling stay snappy.
+- **DevOps sample migration** — the layered DevOps sample now runs on the shipped terminal UI rather than the removed blessed-only path.
+
+### SDK / Orchestration
+
+- **Orchestration v1.0.33** — the flat durable event loop matured with inline control tools, explicit turn boundaries, context usage reporting, improved prompt layering, child-session status handling, and frozen replay versions `1.0.31` and `1.0.32`.
+- **Session recovery hardening** — `runTurn` now treats Copilot-side `Session not found` as a recovery path: invalidate warm state, resume or hydrate once, inject a recovery notice, and fail unrecoverably instead of retrying forever when state is truly gone.
+- **Autonomy and cron hardening** — default/system prompts now explicitly tell autonomous agents to use durable waits/cron for ambiguous long-running work, ask the user when intent is unclear, and avoid wasting tokens in in-turn polling loops.
+- **Session/tooling fixes** — generic sessions now inherit default tool layers correctly, manual title locking prevents later auto-retitling, and cascading cancel/done plus terminal child status handling are more consistent.
+- **Monitoring compatibility fix** — resource-manager monitoring now uses Duroxide management APIs for system metrics and queue depths instead of querying Duroxide internal tables directly.
+
+### Tests / Ops
+
+- **Recovery and control contracts** — added regression coverage for inline control tools, session recovery/failures, terminal child states, resource-manager monitoring, and orchestration prompt/tool contracts.
+- **Test hygiene** — [`scripts/run-tests.sh`](scripts/run-tests.sh) now cleans stale local test schemas and temp session layouts before and after runs to reduce environmental contamination.
+- **Reset/deploy cleanup** — stale legacy queue-table assumptions were removed from reset helpers and resource monitoring paths.
+
+### Recommended Reading
+
+- **TUI architecture** — [`docs/tui-architecture.md`](docs/tui-architecture.md)
+- **TUI implementor guide** — [`docs/tui-implementor-guide.md`](docs/tui-implementor-guide.md)
+- **Main orchestration loop** — [`docs/orchestration-loop.md`](docs/orchestration-loop.md)
+- **Inline control / explicit turn boundaries proposal** — [`docs/proposals/inline-sub-agent-tools-and-explicit-turn-boundaries.md`](docs/proposals/inline-sub-agent-tools-and-explicit-turn-boundaries.md)
+- **TUI design spec** — [`docs/proposals/tui-design-spec.md`](docs/proposals/tui-design-spec.md)
+- **Session-store-driven durability proposal** — [`docs/proposals/session-store-driven-durability.md`](docs/proposals/session-store-driven-durability.md)
+- **Session-loss bug report and recovery context** — [`docs/bugreports/runTurn-session-not-found-infinite-retry.md`](docs/bugreports/runTurn-session-not-found-infinite-retry.md)
+
 ## 0.1.12 — 2026-03-28
 
 ### SDK
@@ -204,36 +237,30 @@
   `--system`→`SYSTEM_MESSAGE`, `--namespace`→`K8S_NAMESPACE`, `--label`→`K8S_POD_LABEL`,
   `--log-level`→`LOG_LEVEL`. Zero-flag operation possible with everything in `.env`.
 
-### TUI (`cli/tui.js`)
+### TUI
 
-- **Moved from `examples/tui.js` to `cli/tui.js`** — TUI is now part of the package, not an example.
+- **Moved from the old standalone example into the shipped TUI package** — the terminal UI became a maintained product surface instead of a one-off example.
 - **Parameterized hardcoded values** — system message, K8s namespace, K8s pod label, and worker
   module path all read from env vars set by the CLI.
-- **Emoji rendering fix** — monkey-patch neo-blessed's `unicode.charWidth()` to correctly report
-  emoji codepoints (U+1F100–U+1FAFF, U+2300–U+27BF, etc.) as 2 cells wide. Emoji now render
-  correctly instead of being stripped. Added `forceUnicode: true` to screen options.
+- **Emoji rendering fix** — terminal width handling was corrected so wide emoji render predictably instead of corrupting layout.
 - **Session switch repaint fix** — switching sessions now triggers the same full
   `screen.realloc()` + `relayoutAll()` cycle as pressing 'r', plus a deferred
   repaint on next tick. Fixes stale content bleeding through on first switch.
 - **Log mode switch repaint fix** — pressing 'm' to change log view mode now also
   triggers the full 'r'-equivalent repaint.
-- **Clean exit** — suppress `process.stdout.write` and `process.stderr.write` before
-  `screen.destroy()` to prevent neo-blessed's terminfo `SetUlc` compilation dump.
-  Terminal reset written via `fs.writeSync(1, ...)` to bypass suppression.
-- **Suppress `SetUlc` on load** — stderr silenced during `require("neo-blessed")` and
-  `blessed.screen()` creation to prevent terminfo junk on startup.
+- **Clean exit** — shutdown now suppresses terminal junk and restores the screen cleanly on exit.
+- **Startup terminal cleanup** — noisy terminal capability output on startup is suppressed.
 
 ### `run.sh`
 
 - Updated to use `node bin/tui.js local|remote` instead of setting env vars and calling
-  `examples/tui.js` directly.
+  the old example launcher directly.
 
 ### `package.json`
 
 - Added `bin` field for `pilotswarm-tui` → `bin/tui.js`.
-- TUI rendering deps (`neo-blessed`, `marked`, `marked-terminal`) moved from
-  `devDependencies` to `dependencies`.
-- `files` includes `bin/`, `cli/tui.js`, and `plugin/`.
+- TUI runtime dependencies moved from `devDependencies` to `dependencies`.
+- `files` includes the terminal UI binary and shipped assets.
 - NPM scripts updated to use new CLI.
 
 ### Docs
@@ -241,5 +268,5 @@
 - **`building-apps.md`** — deployment topology diagrams updated to reference
   `npx pilotswarm-tui` / `node bin/tui.js`. CLI reference shows env var
   equivalents for all flags. Intro updated to remove stale `tui-apps.md` cross-ref.
-- **`README.md`** — TUI example row updated to reference `cli/tui.js`.
-- **`examples.md`** — TUI section header updated to `cli/tui.js`.
+- **`README.md`** — TUI docs updated to point at the shipped terminal UI entrypoint.
+- **`examples.md`** — example docs updated to point at the shipped terminal UI entrypoint.

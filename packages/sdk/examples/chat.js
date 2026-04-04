@@ -55,7 +55,6 @@ await worker.start();
 
 const client = new PilotSwarmClient({
     store: STORE,
-    blobEnabled: true,
 });
 await client.start();
 

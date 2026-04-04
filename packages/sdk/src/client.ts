@@ -21,6 +21,7 @@ import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { createFactStoreForUrl } from "./facts-store.js";
+import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -414,12 +415,12 @@ export class PilotSwarmClient {
 
     // ─── Internal ────────────────────────────────────────────
 
-    private get _blobEnabled(): boolean {
-        return this.config.blobEnabled ?? false;
-    }
-
     /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
-    private async _ensureOrchestrationAndSend(sessionId: string, prompt: string, opts?: { bootstrap?: boolean }): Promise<string> {
+    private async _ensureOrchestrationAndSend(
+        sessionId: string,
+        prompt: string,
+        opts?: { bootstrap?: boolean; requiredTool?: string },
+    ): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
         const _trace = this.config.traceWriter ?? (() => {});
         const startedAt = Date.now();
@@ -447,6 +448,25 @@ export class PilotSwarmClient {
 
         trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
 
+        const cmsRow = await this._catalog.getSession(sessionId);
+        if (
+            cmsRow?.state === "completed"
+            && cmsRow.parentSessionId
+            && !cmsRow.isSystem
+        ) {
+            throw new Error(
+                `Session ${sessionId.slice(0, 8)} is a completed terminal orchestration and cannot accept new messages.`,
+            );
+        }
+        if (cmsRow && (cmsRow.state === "failed" || cmsRow.state === "error")) {
+            const info = await this._getSessionInfo(sessionId).catch(() => null);
+            if (info?.status === "failed") {
+                throw new Error(
+                    `Session ${sessionId.slice(0, 8)} is a failed terminal orchestration and cannot accept new messages.`,
+                );
+            }
+        }
+
         if (!this.activeOrchestrations.has(sessionId)) {
             const parentSessionId = this.parentSessionIds.get(sessionId);
             const nestingLevel = this.nestingLevels.get(sessionId);
@@ -454,7 +474,10 @@ export class PilotSwarmClient {
                 sessionId,
                 config: serializableConfig,
                 iteration: 0,
-                blobEnabled: this._blobEnabled,
+                // Client-created sessions are always durable. The worker's
+                // configured session store determines how that durability is
+                // backed (blob storage or local filesystem state).
+                blobEnabled: true,
                 dehydrateThreshold: this.config.dehydrateThreshold ?? 30,
                 idleTimeout: parentSessionId ? -1 : (this.config.dehydrateOnIdle ?? 30),
                 inputGracePeriod: parentSessionId ? -1 : (this.config.dehydrateOnInputRequired ?? 30),
@@ -483,6 +506,8 @@ export class PilotSwarmClient {
         await this._catalog.updateSession(sessionId, {
             orchestrationId,
             state: "running",
+            lastError: null,
+            waitReason: null,
             lastActiveAt: new Date(),
         });
         trace(`[client] updateSession running done (${Date.now() - updateAt}ms)`);
@@ -491,7 +516,11 @@ export class PilotSwarmClient {
         await this.duroxideClient.enqueueEvent(
             orchestrationId,
             "messages",
-            JSON.stringify({ prompt, ...(opts?.bootstrap ? { bootstrap: true } : {}) }),
+            JSON.stringify({
+                prompt,
+                ...(opts?.bootstrap ? { bootstrap: true } : {}),
+                ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
+            }),
         );
         trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
         trace("[client] ensureOrchestrationAndSend complete");
@@ -506,7 +535,7 @@ export class PilotSwarmClient {
         onUserInput: UserInputHandler | undefined,
         timeout?: number,
         onIntermediateContent?: (content: string) => void,
-        opts?: { bootstrap?: boolean; signal?: AbortSignal },
+        opts?: { bootstrap?: boolean; signal?: AbortSignal; requiredTool?: string },
     ): Promise<string | undefined> {
         const orchestrationId = await this._ensureOrchestrationAndSend(sessionId, prompt, opts);
 
@@ -521,7 +550,11 @@ export class PilotSwarmClient {
     }
 
     /** @internal */
-    async _startTurn(sessionId: string, prompt: string, opts?: { bootstrap?: boolean }): Promise<string> {
+    async _startTurn(
+        sessionId: string,
+        prompt: string,
+        opts?: { bootstrap?: boolean; requiredTool?: string },
+    ): Promise<string> {
         return this._ensureOrchestrationAndSend(sessionId, prompt, opts);
     }
 
@@ -614,11 +647,68 @@ export class PilotSwarmClient {
             ? await this._getLatestResponse(orchestrationId)
             : null;
 
-        let status: PilotSwarmSessionStatus = customStatus.status
-            ?? (cmsRow?.state as PilotSwarmSessionStatus)
-            ?? "pending";
-        if (orchStatus.status === "Completed") status = "completed";
-        if (orchStatus.status === "Failed") status = "failed";
+        const cronActive = customStatus.cronActive === true;
+        const cronInterval = typeof customStatus.cronInterval === "number" ? customStatus.cronInterval : undefined;
+        const status = deriveStatusFromCmsAndRuntime({
+            row: cmsRow,
+            customStatus,
+            latestResponse,
+            orchestrationStatus: orchStatus.status,
+        });
+
+        const terminalStatusInput = cmsRow ? {
+            parentSessionId: cmsRow.parentSessionId,
+            isSystem: cmsRow.isSystem,
+            rowState: cmsRow.state,
+            status: customStatus?.status,
+            orchestrationStatus: orchStatus.status,
+            cronActive,
+            cronInterval,
+            turnResultType: customStatus?.turnResult?.type,
+            latestResponseType: latestResponse?.type,
+        } : null;
+
+        if (cmsRow && terminalStatusInput && shouldSyncCompletedStatus(terminalStatusInput)) {
+            await this._catalog.updateSession(sessionId, {
+                state: "completed",
+                lastError: null,
+                waitReason: null,
+            }).catch(() => {});
+        } else if (cmsRow && terminalStatusInput && shouldSyncFailedStatus(terminalStatusInput)) {
+            const failureMessage =
+                (typeof customStatus?.error === "string" && customStatus.error.trim())
+                    ? customStatus.error.trim()
+                    : (typeof cmsRow.lastError === "string" && cmsRow.lastError.trim())
+                        ? cmsRow.lastError.trim()
+                        : null;
+            await this._catalog.updateSession(sessionId, {
+                state: "failed",
+                waitReason: null,
+                ...(failureMessage ? { lastError: failureMessage } : {}),
+            }).catch(() => {});
+        } else if (
+            cmsRow
+            && orchStatus.status === "Running"
+            && (cmsRow.state === "error" || cmsRow.state === "failed")
+        ) {
+            const recoveredState =
+                typeof customStatus?.status === "string"
+                    && customStatus.status !== "error"
+                    && customStatus.status !== "failed"
+                    ? customStatus.status
+                    : "running";
+            await this._catalog.updateSession(sessionId, {
+                state: recoveredState,
+                lastError: null,
+                ...(recoveredState === "waiting" || recoveredState === "input_required"
+                    ? {}
+                    : { waitReason: null }),
+            }).catch(() => {});
+        }
+
+        const effectiveError = (status === "error" || status === "failed")
+            ? (orchStatus.status === "Failed" ? orchStatus.error : (cmsRow?.lastError ?? undefined))
+            : undefined;
 
         return {
             sessionId,
@@ -642,8 +732,8 @@ export class PilotSwarmClient {
                 ? new Date(Date.now() + customStatus.waitSeconds * 1000)
                 : undefined,
             waitReason: customStatus.waitReason,
-            cronActive: customStatus.cronActive === true,
-            cronInterval: typeof customStatus.cronInterval === "number" ? customStatus.cronInterval : undefined,
+            cronActive,
+            cronInterval,
             cronReason: typeof customStatus.cronReason === "string" ? customStatus.cronReason : undefined,
             contextUsage: customStatus?.contextUsage && typeof customStatus.contextUsage === "object"
                 ? customStatus.contextUsage
@@ -653,7 +743,7 @@ export class PilotSwarmClient {
                 : latestResponse?.type === "completed"
                     ? latestResponse.content
                 : (orchStatus.status === "Completed" ? orchStatus.output : undefined),
-            error: orchStatus.status === "Failed" ? orchStatus.error : (cmsRow?.lastError ?? undefined),
+            error: effectiveError,
         };
     }
 
@@ -860,7 +950,7 @@ export class PilotSwarmSession {
         prompt: string,
         timeout?: number,
         onIntermediateContent?: (content: string) => void,
-        opts?: { signal?: AbortSignal },
+        opts?: { signal?: AbortSignal; requiredTool?: string },
     ): Promise<string | undefined> {
         return this.client._startAndWait(
             this.sessionId,
@@ -872,7 +962,7 @@ export class PilotSwarmSession {
         );
     }
 
-    async send(prompt: string, opts?: { bootstrap?: boolean }): Promise<void> {
+    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string }): Promise<void> {
         this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt, opts);
     }
 

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { blessedToHtml } from "./blessedToHtml";
+import { terminalMarkupToHtml } from "./terminalMarkupToHtml";
 
 interface StartupSplashProps {
   onNewSession: () => void;
@@ -11,7 +11,7 @@ export default function StartupSplash({ onNewSession }: StartupSplashProps) {
   useEffect(() => {
     fetch("/splash.txt")
       .then((r) => r.text())
-      .then((text) => setSplashHtml(blessedToHtml(text)))
+      .then((text) => setSplashHtml(terminalMarkupToHtml(text)))
       .catch(() => setSplashHtml("PilotSwarm"));
   }, []);
 

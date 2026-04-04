@@ -49,7 +49,12 @@ async function testToolCalling(env) {
         });
 
         console.log("  Sending: What is 17 + 25?");
-        const response = await session.sendAndWait("What is 17 + 25?", TIMEOUT);
+        const response = await session.sendAndWait(
+            "What is 17 + 25?",
+            TIMEOUT,
+            undefined,
+            { requiredTool: "test_add" },
+        );
 
         console.log(`  Response: "${response}"`);
         assert(tracker.called, "test_add tool was not called");

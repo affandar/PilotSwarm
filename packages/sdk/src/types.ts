@@ -58,6 +58,25 @@ export interface TurnOptions {
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */
     bootstrap?: boolean;
+    /** Require the Copilot SDK to use a specific tool during this turn. */
+    requiredTool?: string;
+    /** Worker-owned inline implementations for non-suspending control tools. */
+    controlToolBridge?: {
+        spawnAgent(args: {
+            agent_name?: string;
+            task?: string;
+            model?: string;
+            system_message?: string;
+            tool_names?: string[];
+        }): Promise<string>;
+        messageAgent(args: { agent_id: string; message: string }): Promise<string>;
+        checkAgents(): Promise<string>;
+        resolveWaitForAgents(agentIds?: string[]): Promise<string[]>;
+        listSessions(): Promise<string>;
+        completeAgent(args: { agent_id: string }): Promise<string>;
+        cancelAgent(args: { agent_id: string; reason?: string }): Promise<string>;
+        deleteAgent(args: { agent_id: string; reason?: string }): Promise<string>;
+    };
 }
 
 // ─── Session Config ──────────────────────────────────────────────
@@ -66,6 +85,8 @@ export interface TurnOptions {
 export interface SerializableSessionConfig {
     model?: string;
     systemMessage?: string | { mode: "append" | "replace"; content: string };
+    /** Internal: orchestration-generated system guidance for the next turn only. */
+    turnSystemPrompt?: string;
     workingDirectory?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
@@ -170,7 +191,7 @@ export interface PilotSwarmSessionInfo {
     isSystem?: boolean;
     /** Agent definition ID (e.g. "sweeper"). Links session to its agent config. */
     agentId?: string;
-    /** Splash banner (blessed markup) from the agent definition. */
+    /** Splash banner (terminal markup) from the agent definition. */
     splash?: string;
     /** Latest known context-window usage snapshot for this session. */
     contextUsage?: SessionContextUsage;
@@ -196,6 +217,10 @@ export interface OrchestrationInput {
     needsHydration?: boolean;
     blobEnabled?: boolean;
     prompt?: string;
+    /** Internal: require the next prompt turn to use a specific tool if available. */
+    requiredTool?: string;
+    /** Internal: system guidance carried alongside the next prompt without becoming user text. */
+    systemPrompt?: string;
     /** Internal: pending prompt is a bootstrap message, not a user-authored prompt. */
     bootstrapPrompt?: boolean;
     // Thresholds
@@ -220,6 +245,33 @@ export interface OrchestrationInput {
     cronSchedule?: CronSchedule;
     /** Latest known context-window usage snapshot captured from session events. */
     contextUsage?: SessionContextUsage;
+
+    // ─── Flat event loop state (v1.0.32+) ───────────────────
+    /** Timer state carried across continueAsNew for the flat event loop. */
+    activeTimerState?: {
+        remainingMs: number;
+        reason: string;
+        type: "wait" | "cron" | "idle" | "agent-poll" | "input-grace";
+        originalDurationMs?: number;
+        shouldRehydrate?: boolean;
+        waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
+        content?: string;
+        question?: string;
+        choices?: string[];
+        allowFreeform?: boolean;
+        agentIds?: string[];
+    };
+    /** Agent IDs being waited on (for wait_for_agents across CAN). v1.0.32+. */
+    waitingForAgentIds?: string[];
+    /** Pending input_required question context (for answer routing after CAN). v1.0.32+. */
+    pendingInputQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean };
+    /** Saved interrupted wait timer. The orchestration auto-resumes after the LLM responds. v1.0.32+. */
+    interruptedWaitTimer?: {
+        remainingSec: number;
+        reason: string;
+        shouldRehydrate: boolean;
+        waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
+    };
 
     // ─── Sub-agent state ─────────────────────────────────────
     /** Tracked sub-agents spawned by this orchestration. Carried across continueAsNew. */
@@ -253,9 +305,11 @@ export interface SubAgentEntry {
     /** Short description of the task assigned to this sub-agent. */
     task: string;
     /** Last known status of the sub-agent. */
-    status: "running" | "completed" | "failed" | "cancelled";
+    status: "running" | "waiting" | "completed" | "failed" | "cancelled";
     /** Final result content (set when status becomes completed). */
     result?: string;
+    /** Named agent ID (e.g. "sweeper", "resourcemgr") for dedup guards. */
+    agentId?: string;
 }
 
 // ─── Session Policy ──────────────────────────────────────────────
@@ -426,8 +480,10 @@ export interface PilotSwarmWorkerOptions {
 export interface PilotSwarmClientOptions {
     /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
     store: string;
-    /** Enables durable session-store paths in the orchestration. Works with Azure blob or any custom session store configured on workers. */
-    blobEnabled?: boolean;
+    /**
+     * Client-created sessions are always started with durable session state enabled.
+     * Durability is backed by the worker's configured session store (blob or local filesystem).
+     */
     waitThreshold?: number;
     dehydrateThreshold?: number;
     dehydrateOnInputRequired?: number;

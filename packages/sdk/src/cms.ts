@@ -25,6 +25,7 @@ export interface SessionRow {
     sessionId: string;
     orchestrationId: string | null;
     title: string | null;
+    titleLocked: boolean;
     state: string;
     model: string | null;
     createdAt: Date;
@@ -41,7 +42,7 @@ export interface SessionRow {
     isSystem: boolean;
     /** Agent definition ID (e.g. "sweeper"). Links session to its agent config. */
     agentId: string | null;
-    /** Splash banner (blessed markup) from the agent definition. */
+    /** Splash banner (terminal markup) from the agent definition. */
     splash: string | null;
 }
 
@@ -49,6 +50,7 @@ export interface SessionRow {
 export interface SessionRowUpdates {
     orchestrationId?: string | null;
     title?: string | null;
+    titleLocked?: boolean;
     state?: string;
     model?: string | null;
     lastActiveAt?: Date;
@@ -105,6 +107,9 @@ export interface SessionCatalogProvider {
     /** Get events for a session, optionally after a sequence number. */
     getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<SessionEvent[]>;
 
+    /** Get events before a sequence number, ordered ascending by seq. */
+    getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<SessionEvent[]>;
+
     /** Cleanup / close connections. */
     close(): Promise<void>;
 }
@@ -130,6 +135,7 @@ CREATE TABLE IF NOT EXISTS ${table} (
     session_id        TEXT PRIMARY KEY,
     orchestration_id  TEXT,
     title             TEXT,
+    title_locked      BOOLEAN NOT NULL DEFAULT FALSE,
     state             TEXT NOT NULL DEFAULT 'pending',
     model             TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -238,6 +244,12 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
                 `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS splash TEXT`
             );
         } catch {}
+        // Migration: add title_locked column if missing
+        try {
+            await this.pool.query(
+                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS title_locked BOOLEAN NOT NULL DEFAULT FALSE`
+            );
+        } catch {}
         // Migration: add worker_node_id to events table if missing
         try {
             await this.pool.query(
@@ -266,7 +278,8 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
                  last_error = NULL,
                  last_active_at = NULL,
                  current_iteration = 0,
-                 wait_reason = NULL
+                 wait_reason = NULL,
+                 title_locked = FALSE
              WHERE ${this.sql.table}.deleted_at IS NOT NULL`,
             [sessionId, opts?.model ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null],
         );
@@ -284,6 +297,10 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         if (updates.title !== undefined) {
             setClauses.push(`title = $${idx++}`);
             values.push(updates.title);
+        }
+        if (updates.titleLocked !== undefined) {
+            setClauses.push(`title_locked = $${idx++}`);
+            values.push(updates.titleLocked);
         }
         if (updates.state !== undefined) {
             setClauses.push(`state = $${idx++}`);
@@ -435,6 +452,18 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         return rows.map(rowToSessionEvent);
     }
 
+    async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<SessionEvent[]> {
+        const effectiveLimit = limit ?? 1000;
+        const query = `SELECT * FROM (
+                           SELECT * FROM ${this.sql.eventsTable}
+                           WHERE session_id = $1 AND seq < $2
+                           ORDER BY seq DESC LIMIT $3
+                       ) t ORDER BY seq ASC`;
+        const params = [sessionId, beforeSeq, effectiveLimit];
+        const { rows } = await this.pool.query(query, params);
+        return rows.map(rowToSessionEvent);
+    }
+
     async close(): Promise<void> {
         if (this.pool) {
             await this.pool.end();
@@ -451,6 +480,7 @@ function rowToSessionRow(row: any): SessionRow {
         sessionId: row.session_id,
         orchestrationId: row.orchestration_id ?? null,
         title: row.title ?? null,
+        titleLocked: row.title_locked ?? false,
         state: row.state,
         model: row.model ?? null,
         createdAt: new Date(row.created_at),

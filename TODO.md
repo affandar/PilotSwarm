@@ -1,12 +1,15 @@
 
 TODO
 
-* stabilize `system-prompt-refactor` branch after regressions before merging it
+* session-store-driven durability cleanup
+    ** proposal: [docs/proposals/session-store-driven-durability.md](/Users/affandar/workshop/drox/pilotswarm/docs/proposals/session-store-driven-durability.md)
+* pilotswarm provider (local + remote) which can support different auth methods
+* startup/shutdown performance.
+* spin up all system agents via orchestrations, don't depend on bootstrapping agent
 * add interrupt/steer for LLMs
 * fix the shutdown and startup performance and freezes
 * junk / stray text on the panes
 * self contained docker image 
-* pilotswarm provider (local + remote) which can support different auth methods
 * session titles are not sticking
 * review rules for producing knowledge, human interactions and questions that were answered. 
 * multitenancy/workspacing
@@ -23,6 +26,7 @@ TODO
 * agent to agent messaging
 
 DONE
+* stabilize `system-prompt-refactor` branch after regressions before merging it
 * use copilot system prompt sections rather than flat prompt
 * update smelter with it, update waldemort
 * GC old orchestration versions
@@ -61,4 +65,3 @@ REJECTED
 
 * pull spawn agent into orchestraion code and not an activity
 * squad samples
-

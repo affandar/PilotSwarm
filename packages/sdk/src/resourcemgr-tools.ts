@@ -32,6 +32,18 @@ export function createResourceManagerTools(opts: {
     const duroxideSchema = opts.duroxideSchema ?? "duroxide";
     const cmsSchema = opts.cmsSchema ?? "copilot_sessions";
 
+    async function getOptionalInstanceStatusCount(status: string): Promise<number | null> {
+        if (!duroxideClient || typeof duroxideClient.listInstancesByStatus !== "function") {
+            return null;
+        }
+        try {
+            const instances = await duroxideClient.listInstancesByStatus(status);
+            return Array.isArray(instances) ? instances.length : null;
+        } catch {
+            return null;
+        }
+    }
+
     // ── get_infrastructure_stats ─────────────────────────────
 
     const infraStatsTool = defineTool("get_infrastructure_stats", {
@@ -302,61 +314,66 @@ export function createResourceManagerTools(opts: {
                     cmsStats.error = err.message;
                 }
 
-                // Duroxide stats
+                // Duroxide stats — use the management API rather than reaching into
+                // provider-specific/internal tables. The table layout is not a stable
+                // monitoring contract and has drifted across duroxide versions.
                 const duroxideStats: any = {};
                 try {
-                    // Instances
-                    const instResult = await pool.query(
-                        `SELECT
-                            COUNT(*) as total_instances,
-                            COUNT(*) FILTER (WHERE runtime_status = 'Running') as running,
-                            COUNT(*) FILTER (WHERE runtime_status = 'Completed') as completed,
-                            COUNT(*) FILTER (WHERE runtime_status = 'Failed') as failed,
-                            COUNT(*) FILTER (WHERE runtime_status = 'Suspended') as suspended,
-                            COUNT(*) FILTER (WHERE runtime_status = 'Terminated') as terminated
-                        FROM ${duroxideSchema}.instances`,
-                    );
-                    duroxideStats.instances = instResult.rows[0];
+                    const systemMetrics = await duroxideClient.getSystemMetrics();
+                    const [suspendedCount, terminatedCount] = await Promise.all([
+                        getOptionalInstanceStatusCount("Suspended"),
+                        getOptionalInstanceStatusCount("Terminated"),
+                    ]);
+                    duroxideStats.instances = {
+                        total_instances: Number(systemMetrics?.totalInstances ?? 0),
+                        running: Number(systemMetrics?.runningInstances ?? 0),
+                        completed: Number(systemMetrics?.completedInstances ?? 0),
+                        failed: Number(systemMetrics?.failedInstances ?? 0),
+                        suspended: suspendedCount,
+                        terminated: terminatedCount,
+                    };
+                    duroxideStats.totalExecutions = Number(systemMetrics?.totalExecutions ?? 0);
+                    duroxideStats.totalHistoryEvents = Number(systemMetrics?.totalEvents ?? 0);
+
+                    const instCount = Number(duroxideStats.instances?.total_instances ?? 0);
+                    if (instCount > 0) {
+                        duroxideStats.avgExecutionsPerInstance =
+                            Math.round((duroxideStats.totalExecutions / instCount) * 10) / 10;
+                    }
                 } catch (err: any) {
                     duroxideStats.instancesError = err.message;
                 }
 
                 try {
-                    // Executions
-                    const execResult = await pool.query(
-                        `SELECT COUNT(*) as total_executions FROM ${duroxideSchema}.executions`,
-                    );
-                    duroxideStats.totalExecutions = Number(execResult.rows[0].total_executions);
-
-                    // Avg executions per instance
-                    const instCount = Number(duroxideStats.instances?.total_instances ?? 1);
-                    if (instCount > 0) {
-                        duroxideStats.avgExecutionsPerInstance =
-                            Math.round((duroxideStats.totalExecutions / instCount) * 10) / 10;
+                    if (duroxideStats.totalExecutions == null) {
+                        const systemMetrics = await duroxideClient.getSystemMetrics();
+                        duroxideStats.totalExecutions = Number(systemMetrics?.totalExecutions ?? 0);
+                        const instCount = Number(duroxideStats.instances?.total_instances ?? 0);
+                        if (instCount > 0) {
+                            duroxideStats.avgExecutionsPerInstance =
+                                Math.round((duroxideStats.totalExecutions / instCount) * 10) / 10;
+                        }
                     }
                 } catch (err: any) {
                     duroxideStats.executionsError = err.message;
                 }
 
                 try {
-                    // History events
-                    const histResult = await pool.query(
-                        `SELECT COUNT(*) as total_history FROM ${duroxideSchema}.history`,
-                    );
-                    duroxideStats.totalHistoryEvents = Number(histResult.rows[0].total_history);
+                    if (duroxideStats.totalHistoryEvents == null) {
+                        const systemMetrics = await duroxideClient.getSystemMetrics();
+                        duroxideStats.totalHistoryEvents = Number(systemMetrics?.totalEvents ?? 0);
+                    }
                 } catch (err: any) {
                     duroxideStats.historyError = err.message;
                 }
 
                 try {
-                    // Queue depths
-                    const queueResult = await pool.query(`
-                        SELECT
-                            (SELECT COUNT(*) FROM ${duroxideSchema}.orchestrator_queue) as orchestrator_queue,
-                            (SELECT COUNT(*) FROM ${duroxideSchema}.worker_queue) as worker_queue,
-                            (SELECT COUNT(*) FROM ${duroxideSchema}.timer_queue) as timer_queue
-                    `);
-                    duroxideStats.queues = queueResult.rows[0];
+                    const queueDepths = await duroxideClient.getQueueDepths();
+                    duroxideStats.queues = {
+                        orchestrator_queue: Number(queueDepths?.orchestratorQueue ?? 0),
+                        worker_queue: Number(queueDepths?.workerQueue ?? 0),
+                        timer_queue: Number(queueDepths?.timerQueue ?? 0),
+                    };
                 } catch (err: any) {
                     duroxideStats.queuesError = err.message;
                 }

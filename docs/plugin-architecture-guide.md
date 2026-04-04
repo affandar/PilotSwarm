@@ -22,7 +22,7 @@ Tools and model providers are configured in code or JSON rather than inside plug
 `plugin.json` is now used by the CLI/TUI for app branding. In addition to human-readable metadata, it may contain:
 
 - `tui.title` — app title for the terminal/tab and root system-session heading
-- `tui.splash` — inline blessed-markup splash text
+- `tui.splash` — inline terminal-markup splash text
 - `tui.splashFile` — path to a text file containing the splash markup
 
 ---
@@ -492,6 +492,8 @@ PilotSwarm composes system prompts with explicit layers:
 [active agent prompt, if any]
 [runtime context overlay, if any]
 ```
+
+Those layers are now mapped into the GitHub Copilot SDK's structured system-prompt sections rather than concatenated into one monolithic string. This does not change how apps organize `default.agent.md`, named agents, or skills on disk; it only changes how the runtime feeds those layers to the SDK.
 
 PilotSwarm's own management agents use:
 

@@ -2,11 +2,11 @@ import { describe, it } from "vitest";
 import {
     computeContextPercent,
     formatTokenCount,
-    formatContextHeaderBadge,
-    formatContextListBadge,
-    formatContextCompactionBadge,
-    formatCompactionActivityMarkup,
-} from "../../../cli/cli/context-usage.js";
+    getContextHeaderBadge,
+    getContextListBadge,
+    getContextCompactionBadge,
+    formatCompactionActivityRuns,
+} from "../../../ui-core/src/context-usage.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 describe("context usage UI helpers", () => {
@@ -27,33 +27,34 @@ describe("context usage UI helpers", () => {
         const warning = { currentTokens: 95000, tokenLimit: 128000, utilization: 95000 / 128000 };
         const danger = { currentTokens: 116000, tokenLimit: 128000, utilization: 116000 / 128000 };
 
-        assertIncludes(formatContextHeaderBadge(low), "ctx 12k/128k 9%", "header should show a compact meter");
-        assertIncludes(formatContextHeaderBadge(warning), "{yellow-fg}", "warning header badge should be yellow");
-        assertIncludes(formatContextHeaderBadge(danger), "{red-fg}", "danger header badge should be red");
+        assertEqual(getContextHeaderBadge(low)?.text, "ctx 12k/128k 9%", "header should show a compact meter");
+        assertEqual(getContextHeaderBadge(warning)?.color, "yellow", "warning header badge should be yellow");
+        assertEqual(getContextHeaderBadge(danger)?.color, "red", "danger header badge should be red");
 
-        assertEqual(formatContextListBadge(low), "", "low usage should not clutter the session list");
-        assertIncludes(formatContextListBadge(warning), "[ctx 74%]", "warning usage should show a list badge");
-        assertIncludes(formatContextListBadge(danger), "{red-fg}", "danger usage should show a red list badge");
+        assertEqual(getContextListBadge(low), null, "low usage should not clutter the session list");
+        assertEqual(getContextListBadge(warning)?.text, "[ctx 74%]", "warning usage should show a list badge");
+        assertEqual(getContextListBadge(danger)?.color, "red", "danger usage should show a red list badge");
     });
 
     it("prioritizes compaction badges over percentage badges", () => {
         const compacting = { currentTokens: 90000, tokenLimit: 128000, compaction: { state: "running" } };
         const failed = { currentTokens: 90000, tokenLimit: 128000, compaction: { state: "failed" } };
 
-        assertEqual(formatContextListBadge(compacting), " {magenta-fg}[compact]{/magenta-fg}");
-        assertEqual(formatContextCompactionBadge(compacting), " {magenta-fg}[compacting]{/magenta-fg}");
-        assertEqual(formatContextListBadge(failed), " {red-fg}[compact !]{/red-fg}");
-        assertEqual(formatContextCompactionBadge(failed), " {red-fg}[compact failed]{/red-fg}");
+        assertEqual(getContextListBadge(compacting)?.text, "[compact]");
+        assertEqual(getContextCompactionBadge(compacting)?.text, "[compacting]");
+        assertEqual(getContextListBadge(failed)?.text, "[compact !]");
+        assertEqual(getContextCompactionBadge(failed)?.text, "[compact failed]");
     });
 
     it("formats compaction activity lines for start, success, and failure", () => {
-        const started = formatCompactionActivityMarkup("12:34:56", "session.compaction_start", {});
-        const completed = formatCompactionActivityMarkup("12:34:56", "session.compaction_complete", { success: true, tokensRemoved: 12345 });
-        const failed = formatCompactionActivityMarkup("12:34:56", "session.compaction_complete", { success: false, error: "boom" });
+        const started = formatCompactionActivityRuns("12:34:56", "session.compaction_start", {});
+        const completed = formatCompactionActivityRuns("12:34:56", "session.compaction_complete", { success: true, tokensRemoved: 12345 });
+        const failed = formatCompactionActivityRuns("12:34:56", "session.compaction_complete", { success: false, error: "boom" });
 
-        assertIncludes(started, "[compaction]", "start line should mention compaction");
-        assertIncludes(completed, "freed 12.3k", "success line should report tokens removed");
-        assertIncludes(failed, "failed: boom", "failed line should include the error");
-        assert(completed.includes("{magenta-fg}") && failed.includes("{red-fg}"), "success and failure lines should be color-coded");
+        const flatten = (runs) => (runs || []).map((run) => run?.text || "").join("");
+        assertIncludes(flatten(started), "[compaction]", "start line should mention compaction");
+        assertIncludes(flatten(completed), "freed 12.3k", "success line should report tokens removed");
+        assertIncludes(flatten(failed), "failed: boom", "failed line should include the error");
+        assert(completed.some((run) => run.color === "magenta") && failed.some((run) => run.color === "red"), "success and failure lines should be color-coded");
     });
 });

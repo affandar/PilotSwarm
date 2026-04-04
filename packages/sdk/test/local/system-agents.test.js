@@ -1,16 +1,17 @@
 /**
  * System agent lifecycle tests.
  *
- * Purpose: verify that the PilotSwarm management agent auto-starts on
- * worker boot and spawns its two child system agents (Sweeper and Resource
- * Manager) via tool calls, with correct titles and splash screens in CMS.
+ * Purpose: verify that the worker bootstraps the PilotSwarm management
+ * system sessions directly on worker start, including the permanent child
+ * agents under PilotSwarm, with correct titles, splash screens, and parent
+ * links in CMS.
  *
  * These tests explicitly enable management agents (most other suites
  * disable them for speed).
  *
  * Cases covered:
  *   - pilotswarm root system agent is created on worker start
- *   - pilotswarm agent spawns sweeper and resourcemgr children
+ *   - worker bootstraps pilotswarm child system agents directly
  *   - child sessions have correct titles
  *   - child sessions have splash banners in CMS
  *   - child sessions are marked isSystem with correct agentId
@@ -34,7 +35,7 @@ import {
     waitForSessionState,
     validateSessionAfterTurn,
 } from "../helpers/cms-helpers.js";
-import { systemAgentUUID } from "../../src/index.ts";
+import { systemAgentUUID, systemChildAgentUUID } from "../../src/index.ts";
 
 const TIMEOUT = 180_000; // System agent flows need time for LLM tool calls
 
@@ -85,6 +86,8 @@ async function testPilotswarmRootCreated(env) {
     }
 }
 
+const EXPECTED_CHILD_AGENT_IDS = ["sweeper", "resourcemgr", "facts-manager"];
+
 // ─── Test: Child System Agents Spawned ───────────────────────────
 
 async function testChildAgentsSpawned(env) {
@@ -98,9 +101,8 @@ async function testChildAgentsSpawned(env) {
         // Wait for pilotswarm to be running
         await waitForSessionState(catalog, pilotswarmId, ["running", "idle"], 60_000);
 
-        // The pilotswarm agent's initial prompt tells it to spawn sweeper and
-        // resourcemgr via tool calls. Wait for children to appear in CMS.
-        console.log("  Waiting for child system agents to be spawned...");
+        // Child system agents are worker-bootstrapped directly.
+        console.log("  Waiting for child system agents to be bootstrapped...");
 
         let children = [];
         const deadline = Date.now() + TIMEOUT;
@@ -110,7 +112,7 @@ async function testChildAgentsSpawned(env) {
             children = allSessions.filter(
                 s => s.parentSessionId === pilotswarmId && s.isSystem,
             );
-            if (children.length >= 2) break;
+            if (children.length >= EXPECTED_CHILD_AGENT_IDS.length) break;
             await new Promise(r => setTimeout(r, 2000));
         }
 
@@ -119,12 +121,18 @@ async function testChildAgentsSpawned(env) {
             console.log(`    - ${c.agentId} | title="${c.title}" | state=${c.state}`);
         }
 
-        assertGreaterOrEqual(children.length, 2, "Expected sweeper + resourcemgr children");
+        assertGreaterOrEqual(children.length, EXPECTED_CHILD_AGENT_IDS.length, "Expected all permanent system children");
 
-        // Verify both expected agents are present
+        // Verify all expected agents are present
         const agentIds = children.map(c => c.agentId);
-        assert(agentIds.includes("sweeper"), "Missing sweeper child agent");
-        assert(agentIds.includes("resourcemgr"), "Missing resourcemgr child agent");
+        for (const agentId of EXPECTED_CHILD_AGENT_IDS) {
+            assert(agentIds.includes(agentId), `Missing ${agentId} child agent`);
+        }
+
+        for (const child of children.filter(c => c.agentId)) {
+            const expectedSessionId = systemChildAgentUUID(pilotswarmId, child.agentId);
+            assertEqual(child.sessionId, expectedSessionId, `${child.agentId} deterministic child session id`);
+        }
 
         ("Child System Agents Spawned");
     } finally {
@@ -152,24 +160,28 @@ async function testChildAgentTitles(env) {
             children = allSessions.filter(
                 s => s.parentSessionId === pilotswarmId && s.isSystem,
             );
-            if (children.length >= 2) break;
+            if (children.length >= EXPECTED_CHILD_AGENT_IDS.length) break;
             await new Promise(r => setTimeout(r, 2000));
         }
 
-        assertGreaterOrEqual(children.length, 2, "Expected 2 children");
+        assertGreaterOrEqual(children.length, EXPECTED_CHILD_AGENT_IDS.length, "Expected all permanent system children");
 
         const sweeper = children.find(c => c.agentId === "sweeper");
         const resourcemgr = children.find(c => c.agentId === "resourcemgr");
+        const factsManager = children.find(c => c.agentId === "facts-manager");
 
         assertNotNull(sweeper, "Sweeper child should exist");
         assertNotNull(resourcemgr, "Resource Manager child should exist");
+        assertNotNull(factsManager, "Facts Manager child should exist");
 
         // Title: set in the agent .md frontmatter
         assertEqual(sweeper.title, "Sweeper Agent", "Sweeper title");
         assertEqual(resourcemgr.title, "Resource Manager Agent", "Resource Manager title");
+        assertEqual(factsManager.title, "Facts Manager", "Facts Manager title");
 
         console.log(`  ✓ Sweeper title: "${sweeper.title}"`);
         console.log(`  ✓ Resource Manager title: "${resourcemgr.title}"`);
+        console.log(`  ✓ Facts Manager title: "${factsManager.title}"`);
 
         ("Child Agent Titles");
     } finally {
@@ -197,17 +209,19 @@ async function testChildAgentSplash(env) {
             children = allSessions.filter(
                 s => s.parentSessionId === pilotswarmId && s.isSystem,
             );
-            if (children.length >= 2) break;
+            if (children.length >= EXPECTED_CHILD_AGENT_IDS.length) break;
             await new Promise(r => setTimeout(r, 2000));
         }
 
-        assertGreaterOrEqual(children.length, 2, "Expected 2 children");
+        assertGreaterOrEqual(children.length, EXPECTED_CHILD_AGENT_IDS.length, "Expected all permanent system children");
 
         const sweeper = children.find(c => c.agentId === "sweeper");
         const resourcemgr = children.find(c => c.agentId === "resourcemgr");
+        const factsManager = children.find(c => c.agentId === "facts-manager");
 
         assertNotNull(sweeper, "Sweeper child should exist");
         assertNotNull(resourcemgr, "Resource Manager child should exist");
+        assertNotNull(factsManager, "Facts Manager child should exist");
 
         // Splash banners should be present and contain identifying text
         assertNotNull(sweeper.splash, "Sweeper should have a splash banner");
@@ -215,9 +229,12 @@ async function testChildAgentSplash(env) {
 
         assertNotNull(resourcemgr.splash, "Resource Manager should have a splash banner");
         assertIncludes(resourcemgr.splash, "Resource Manager", "ResourceManager splash should contain 'Resource Manager'");
+        assertNotNull(factsManager.splash, "Facts Manager should have a splash banner");
+        assertIncludes(factsManager.splash, "Knowledge Curator", "Facts Manager splash should contain 'Knowledge Curator'");
 
         console.log(`  ✓ Sweeper splash: ${sweeper.splash.split("\n").length} lines`);
         console.log(`  ✓ ResourceManager splash: ${resourcemgr.splash.split("\n").length} lines`);
+        console.log(`  ✓ FactsManager splash: ${factsManager.splash.split("\n").length} lines`);
 
         ("Child Agent Splash Screens");
     } finally {
@@ -245,11 +262,11 @@ async function testChildAgentCmsMetadata(env) {
             children = allSessions.filter(
                 s => s.parentSessionId === pilotswarmId && s.isSystem,
             );
-            if (children.length >= 2) break;
+            if (children.length >= EXPECTED_CHILD_AGENT_IDS.length) break;
             await new Promise(r => setTimeout(r, 2000));
         }
 
-        assertGreaterOrEqual(children.length, 2, "Expected 2 children");
+        assertGreaterOrEqual(children.length, EXPECTED_CHILD_AGENT_IDS.length, "Expected all permanent system children");
 
         for (const child of children) {
             console.log(`  Checking ${child.agentId}...`);
@@ -276,6 +293,8 @@ async function testChildAgentCmsMetadata(env) {
         // Validate duroxide + CMS integrity for parent
         await validateSessionAfterTurn(env, pilotswarmId, {
             expectedCmsStates: ["running", "idle", "waiting"],
+            minIteration: 1,
+            requiredEventTypes: ["session.turn_started"],
             expectResponse: false,
         });
 
@@ -305,11 +324,11 @@ async function testDescendantLinks(env) {
             children = allSessions.filter(
                 s => s.parentSessionId === pilotswarmId && s.isSystem,
             );
-            if (children.length >= 2) break;
+            if (children.length >= EXPECTED_CHILD_AGENT_IDS.length) break;
             await new Promise(r => setTimeout(r, 2000));
         }
 
-        assertGreaterOrEqual(children.length, 2, "Expected 2 children");
+        assertGreaterOrEqual(children.length, EXPECTED_CHILD_AGENT_IDS.length, "Expected all permanent system children");
 
         // getDescendantSessionIds should return both children
         const descendants = await catalog.getDescendantSessionIds(pilotswarmId);
@@ -328,6 +347,7 @@ async function testDescendantLinks(env) {
         await catalog.close();
     }
 }
+
 
 // ─── Runner ──────────────────────────────────────────────────────
 
