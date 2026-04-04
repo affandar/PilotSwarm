@@ -104,6 +104,7 @@ The DevOps sample uses exactly this split:
 - plugin files in [examples/devops-command-center/plugin](../../examples/devops-command-center/plugin)
 - worker-side tools in [examples/devops-command-center/tools.js](../../examples/devops-command-center/tools.js)
 - SDK app driver in [examples/devops-command-center/sdk-app.js](../../examples/devops-command-center/sdk-app.js)
+- helper launcher in [scripts/run-devops-sdk-sample.sh](../../scripts/run-devops-sdk-sample.sh)
 
 ## Session Creation Model
 

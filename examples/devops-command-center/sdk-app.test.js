@@ -263,11 +263,11 @@ async function testRenameInvestigatorSession(env) {
 
             const info = await session.getInfo();
             console.log(`  Title after rename: "${info.title}"`);
-            assertEqual(info.title, "CPU Spike Investigation", "title updated");
+            assertEqual(info.title, "Investigator: CPU Spike Investigation", "title updated with named-agent prefix");
 
             const list = await client.listSessions();
             const entry = list.find(s => s.sessionId === session.sessionId);
-            assertEqual(entry?.title, "CPU Spike Investigation", "title in list");
+            assertEqual(entry?.title, "Investigator: CPU Spike Investigation", "title in list");
         });
     } finally {
         await mgmt.stop();

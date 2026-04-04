@@ -112,6 +112,7 @@ my-cli-app/
 ```
 
 For a fuller example with layered agents, skills, session policy, TUI branding, and mock tools, see [examples/devops-command-center](../../examples/devops-command-center).
+The repo-root launcher for that sample is [scripts/run-devops-cli-sample.sh](../../scripts/run-devops-cli-sample.sh).
 
 Minimal `plugin.json` example:
 

@@ -82,6 +82,8 @@ This launches the full TUI with:
 
 Because this sample uses an allowlist session policy, generic sessions are blocked. `n` will offer only the named DevOps agents instead of a generic-session choice.
 
+Named-agent titles keep their agent prefix when renamed. For example, renaming an Investigator session to `CPU Spike Investigation` becomes `Investigator: CPU Spike Investigation`.
+
 Try the Builder agent in the TUI with prompts like:
 - `Start a new build from the devops-command-center repo on this worker and monitor it until complete.`
 - `Start a mock remote build for the devops-command-center repo and monitor it until complete.`
@@ -93,6 +95,12 @@ The local-build path should use 40-second durable waits with `preserveWorkerAffi
 ```bash
 cd examples/devops-command-center
 node --env-file=../../.env sdk-app.js
+```
+
+Or use the helper script from the repo root:
+
+```bash
+./scripts/run-devops-sdk-sample.sh
 ```
 
 By default this runs the incident-investigation scenario. You can also run the new build flows:
@@ -180,6 +188,6 @@ devops-command-center/
 | Durable timers | Watchdog uses `wait` tool for periodic monitoring |
 | Affinity-aware waits | Builder preserves worker affinity only for worker-local builds |
 | `ask_user` | Deployer asks for human approval before deploying |
-| Title prefixing | Sessions show "Investigator: CPU Spike Analysis" |
+| Title prefixing | Named-agent sessions keep their prefix, e.g. "Investigator: CPU Spike Analysis" |
 | TUI layering | Sample plugin branding, named-agent session picker, and worker-module tools all run on the shipped terminal UI host |
 | Management client | Rename sessions, cancel, delete |
