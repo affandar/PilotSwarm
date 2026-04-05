@@ -1,5 +1,7 @@
 import React from "react";
 import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import { createRequire } from "node:module";
 import { render } from "ink";
 import {
@@ -13,6 +15,26 @@ import { createTuiPlatform } from "./platform.js";
 import { NodeSdkTransport } from "./node-sdk-transport.js";
 
 const require = createRequire(import.meta.url);
+
+const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "pilotswarm");
+const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+
+function readConfig() {
+    try {
+        return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+    } catch {
+        return {};
+    }
+}
+
+function writeConfig(patch) {
+    try {
+        const existing = readConfig();
+        const merged = { ...existing, ...patch };
+        fs.mkdirSync(CONFIG_DIR, { recursive: true });
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2) + "\n", "utf8");
+    } catch {}
+}
 
 function setupTuiHostRuntime() {
     const logFile = "/tmp/duroxide-tui.log";
@@ -90,9 +112,11 @@ export async function startTuiApp(config) {
         store: config.store,
         mode: config.mode,
     });
+    const userConfig = readConfig();
     const store = createStore(appReducer, createInitialState({
         mode: config.mode,
         branding: config.branding,
+        themeId: userConfig.themeId,
     }));
     const controller = new PilotSwarmUiController({ store, transport });
     let tuiApp;
@@ -142,6 +166,49 @@ export async function startTuiApp(config) {
         onRequestExit: requestExit,
     }), {
         exitOnCtrlC: false,
+    });
+
+    // Listen for portal theme-change OSC sequences on stdin:
+    //   \x1b]777;theme;<themeId>\x07
+    let oscBuffer = "";
+    const OSC_PREFIX = "\x1b]777;theme;";
+    const OSC_SUFFIX = "\x07";
+    const stdinThemeHandler = (data) => {
+        const str = typeof data === "string" ? data : data.toString("utf8");
+        oscBuffer += str;
+        while (oscBuffer.includes(OSC_PREFIX) && oscBuffer.includes(OSC_SUFFIX)) {
+            const start = oscBuffer.indexOf(OSC_PREFIX);
+            const end = oscBuffer.indexOf(OSC_SUFFIX, start);
+            if (end < 0) break;
+            const themeId = oscBuffer.slice(start + OSC_PREFIX.length, end);
+            oscBuffer = oscBuffer.slice(end + OSC_SUFFIX.length);
+            if (themeId) {
+                store.dispatch({ type: "ui/theme", themeId });
+            }
+        }
+        // Prevent buffer from growing unbounded
+        if (oscBuffer.length > 1024) oscBuffer = oscBuffer.slice(-256);
+    };
+    process.stdin.on("data", stdinThemeHandler);
+
+    // Sync viewport on terminal resize (SIGWINCH)
+    const syncViewport = () => {
+        controller.setViewport({
+            width: process.stdout.columns || 120,
+            height: process.stdout.rows || 40,
+        });
+    };
+    syncViewport();
+    process.stdout.on("resize", syncViewport);
+
+    // Persist theme changes to config file
+    let lastPersistedThemeId = store.getState().ui.themeId;
+    store.subscribe(() => {
+        const currentThemeId = store.getState().ui.themeId;
+        if (currentThemeId && currentThemeId !== lastPersistedThemeId) {
+            lastPersistedThemeId = currentThemeId;
+            writeConfig({ themeId: currentThemeId });
+        }
     });
 
     try {

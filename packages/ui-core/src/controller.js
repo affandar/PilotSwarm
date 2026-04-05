@@ -27,6 +27,7 @@ import {
     selectSelectedFileBrowserItem,
     selectVisibleSessionRows,
 } from "./selectors.js";
+import { getTheme, listThemes } from "./themes/index.js";
 
 const ORCHESTRATION_STATS_REFRESH_MS = 20_000;
 
@@ -1456,6 +1457,36 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: "Select a model and press Enter" });
     }
 
+    openThemePicker() {
+        const themes = listThemes().map((theme) => ({
+            id: theme.id,
+            label: theme.label,
+            description: theme.description,
+            page: theme.page,
+            terminal: theme.terminal,
+            tui: theme.tui,
+        }));
+        if (themes.length === 0) {
+            this.dispatch({ type: "ui/status", text: "No themes available" });
+            return;
+        }
+
+        const currentThemeId = this.getState().ui.themeId;
+        const selectedIndex = Math.max(0, themes.findIndex((theme) => theme.id === currentThemeId));
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "themePicker",
+                title: "Theme Picker",
+                items: themes,
+                selectedIndex,
+                previousFocus: this.getState().ui.focusRegion,
+                currentThemeId,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Select a theme and press Enter" });
+    }
+
     getPromptDraftSessionId() {
         const promptAttachmentSessionId = this.getPromptAttachments()[0]?.sessionId || null;
         return promptAttachmentSessionId || this.getState().sessions.activeSessionId || null;
@@ -1868,6 +1899,22 @@ export class PilotSwarmUiController {
             const previousFocus = modal.previousFocus;
             this.dispatch({ type: "ui/modal", modal: null });
             if (previousFocus) this.dispatch({ type: "ui/focus", focusRegion: previousFocus });
+            return;
+        }
+        if (modal.type === "themePicker") {
+            const item = modal.items?.[modal.selectedIndex || 0];
+            const nextTheme = getTheme(item?.id);
+            if (!nextTheme) {
+                this.dispatch({ type: "ui/status", text: "Unable to apply that theme" });
+                return;
+            }
+            const previousFocus = modal.previousFocus;
+            this.dispatch({ type: "ui/modal", modal: null });
+            this.dispatch({ type: "ui/theme", themeId: nextTheme.id });
+            if (previousFocus) {
+                this.dispatch({ type: "ui/focus", focusRegion: previousFocus });
+            }
+            this.dispatch({ type: "ui/status", text: `Applied theme: ${nextTheme.label}` });
             return;
         }
         if (modal.type === "modelPicker") {
@@ -2759,6 +2806,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.OPEN_MODEL_PICKER:
                 await this.openModelPicker();
+                return;
+            case UI_COMMANDS.OPEN_THEME_PICKER:
+                this.openThemePicker();
                 return;
             case UI_COMMANDS.OPEN_RENAME_SESSION:
                 this.openRenameSessionModal();

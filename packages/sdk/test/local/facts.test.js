@@ -227,13 +227,14 @@ async function testParentReadsChildFactsBySessionId(env) {
     await factStore.initialize();
 
     try {
-        const mockGetDescendants = async (sessionId) => {
+        const mockGetLineage = async (sessionId) => {
             if (sessionId === "parent-session") return ["child-session"];
+            if (sessionId === "child-session") return ["parent-session"];
             return [];
         };
         const [storeFact, readFacts] = createFactTools({
             factStore,
-            getDescendantSessionIds: mockGetDescendants,
+            getLineageSessionIds: mockGetLineage,
         });
 
         // Parent stores a session-scoped fact
@@ -295,6 +296,15 @@ async function testParentReadsChildFactsBySessionId(env) {
         );
         console.log("  parent reads child facts with non-matching pattern:", noMatch.count);
         assertEqual(noMatch.count, 0, "non-matching key_pattern should return 0 even for descendant");
+
+        // Child can also read the ancestor's session facts via session_id
+        const childReadsParent = await readFacts.handler(
+            { session_id: "parent-session" },
+            { sessionId: "child-session" },
+        );
+        console.log("  child reads parent facts:", childReadsParent.count);
+        assertEqual(childReadsParent.count, 1, "child should see parent's session-scoped fact");
+        assertEqual(childReadsParent.facts[0].key, "parent/state", "child should see parent's fact key");
     } finally {
         await factStore.close();
     }
@@ -474,6 +484,68 @@ async function testDescendantsScopeWithNoSubAgents(env) {
     }
 }
 
+async function testAccessibleScopeIncludesFullLineage(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+
+    try {
+        const mockGetLineage = async (sessionId) => {
+            if (sessionId === "grandparent-session") return ["parent-session", "child-session"];
+            if (sessionId === "parent-session") return ["grandparent-session", "child-session"];
+            if (sessionId === "child-session") return ["parent-session", "grandparent-session"];
+            return [];
+        };
+        const [storeFact, readFacts] = createFactTools({
+            factStore,
+            getLineageSessionIds: mockGetLineage,
+        });
+
+        await storeFact.handler(
+            { key: "grandparent/brief", value: { summary: "root context" } },
+            { sessionId: "grandparent-session", agentId: "grandparent" },
+        );
+        await storeFact.handler(
+            { key: "parent/plan", value: { summary: "middle context" } },
+            { sessionId: "parent-session", agentId: "parent" },
+        );
+        await storeFact.handler(
+            { key: "child/detail", value: { summary: "leaf context" } },
+            { sessionId: "child-session", agentId: "child" },
+        );
+        await storeFact.handler(
+            { key: "shared/reference", value: { summary: "shared context" }, shared: true },
+            { sessionId: "parent-session", agentId: "parent" },
+        );
+        await storeFact.handler(
+            { key: "unrelated/private", value: { hidden: true } },
+            { sessionId: "unrelated-session", agentId: "other" },
+        );
+
+        const parentAccessible = await readFacts.handler(
+            { scope: "accessible" },
+            { sessionId: "parent-session" },
+        );
+        console.log("  parent accessible lineage facts:", parentAccessible.count);
+        assertEqual(parentAccessible.count, 4, "accessible scope should include ancestors, descendants, self, and shared facts");
+        assert(parentAccessible.facts.some((fact) => fact.key === "grandparent/brief"), "accessible scope should include ancestor facts");
+        assert(parentAccessible.facts.some((fact) => fact.key === "parent/plan"), "accessible scope should include current session facts");
+        assert(parentAccessible.facts.some((fact) => fact.key === "child/detail"), "accessible scope should include descendant facts");
+        assert(parentAccessible.facts.some((fact) => fact.key === "shared/reference"), "accessible scope should include shared facts");
+        assert(!parentAccessible.facts.some((fact) => fact.key === "unrelated/private"), "accessible scope should exclude unrelated session facts");
+
+        const childAccessible = await readFacts.handler(
+            { scope: "accessible" },
+            { sessionId: "child-session" },
+        );
+        console.log("  child accessible lineage facts:", childAccessible.count);
+        assertEqual(childAccessible.count, 4, "descendants should inherit access upward to ancestor lineage facts");
+        assert(childAccessible.facts.some((fact) => fact.key === "grandparent/brief"), "child should see grandparent facts");
+        assert(childAccessible.facts.some((fact) => fact.key === "parent/plan"), "child should see parent facts");
+    } finally {
+        await factStore.close();
+    }
+}
+
 describe("Level 3/4: Facts", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -495,6 +567,10 @@ describe("Level 3/4: Facts", () => {
 
     it("parent reads child session facts via session_id lineage check", { timeout: TIMEOUT }, async () => {
         await testParentReadsChildFactsBySessionId(getEnv());
+    });
+
+    it("accessible scope includes ancestors and descendants in the same lineage", { timeout: TIMEOUT }, async () => {
+        await testAccessibleScopeIncludesFullLineage(getEnv());
     });
 
     it("multi-level descendant facts read via session_id at each level", { timeout: TIMEOUT }, async () => {

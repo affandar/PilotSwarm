@@ -54,10 +54,14 @@ describe("system agent cron contracts", () => {
 
         assertIncludes(orchestration, "use the \\`wait\\`, \\`wait_on_worker\\`, or \\`cron\\` tools", "sub-agent preamble should allow cron for recurring work");
         assertIncludes(orchestration, "report that ambiguity back to the parent", "sub-agent preamble should route long-running ambiguity to the parent");
+        assertIncludes(orchestration, "Prefer using \\`store_fact\\` for larger structured context handoffs", "sub-agent preamble should push large context handoffs into facts");
+        assertIncludes(orchestration, "pass fact keys or \\`read_facts\\` pointers in messages/prompts", "sub-agent preamble should tell children to send pointers instead of blobs");
         assert(!orchestration.includes("NEVER use setTimeout, sleep, setInterval, cron, or any other timing mechanism."), "latest orchestration should not forbid cron for sub-agents");
 
         assertIncludes(sessionProxy, "use the \\`wait\\`, \\`wait_on_worker\\`, or \\`cron\\` tools", "session-proxy sub-agent preamble should allow cron for recurring work");
         assertIncludes(sessionProxy, "report that ambiguity back to the parent", "session-proxy sub-agent preamble should route long-running ambiguity to the parent");
+        assertIncludes(sessionProxy, "Prefer using \\`store_fact\\` for larger structured context handoffs", "session-proxy should push large context handoffs into facts");
+        assertIncludes(sessionProxy, "pass fact keys or \\`read_facts\\` pointers in messages/prompts", "session-proxy should tell children to send pointers instead of blobs");
         assert(!sessionProxy.includes("NEVER use setTimeout, sleep, setInterval, cron, or any other timing mechanism."), "session-proxy should not forbid cron for sub-agents");
     });
 
@@ -68,7 +72,7 @@ describe("system agent cron contracts", () => {
         assertIncludes(orchestration, 'yield* dehydrateForNextTurn("cron", true);', "cron waits should release worker affinity");
         assertIncludes(orchestration, "[orch] cron timer:", "cron waits should emit a dedicated trace event");
         assertIncludes(selectors, 'case "cron_waiting": return "yellow";', "cron wait sessions should render like normal waiting rows");
-        assertIncludes(selectors, 'detail: `ZZ ${event?.data?.reason || ""}`.trim()', "sequence view should show a reason-prefixed dehydration marker");
+        assertIncludes(selectors, 'detail: `ZZ ${formatDehydrateSequenceDetail(event, preview)}`.trim()', "sequence view should show a reason-prefixed dehydration marker");
         assertIncludes(selectors, 'text: `[cron ${formatHumanDurationSeconds(session.cronInterval)}]`', "session rows should include a cron badge");
     });
 

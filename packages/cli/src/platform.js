@@ -1,11 +1,11 @@
 import React from "react";
 import { spawnSync } from "node:child_process";
 import { Box, Text } from "ink";
-import { parseTerminalMarkupRuns } from "pilotswarm-ui-core";
+import { DEFAULT_THEME_ID, getTheme, parseTerminalMarkupRuns } from "pilotswarm-ui-core";
 
 const MAX_PROMPT_INPUT_ROWS = 3;
-const SELECTION_BACKGROUND = "white";
-const SELECTION_FOREGROUND = "black";
+const SELECTION_BACKGROUND = "selectionBackground";
+const SELECTION_FOREGROUND = "selectionForeground";
 
 function clampValue(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -25,7 +25,22 @@ const tuiPlatformRuntime = {
     paneRegistry: new Map(),
     selection: createEmptySelection(),
     renderInvalidator: null,
+    themeId: DEFAULT_THEME_ID,
 };
+
+function getCurrentTheme() {
+    return getTheme(tuiPlatformRuntime.themeId) || getTheme(DEFAULT_THEME_ID);
+}
+
+function resolveColorToken(color) {
+    if (!color) return undefined;
+    const theme = getCurrentTheme();
+    return theme?.tui?.[color] || color;
+}
+
+function isDimColorToken(color) {
+    return color === "gray";
+}
 
 function trimText(value, width) {
     if (width <= 0) return "";
@@ -230,11 +245,11 @@ function flattenTitleText(title) {
 function renderInlineRuns(runs, keyPrefix = "run") {
     return runs.map((run, index) => React.createElement(Text, {
         key: `${keyPrefix}:${index}`,
-        color: run.color || undefined,
-        backgroundColor: run.backgroundColor || undefined,
+        color: resolveColorToken(run.color),
+        backgroundColor: resolveColorToken(run.backgroundColor),
         bold: Boolean(run.bold),
         underline: Boolean(run.underline),
-        dimColor: run.color === "gray",
+        dimColor: isDimColorToken(run.color),
     }, run.text || ""));
 }
 
@@ -339,15 +354,15 @@ function renderPanelRow(line, rowKey, contentWidth, borderColor, scrollIndicator
     const selectedRuns = applySelectionToRuns(lineToRuns(line, contentWidth), normalizedSelection);
 
     return React.createElement(Box, { key: `row:${rowKey}`, flexDirection: "row" },
-        React.createElement(Text, { color: borderColor }, "│ "),
-        React.createElement(Box, { width: contentWidth, backgroundColor: fillColor || undefined },
+        React.createElement(Text, { color: resolveColorToken(borderColor) }, "│ "),
+        React.createElement(Box, { width: contentWidth, backgroundColor: resolveColorToken(fillColor) },
             !line
                 ? React.createElement(Text, null, " ".repeat(contentWidth))
                 : selectedRuns.length > 0
                     ? renderInlineRuns(selectedRuns, `inline:${rowKey}`)
                     : React.createElement(Text, null, "")),
-        React.createElement(Text, { color: scrollIndicator ? "gray" : undefined, dimColor: Boolean(scrollIndicator) }, scrollChar),
-        React.createElement(Text, { color: borderColor }, "│"));
+        React.createElement(Text, { color: scrollIndicator ? resolveColorToken("gray") : undefined, dimColor: Boolean(scrollIndicator) }, scrollChar),
+        React.createElement(Text, { color: resolveColorToken(borderColor) }, "│"));
 }
 
 function renderBorderTop(title, color, width) {
@@ -356,14 +371,14 @@ function renderBorderTop(title, color, width) {
     const fill = Math.max(0, safeWidth - titleRunLength(safeTitleRuns) - 5);
 
     return React.createElement(Box, null,
-        React.createElement(Text, { color }, "╭─ "),
+        React.createElement(Text, { color: resolveColorToken(color) }, "╭─ "),
         renderInlineRuns(safeTitleRuns, "title"),
-        React.createElement(Text, { color }, ` ${"─".repeat(fill)}╮`));
+        React.createElement(Text, { color: resolveColorToken(color) }, ` ${"─".repeat(fill)}╮`));
 }
 
 function renderBorderBottom(color, width) {
     const safeWidth = Math.max(8, Number(width) || 40);
-    return React.createElement(Text, { color }, `╰${"─".repeat(Math.max(0, safeWidth - 2))}╯`);
+    return React.createElement(Text, { color: resolveColorToken(color) }, `╰${"─".repeat(Math.max(0, safeWidth - 2))}╯`);
 }
 
 function compareSelectionPoints(left, right) {
@@ -527,10 +542,10 @@ function linesToElements(lines) {
         }
         return React.createElement(Text, {
             key: `text:${index}`,
-            color: line.color || undefined,
-            backgroundColor: line.backgroundColor || undefined,
+            color: resolveColorToken(line.color),
+            backgroundColor: resolveColorToken(line.backgroundColor),
             bold: Boolean(line.bold),
-            dimColor: line.color === "gray",
+            dimColor: isDimColorToken(line.color),
         }, line.text || "");
     });
 }
@@ -540,6 +555,7 @@ function Root({ children }) {
         flexDirection: "column",
         height: process.stdout.rows || 40,
         width: process.stdout.columns || 120,
+        backgroundColor: resolveColorToken("background"),
     }, children);
 }
 
@@ -554,13 +570,13 @@ function Column({ children, ...props }) {
 function Header({ title, subtitle }) {
     return React.createElement(Box, {
         borderStyle: "round",
-        borderColor: "cyan",
+        borderColor: resolveColorToken("cyan"),
         paddingX: 1,
         marginBottom: 1,
         justifyContent: "space-between",
     },
-    React.createElement(Text, { bold: true, color: "cyan" }, title),
-    React.createElement(Text, { color: "gray" }, subtitle || ""));
+    React.createElement(Text, { bold: true, color: resolveColorToken("cyan") }, title),
+    React.createElement(Text, { color: resolveColorToken("gray"), dimColor: true }, subtitle || ""));
 }
 
 function Panel({
@@ -660,10 +676,10 @@ function Panel({
         : React.createElement(Box, {
             flexDirection: "column",
             borderStyle: "round",
-            borderColor: borderColor,
+            borderColor: resolveColorToken(borderColor),
             paddingX: 1,
             flexGrow: 1,
-            backgroundColor: fillColor || undefined,
+            backgroundColor: resolveColorToken(fillColor),
         }, children),
     renderBorderBottom(borderColor, safeWidth));
 }
@@ -717,11 +733,11 @@ function renderPromptRow(lineText, cursorColumn, { color, showCursor, keyPrefix,
         showCursor
             ? cursorChar
                 ? React.createElement(Text, {
-                    color: "black",
-                    backgroundColor: "green",
+                    color: resolveColorToken("promptCursorForeground"),
+                    backgroundColor: resolveColorToken("promptCursorBackground"),
                     dimColor,
                 }, cursorChar)
-                : React.createElement(Text, { color: "green" }, "█")
+                : React.createElement(Text, { color: resolveColorToken("promptCursorBackground") }, "█")
             : null,
         after ? React.createElement(Text, { color, dimColor }, after) : null,
     );
@@ -732,7 +748,7 @@ function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0 }
     const isEmpty = safeValue.length === 0;
     const safeRows = clampValue(Number(rows) || 1, 1, MAX_PROMPT_INPUT_ROWS);
     const labelPrefix = React.createElement(Text, {
-        color: focused ? "red" : "green",
+        color: resolveColorToken(focused ? "red" : "green"),
         bold: true,
     }, `${label}: `);
     const cursorPosition = getPromptCursorPosition(safeValue, cursorIndex);
@@ -756,7 +772,7 @@ function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0 }
         isEmpty
             ? [
                 renderPromptRow(placeholder || "Type a message and press Enter", focused ? 0 : null, {
-                    color: "gray",
+                    color: resolveColorToken("gray"),
                     dimColor: true,
                     showCursor: Boolean(focused),
                     keyPrefix: "prompt-line:0",
@@ -768,7 +784,7 @@ function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0 }
                 }, React.createElement(Text, null, ""))),
             ]
             : displayLines.map((line, index) => renderPromptRow(line, focused && visibleCursorLine === index ? cursorPosition.column : null, {
-                color: "white",
+                color: resolveColorToken("white"),
                 showCursor: Boolean(focused && visibleCursorLine === index),
                 keyPrefix: `prompt-line:${index}`,
                 prefix: index === 0 ? labelPrefix : null,
@@ -779,12 +795,12 @@ function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0 }
 function StatusLine({ left, right }) {
     return React.createElement(Box, {
         borderStyle: "round",
-        borderColor: "gray",
+        borderColor: resolveColorToken("gray"),
         paddingX: 1,
         justifyContent: "space-between",
     },
-    React.createElement(Text, { color: "white" }, left || ""),
-    React.createElement(Text, { color: "gray", dimColor: true }, right || ""));
+    React.createElement(Text, { color: resolveColorToken("white") }, left || ""),
+    React.createElement(Text, { color: resolveColorToken("gray"), dimColor: true }, right || ""));
 }
 
 function Overlay({ children }) {
@@ -807,6 +823,7 @@ export function createTuiPlatform() {
     tuiPlatformRuntime.paneRegistry.clear();
     tuiPlatformRuntime.selection = createEmptySelection();
     tuiPlatformRuntime.renderInvalidator = null;
+    tuiPlatformRuntime.themeId = DEFAULT_THEME_ID;
 
     return {
         Root,
@@ -818,6 +835,12 @@ export function createTuiPlatform() {
         Lines,
         Input,
         StatusLine,
+        setTheme(themeId) {
+            const nextTheme = getTheme(themeId) || getTheme(DEFAULT_THEME_ID);
+            if (!nextTheme || nextTheme.id === tuiPlatformRuntime.themeId) return;
+            tuiPlatformRuntime.themeId = nextTheme.id;
+            requestTuiRender();
+        },
         setRenderInvalidator(fn) {
             tuiPlatformRuntime.renderInvalidator = typeof fn === "function" ? fn : null;
         },

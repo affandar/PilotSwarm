@@ -6,13 +6,35 @@
   <title>PilotSwarm</title>
   <link rel="stylesheet" href="/xterm/css/xterm.css" />
   <style>
+    :root {
+      --app-background: #ffffff;
+      --app-foreground: #1f2328;
+      --overlay-background: #ffffff;
+      --overlay-foreground: #1f2328;
+      --hint-color: #3d444d;
+      --modal-backdrop: rgba(31, 35, 40, 0.28);
+      --modal-background: #ffffff;
+      --modal-border: #d0d7de;
+      --modal-foreground: #1f2328;
+      --modal-muted: #57606a;
+      --modal-selected-background: #ddf4ff;
+      --modal-selected-border: #0969da;
+      --modal-selected-foreground: #0550ae;
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #ffffff; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--app-background);
+      color: var(--app-foreground);
+    }
     #terminal { width: 100%; height: 100%; }
     #overlay {
       position: fixed; inset: 0;
       display: flex; align-items: center; justify-content: center;
-      background: #ffffff; color: #1f2328;
+      background: var(--overlay-background);
+      color: var(--overlay-foreground);
       font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
       font-size: 15px;
       z-index: 10; transition: opacity 0.3s;
@@ -21,10 +43,114 @@
     .spinner { display: inline-block; width: 16px; text-align: center; }
     #copy-hint {
       position: fixed; bottom: 4px; right: 8px;
-      color: #3d444d;
+      color: var(--hint-color);
       font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
       font-size: 12px;
       z-index: 5; pointer-events: none;
+    }
+    #theme-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: var(--modal-backdrop);
+      z-index: 15;
+    }
+    #theme-modal-backdrop.hidden {
+      display: none;
+    }
+    #theme-modal {
+      width: min(520px, calc(100vw - 24px));
+      max-height: min(640px, calc(100vh - 40px));
+      overflow: auto;
+      border: 1px solid var(--modal-border);
+      border-radius: 14px;
+      background: var(--modal-background);
+      color: var(--modal-foreground);
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+      padding: 18px;
+    }
+    .theme-modal-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    .theme-modal-title {
+      font-size: 18px;
+      font-weight: 700;
+    }
+    .theme-modal-subtitle {
+      color: var(--modal-muted);
+      font-size: 12px;
+      line-height: 1.45;
+      text-align: right;
+    }
+    #theme-options {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .theme-option {
+      width: 100%;
+      border: 1px solid var(--modal-border);
+      border-radius: 10px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      padding: 12px 14px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .theme-option.is-selected {
+      background: var(--modal-selected-background);
+      border-color: var(--modal-selected-border);
+      color: var(--modal-selected-foreground);
+    }
+    .theme-option-title-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .theme-option-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .theme-option-current {
+      border: 1px solid var(--modal-border);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: var(--modal-muted);
+    }
+    .theme-option.is-selected .theme-option-current {
+      border-color: var(--modal-selected-border);
+      color: inherit;
+    }
+    .theme-option-description {
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--modal-muted);
+      margin-bottom: 10px;
+    }
+    .theme-option.is-selected .theme-option-description {
+      color: inherit;
+      opacity: 0.8;
+    }
+    .theme-option-swatches {
+      display: flex;
+      gap: 8px;
+    }
+    .theme-swatch {
+      width: 22px;
+      height: 10px;
+      border-radius: 999px;
+      border: 1px solid var(--modal-border);
     }
     @keyframes dots { 0% { content: '.'; } 33% { content: '..'; } 66% { content: '...'; } }
   </style>
@@ -33,113 +159,17 @@
   <div id="overlay">
     <span>Connecting to PilotSwarm<span class="spinner" id="dots">...</span></span>
   </div>
-  <div id="copy-hint">Select text to copy · ⌥Enter for multiline</div>
+  <div id="copy-hint">Select text to copy · ⌥Enter for multiline · Shift+T themes</div>
   <div id="terminal"></div>
-
-  <script type="module">
-    import { Terminal } from "/xterm/lib/xterm.mjs";
-    import { FitAddon } from "/xterm-addon-fit/lib/addon-fit.mjs";
-    import { WebLinksAddon } from "/xterm-addon-web-links/lib/addon-web-links.mjs";
-
-    const term = new Terminal({
-      cursorBlink: true,
-      cursorStyle: "block",
-      fontFamily: "ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace",
-      fontSize: 14,
-      lineHeight: 1.1,
-      macOptionIsMeta: true,
-      allowProposedApi: true,
-      theme: {
-        background: "#ffffff",
-        foreground: "#0e1116",
-        cursor: "#0550ae",
-        cursorAccent: "#ffffff",
-        selectionBackground: "rgba(5, 80, 174, 0.22)",
-        black: "#0e1116",
-        red: "#a40e26",
-        green: "#055d20",
-        yellow: "#6f4e00",
-        blue: "#0550ae",
-        magenta: "#6f42c1",
-        cyan: "#055d6b",
-        white: "#3d444d",
-        brightBlack: "#57606a",
-        brightRed: "#cf222e",
-        brightGreen: "#1a7f37",
-        brightYellow: "#9a6700",
-        brightBlue: "#0969da",
-        brightMagenta: "#8250df",
-        brightCyan: "#1b7c83",
-        brightWhite: "#1f2328",
-      },
-    });
-
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    term.loadAddon(new WebLinksAddon());
-
-    const container = document.getElementById("terminal");
-    term.open(container);
-    fitAddon.fit();
-
-    // ── WebSocket connection ──────────────────────────────────
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${location.host}/ws`);
-
-    ws.onopen = () => {
-      document.getElementById("overlay").classList.add("hidden");
-      // Send initial terminal size
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-    };
-
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === "output") {
-          term.write(msg.data);
-        } else if (msg.type === "exit") {
-          term.write("\r\n\x1b[90m[Session ended]\x1b[0m\r\n");
-        }
-      } catch {}
-    };
-
-    ws.onclose = () => {
-      term.write("\r\n\x1b[90m[Disconnected — reload to reconnect]\x1b[0m\r\n");
-    };
-
-    // ── Keyboard input → PTY ──────────────────────────────────
-    term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "input", data }));
-      }
-    });
-
-    // Handle binary data (some key combos on macOS)
-    term.onBinary((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "input", data }));
-      }
-    });
-
-    // ── Resize → PTY ──────────────────────────────────────────
-    window.addEventListener("resize", () => {
-      fitAddon.fit();
-    });
-
-    term.onResize(({ cols, rows }) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "resize", cols, rows }));
-      }
-    });
-
-    // ── Animated dots while connecting ────────────────────────
-    let dotCount = 0;
-    const dotInterval = setInterval(() => {
-      dotCount = (dotCount + 1) % 4;
-      const el = document.getElementById("dots");
-      if (el) el.textContent = ".".repeat(dotCount || 1);
-      if (ws.readyState === WebSocket.OPEN) clearInterval(dotInterval);
-    }, 400);
-  </script>
+  <div id="theme-modal-backdrop" class="hidden" aria-hidden="true">
+    <div id="theme-modal" role="dialog" aria-modal="true" aria-labelledby="theme-modal-title">
+      <div class="theme-modal-header">
+        <div class="theme-modal-title" id="theme-modal-title">Theme Picker</div>
+        <div class="theme-modal-subtitle">Shift+T toggle · Up/Down or j/k move · Enter apply · Esc close</div>
+      </div>
+      <div id="theme-options"></div>
+    </div>
+  </div>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

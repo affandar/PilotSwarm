@@ -70,8 +70,8 @@ export class SessionManager {
     private sessionStateDir: string;
     /** Shared facts store used to build always-on facts tools. */
     private factStore: FactStore | null = null;
-    /** Lineage lookup for descendant facts access. */
-    private _getDescendantSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
+    /** Lineage lookup for ancestor/descendant facts access. */
+    private _getLineageSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
 
     constructor(
         private githubToken?: string,
@@ -139,9 +139,14 @@ export class SessionManager {
         this.factStore = factStore;
     }
 
-    /** Set the lineage lookup for descendant facts access. */
+    /** Set the lineage lookup for ancestor/descendant facts access. */
+    setLineageSessionLookup(fn: ((sessionId: string) => Promise<string[]>) | null): void {
+        this._getLineageSessionIds = fn;
+    }
+
+    /** @deprecated Use setLineageSessionLookup. */
     setDescendantSessionLookup(fn: ((sessionId: string) => Promise<string[]>) | null): void {
-        this._getDescendantSessionIds = fn;
+        this.setLineageSessionLookup(fn);
     }
 
     /**
@@ -261,7 +266,7 @@ export class SessionManager {
         const subAgentTools = ManagedSession.subAgentToolDefs();
         const factTools = createFactTools({
             factStore: this.factStore,
-            getDescendantSessionIds: this._getDescendantSessionIds ?? undefined,
+            getLineageSessionIds: this._getLineageSessionIds ?? undefined,
             agentIdentity: effectiveSerializableConfig.agentIdentity,
         });
         const SYSTEM_TOOL_NAMES = new Set([...systemTools, ...subAgentTools, ...factTools].map((t: any) => t.name));

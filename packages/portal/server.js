@@ -35,6 +35,7 @@ export function startServer(opts = {}) {
 
   // Serve static files (index.html + xterm assets)
   app.use(express.static(path.join(__dirname, "public")));
+  app.use("/ui-core", express.static(path.join(REPO_ROOT, "packages/ui-core/src")));
 
   // Serve xterm.js from node_modules (may be hoisted to repo root)
   const xtermBase = findPkgDir("@xterm/xterm");
@@ -109,6 +110,11 @@ export function startServer(opts = {}) {
           case "resize":
             if (msg.cols > 0 && msg.rows > 0) {
               ptyProcess.resize(msg.cols, msg.rows);
+            }
+            break;
+          case "theme":
+            if (msg.themeId && typeof msg.themeId === "string") {
+              ptyProcess.write(`\x1b]777;theme;${msg.themeId}\x07`);
             }
             break;
         }

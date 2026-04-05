@@ -19,6 +19,7 @@ function makeHarness() {
         getOrCreate: vi.fn(async () => session),
         getModelSummary: vi.fn(() => undefined),
         invalidateWarmSession: vi.fn(async () => {}),
+        dehydrate: vi.fn(async () => {}),
     };
 
     const recordedEvents = [];
@@ -48,6 +49,7 @@ function makeHarness() {
 
     return {
         runTurn: handlers.runTurn,
+        dehydrateSession: handlers.dehydrateSession,
         recordedEvents,
         session,
         sessionManager,
@@ -226,5 +228,35 @@ describe("session-proxy CMS prompt classification", () => {
                 lastError: expect.stringContaining("unrecoverable live Copilot session loss"),
             }),
         );
+    });
+
+    it("records structured dehydration details for observability", async () => {
+        const { dehydrateSession, recordedEvents, sessionManager } = makeHarness();
+
+        await dehydrateSession(
+            { traceInfo: () => {} },
+            {
+                sessionId: "session-lossy",
+                reason: "lossy_handoff",
+                eventData: {
+                    detail: "Live Copilot connection stayed closed after 3 retries; dehydrating for handoff.",
+                    error: "Connection is closed.",
+                    retries: 3,
+                    retryDelaySeconds: 15,
+                },
+            },
+        );
+
+        expect(sessionManager.dehydrate).toHaveBeenCalledWith("session-lossy", "lossy_handoff");
+        expect(recordedEvents).toContainEqual({
+            eventType: "session.dehydrated",
+            data: {
+                reason: "lossy_handoff",
+                detail: "Live Copilot connection stayed closed after 3 retries; dehydrating for handoff.",
+                error: "Connection is closed.",
+                retries: 3,
+                retryDelaySeconds: 15,
+            },
+        });
     });
 });

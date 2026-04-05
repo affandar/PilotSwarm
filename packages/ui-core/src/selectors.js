@@ -17,26 +17,14 @@ import {
     getContextListBadge,
 } from "./context-usage.js";
 
-export const ACTIVE_HIGHLIGHT_BACKGROUND = "#20364f";
-export const ACTIVE_HIGHLIGHT_FOREGROUND = "#f8fbff";
+export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
+export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
 
 const totalDescendantCountsCache = new WeakMap();
 const visibleDescendantCountsCache = new WeakMap();
 
-const ACTIVE_HIGHLIGHT_COLOR_MAP = {
-    white: "#f8fbff",
-    gray: "#d6deea",
-    yellow: "#ffd86b",
-    magenta: "#f4afff",
-    cyan: "#8fe8ff",
-    green: "#98f2b4",
-    red: "#ff9f9f",
-    blue: "#a7cfff",
-};
-
 export function resolveActiveHighlightColor(color) {
-    if (!color) return ACTIVE_HIGHLIGHT_FOREGROUND;
-    return ACTIVE_HIGHLIGHT_COLOR_MAP[color] || color;
+    return color || ACTIVE_HIGHLIGHT_FOREGROUND;
 }
 
 export function applyActiveHighlightRuns(runs, { preserveColors = false } = {}) {
@@ -1214,6 +1202,12 @@ export function selectStatusBar(state) {
             right: "up/down move · enter create · esc cancel",
         };
     }
+    if (state.ui.modal?.type === "themePicker") {
+        return {
+            left: "Select a shared portal/TUI theme",
+            right: "up/down move · enter apply · esc close",
+        };
+    }
     if (state.ui.modal?.type === "sessionAgentPicker") {
         return {
             left: "Select an agent for the new session",
@@ -1233,21 +1227,21 @@ export function selectStatusBar(state) {
         };
     }
     const hints = {
-        [FOCUS_REGIONS.SESSIONS]: "up/down switch · ctrl-u/ctrl-d page · d done · D delete · r refresh · t title · a linked artifacts · drag copy · tab next pane · p prompt",
-        [FOCUS_REGIONS.CHAT]: "j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · a linked artifacts · drag copy · tab next pane · p prompt",
+        [FOCUS_REGIONS.SESSIONS]: "up/down switch · ctrl-u/ctrl-d page · d done · D delete · r refresh · t title · T themes · a linked artifacts · drag copy · tab next pane · p prompt",
+        [FOCUS_REGIONS.CHAT]: "j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · T themes · a linked artifacts · drag copy · tab next pane · p prompt",
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
-            ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · a linked artifacts · drag copy · left/right tab · tab next pane"
+            ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · T themes · a linked artifacts · drag copy · left/right tab · tab next pane"
             : state.ui.inspectorTab === "files"
                 ? state.files?.fullscreen
-                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f filter · o open · d done · v close fullscreen · a linked artifacts · drag copy · left/right tab · tab next pane"
-                    : "j/k files · ctrl-u/ctrl-d page preview · g/G preview top/bottom · f filter · o open · d done · v fullscreen · a linked artifacts · drag copy · left/right tab · tab next pane"
+                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f filter · o open · d done · v close fullscreen · T themes · a linked artifacts · drag copy · left/right tab · tab next pane"
+                    : "j/k files · ctrl-u/ctrl-d page preview · g/G preview top/bottom · f filter · o open · d done · v fullscreen · T themes · a linked artifacts · drag copy · left/right tab · tab next pane"
                 : state.ui.inspectorTab === "history"
-                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f format · r refresh · a save artifact · d done · left/right tab · m next tab · tab next pane"
-                    : "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · h/l focus · left/right tab · a linked artifacts · drag copy · m next tab · tab next pane",
-        [FOCUS_REGIONS.ACTIVITY]: "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · a linked artifacts · drag copy · h left · tab next pane",
+                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f format · r refresh · a save artifact · d done · T themes · left/right tab · m next tab · tab next pane"
+                    : "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · T themes · h/l focus · left/right tab · a linked artifacts · drag copy · m next tab · tab next pane",
+        [FOCUS_REGIONS.ACTIVITY]: "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · T themes · a linked artifacts · drag copy · h left · tab next pane",
         [FOCUS_REGIONS.PROMPT]: hasPendingQuestion
-            ? "type answer · enter reply · alt-enter newline · ctrl-a attach file · arrows move · alt-left/right word · alt-delete word · esc sessions"
-            : "type message · enter send · alt-enter newline · ctrl-a attach file · arrows move · alt-left/right word · alt-delete word · esc sessions",
+            ? "type answer · enter reply · alt-enter newline · ctrl-a attach file · T themes · arrows move · alt-left/right word · alt-delete word · esc sessions"
+            : "type message · enter send · alt-enter newline · ctrl-a attach file · T themes · arrows move · alt-left/right word · alt-delete word · esc sessions",
     };
 
     return {
@@ -1338,6 +1332,39 @@ function eventMessageText(event) {
         if (typeof data.question === "string") return data.question;
     }
     return "";
+}
+
+function joinUniqueSequenceDetail(parts = []) {
+    const seen = new Set();
+    const normalized = [];
+    for (const part of parts) {
+        const text = String(part || "").trim();
+        if (!text) continue;
+        const key = text.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        normalized.push(text);
+    }
+    return normalized.join(" | ");
+}
+
+function formatDehydrateSequenceDetail(event, preview = "") {
+    return joinUniqueSequenceDetail([
+        event?.data?.reason,
+        event?.data?.detail,
+        event?.data?.message,
+        event?.data?.error,
+        preview,
+    ]);
+}
+
+function formatLossyHandoffSequenceDetail(event, preview = "") {
+    return joinUniqueSequenceDetail([
+        event?.data?.message,
+        event?.data?.detail,
+        event?.data?.error,
+        preview,
+    ]);
 }
 
 function shortNodeLabel(nodeId) {
@@ -1448,8 +1475,22 @@ function mapEventToSequenceEntry(event) {
                 color: "yellow",
                 detail: `${formatHumanDurationSeconds(event?.data?.seconds ?? 0)} up`,
             };
+        case "session.lossy_handoff": {
+            const detail = formatLossyHandoffSequenceDetail(event, preview);
+            return {
+                ...base,
+                type: "dehydrate",
+                color: "red",
+                detail: detail ? `lossy ${detail}` : "lossy handoff",
+            };
+        }
         case "session.dehydrated":
-            return { ...base, type: "dehydrate", color: "red", detail: `ZZ ${event?.data?.reason || ""}`.trim() };
+            return {
+                ...base,
+                type: "dehydrate",
+                color: "red",
+                detail: `ZZ ${formatDehydrateSequenceDetail(event, preview)}`.trim(),
+            };
         case "session.rehydrated":
         case "session.hydrated":
             return { ...base, type: "hydrate", color: "green", detail: "rehydrated" };
@@ -2590,4 +2631,77 @@ export function selectHistoryFormatModal(state, maxWidth = 88) {
         "Execution History Format",
         "Choose the display format for duroxide execution history events.",
     );
+}
+
+function buildThemeSwatchRuns(entries = []) {
+    const runs = [];
+    for (const entry of entries) {
+        if (runs.length > 0) runs.push({ text: "  ", color: "gray" });
+        runs.push({ text: `${entry.label} `, color: "gray" });
+        runs.push({
+            text: "██",
+            color: entry.color,
+            backgroundColor: entry.color,
+        });
+    }
+    return runs;
+}
+
+export function selectThemePickerModal(state, maxWidth = 80) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "themePicker") return null;
+
+    const items = Array.isArray(modal.items) ? modal.items : [];
+    const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
+    const selectedItem = items[selectedIndex] || null;
+    const currentThemeId = modal.currentThemeId || state.ui.themeId || null;
+    const currentTheme = items.find((item) => item.id === currentThemeId) || null;
+    const contentWidth = Math.max(24, maxWidth - 4);
+    const rows = items.map((item, index) => {
+        const suffix = item.id === currentThemeId ? " [current]" : "";
+        const text = `${item.label}${suffix}`.slice(0, contentWidth);
+        if (index === selectedIndex) {
+            return buildActiveHighlightLine(text.padEnd(contentWidth, " "));
+        }
+        return [{
+            text,
+            color: item.id === currentThemeId ? "cyan" : "white",
+            bold: item.id === currentThemeId,
+        }];
+    });
+
+    const detailsLines = selectedItem
+        ? [
+            [{ text: `theme: ${selectedItem.description || "Shared theme for the portal and native TUI."}`, color: "white" }],
+            { text: "", color: "gray" },
+            [{
+                text: currentTheme?.id === selectedItem.id
+                    ? "Currently active in this TUI session."
+                    : `Current theme: ${currentTheme?.label || "Unknown"}`,
+                color: currentTheme?.id === selectedItem.id ? "green" : "gray",
+            }],
+            buildThemeSwatchRuns([
+                { label: "bg", color: selectedItem.tui?.background || selectedItem.terminal?.background || "#000000" },
+                { label: "surface", color: selectedItem.tui?.surface || selectedItem.terminal?.background || "#000000" },
+                { label: "fg", color: selectedItem.tui?.white || selectedItem.terminal?.foreground || "#ffffff" },
+            ]),
+            buildThemeSwatchRuns([
+                { label: "blue", color: selectedItem.tui?.blue || selectedItem.terminal?.blue || "#5555ff" },
+                { label: "green", color: selectedItem.tui?.green || selectedItem.terminal?.green || "#55ff55" },
+                { label: "magenta", color: selectedItem.tui?.magenta || selectedItem.terminal?.magenta || "#ff55ff" },
+                { label: "yellow", color: selectedItem.tui?.yellow || selectedItem.terminal?.yellow || "#ffff55" },
+            ]),
+            { text: "", color: "gray" },
+            [{ text: "Press Enter to apply. The portal browser picker uses this same shared registry.", color: "gray" }],
+        ]
+        : [{ text: "No themes available.", color: "gray" }];
+
+    return {
+        title: modal.title || "Theme Picker",
+        idealWidth: Math.max(60, Math.min(maxWidth, 80)),
+        rows,
+        selectedRowIndex: selectedIndex,
+        detailsTitle: "Theme Details",
+        detailsLines,
+    };
 }

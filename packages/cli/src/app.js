@@ -241,6 +241,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         const isCtrlA = matchesCtrlKey("a", "\u0001");
         const isShiftN = input === "N" || (key.shift && key.name === "n");
         const isShiftD = input === "D" || (key.shift && key.name === "d");
+        const isShiftT = !key.ctrl && !key.meta && !key.alt && (input === "T" || (key.shift && key.name === "t"));
         const isAltBackspace = key.meta && (key.backspace || key.delete || key.name === "backspace" || key.name === "delete");
         const isAltLeftWord = key.meta && (key.leftArrow || key.name === "left" || input === "b" || input === "B");
         const isAltRightWord = key.meta && (key.rightArrow || key.name === "right" || input === "f" || input === "F");
@@ -275,6 +276,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
 
         if (modal) {
+            if (isShiftT && modal.type === "themePicker") {
+                controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                return;
+            }
             if (modal.type === "renameSession" || modal.type === "artifactUpload") {
                 if (key.escape) {
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
@@ -339,6 +344,11 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 controller.handleCommand(UI_COMMANDS.MODAL_NEXT).catch(() => {});
                 return;
             }
+            return;
+        }
+
+        if (isShiftT) {
+            controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {});
             return;
         }
 

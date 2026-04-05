@@ -137,8 +137,14 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
     }
 
     async function runUntilRunTurn() {
-        const { durableSessionOrchestration_1_0_34 } = await import("../../src/orchestration.ts");
-        const gen = durableSessionOrchestration_1_0_34(ctx, {
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`Could not resolve latest orchestration handler: ${handlerName}`);
+        }
+        const gen = handler(ctx, {
             sessionId: "parent-session",
             config: {},
             iteration: 5,

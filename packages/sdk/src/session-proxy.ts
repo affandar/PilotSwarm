@@ -77,10 +77,14 @@ export function createSessionProxy(
                 affinityKey,
             );
         },
-        dehydrate(reason: string) {
+        dehydrate(reason: string, eventData?: Record<string, unknown>) {
             return ctx.scheduleActivityOnSession(
                 "dehydrateSession",
-                { sessionId, reason },
+                {
+                    sessionId,
+                    reason,
+                    ...(eventData && Object.keys(eventData).length > 0 ? { eventData } : {}),
+                },
                 affinityKey,
             );
         },
@@ -489,6 +493,7 @@ export function registerActivities(
                         `- You are autonomous and goal-driven. If the task implies ongoing monitoring or follow-through until done, keep yourself alive with durable timers until the goal is complete or you can no longer make progress.\n` +
                         `- If it is ambiguous whether the task should become a long-running recurring workflow, report that ambiguity back to the parent instead of guessing or asking the user directly.\n` +
                         `- When your task is complete, provide a clear summary of your findings/results.\n` +
+                        `- Prefer using \`store_fact\` for larger structured context handoffs across your session lineage. Put the durable details in facts, then pass fact keys or \`read_facts\` pointers in messages/prompts instead of pasting large context blobs.\n` +
                         `- If you write any files with write_artifact, you MUST also call export_artifact and include the artifact:// link in your response.\n` +
                         `- If you override a sub-agent model, you MUST first call list_available_models in this session and use only an exact provider:model value returned there. ` +
                         `NEVER invent, guess, shorten, or reuse a stale model name.\n` +
@@ -887,13 +892,19 @@ export function registerActivities(
     // ── dehydrateSession ────────────────────────────────────
     runtime.registerActivity("dehydrateSession", async (
         _ctx: any,
-        input: { sessionId: string; reason?: string },
+        input: { sessionId: string; reason?: string; eventData?: Record<string, unknown> },
     ): Promise<void> => {
         await sessionManager.dehydrate(input.sessionId, input.reason ?? "unknown");
         if (catalog) {
+            const eventData = input.eventData && typeof input.eventData === "object"
+                ? input.eventData
+                : null;
             catalog.recordEvents(input.sessionId, [{
                 eventType: "session.dehydrated",
-                data: { reason: input.reason ?? "unknown" },
+                data: {
+                    reason: input.reason ?? "unknown",
+                    ...(eventData ?? {}),
+                },
             }], workerNodeId).catch(() => {});
         }
     });

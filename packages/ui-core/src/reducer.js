@@ -122,6 +122,15 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "ui/theme":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    themeId: action.themeId || state.ui.themeId,
+                },
+            };
+
         case "ui/modal":
             return {
                 ...state,

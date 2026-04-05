@@ -44,14 +44,15 @@ function checkNamespaceDelete(key: string, agentIdentity?: string): string | nul
 export function createFactTools(opts: {
     factStore: FactStore;
     getDescendantSessionIds?: (sessionId: string) => Promise<string[]>;
+    getLineageSessionIds?: (sessionId: string) => Promise<string[]>;
     agentIdentity?: string;
 }): Tool<any>[] {
-    const { factStore, getDescendantSessionIds, agentIdentity } = opts;
+    const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity } = opts;
 
     const storeTool = defineTool("store_fact", {
         description:
             "Store a fact in the facts table for durable structured memory. " +
-            "Facts are session-scoped by default and are deleted when the session is deleted. " +
+            "Facts are session-scoped by default, visible to ancestor/descendant sessions in the same spawned-agent lineage, and are deleted when the session is deleted. " +
             "Set shared=true to create shared durable memory visible across sessions; shared facts persist until explicitly deleted.",
         parameters: {
             type: "object" as const,
@@ -99,9 +100,9 @@ export function createFactTools(opts: {
 
     const readTool = defineTool("read_facts", {
         description:
-            "Read durable facts. By default this returns facts accessible to you now: your current session's facts plus shared facts. " +
+            "Read durable facts. By default this returns facts accessible to you now: your current session's facts, lineage facts from ancestor/descendant sessions, plus shared facts. " +
             "Use scope='shared' to read only shared facts. " +
-            "Use scope='descendants' to also include facts from your sub-agent sessions (children, grandchildren, etc.).",
+            "Use scope='descendants' as an explicit family-tree view of spawned-agent lineage facts.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -118,7 +119,7 @@ export function createFactTools(opts: {
                 session_id: {
                     type: "string",
                     description:
-                        "Filter by source session. When targeting a descendant session, its private facts become visible automatically.",
+                        "Filter by source session. When targeting an ancestor or descendant session in your spawned-agent lineage, its private facts become visible automatically.",
                 },
                 agent_id: {
                     type: "string",
@@ -132,10 +133,10 @@ export function createFactTools(opts: {
                     type: "string",
                     enum: ["accessible", "shared", "session", "descendants"],
                     description:
-                        "accessible = current session facts plus shared facts (default). " +
+                        "accessible = current session facts + lineage facts from ancestor/descendant sessions + shared facts (default). " +
                         "shared = shared facts only. " +
                         "session = current session facts only. " +
-                        "descendants = your session facts + shared facts + all facts from your sub-agent sessions (children, grandchildren, etc.).",
+                        "descendants = the same family-tree visibility as accessible, kept as an explicit lineage view for parent/child workflows.",
                 },
             },
         },
@@ -159,22 +160,31 @@ export function createFactTools(opts: {
                 ? args.session_id.slice("session-".length)
                 : args.session_id;
 
+            let lineageSessionIds: string[] = [];
             let grantedSessionIds: string[] = [];
 
-            if (getDescendantSessionIds && ctx?.sessionId) {
-                if (args.scope === "descendants") {
-                    // Grant access to all descendant sessions
-                    grantedSessionIds = await getDescendantSessionIds(ctx.sessionId);
-                } else if (targetSessionId && targetSessionId !== ctx.sessionId) {
-                    // Targeted read: grant access if the target is a descendant
-                    const descendants = await getDescendantSessionIds(ctx.sessionId);
-                    if (descendants.includes(targetSessionId)) {
-                        grantedSessionIds = [targetSessionId];
-                    }
+            if (ctx?.sessionId) {
+                const rawLineageSessionIds = getLineageSessionIds
+                    ? await getLineageSessionIds(ctx.sessionId)
+                    : getDescendantSessionIds
+                        ? await getDescendantSessionIds(ctx.sessionId)
+                        : [];
+                lineageSessionIds = [...new Set((rawLineageSessionIds || []).filter((sessionId) => (
+                    Boolean(sessionId) && sessionId !== ctx.sessionId
+                )))];
+
+                if (args.scope === "accessible" || args.scope === "descendants" || !args.scope) {
+                    grantedSessionIds = lineageSessionIds;
+                }
+
+                if (targetSessionId && targetSessionId !== ctx.sessionId) {
+                    grantedSessionIds = lineageSessionIds.includes(targetSessionId)
+                        ? [targetSessionId]
+                        : [];
                 }
             }
 
-            // Determine effective scope: if we've granted descendant access,
+            // Determine effective scope: if we've granted lineage access,
             // force "accessible" so the visibility clause includes granted IDs.
             let effectiveScope = args.scope;
             if (effectiveScope === "descendants" || grantedSessionIds.length > 0) {

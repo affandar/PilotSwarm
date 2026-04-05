@@ -1,6 +1,8 @@
 import { FOCUS_REGIONS, INSPECTOR_TABS } from "./commands.js";
+import { DEFAULT_THEME_ID, getTheme } from "./themes/index.js";
 
-export function createInitialState({ mode = "local", branding = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, themeId = null } = {}) {
+    const resolvedThemeId = (themeId && getTheme(themeId)) ? themeId : DEFAULT_THEME_ID;
     return {
         branding: branding || {
             title: "PilotSwarm",
@@ -13,6 +15,7 @@ export function createInitialState({ mode = "local", branding = null } = {}) {
             promptCursor: 0,
             promptAttachments: [],
             statusText: "Starting PilotSwarm...",
+            themeId: resolvedThemeId,
             modal: null,
             layout: {
                 paneAdjust: 0,

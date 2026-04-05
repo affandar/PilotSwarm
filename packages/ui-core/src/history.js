@@ -160,6 +160,39 @@ function summarizeActivityPreview(text, maxLen = 120) {
         : compact;
 }
 
+function joinUniqueActivityDetail(parts = []) {
+    const seen = new Set();
+    const normalized = [];
+    for (const part of parts) {
+        const text = String(part || "").trim();
+        if (!text) continue;
+        const key = text.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        normalized.push(text);
+    }
+    return normalized.join(" | ");
+}
+
+function formatDehydrationActivityDetail(event, fallbackBody = "") {
+    return joinUniqueActivityDetail([
+        event?.data?.reason,
+        event?.data?.detail,
+        event?.data?.message,
+        event?.data?.error,
+        fallbackBody,
+    ]);
+}
+
+function formatLossyHandoffActivityDetail(event, fallbackBody = "") {
+    return joinUniqueActivityDetail([
+        event?.data?.message,
+        event?.data?.detail,
+        event?.data?.error,
+        fallbackBody,
+    ]);
+}
+
 function formatToolArgValue(value) {
     if (value == null) return "null";
     if (typeof value === "string") {
@@ -275,8 +308,22 @@ function formatActivity(event) {
             );
             break;
 
+        case "session.lossy_handoff":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[lossy handoff]",
+                "red",
+                formatLossyHandoffActivityDetail(event, body) || "handoff to a new worker",
+            );
+            break;
+
         case "session.dehydrated":
-            runs = buildLabeledActivityRuns(time, "[dehydrated]", "red", event?.data?.reason || body);
+            runs = buildLabeledActivityRuns(
+                time,
+                "[dehydrated]",
+                "red",
+                formatDehydrationActivityDetail(event, body),
+            );
             break;
 
         case "session.hydrated":

@@ -54,28 +54,6 @@ function isSubAgentTerminalStatus(status?: string): boolean {
     return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-const COPILOT_CONNECTION_CLOSED_MAX_RETRIES = 3;
-const COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS = 15;
-
-function isCopilotConnectionClosedError(message?: string): boolean {
-    return /\bConnection is closed\b/i.test(String(message || ""));
-}
-
-function buildConnectionClosedRetryDetail(retryAttempt: number): string {
-    return `Live Copilot connection lost; retry ${retryAttempt}/${COPILOT_CONNECTION_CLOSED_MAX_RETRIES} in ${COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS}s.`;
-}
-
-function buildLossyHandoffSummary(errorMessage: string): string {
-    return `Live Copilot connection stayed closed after ${COPILOT_CONNECTION_CLOSED_MAX_RETRIES} retries; ` +
-        `dehydrating for handoff to a new worker. Last error: ${errorMessage}`;
-}
-
-function buildLossyHandoffRehydrationMessage(errorMessage: string): string {
-    return `The previous worker lost the live Copilot connection and handed this session off after ` +
-        `${COPILOT_CONNECTION_CLOSED_MAX_RETRIES} retries. The LLM conversation history is preserved. ` +
-        `Review the latest durable context and continue carefully. Last transport error: ${errorMessage}`;
-}
-
 function updateContextUsageFromEvents(
     previous: SessionContextUsage | undefined,
     events: Array<{ eventType?: string; data?: any }> | undefined,
@@ -201,22 +179,22 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.36).
+ * Flat event loop durable session orchestration (v1.0.35).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.36";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.35";
 
-export function* durableSessionOrchestration_1_0_36(
+export function* durableSessionOrchestration_1_0_35(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.36] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.35] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -755,13 +733,9 @@ export function* durableSessionOrchestration_1_0_36(
     }
 
     // ─── Helper: dehydrate and optionally release affinity ───
-    function* dehydrateForNextTurn(
-        reason: string,
-        resetAffinity = true,
-        eventData?: Record<string, unknown>,
-    ): Generator<any, void, any> {
+    function* dehydrateForNextTurn(reason: string, resetAffinity = true): Generator<any, void, any> {
         ctx.traceInfo(`[orch] dehydrating session (reason=${reason}, resetAffinity=${resetAffinity})`);
-        yield session.dehydrate(reason, eventData);
+        yield session.dehydrate(reason);
         needsHydration = true;
         preserveAffinityOnHydrate = !resetAffinity;
         if (resetAffinity) {
@@ -1452,87 +1426,6 @@ export function* durableSessionOrchestration_1_0_36(
             retryCount++;
             ctx.traceInfo(`[orch] runTurn FAILED (attempt ${retryCount}/${MAX_RETRIES}): ${errorMsg}`);
 
-            if (isCopilotConnectionClosedError(errorMsg)) {
-                if (retryCount <= COPILOT_CONNECTION_CLOSED_MAX_RETRIES) {
-                    const retryDetail = buildConnectionClosedRetryDetail(retryCount);
-                    publishStatus("error", {
-                        error: `${errorMsg} (${retryDetail})`,
-                        recoverableTransportLoss: true,
-                    });
-                    ctx.traceInfo(
-                        `[orch] live Copilot connection lost; retrying in ${COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS}s`,
-                    );
-
-                    if (blobEnabled) {
-                        yield* dehydrateForNextTurn("error", true, {
-                            detail: retryDetail,
-                            error: errorMsg,
-                            phase: "runTurn.throw",
-                            retryAttempt: retryCount,
-                            maxRetries: COPILOT_CONNECTION_CLOSED_MAX_RETRIES,
-                            retryDelaySeconds: COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS,
-                        });
-                    }
-
-                    yield ctx.scheduleTimer(COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS * 1000);
-                    yield* versionedContinueAsNew(continueInput({
-                        ...(systemOnlyTurn ? {} : { prompt }),
-                        ...(requiredTool ? { requiredTool } : {}),
-                        ...(turnSystemPrompt ? { systemPrompt: turnSystemPrompt } : {}),
-                        retryCount,
-                        needsHydration: blobEnabled ? true : needsHydration,
-                    }));
-                    return;
-                }
-
-                const handoffMessage = buildLossyHandoffSummary(errorMsg);
-                ctx.traceInfo(`[orch] ${handoffMessage}`);
-                publishStatus("error", {
-                    error: handoffMessage,
-                    retriesExhausted: true,
-                    lossyHandoff: true,
-                });
-                yield manager.recordSessionEvent(input.sessionId, [{
-                    eventType: "session.lossy_handoff",
-                    data: {
-                        message: handoffMessage,
-                        error: errorMsg,
-                        phase: "runTurn.throw",
-                        retries: COPILOT_CONNECTION_CLOSED_MAX_RETRIES,
-                        retryDelaySeconds: COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS,
-                        nextStep: "dehydrate_and_resume_on_new_worker",
-                    },
-                }]);
-
-                if (blobEnabled) {
-                    yield* dehydrateForNextTurn("lossy_handoff", true, {
-                        detail: handoffMessage,
-                        error: errorMsg,
-                        phase: "runTurn.throw",
-                        retries: COPILOT_CONNECTION_CLOSED_MAX_RETRIES,
-                        retryDelaySeconds: COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS,
-                        nextStep: "dehydrate_and_resume_on_new_worker",
-                    });
-                    yield* versionedContinueAsNew(continueInput({
-                        ...(systemOnlyTurn ? {} : { prompt }),
-                        ...(requiredTool ? { requiredTool } : {}),
-                        ...(turnSystemPrompt ? { systemPrompt: turnSystemPrompt } : {}),
-                        retryCount: 0,
-                        needsHydration: true,
-                        rehydrationMessage: buildLossyHandoffRehydrationMessage(errorMsg),
-                    }));
-                    return;
-                }
-
-                publishStatus("error", {
-                    error: `${handoffMessage} Durable handoff is unavailable because blob persistence is disabled.`,
-                    retriesExhausted: true,
-                    lossyHandoff: false,
-                });
-                retryCount = 0;
-                return;
-            }
-
             if (retryCount >= MAX_RETRIES) {
                 ctx.traceInfo(`[orch] max retries exhausted, waiting for user input`);
                 publishStatus("error", {
@@ -1550,14 +1443,7 @@ export function* durableSessionOrchestration_1_0_36(
             ctx.traceInfo(`[orch] retrying in ${retryDelay}s`);
 
             if (blobEnabled) {
-                yield* dehydrateForNextTurn("error", true, {
-                    detail: errorMsg,
-                    error: errorMsg,
-                    phase: "runTurn.throw",
-                    retryAttempt: retryCount,
-                    maxRetries: MAX_RETRIES,
-                    retryDelaySeconds: retryDelay,
-                });
+                yield* dehydrateForNextTurn("error");
             }
             yield ctx.scheduleTimer(retryDelay * 1000);
             yield* versionedContinueAsNew(continueInput({
@@ -2299,83 +2185,6 @@ export function* durableSessionOrchestration_1_0_36(
                 retryCount++;
                 ctx.traceInfo(`[orch] turn returned error (attempt ${retryCount}/${MAX_RETRIES}): ${result.message}`);
 
-                if (isCopilotConnectionClosedError(result.message)) {
-                    if (retryCount <= COPILOT_CONNECTION_CLOSED_MAX_RETRIES) {
-                        const retryDetail = buildConnectionClosedRetryDetail(retryCount);
-                        publishStatus("error", {
-                            error: `${result.message} (${retryDetail})`,
-                            recoverableTransportLoss: true,
-                        });
-                        ctx.traceInfo(
-                            `[orch] live Copilot connection loss returned as turn error; retrying in ${COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS}s`,
-                        );
-
-                        if (blobEnabled) {
-                            yield* dehydrateForNextTurn("error", true, {
-                                detail: retryDetail,
-                                error: result.message,
-                                phase: "turn.result.error",
-                                retryAttempt: retryCount,
-                                maxRetries: COPILOT_CONNECTION_CLOSED_MAX_RETRIES,
-                                retryDelaySeconds: COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS,
-                            });
-                        }
-
-                        yield ctx.scheduleTimer(COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS * 1000);
-                        yield* versionedContinueAsNew(continueInput({
-                            prompt: sourcePrompt,
-                            retryCount,
-                            needsHydration: blobEnabled ? true : needsHydration,
-                        }));
-                        return;
-                    }
-
-                    const handoffMessage = buildLossyHandoffSummary(result.message);
-                    ctx.traceInfo(`[orch] ${handoffMessage}`);
-                    publishStatus("error", {
-                        error: handoffMessage,
-                        retriesExhausted: true,
-                        lossyHandoff: true,
-                    });
-                    yield manager.recordSessionEvent(input.sessionId, [{
-                        eventType: "session.lossy_handoff",
-                        data: {
-                            message: handoffMessage,
-                            error: result.message,
-                            phase: "turn.result.error",
-                            retries: COPILOT_CONNECTION_CLOSED_MAX_RETRIES,
-                            retryDelaySeconds: COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS,
-                            nextStep: "dehydrate_and_resume_on_new_worker",
-                        },
-                    }]);
-
-                    if (blobEnabled) {
-                        yield* dehydrateForNextTurn("lossy_handoff", true, {
-                            detail: handoffMessage,
-                            error: result.message,
-                            phase: "turn.result.error",
-                            retries: COPILOT_CONNECTION_CLOSED_MAX_RETRIES,
-                            retryDelaySeconds: COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS,
-                            nextStep: "dehydrate_and_resume_on_new_worker",
-                        });
-                        yield* versionedContinueAsNew(continueInput({
-                            prompt: sourcePrompt,
-                            retryCount: 0,
-                            needsHydration: true,
-                            rehydrationMessage: buildLossyHandoffRehydrationMessage(result.message),
-                        }));
-                        return;
-                    }
-
-                    publishStatus("error", {
-                        error: `${handoffMessage} Durable handoff is unavailable because blob persistence is disabled.`,
-                        retriesExhausted: true,
-                        lossyHandoff: false,
-                    });
-                    retryCount = 0;
-                    return;
-                }
-
                 if (retryCount >= MAX_RETRIES) {
                     ctx.traceInfo(`[orch] max retries exhausted for turn error, waiting for user input`);
                     publishStatus("error", {
@@ -2386,21 +2195,15 @@ export function* durableSessionOrchestration_1_0_36(
                     return;
                 }
 
-                const errorRetryDelay = 15 * Math.pow(2, retryCount - 1);
                 publishStatus("error", {
-                    error: `${result.message} (retry ${retryCount}/${MAX_RETRIES} in ${errorRetryDelay}s)`,
+                    error: `${result.message} (retry ${retryCount}/${MAX_RETRIES})`,
                 });
+
+                const errorRetryDelay = 15 * Math.pow(2, retryCount - 1);
                 ctx.traceInfo(`[orch] retrying in ${errorRetryDelay}s after turn error`);
 
                 if (blobEnabled) {
-                    yield* dehydrateForNextTurn("error", true, {
-                        detail: result.message,
-                        error: result.message,
-                        phase: "turn.result.error",
-                        retryAttempt: retryCount,
-                        maxRetries: MAX_RETRIES,
-                        retryDelaySeconds: errorRetryDelay,
-                    });
+                    yield* dehydrateForNextTurn("error");
                 }
 
                 yield ctx.scheduleTimer(errorRetryDelay * 1000);

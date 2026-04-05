@@ -284,9 +284,29 @@ export class PilotSwarmWorker {
         await this.factStore.initialize();
         this.sessionManager.setFactStore(this.factStore);
         if (this._catalog) {
-            this.sessionManager.setDescendantSessionLookup(
-                (sessionId) => this._catalog!.getDescendantSessionIds(sessionId),
-            );
+            this.sessionManager.setLineageSessionLookup(async (sessionId) => {
+                const seen = new Set([sessionId]);
+                const lineage: string[] = [];
+
+                let currentSessionId = sessionId;
+                while (true) {
+                    const row = await this._catalog!.getSession(currentSessionId);
+                    const parentSessionId = row?.parentSessionId ?? null;
+                    if (!parentSessionId || seen.has(parentSessionId)) break;
+                    lineage.push(parentSessionId);
+                    seen.add(parentSessionId);
+                    currentSessionId = parentSessionId;
+                }
+
+                const descendants = await this._catalog!.getDescendantSessionIds(sessionId);
+                for (const descendantSessionId of descendants) {
+                    if (seen.has(descendantSessionId)) continue;
+                    lineage.push(descendantSessionId);
+                    seen.add(descendantSessionId);
+                }
+
+                return lineage;
+            });
         }
 
         this.runtime = new Runtime(this._provider, {

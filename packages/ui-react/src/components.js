@@ -19,6 +19,7 @@ import {
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
     selectStatusBar,
+    selectThemePickerModal,
     selectVisibleSessionRows,
 } from "pilotswarm-ui-core";
 import { useUiPlatform } from "./platform.js";
@@ -492,6 +493,7 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         filesFullscreen: Boolean(state.files.fullscreen),
         mode: state.connection.mode,
         statusText: state.ui.statusText,
+        modal: state.ui.modal,
         activeSessionId: state.sessions.activeSessionId,
         activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
     }), shallowEqualObject);
@@ -505,6 +507,7 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
             focusRegion: statusState.focusRegion,
             inspectorTab: statusState.inspectorTab,
             statusText: statusState.statusText,
+            modal: statusState.modal,
         },
         logs: {
             available: statusState.logsAvailable,
@@ -563,7 +566,7 @@ function ModelPickerModal({ state }) {
                 scrollOffset,
                 scrollMode: "top",
                 marginBottom: 1,
-                fillColor: "black",
+                fillColor: "surface",
             }),
             React.createElement(platform.Panel, {
                 title: modal.detailsTitle || "Model Details",
@@ -574,7 +577,7 @@ function ModelPickerModal({ state }) {
                 lines: modal.detailsLines,
                 scrollOffset: 0,
                 scrollMode: "top",
-                fillColor: "black",
+                fillColor: "surface",
             }),
         ));
 }
@@ -617,7 +620,7 @@ function SessionAgentPickerModal({ state }) {
                 scrollOffset,
                 scrollMode: "top",
                 marginBottom: 1,
-                fillColor: "black",
+                fillColor: "surface",
             }),
             React.createElement(platform.Panel, {
                 title: modal.detailsTitle || "Agent Details",
@@ -628,7 +631,7 @@ function SessionAgentPickerModal({ state }) {
                 lines: modal.detailsLines,
                 scrollOffset: 0,
                 scrollMode: "top",
-                fillColor: "black",
+                fillColor: "surface",
             }),
         ));
 }
@@ -666,7 +669,7 @@ function RenameSessionModal({ state }) {
                 scrollOffset: 0,
                 scrollMode: "top",
                 marginBottom: 1,
-                fillColor: "black",
+                fillColor: "surface",
             }),
             React.createElement(platform.Input, {
                 label: "title",
@@ -685,7 +688,7 @@ function RenameSessionModal({ state }) {
                 lines: modal.helpLines,
                 scrollOffset: 0,
                 scrollMode: "top",
-                fillColor: "black",
+                fillColor: "surface",
             }),
         ));
 }
@@ -723,7 +726,7 @@ function ArtifactUploadModal({ state }) {
                 scrollOffset: 0,
                 scrollMode: "top",
                 marginBottom: 1,
-                fillColor: "black",
+                fillColor: "surface",
             }),
             React.createElement(platform.Input, {
                 label: "path",
@@ -742,7 +745,7 @@ function ArtifactUploadModal({ state }) {
                 lines: modal.helpLines,
                 scrollOffset: 0,
                 scrollMode: "top",
-                fillColor: "black",
+                fillColor: "surface",
             }),
         ));
 }
@@ -791,7 +794,7 @@ function ArtifactPickerModal({ state }) {
                 scrollOffset,
                 scrollMode: "top",
                 marginBottom: 1,
-                fillColor: "black",
+                fillColor: "surface",
             }),
             React.createElement(platform.Panel, {
                 title: modal.detailsTitle || "Artifact Details",
@@ -802,9 +805,64 @@ function ArtifactPickerModal({ state }) {
                 lines: modal.detailsLines,
                 scrollOffset: 0,
                 scrollMode: "top",
-                fillColor: "black",
+                fillColor: "surface",
             }),
         ));
+}
+
+function ThemePickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectThemePickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(54, Math.min(modal.idealWidth || 76, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 14, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(8, Math.min(10, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No themes available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Theme Details",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ThemePickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+            themeId: rootState.ui.themeId,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ThemePickerModal, { state });
 }
 
 function ArtifactPickerModalContainer({ controller }) {
@@ -853,7 +911,7 @@ function renderFilterModal(platform, modal) {
             focused: false,
             width,
             height: modalHeight,
-            fillColor: "black",
+            fillColor: "surface",
         },
         React.createElement(platform.Column, { width: contentWidth },
             React.createElement(platform.Row, { marginBottom: 1 },
@@ -868,7 +926,7 @@ function renderFilterModal(platform, modal) {
                     scrollOffset: 0,
                     scrollMode: "top",
                     marginRight: index === modal.panes.length - 1 ? 0 : paneGap,
-                    fillColor: "black",
+                    fillColor: "surface",
                 })),
             ),
             React.createElement(platform.Panel, {
@@ -880,7 +938,7 @@ function renderFilterModal(platform, modal) {
                 lines: modal.helpLines || [modal.footerRuns],
                 scrollOffset: 0,
                 scrollMode: "top",
-                fillColor: "black",
+                fillColor: "surface",
             }),
         )));
 }
@@ -946,12 +1004,12 @@ export function SharedPilotSwarmApp({ controller }) {
         promptRows: getPromptInputRows(state.ui.prompt),
         inspectorTab: state.ui.inspectorTab,
         filesFullscreen: Boolean(state.files?.fullscreen),
+        themeId: state.ui.themeId,
+        viewportWidth: state.ui.layout?.viewportWidth ?? 120,
+        viewportHeight: state.ui.layout?.viewportHeight ?? 40,
     }), shallowEqualObject);
-    const viewport = typeof platform.getViewport === "function"
-        ? platform.getViewport()
-        : { width: 120, height: 40 };
-    const viewportWidth = viewport.width || 120;
-    const viewportHeight = viewport.height || 40;
+    const viewportWidth = layoutState.viewportWidth;
+    const viewportHeight = layoutState.viewportHeight;
     const layout = React.useMemo(
         () => computeLegacyLayout({ width: viewportWidth, height: viewportHeight }, layoutState.paneAdjust, layoutState.promptRows),
         [layoutState.paneAdjust, layoutState.promptRows, viewportHeight, viewportWidth],
@@ -967,6 +1025,12 @@ export function SharedPilotSwarmApp({ controller }) {
             controller.setViewport({ width: viewportWidth, height: viewportHeight });
         }
     }, [controller, viewportHeight, viewportWidth]);
+
+    React.useEffect(() => {
+        if (typeof platform.setTheme === "function") {
+            platform.setTheme(layoutState.themeId);
+        }
+    }, [layoutState.themeId, platform]);
 
     platform.clearSelectablePanes?.();
 
@@ -1019,6 +1083,7 @@ export function SharedPilotSwarmApp({ controller }) {
         React.createElement(ArtifactUploadModalContainer, { controller }),
         React.createElement(ArtifactPickerModalContainer, { controller }),
         React.createElement(ModelPickerModalContainer, { controller }),
+        React.createElement(ThemePickerModalContainer, { controller }),
         React.createElement(SessionAgentPickerModalContainer, { controller }),
         React.createElement(LogFilterModalContainer, { controller }),
         React.createElement(FilesFilterModalContainer, { controller }),
