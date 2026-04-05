@@ -1,0 +1,54 @@
+# Portal image: Express + xterm.js + node-pty → spawns TUI per browser tab.
+# Includes the full CLI/SDK/UI stack so each PTY runs PilotSwarm in "local" mode.
+#
+# Build with: docker buildx build --platform linux/amd64 -f deploy/Dockerfile.portal ...
+
+FROM node:24-slim
+
+# node-pty needs native compilation; also need CA certs for HTTPS
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy workspace root manifests
+COPY package.json package-lock.json ./
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/portal/package.json ./packages/portal/
+COPY packages/ui-core/package.json ./packages/ui-core/
+COPY packages/ui-react/package.json ./packages/ui-react/
+COPY scripts/postinstall.js ./scripts/
+
+# Install all deps including devDeps (xterm is in portal devDeps)
+RUN npm install --force
+
+# Copy built SDK dist + plugins
+COPY packages/sdk/dist/ ./packages/sdk/dist/
+COPY packages/sdk/plugins/ ./packages/sdk/plugins/
+COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
+
+# Copy CLI (plain JS)
+COPY packages/cli/bin/ ./packages/cli/bin/
+COPY packages/cli/src/ ./packages/cli/src/
+COPY packages/cli/tui-splash.txt ./packages/cli/
+COPY packages/cli/plugins/ ./packages/cli/plugins/
+
+# Copy UI packages (plain JS)
+COPY packages/ui-core/src/ ./packages/ui-core/src/
+COPY packages/ui-react/src/ ./packages/ui-react/src/
+
+# Copy portal (server + auth + public assets)
+COPY packages/portal/server.js packages/portal/auth.js ./packages/portal/
+COPY packages/portal/public/ ./packages/portal/public/
+
+# Copy model providers config (if present)
+COPY .model_providers.json* ./
+
+EXPOSE 3001
+
+# Run as non-root
+USER node
+
+ENTRYPOINT ["node", "packages/portal/server.js"]
