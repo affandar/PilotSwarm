@@ -21,6 +21,7 @@
       --modal-selected-border: #0969da;
       --modal-selected-foreground: #0550ae;
     }
+    .hidden { display: none !important; }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
       width: 100%;
@@ -29,9 +30,77 @@
       background: var(--app-background);
       color: var(--app-foreground);
     }
-    #terminal { width: 100%; height: 100%; }
+    /* ── Top bar ─────────────────────────────────────────────── */
+    #topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 36px;
+      padding: 0 12px;
+      background: #24292f;
+      color: #ffffff;
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+      font-size: 13px;
+      flex-shrink: 0;
+      z-index: 20;
+    }
+    #topbar .brand { font-weight: 600; }
+    #topbar .user-area { display: flex; align-items: center; gap: 10px; }
+    #topbar .user-name { opacity: 0.85; font-size: 12px; }
+    #topbar button {
+      background: transparent;
+      color: #ffffff;
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 4px;
+      padding: 3px 10px;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    #topbar button:hover { background: rgba(255,255,255,0.1); }
+    /* ── Layout ──────────────────────────────────────────────── */
+    #app-wrapper {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+    }
+    #terminal-area {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    #terminal { position: absolute; inset: 0; }
+    /* ── Not-signed-in graphic ───────────────────────────────── */
+    #signed-out-screen {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      background: var(--app-background);
+      color: var(--app-foreground);
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+      z-index: 12;
+    }
+    #signed-out-screen.hidden { display: none; }
+    #signed-out-screen .lock-icon { font-size: 48px; opacity: 0.3; }
+    #signed-out-screen .message { font-size: 15px; opacity: 0.6; text-align: center; line-height: 1.6; }
+    #signed-out-screen button {
+      background: #0078d4;
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 24px;
+      font: inherit;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    #signed-out-screen button:hover { background: #106ebe; }
     #overlay {
-      position: fixed; inset: 0;
+      position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center;
       background: var(--overlay-background);
       color: var(--overlay-foreground);
@@ -63,8 +132,8 @@
     }
     #theme-modal {
       width: min(520px, calc(100vw - 24px));
-      max-height: min(640px, calc(100vh - 40px));
-      overflow: auto;
+      max-height: min(640px, calc(100vh - 80px));
+      overflow-y: auto;
       border: 1px solid var(--modal-border);
       border-radius: 14px;
       background: var(--modal-background);
@@ -156,11 +225,26 @@
   </style>
 </head>
 <body>
-  <div id="overlay">
-    <span>Connecting to PilotSwarm<span class="spinner" id="dots">...</span></span>
-  </div>
-  <div id="copy-hint">Select text to copy · ⌥Enter for multiline · Shift+T themes</div>
-  <div id="terminal"></div>
+  <div id="app-wrapper">
+    <div id="topbar">
+      <span class="brand">PilotSwarm</span>
+      <div class="user-area">
+        <span id="topbar-user" class="user-name"></span>
+        <button id="topbar-signin-btn" class="hidden" onclick="window.__portalSignIn && window.__portalSignIn()">Sign In</button>
+        <button id="topbar-signout-btn" class="hidden" onclick="window.__portalSignOut && window.__portalSignOut()">Sign Out</button>
+      </div>
+    </div>
+    <div id="terminal-area">
+      <div id="overlay">
+        <span>Connecting to PilotSwarm<span class="spinner" id="dots">...</span></span>
+      </div>
+      <div id="signed-out-screen" class="hidden">
+        <div class="lock-icon">&#x1F512;</div>
+        <div class="message">Sign in with your Microsoft account<br/>to access PilotSwarm</div>
+        <button onclick="window.__portalSignIn && window.__portalSignIn()">Sign in with Microsoft</button>
+      </div>
+      <div id="copy-hint">Select text to copy · ⌥Enter for multiline · Shift+T themes</div>
+      <div id="terminal"></div>
   <div id="theme-modal-backdrop" class="hidden" aria-hidden="true">
     <div id="theme-modal" role="dialog" aria-modal="true" aria-labelledby="theme-modal-title">
       <div class="theme-modal-header">
@@ -170,6 +254,9 @@
       <div id="theme-options"></div>
     </div>
   </div>
+    </div><!-- /terminal-area -->
+  </div><!-- /app-wrapper -->
+  <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
