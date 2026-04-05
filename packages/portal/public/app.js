@@ -33,7 +33,7 @@ async function initAuth() {
     },
     cache: {
       cacheLocation: "sessionStorage",
-      storeAuthStateInCookie: false,
+      storeAuthStateInCookie: true,
     },
   });
 
@@ -83,6 +83,11 @@ async function acquireToken() {
 async function signIn() {
   if (!msalInstance) return;
   try {
+    // Mobile browsers block popups — use redirect flow instead
+    if (/Mobi|Android/i.test(navigator.userAgent)) {
+      await msalInstance.loginRedirect({ scopes: ["User.Read"] });
+      return; // page will redirect
+    }
     const resp = await msalInstance.loginPopup({
       scopes: ["User.Read"],
     });
