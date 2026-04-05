@@ -6,7 +6,7 @@ export const FOCUS_REGIONS = {
     PROMPT: "prompt",
 };
 
-export const INSPECTOR_TABS = ["sequence", "logs", "nodes", "files"];
+export const INSPECTOR_TABS = ["sequence", "logs", "nodes", "history", "files"];
 
 export const UI_COMMANDS = {
     REFRESH: "refresh",
@@ -54,6 +54,9 @@ export const UI_COMMANDS = {
     DONE_SESSION: "doneSession",
     CANCEL_SESSION: "cancelSession",
     DELETE_SESSION: "deleteSession",
+    OPEN_HISTORY_FORMAT: "openHistoryFormat",
+    REFRESH_EXECUTION_HISTORY: "refreshExecutionHistory",
+    EXPORT_EXECUTION_HISTORY: "exportExecutionHistory",
 };
 
 export function cycleValue(values, current, delta) {

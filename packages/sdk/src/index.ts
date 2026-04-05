@@ -26,6 +26,7 @@ export type {
     ModelSummary,
     SessionStatusChange,
     SessionOrchestrationStats,
+    ExecutionHistoryEvent,
     PilotSwarmManagementClientOptions,
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";

@@ -46,6 +46,10 @@ export function createInitialState({ mode = "local", branding = null } = {}) {
         orchestration: {
             bySessionId: {},
         },
+        executionHistory: {
+            bySessionId: {},
+            format: "pretty",
+        },
         files: {
             bySessionId: {},
             fullscreen: false,

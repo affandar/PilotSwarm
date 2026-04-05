@@ -179,22 +179,22 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.34).
+ * Flat event loop durable session orchestration (v1.0.33).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.34";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.33";
 
-export function* durableSessionOrchestration_1_0_34(
+export function* durableSessionOrchestration_1_0_33(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.34] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.33] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -216,7 +216,6 @@ export function* durableSessionOrchestration_1_0_34(
     const MAX_RETRIES = 3;
     const MAX_SUB_AGENTS = 20;
     const MAX_NESTING_LEVEL = 2;
-    const CHILD_UPDATE_BATCH_MS = 30_000;
 
     // ─── Sub-agent tracking ──────────────────────────────────
     let subAgents: SubAgentEntry[] = input.subAgents ? [...input.subAgents] : [];
@@ -361,17 +360,6 @@ export function* durableSessionOrchestration_1_0_34(
         return { prompt: rawPrompt };
     }
 
-    function appendSystemContext(rawPrompt: string | undefined, extraSystemPrompt?: string): string | undefined {
-        if (!extraSystemPrompt) return rawPrompt;
-        const extracted = extractPromptSystemContext(rawPrompt);
-        const mergedSystemPrompt = mergePrompt(extracted.systemPrompt, extraSystemPrompt);
-        if (!mergedSystemPrompt) return extracted.prompt ?? rawPrompt;
-        if (extracted.prompt) {
-            return `${extracted.prompt}\n\n[SYSTEM: ${mergedSystemPrompt}]`;
-        }
-        return `[SYSTEM: ${mergedSystemPrompt}]`;
-    }
-
     function ensureTaskContext(sourcePrompt?: string): void {
         if (taskContext || !sourcePrompt) return;
         taskContext = sourcePrompt.slice(0, 2000);
@@ -451,7 +439,6 @@ export function* durableSessionOrchestration_1_0_34(
             ...(pendingInputQuestion ? { pendingInputQuestion } : {}),
             ...(waitingForAgentIds ? { waitingForAgentIds } : {}),
             ...(interruptedWaitTimer ? { interruptedWaitTimer } : {}),
-            ...(pendingChildDigest ? { pendingChildDigest } : {}),
             ...restOverrides,
         };
     }
@@ -527,113 +514,6 @@ export function* durableSessionOrchestration_1_0_34(
             updateType: match[2].replace(/\]$/, ""),
             content: promptText.split("\n").slice(1).join("\n").trim(),
         };
-    }
-
-    function bufferChildUpdate(update: { sessionId: string; updateType: string; content: string }, observedAtMs: number): void {
-        if (!pendingChildDigest) {
-            pendingChildDigest = {
-                startedAtMs: observedAtMs,
-                updates: [],
-            };
-        }
-
-        const nextEntry = {
-            sessionId: update.sessionId,
-            updateType: update.updateType,
-            ...(update.content ? { content: update.content.slice(0, 2000) } : {}),
-            observedAtMs,
-        };
-        const existingIndex = pendingChildDigest.updates.findIndex((entry) => entry.sessionId === update.sessionId);
-        if (existingIndex >= 0) {
-            pendingChildDigest.updates[existingIndex] = nextEntry;
-        } else {
-            pendingChildDigest.updates.push(nextEntry);
-        }
-    }
-
-    function clearPendingChildDigest(): void {
-        pendingChildDigest = null;
-    }
-
-    function buildPendingChildDigestSystemPrompt(): string | undefined {
-        if (!pendingChildDigest || pendingChildDigest.updates.length === 0) return undefined;
-
-        const lines = pendingChildDigest.updates.map((update) => {
-            const agent = subAgents.find((entry) => entry.sessionId === update.sessionId);
-            const label = agent?.orchId ?? update.sessionId;
-            const task = agent?.task ? `Task: "${agent.task.slice(0, 120)}"\n` : "";
-            const status = agent?.status ?? update.updateType;
-            const resultText = String(update.content || agent?.result || "").trim();
-            const result = resultText ? resultText.slice(0, 240) : "(no summary)";
-            return `  - Agent ${label}\n` +
-                `    ${task}` +
-                `    Update: ${update.updateType}\n` +
-                `    Status: ${status}\n` +
-                `    Result: ${result}`;
-        });
-
-        return `Buffered child updates arrived during the last 30 seconds:\n${lines.join("\n")}\nReview the updates and continue your task.`;
-    }
-
-    function flushPendingChildDigestIntoPrompt(rawPrompt: string | undefined): string | undefined {
-        const childDigestPrompt = buildPendingChildDigestSystemPrompt();
-        if (!childDigestPrompt) return rawPrompt;
-        clearPendingChildDigest();
-        return appendSystemContext(rawPrompt, childDigestPrompt);
-    }
-
-    function* processPendingChildDigest(): Generator<any, void, any> {
-        const digestPrompt = buildPendingChildDigestSystemPrompt();
-        if (!digestPrompt) {
-            clearPendingChildDigest();
-            return;
-        }
-
-        if (activeTimer?.type === "wait") {
-            const now: number = yield ctx.utcNow();
-            const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
-            const remainingSec = Math.round(remainingMs / 1000);
-            const elapsedMs = activeTimer.originalDurationMs - remainingMs;
-            const elapsedSec = Math.round(elapsedMs / 1000);
-            const totalSec = Math.round(activeTimer.originalDurationMs / 1000);
-            interruptedWaitTimer = {
-                remainingSec,
-                reason: activeTimer.reason,
-                shouldRehydrate: activeTimer.shouldRehydrate ?? false,
-                waitPlan: activeTimer.waitPlan,
-            };
-            activeTimer = null;
-            clearPendingChildDigest();
-            yield* processPrompt(
-                `[SYSTEM: Buffered child updates interrupted your ${totalSec}s timer (reason: "${interruptedWaitTimer.reason}"). ` +
-                    `${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
-                    `Review the updates and continue your task now. The remaining wait will be resumed automatically after this turn completes.\n\n${digestPrompt}]`,
-                true,
-            );
-            return;
-        }
-
-        if (activeTimer?.type === "cron") {
-            const activeCron = cronSchedule;
-            activeTimer = null;
-            clearPendingChildDigest();
-            yield* processPrompt(
-                `[SYSTEM: Buffered child updates arrived while your recurring schedule was waiting for the next wake-up${activeCron ? ` ("${activeCron.reason}")` : ""}. ` +
-                    `Review the updates and continue your task now. The recurring cron schedule remains active and will be re-armed automatically after this turn completes.\n\n${digestPrompt}]`,
-                true,
-            );
-            return;
-        }
-
-        if (activeTimer?.type === "idle") {
-            activeTimer = null;
-        } else if (activeTimer?.type === "agent-poll") {
-            waitingForAgentIds = null;
-            activeTimer = null;
-        }
-
-        clearPendingChildDigest();
-        yield* processPrompt(`[SYSTEM: ${digestPrompt}]`, true);
     }
 
     function* applyChildUpdate(update: { sessionId: string; updateType: string; content: string }): Generator<any, void, any> {
@@ -811,14 +691,6 @@ export function* durableSessionOrchestration_1_0_34(
         shouldRehydrate: boolean;
         waitPlan?: ActiveTimer["waitPlan"];
     } | null = input.interruptedWaitTimer ?? null;
-    let pendingChildDigest: NonNullable<OrchestrationInput["pendingChildDigest"]> | null =
-        input.pendingChildDigest
-            ? {
-                startedAtMs: input.pendingChildDigest.startedAtMs,
-                ...(input.pendingChildDigest.ready ? { ready: true } : {}),
-                updates: [...(input.pendingChildDigest.updates || [])],
-            }
-            : null;
 
     // Reconstruct active timer from CAN input
     if (input.activeTimerState) {
@@ -854,30 +726,6 @@ export function* durableSessionOrchestration_1_0_34(
     const MAX_DRAIN_PER_TURN = 50;
     const MAX_ITERATIONS_PER_EXECUTION = 100;
     const NON_BLOCKING_TIMER_MS = 10;
-
-    function nextTimerCandidate(now: number): {
-        kind: "active" | "child-digest";
-        remainingMs: number;
-        timer?: ActiveTimer;
-    } | null {
-        const candidates: Array<{ kind: "active" | "child-digest"; remainingMs: number; timer?: ActiveTimer }> = [];
-        if (activeTimer) {
-            candidates.push({
-                kind: "active",
-                remainingMs: Math.max(0, activeTimer.deadlineMs - now),
-                timer: activeTimer,
-            });
-        }
-        if (pendingChildDigest && !pendingChildDigest.ready && pendingChildDigest.updates.length > 0) {
-            candidates.push({
-                kind: "child-digest",
-                remainingMs: Math.max(0, pendingChildDigest.startedAtMs + CHILD_UPDATE_BATCH_MS - now),
-            });
-        }
-        if (candidates.length === 0) return null;
-        candidates.sort((left, right) => left.remainingMs - right.remainingMs);
-        return candidates[0];
-    }
 
     function fifoBucketKey(i: number): string { return `fifo.${i}`; }
 
@@ -1138,41 +986,30 @@ export function* durableSessionOrchestration_1_0_34(
         for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
             let msg: any = null;
 
-            // ─── Mode 1: Active Timer / Child Digest — race dequeue vs timer ───
-            if (activeTimer || (pendingChildDigest && !pendingChildDigest.ready)) {
+            // ─── Mode 1: Active Timer — race dequeue vs timer ───
+            if (activeTimer) {
                 const now: number = yield ctx.utcNow();
-                const candidate = nextTimerCandidate(now);
-                if (!candidate) continue;
+                const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
 
-                if (candidate.remainingMs === 0) {
-                    if (candidate.kind === "active" && candidate.timer) {
-                        stash.push({ kind: "timer", timer: { ...candidate.timer }, firedAtMs: now });
-                        activeTimer = null;
-                    } else if (pendingChildDigest && pendingChildDigest.updates.length > 0) {
-                        pendingChildDigest.ready = true;
-                        break;
-                    }
+                if (remainingMs === 0) {
+                    stash.push({ kind: "timer", timer: { ...activeTimer }, firedAtMs: now });
+                    activeTimer = null;
                     continue;
                 }
 
                 const msgTask = ctx.dequeueEvent("messages");
-                const timerTask = ctx.scheduleTimer(candidate.remainingMs);
+                const timerTask = ctx.scheduleTimer(remainingMs);
                 const race: any = yield ctx.race(msgTask, timerTask);
 
                 if (race.index === 1) {
-                    if (candidate.kind === "active" && candidate.timer) {
-                        const firedAt: number = yield ctx.utcNow();
-                        stash.push({ kind: "timer", timer: { ...candidate.timer }, firedAtMs: firedAt });
-                        activeTimer = null;
-                    } else if (pendingChildDigest && pendingChildDigest.updates.length > 0) {
-                        pendingChildDigest.ready = true;
-                        break;
-                    }
+                    const firedAt: number = yield ctx.utcNow();
+                    stash.push({ kind: "timer", timer: { ...activeTimer }, firedAtMs: firedAt });
+                    activeTimer = null;
                     continue; // keep draining — pick up queued msgs in mode 3
                 }
 
                 msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
-                // activeTimer / pending child digest stay set — deadlines unchanged
+                // activeTimer stays set — deadline unchanged
 
             // ─── Mode 2: Blocking Dequeue — nothing to process ──
             } else if (needsBlockingDequeue()) {
@@ -1204,12 +1041,45 @@ export function* durableSessionOrchestration_1_0_34(
             // ─── Route: Child updates → apply immediately ───────
             const childUpdate = parseChildUpdate(msg.prompt);
             if (childUpdate) {
-                const key = `${childUpdate.sessionId}|${childUpdate.updateType}|${childUpdate.content ?? ""}`;
+                const key = `${childUpdate.sessionId}|${childUpdate.updateType}`;
                 if (!seenChildUpdates.has(key)) {
                     seenChildUpdates.add(key);
                     yield* applyChildUpdate(childUpdate);
-                    const childObservedAt: number = yield ctx.utcNow();
-                    bufferChildUpdate(childUpdate, childObservedAt);
+
+                    // Break active wait timer if >60s remaining
+                    if (activeTimer?.type === "wait") {
+                        const now: number = yield ctx.utcNow();
+                        const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
+                        const remainingSec = Math.round(remainingMs / 1000);
+                        if (remainingSec > 60) {
+                            const elapsedMs = activeTimer.originalDurationMs - remainingMs;
+                            const elapsedSec = Math.round(elapsedMs / 1000);
+                            ctx.traceInfo(`[drain] child update during wait, ${remainingSec}s remain (>60s) — breaking timer`);
+                            stash.push({
+                                kind: "prompt",
+                                prompt: `The wait was partially completed (${elapsedSec}s elapsed, ${remainingSec}s remain). Resume the wait for the remaining ${remainingSec} seconds.`,
+                                bootstrap: true,
+                            });
+                            activeTimer = null;
+                        }
+                    }
+
+                    // Break active cron timer if >60s remaining
+                    if (activeTimer?.type === "cron") {
+                        const now: number = yield ctx.utcNow();
+                        const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
+                        if (Math.round(remainingMs / 1000) > 60) {
+                            ctx.traceInfo(`[drain] child update during cron wait, >60s remain — breaking timer`);
+                            const activeCron = cronSchedule;
+                            stash.push({
+                                kind: "prompt",
+                                prompt: `[SYSTEM: A child update arrived while your recurring schedule was waiting for the next wake-up${activeCron ? ` ("${activeCron.reason}")` : ""}. ` +
+                                    `Review the update and continue your task now. The recurring cron schedule remains active and will be re-armed automatically after this turn completes.]`,
+                                bootstrap: true,
+                            });
+                            activeTimer = null;
+                        }
+                    }
 
                     // Check if all waited-for agents are now done
                     if (waitingForAgentIds) {
@@ -1223,7 +1093,6 @@ export function* durableSessionOrchestration_1_0_34(
                             // and produces a single LLM turn, matching v1.0.31 behavior.
                             queueFollowup(buildWaitForAgentsFollowup(waitingForAgentIds));
                             waitingForAgentIds = null;
-                            clearPendingChildDigest();
                             activeTimer = null;
                         }
                     }
@@ -1298,10 +1167,6 @@ export function* durableSessionOrchestration_1_0_34(
                     ctx.traceInfo(`[drain] user prompt interrupted agent wait`);
                     waitingForAgentIds = null;
                     activeTimer = null;
-                }
-
-                if (pendingChildDigest?.updates.length) {
-                    userPrompt = flushPendingChildDigestIntoPrompt(userPrompt);
                 }
 
                 stash.push({
@@ -2378,12 +2243,6 @@ export function* durableSessionOrchestration_1_0_34(
                 default:
                     ctx.traceInfo(`[decide] unknown FIFO item kind: ${item.kind}`);
             }
-            return true;
-        }
-
-        // Priority 4: buffered child digest — only after user/FIFO work is drained
-        if (pendingChildDigest?.ready && pendingChildDigest.updates.length > 0 && !waitingForAgentIds) {
-            yield* processPendingChildDigest();
             return true;
         }
 

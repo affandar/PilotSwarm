@@ -163,6 +163,15 @@ export interface SessionOrchestrationStats {
     kvTotalValueBytes: number;
 }
 
+/** A single duroxide execution history event. */
+export interface ExecutionHistoryEvent {
+    eventId: number;
+    kind: string;
+    sourceEventId?: number;
+    timestampMs: number;
+    data?: string;
+}
+
 /** Options for PilotSwarmManagementClient. */
 export interface PilotSwarmManagementClientOptions {
     /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
@@ -610,6 +619,34 @@ export class PilotSwarmManagementClient {
                 kvUserKeyCount: Number(stats.kvUserKeyCount) || 0,
                 kvTotalValueBytes: Number(stats.kvTotalValueBytes) || 0,
             };
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Read the duroxide execution history for a session's current (or specified) execution.
+     * Returns the raw event list from the duroxide orchestration engine.
+     */
+    async getExecutionHistory(sessionId: string, executionId?: number): Promise<ExecutionHistoryEvent[] | null> {
+        this._ensureStarted();
+        const orchId = `session-${sessionId}`;
+        try {
+            let execId = executionId;
+            if (execId == null) {
+                const executions: number[] = await this._duroxideClient.listExecutions(orchId);
+                if (!Array.isArray(executions) || executions.length === 0) return null;
+                execId = executions[executions.length - 1];
+            }
+            const events = await this._duroxideClient.readExecutionHistory(orchId, execId);
+            if (!Array.isArray(events)) return null;
+            return events.map((e: any) => ({
+                eventId: Number(e.eventId) || 0,
+                kind: String(e.kind || ""),
+                ...(e.sourceEventId != null ? { sourceEventId: Number(e.sourceEventId) } : {}),
+                timestampMs: Number(e.timestampMs) || 0,
+                ...(e.data != null ? { data: String(e.data) } : {}),
+            }));
         } catch {
             return null;
         }

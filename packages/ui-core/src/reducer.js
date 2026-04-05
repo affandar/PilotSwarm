@@ -448,6 +448,57 @@ export function appReducer(state, action) {
             };
         }
 
+        case "executionHistory/loading": {
+            const bySessionId = { ...(state.executionHistory?.bySessionId || {}) };
+            bySessionId[action.sessionId] = {
+                ...(bySessionId[action.sessionId] || {}),
+                loading: true,
+                error: null,
+            };
+            return {
+                ...state,
+                executionHistory: { ...state.executionHistory, bySessionId },
+            };
+        }
+
+        case "executionHistory/loaded": {
+            const bySessionId = { ...(state.executionHistory?.bySessionId || {}) };
+            bySessionId[action.sessionId] = {
+                loading: false,
+                error: null,
+                fetchedAt: action.fetchedAt || Date.now(),
+                events: action.events || [],
+            };
+            return {
+                ...state,
+                executionHistory: { ...state.executionHistory, bySessionId },
+            };
+        }
+
+        case "executionHistory/error": {
+            const bySessionId = { ...(state.executionHistory?.bySessionId || {}) };
+            bySessionId[action.sessionId] = {
+                ...(bySessionId[action.sessionId] || {}),
+                loading: false,
+                error: action.error || "Failed to load execution history",
+                fetchedAt: action.fetchedAt || Date.now(),
+            };
+            return {
+                ...state,
+                executionHistory: { ...state.executionHistory, bySessionId },
+            };
+        }
+
+        case "executionHistory/format": {
+            return {
+                ...state,
+                executionHistory: {
+                    ...state.executionHistory,
+                    format: action.format || "pretty",
+                },
+            };
+        }
+
         case "files/sessionLoading": {
             const bySessionId = cloneFilesBySessionId(state.files.bySessionId);
             const current = bySessionId[action.sessionId] || {
