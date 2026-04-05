@@ -11,6 +11,8 @@ import {
     selectArtifactPickerModal,
     selectFilesFilterModal,
     selectFilesView,
+    selectHistoryFormatModal,
+    INSPECTOR_TABS,
     selectInspector,
     selectLogFilterModal,
     selectModelPickerModal,
@@ -241,7 +243,7 @@ const FilesBrowser = React.memo(function FilesBrowser({ controller, width, heigh
         previewWidth: Math.max(8, contentWidth - 4),
     }), [contentWidth, selectorState]);
     const title = shellTitle
-        || (showFullscreenTitle ? filesView.fullscreenTitle : filesView.listTitle)
+        || (showFullscreenTitle ? filesView.fullscreenTitle : filesView.panelTitle || filesView.listTitle)
         || [{ text: "Files", color: "magenta", bold: true }];
     const availablePanelsHeight = Math.max(9, height - 4);
     const maxListPanelHeight = Math.max(5, Math.min(10, Math.floor(availablePanelsHeight * 0.35)));
@@ -272,27 +274,26 @@ const FilesBrowser = React.memo(function FilesBrowser({ controller, width, heigh
         }
         : null;
 
+    const tabLine = INSPECTOR_TABS.map((tab) => ({
+        text: tab === "files" ? `[${tab}] ` : `${tab} `,
+        color: tab === "files" ? "magenta" : "gray",
+        bold: tab === "files",
+    }));
+
     return React.createElement(platform.Panel, {
         title,
         color: "magenta",
         focused,
         width,
         height,
-        fillColor: "black",
     },
     React.createElement(platform.Column, { width: contentWidth },
         React.createElement(platform.Lines, {
-            lines: [[
-                ..."sequence logs nodes files".split(" ").map((tab) => ({
-                    text: tab === "files" ? `[${tab}] ` : `${tab} `,
-                    color: tab === "files" ? "magenta" : "gray",
-                    bold: tab === "files",
-                })),
-            ]],
+            lines: [tabLine],
         }),
         React.createElement(platform.Panel, {
             title: filesView.listTitle,
-            color: "magenta",
+            color: "gray",
             focused: false,
             width: contentWidth,
             height: listPanelHeight,
@@ -300,21 +301,19 @@ const FilesBrowser = React.memo(function FilesBrowser({ controller, width, heigh
             scrollOffset: listScrollOffset,
             scrollMode: "top",
             marginBottom: 1,
-            fillColor: "black",
             paneId: "files:list",
             paneLabel: "Files list",
             frame: listFrame,
         }),
         React.createElement(platform.Panel, {
             title: filesView.previewTitle,
-            color: "cyan",
+            color: "gray",
             focused: false,
             width: contentWidth,
             height: previewPanelHeight,
             lines: filesView.previewLines,
             scrollOffset: filesView.previewScrollOffset,
             scrollMode: "top",
-            fillColor: "black",
             paneId: "files:preview",
             paneLabel: "File preview",
             frame: previewFrame,
@@ -342,6 +341,7 @@ const InspectorPane = React.memo(function InspectorPane({ controller, width, hei
         histories: state.history.bySessionId,
         logs: state.logs,
         inspectorTab: state.ui.inspectorTab,
+        executionHistory: state.executionHistory,
     }), shallowEqualObject);
     const selectorState = React.useMemo(() => ({
         branding: inspectorState.branding,
@@ -362,6 +362,7 @@ const InspectorPane = React.memo(function InspectorPane({ controller, width, hei
         ui: {
             inspectorTab: inspectorState.inspectorTab,
         },
+        executionHistory: inspectorState.executionHistory,
     }), [inspectorState]);
     const inspector = React.useMemo(() => selectInspector(selectorState, { width: contentWidth }), [contentWidth, selectorState]);
     if (inspectorMeta.inspectorTab === "files") {
@@ -920,6 +921,24 @@ function FilesFilterModalContainer({ controller }) {
     return React.createElement(FilesFilterModal, { state });
 }
 
+function HistoryFormatModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectHistoryFormatModal(state);
+    return renderFilterModal(platform, modal);
+}
+
+function HistoryFormatModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+        executionHistory: {
+            format: rootState.executionHistory?.format || "pretty",
+        },
+    }), shallowEqualObject);
+    return React.createElement(HistoryFormatModal, { state });
+}
+
 export function SharedPilotSwarmApp({ controller }) {
     const platform = useUiPlatform();
     const layoutState = useControllerSelector(controller, (state) => ({
@@ -1003,5 +1022,6 @@ export function SharedPilotSwarmApp({ controller }) {
         React.createElement(SessionAgentPickerModalContainer, { controller }),
         React.createElement(LogFilterModalContainer, { controller }),
         React.createElement(FilesFilterModalContainer, { controller }),
+        React.createElement(HistoryFormatModalContainer, { controller }),
     );
 }

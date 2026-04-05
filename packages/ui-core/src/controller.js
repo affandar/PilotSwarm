@@ -18,9 +18,12 @@ import {
 import { parseTerminalMarkupRuns } from "./formatting.js";
 import {
     selectActiveArtifactLinks,
+    selectActivityPane,
     selectChatLines,
     selectFileBrowserItems,
     selectFilesScope,
+    selectFilesView,
+    selectInspector,
     selectSelectedFileBrowserItem,
     selectVisibleSessionRows,
 } from "./selectors.js";
@@ -737,6 +740,15 @@ export class PilotSwarmUiController {
         if (targetTab === "files") {
             await this.ensureFilesForScope(selectFilesScope(this.getState()));
         }
+        if (targetTab === "history") {
+            const activeSessionId = this.getState().sessions.activeSessionId;
+            const current = activeSessionId
+                ? this.getState().executionHistory?.bySessionId?.[activeSessionId] || null
+                : null;
+            if (activeSessionId && !current) {
+                await this.ensureExecutionHistory(activeSessionId);
+            }
+        }
     }
 
     async ensureOrchestrationStats(sessionId, { force = false } = {}) {
@@ -782,6 +794,35 @@ export class PilotSwarmUiController {
         });
         this.sessionOrchestrationStatsLoads.set(sessionId, loadPromise);
         return loadPromise;
+    }
+
+    async ensureExecutionHistory(sessionId, { force = false } = {}) {
+        if (!sessionId || typeof this.transport.getExecutionHistory !== "function") return null;
+        const current = this.getState().executionHistory?.bySessionId?.[sessionId] || null;
+        const now = Date.now();
+        if (!force && current?.loading) return current;
+        if (!force && current && Number.isFinite(current.fetchedAt) && (now - current.fetchedAt) < 15_000) {
+            return current;
+        }
+        this.dispatch({ type: "executionHistory/loading", sessionId });
+        try {
+            const events = await this.transport.getExecutionHistory(sessionId);
+            this.dispatch({
+                type: "executionHistory/loaded",
+                sessionId,
+                events: events || [],
+                fetchedAt: Date.now(),
+            });
+        } catch (error) {
+            console.error("[executionHistory] fetch error:", error?.message || error);
+            this.dispatch({
+                type: "executionHistory/error",
+                sessionId,
+                error: error?.message || String(error),
+                fetchedAt: Date.now(),
+            });
+        }
+        return this.getState().executionHistory?.bySessionId?.[sessionId] || null;
     }
 
     async ensureFilesForScope(scope = selectFilesScope(this.getState()), { force = false } = {}) {
@@ -1760,7 +1801,7 @@ export class PilotSwarmUiController {
     moveModalSelection(delta) {
         const modal = this.getState().ui.modal;
         if (!modal || !Array.isArray(modal.items) || modal.items.length === 0) return;
-        if (modal.type === "logFilter" || modal.type === "filesFilter") {
+        if (modal.type === "logFilter" || modal.type === "filesFilter" || modal.type === "historyFormat") {
             const currentPaneIndex = Math.max(0, Math.min(Number(modal.selectedIndex) || 0, modal.items.length - 1));
             const selected = modal.items[currentPaneIndex];
             if (!selected || !Array.isArray(selected.options) || selected.options.length === 0) return;
@@ -1768,12 +1809,15 @@ export class PilotSwarmUiController {
             if (optionIds.length === 0) return;
             const currentValue = modal.type === "filesFilter"
                 ? this.getState().files.filter?.[selected.id] || optionIds[0]
-                : this.getState().logs.filter?.[selected.id] || optionIds[0];
+                : modal.type === "historyFormat"
+                    ? this.getState().executionHistory?.format || optionIds[0]
+                    : this.getState().logs.filter?.[selected.id] || optionIds[0];
             const nextValue = cycleValue(optionIds, currentValue, delta);
             const nextOption = selected.options.find((option) => option.id === nextValue) || selected.options[0];
             this.dispatch({
-                type: modal.type === "filesFilter" ? "files/filter" : "logs/filter",
-                filter: { [selected.id]: nextValue },
+                type: modal.type === "filesFilter" ? "files/filter" : modal.type === "historyFormat" ? "executionHistory/format" : "logs/filter",
+                filter: modal.type === "historyFormat" ? undefined : { [selected.id]: nextValue },
+                ...(modal.type === "historyFormat" ? { format: nextValue } : {}),
             });
             if (modal.type === "filesFilter") {
                 this.ensureFilesForScope(nextValue).catch(() => {});
@@ -1781,7 +1825,7 @@ export class PilotSwarmUiController {
             }
             this.dispatch({
                 type: "ui/status",
-                text: `${modal.type === "filesFilter" ? "Files" : "Log"} filter updated: ${selected.label} = ${nextOption?.label || nextValue}`,
+                text: `${modal.type === "filesFilter" ? "Files" : modal.type === "historyFormat" ? "History" : "Log"} filter updated: ${selected.label} = ${nextOption?.label || nextValue}`,
             });
             return;
         }
@@ -1792,13 +1836,15 @@ export class PilotSwarmUiController {
 
     moveModalPane(delta) {
         const modal = this.getState().ui.modal;
-        if (!modal || (modal.type !== "logFilter" && modal.type !== "filesFilter") || !Array.isArray(modal.items) || modal.items.length === 0) return;
+        if (!modal || (modal.type !== "logFilter" && modal.type !== "filesFilter" && modal.type !== "historyFormat") || !Array.isArray(modal.items) || modal.items.length === 0) return;
         const current = Math.max(0, Number(modal.selectedIndex) || 0);
         const next = (current + delta + modal.items.length) % modal.items.length;
         const selected = modal.items[next];
         const currentValue = modal.type === "filesFilter"
             ? this.getState().files.filter?.[selected.id] || selected.options?.[0]?.id
-            : this.getState().logs.filter?.[selected.id] || selected.options?.[0]?.id;
+            : modal.type === "historyFormat"
+                ? this.getState().executionHistory?.format || selected.options?.[0]?.id
+                : this.getState().logs.filter?.[selected.id] || selected.options?.[0]?.id;
         const currentOption = selected.options?.find((option) => option.id === currentValue) || selected.options?.[0];
         this.dispatch({ type: "ui/modalSelection", index: next });
         this.dispatch({
@@ -1858,6 +1904,10 @@ export class PilotSwarmUiController {
             this.closeModal();
             return;
         }
+        if (modal.type === "historyFormat") {
+            this.closeModal();
+            return;
+        }
         if (modal.type === "artifactPicker") {
             await this.downloadArtifactModalSelection();
         }
@@ -1908,6 +1958,31 @@ export class PilotSwarmUiController {
             },
         });
         this.dispatch({ type: "ui/status", text: "Tab/Shift-Tab switch filters · Up/Down change values · Enter close · Esc cancel" });
+    }
+
+    openHistoryFormat() {
+        const previousFocus = this.getState().ui.focusRegion;
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "historyFormat",
+                title: "Execution History Format",
+                previousFocus,
+                selectedIndex: 0,
+                items: [
+                    {
+                        id: "format",
+                        label: "Format",
+                        description: "Pretty prints a human-readable view with colored event kinds. Raw JSON shows the full event objects.",
+                        options: [
+                            { id: "pretty", label: "Pretty text" },
+                            { id: "raw", label: "Raw JSON" },
+                        ],
+                    },
+                ],
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Up/Down change format · Enter close · Esc cancel" });
     }
 
     toggleLogTail() {
@@ -2217,8 +2292,10 @@ export class PilotSwarmUiController {
     }
 
     scrollPane(pane, delta) {
-        const current = this.getState().ui.scroll?.[pane] || 0;
-        const nextOffset = current + delta;
+        const state = this.getState();
+        const maxOffset = this.getPaneMaxScrollOffset(pane, state);
+        const current = Math.max(0, Math.min(Number(state.ui.scroll?.[pane]) || 0, maxOffset));
+        const nextOffset = Math.max(0, Math.min(current + delta, maxOffset));
         this.dispatch({ type: "ui/scroll", pane, offset: nextOffset });
         if (pane === "chat" && delta > 0) {
             this.maybeAutoExpandActiveHistory(nextOffset).catch(() => {});
@@ -2226,9 +2303,11 @@ export class PilotSwarmUiController {
     }
 
     scrollPaneTo(pane, offset) {
-        this.dispatch({ type: "ui/scroll", pane, offset });
-        if (pane === "chat" && offset > 0) {
-            this.maybeAutoExpandActiveHistory(offset).catch(() => {});
+        const maxOffset = this.getPaneMaxScrollOffset(pane, this.getState());
+        const nextOffset = Math.max(0, Math.min(Number(offset) || 0, maxOffset));
+        this.dispatch({ type: "ui/scroll", pane, offset: nextOffset });
+        if (pane === "chat" && nextOffset > 0) {
+            this.maybeAutoExpandActiveHistory(nextOffset).catch(() => {});
         }
     }
 
@@ -2298,6 +2377,187 @@ export class PilotSwarmUiController {
             contentHeight,
             totalLines,
         };
+    }
+
+    getActivityRenderMetrics(state = this.getState()) {
+        const layout = this.getCurrentLayout();
+        if (layout.rightHidden) {
+            return {
+                contentWidth: 20,
+                contentHeight: 1,
+                totalLines: 0,
+            };
+        }
+
+        const contentWidth = Math.max(20, layout.rightWidth - 4);
+        const contentHeight = Math.max(1, layout.activityPaneHeight - 2);
+        const activeSessionId = state.sessions.activeSessionId;
+        const selectorState = {
+            sessions: {
+                activeSessionId,
+                byId: activeSessionId
+                    ? { [activeSessionId]: state.sessions.byId[activeSessionId] || null }
+                    : {},
+            },
+            history: {
+                bySessionId: activeSessionId
+                    ? new Map([[activeSessionId, state.history.bySessionId.get(activeSessionId) || null]])
+                    : new Map(),
+            },
+        };
+        const activity = selectActivityPane(selectorState);
+        return {
+            contentWidth,
+            contentHeight,
+            totalLines: countWrappedRenderableLines(activity.lines, contentWidth),
+        };
+    }
+
+    getInspectorRenderMetrics(state = this.getState()) {
+        const layout = this.getCurrentLayout();
+        if (layout.rightHidden) {
+            return {
+                contentWidth: 20,
+                contentHeight: 1,
+                stickyLineCount: 0,
+                totalLines: 0,
+            };
+        }
+
+        const contentWidth = Math.max(20, layout.rightWidth - 4);
+        const activeSessionId = state.sessions.activeSessionId;
+        const activeOrchestration = activeSessionId
+            ? state.orchestration.bySessionId?.[activeSessionId] || null
+            : null;
+        const selectorState = {
+            branding: state.branding,
+            sessions: {
+                activeSessionId,
+                byId: state.sessions.byId,
+                flat: state.sessions.flat,
+            },
+            history: {
+                bySessionId: state.history.bySessionId,
+            },
+            orchestration: {
+                bySessionId: activeSessionId && activeOrchestration
+                    ? { [activeSessionId]: activeOrchestration }
+                    : {},
+            },
+            logs: state.logs,
+            ui: {
+                inspectorTab: state.ui.inspectorTab,
+            },
+            executionHistory: state.executionHistory,
+        };
+        const inspector = selectInspector(selectorState, { width: contentWidth });
+        const tabLine = inspector.tabs.map((tab) => ({
+            text: tab === inspector.activeTab ? `[${tab}] ` : `${tab} `,
+            color: tab === inspector.activeTab ? "magenta" : "gray",
+            bold: tab === inspector.activeTab,
+        }));
+        const normalizedLines = (inspector.lines || []).map((line) => (typeof line === "string"
+            ? { text: line, color: "white" }
+            : line));
+        const stickyLines = inspector.activeTab === "sequence"
+            ? [
+                tabLine,
+                ...((inspector.stickyLines || []).map((line) => (typeof line === "string"
+                    ? { text: line, color: "white" }
+                    : line))),
+            ]
+            : [];
+        const bodyLines = inspector.activeTab === "sequence"
+            ? normalizedLines
+            : [tabLine, ...normalizedLines];
+        return {
+            contentWidth,
+            contentHeight: Math.max(1, layout.inspectorPaneHeight - 2),
+            stickyLineCount: countWrappedRenderableLines(stickyLines, contentWidth),
+            totalLines: countWrappedRenderableLines(bodyLines, contentWidth),
+        };
+    }
+
+    getFilePreviewRenderMetrics(state = this.getState()) {
+        const layout = this.getCurrentLayout();
+        if (layout.rightHidden && !state.files?.fullscreen) {
+            return {
+                contentWidth: 20,
+                contentHeight: 1,
+                totalLines: 0,
+            };
+        }
+
+        const fullscreen = state.ui.inspectorTab === "files" && Boolean(state.files?.fullscreen);
+        const width = fullscreen ? layout.totalWidth : layout.rightWidth;
+        const height = fullscreen ? Math.max(10, layout.bodyHeight) : layout.inspectorPaneHeight;
+        const outerContentWidth = Math.max(20, width - 4);
+        const previewWidth = Math.max(8, outerContentWidth - 4);
+
+        const activeSessionId = state.sessions.activeSessionId;
+        const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
+        const selectorState = {
+            sessions: {
+                activeSessionId,
+                byId: activeSessionId && activeSession
+                    ? { [activeSessionId]: activeSession }
+                    : {},
+                flat: state.sessions.flat,
+            },
+            files: {
+                bySessionId: state.files.bySessionId,
+                fullscreen: Boolean(state.files.fullscreen),
+                selectedArtifactId: state.files.selectedArtifactId,
+                filter: state.files.filter,
+            },
+            ui: {
+                scroll: {
+                    filePreview: state.ui.scroll.filePreview,
+                },
+            },
+        };
+        const filesView = selectFilesView(selectorState, {
+            listWidth: previewWidth,
+            previewWidth,
+        });
+        const availablePanelsHeight = Math.max(9, height - 4);
+        const maxListPanelHeight = Math.max(5, Math.min(10, Math.floor(availablePanelsHeight * 0.35)));
+        let listPanelHeight = Math.max(5, Math.min(maxListPanelHeight, (filesView.listBodyLines || []).length + 2));
+        let previewPanelHeight = Math.max(5, availablePanelsHeight - listPanelHeight - 1);
+        const minPreviewPanelHeight = 8;
+        if (previewPanelHeight < minPreviewPanelHeight) {
+            const deficit = minPreviewPanelHeight - previewPanelHeight;
+            listPanelHeight = Math.max(5, listPanelHeight - deficit);
+            previewPanelHeight = Math.max(5, availablePanelsHeight - listPanelHeight - 1);
+        }
+        return {
+            contentWidth: previewWidth,
+            contentHeight: Math.max(1, previewPanelHeight - 2),
+            totalLines: countWrappedRenderableLines(filesView.previewLines, previewWidth),
+        };
+    }
+
+    getPaneMaxScrollOffset(pane, state = this.getState()) {
+        if (!pane) return 0;
+        if (pane === "chat") {
+            const metrics = this.getActiveChatRenderMetrics(state);
+            return Math.max(0, metrics.totalLines - metrics.contentHeight);
+        }
+        if (pane === "activity") {
+            const metrics = this.getActivityRenderMetrics(state);
+            return Math.max(0, metrics.totalLines - metrics.contentHeight);
+        }
+        if (pane === "inspector") {
+            const metrics = this.getInspectorRenderMetrics(state);
+            const stickyLineCount = Math.min(metrics.contentHeight, metrics.stickyLineCount || 0);
+            const scrollableHeight = Math.max(0, metrics.contentHeight - stickyLineCount);
+            return Math.max(0, metrics.totalLines - scrollableHeight);
+        }
+        if (pane === "filePreview") {
+            const metrics = this.getFilePreviewRenderMetrics(state);
+            return Math.max(0, metrics.totalLines - metrics.contentHeight);
+        }
+        return 0;
     }
 
     async maybeAutoExpandActiveHistory(targetOffset) {
@@ -2634,8 +2894,62 @@ export class PilotSwarmUiController {
             case UI_COMMANDS.DELETE_SESSION:
                 await this.deleteActiveSession();
                 return;
+            case UI_COMMANDS.OPEN_HISTORY_FORMAT:
+                this.openHistoryFormat();
+                return;
+            case UI_COMMANDS.REFRESH_EXECUTION_HISTORY: {
+                const sessionId = this.getState().sessions.activeSessionId;
+                if (sessionId) {
+                    await this.ensureExecutionHistory(sessionId, { force: true });
+                }
+                return;
+            }
+            case UI_COMMANDS.EXPORT_EXECUTION_HISTORY: {
+                await this.exportExecutionHistory();
+                return;
+            }
             default:
                 return;
+        }
+    }
+
+    async exportExecutionHistory() {
+        const sessionId = this.getState().sessions.activeSessionId;
+        if (!sessionId) {
+            this.dispatch({ type: "ui/status", text: "No session selected." });
+            return;
+        }
+        if (typeof this.transport.exportExecutionHistory !== "function") {
+            this.dispatch({ type: "ui/status", text: "History export is not supported by this transport." });
+            return;
+        }
+        this.dispatch({ type: "ui/status", text: "Exporting execution history..." });
+        try {
+            const result = await this.transport.exportExecutionHistory(sessionId);
+            if (result?.filename) {
+                await this.ensureFilesForSession(sessionId, { force: true }).catch(() => null);
+                this.dispatch({
+                    type: "files/select",
+                    sessionId,
+                    filename: result.filename,
+                });
+                this.dispatch({
+                    type: "files/selectGlobal",
+                    artifactId: `${sessionId}/${result.filename}`,
+                });
+                await this.ensureFilePreview(sessionId, result.filename, { force: true }).catch(() => null);
+            }
+            this.dispatch({
+                type: "ui/status",
+                text: result?.filename
+                    ? `History saved as artifact ${result.filename}`
+                    : `History exported → ${result?.artifactLink || "artifact created"}`,
+            });
+        } catch (error) {
+            this.dispatch({
+                type: "ui/status",
+                text: `Export failed: ${error?.message || String(error)}`,
+            });
         }
     }
 }

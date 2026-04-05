@@ -387,6 +387,18 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.OPEN_FILES_FILTER).catch(() => {});
             return;
         }
+        if (focus === "inspector" && inspectorTab === "history" && input === "f") {
+            controller.handleCommand(UI_COMMANDS.OPEN_HISTORY_FORMAT).catch(() => {});
+            return;
+        }
+        if (focus === "inspector" && inspectorTab === "history" && input === "r") {
+            controller.handleCommand(UI_COMMANDS.REFRESH_EXECUTION_HISTORY).catch(() => {});
+            return;
+        }
+        if (focus === "inspector" && inspectorTab === "history" && input === "a") {
+            controller.handleCommand(UI_COMMANDS.EXPORT_EXECUTION_HISTORY).catch(() => {});
+            return;
+        }
         if (focus === "inspector" && inspectorTab === "files" && input === "v") {
             controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {});
             return;

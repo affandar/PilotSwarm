@@ -272,6 +272,17 @@ export interface OrchestrationInput {
         shouldRehydrate: boolean;
         waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
     };
+    /** Buffered child updates waiting to be coalesced into a single parent turn. */
+    pendingChildDigest?: {
+        startedAtMs: number;
+        ready?: boolean;
+        updates: Array<{
+            sessionId: string;
+            updateType: string;
+            content?: string;
+            observedAtMs: number;
+        }>;
+    };
 
     // ─── Sub-agent state ─────────────────────────────────────
     /** Tracked sub-agents spawned by this orchestration. Carried across continueAsNew. */

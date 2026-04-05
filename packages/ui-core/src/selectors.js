@@ -1150,14 +1150,20 @@ export function selectFilesView(state, options = {}) {
             : buildPlainFilePreviewLines(previewState?.content || "");
     }
 
-    const fileCountLabel = scope === "allSessions"
+    const panelTitleLabel = scope === "allSessions"
         ? `Files: all sessions${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
         : session
             ? `Files: ${shortId}${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
             : "Files";
+    const listTitleLabel = scope === "allSessions"
+        ? `Artifacts: all sessions${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
+        : session
+            ? `Artifacts: ${shortId}${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
+            : "Artifacts";
 
     return {
-        listTitle: [{ text: fileCountLabel, color: "magenta", bold: true }],
+        panelTitle: [{ text: panelTitleLabel, color: "magenta", bold: true }],
+        listTitle: [{ text: listTitleLabel, color: "cyan", bold: true }],
         listLines,
         listBodyLines: listLines.slice(1),
         selectedIndex,
@@ -1169,7 +1175,7 @@ export function selectFilesView(state, options = {}) {
         previewScrollOffset: state.ui.scroll.filePreview || 0,
         fullscreen: Boolean(state.files?.fullscreen),
         fullscreenTitle: [
-            { text: fileCountLabel, color: "magenta", bold: true },
+            { text: panelTitleLabel, color: "magenta", bold: true },
             ...(selectedFilename
                 ? [
                     { text: " · ", color: "gray" },
@@ -1235,7 +1241,9 @@ export function selectStatusBar(state) {
                 ? state.files?.fullscreen
                     ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f filter · o open · d done · v close fullscreen · a linked artifacts · drag copy · left/right tab · tab next pane"
                     : "j/k files · ctrl-u/ctrl-d page preview · g/G preview top/bottom · f filter · o open · d done · v fullscreen · a linked artifacts · drag copy · left/right tab · tab next pane"
-                : "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · h/l focus · left/right tab · a linked artifacts · drag copy · m next tab · tab next pane",
+                : state.ui.inspectorTab === "history"
+                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f format · r refresh · a save artifact · d done · left/right tab · m next tab · tab next pane"
+                    : "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · h/l focus · left/right tab · a linked artifacts · drag copy · m next tab · tab next pane",
         [FOCUS_REGIONS.ACTIVITY]: "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · a linked artifacts · drag copy · h left · tab next pane",
         [FOCUS_REGIONS.PROMPT]: hasPendingQuestion
             ? "type answer · enter reply · alt-enter newline · ctrl-a attach file · arrows move · alt-left/right word · alt-delete word · esc sessions"
@@ -2417,7 +2425,11 @@ export function selectInspector(state, options = {}) {
             ]
             : activeTab === "logs"
                 ? `Logs: ${shortId}`
-                : `Files: ${shortId}`;
+                : activeTab === "history"
+                    ? [
+                        { text: `History: ${shortId}`, color: "magenta", bold: true },
+                    ]
+                    : `Files: ${shortId}`;
 
     let lines;
     let stickyLines = [];
@@ -2443,6 +2455,11 @@ export function selectInspector(state, options = {}) {
                 ? ["Files view is rendered in the shared host layout."]
                 : ["No session selected."];
             break;
+        case "history":
+            lines = session
+                ? selectExecutionHistoryPane(state, session)
+                : ["No session selected."];
+            break;
         default:
             lines = ["Inspector view is scaffolded in the new architecture."];
             break;
@@ -2455,4 +2472,122 @@ export function selectInspector(state, options = {}) {
         stickyLines,
         lines,
     };
+}
+
+// ── Execution History Pane ──────────────────────────────────────────
+
+const HISTORY_EVENT_KIND_COLORS = {
+    OrchestratorStarted: "green",
+    OrchestratorCompleted: "green",
+    ExecutionStarted: "cyan",
+    ExecutionCompleted: "cyan",
+    TaskScheduled: "yellow",
+    TaskCompleted: "yellow",
+    TaskFailed: "red",
+    SubOrchestrationCreated: "magenta",
+    SubOrchestrationCompleted: "magenta",
+    SubOrchestrationFailed: "red",
+    TimerCreated: "blue",
+    TimerFired: "blue",
+    EventRaised: "white",
+    EventSent: "white",
+    CustomStatusUpdated: "gray",
+};
+
+function formatHistoryEventPretty(event) {
+    const ts = event.timestampMs
+        ? new Date(event.timestampMs).toISOString().slice(11, 23)
+        : "???";
+    const color = HISTORY_EVENT_KIND_COLORS[event.kind] || "gray";
+    const lines = [];
+    const header = [
+        { text: `#${event.eventId}`, color: "white", bold: true },
+        { text: `  ${ts}`, color: "gray" },
+        { text: `  ${event.kind}`, color, bold: event.kind.includes("Failed") },
+    ];
+    if (event.sourceEventId != null) {
+        header.push({ text: `  ←#${event.sourceEventId}`, color: "cyan" });
+    }
+    lines.push(header);
+    if (event.data) {
+        try {
+            const parsed = JSON.parse(event.data);
+            if (typeof parsed === "object" && parsed !== null) {
+                for (const [k, v] of Object.entries(parsed)) {
+                    const s = typeof v === "string" ? v : JSON.stringify(v);
+                    const display = s.length > 100 ? s.slice(0, 97) + "..." : s;
+                    lines.push([
+                        { text: `    ${k}: `, color: "yellow" },
+                        { text: display, color: "white" },
+                    ]);
+                }
+            } else {
+                lines.push({ text: `    ${String(parsed).slice(0, 120)}`, color: "white" });
+            }
+        } catch {
+            const display = event.data.length > 120 ? event.data.slice(0, 117) + "..." : event.data;
+            lines.push({ text: `    ${display}`, color: "white" });
+        }
+    }
+    return lines;
+}
+
+function formatHistoryEventRaw(event) {
+    const clone = { ...event };
+    if (clone.data) {
+        try { clone.data = JSON.parse(clone.data); } catch { /* keep raw */ }
+    }
+    return JSON.stringify(clone, null, 2);
+}
+
+function selectExecutionHistoryPane(state, session) {
+    const entry = state.executionHistory?.bySessionId?.[session.sessionId];
+    if (!entry) return ["No execution history loaded. Press r to refresh."];
+    if (entry.loading) return ["Loading execution history..."];
+    if (entry.error) return [`Error: ${entry.error}`];
+    const events = entry.events;
+    if (!Array.isArray(events) || events.length === 0) return ["No history events found."];
+
+    const format = state.executionHistory?.format || "pretty";
+    const lines = [];
+    lines.push({
+        text: `${events.length} event(s) · format: ${format}`,
+        color: "gray",
+    });
+    lines.push("");
+
+    if (format === "raw") {
+        for (let i = 0; i < events.length; i++) {
+            const rawLines = formatHistoryEventRaw(events[i]).split("\n");
+            for (const line of rawLines) {
+                lines.push({ text: line, color: "gray" });
+            }
+            if (i < events.length - 1) {
+                lines.push({ text: "────────────────────────────────", color: "gray" });
+            }
+        }
+    } else {
+        for (let i = 0; i < events.length; i++) {
+            const eventLines = formatHistoryEventPretty(events[i]);
+            for (const line of eventLines) {
+                lines.push(line);
+            }
+            if (i < events.length - 1) {
+                lines.push({ text: "────────────────────────────────", color: "gray" });
+            }
+        }
+    }
+    return lines;
+}
+
+export function selectHistoryFormatModal(state, maxWidth = 88) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "historyFormat") return null;
+    return buildFilterModalPresentation(
+        modal,
+        { format: state.executionHistory?.format || "pretty" },
+        maxWidth,
+        "Execution History Format",
+        "Choose the display format for duroxide execution history events.",
+    );
 }

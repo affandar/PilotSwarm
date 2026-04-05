@@ -335,6 +335,10 @@ export class NodeSdkTransport {
         return this.mgmt.getOrchestrationStats(sessionId);
     }
 
+    async getExecutionHistory(sessionId, executionId) {
+        return this.mgmt.getExecutionHistory(sessionId, executionId);
+    }
+
     async createSession({ model } = {}) {
         const effectiveModel = model || this.mgmt.getDefaultModel();
         const session = await this.client.createSession(effectiveModel ? { model: effectiveModel } : undefined);
@@ -492,6 +496,43 @@ export class NodeSdkTransport {
         await fs.promises.writeFile(localPath, content, "utf8");
         return {
             localPath,
+        };
+    }
+
+    async exportExecutionHistory(sessionId) {
+        if (!this.artifactStore) {
+            throw new Error("Artifact store is not available for this transport.");
+        }
+        const shortId = String(sessionId || "").slice(0, 8);
+        const [history, stats] = await Promise.all([
+            this.mgmt.getExecutionHistory(sessionId),
+            this.mgmt.getOrchestrationStats(sessionId),
+        ]);
+        const sessionInfo = await this.mgmt.getSession(sessionId).catch(() => null);
+        const exportData = {
+            exportedAt: new Date().toISOString(),
+            sessionId,
+            title: sessionInfo?.title || null,
+            agentId: sessionInfo?.agentId || null,
+            model: sessionInfo?.model || null,
+            orchestrationStats: stats || null,
+            eventCount: history?.length || 0,
+            events: (history || []).map((e) => {
+                const evt = { ...e };
+                if (evt.data) {
+                    try { evt.data = JSON.parse(evt.data); } catch { /* keep raw */ }
+                }
+                return evt;
+            }),
+        };
+        const filename = `execution-history-${shortId}-${Date.now()}.json`;
+        const content = JSON.stringify(exportData, null, 2);
+        await this.artifactStore.uploadArtifact(sessionId, filename, content, guessArtifactContentType(filename));
+        return {
+            sessionId,
+            filename,
+            artifactLink: `artifact://${sessionId}/${filename}`,
+            sizeBytes: Buffer.byteLength(content, "utf8"),
         };
     }
 
