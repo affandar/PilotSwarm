@@ -575,10 +575,19 @@ export class NodeSdkTransport {
     }
 
     emitLogEntry(entry) {
-        for (const handler of this.logSubscribers) {
-            try {
-                handler(entry);
-            } catch {}
+        if (!this._logBatch) this._logBatch = [];
+        this._logBatch.push(entry);
+        if (!this._logBatchTimer) {
+            this._logBatchTimer = setTimeout(() => {
+                const batch = this._logBatch;
+                this._logBatch = [];
+                this._logBatchTimer = null;
+                for (const handler of this.logSubscribers) {
+                    try {
+                        handler(batch);
+                    } catch {}
+                }
+            }, 250);
         }
     }
 
@@ -690,6 +699,11 @@ export class NodeSdkTransport {
     }
 
     async stopLogTail() {
+        if (this._logBatchTimer) {
+            clearTimeout(this._logBatchTimer);
+            this._logBatchTimer = null;
+            this._logBatch = [];
+        }
         if (this.logRestartTimer) {
             clearTimeout(this.logRestartTimer);
             this.logRestartTimer = null;

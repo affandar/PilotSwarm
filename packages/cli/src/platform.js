@@ -365,15 +365,39 @@ function renderPanelRow(line, rowKey, contentWidth, borderColor, scrollIndicator
         React.createElement(Text, { color: resolveColorToken(borderColor) }, "│"));
 }
 
-function renderBorderTop(title, color, width) {
+function renderBorderTop(title, color, width, titleRight = null) {
     const safeWidth = Math.max(8, Number(width) || 40);
-    const safeTitleRuns = trimRuns(normalizeTitleRuns(title, color), Math.max(1, safeWidth - 6));
-    const fill = Math.max(0, safeWidth - titleRunLength(safeTitleRuns) - 5);
+    const normalizedTitleRuns = normalizeTitleRuns(title, color);
+    const normalizedRightRuns = titleRight ? normalizeTitleRuns(titleRight, "gray") : [];
+    let safeTitleRuns = trimRuns(normalizedTitleRuns, Math.max(1, safeWidth - 6));
+    let safeRightRuns = trimRuns(normalizedRightRuns, Math.max(0, safeWidth - 8));
+    let titleWidth = titleRunLength(safeTitleRuns);
+    let rightWidth = titleRunLength(safeRightRuns);
+    const hasRightTitle = rightWidth > 0;
+    const chromeWidth = hasRightTitle ? 6 : 5;
+    const availableTitleWidth = Math.max(1, safeWidth - chromeWidth);
+
+    if (titleWidth + rightWidth > availableTitleWidth) {
+        safeTitleRuns = trimRuns(normalizedTitleRuns, Math.max(1, availableTitleWidth - rightWidth));
+        titleWidth = titleRunLength(safeTitleRuns);
+        if (titleWidth + rightWidth > availableTitleWidth) {
+            safeRightRuns = trimRuns(normalizedRightRuns, Math.max(0, availableTitleWidth - titleWidth));
+            rightWidth = titleRunLength(safeRightRuns);
+        }
+    }
+
+    const fill = Math.max(0, safeWidth - titleWidth - rightWidth - chromeWidth);
 
     return React.createElement(Box, null,
         React.createElement(Text, { color: resolveColorToken(color) }, "╭─ "),
         renderInlineRuns(safeTitleRuns, "title"),
-        React.createElement(Text, { color: resolveColorToken(color) }, ` ${"─".repeat(fill)}╮`));
+        hasRightTitle
+            ? [
+                React.createElement(Text, { key: "title-fill", color: resolveColorToken(color) }, ` ${"─".repeat(fill)} `),
+                ...renderInlineRuns(safeRightRuns, "title-right"),
+                React.createElement(Text, { key: "title-end", color: resolveColorToken(color) }, "╮"),
+            ]
+            : React.createElement(Text, { color: resolveColorToken(color) }, ` ${"─".repeat(fill)}╮`));
 }
 
 function renderBorderBottom(color, width) {
@@ -581,6 +605,7 @@ function Header({ title, subtitle }) {
 
 function Panel({
     title,
+    titleRight,
     color = "white",
     focused = false,
     width,
@@ -649,7 +674,7 @@ function Panel({
         flexGrow,
         flexBasis,
     },
-    renderBorderTop(title, borderColor, safeWidth),
+    renderBorderTop(title, borderColor, safeWidth, titleRight),
     lines
         ? React.createElement(Box, { flexDirection: "column", flexGrow: 1, backgroundColor: fillColor || undefined },
             [
