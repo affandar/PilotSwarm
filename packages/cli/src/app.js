@@ -347,7 +347,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             return;
         }
 
-        if (isShiftT) {
+        if (focus !== "prompt" && isShiftT) {
             controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {});
             return;
         }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start the PilotSwarm web portal (xterm.js TUI in browser).
+# Start the PilotSwarm browser-native web portal.
 #
 # Usage:
 #   ./scripts/portal-start.sh              # local mode — embedded workers, remote PG (default)
@@ -8,7 +8,7 @@
 #   ./scripts/portal-start.sh remote       # remote mode — AKS workers, client-only
 #   ./scripts/portal-start.sh --port 3001  # custom port
 #
-# Equivalent to ./run.sh but serves the TUI in a browser via xterm.js.
+# Equivalent to ./run.sh but serves the shared browser workspace.
 #
 # Stop with: ./scripts/portal-stop.sh
 
@@ -54,6 +54,8 @@ if [ -f "$PIDFILE" ]; then
 fi
 
 echo "[portal] Starting server (port $PORT, mode $TUI_MODE)..."
+echo "[portal] Building browser app..."
+npm run build --workspace=packages/portal >/tmp/portal-build.log 2>&1
 PORTAL_ENV_FILE="$ENV_FILE" PORTAL_TUI_MODE="$TUI_MODE" node --env-file="$ENV_FILE" packages/portal/server.js > /tmp/portal-server.log 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$PIDFILE"
@@ -84,7 +86,7 @@ echo "  PID:  $SERVER_PID"
 echo "  Mode: $TUI_MODE"
 echo "  Env:  $ENV_FILE"
 echo ""
-echo "  Each browser tab gets its own TUI instance."
+echo "  Browser-native workspace is served from packages/portal/dist."
 echo ""
 echo "  Stop: ./scripts/portal-stop.sh"
 echo "  Logs: tail -f /tmp/portal-server.log"

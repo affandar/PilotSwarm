@@ -1,9 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   server: {
     port: 5173,
     proxy: {
@@ -16,5 +15,14 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ["react", "react-dom"],
+          msal: ["@azure/msal-browser"],
+          pilotswarm: ["pilotswarm-ui-core", "pilotswarm-ui-react"],
+        },
+      },
+    },
   },
 });

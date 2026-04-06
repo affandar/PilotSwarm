@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.1.14 — 2026-04-06
+
+### Web Portal
+
+- **Browser-native web portal** — replaced the xterm.js PTY-based terminal emulator with a full React SPA. Each browser tab now connects over RPC + WebSocket instead of spawning a separate TUI process.
+- **React workspace UI** — new `PilotSwarmWebApp` component with responsive desktop (3-column resizable grid) and mobile (tabbed navigation) layouts. Includes all inspector tabs (sequence, logs, nodes, history, files), modals, prompt composer, and keyboard shortcuts.
+- **Entra ID authentication** — optional MSAL-based auth gate with PKCE flow and mobile redirect support. Enable by setting `ENTRA_TENANT_ID` and `ENTRA_CLIENT_ID`; omit both to run without auth.
+- **Browser transport** — `BrowserPortalTransport` class handles RPC dispatch over `/api/rpc` and live session/log subscriptions over WebSocket (`/portal-ws`).
+- **Portal server rewrite** — Express server now serves the Vite-built SPA, dispatches RPC calls to `PortalRuntime`, and bridges WebSocket subscriptions for session events and logs.
+- **Artifact downloads** — portal supports file artifact downloads through a dedicated endpoint.
+
+### SDK / Runtime
+
+- **Duroxide 0.1.19** — bumped from 0.1.18; includes duroxide-pg 0.1.29 with advisory lock for concurrent migration safety. Eliminates the startup race where multiple workers crash on `duplicate key value violates unique constraint "_duroxide_migrations_pkey"` during fresh DB initialization.
+
+### Shared UI
+
+- **File browser selection** — added `selectFileBrowserItem()` click handler for artifact preview in the files inspector.
+- **Programmatic tab switch** — added `selectInspectorTab()` to the controller for navigating inspector panes with data prefetch.
+- **Responsive stats** — compact orchestration stats rendering for narrow viewports with abbreviated prefixes.
+- **Wide column mode** — `buildSequenceViewForSession()` and `buildNodeMapLines()` accept `allowWideColumns` to avoid truncating node labels on tablet/mobile.
+- **History inspector** — now displayed with wrapping enabled, bottom-anchored scroll, and smaller footer strip.
+- **Keybinding updates** — replaced `T themes` hint with `[/] side pane` for show/hide side panels on desktop.
+
+### Deploy / Ops
+
+- **Portal k8s manifests** — new `portal-deployment.yaml` and `portal-ingress.yaml` with AKS app-routing nginx, Let's Encrypt TLS via cert-manager, and Entra auth env injection from `copilot-runtime-secrets`.
+- **Portal Dockerfile** — Vite build runs in-image; serves `dist/` as static SPA root. No PTY native dependencies.
+- **Portal deploy script** — new `scripts/deploy-portal.sh` for building, pushing, and rolling out the portal image.
+- **AKS region move** — portal ingress updated from `westus2` to `westus3` domain; LB IP `4.249.58.118`.
+- **AKS deployer docs** — updated agent and skill to cover portal deployment, ACR secret refresh procedure, duroxide migration advisory, and portal TLS model.
+- **Corp-specific deployer files gitignored** — corp AKS deployer agent and skills are local-only and excluded from checked-in code.
+
+### Fixes
+
+- **Shift+T keybind** — theme picker no longer activates when focus is on the prompt input.
+
 ## 0.1.13 — 2026-04-04
 
 ### Terminal UI

@@ -13,15 +13,27 @@ Keep the workflow repo-specific and explicit. Prefer the repo-owned scripts, and
 
 - Kubernetes context: `toygres-aks`
 - Namespace: `copilot-runtime`
-- Deployment: `copilot-runtime-worker`
-- Image: `toygresaksacr.azurecr.io/copilot-runtime-worker:latest`
+- Worker deployment: `copilot-runtime-worker`
+- Portal deployment: `pilotswarm-portal`
+- Worker image: `toygresaksacr.azurecr.io/copilot-runtime-worker:latest`
+- Portal image: `toygresaksacr.azurecr.io/pilotswarm-portal:latest`
 - ACR: `toygresaksacr`
+- Resource group: `adar-pg`
+- Node resource group: `MC_adar-pg_toygres-aks_westus3`
+- Portal DNS: `pilotswarm-portal.westus3.cloudapp.azure.com`
+- Portal LB IP: `4.249.58.118` (app-routing nginx)
+- Postgres server: `adarflexpgai.postgres.database.azure.com`
+- Location: `westus3`
 
 ## Canonical Files
 
 - Deploy script: `scripts/deploy-aks.sh`
 - Remote reset script: `scripts/db-reset.js`
 - Worker manifest: `deploy/k8s/worker-deployment.yaml`
+- Portal manifest: `deploy/k8s/portal-deployment.yaml`
+- Portal ingress: `deploy/k8s/portal-ingress.yaml`
+- Worker Dockerfile: `deploy/Dockerfile.worker`
+- Portal Dockerfile: `deploy/Dockerfile.portal`
 - Namespace manifest: `deploy/k8s/namespace.yaml`
 - AKS guide: `docs/deploying-to-aks.md`
 - Model catalog template: `.model_providers.example.json`
@@ -41,6 +53,17 @@ Keep the workflow repo-specific and explicit. Prefer the repo-owned scripts, and
 - If `ANTHROPIC_API_KEY` is intentionally removed from the deploy env, refresh the Kubernetes secret and restart workers, then verify Anthropic models disappeared from selectors or `list_available_models`.
 - Old worker pods in another namespace can still poll the same database and cause nondeterminism. Check all namespaces if behavior looks impossible.
 - After a destructive reset, healthy workers will immediately recreate the built-in system sessions. Verify the fresh root `PilotSwarm Agent` instead of expecting the catalog to stay empty.
+- The AKS rollout needs a valid `acr-pull` registry secret wired into the worker and portal deployments. ACR tokens expire — if pods show `ErrImagePull` / `401 Unauthorized`, refresh the `acr-pull` secret:
+  ```bash
+  ACR_TOKEN=$(az acr login --name toygresaksacr --expose-token --query accessToken -o tsv) && \
+  kubectl create secret docker-registry acr-pull -n copilot-runtime \
+    --docker-server=toygresaksacr.azurecr.io \
+    --docker-username=00000000-0000-0000-0000-000000000000 \
+    --docker-password="$ACR_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+  ```
+- When starting all workers simultaneously against a fresh DB, duroxide migrations can race. Duroxide 0.1.19+ uses advisory locks to handle this safely — workers that lose the race will retry and succeed. Earlier versions crash on duplicate migration keys.
+- Portal listens on port 3001 (HTTP) internally; TLS termination happens at the app-routing nginx ingress.
+- Portal is publicly accessible with Entra ID as the sole access gate.
 
 ## Default Deploy Workflow
 

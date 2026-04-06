@@ -19,3 +19,8 @@ TODO.md
 .portal.pids
 scripts/tmp/
 .tmp/
+deploy/.portal-tls/
+# Corp-specific AKS deployer agent/skills (local only, contains infra details)
+.github/agents/pilotswarm-corp-aks-deployer.agent.md
+.github/skills/pilotswarm-corp-aks-deploy/
+.github/skills/pilotswarm-corp-aks-networking/
