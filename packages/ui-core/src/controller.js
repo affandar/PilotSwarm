@@ -80,31 +80,64 @@ function extractSessionContextUsageFromEvents(initialContextUsage, events = []) 
     return current;
 }
 
+function areStructuredValuesEqual(left, right) {
+    if (Object.is(left, right)) return true;
+    if (Array.isArray(left) || Array.isArray(right)) {
+        if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+        for (let index = 0; index < left.length; index += 1) {
+            if (!areStructuredValuesEqual(left[index], right[index])) return false;
+        }
+        return true;
+    }
+    if (!left || !right || typeof left !== "object" || typeof right !== "object") {
+        return false;
+    }
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) return false;
+    for (const key of leftKeys) {
+        if (!Object.prototype.hasOwnProperty.call(right, key)) return false;
+        if (!areStructuredValuesEqual(left[key], right[key])) return false;
+    }
+    return true;
+}
+
 function buildSessionMergePatch(previousSession, nextSession) {
     if (!nextSession?.sessionId) return null;
 
     const patch = { sessionId: nextSession.sessionId };
+    let changed = false;
     for (const [key, value] of Object.entries(nextSession)) {
         if (key === "sessionId" || value === undefined) continue;
+        if (areStructuredValuesEqual(previousSession?.[key], value)) continue;
         patch[key] = value;
+        changed = true;
     }
 
     if (nextSession.pendingQuestion === undefined && previousSession?.pendingQuestion && nextSession.status !== "input_required") {
         patch.pendingQuestion = null;
+        changed = true;
     }
     if (nextSession.waitReason === undefined && previousSession?.waitReason && nextSession.status !== "waiting" && nextSession.status !== "input_required") {
         patch.waitReason = null;
+        changed = true;
     }
     if (nextSession.error === undefined && previousSession?.error && nextSession.status !== "failed" && nextSession.status !== "error") {
         patch.error = null;
+        changed = true;
     }
     if (nextSession.result === undefined && previousSession?.result && nextSession.status !== "completed") {
         patch.result = null;
+        changed = true;
     }
     if (nextSession.cronActive !== true) {
-        if (previousSession?.cronReason) patch.cronReason = null;
+        if (previousSession?.cronReason) {
+            patch.cronReason = null;
+            changed = true;
+        }
         if (previousSession?.cronInterval != null && nextSession.cronInterval === undefined) {
             patch.cronInterval = null;
+            changed = true;
         }
     }
 
@@ -117,9 +150,10 @@ function buildSessionMergePatch(previousSession, nextSession) {
         const nextContextUsage = { ...previousSession.contextUsage };
         delete nextContextUsage.compaction;
         patch.contextUsage = Object.keys(nextContextUsage).length > 0 ? nextContextUsage : null;
+        changed = true;
     }
 
-    return patch;
+    return changed ? patch : null;
 }
 
 function isTerminalOrchestrationStatus(status) {
@@ -726,16 +760,17 @@ export class PilotSwarmUiController {
     }
 
     async ensureInspectorData(targetTab = this.getState().ui.inspectorTab) {
-        if (targetTab === "nodes" || targetTab === "sequence") {
+        if (targetTab === "sequence") {
+            const activeSessionId = this.getState().sessions.activeSessionId;
+            if (!activeSessionId) return;
+            await this.ensureSessionHistory(activeSessionId).catch(() => {});
+            await this.ensureOrchestrationStats(activeSessionId).catch(() => {});
+            return;
+        }
+        if (targetTab === "nodes") {
             const sessionIds = Object.keys(this.getState().sessions.byId);
             if (sessionIds.length === 0) return;
             await Promise.allSettled(sessionIds.map((sessionId) => this.ensureSessionHistory(sessionId)));
-            if (targetTab === "sequence") {
-                const activeSessionId = this.getState().sessions.activeSessionId;
-                if (activeSessionId) {
-                    await this.ensureOrchestrationStats(activeSessionId).catch(() => {});
-                }
-            }
             return;
         }
         if (targetTab === "files") {
@@ -2081,8 +2116,11 @@ export class PilotSwarmUiController {
             return;
         }
 
-        this.logUnsubscribe = this.transport.startLogTail((entry) => {
-            this.dispatch({ type: "logs/append", entry });
+        this.logUnsubscribe = this.transport.startLogTail((entryOrBatch) => {
+            const entries = Array.isArray(entryOrBatch) ? entryOrBatch : [entryOrBatch];
+            if (entries.length > 0) {
+                this.dispatch({ type: "logs/append", entries });
+            }
         });
         this.dispatch({ type: "logs/tailing", tailing: true });
         this.dispatch({ type: "ui/status", text: "Log tailing started" });
