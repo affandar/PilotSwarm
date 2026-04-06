@@ -406,7 +406,7 @@ function movePromptCursorVertically(prompt, cursor, direction) {
 }
 
 const AUTO_HISTORY_EVENT_SOFT_CAP = 3_000;
-const INSPECTOR_BOTTOM_ANCHORED_TABS = new Set(["logs", "sequence"]);
+const INSPECTOR_BOTTOM_ANCHORED_TABS = new Set(["logs", "sequence", "history"]);
 const FILE_PREVIEW_CHAR_LIMIT = 200_000;
 const MARKDOWN_FILE_EXTENSIONS = new Set([
     ".md",
@@ -1187,6 +1187,30 @@ export class PilotSwarmUiController {
             text: scope === "allSessions"
                 ? `Previewing ${shortSessionIdValue(nextItem.sessionId)} ${nextItem.filename}`
                 : `Previewing ${nextItem.filename}`,
+        });
+    }
+
+    async selectFileBrowserItem(item) {
+        if (!item?.sessionId || !item?.filename) return;
+        const scope = selectFilesScope(this.getState());
+        if (scope === "allSessions") {
+            this.dispatch({
+                type: "files/selectGlobal",
+                artifactId: item.id,
+            });
+        } else {
+            this.dispatch({
+                type: "files/select",
+                sessionId: item.sessionId,
+                filename: item.filename,
+            });
+        }
+        await this.ensureFilePreview(item.sessionId, item.filename).catch(() => {});
+        this.dispatch({
+            type: "ui/status",
+            text: scope === "allSessions"
+                ? `Previewing ${shortSessionIdValue(item.sessionId)} ${item.filename}`
+                : `Previewing ${item.filename}`,
         });
     }
 
@@ -2300,6 +2324,15 @@ export class PilotSwarmUiController {
 
     cycleInspectorTab() {
         this.nextInspectorTab();
+    }
+
+    async selectInspectorTab(inspectorTab) {
+        if (!INSPECTOR_TABS.includes(inspectorTab)) return;
+        this.dispatch({
+            type: "ui/inspectorTab",
+            inspectorTab,
+        });
+        await this.ensureInspectorData(inspectorTab).catch(() => {});
     }
 
     async moveSession(delta) {

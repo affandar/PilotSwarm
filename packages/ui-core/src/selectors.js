@@ -1227,18 +1227,18 @@ export function selectStatusBar(state) {
         };
     }
     const hints = {
-        [FOCUS_REGIONS.SESSIONS]: "up/down switch · ctrl-u/ctrl-d page · d done · D delete · r refresh · t title · T themes · a linked artifacts · drag copy · tab next pane · p prompt",
-        [FOCUS_REGIONS.CHAT]: "j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · T themes · a linked artifacts · drag copy · tab next pane · p prompt",
+        [FOCUS_REGIONS.SESSIONS]: "up/down switch · ctrl-u/ctrl-d page · d done · D delete · r refresh · t title · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt",
+        [FOCUS_REGIONS.CHAT]: "j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt",
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
-            ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · T themes · a linked artifacts · drag copy · left/right tab · tab next pane"
+            ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · left/right tab · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane"
             : state.ui.inspectorTab === "files"
                 ? state.files?.fullscreen
-                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f filter · o open · d done · v close fullscreen · T themes · a linked artifacts · drag copy · left/right tab · tab next pane"
-                    : "j/k files · ctrl-u/ctrl-d page preview · g/G preview top/bottom · f filter · o open · d done · v fullscreen · T themes · a linked artifacts · drag copy · left/right tab · tab next pane"
+                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f filter · o open · d done · v close fullscreen · left/right tab · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane"
+                    : "j/k files · ctrl-u/ctrl-d page preview · g/G preview top/bottom · f filter · o open · d done · v fullscreen · left/right tab · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane"
                 : state.ui.inspectorTab === "history"
-                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f format · r refresh · a save artifact · d done · T themes · left/right tab · m next tab · tab next pane"
-                    : "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · T themes · h/l focus · left/right tab · a linked artifacts · drag copy · m next tab · tab next pane",
-        [FOCUS_REGIONS.ACTIVITY]: "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · T themes · a linked artifacts · drag copy · h left · tab next pane",
+                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f format · r refresh · a save artifact · d done · left/right tab · [/] side pane · T themes · m next tab · tab next pane"
+                    : "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · left/right tab · [/] side pane · T themes · h/l focus · a linked artifacts · drag copy · m next tab · tab next pane",
+        [FOCUS_REGIONS.ACTIVITY]: "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · [/] side pane · T themes · a linked artifacts · drag copy · h left · tab next pane",
         [FOCUS_REGIONS.PROMPT]: hasPendingQuestion
             ? "type answer · enter reply · alt-enter newline · ctrl-a attach file · T themes · arrows move · alt-left/right word · alt-delete word · esc sessions"
             : "type message · enter send · alt-enter newline · ctrl-a attach file · T themes · arrows move · alt-left/right word · alt-delete word · esc sessions",
@@ -1687,13 +1687,27 @@ function buildSequenceStatsLines(state, session, maxWidth) {
         body = statsEntry.error ? "orchestration stats unavailable" : "loading orchestration stats...";
     } else {
         const stats = statsEntry.stats;
-        body = [
+        const fullParts = [
             `hist ${Number(stats.historyEventCount) || 0} ev`,
             formatCompactBytes(stats.historySizeBytes),
             `q ${Number(stats.queuePendingCount) || 0}`,
             `kv ${Number(stats.kvUserKeyCount) || 0} keys`,
             formatCompactBytes(stats.kvTotalValueBytes),
-        ].join(" | ");
+        ];
+        const compactParts = [
+            `h${Number(stats.historyEventCount) || 0}`,
+            formatCompactBytes(stats.historySizeBytes),
+            `q${Number(stats.queuePendingCount) || 0}`,
+            `kv${Number(stats.kvUserKeyCount) || 0}`,
+        ];
+        body = maxWidth <= 40 ? compactParts.join(" · ") : fullParts.join(" | ");
+    }
+
+    if (maxWidth <= 52) {
+        return [fitRuns([
+            { text: "Stats ", color: "cyan", bold: true },
+            { text: body, color: "white" },
+        ], Math.max(18, maxWidth))];
     }
 
     return buildMessageCardLines({
@@ -1744,7 +1758,8 @@ function buildNodeMapHeaderLine(nodeLabels, colWidth) {
     return runs;
 }
 
-function buildSequenceViewForSession(state, session, maxWidth) {
+function buildSequenceViewForSession(state, session, maxWidth, options = {}) {
+    const allowWideColumns = Boolean(options?.allowWideColumns);
     const statsLines = buildSequenceStatsLines(state, session, maxWidth);
     const history = state.history.bySessionId.get(session.sessionId);
     const entries = appendCurrentSessionStatusEntry(
@@ -1770,7 +1785,7 @@ function buildSequenceViewForSession(state, session, maxWidth) {
     const availableWidth = Math.max(18, maxWidth);
     const maxNodes = Math.max(1, Math.floor((availableWidth - timeWidth - 1) / 6));
     let nodeLabels = ["orch", ...uniqueNodes];
-    if (nodeLabels.length > maxNodes) {
+    if (!allowWideColumns && nodeLabels.length > maxNodes) {
         const visibleCount = Math.max(1, maxNodes - 1);
         nodeLabels = [
             ...nodeLabels.slice(0, visibleCount),
@@ -1844,7 +1859,8 @@ function buildNodeMapCell(session, brandingTitle, width, active) {
     };
 }
 
-function buildNodeMapLines(state, maxWidth) {
+function buildNodeMapLines(state, maxWidth, options = {}) {
+    const allowWideColumns = Boolean(options?.allowWideColumns);
     const orderedSessionIds = buildOrderedSessionIds(state);
     if (orderedSessionIds.length === 0) {
         return [plainInspectorLine("No sessions available for the node map.", "gray")];
@@ -1877,7 +1893,7 @@ function buildNodeMapLines(state, maxWidth) {
     const availableWidth = Math.max(18, maxWidth);
     const maxColumns = Math.max(1, Math.floor((availableWidth + 1) / 10));
     let nodeLabels = knownNodes;
-    if (knownNodes.length > maxColumns) {
+    if (!allowWideColumns && knownNodes.length > maxColumns) {
         const visibleCount = Math.max(0, maxColumns - 1);
         const overflowSessions = [];
         const visibleLabels = knownNodes.slice(0, visibleCount);
@@ -2450,6 +2466,7 @@ export function selectInspector(state, options = {}) {
     const session = selectActiveSession(state);
     const activeTab = state.ui.inspectorTab;
     const maxWidth = Math.max(18, Number(options?.width) || 36);
+    const allowWideColumns = Boolean(options?.allowWideColumns);
     const shortId = session ? shortSessionId(session.sessionId) : "";
     const recentWindow = getRecentActivityWindow(state);
     const title = activeTab === "nodes"
@@ -2477,7 +2494,7 @@ export function selectInspector(state, options = {}) {
     switch (activeTab) {
         case "sequence": {
             const sequenceView = session
-                ? buildSequenceViewForSession(state, session, maxWidth)
+                ? buildSequenceViewForSession(state, session, maxWidth, { allowWideColumns })
                 : { stickyLines: [], lines: ["No session selected."] };
             stickyLines = sequenceView.stickyLines || [];
             lines = sequenceView.lines;
@@ -2489,7 +2506,7 @@ export function selectInspector(state, options = {}) {
                 : ["No session selected."];
             break;
         case "nodes":
-            lines = buildNodeMapLines(state, maxWidth);
+            lines = buildNodeMapLines(state, maxWidth, { allowWideColumns });
             break;
         case "files":
             lines = session
