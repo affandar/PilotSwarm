@@ -726,7 +726,6 @@ export function selectChatPaneChrome(state) {
     const session = selectActiveSession(state);
     const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
     const visibleDescendantCounts = getVisibleDescendantCounts(state.sessions.flat, state.sessions.byId);
-    const inspectorWindow = getRecentActivityWindow(state);
 
     if (!session) {
         return {
@@ -769,7 +768,7 @@ export function selectChatPaneChrome(state) {
     }
 
     if (state.ui.inspectorTab === "sequence" || state.ui.inspectorTab === "nodes") {
-        title.push({ text: ` [${inspectorWindow.label} window]`, color: "gray" });
+        title.push({ text: " [last 5m window]", color: "gray" });
     }
 
     return {
@@ -1376,6 +1375,7 @@ function shortNodeLabel(nodeId) {
 }
 
 const RECENT_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
+const RECENT_ACTIVITY_WINDOW_LABEL = "last 5m";
 
 function getRecentActivityWindow(state) {
     let endMs = 0;
@@ -1398,7 +1398,7 @@ function getRecentActivityWindow(state) {
     return {
         startMs: endMs - RECENT_ACTIVITY_WINDOW_MS,
         endMs,
-        label: "last 5m",
+        label: RECENT_ACTIVITY_WINDOW_LABEL,
     };
 }
 
@@ -2468,7 +2468,9 @@ export function selectInspector(state, options = {}) {
     const maxWidth = Math.max(18, Number(options?.width) || 36);
     const allowWideColumns = Boolean(options?.allowWideColumns);
     const shortId = session ? shortSessionId(session.sessionId) : "";
-    const recentWindow = getRecentActivityWindow(state);
+    const recentWindow = activeTab === "sequence" || activeTab === "nodes"
+        ? getRecentActivityWindow(state)
+        : null;
     const title = activeTab === "nodes"
         ? [
             { text: "Node Map", color: "magenta", bold: true },

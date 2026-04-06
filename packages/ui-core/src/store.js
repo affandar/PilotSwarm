@@ -7,7 +7,11 @@ export function createStore(reducer, initialState) {
             return state;
         },
         dispatch(action) {
-            state = reducer(state, action);
+            const nextState = reducer(state, action);
+            if (Object.is(nextState, state)) {
+                return action;
+            }
+            state = nextState;
             for (const listener of listeners) listener(state, action);
             return action;
         },

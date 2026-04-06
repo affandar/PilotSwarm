@@ -38,10 +38,36 @@ function clampHistoryItems(items, maxItems) {
     return list.length > safeMax ? list.slice(-safeMax) : list;
 }
 
+function areStructuredValuesEqual(left, right) {
+    if (Object.is(left, right)) return true;
+    if (Array.isArray(left) || Array.isArray(right)) {
+        if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+        for (let index = 0; index < left.length; index += 1) {
+            if (!areStructuredValuesEqual(left[index], right[index])) return false;
+        }
+        return true;
+    }
+    if (!left || !right || typeof left !== "object" || typeof right !== "object") {
+        return false;
+    }
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) return false;
+    for (const key of leftKeys) {
+        if (!Object.prototype.hasOwnProperty.call(right, key)) return false;
+        if (!areStructuredValuesEqual(left[key], right[key])) return false;
+    }
+    return true;
+}
+
 function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
-    const merged = { ...previousSession };
+    let merged = previousSession || {};
     for (const [key, value] of Object.entries(nextSession || {})) {
         if (value === undefined) continue;
+        if (areStructuredValuesEqual(previousSession?.[key], value)) continue;
+        if (merged === previousSession) {
+            merged = { ...(previousSession || {}) };
+        }
         merged[key] = value;
     }
     return merged;
@@ -256,11 +282,12 @@ export function appReducer(state, action) {
 
         case "sessions/loaded": {
             const byId = {};
+            let anyChanged = false;
             for (const session of action.sessions) {
-                byId[session.sessionId] = mergeDefinedSessionFields(
-                    state.sessions.byId[session.sessionId] || {},
-                    session,
-                );
+                const previous = state.sessions.byId[session.sessionId];
+                const merged = mergeDefinedSessionFields(previous, session);
+                byId[session.sessionId] = merged;
+                if (!anyChanged && merged !== previous) anyChanged = true;
             }
             if (
                 state.sessions.activeSessionId
@@ -270,7 +297,18 @@ export function appReducer(state, action) {
                 byId[state.sessions.activeSessionId] = {
                     ...state.sessions.byId[state.sessions.activeSessionId],
                 };
+                anyChanged = true;
             }
+            // Check if session set changed (added/removed)
+            const prevIds = Object.keys(state.sessions.byId);
+            const nextIds = Object.keys(byId);
+            if (prevIds.length !== nextIds.length) anyChanged = true;
+            if (!anyChanged) {
+                for (const id of nextIds) {
+                    if (!state.sessions.byId[id]) { anyChanged = true; break; }
+                }
+            }
+            if (!anyChanged) return state;
             const mergedSessions = Object.values(byId);
             const {
                 orderById,
@@ -298,12 +336,12 @@ export function appReducer(state, action) {
 
         case "sessions/merged": {
             if (!action.session?.sessionId) return state;
+            const previousSession = state.sessions.byId[action.session.sessionId];
+            const mergedSession = mergeDefinedSessionFields(previousSession, action.session);
+            if (mergedSession === previousSession) return state;
             const byId = {
                 ...state.sessions.byId,
-                [action.session.sessionId]: {
-                    ...(state.sessions.byId[action.session.sessionId] || {}),
-                    ...action.session,
-                },
+                [action.session.sessionId]: mergedSession,
             };
             const {
                 orderById,
@@ -822,17 +860,19 @@ export function appReducer(state, action) {
                 },
             };
 
-        case "logs/append":
+        case "logs/append": {
+            const newEntries = (Array.isArray(action.entries) ? action.entries : [action.entry]).filter(Boolean);
+            if (newEntries.length === 0) return state;
+            const combined = [...(state.logs.entries || []), ...newEntries];
+            const capped = combined.length > 1000 ? combined.slice(-1000) : combined;
             return {
                 ...state,
                 logs: {
                     ...state.logs,
-                    entries: normalizeLogEntries([
-                        ...(state.logs.entries || []),
-                        ...(Array.isArray(action.entries) ? action.entries : [action.entry]).filter(Boolean),
-                    ]),
+                    entries: capped,
                 },
             };
+        }
 
         default:
             return state;
