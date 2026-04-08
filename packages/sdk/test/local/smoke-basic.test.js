@@ -156,6 +156,28 @@ async function testSendAndWait(env) {
     });
 }
 
+async function testResumePendingSessionBeforeFirstSend(env) {
+    await withClient(env, async (client) => {
+        const session = await client.createSession(ONEWORD_CONFIG);
+
+        console.log("  Resuming pending session before first send...");
+        const resumed = await client.resumeSession(session.sessionId);
+        assertEqual(resumed.sessionId, session.sessionId, "Resumed pending session ID");
+
+        console.log("  Sending first prompt through resumed handle: What is 2+2?");
+        const response = await resumed.sendAndWait("What is 2+2?", TIMEOUT);
+        console.log(`  Response: \"${response}\"`);
+        assertIncludes(response, "4", "Expected first prompt after pending resume to succeed");
+
+        const v = await validateSessionAfterTurn(env, session.sessionId, {
+            minIteration: 1,
+            requiredEventTypes: ["user.message", "assistant.message"],
+        });
+        assertEqual(v.cmsRow.orchestrationId, `session-${session.sessionId}`, "[CMS] orchestrationId after first send on resumed pending session");
+        console.log(`  [CMS] orchestrationId=${v.cmsRow.orchestrationId}, iter=${v.orchStatus.customStatus?.iteration}`);
+    });
+}
+
 describe("Level 1a: Smoke — Basic", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -176,5 +198,8 @@ describe("Level 1a: Smoke — Basic", () => {
     });
     it("send() + wait()", { timeout: TIMEOUT }, async () => {
         await testSendAndWait(getEnv());
+    });
+    it("Resume Pending Session Before First Send", { timeout: TIMEOUT }, async () => {
+        await testResumePendingSessionBeforeFirstSend(getEnv());
     });
 });

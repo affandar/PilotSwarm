@@ -321,7 +321,7 @@ function formatActivity(event) {
             runs = buildLabeledActivityRuns(
                 time,
                 "[dehydrated]",
-                "red",
+                "cyan",
                 formatDehydrationActivityDetail(event, body),
             );
             break;
@@ -522,14 +522,17 @@ export function appendEventToHistory(history, event) {
     return next;
 }
 
-export function createSplashCard(branding) {
-    if (!branding?.splash) return [];
-    const title = branding.title || "PilotSwarm";
+export function createSplashCard(branding, session = null) {
+    const splash = typeof session?.splash === "string" && session.splash.trim()
+        ? session.splash
+        : branding?.splash;
+    if (!splash) return [];
+    const title = session?.title || branding?.title || "PilotSwarm";
     const hint = "{gray-fg}Start interacting with this session to replace the splash screen.{/gray-fg}";
     return [{
         id: `splash:${title}`,
         role: "system",
-        text: `${branding.splash}\n\n${hint}`,
+        text: `${splash}\n\n${hint}`,
         time: "",
         splash: true,
     }];

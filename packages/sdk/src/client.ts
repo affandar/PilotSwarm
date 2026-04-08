@@ -276,16 +276,19 @@ export class PilotSwarmClient {
         if (config) {
             this.sessionConfigs.set(sessionId, config);
         }
-        // Mark orchestration as active so _ensureOrchestrationAndSend skips creation.
-        // The orchestration should already be running for resumed sessions.
         const orchestrationId = `session-${sessionId}`;
-        this.activeOrchestrations.set(sessionId, orchestrationId);
+        const cmsRow = await this._catalog.getSession(sessionId).catch(() => null);
+        let shouldTreatAsActive = cmsRow?.orchestrationId === orchestrationId && cmsRow?.state !== "pending";
 
         // Sync tracking state from the live orchestration so the client
         // doesn't mistake pre-existing KV data (from prior turns) as new.
         // Without this, sendAndWait returns stale responses after worker restarts.
         try {
-            const orchStatus = await this.duroxideClient!.getStatus(orchestrationId);
+            const [instanceInfo, orchStatus] = await Promise.all([
+                this.duroxideClient!.getInstanceInfo(orchestrationId),
+                this.duroxideClient!.getStatus(orchestrationId),
+            ]);
+            shouldTreatAsActive = instanceInfo?.status && instanceInfo.status !== "Unknown";
             if (orchStatus.customStatusVersion) {
                 this.lastSeenStatusVersion.set(orchestrationId, orchStatus.customStatusVersion);
             }
@@ -301,6 +304,12 @@ export class PilotSwarmClient {
             }
         } catch {
             // Best-effort — if getStatus fails, we'll still work (may see a stale response on first poll)
+        }
+
+        if (shouldTreatAsActive) {
+            this.activeOrchestrations.set(sessionId, orchestrationId);
+        } else {
+            this.activeOrchestrations.delete(sessionId);
         }
 
         return new PilotSwarmSession(sessionId, this, config?.onUserInputRequest);

@@ -60,6 +60,61 @@ async function waitForPath(pathToCheck: string, timeoutMs = 5_000, pollMs = 100)
     return fs.existsSync(pathToCheck);
 }
 
+const CORE_SESSION_FILES = ["events.jsonl", "workspace.yaml"];
+
+async function waitForSessionSnapshot(
+    sessionStateDir: string,
+    sessionId: string,
+    timeoutMs = 5_000,
+    pollMs = 100,
+    stablePolls = 3,
+): Promise<{ ready: boolean; missing: string[] }> {
+    const sessionDir = path.join(sessionStateDir, sessionId);
+    let lastSignature = "";
+    let stableCount = 0;
+    let missing = [`${sessionId}/`];
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (!fs.existsSync(sessionDir)) {
+            missing = [`${sessionId}/`];
+            stableCount = 0;
+            lastSignature = "";
+        } else {
+            missing = CORE_SESSION_FILES
+                .filter((file) => !fs.existsSync(path.join(sessionDir, file)))
+                .map((file) => `${sessionId}/${file}`);
+
+            if (missing.length === 0) {
+                const signature = CORE_SESSION_FILES
+                    .map((file) => {
+                        const stat = fs.statSync(path.join(sessionDir, file));
+                        return `${file}:${stat.size}:${stat.mtimeMs}`;
+                    })
+                    .join("|");
+
+                if (signature === lastSignature) {
+                    stableCount += 1;
+                } else {
+                    lastSignature = signature;
+                    stableCount = 1;
+                }
+
+                if (stableCount >= stablePolls) {
+                    return { ready: true, missing: [] };
+                }
+            } else {
+                stableCount = 0;
+                lastSignature = "";
+            }
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+
+    return { ready: false, missing };
+}
+
 export class FilesystemSessionStore implements SessionStateStore {
     private storeDir: string;
     private sessionStateDir: string;
@@ -80,10 +135,11 @@ export class FilesystemSessionStore implements SessionStateStore {
 
     async dehydrate(sessionId: string, meta?: Record<string, unknown>): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
-        const sessionDirReady = await waitForPath(sessionDir);
-        if (!sessionDirReady) {
+        const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
+        if (!snapshot.ready) {
             throw new Error(
-                `Session state directory not found during dehydrate: ${sessionId} (${sessionDir})`,
+                `Session state directory not ready during dehydrate: ${sessionId} (${sessionDir}). ` +
+                `Missing: ${snapshot.missing.join(", ") || "unknown"}`,
             );
         }
 
@@ -202,4 +258,5 @@ export {
     archiveSessionDir,
     buildMetadata,
     extractSessionArchive,
+    waitForSessionSnapshot,
 };

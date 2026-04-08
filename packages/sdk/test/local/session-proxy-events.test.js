@@ -259,4 +259,44 @@ describe("session-proxy CMS prompt classification", () => {
             },
         });
     });
+
+    it("records terminal dehydration failures as session.error and rethrows", async () => {
+        const { dehydrateSession, recordedEvents, sessionManager, catalog } = makeHarness();
+        const failure = new Error(
+            "Session-store persistence failed after 3 attempts during dehydrate for session-dehydrate-fail (reason=cron): blob unavailable",
+        );
+        failure.sessionStoreAttemptCount = 3;
+        failure.sessionStoreError = "blob unavailable";
+        sessionManager.dehydrate = vi.fn(async () => {
+            throw failure;
+        });
+
+        await expect(dehydrateSession(
+            { traceInfo: () => {} },
+            {
+                sessionId: "session-dehydrate-fail",
+                reason: "cron",
+                eventData: {
+                    detail: "Recurring cron handoff failed to persist.",
+                },
+            },
+        )).rejects.toThrow("after 3 attempts");
+
+        expect(recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "session.error",
+            data: expect.objectContaining({
+                reason: "cron",
+                detail: "Recurring cron handoff failed to persist.",
+                message: expect.stringContaining("Session-store persistence failed after 3 attempts"),
+                sessionStoreAttemptCount: 3,
+                sessionStoreError: "blob unavailable",
+            }),
+        }));
+        expect(catalog.updateSession).toHaveBeenCalledWith(
+            "session-dehydrate-fail",
+            expect.objectContaining({
+                lastError: expect.stringContaining("Session-store persistence failed after 3 attempts"),
+            }),
+        );
+    });
 });

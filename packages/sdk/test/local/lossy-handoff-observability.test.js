@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { selectInspector } from "../../../ui-core/src/selectors.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
-import { assertEqual, assertIncludes } from "../helpers/assertions.js";
+import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../..");
@@ -67,6 +67,10 @@ describe("lossy handoff observability", () => {
         assertIncludes(history.activity[1].text, "[dehydrated]", "activity should still show the dehydration event");
         assertIncludes(history.activity[1].text, "lossy_handoff", "activity should show the special dehydration reason");
         assertIncludes(history.activity[1].text, "Connection is closed.", "dehydration activity should include the raw error");
+        const lossyLabelRun = history.activity[0].line.find((run) => run?.text === "[lossy handoff]");
+        const dehydratedLabelRun = history.activity[1].line.find((run) => run?.text === "[dehydrated]");
+        assertEqual(lossyLabelRun?.color, "red", "lossy handoffs should remain error-colored in activity");
+        assertEqual(dehydratedLabelRun?.color, "cyan", "successful dehydration should render as a neutral handoff in activity");
 
         const state = createInitialState({ mode: "local" });
         state.ui.inspectorTab = "sequence";
@@ -95,5 +99,13 @@ describe("lossy handoff observability", () => {
         assertIncludes(sequenceText, "lossy", "sequence view should show the lossy handoff row");
         assertIncludes(sequenceText, "closed", "sequence view should expose the connection failure detail");
         assertIncludes(sequenceText, "lossy_handoff", "sequence view should include the special dehydration reason");
+        const dehydrationSequenceLine = inspector.lines.find((line) =>
+            Array.isArray(line) && line.some((run) => String(run?.text || "").includes("ZZ lossy_handoff")),
+        );
+        assert(dehydrationSequenceLine, "sequence view should include the dehydration handoff row");
+        const dehydrationSequenceRun = dehydrationSequenceLine.find((run) =>
+            String(run?.text || "").includes("ZZ lossy_handoff"),
+        );
+        assertEqual(dehydrationSequenceRun?.color, "cyan", "successful dehydration should render cyan in the sequence view");
     });
 });

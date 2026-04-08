@@ -57,6 +57,22 @@ When a keybinding changes, update all user-facing surfaces together:
 - startup/help copy if present
 - `.github/copilot-instructions.md`
 
+## TUI vs Portal Divergences
+
+The native TUI and browser portal share `ui-core` state and `ui-react` components but diverge in these areas:
+
+| Aspect | Native TUI (`packages/cli`) | Portal (`packages/portal`) |
+|--------|----------------------------|---------------------------|
+| Border radius | N/A (terminal box-drawing) | **Slight rounding** (`6px` / `8px`) — subtle corners, not pills |
+| Scrollbars | Native terminal scrolling | **Custom dark scrollbars** — slim, theme-matched thumbs/tracks instead of browser-default white scrollbars |
+| Structured chat blocks | Box-drawing cards/tables rendered as terminal text | **Web-native cards/tables** — the portal converts shared box-drawing system notices and markdown tables into wrapped HTML blocks for layout fidelity |
+| Status bar / keybinding hints | Rendered in a status strip below the workspace | **Removed** — the portal has no keybinding hints strip; status/error text is shown in the toolbar next to New/Refresh/Theme buttons |
+| Footer | Status strip + prompt | **Prompt only** — maximizes prompt box space |
+| Session collapse default | **Starts collapsed** — sessions that become parents are auto-collapsed on initial bulk load, but manual expand stays respected across refreshes | **Starts collapsed** — same shared reducer behavior |
+| Session collapse toggle | Keyboard shortcut in `app.js` | **Click** — clicking a session with children toggles collapse/expand in `SessionPane` |
+
+The auto-collapse-on-load logic lives in `ui-core/src/reducer.js` (shared). It collapses sessions when they first become parents, including nested parents, but must not re-collapse a row the user already expanded during later `sessions/loaded` refreshes. Initial active selection should be the first visible flat-tree row after collapse, not the first raw session object.
+
 ## Workflow
 
 1. Decide which layer owns the change.

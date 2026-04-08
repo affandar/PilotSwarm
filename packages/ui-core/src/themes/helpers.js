@@ -7,6 +7,40 @@ function freezeTheme(theme) {
     });
 }
 
+function parseHexChannel(value) {
+    return Number.parseInt(value, 16) / 255;
+}
+
+function normalizeHexColor(value) {
+    const color = String(value || "").trim();
+    if (/^#[0-9a-f]{3}$/iu.test(color)) {
+        return `#${color.slice(1).split("").map((channel) => channel + channel).join("")}`;
+    }
+    return /^#[0-9a-f]{6}$/iu.test(color) ? color : null;
+}
+
+function toRelativeLuminanceChannel(value) {
+    return value <= 0.03928
+        ? value / 12.92
+        : ((value + 0.055) / 1.055) ** 2.4;
+}
+
+function getRelativeLuminance(color) {
+    const normalized = normalizeHexColor(color);
+    if (!normalized) return 0;
+
+    const red = toRelativeLuminanceChannel(parseHexChannel(normalized.slice(1, 3)));
+    const green = toRelativeLuminanceChannel(parseHexChannel(normalized.slice(3, 5)));
+    const blue = toRelativeLuminanceChannel(parseHexChannel(normalized.slice(5, 7)));
+
+    return (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+}
+
+export function isThemeLight(theme) {
+    const background = theme?.page?.background || theme?.tui?.background || theme?.terminal?.background;
+    return getRelativeLuminance(background) >= 0.5;
+}
+
 export function createTheme({ id, label, description, page, terminal, tui = {} }) {
     const baseTui = {
         background: page?.background || terminal?.background || "#000000",

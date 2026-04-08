@@ -41,6 +41,108 @@ function shallowEqualObject(left, right) {
     return true;
 }
 
+function shallowEqualArray(left, right, itemEqual = Object.is) {
+    if (Object.is(left, right)) return true;
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+        if (!itemEqual(left[index], right[index])) return false;
+    }
+    return true;
+}
+
+function shallowEqualChatChrome(left, right) {
+    if (Object.is(left, right)) return true;
+    if (!left || !right) return false;
+    return Object.is(left.color, right.color)
+        && shallowEqualArray(left.title, right.title, shallowEqualObject);
+}
+
+function readProcessRssBytes() {
+    try {
+        const runtimeProcess = globalThis?.process;
+        const memoryUsage = runtimeProcess?.memoryUsage;
+        if (typeof memoryUsage?.rss === "function") {
+            const rss = Number(memoryUsage.rss());
+            return Number.isFinite(rss) && rss > 0 ? rss : null;
+        }
+        if (typeof memoryUsage === "function") {
+            const rss = Number(memoryUsage.call(runtimeProcess)?.rss);
+            return Number.isFinite(rss) && rss > 0 ? rss : null;
+        }
+    } catch {}
+    return null;
+}
+
+function formatProcessRssTitleRuns(rssBytes) {
+    if (!Number.isFinite(rssBytes) || rssBytes <= 0) return null;
+    const rssMb = Math.round(rssBytes / (1024 * 1024));
+    return [
+        { text: "rss ", color: "gray" },
+        { text: `${rssMb}M`, color: "white", bold: true },
+    ];
+}
+
+function useProcessRssTitleRuns(sampleIntervalMs = 2000) {
+    const [rssBytes, setRssBytes] = React.useState(() => readProcessRssBytes());
+
+    React.useEffect(() => {
+        if (readProcessRssBytes() == null) return undefined;
+        const update = () => {
+            const nextRssBytes = readProcessRssBytes();
+            if (nextRssBytes == null) return;
+            setRssBytes((currentRssBytes) => (currentRssBytes === nextRssBytes ? currentRssBytes : nextRssBytes));
+        };
+        update();
+        const timer = setInterval(update, sampleIntervalMs);
+        return () => clearInterval(timer);
+    }, [sampleIntervalMs]);
+
+    return React.useMemo(() => formatProcessRssTitleRuns(rssBytes), [rssBytes]);
+}
+
+function buildSingleSessionMap(sessionId, session) {
+    return sessionId && session ? { [sessionId]: session } : {};
+}
+
+function normalizeInspectorLine(line) {
+    return typeof line === "string"
+        ? { text: line, color: "white" }
+        : line;
+}
+
+function renderInspectorPanel(platform, inspector, meta, width, height, frame) {
+    const tabLine = (inspector.tabs || INSPECTOR_TABS).map((tab) => ({
+        text: tab === inspector.activeTab ? `[${tab}] ` : `${tab} `,
+        color: tab === inspector.activeTab ? "magenta" : "gray",
+        bold: tab === inspector.activeTab,
+    }));
+    const normalizedLines = (inspector.lines || []).map(normalizeInspectorLine);
+    const normalizedStickyLines = (inspector.stickyLines || []).map(normalizeInspectorLine);
+    const stickyLines = inspector.activeTab === "sequence"
+        ? [tabLine, ...normalizedStickyLines]
+        : [];
+    const lines = inspector.activeTab === "sequence"
+        ? normalizedLines
+        : [tabLine, ...normalizedLines];
+
+    return React.createElement(platform.Panel, {
+        title: inspector.title,
+        color: "magenta",
+        focused: meta.focused,
+        width,
+        height,
+        stickyLines,
+        marginBottom: PANE_GAP_Y,
+        lines,
+        scrollOffset: meta.inspectorScroll,
+        scrollMode: inspector.activeTab === "logs" || inspector.activeTab === "sequence" ? "bottom" : "top",
+        paneId: "inspector",
+        paneLabel: inspector.activeTab === "sequence" ? "Sequence" : "Inspector",
+        frame,
+    });
+}
+
 function fitText(value, maxWidth) {
     const text = String(value || "");
     if (maxWidth <= 0) return "";
@@ -89,6 +191,7 @@ function buildWorkspacePaneFrames(layout) {
 
 const SessionList = React.memo(function SessionList({ controller, maxRows, width, height, frame }) {
     const platform = useUiPlatform();
+    const rssTitleRuns = useProcessRssTitleRuns();
     const sessionView = useControllerSelector(controller, (state) => ({
         sessions: state.sessions,
         mode: state.connection?.mode || "local",
@@ -114,6 +217,7 @@ const SessionList = React.memo(function SessionList({ controller, maxRows, width
 
     return React.createElement(platform.Panel, {
         title: "Sessions",
+        titleRight: rssTitleRuns,
         color: "yellow",
         focused: sessionView.focused,
         width,
@@ -128,18 +232,16 @@ const SessionList = React.memo(function SessionList({ controller, maxRows, width
 
 const ChatPane = React.memo(function ChatPane({ controller, width, height, frame }) {
     const platform = useUiPlatform();
+    const chrome = useControllerSelector(controller, selectChatPaneChrome, shallowEqualChatChrome);
     const chatView = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         return {
-            sessionsById: state.sessions.byId,
-            sessionsFlat: state.sessions.flat,
             activeSessionId,
             activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
             branding: state.branding,
             connectionError: state.connection.error,
             connectionMode: state.connection.mode,
-            inspectorTab: state.ui.inspectorTab,
             chatScroll: state.ui.scroll.chat,
             focused: state.ui.focusRegion === "chat",
         };
@@ -158,28 +260,21 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             },
             sessions: {
                 activeSessionId: chatView.activeSessionId,
-                byId: chatView.sessionsById,
-                flat: chatView.sessionsFlat,
+                byId: buildSingleSessionMap(chatView.activeSessionId, chatView.activeSession),
             },
             history: {
                 bySessionId: historyMap,
-            },
-            ui: {
-                inspectorTab: chatView.inspectorTab,
             },
         };
     }, [
         chatView.activeHistory,
         chatView.activeSessionId,
+        chatView.activeSession,
         chatView.branding,
         chatView.connectionError,
         chatView.connectionMode,
-        chatView.inspectorTab,
-        chatView.sessionsById,
-        chatView.sessionsFlat,
     ]);
     const startupError = !chatView.activeSessionId && chatView.connectionError;
-    const chrome = React.useMemo(() => selectChatPaneChrome(selectorState), [selectorState]);
     const elements = React.useMemo(() => (startupError
         ? [
             { kind: "markup", value: chatView.branding.splash },
@@ -322,50 +417,140 @@ const FilesBrowser = React.memo(function FilesBrowser({ controller, width, heigh
     ));
 });
 
-const InspectorPane = React.memo(function InspectorPane({ controller, width, height, frame }) {
+const InspectorSequencePane = React.memo(function InspectorSequencePane({ controller, width, height, frame, meta }) {
     const platform = useUiPlatform();
-    const inspectorMeta = useControllerSelector(controller, (state) => ({
-        inspectorTab: state.ui.inspectorTab,
-        inspectorScroll: state.ui.scroll.inspector,
-        focused: state.ui.focusRegion === "inspector",
-    }), shallowEqualObject);
     const contentWidth = Math.max(20, width - 4);
-    const inspectorState = useControllerSelector(controller, (state) => ({
-        branding: state.branding,
+    const sequenceState = useControllerSelector(controller, (state) => ({
         activeSessionId: state.sessions.activeSessionId,
         activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
         activeOrchestration: state.sessions.activeSessionId
             ? state.orchestration.bySessionId?.[state.sessions.activeSessionId] || null
             : null,
-        sessionsById: state.sessions.byId,
-        sessionsFlat: state.sessions.flat,
         histories: state.history.bySessionId,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: sequenceState.activeSessionId,
+            byId: buildSingleSessionMap(sequenceState.activeSessionId, sequenceState.activeSession),
+        },
+        history: {
+            bySessionId: sequenceState.histories,
+        },
+        orchestration: {
+            bySessionId: sequenceState.activeSessionId && sequenceState.activeOrchestration
+                ? { [sequenceState.activeSessionId]: sequenceState.activeOrchestration }
+                : {},
+        },
+        ui: {
+            inspectorTab: "sequence",
+        },
+    }), [
+        sequenceState.activeOrchestration,
+        sequenceState.activeSession,
+        sequenceState.activeSessionId,
+        sequenceState.histories,
+    ]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return renderInspectorPanel(platform, inspector, meta, width, height, frame);
+});
+
+const InspectorLogsPane = React.memo(function InspectorLogsPane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const logsState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
         logs: state.logs,
-        inspectorTab: state.ui.inspectorTab,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: logsState.activeSessionId,
+            byId: buildSingleSessionMap(logsState.activeSessionId, logsState.activeSession),
+        },
+        logs: logsState.logs,
+        ui: {
+            inspectorTab: "logs",
+        },
+    }), [logsState.activeSession, logsState.activeSessionId, logsState.logs]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return renderInspectorPanel(platform, inspector, meta, width, height, frame);
+});
+
+const InspectorHistoryPane = React.memo(function InspectorHistoryPane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const historyState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
         executionHistory: state.executionHistory,
     }), shallowEqualObject);
     const selectorState = React.useMemo(() => ({
-        branding: inspectorState.branding,
         sessions: {
-            activeSessionId: inspectorState.activeSessionId,
-            byId: inspectorState.sessionsById,
-            flat: inspectorState.sessionsFlat,
+            activeSessionId: historyState.activeSessionId,
+            byId: buildSingleSessionMap(historyState.activeSessionId, historyState.activeSession),
+        },
+        executionHistory: historyState.executionHistory,
+        ui: {
+            inspectorTab: "history",
+        },
+    }), [historyState.activeSession, historyState.activeSessionId, historyState.executionHistory]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return renderInspectorPanel(platform, inspector, meta, width, height, frame);
+});
+
+const InspectorNodesPane = React.memo(function InspectorNodesPane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const nodesState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        sessionsById: state.sessions.byId,
+        sessionsFlat: state.sessions.flat,
+        histories: state.history.bySessionId,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: nodesState.activeSessionId,
+            byId: nodesState.sessionsById,
+            flat: nodesState.sessionsFlat,
         },
         history: {
-            bySessionId: inspectorState.histories,
+            bySessionId: nodesState.histories,
         },
-        orchestration: {
-            bySessionId: inspectorState.activeSessionId && inspectorState.activeOrchestration
-                ? { [inspectorState.activeSessionId]: inspectorState.activeOrchestration }
-                : {},
-        },
-        logs: inspectorState.logs,
         ui: {
-            inspectorTab: inspectorState.inspectorTab,
+            inspectorTab: "nodes",
         },
-        executionHistory: inspectorState.executionHistory,
-    }), [inspectorState]);
-    const inspector = React.useMemo(() => selectInspector(selectorState, { width: contentWidth }), [contentWidth, selectorState]);
+    }), [
+        nodesState.activeSessionId,
+        nodesState.histories,
+        nodesState.sessionsById,
+        nodesState.sessionsFlat,
+    ]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return renderInspectorPanel(platform, inspector, meta, width, height, frame);
+});
+
+const InspectorPane = React.memo(function InspectorPane({ controller, width, height, frame }) {
+    const inspectorMeta = useControllerSelector(controller, (state) => ({
+        inspectorTab: state.ui.inspectorTab,
+        inspectorScroll: state.ui.scroll.inspector,
+        focused: state.ui.focusRegion === "inspector",
+    }), shallowEqualObject);
     if (inspectorMeta.inspectorTab === "files") {
         return React.createElement(FilesBrowser, {
             controller,
@@ -375,40 +560,39 @@ const InspectorPane = React.memo(function InspectorPane({ controller, width, hei
             frame,
         });
     }
-    const tabLine = inspector.tabs.map((tab) => ({
-        text: tab === inspector.activeTab ? `[${tab}] ` : `${tab} `,
-        color: tab === inspector.activeTab ? "magenta" : "gray",
-        bold: tab === inspector.activeTab,
-    }));
-    const normalizedLines = inspector.lines.map((line) => (typeof line === "string"
-        ? { text: line, color: "white" }
-        : line));
-    const stickyLines = inspector.activeTab === "sequence"
-        ? [
-            tabLine,
-            ...((inspector.stickyLines || []).map((line) => (typeof line === "string"
-                ? { text: line, color: "white" }
-                : line))),
-        ]
-        : [];
-    const lines = inspector.activeTab === "sequence"
-        ? normalizedLines
-        : [tabLine, ...normalizedLines];
-
-    return React.createElement(platform.Panel, {
-        title: inspector.title,
-        color: "magenta",
-        focused: inspectorMeta.focused,
+    if (inspectorMeta.inspectorTab === "sequence") {
+        return React.createElement(InspectorSequencePane, {
+            controller,
+            width,
+            height,
+            frame,
+            meta: inspectorMeta,
+        });
+    }
+    if (inspectorMeta.inspectorTab === "logs") {
+        return React.createElement(InspectorLogsPane, {
+            controller,
+            width,
+            height,
+            frame,
+            meta: inspectorMeta,
+        });
+    }
+    if (inspectorMeta.inspectorTab === "history") {
+        return React.createElement(InspectorHistoryPane, {
+            controller,
+            width,
+            height,
+            frame,
+            meta: inspectorMeta,
+        });
+    }
+    return React.createElement(InspectorNodesPane, {
+        controller,
         width,
         height,
-        stickyLines,
-        marginBottom: PANE_GAP_Y,
-        lines,
-        scrollOffset: inspectorMeta.inspectorScroll,
-        scrollMode: inspector.activeTab === "logs" || inspector.activeTab === "sequence" ? "bottom" : "top",
-        paneId: "inspector",
-        paneLabel: inspector.activeTab === "sequence" ? "Sequence" : "Inspector",
         frame,
+        meta: inspectorMeta,
     });
 });
 

@@ -135,11 +135,16 @@ Current overlap to preserve unless intentionally changed:
 
 The shared terminal UI is a maintained product surface, not an experiment.
 
+The native TUI and the browser portal are a single shared UX surface by default. When a change affects shared behavior, layout semantics, inspector behavior, themes, keybindings, prompt ergonomics, or visible help text, keep the TUI and portal in complete sync unless that is genuinely impossible or the user explicitly asks for a divergence.
+
+If a change leaves the TUI and portal out of sync, say so explicitly in your response and note the reason for the mismatch rather than implying parity.
+
 When you change the terminal/shared UI stack in:
 
 - `packages/ui-core/`
 - `packages/ui-react/`
 - `packages/cli/`
+- `packages/portal/`
 - `run.sh`
 
 you must also keep [`.github/skills/pilotswarm-tui/SKILL.md`](./skills/pilotswarm-tui/SKILL.md) current if the change affects architecture, layout, visual conventions, status semantics, prompt/question behavior, message-card behavior, or keybinding expectations.

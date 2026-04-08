@@ -44,6 +44,10 @@ function buildUnrecoverableSessionLossMessage(sessionId: string, detail: string)
         `Some very recent in-memory state may have been lost. ${detail}`;
 }
 
+function normalizeEventData(eventData?: Record<string, unknown>): Record<string, unknown> | null {
+    return eventData && typeof eventData === "object" ? eventData : null;
+}
+
 // ─── SessionProxy ────────────────────────────────────────────────
 // The orchestration's view of a specific ManagedSession.
 // Each method maps 1:1 to an activity dispatched to the session's worker node.
@@ -891,21 +895,50 @@ export function registerActivities(
 
     // ── dehydrateSession ────────────────────────────────────
     runtime.registerActivity("dehydrateSession", async (
-        _ctx: any,
+        activityCtx: any,
         input: { sessionId: string; reason?: string; eventData?: Record<string, unknown> },
     ): Promise<void> => {
-        await sessionManager.dehydrate(input.sessionId, input.reason ?? "unknown");
+        const reason = input.reason ?? "unknown";
+        const eventData = normalizeEventData(input.eventData);
+
+        try {
+            await sessionManager.dehydrate(input.sessionId, reason);
+        } catch (err: any) {
+            const message = err?.message || String(err);
+            if (catalog) {
+                const sessionStoreAttemptCount = Number(err?.sessionStoreAttemptCount) || undefined;
+                await catalog.recordEvents(input.sessionId, [{
+                    eventType: "session.error",
+                    data: {
+                        ...(eventData ?? {}),
+                        reason,
+                        message,
+                        ...(sessionStoreAttemptCount ? { sessionStoreAttemptCount } : {}),
+                        ...(typeof err?.sessionStoreError === "string" ? { sessionStoreError: err.sessionStoreError } : {}),
+                    },
+                }], workerNodeId).catch((catalogErr: any) => {
+                    activityCtx.traceInfo(`[dehydrateSession] CMS failure event write failed: ${catalogErr}`);
+                });
+                await catalog.updateSession(input.sessionId, {
+                    lastError: message,
+                    lastActiveAt: new Date(),
+                }).catch((catalogErr: any) => {
+                    activityCtx.traceInfo(`[dehydrateSession] CMS lastError update failed: ${catalogErr}`);
+                });
+            }
+            throw err;
+        }
+
         if (catalog) {
-            const eventData = input.eventData && typeof input.eventData === "object"
-                ? input.eventData
-                : null;
-            catalog.recordEvents(input.sessionId, [{
+            await catalog.recordEvents(input.sessionId, [{
                 eventType: "session.dehydrated",
                 data: {
-                    reason: input.reason ?? "unknown",
+                    reason,
                     ...(eventData ?? {}),
                 },
-            }], workerNodeId).catch(() => {});
+            }], workerNodeId).catch((err: any) => {
+                activityCtx.traceInfo(`[dehydrateSession] CMS success event write failed: ${err}`);
+            });
         }
     });
 

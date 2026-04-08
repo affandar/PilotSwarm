@@ -521,9 +521,19 @@ function computeMarkdownTableColumnWidths(rows, maxWidth) {
         3,
         ...rows.map((row) => displayWidth(row[index] || "")),
     ));
+    const longestWord = Array.from({ length: columnCount }, (_, index) => Math.max(
+        3,
+        ...rows.map((row) => Math.max(
+            0,
+            ...String(row[index] || "")
+                .split(/\s+/)
+                .filter(Boolean)
+                .map((word) => displayWidth(word)),
+        )),
+    ));
     const minimum = Array.from({ length: columnCount }, (_, index) => Math.max(
         3,
-        Math.min(displayWidth(rows[0]?.[index] || "") || 3, 18),
+        Math.min(Math.max(displayWidth(rows[0]?.[index] || "") || 3, longestWord[index]), 24),
     ));
 
     const totalPreferred = preferred.reduce((sum, width) => sum + width, 0);
@@ -586,8 +596,12 @@ function renderPlainMarkdownTable(rows, maxWidth) {
     rendered.push(topBorder);
     renderRow(normalizedRows[0]);
     rendered.push(middleBorder);
-    for (const row of normalizedRows.slice(1)) {
+    const bodyRows = normalizedRows.slice(1);
+    for (const [index, row] of bodyRows.entries()) {
         renderRow(row);
+        if (index < bodyRows.length - 1) {
+            rendered.push(middleBorder);
+        }
     }
     rendered.push(bottomBorder);
 

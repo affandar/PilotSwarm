@@ -22,10 +22,18 @@
   --ps-font-size-dense: 12px;
   --ps-line-height-base: 1.28;
   --ps-line-height-dense: 1.18;
+  --ps-radius-sm: 6px;
+  --ps-radius-md: 8px;
+  --ps-scrollbar-size: 10px;
+  --ps-scrollbar-track: rgba(110, 118, 129, 0.14);
+  --ps-scrollbar-thumb: color-mix(in srgb, var(--ps-border) 56%, var(--ps-surface));
+  --ps-scrollbar-thumb-hover: color-mix(in srgb, var(--ps-modal-selected-border) 42%, var(--ps-border));
 }
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ps-scrollbar-thumb) var(--ps-scrollbar-track);
 }
 
 html,
@@ -77,7 +85,7 @@ button {
 .portal-gate-card {
   width: min(480px, 100%);
   border: 1px solid var(--ps-modal-border);
-  border-radius: 20px;
+  border-radius: var(--ps-radius-md);
   background: color-mix(in srgb, var(--ps-modal-background) 92%, transparent);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
   padding: 28px;
@@ -116,7 +124,7 @@ button {
 .ps-list-button,
 .ps-modal-close {
   border: 1px solid var(--ps-modal-border);
-  border-radius: 12px;
+  border-radius: var(--ps-radius-sm);
   background: color-mix(in srgb, var(--ps-surface) 94%, transparent);
   color: var(--ps-foreground);
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
@@ -169,7 +177,7 @@ button {
 .portal-logo-frame {
   width: 38px;
   height: 38px;
-  border-radius: 12px;
+  border-radius: var(--ps-radius-sm);
   border: 1px solid color-mix(in srgb, var(--ps-modal-selected-border) 52%, var(--ps-modal-border));
   background:
     radial-gradient(circle at 28% 24%, color-mix(in srgb, var(--ps-modal-selected-border) 20%, transparent), transparent 58%),
@@ -306,8 +314,7 @@ button {
 }
 
 .ps-toolbar-status {
-  flex: 0 0 auto;
-  max-width: 46%;
+  flex: 0 1 auto;
   color: var(--ps-muted);
   font-size: 10px;
   line-height: 1;
@@ -472,7 +479,7 @@ body.is-resizing-pane * {
   flex-direction: column;
   overflow: hidden;
   border: 2px solid var(--ps-panel-accent, var(--ps-border));
-  border-radius: 12px;
+  border-radius: var(--ps-radius-sm);
   background: color-mix(in srgb, var(--ps-surface) 96%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ps-page-background) 35%, transparent);
 }
@@ -527,6 +534,7 @@ body.is-resizing-pane * {
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-x pan-y;
+  scrollbar-gutter: stable both-edges;
   padding: 6px 10px 10px;
   font-size: var(--ps-font-size-dense);
   line-height: var(--ps-line-height-dense);
@@ -546,6 +554,7 @@ body.is-resizing-pane * {
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-x;
+  scrollbar-gutter: stable both-edges;
 }
 
 .ps-line {
@@ -573,6 +582,79 @@ body.is-resizing-pane * {
   word-break: break-word;
 }
 
+.ps-chat-card {
+  margin: 8px 0;
+  margin-right: auto;
+  border: 1px solid color-mix(in srgb, var(--ps-chat-card-accent, var(--ps-border)) 78%, transparent);
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, var(--ps-surface) 98%, transparent);
+  overflow: hidden;
+  width: fit-content;
+  max-width: min(100%, 82ch);
+}
+
+.ps-chat-card-header {
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-chat-card-accent, var(--ps-border)) 28%, transparent);
+  background: color-mix(in srgb, var(--ps-chat-card-accent, var(--ps-surface)) 10%, transparent);
+}
+
+.ps-chat-card-body {
+  padding: 8px 12px 10px;
+}
+
+.ps-chat-card-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ps-chat-card-line + .ps-chat-card-line {
+  margin-top: 6px;
+}
+
+.ps-chat-table-wrap {
+  margin: 8px 0;
+  margin-right: auto;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 55%, transparent);
+  border-radius: var(--ps-radius-sm);
+  overflow-x: auto;
+  overflow-y: hidden;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.ps-chat-table {
+  width: max-content;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.ps-chat-table th,
+.ps-chat-table td {
+  padding: 6px 8px;
+  border-right: 1px solid color-mix(in srgb, var(--ps-border) 34%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 34%, transparent);
+  white-space: pre-wrap;
+  word-break: break-word;
+  vertical-align: top;
+}
+
+.ps-chat-table th:last-child,
+.ps-chat-table td:last-child {
+  border-right: 0;
+}
+
+.ps-chat-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.ps-chat-table th {
+  text-align: left;
+  font-weight: 700;
+  color: var(--ps-foreground);
+  background: color-mix(in srgb, var(--ps-highlight-background) 10%, var(--ps-surface));
+}
+
 .ps-action-list {
   display: flex;
   flex-direction: column;
@@ -581,6 +663,7 @@ body.is-resizing-pane * {
   overflow: auto;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
+  scrollbar-gutter: stable both-edges;
   font-size: var(--ps-font-size-dense);
   line-height: var(--ps-line-height-dense);
 }
@@ -595,6 +678,10 @@ body.is-resizing-pane * {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.ps-session-row-content {
+  display: block;
 }
 
 .ps-list-button.is-selected,
@@ -632,6 +719,18 @@ body.is-resizing-pane * {
   padding-top: 10px;
 }
 
+.ps-chat-panel .ps-panel-header {
+  padding-bottom: 8px;
+}
+
+.ps-chat-panel .ps-panel-body {
+  padding-top: 2px;
+}
+
+.ps-chat-panel .ps-scroll-panel {
+  padding-top: 6px;
+}
+
 .ps-status-strip {
   display: flex;
   justify-content: space-between;
@@ -655,7 +754,7 @@ body.is-resizing-pane * {
   gap: 4px;
   padding: 6px 8px 8px;
   border: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent);
-  border-radius: 12px;
+  border-radius: var(--ps-radius-sm);
   background: color-mix(in srgb, var(--ps-surface) 94%, transparent);
 }
 
@@ -691,7 +790,7 @@ body.is-resizing-pane * {
   min-height: 40px;
   resize: vertical;
   border: 1px solid color-mix(in srgb, var(--ps-border) 60%, transparent);
-  border-radius: 12px;
+  border-radius: var(--ps-radius-sm);
   background: color-mix(in srgb, var(--ps-background) 94%, transparent);
   color: var(--ps-foreground);
   padding: 8px 10px;
@@ -720,7 +819,7 @@ body.is-resizing-pane * {
   min-height: 40px;
   min-width: 40px;
   padding: 0;
-  border-radius: 12px;
+  border-radius: var(--ps-radius-sm);
   font-size: 18px;
   line-height: 1;
   display: inline-flex;
@@ -751,12 +850,55 @@ body.is-resizing-pane * {
   overflow: auto;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
+  scrollbar-gutter: stable both-edges;
   border: 1px solid var(--ps-modal-border);
-  border-radius: 18px;
+  border-radius: var(--ps-radius-md);
   background: var(--ps-modal-background);
   color: var(--ps-modal-foreground);
   padding: 18px;
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4);
+}
+
+.ps-scroll-panel::-webkit-scrollbar,
+.ps-action-list::-webkit-scrollbar,
+.ps-panel-sticky.is-scroll-sync::-webkit-scrollbar,
+.ps-modal::-webkit-scrollbar {
+  width: var(--ps-scrollbar-size);
+  height: var(--ps-scrollbar-size);
+}
+
+.ps-scroll-panel::-webkit-scrollbar-track,
+.ps-action-list::-webkit-scrollbar-track,
+.ps-panel-sticky.is-scroll-sync::-webkit-scrollbar-track,
+.ps-modal::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ps-scroll-panel::-webkit-scrollbar-thumb,
+.ps-action-list::-webkit-scrollbar-thumb,
+.ps-panel-sticky.is-scroll-sync::-webkit-scrollbar-thumb,
+.ps-modal::-webkit-scrollbar-thumb {
+  background: var(--ps-scrollbar-thumb);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  min-height: 28px;
+}
+
+.ps-scroll-panel::-webkit-scrollbar-thumb:hover,
+.ps-action-list::-webkit-scrollbar-thumb:hover,
+.ps-panel-sticky.is-scroll-sync::-webkit-scrollbar-thumb:hover,
+.ps-modal::-webkit-scrollbar-thumb:hover {
+  background: var(--ps-scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.ps-scroll-panel::-webkit-scrollbar-corner,
+.ps-action-list::-webkit-scrollbar-corner,
+.ps-panel-sticky.is-scroll-sync::-webkit-scrollbar-corner,
+.ps-modal::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .ps-modal.is-narrow {

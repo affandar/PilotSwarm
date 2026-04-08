@@ -1,7 +1,7 @@
 import React from "react";
 import { spawnSync } from "node:child_process";
 import { Box, Text } from "ink";
-import { DEFAULT_THEME_ID, getTheme, parseTerminalMarkupRuns } from "pilotswarm-ui-core";
+import { DEFAULT_THEME_ID, getTheme, isThemeLight, parseTerminalMarkupRuns } from "pilotswarm-ui-core";
 
 const MAX_PROMPT_INPUT_ROWS = 3;
 const SELECTION_BACKGROUND = "selectionBackground";
@@ -38,8 +38,12 @@ function resolveColorToken(color) {
     return theme?.tui?.[color] || color;
 }
 
+export function shouldDimGrayTextForTheme(theme = getCurrentTheme()) {
+    return !isThemeLight(theme);
+}
+
 function isDimColorToken(color) {
-    return color === "gray";
+    return color === "gray" && shouldDimGrayTextForTheme();
 }
 
 function trimText(value, width) {
@@ -361,19 +365,46 @@ function renderPanelRow(line, rowKey, contentWidth, borderColor, scrollIndicator
                 : selectedRuns.length > 0
                     ? renderInlineRuns(selectedRuns, `inline:${rowKey}`)
                     : React.createElement(Text, null, "")),
-        React.createElement(Text, { color: scrollIndicator ? resolveColorToken("gray") : undefined, dimColor: Boolean(scrollIndicator) }, scrollChar),
+        React.createElement(Text, {
+            color: scrollIndicator ? resolveColorToken("gray") : undefined,
+            dimColor: Boolean(scrollIndicator) && shouldDimGrayTextForTheme(),
+        }, scrollChar),
         React.createElement(Text, { color: resolveColorToken(borderColor) }, "│"));
 }
 
-function renderBorderTop(title, color, width) {
+function renderBorderTop(title, color, width, titleRight = null) {
     const safeWidth = Math.max(8, Number(width) || 40);
-    const safeTitleRuns = trimRuns(normalizeTitleRuns(title, color), Math.max(1, safeWidth - 6));
-    const fill = Math.max(0, safeWidth - titleRunLength(safeTitleRuns) - 5);
+    const normalizedTitleRuns = normalizeTitleRuns(title, color);
+    const normalizedRightRuns = titleRight ? normalizeTitleRuns(titleRight, "gray") : [];
+    let safeTitleRuns = trimRuns(normalizedTitleRuns, Math.max(1, safeWidth - 6));
+    let safeRightRuns = trimRuns(normalizedRightRuns, Math.max(0, safeWidth - 8));
+    let titleWidth = titleRunLength(safeTitleRuns);
+    let rightWidth = titleRunLength(safeRightRuns);
+    const hasRightTitle = rightWidth > 0;
+    const chromeWidth = hasRightTitle ? 6 : 5;
+    const availableTitleWidth = Math.max(1, safeWidth - chromeWidth);
+
+    if (titleWidth + rightWidth > availableTitleWidth) {
+        safeTitleRuns = trimRuns(normalizedTitleRuns, Math.max(1, availableTitleWidth - rightWidth));
+        titleWidth = titleRunLength(safeTitleRuns);
+        if (titleWidth + rightWidth > availableTitleWidth) {
+            safeRightRuns = trimRuns(normalizedRightRuns, Math.max(0, availableTitleWidth - titleWidth));
+            rightWidth = titleRunLength(safeRightRuns);
+        }
+    }
+
+    const fill = Math.max(0, safeWidth - titleWidth - rightWidth - chromeWidth);
 
     return React.createElement(Box, null,
         React.createElement(Text, { color: resolveColorToken(color) }, "╭─ "),
         renderInlineRuns(safeTitleRuns, "title"),
-        React.createElement(Text, { color: resolveColorToken(color) }, ` ${"─".repeat(fill)}╮`));
+        hasRightTitle
+            ? [
+                React.createElement(Text, { key: "title-fill", color: resolveColorToken(color) }, ` ${"─".repeat(fill)} `),
+                ...renderInlineRuns(safeRightRuns, "title-right"),
+                React.createElement(Text, { key: "title-end", color: resolveColorToken(color) }, "╮"),
+            ]
+            : React.createElement(Text, { color: resolveColorToken(color) }, ` ${"─".repeat(fill)}╮`));
 }
 
 function renderBorderBottom(color, width) {
@@ -576,11 +607,12 @@ function Header({ title, subtitle }) {
         justifyContent: "space-between",
     },
     React.createElement(Text, { bold: true, color: resolveColorToken("cyan") }, title),
-    React.createElement(Text, { color: resolveColorToken("gray"), dimColor: true }, subtitle || ""));
+    React.createElement(Text, { color: resolveColorToken("gray"), dimColor: shouldDimGrayTextForTheme() }, subtitle || ""));
 }
 
 function Panel({
     title,
+    titleRight,
     color = "white",
     focused = false,
     width,
@@ -649,7 +681,7 @@ function Panel({
         flexGrow,
         flexBasis,
     },
-    renderBorderTop(title, borderColor, safeWidth),
+    renderBorderTop(title, borderColor, safeWidth, titleRight),
     lines
         ? React.createElement(Box, { flexDirection: "column", flexGrow: 1, backgroundColor: fillColor || undefined },
             [
@@ -773,7 +805,7 @@ function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0 }
             ? [
                 renderPromptRow(placeholder || "Type a message and press Enter", focused ? 0 : null, {
                     color: resolveColorToken("gray"),
-                    dimColor: true,
+                    dimColor: shouldDimGrayTextForTheme(),
                     showCursor: Boolean(focused),
                     keyPrefix: "prompt-line:0",
                     prefix: labelPrefix,
@@ -800,7 +832,7 @@ function StatusLine({ left, right }) {
         justifyContent: "space-between",
     },
     React.createElement(Text, { color: resolveColorToken("white") }, left || ""),
-    React.createElement(Text, { color: resolveColorToken("gray"), dimColor: true }, right || ""));
+    React.createElement(Text, { color: resolveColorToken("gray"), dimColor: shouldDimGrayTextForTheme() }, right || ""));
 }
 
 function Overlay({ children }) {

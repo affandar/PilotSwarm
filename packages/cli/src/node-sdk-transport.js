@@ -1,5 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -13,6 +14,61 @@ import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js
 
 const EXPORTS_DIR = path.join(os.homedir(), "pilotswarm-exports");
 fs.mkdirSync(EXPORTS_DIR, { recursive: true });
+const K8S_SERVICE_ACCOUNT_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
+
+function fileExists(filePath) {
+    try {
+        return fs.existsSync(filePath);
+    } catch {
+        return false;
+    }
+}
+
+function getInClusterK8sPaths() {
+    const baseDir = process.env.PILOTSWARM_K8S_SERVICE_ACCOUNT_DIR || K8S_SERVICE_ACCOUNT_DIR;
+    return {
+        tokenPath: process.env.PILOTSWARM_K8S_TOKEN_PATH || path.join(baseDir, "token"),
+        caPath: process.env.PILOTSWARM_K8S_CA_PATH || path.join(baseDir, "ca.crt"),
+        namespacePath: process.env.PILOTSWARM_K8S_NAMESPACE_PATH || path.join(baseDir, "namespace"),
+    };
+}
+
+function readOptionalTextFile(filePath) {
+    try {
+        return fs.readFileSync(filePath, "utf8").trim();
+    } catch {
+        return "";
+    }
+}
+
+function hasInClusterK8sAccess() {
+    const { tokenPath, caPath } = getInClusterK8sPaths();
+    return Boolean(process.env.KUBERNETES_SERVICE_HOST)
+        && fileExists(tokenPath)
+        && fileExists(caPath);
+}
+
+function getInClusterK8sConfig() {
+    if (!hasInClusterK8sAccess()) return null;
+
+    const { tokenPath, caPath, namespacePath } = getInClusterK8sPaths();
+    return {
+        host: String(process.env.KUBERNETES_SERVICE_HOST || "").trim(),
+        port: Number(process.env.KUBERNETES_SERVICE_PORT || 443) || 443,
+        token: readOptionalTextFile(tokenPath),
+        ca: fs.readFileSync(caPath),
+        namespace: String(process.env.K8S_NAMESPACE || "").trim() || readOptionalTextFile(namespacePath) || "default",
+    };
+}
+
+function hasExplicitKubectlConfig() {
+    return Boolean((process.env.K8S_CONTEXT || "").trim() || (process.env.KUBECONFIG || "").trim());
+}
+
+function isKubectlAvailable() {
+    const result = spawnSync("kubectl", ["version", "--client=true"], { stdio: "ignore" });
+    return !result.error;
+}
 
 function stripAnsi(value) {
     return String(value || "").replace(/\x1b\[[0-9;]*m/g, "");
@@ -124,6 +180,21 @@ function buildLogEntry(line, counter) {
         rawLine,
         message: extractPrettyLogMessage(rawLine),
         prettyMessage: extractPrettyLogMessage(rawLine),
+    };
+}
+
+function buildSyntheticLogEntry({ message, level = "info", podName = "k8s", counter = 0 }) {
+    const safeMessage = trimLogText(String(message || "").trim());
+    return {
+        id: `log:${Date.now()}:${counter}`,
+        time: extractLogTime(safeMessage),
+        podName,
+        level,
+        orchId: null,
+        category: "log",
+        rawLine: safeMessage,
+        message: safeMessage,
+        prettyMessage: safeMessage,
     };
 }
 
@@ -256,10 +327,12 @@ export class NodeSdkTransport {
         this.allowedAgentNames = [];
         this.creatableAgents = [];
         this.logProc = null;
+        this.logTailHandle = null;
         this.logBuffer = "";
         this.logRestartTimer = null;
         this.logSubscribers = new Set();
         this.logEntryCounter = 0;
+        this.kubectlAvailable = null;
     }
 
     async start() {
@@ -314,12 +387,30 @@ export class NodeSdkTransport {
     }
 
     getLogConfig() {
-        const hasK8sConfig = Boolean((process.env.K8S_CONTEXT || "").trim() || (process.env.KUBECONFIG || "").trim());
+        const hasInClusterConfig = hasInClusterK8sAccess();
+        const hasKubectlConfig = hasExplicitKubectlConfig();
+        if (hasInClusterConfig) {
+            return {
+                available: true,
+                availabilityReason: "",
+            };
+        }
+
+        if (hasKubectlConfig) {
+            if (this.kubectlAvailable == null) {
+                this.kubectlAvailable = isKubectlAvailable();
+            }
+            return {
+                available: this.kubectlAvailable,
+                availabilityReason: this.kubectlAvailable
+                    ? ""
+                    : "Log tailing disabled: kubectl is not installed in this environment.",
+            };
+        }
+
         return {
-            available: hasK8sConfig,
-            availabilityReason: hasK8sConfig
-                ? ""
-                : "Log tailing disabled: no K8S_CONTEXT configured in the env file.",
+            available: false,
+            availabilityReason: "Log tailing disabled: no K8S_CONTEXT/KUBECONFIG or in-cluster Kubernetes access detected.",
         };
     }
 
@@ -575,10 +666,19 @@ export class NodeSdkTransport {
     }
 
     emitLogEntry(entry) {
-        for (const handler of this.logSubscribers) {
-            try {
-                handler(entry);
-            } catch {}
+        if (!this._logBatch) this._logBatch = [];
+        this._logBatch.push(entry);
+        if (!this._logBatchTimer) {
+            this._logBatchTimer = setTimeout(() => {
+                const batch = this._logBatch;
+                this._logBatch = [];
+                this._logBatchTimer = null;
+                for (const handler of this.logSubscribers) {
+                    try {
+                        handler(batch);
+                    } catch {}
+                }
+            }, 250);
         }
     }
 
@@ -592,9 +692,208 @@ export class NodeSdkTransport {
         }, 5000);
     }
 
-    startLogProcess() {
+    emitSyntheticLogMessage(message, level = "info", podName = "k8s") {
+        this.logEntryCounter += 1;
+        this.emitLogEntry(buildSyntheticLogEntry({
+            message,
+            level,
+            podName,
+            counter: this.logEntryCounter,
+        }));
+    }
+
+    async listPodsFromKubeApi(config, labelSelector) {
+        const params = new URLSearchParams();
+        if (labelSelector) params.set("labelSelector", labelSelector);
+        const pathName = `/api/v1/namespaces/${encodeURIComponent(config.namespace)}/pods${params.size > 0 ? `?${params.toString()}` : ""}`;
+
+        return await new Promise((resolve, reject) => {
+            const req = https.request({
+                method: "GET",
+                hostname: config.host,
+                port: config.port,
+                path: pathName,
+                ca: config.ca,
+                headers: {
+                    Authorization: `Bearer ${config.token}`,
+                    Accept: "application/json",
+                },
+            }, (res) => {
+                let body = "";
+                res.setEncoding("utf8");
+                res.on("data", (chunk) => {
+                    body += chunk;
+                });
+                res.on("end", () => {
+                    if ((res.statusCode || 0) >= 400) {
+                        reject(new Error(
+                            `Kubernetes API pod list failed (${res.statusCode}): ${trimLogText(body || res.statusMessage || "unknown error")}`,
+                        ));
+                        return;
+                    }
+                    try {
+                        const payload = JSON.parse(body || "{}");
+                        const items = Array.isArray(payload?.items) ? payload.items : [];
+                        resolve(items
+                            .map((item) => String(item?.metadata?.name || "").trim())
+                            .filter(Boolean));
+                    } catch (error) {
+                        reject(error);
+                    }
+                });
+            });
+
+            req.on("error", reject);
+            req.end();
+        });
+    }
+
+    streamPodLogsFromKubeApi(config, podName, handle, options = {}) {
+        const params = new URLSearchParams({
+            follow: "true",
+            timestamps: "true",
+            tailLines: String(options.tailLines ?? 500),
+        });
+        const pathName = `/api/v1/namespaces/${encodeURIComponent(config.namespace)}/pods/${encodeURIComponent(podName)}/log?${params.toString()}`;
+
+        return new Promise((resolve, reject) => {
+            let buffer = "";
+            let settled = false;
+            let response = null;
+
+            const finish = (error = null) => {
+                if (settled) return;
+                settled = true;
+
+                if (buffer.trim()) {
+                    this.logEntryCounter += 1;
+                    this.emitLogEntry(buildLogEntry(`[pod/${podName}] ${buffer.trim()}`, this.logEntryCounter));
+                    buffer = "";
+                }
+
+                if (response) {
+                    handle.responses.delete(response);
+                }
+                handle.requests.delete(request);
+
+                if (error) reject(error);
+                else resolve();
+            };
+
+            const request = https.request({
+                method: "GET",
+                hostname: config.host,
+                port: config.port,
+                path: pathName,
+                ca: config.ca,
+                headers: {
+                    Authorization: `Bearer ${config.token}`,
+                    Accept: "text/plain",
+                },
+            }, (res) => {
+                response = res;
+                handle.responses.add(res);
+
+                if ((res.statusCode || 0) >= 400) {
+                    let body = "";
+                    res.setEncoding("utf8");
+                    res.on("data", (chunk) => {
+                        body += chunk;
+                    });
+                    res.on("end", () => {
+                        finish(new Error(
+                            `Kubernetes log stream failed for ${podName} (${res.statusCode}): ${trimLogText(body || res.statusMessage || "unknown error")}`,
+                        ));
+                    });
+                    return;
+                }
+
+                res.setEncoding("utf8");
+                res.on("data", (chunk) => {
+                    buffer += chunk;
+                    const lines = buffer.split("\n");
+                    buffer = lines.pop() || "";
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        this.logEntryCounter += 1;
+                        this.emitLogEntry(buildLogEntry(`[pod/${podName}] ${line}`, this.logEntryCounter));
+                    }
+                });
+                res.on("end", () => finish());
+                res.on("close", () => finish());
+                res.on("error", (error) => finish(error));
+            });
+
+            handle.requests.add(request);
+            request.on("error", (error) => finish(error));
+            request.end();
+        });
+    }
+
+    startInClusterLogProcess() {
+        const config = getInClusterK8sConfig();
+        if (!config || this.logTailHandle) return;
+
+        const labelSelector = process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker";
+        const handle = {
+            stopped: false,
+            requests: new Set(),
+            responses: new Set(),
+            stop: () => {
+                if (handle.stopped) return;
+                handle.stopped = true;
+                for (const response of handle.responses) {
+                    try { response.destroy(); } catch {}
+                }
+                handle.responses.clear();
+                for (const request of handle.requests) {
+                    try { request.destroy(); } catch {}
+                }
+                handle.requests.clear();
+            },
+        };
+        this.logTailHandle = handle;
+
+        this.listPodsFromKubeApi(config, labelSelector)
+            .then(async (podNames) => {
+                if (handle.stopped || this.logTailHandle !== handle) return;
+                if (podNames.length === 0) {
+                    this.emitSyntheticLogMessage(
+                        `No pods matched label selector ${JSON.stringify(labelSelector)} in namespace ${config.namespace}.`,
+                        "warn",
+                    );
+                    return;
+                }
+
+                const results = await Promise.allSettled(
+                    podNames.map((podName) => this.streamPodLogsFromKubeApi(config, podName, handle)),
+                );
+
+                if (handle.stopped || this.logTailHandle !== handle) return;
+                for (const result of results) {
+                    if (result.status === "fulfilled") continue;
+                    this.emitSyntheticLogMessage(result.reason?.message || String(result.reason), "error");
+                }
+            })
+            .catch((error) => {
+                if (handle.stopped || this.logTailHandle !== handle) return;
+                this.emitSyntheticLogMessage(error?.message || String(error), "error");
+            })
+            .finally(() => {
+                if (this.logTailHandle === handle) {
+                    this.logTailHandle = null;
+                }
+                if (!handle.stopped) {
+                    this.scheduleLogRestart();
+                }
+            });
+    }
+
+    startKubectlLogProcess() {
+        if (this.logProc) return;
+
         const config = this.getLogConfig();
-        if (!config.available || this.logProc) return;
+        if (!config.available) return;
 
         const k8sContext = process.env.K8S_CONTEXT || "";
         const k8sNamespace = process.env.K8S_NAMESPACE || "copilot-runtime";
@@ -626,51 +925,30 @@ export class NodeSdkTransport {
         this.logProc.stderr.on("data", (chunk) => {
             const text = stripAnsi(chunk.toString()).trim();
             if (!text) return;
-            this.logEntryCounter += 1;
-            this.emitLogEntry({
-                id: `log:${Date.now()}:${this.logEntryCounter}`,
-                time: extractLogTime(text),
-                podName: "kubectl",
-                level: "warn",
-                orchId: null,
-                category: "log",
-                rawLine: trimLogText(text),
-                message: trimLogText(text),
-                prettyMessage: trimLogText(text),
-            });
+            this.emitSyntheticLogMessage(text, "warn", "kubectl");
         });
 
         this.logProc.on("error", (error) => {
-            this.logEntryCounter += 1;
-            this.emitLogEntry({
-                id: `log:${Date.now()}:${this.logEntryCounter}`,
-                time: extractLogTime(""),
-                podName: "kubectl",
-                level: "error",
-                orchId: null,
-                category: "log",
-                rawLine: trimLogText(`kubectl error: ${error.message}`),
-                message: trimLogText(`kubectl error: ${error.message}`),
-                prettyMessage: trimLogText(`kubectl error: ${error.message}`),
-            });
+            this.emitSyntheticLogMessage(`kubectl error: ${error.message}`, "error", "kubectl");
         });
 
         this.logProc.on("exit", (code, signal) => {
             this.logProc = null;
-            this.logEntryCounter += 1;
-            this.emitLogEntry({
-                id: `log:${Date.now()}:${this.logEntryCounter}`,
-                time: extractLogTime(""),
-                podName: "kubectl",
-                level: "warn",
-                orchId: null,
-                category: "log",
-                rawLine: trimLogText(`kubectl exited (code=${code} signal=${signal})`),
-                message: trimLogText(`kubectl exited (code=${code} signal=${signal})`),
-                prettyMessage: trimLogText(`kubectl exited (code=${code} signal=${signal})`),
-            });
+            this.emitSyntheticLogMessage(`kubectl exited (code=${code} signal=${signal})`, "warn", "kubectl");
             this.scheduleLogRestart();
         });
+    }
+
+    startLogProcess() {
+        const config = this.getLogConfig();
+        if (!config.available || this.logProc || this.logTailHandle) return;
+
+        if (hasInClusterK8sAccess()) {
+            this.startInClusterLogProcess();
+            return;
+        }
+
+        this.startKubectlLogProcess();
     }
 
     startLogTail(handler) {
@@ -690,9 +968,20 @@ export class NodeSdkTransport {
     }
 
     async stopLogTail() {
+        if (this._logBatchTimer) {
+            clearTimeout(this._logBatchTimer);
+            this._logBatchTimer = null;
+            this._logBatch = [];
+        }
         if (this.logRestartTimer) {
             clearTimeout(this.logRestartTimer);
             this.logRestartTimer = null;
+        }
+        if (this.logTailHandle) {
+            try {
+                this.logTailHandle.stop();
+            } catch {}
+            this.logTailHandle = null;
         }
         if (this.logProc) {
             try {

@@ -213,7 +213,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         controller.dispatch({
             type: "ui/scroll",
             pane: paneKey,
-            offset: Math.round(pixels / SCROLL_ROW_HEIGHT),
+            offset: pixels / SCROLL_ROW_HEIGHT,
         });
     }, [controller, paneKey, ref, scrollMode]);
 
@@ -253,6 +253,211 @@ function Line({ line, theme }) {
     }, line.text || " ");
 }
 
+function lineText(line) {
+    if (!line) return "";
+    if (line.kind === "runs") return runsToText(line.runs);
+    return String(line.text || "");
+}
+
+function isBoxTopLine(text) {
+    const value = String(text || "").trim();
+    return value.startsWith("┌") && value.endsWith("┐");
+}
+
+function isBoxBottomLine(text) {
+    const value = String(text || "").trim();
+    return value.startsWith("└") && value.endsWith("┘");
+}
+
+function isBoxDividerLine(text) {
+    const value = String(text || "").trim();
+    return value.startsWith("├") && value.endsWith("┤");
+}
+
+function isBoxContentLine(text) {
+    const value = String(text || "").trim();
+    return value.startsWith("│") && value.endsWith("│");
+}
+
+function trimRunsEdgeWhitespace(runs = []) {
+    const nextRuns = (runs || []).map((run) => ({ ...run }));
+    if (nextRuns.length === 0) return nextRuns;
+    nextRuns[0].text = String(nextRuns[0].text || "").replace(/^\s+/, "");
+    nextRuns[nextRuns.length - 1].text = String(nextRuns[nextRuns.length - 1].text || "").replace(/\s+$/, "");
+    return nextRuns.filter((run, index) => String(run.text || "").length > 0 || nextRuns.length === 1 || index === 0);
+}
+
+function extractFramedRuns(line, { fallbackColor = null } = {}) {
+    if (line?.kind === "runs" && Array.isArray(line.runs) && line.runs.length >= 3) {
+        return trimRunsEdgeWhitespace(line.runs.slice(1, -1));
+    }
+    const text = lineText(line)
+        .replace(/^\s*[┌│]\s?/, "")
+        .replace(/\s?[┐│]\s*$/, "")
+        .replace(/^─+/, "")
+        .replace(/─+$/, "")
+        .trim();
+    return [{ text, color: fallbackColor }];
+}
+
+function splitBoxTableCells(text) {
+    const value = String(text || "").trim();
+    if (!isBoxContentLine(value)) return [];
+    return value
+        .slice(1, -1)
+        .split("│")
+        .map((cell) => cell.trim());
+}
+
+function mergeBoxTableRowGroup(rowGroup = []) {
+    const columnCount = Math.max(0, ...rowGroup.map((row) => row.length));
+    return Array.from({ length: columnCount }, (_, columnIndex) => rowGroup
+        .map((row) => String(row[columnIndex] || "").trim())
+        .filter(Boolean)
+        .join(" "));
+}
+
+function parseStructuredChatBlocks(lines = []) {
+    const blocks = [];
+
+    for (let index = 0; index < lines.length;) {
+        const currentLine = lines[index];
+        const currentText = lineText(currentLine);
+
+        if (isBoxTopLine(currentText) && currentText.includes("┬")) {
+            const headerRows = [];
+            const bodyRows = [];
+            let currentRowGroup = [];
+            let inHeader = true;
+            index += 1;
+
+            while (index < lines.length) {
+                const nextLine = lines[index];
+                const nextText = lineText(nextLine);
+                if (isBoxBottomLine(nextText)) {
+                    if (currentRowGroup.length > 0) {
+                        const mergedRow = mergeBoxTableRowGroup(currentRowGroup);
+                        if (mergedRow.length > 0) {
+                            if (inHeader) headerRows.push(mergedRow);
+                            else bodyRows.push(mergedRow);
+                        }
+                    }
+                    index += 1;
+                    break;
+                }
+                if (isBoxDividerLine(nextText)) {
+                    if (currentRowGroup.length > 0) {
+                        const mergedRow = mergeBoxTableRowGroup(currentRowGroup);
+                        if (mergedRow.length > 0) {
+                            if (inHeader) headerRows.push(mergedRow);
+                            else bodyRows.push(mergedRow);
+                        }
+                    }
+                    currentRowGroup = [];
+                    inHeader = false;
+                    index += 1;
+                    continue;
+                }
+                if (isBoxContentLine(nextText)) {
+                    const cells = splitBoxTableCells(nextText);
+                    if (cells.length > 0) {
+                        currentRowGroup.push(cells);
+                    }
+                }
+                index += 1;
+            }
+
+            blocks.push({ type: "table", headerRows, bodyRows });
+            continue;
+        }
+
+        if (
+            currentLine?.kind === "runs"
+            && Array.isArray(currentLine.runs)
+            && currentLine.runs.length > 2
+            && isBoxTopLine(currentText)
+        ) {
+            const headerRuns = extractFramedRuns(currentLine);
+            const borderColor = currentLine.runs[0]?.color || "gray";
+            const bodyLines = [];
+            index += 1;
+
+            while (index < lines.length) {
+                const nextLine = lines[index];
+                const nextText = lineText(nextLine);
+                if (isBoxBottomLine(nextText)) {
+                    index += 1;
+                    break;
+                }
+                if (isBoxContentLine(nextText)) {
+                    bodyLines.push(extractFramedRuns(nextLine));
+                } else {
+                    bodyLines.push(nextLine?.kind === "runs"
+                        ? nextLine.runs
+                        : [{ text: lineText(nextLine), color: nextLine?.color || null }]);
+                }
+                index += 1;
+            }
+
+            if (index < lines.length && lineText(lines[index]).trim().length === 0) {
+                index += 1;
+            }
+
+            blocks.push({ type: "card", headerRuns, bodyLines, borderColor });
+            continue;
+        }
+
+        blocks.push({ type: "line", line: currentLine });
+        index += 1;
+    }
+
+    return blocks;
+}
+
+function StructuredChatBlocks({ lines, theme }) {
+    const blocks = React.useMemo(() => parseStructuredChatBlocks(lines), [lines]);
+
+    return React.createElement(React.Fragment, null,
+        blocks.map((block, index) => {
+            if (block.type === "card") {
+                return React.createElement("section", {
+                    key: `card:${index}`,
+                    className: "ps-chat-card",
+                    style: { "--ps-chat-card-accent": resolveColor(theme, block.borderColor) || "var(--ps-border)" },
+                },
+                React.createElement("header", { className: "ps-chat-card-header" },
+                    React.createElement(Runs, { runs: block.headerRuns, theme })),
+                React.createElement("div", { className: "ps-chat-card-body" },
+                    (block.bodyLines || []).map((bodyRuns, bodyIndex) => React.createElement("div", {
+                        key: `card:${index}:line:${bodyIndex}`,
+                        className: "ps-chat-card-line",
+                    }, React.createElement(Runs, { runs: bodyRuns, theme })) )));
+            }
+
+            if (block.type === "table") {
+                const headerRows = block.headerRows || [];
+                const bodyRows = block.bodyRows || [];
+                const columnCount = Math.max(
+                    1,
+                    ...headerRows.map((row) => row.length),
+                    ...bodyRows.map((row) => row.length),
+                );
+                return React.createElement("div", { key: `table:${index}`, className: "ps-chat-table-wrap" },
+                    React.createElement("table", { className: "ps-chat-table" },
+                        headerRows.length > 0
+                            ? React.createElement("thead", null,
+                                headerRows.map((row, rowIndex) => React.createElement("tr", { key: `thead:${rowIndex}` },
+                                    Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("th", { key: `th:${rowIndex}:${cellIndex}` }, row[cellIndex] || "")))))
+                            : null,
+                        React.createElement("tbody", null,
+                            bodyRows.map((row, rowIndex) => React.createElement("tr", { key: `tbody:${rowIndex}` },
+                                Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("td", { key: `td:${rowIndex}:${cellIndex}` }, row[cellIndex] || "")))))));
+            }
+
+            return React.createElement(Line, { key: `line:${index}`, line: block.line, theme });
+        }));
+}
+
 function Panel({ title, color = "gray", focused = false, actions = null, children, theme, className = "" }) {
     const accent = resolveColor(theme, color);
     return React.createElement("section", {
@@ -269,7 +474,7 @@ function Panel({ title, color = "gray", focused = false, actions = null, childre
     React.createElement("div", { className: "ps-panel-body" }, children));
 }
 
-function ScrollLinesPanel({ title, color, focused, actions, lines, stickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null }) {
+function ScrollLinesPanel({ title, color, focused, actions, lines, stickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -312,7 +517,9 @@ function ScrollLinesPanel({ title, color, focused, actions, lines, stickyLines =
             )
             : null,
         React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll },
-            normalizedLines.map((line, index) => React.createElement(Line, { key: `line:${index}`, line, theme })),
+            structuredBlocks
+                ? React.createElement(StructuredChatBlocks, { lines: normalizedLines, theme })
+                : normalizedLines.map((line, index) => React.createElement(Line, { key: `line:${index}`, line, theme })),
         ));
 }
 
@@ -339,12 +546,21 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
                 key: row.sessionId,
                 type: "button",
                 className: `ps-list-button${row.active ? " is-selected" : ""}`,
-                onClick: () => {
+                onClick: (event) => {
+                    if (row.hasChildren && !event.metaKey && !event.ctrlKey) {
+                        controller.dispatch({
+                            type: row.collapsed ? "sessions/expand" : "sessions/collapse",
+                            sessionId: row.sessionId,
+                        });
+                    }
                     controller.setFocus("sessions");
                     controller.loadSession(row.sessionId).catch(() => {});
                 },
             },
-            React.createElement("div", { className: "ps-line" },
+            React.createElement("div", {
+                className: "ps-line ps-session-row-content",
+                style: { paddingInlineStart: `${Math.max(0, row.depth) * 18}px` },
+            },
                 Array.isArray(row.runs)
                     ? React.createElement(Runs, { runs: row.runs, theme })
                     : row.text),
@@ -396,6 +612,8 @@ function ChatPane({ controller, mobile = false }) {
         scrollMode: "bottom",
         paneKey: "chat",
         className: "is-wrapped",
+        panelClassName: "ps-chat-panel",
+        structuredBlocks: true,
     });
 }
 
@@ -710,7 +928,7 @@ function Toolbar({ controller, mobile }) {
             className: "ps-toolbar-button",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {}),
         }, "Theme")),
-        mobile && status.left
+        status.left
             ? React.createElement("div", { className: "ps-toolbar-status" }, status.left)
             : null,
     );
@@ -1170,7 +1388,6 @@ export function PilotSwarmWebApp({ controller }) {
         React.createElement("div", { className: "ps-workspace" },
             mobile ? mobileContent : desktopWorkspace),
         React.createElement("div", { className: "ps-footer-shell" },
-            mobile ? null : React.createElement(StatusStrip, { controller }),
             React.createElement(PromptComposer, { controller, mobile })),
         mobile ? React.createElement(MobileNav, { activePane: mobilePane, setActivePane: setMobilePane, controller }) : null,
         React.createElement(ModalLayer, { controller }));

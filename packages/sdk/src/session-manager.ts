@@ -12,6 +12,17 @@ import path from "node:path";
 import os from "node:os";
 
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
+const DEHYDRATE_STORE_MAX_RETRIES = 3;
+const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 500;
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeError(error: unknown): Error {
+    if (error instanceof Error) return error;
+    return new Error(String(error));
+}
 
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
@@ -404,15 +415,16 @@ export class SessionManager {
      *
      * If destroy() fails (e.g., Copilot connection already disposed), we retry
      * by re-creating the session from local files and destroying again.
-     * After MAX_RETRIES, we still attempt the session-store write and throw a
-     * clear error if that also fails.
+     * After destroy retries, we still attempt the session-store write. That
+     * write is retried separately so transient archive/blob failures can
+     * recover before we bubble a terminal error back to the orchestration.
      */
     async dehydrate(sessionId: string, reason: string): Promise<void> {
-        const MAX_RETRIES = 3;
-        let lastError: Error | undefined;
+        const DESTROY_MAX_RETRIES = 3;
+        let lastDestroyError: Error | undefined;
 
         // Phase 1: Destroy the in-memory session (with retries)
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        for (let attempt = 1; attempt <= DESTROY_MAX_RETRIES; attempt++) {
             const session = this.sessions.get(sessionId);
             if (!session) break; // No in-memory session — nothing to destroy
 
@@ -421,10 +433,10 @@ export class SessionManager {
                 this.sessions.delete(sessionId);
                 break; // Success
             } catch (err: any) {
-                lastError = err;
+                lastDestroyError = normalizeError(err);
                 this.sessions.delete(sessionId); // Remove broken session from map
 
-                if (attempt < MAX_RETRIES) {
+                if (attempt < DESTROY_MAX_RETRIES) {
                     // Re-create the session from local files so we can try destroy again.
                     const sessionDir = path.join(this.sessionStateDir, sessionId);
                     if (fs.existsSync(sessionDir)) {
@@ -438,7 +450,7 @@ export class SessionManager {
                             const managed = new ManagedSession(sessionId, copilotSession, config);
                             this.sessions.set(sessionId, managed);
                             // Brief pause before retry
-                            await new Promise(r => setTimeout(r, 500 * attempt));
+                            await sleep(500 * attempt);
                         } catch {
                             // Can't resume — session files may be corrupt. Fall through.
                             break;
@@ -452,25 +464,48 @@ export class SessionManager {
 
         // Phase 2: Persist to the session store (always attempt, even if destroy failed)
         if (this.sessionStore) {
-            try {
-                await this.sessionStore.dehydrate(sessionId, { reason });
-            } catch (storeErr: any) {
-                if (lastError) {
-                    throw new Error(
-                        `Session ${sessionId} is not dehydratable: ` +
-                        `destroy failed (${lastError.message}), ` +
-                        `session-store persistence also failed (${storeErr.message}). ` +
-                        `Session state may be lost on worker recycle.`
-                    );
+            let lastStoreError: Error | undefined;
+            let sessionStoreAttemptCount = 0;
+
+            for (let attempt = 1; attempt <= DEHYDRATE_STORE_MAX_RETRIES; attempt++) {
+                sessionStoreAttemptCount = attempt;
+                try {
+                    await this.sessionStore.dehydrate(sessionId, { reason });
+                    lastStoreError = undefined;
+                    break;
+                } catch (storeErr: any) {
+                    lastStoreError = normalizeError(storeErr);
+                    if (attempt < DEHYDRATE_STORE_MAX_RETRIES) {
+                        console.warn(
+                            `[SessionManager] session-store dehydrate failed for ${sessionId} ` +
+                            `(attempt ${attempt}/${DEHYDRATE_STORE_MAX_RETRIES}): ${lastStoreError.message}`,
+                        );
+                        await sleep(DEHYDRATE_STORE_RETRY_BASE_DELAY_MS * attempt);
+                    }
                 }
-                throw storeErr;
+            }
+
+            if (lastStoreError) {
+                const message = lastDestroyError
+                    ? `Session ${sessionId} is not dehydratable (reason=${reason}): ` +
+                        `destroy failed (${lastDestroyError.message}), ` +
+                        `session-store persistence failed after ${sessionStoreAttemptCount} attempts (${lastStoreError.message}). ` +
+                        `Session state may be lost on worker recycle.`
+                    : `Session-store persistence failed after ${sessionStoreAttemptCount} attempts ` +
+                        `during dehydrate for ${sessionId} (reason=${reason}): ${lastStoreError.message}`;
+                const error = new Error(message);
+                (error as any).sessionStoreAttemptCount = sessionStoreAttemptCount;
+                (error as any).sessionStoreError = lastStoreError.message;
+                (error as any).dehydrateReason = reason;
+                (error as any).sessionId = sessionId;
+                throw error;
             }
         }
 
-        if (lastError) {
+        if (lastDestroyError) {
             console.warn(
-                `[SessionManager] destroy() failed for ${sessionId} after ${MAX_RETRIES} attempts ` +
-                `(${lastError.message}), but session-store persistence succeeded. Session state is preserved.`
+                `[SessionManager] destroy() failed for ${sessionId} after ${DESTROY_MAX_RETRIES} attempts ` +
+                `(${lastDestroyError.message}), but session-store persistence succeeded. Session state is preserved.`
             );
         }
     }

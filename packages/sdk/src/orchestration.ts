@@ -878,7 +878,7 @@ export function* durableSessionOrchestration_1_0_36(
     const FIFO_BUCKET_COUNT = 20;
     const MAX_BUCKET_BYTES = 14 * 1024;
     const MAX_DRAIN_PER_TURN = 50;
-    const MAX_ITERATIONS_PER_EXECUTION = 100;
+    const MAX_ITERATIONS_PER_EXECUTION = 10;
     const NON_BLOCKING_TIMER_MS = 10;
 
     function nextTimerCandidate(now: number): {

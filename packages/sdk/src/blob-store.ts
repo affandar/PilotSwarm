@@ -16,6 +16,7 @@ import {
     archiveSessionDir,
     buildMetadata,
     extractSessionArchive,
+    waitForSessionSnapshot,
 } from "./session-store.js";
 
 /**
@@ -56,7 +57,13 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
      */
     async dehydrate(sessionId: string, meta?: Record<string, unknown>): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
-        if (!fs.existsSync(sessionDir)) return;
+        const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
+        if (!snapshot.ready) {
+            throw new Error(
+                `Session state directory not ready during dehydrate: ${sessionId} (${sessionDir}). ` +
+                `Missing: ${snapshot.missing.join(", ") || "unknown"}`,
+            );
+        }
 
         const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
         try {

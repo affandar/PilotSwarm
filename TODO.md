@@ -1,6 +1,9 @@
 
 # TODO
 
+- reduce size of orchestrations. Reaching ~4MB+ 
+- OOM in the TUI
+- Calls fail to find session, 
 - evals for prompts
 - update the packages/portal to host the new Ink based TUI, add entraid auth to the portal
     - proposal: [docs/proposals/portal-native-web-experience.md](docs/proposals/portal-native-web-experience.md)
