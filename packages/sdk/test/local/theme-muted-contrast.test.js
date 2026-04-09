@@ -39,8 +39,8 @@ function getContrastRatio(foreground, background) {
 }
 
 describe("theme muted text contrast", () => {
-    it("keeps shared light-theme gray text readable across TUI and portal surfaces", () => {
-        for (const themeId of ["github-light-high-contrast", "catppuccin-latte", "solarized-light"]) {
+    it("keeps dark-theme gray text readable across TUI and portal surfaces", () => {
+        for (const themeId of ["noctis", "noctis-viola"]) {
             const theme = getTheme(themeId);
             assertNotNull(theme, `${themeId} should exist`);
 
@@ -69,19 +69,14 @@ describe("theme muted text contrast", () => {
             "dark themes should keep dim gray treatment",
         );
         assertEqual(
-            shouldDimGrayTextForTheme(getTheme("github-light-high-contrast")),
-            false,
-            "github light should not dim gray treatment",
+            shouldDimGrayTextForTheme(getTheme("noctis")),
+            true,
+            "noctis (dark) should keep dim gray treatment",
         );
         assertEqual(
-            shouldDimGrayTextForTheme(getTheme("catppuccin-latte")),
-            false,
-            "catppuccin latte should not dim gray treatment",
-        );
-        assertEqual(
-            shouldDimGrayTextForTheme(getTheme("solarized-light")),
-            false,
-            "solarized light should not dim gray treatment",
+            shouldDimGrayTextForTheme(getTheme("noctis-viola")),
+            true,
+            "noctis viola (dark) should keep dim gray treatment",
         );
     });
 });

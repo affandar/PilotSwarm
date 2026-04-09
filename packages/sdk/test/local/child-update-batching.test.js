@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { commandResponseKey } from "../../src/types.ts";
 
 let mockSession;
 let mockManager;
@@ -26,6 +27,9 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
         nowMs: 0,
         runTurnCall: null,
         continueAsNew: null,
+        sentCommands: [],
+        cmsUpdates: [],
+        deletedSessions: [],
     };
 
     mockSession = {
@@ -49,9 +53,17 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
         recordSessionEvent: vi.fn(() => ({ effect: "recordSessionEvent" })),
         summarizeSession: vi.fn(() => ({ effect: "summarizeSession" })),
         listChildSessions: vi.fn(() => ({ effect: "listChildSessions" })),
-        getSessionStatus: vi.fn(() => {
-            throw new Error("status unavailable in unit harness");
-        }),
+        getSessionStatus: vi.fn((sessionId) => ({ effect: "getSessionStatus", sessionId })),
+        sendCommandToSession: vi.fn((sessionId, command) => ({ effect: "sendCommandToSession", sessionId, command })),
+        updateCmsState: vi.fn((sessionId, nextState, lastError, waitReason) => ({
+            effect: "updateCmsState",
+            sessionId,
+            state: nextState,
+            lastError,
+            waitReason,
+        })),
+        getDescendantSessionIds: vi.fn((sessionId) => ({ effect: "getDescendantSessionIds", sessionId })),
+        deleteSession: vi.fn((sessionId, reason) => ({ effect: "deleteSession", sessionId, reason })),
     };
 
     const ctx = {
@@ -119,6 +131,31 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
                 return undefined;
             case "listChildSessions":
                 return JSON.stringify(inputOverrides.subAgents ?? []);
+            case "getSessionStatus": {
+                if (typeof inputOverrides.getSessionStatus === "function") {
+                    const value = inputOverrides.getSessionStatus(effect.sessionId, state);
+                    return typeof value === "string" ? value : JSON.stringify(value);
+                }
+                const statusMap = inputOverrides.sessionStatuses ?? {};
+                const value = statusMap[effect.sessionId] ?? { status: "running" };
+                return typeof value === "string" ? value : JSON.stringify(value);
+            }
+            case "sendCommandToSession":
+                state.sentCommands.push({ sessionId: effect.sessionId, command: effect.command });
+                return undefined;
+            case "updateCmsState":
+                state.cmsUpdates.push({
+                    sessionId: effect.sessionId,
+                    state: effect.state,
+                    lastError: effect.lastError,
+                    waitReason: effect.waitReason,
+                });
+                return undefined;
+            case "getDescendantSessionIds":
+                return [...(inputOverrides.descendantIdsBySessionId?.[effect.sessionId] ?? [])];
+            case "deleteSession":
+                state.deletedSessions.push({ sessionId: effect.sessionId, reason: effect.reason });
+                return undefined;
             case "newGuid":
                 return "generated-affinity";
             case "dequeueEvent":
@@ -188,9 +225,63 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
         throw new Error("Exceeded step limit before reaching runTurn.");
     }
 
+    async function runUntilDone() {
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`Could not resolve latest orchestration handler: ${handlerName}`);
+        }
+        let currentInput = {
+            sessionId: "parent-session",
+            config: {},
+            iteration: 5,
+            isSystem: true,
+            blobEnabled: false,
+            ...inputOverrides,
+        };
+
+        for (let execution = 0; execution < 20; execution += 1) {
+            const gen = handler(ctx, currentInput);
+            let input;
+            for (let step = 0; step < 800; step += 1) {
+                const next = gen.next(input);
+                if (next.done) {
+                    return {
+                        done: true,
+                        value: next.value,
+                        state,
+                        values,
+                    };
+                }
+
+                state.continueAsNew = null;
+                const resolved = resolve(next.value);
+                if (resolved === STOP) {
+                    throw new Error("Unexpected runTurn during shutdown harness test.");
+                }
+                input = resolved;
+
+                if (state.continueAsNew) {
+                    currentInput = state.continueAsNew.input;
+                    break;
+                }
+            }
+
+            if (!state.continueAsNew) {
+                throw new Error("Exceeded step limit before orchestration completed.");
+            }
+        }
+
+        throw new Error("Exceeded execution limit before orchestration completed.");
+    }
+
     return {
         runUntilRunTurn,
+        runUntilDone,
         state,
+        values,
     };
 }
 
@@ -327,5 +418,179 @@ describe("orchestration child update batching", () => {
         expect(result.runTurnCall.systemPrompt).toContain("Waiting on reporter");
         expect(result.runTurnCall.systemPrompt).toContain('There is an active recurring schedule every 180 seconds for "refresh summary".');
         expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("orchestration shutdown semantics", () => {
+    beforeEach(() => {
+        vi.resetModules();
+    });
+
+    it("waits for active children before completing the parent", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { type: "cmd", cmd: "done", id: "done-cmd", args: { reason: "Finished" } },
+                },
+                {
+                    atMs: 6_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=6]\nChild finished cleanly",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "running" },
+                ],
+                getSessionStatus: (_sessionId, state) => ({ status: state.nowMs >= 6_000 ? "completed" : "running" }),
+            },
+        });
+
+        const result = await harness.runUntilDone();
+
+        expect(result.value).toBe("done");
+        expect(result.state.sentCommands).toEqual([
+            expect.objectContaining({
+                sessionId: "child-session-1",
+                command: expect.objectContaining({ cmd: "done" }),
+            }),
+        ]);
+        expect(result.state.cmsUpdates).toContainEqual(expect.objectContaining({
+            sessionId: "parent-session",
+            state: "completed",
+            lastError: null,
+            waitReason: null,
+        }));
+        expect(mockSession.destroy).toHaveBeenCalledTimes(1);
+
+        const response = JSON.parse(result.values.get(commandResponseKey("done-cmd")));
+        expect(response.result?.ok).toBe(true);
+        expect(response.cmd).toBe("done");
+    });
+
+    it("waits for active children before cancelling the parent", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { type: "cmd", cmd: "cancel", id: "cancel-cmd", args: { reason: "Stop now" } },
+                },
+                {
+                    atMs: 6_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=cancelled iter=6]\nChild cancelled cleanly",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "running" },
+                ],
+                getSessionStatus: (_sessionId, state) => ({ status: state.nowMs >= 6_000 ? "cancelled" : "running" }),
+            },
+        });
+
+        const result = await harness.runUntilDone();
+
+        expect(result.value).toBe("cancelled");
+        expect(result.state.sentCommands).toEqual([
+            expect.objectContaining({
+                sessionId: "child-session-1",
+                command: expect.objectContaining({ cmd: "cancel" }),
+            }),
+        ]);
+        expect(result.state.cmsUpdates).toContainEqual(expect.objectContaining({
+            sessionId: "parent-session",
+            state: "cancelled",
+            lastError: null,
+            waitReason: null,
+        }));
+
+        const response = JSON.parse(result.values.get(commandResponseKey("cancel-cmd")));
+        expect(response.result?.ok).toBe(true);
+        expect(response.cmd).toBe("cancel");
+    });
+
+    it("uses the cancel route before deleting the subtree", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { type: "cmd", cmd: "delete", id: "delete-cmd", args: { reason: "Clean up" } },
+                },
+                {
+                    atMs: 6_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=cancelled iter=6]\nChild cancelled for deletion",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "running" },
+                ],
+                descendantIdsBySessionId: {
+                    "parent-session": ["child-session-1", "grandchild-session-1"],
+                },
+                getSessionStatus: (_sessionId, state) => ({ status: state.nowMs >= 6_000 ? "cancelled" : "running" }),
+            },
+        });
+
+        const result = await harness.runUntilDone();
+
+        expect(result.value).toBe("deleted");
+        expect(result.state.sentCommands).toEqual([
+            expect.objectContaining({
+                sessionId: "child-session-1",
+                command: expect.objectContaining({ cmd: "cancel" }),
+            }),
+        ]);
+        expect(result.state.deletedSessions).toEqual([
+            { sessionId: "child-session-1", reason: "Ancestor parent-session deleted: Clean up" },
+            { sessionId: "grandchild-session-1", reason: "Ancestor parent-session deleted: Clean up" },
+            { sessionId: "parent-session", reason: "Clean up" },
+        ]);
+
+        const response = JSON.parse(result.values.get(commandResponseKey("delete-cmd")));
+        expect(response.result?.ok).toBe(true);
+        expect(response.cmd).toBe("delete");
+    });
+
+    it("fails the parent when graceful completion exceeds the shutdown timeout", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { type: "cmd", cmd: "done", id: "done-timeout", args: { reason: "Finished" } },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "running" },
+                ],
+                getSessionStatus: () => ({ status: "running" }),
+            },
+        });
+
+        const result = await harness.runUntilDone();
+
+        expect(result.value).toBe("failed");
+        expect(result.state.sentCommands).toEqual([
+            expect.objectContaining({
+                sessionId: "child-session-1",
+                command: expect.objectContaining({ cmd: "done" }),
+            }),
+        ]);
+        expect(result.state.cmsUpdates).toContainEqual(expect.objectContaining({
+            sessionId: "parent-session",
+            state: "failed",
+            lastError: expect.stringContaining("Graceful done timed out after 60s"),
+            waitReason: null,
+        }));
+
+        const response = JSON.parse(result.values.get(commandResponseKey("done-timeout")));
+        expect(response.error).toContain("Graceful done timed out after 60s");
     });
 });

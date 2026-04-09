@@ -5,5 +5,21 @@
   "tui": {
     "title": "DevOps Command Center",
     "splashFile": "./tui-splash.txt"
+  },
+  "portal": {
+    "branding": {
+      "title": "DevOps Command Center",
+      "pageTitle": "DevOps Command Center Portal",
+      "splashFile": "./tui-splash.txt"
+    },
+    "ui": {
+      "loadingMessage": "Preparing the DevOps workspace",
+      "loadingCopy": "Connecting dashboards, agent sessions, and orchestration state..."
+    },
+    "auth": {
+      "signInTitle": "Sign in to DevOps Command Center",
+      "signInMessage": "Use your organization's identity provider to open the shared operations workspace.",
+      "signInLabel": "Sign In"
+    }
   }
 }

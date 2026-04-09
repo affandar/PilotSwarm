@@ -12,6 +12,10 @@ import os from "node:os";
 const SESSION_RECOVERY_NOTICE =
     "[SYSTEM: The runtime recovered this session after the live Copilot session was lost on a worker. " +
     "Some very recent in-memory state may have been lost. Re-read the visible conversation and continue carefully from the latest durable state.]";
+const LOSSY_SESSION_REPLAY_NOTICE =
+    "[SYSTEM: The runtime is replaying this turn after a worker restart lost the live Copilot session state before it could be durably dehydrated. " +
+    "Some recent in-memory work may be missing, and the previous turn may have partially executed. " +
+    "Re-read the visible conversation and durable facts, avoid blindly repeating destructive actions, and if the correct next step is unclear, stop and ask the user how to proceed.]";
 
 function normalizePromptText(text?: string): string {
     return String(text || "").replace(/\r\n/g, "\n").trim();
@@ -30,6 +34,7 @@ function isInternalSystemPrompt(text?: string): boolean {
         || /^Active sessions \(/i.test(normalized)
         || /^Sub-agents completed:/i.test(normalized)
         || /^Sub-agent .* has been (completed gracefully|cancelled|deleted)\./i.test(normalized)
+        || /^Graceful (completion|cancellation|deletion) requested for sub-agent /i.test(normalized)
         || /^(spawn_agent|message_agent|check_agents|wait_for_agents|complete_agent|cancel_agent|delete_agent) failed/i.test(normalized);
 }
 
@@ -38,14 +43,61 @@ function isLiveSessionLostErrorMessage(message?: string): boolean {
     return /\bSession not found\b/i.test(normalized);
 }
 
+function isMissingSessionStateErrorMessage(message?: string): boolean {
+    return String(message || "").includes(SESSION_STATE_MISSING_PREFIX);
+}
+
+function stripMissingSessionStatePrefix(message?: string): string {
+    const normalized = String(message || "");
+    const index = normalized.indexOf(SESSION_STATE_MISSING_PREFIX);
+    if (index < 0) return normalized.trim();
+    return normalized.slice(index + SESSION_STATE_MISSING_PREFIX.length).trim();
+}
+
+function isMissingDehydrateSnapshotErrorMessage(message?: string): boolean {
+    return /Session state directory not ready during dehydrate/i.test(String(message || ""));
+}
+
 function buildUnrecoverableSessionLossMessage(sessionId: string, detail: string): string {
     return `${SESSION_STATE_MISSING_PREFIX} unrecoverable live Copilot session loss for ${sessionId}. ` +
         `The runtime attempted to resume or rehydrate the session, but recovery failed. ` +
         `Some very recent in-memory state may have been lost. ${detail}`;
 }
 
+function buildLossyReplayMessage(sessionId: string, detail: string): string {
+    return `The runtime detected missing Copilot session state for ${sessionId} while resuming a later turn. ` +
+        `It will recreate a fresh Copilot session and replay the pending turn from durable orchestration context. ` +
+        `Some very recent work may be missing or partially executed. ${detail}`.trim();
+}
+
 function normalizeEventData(eventData?: Record<string, unknown>): Record<string, unknown> | null {
     return eventData && typeof eventData === "object" ? eventData : null;
+}
+
+function activityTrace(activityCtx: any, label: string): (message: string) => void {
+    return (message: string) => {
+        activityCtx.traceInfo(`[${label}] ${message}`);
+    };
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error ?? "");
+}
+
+async function recordLossyHandoffEvent(
+    catalog: SessionCatalogProvider | null | undefined,
+    sessionId: string,
+    workerNodeId: string | undefined,
+    data: Record<string, unknown>,
+    traceFailure: (message: string) => void,
+): Promise<void> {
+    if (!catalog) return;
+    await catalog.recordEvents(sessionId, [{
+        eventType: "session.lossy_handoff",
+        data,
+    }], workerNodeId).catch((error: unknown) => {
+        traceFailure(`CMS lossy handoff event failed: ${errorMessage(error)}`);
+    });
 }
 
 // ─── SessionProxy ────────────────────────────────────────────────
@@ -200,8 +252,14 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("deleteSession", { sessionId, reason });
         },
         /** Update a session's CMS state (e.g. "rejected" for policy violations). */
-        updateCmsState(sessionId: string, state: string, lastError?: string) {
-            return ctx.scheduleActivity("updateCmsState", { sessionId, state, ...(lastError ? { lastError } : {}) });
+        updateCmsState(sessionId: string, state: string, lastError?: string | null, waitReason?: string | null) {
+            const payload: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null } = {
+                sessionId,
+                state,
+            };
+            if (lastError !== undefined) payload.lastError = lastError;
+            if (waitReason !== undefined) payload.waitReason = waitReason;
+            return ctx.scheduleActivity("updateCmsState", payload);
         },
         /** Get the worker's authoritative session policy + allowed agent names. */
         getWorkerSessionPolicy() {
@@ -279,6 +337,7 @@ export function registerActivities(
         }
 
         const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
+        const trace = activityTrace(activityCtx, "runTurn");
 
         const failForMissingState = async (message: string) => {
             if (catalog) {
@@ -291,16 +350,67 @@ export function registerActivities(
         };
 
         let session: any = null;
+        let effectivePrompt = input.prompt;
         try {
             session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
                 turnIndex: input.turnIndex,
+                trace,
             });
         } catch (err: any) {
             const message = err?.message || String(err);
-            if (message.includes(SESSION_STATE_MISSING_PREFIX)) {
-                return await failForMissingState(message);
+            if (isMissingSessionStateErrorMessage(message)) {
+                const detail = stripMissingSessionStatePrefix(message);
+                trace(
+                    `session=${input.sessionId} missing resumable state before turn ${input.turnIndex ?? "unknown"}; ` +
+                    "starting lossy fresh-session replay",
+                );
+                await recordLossyHandoffEvent(
+                    catalog,
+                    input.sessionId,
+                    workerNodeId,
+                    {
+                        cause: "missing_resumable_state_before_run_turn",
+                        message: buildLossyReplayMessage(input.sessionId, detail),
+                        detail,
+                        error: message,
+                        recoveryMode: "fresh_session_replay",
+                        nextStep: "replay_pending_turn_with_recreated_copilot_session",
+                        ...(input.turnIndex != null ? { iteration: input.turnIndex } : {}),
+                    },
+                    (failureMessage) => activityCtx.traceInfo(`[runTurn] ${failureMessage}`),
+                );
+                if (catalog) {
+                    await catalog.recordEvents(input.sessionId, [{
+                        eventType: "system.message",
+                        data: {
+                            content:
+                                "The runtime is replaying this turn after a worker restart lost the live Copilot session state before durable dehydrate completed. " +
+                                "Some recent work may be missing or partially executed.",
+                        },
+                    }], workerNodeId).catch((catalogErr: any) => {
+                        activityCtx.traceInfo(`[runTurn] CMS lossy replay notice failed: ${catalogErr}`);
+                    });
+                }
+                try {
+                    session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
+                        turnIndex: 0,
+                        trace,
+                    });
+                } catch (recoveryErr: any) {
+                    const recoveryMessage = recoveryErr?.message || String(recoveryErr);
+                    const fatalMessage = isMissingSessionStateErrorMessage(recoveryMessage)
+                        ? buildUnrecoverableSessionLossMessage(
+                            input.sessionId,
+                            stripMissingSessionStatePrefix(recoveryMessage),
+                        )
+                        : buildUnrecoverableSessionLossMessage(input.sessionId, recoveryMessage);
+                    trace(`session=${input.sessionId} lossy replay session recreation failed error=${fatalMessage}`);
+                    return await failForMissingState(fatalMessage);
+                }
+                effectivePrompt = mergePromptSections([LOSSY_SESSION_REPLAY_NOTICE, input.prompt]) || input.prompt;
+            } else {
+                throw err;
             }
-            throw err;
         }
 
         let inlineSdkClient: PilotSwarmClient | null = null;
@@ -627,7 +737,8 @@ export function registerActivities(
                         "messages",
                         JSON.stringify({ type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" } }),
                     );
-                    return `[SYSTEM: Sub-agent ${child.orchId} has been completed gracefully.]`;
+                    return `[SYSTEM: Graceful completion requested for sub-agent ${child.orchId}. ` +
+                        `Use check_agents or wait_for_agents to observe final completion.]`;
                 } catch (err: any) {
                     return `[SYSTEM: complete_agent failed: ${err?.message || String(err)}]`;
                 }
@@ -636,17 +747,14 @@ export function registerActivities(
                 try {
                     const child = await resolveManagedChild(args.agent_id);
                     const sdkClient = await getInlineClient();
-                    await (sdkClient as any).duroxideClient.cancelInstance(
+                    const cmdId = `cancel-inline-${Date.now()}`;
+                    await sdkClient._getDuroxideClient().enqueueEvent(
                         child.orchId,
-                        args.reason ?? "Cancelled by parent",
+                        "messages",
+                        JSON.stringify({ type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" } }),
                     );
-                    if (catalog) {
-                        await catalog.updateSession(child.sessionId, {
-                            state: "completed",
-                            lastError: args.reason ? `Cancelled: ${args.reason}` : "Cancelled",
-                        }).catch(() => {});
-                    }
-                    return `[SYSTEM: Sub-agent ${child.orchId} has been cancelled.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
+                    return `[SYSTEM: Graceful cancellation requested for sub-agent ${child.orchId}. ` +
+                        `Use check_agents or wait_for_agents to observe final termination.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                 } catch (err: any) {
                     return `[SYSTEM: cancel_agent failed: ${err?.message || String(err)}]`;
                 }
@@ -655,8 +763,18 @@ export function registerActivities(
                 try {
                     const child = await resolveManagedChild(args.agent_id);
                     const sdkClient = await getInlineClient();
-                    await sdkClient.deleteSession(child.sessionId);
-                    return `[SYSTEM: Sub-agent ${child.orchId} has been deleted.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
+                    if (child.status === "completed" || child.status === "failed" || child.status === "cancelled") {
+                        await sdkClient.deleteSession(child.sessionId);
+                        return `[SYSTEM: Sub-agent ${child.orchId} has been deleted.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
+                    }
+                    const cmdId = `delete-inline-${Date.now()}`;
+                    await sdkClient._getDuroxideClient().enqueueEvent(
+                        child.orchId,
+                        "messages",
+                        JSON.stringify({ type: "cmd", cmd: "delete", id: cmdId, args: { reason: args.reason ?? "Deleted by parent" } }),
+                    );
+                    return `[SYSTEM: Graceful deletion requested for sub-agent ${child.orchId}. ` +
+                        `It will cancel its descendants first and then delete itself.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                 } catch (err: any) {
                     return `[SYSTEM: delete_agent failed: ${err?.message || String(err)}]`;
                 }
@@ -762,7 +880,7 @@ export function registerActivities(
                 });
             };
 
-            let result = await runTurnWithPrompt(session, input.prompt);
+            let result = await runTurnWithPrompt(session, effectivePrompt);
 
             if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
                 activityCtx.traceInfo(
@@ -789,13 +907,14 @@ export function registerActivities(
                 try {
                     session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
                         turnIndex: input.turnIndex,
+                        trace,
                     });
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);
-                    const fatalMessage = recoveryMessage.includes(SESSION_STATE_MISSING_PREFIX)
+                    const fatalMessage = isMissingSessionStateErrorMessage(recoveryMessage)
                         ? buildUnrecoverableSessionLossMessage(
                             input.sessionId,
-                            recoveryMessage.slice(SESSION_STATE_MISSING_PREFIX.length).trim(),
+                            stripMissingSessionStatePrefix(recoveryMessage),
                         )
                         : buildUnrecoverableSessionLossMessage(input.sessionId, recoveryMessage);
                     activityCtx.traceInfo(`[runTurn] unrecoverable session loss for ${input.sessionId}: ${fatalMessage}`);
@@ -897,14 +1016,45 @@ export function registerActivities(
     runtime.registerActivity("dehydrateSession", async (
         activityCtx: any,
         input: { sessionId: string; reason?: string; eventData?: Record<string, unknown> },
-    ): Promise<void> => {
+    ): Promise<{ lossyHandoff?: Record<string, unknown> } | void> => {
         const reason = input.reason ?? "unknown";
         const eventData = normalizeEventData(input.eventData);
+        const trace = activityTrace(activityCtx, "dehydrateSession");
+        trace(`session=${input.sessionId} start reason=${reason}`);
 
         try {
-            await sessionManager.dehydrate(input.sessionId, reason);
+            await sessionManager.dehydrate(input.sessionId, reason, { trace });
         } catch (err: any) {
             const message = err?.message || String(err);
+            if (isMissingDehydrateSnapshotErrorMessage(message)) {
+                const sessionStoreAttemptCount = Number(err?.sessionStoreAttemptCount) || undefined;
+                const lossyHandoffData = {
+                    ...(eventData ?? {}),
+                    reason,
+                    cause: "missing_local_session_state_during_dehydrate",
+                    message:
+                        `Worker lost local Copilot session state before dehydrate completed for ${input.sessionId}. ` +
+                        "The next turn will recreate a fresh Copilot session and continue with possible data loss.",
+                    detail:
+                        "Local session files were unavailable during dehydrate, so the latest live Copilot state " +
+                        "could not be durably archived.",
+                    error: message,
+                    recoveryMode: "fresh_session_replay",
+                    nextStep: "recreate_copilot_session_on_next_turn",
+                    ...(sessionStoreAttemptCount ? { sessionStoreAttemptCount } : {}),
+                    ...(typeof err?.sessionStoreError === "string" ? { sessionStoreError: err.sessionStoreError } : {}),
+                };
+                trace(`session=${input.sessionId} lossy handoff reason=${reason} error=${message}`);
+                await recordLossyHandoffEvent(
+                    catalog,
+                    input.sessionId,
+                    workerNodeId,
+                    lossyHandoffData,
+                    (failureMessage) => activityCtx.traceInfo(`[dehydrateSession] ${failureMessage}`),
+                );
+                return { lossyHandoff: lossyHandoffData };
+            }
+            trace(`session=${input.sessionId} failed reason=${reason} error=${message}`);
             if (catalog) {
                 const sessionStoreAttemptCount = Number(err?.sessionStoreAttemptCount) || undefined;
                 await catalog.recordEvents(input.sessionId, [{
@@ -929,6 +1079,8 @@ export function registerActivities(
             throw err;
         }
 
+        trace(`session=${input.sessionId} complete reason=${reason}`);
+
         if (catalog) {
             await catalog.recordEvents(input.sessionId, [{
                 eventType: "session.dehydrated",
@@ -943,18 +1095,35 @@ export function registerActivities(
     });
 
     runtime.registerActivity("needsHydrationSession", async (
-        _activityCtx: any,
+        activityCtx: any,
         input: { sessionId: string },
     ): Promise<boolean> => {
-        return sessionManager.needsHydration(input.sessionId);
+        const trace = activityTrace(activityCtx, "needsHydrationSession");
+        trace(`session=${input.sessionId} start`);
+        try {
+            const result = await sessionManager.needsHydration(input.sessionId, { trace });
+            trace(`session=${input.sessionId} result=${result}`);
+            return result;
+        } catch (error: unknown) {
+            trace(`session=${input.sessionId} failed error=${errorMessage(error)}`);
+            throw error;
+        }
     });
 
     // ── hydrateSession ──────────────────────────────────────
     runtime.registerActivity("hydrateSession", async (
-        _ctx: any,
+        activityCtx: any,
         input: { sessionId: string },
     ): Promise<void> => {
-        await sessionManager.hydrate(input.sessionId);
+        const trace = activityTrace(activityCtx, "hydrateSession");
+        trace(`session=${input.sessionId} start`);
+        try {
+            await sessionManager.hydrate(input.sessionId, { trace });
+        } catch (error: unknown) {
+            trace(`session=${input.sessionId} failed error=${errorMessage(error)}`);
+            throw error;
+        }
+        trace(`session=${input.sessionId} complete`);
         if (catalog) {
             catalog.recordEvents(input.sessionId, [{
                 eventType: "session.hydrated",
@@ -1541,12 +1710,16 @@ export function registerActivities(
     if (catalog) {
         runtime.registerActivity("updateCmsState", async (
             activityCtx: any,
-            input: { sessionId: string; state: string; lastError?: string },
+            input: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null },
         ): Promise<void> => {
             activityCtx.traceInfo(`[updateCmsState] session=${input.sessionId} state=${input.state}`);
-            await catalog.updateSession(input.sessionId, {
+            const updates: { state: string; lastError?: string | null; waitReason?: string | null } = {
                 state: input.state,
-                ...(input.lastError ? { lastError: input.lastError } : {}),
+            };
+            if (Object.prototype.hasOwnProperty.call(input, "lastError")) updates.lastError = input.lastError ?? null;
+            if (Object.prototype.hasOwnProperty.call(input, "waitReason")) updates.waitReason = input.waitReason ?? null;
+            await catalog.updateSession(input.sessionId, {
+                ...updates,
             });
         });
     }

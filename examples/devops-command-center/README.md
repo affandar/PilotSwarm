@@ -1,6 +1,6 @@
 # DevOps Command Center
 
-A sample PilotSwarm application that demonstrates building an agent-powered DevOps platform with incident response, deployment management, and infrastructure monitoring.
+A sample PilotSwarm application that demonstrates building an agent-powered DevOps platform with incident response, deployment management, infrastructure monitoring, storage-backed artifacts, and durable handoff workflows across the shipped TUI and SDK.
 
 All tools return **mock data** — no real cloud APIs are called.
 
@@ -12,9 +12,9 @@ All tools return **mock data** — no real cloud APIs are called.
 |-------|------|---------|
 | **Watchdog** | System (always-on) | Monitors service health using durable timers, alerts on anomalies |
 | **Janitor** | System (always-on) | Scans for stale deployments and failed releases on a schedule |
-| **Investigator** | User-creatable | Investigates incidents — queries metrics/logs, spawns sub-agents for parallel analysis |
+| **Investigator** | User-creatable | Investigates incidents — queries metrics/logs, spawns sub-agents for parallel analysis, and can consume exported artifact handoffs |
 | **Deployer** | User-creatable | Manages deployments with pre-flight checks, approval gates (`ask_user`), and rollback |
-| **Reporter** | User-creatable | Generates formatted status reports aggregating metrics across services |
+| **Reporter** | User-creatable | Generates formatted status reports aggregating metrics across services and can export detailed reports as downloadable artifacts |
 | **Builder** | User-creatable | Starts mock worker-local builds and monitors remote builds with the right affinity strategy |
 
 ### Tools (Mock)
@@ -79,16 +79,31 @@ This launches the full TUI with:
 - Watchdog + Janitor running as system agents in the sidebar
 - Sequence diagram showing sub-agent spawning
 - Session rename with `t`, cancel with `c`, done with `d`, delete with `D`
+- Vertical session-list resizing with `{` and `}`
+- Theme switching with `Shift+T`, persisted to `~/.config/pilotswarm/config.json`
+- Storage-backed Files inspector on `m`, including `u` upload, `a` download, `f` filter, `v` fullscreen preview, and `o` open-local-copy when supported
+- Prompt reference autocomplete:
+  - `@query` + `Tab` inserts the selected artifact as an `artifact://sessionId/file` reference
+  - `@@query` + `Tab` inserts a durable `session://sessionId` reference you can keep in notes or reuse in SDK prompts
 
 Because this sample uses an allowlist session policy, generic sessions are blocked. `n` will offer only the named DevOps agents instead of a generic-session choice.
 
 Named-agent titles keep their agent prefix when renamed. For example, renaming an Investigator session to `CPU Spike Investigation` becomes `Investigator: CPU Spike Investigation`.
+
+The Files inspector in this sample is storage-backed, so uploads, downloads, and previews operate on shared session artifacts rather than a worker-local directory. That makes it useful for cross-session handoffs and SDK-driven follow-up work.
 
 Try the Builder agent in the TUI with prompts like:
 - `Start a new build from the devops-command-center repo on this worker and monitor it until complete.`
 - `Start a mock remote build for the devops-command-center repo and monitor it until complete.`
 
 The local-build path should use 40-second durable waits with `preserveWorkerAffinity: true` while the build is running. The remote-build path should use the same polling loop without affinity preservation.
+
+Try the newer artifact-centric TUI flows with prompts like:
+- `Generate a detailed status report for payment-service, save it as a markdown artifact, and include the download link.`
+- `Review @payment-service-status-report and tell me the next three investigation steps.` then press `Tab`
+- `Capture a durable handoff note for this investigation, then paste @@payment-service when you want a stable session breadcrumb in the prompt.` then press `Tab`
+
+`session://...` references are durable operator breadcrumbs. They remain visible and clickable in chat, but they do not magically expose hidden session memory to the model. Pair them with explicit instructions or `artifact://...` links when you want another session to reuse work safely.
 
 ## Running with SDK (Programmatic)
 
@@ -114,6 +129,21 @@ DEVOPS_SCENARIO=build-remote node --env-file=../../.env sdk-app.js
 These scenarios create a Builder session, stream tool calls, and demonstrate:
 - worker-local build monitoring with 40-second durable waits and `preserveWorkerAffinity: true`
 - remote build monitoring with the same polling cadence but ordinary waits
+
+The sample also includes artifact-oriented SDK scenarios:
+
+```bash
+cd examples/devops-command-center
+DEVOPS_SCENARIO=report-artifact node --env-file=../../.env sdk-app.js
+DEVOPS_SCENARIO=artifact-handoff node --env-file=../../.env sdk-app.js
+```
+
+These demonstrate:
+- asking the Reporter to write a detailed markdown report, export it, and return an `artifact://...` link
+- feeding that `artifact://...` link into a second session so the Investigator can read the stored artifact and continue the workflow
+- carrying a stable `session://...` breadcrumb alongside the artifact reference for operator-visible handoff metadata
+
+In raw SDK code there is no `@` / `@@` autocomplete layer, but the same underlying references still work: you can pass literal `artifact://sessionId/filename` and `session://sessionId` strings in `sendAndWait(...)` prompts when you already have them.
 
 ## Resetting Local State
 
@@ -187,6 +217,8 @@ devops-command-center/
 | Sub-agent spawning | Investigator fans out parallel queries |
 | Durable timers | Watchdog uses `wait` tool for periodic monitoring |
 | Affinity-aware waits | Builder preserves worker affinity only for worker-local builds |
+| Storage-backed artifacts | Reporter and Investigator can exchange markdown via `write_artifact`, `read_artifact`, and `export_artifact` |
+| Prompt reference workflow | TUI `@` / `@@` autocomplete inserts durable artifact/session references that can also be reused from SDK prompts |
 | `ask_user` | Deployer asks for human approval before deploying |
 | Title prefixing | Named-agent sessions keep their prefix, e.g. "Investigator: CPU Spike Analysis" |
 | TUI layering | Sample plugin branding, named-agent session picker, and worker-module tools all run on the shipped terminal UI host |

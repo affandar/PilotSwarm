@@ -24,6 +24,7 @@ import {
     selectFilesScope,
     selectFilesView,
     selectInspector,
+    selectSessionRows,
     selectSelectedFileBrowserItem,
     selectVisibleSessionRows,
 } from "./selectors.js";
@@ -31,6 +32,12 @@ import { getTheme, listThemes } from "./themes/index.js";
 
 const ORCHESTRATION_STATS_REFRESH_MS = 20_000;
 const SESSION_REFRESH_FAILED_STATUS = "Session refresh failed";
+const FULLSCREENABLE_PANES = new Set([
+    FOCUS_REGIONS.SESSIONS,
+    FOCUS_REGIONS.CHAT,
+    FOCUS_REGIONS.INSPECTOR,
+    FOCUS_REGIONS.ACTIVITY,
+]);
 
 function groupModelsByProvider(models = []) {
     const groups = [];
@@ -277,6 +284,62 @@ function buildPromptAttachmentToken(filename) {
     return `📎 ${String(filename || "").trim()}`;
 }
 
+function extractPromptReferenceContext(prompt, cursorIndex) {
+    const text = String(prompt || "");
+    const safeCursor = clampPromptCursor(text, cursorIndex, text.length);
+    const left = text.slice(0, safeCursor);
+    const match = left.match(/(^|\s)(@@?)([^\s]*)$/u);
+    if (!match) return null;
+
+    const trigger = match[2];
+    const query = String(match[3] || "");
+    return {
+        kind: trigger === "@@" ? "sessions" : "artifacts",
+        query,
+        signature: `${trigger}${query}`,
+        tokenStart: (match.index || 0) + String(match[1] || "").length,
+        tokenEnd: safeCursor,
+    };
+}
+
+function replacePromptTextRange(prompt, start, end, replacement) {
+    const safePrompt = String(prompt || "");
+    const rangeStart = clampPromptCursor(safePrompt, start, 0);
+    const rangeEnd = clampPromptCursor(safePrompt, end, rangeStart);
+    const nextText = String(replacement || "");
+    return {
+        prompt: `${safePrompt.slice(0, rangeStart)}${nextText}${safePrompt.slice(rangeEnd)}`,
+        cursor: rangeStart + nextText.length,
+    };
+}
+
+function normalizePromptReferenceLabel(value, fallback = "session") {
+    const text = String(value || "").replace(/\s+/gu, " ").trim();
+    return text || fallback;
+}
+
+function buildPromptSessionReferenceText(session) {
+    const sessionId = String(session?.sessionId || "").trim();
+    const fallbackLabel = shortSessionIdValue(sessionId) || "session";
+    const label = normalizePromptReferenceLabel(session?.title, fallbackLabel);
+    return `Referenced session: ${label} — session://${sessionId}`;
+}
+
+function replacePromptReferenceContext(prompt, context, replacement) {
+    if (!context) {
+        return insertPromptTextAtCursor(prompt, String(prompt || "").length, replacement);
+    }
+    const safePrompt = String(prompt || "");
+    const nextChar = safePrompt.slice(context.tokenEnd, context.tokenEnd + 1);
+    const needsTrailingSpace = !nextChar || /\s/u.test(nextChar);
+    return replacePromptTextRange(
+        safePrompt,
+        context.tokenStart,
+        context.tokenEnd,
+        `${String(replacement || "")}${needsTrailingSpace ? " " : ""}`,
+    );
+}
+
 function stripPromptAttachmentTokens(prompt, attachments = []) {
     let cleaned = String(prompt || "");
     for (const attachment of attachments || []) {
@@ -441,7 +504,7 @@ function movePromptCursorVertically(prompt, cursor, direction) {
 }
 
 const AUTO_HISTORY_EVENT_SOFT_CAP = 3_000;
-const INSPECTOR_BOTTOM_ANCHORED_TABS = new Set(["logs", "sequence", "history"]);
+const INSPECTOR_BOTTOM_ANCHORED_TABS = new Set(["logs", "sequence"]);
 const FILE_PREVIEW_CHAR_LIMIT = 200_000;
 const MARKDOWN_FILE_EXTENSIONS = new Set([
     ".md",
@@ -552,6 +615,8 @@ export class PilotSwarmUiController {
         this.sessionHistoryExpansionLoads = new Map();
         this.sessionOrchestrationStatsLoads = new Map();
         this.logUnsubscribe = null;
+        this.promptReferenceSignature = null;
+        this.promptReferenceSyncVersion = 0;
     }
 
     getState() {
@@ -580,6 +645,147 @@ export class PilotSwarmUiController {
             type: "ui/promptAttachments",
             attachments: Array.isArray(attachments) ? attachments : [],
         });
+    }
+
+    getPromptReferenceContext() {
+        const state = this.getState();
+        return extractPromptReferenceContext(state.ui.prompt, state.ui.promptCursor);
+    }
+
+    acceptPromptReferenceAutocomplete() {
+        const context = this.getPromptReferenceContext();
+        if (!context) return false;
+        if (context.kind === "sessions") {
+            return this.acceptSessionPromptReference(context);
+        }
+        return this.acceptArtifactPromptReference(context);
+    }
+
+    acceptArtifactPromptReference(context = this.getPromptReferenceContext()) {
+        if (!context || context.kind !== "artifacts") return false;
+
+        const state = this.getState();
+        const selectedItem = selectSelectedFileBrowserItem(state);
+        const sessionId = selectedItem?.sessionId || state.sessions.activeSessionId || null;
+        const filename = selectedItem?.filename || null;
+        if (!sessionId || !filename) return false;
+
+        const token = buildPromptAttachmentToken(filename);
+        const insertion = replacePromptReferenceContext(state.ui.prompt, context, token);
+        const previousAttachments = this.getPromptAttachments();
+        const existingAttachmentIndex = previousAttachments.findIndex((attachment) => (
+            attachment?.sessionId === sessionId
+            && attachment?.filename === filename
+        ));
+        const nextAttachment = {
+            ...(existingAttachmentIndex >= 0 ? previousAttachments[existingAttachmentIndex] : {}),
+            id: `${sessionId}/${filename}`,
+            sessionId,
+            filename,
+            resolvedPath: filename,
+            token,
+        };
+        const nextAttachments = existingAttachmentIndex >= 0
+            ? previousAttachments.map((attachment, index) => (index === existingAttachmentIndex ? nextAttachment : attachment))
+            : [...previousAttachments, nextAttachment];
+
+        this.setPrompt(insertion.prompt, insertion.cursor);
+        this.setPromptAttachments(nextAttachments);
+        this.setFocus(FOCUS_REGIONS.PROMPT);
+        this.dispatch({ type: "ui/status", text: `Attached ${filename}` });
+        return true;
+    }
+
+    acceptSessionPromptReference(context = this.getPromptReferenceContext()) {
+        if (!context || context.kind !== "sessions") return false;
+
+        const state = this.getState();
+        const sessionRows = selectSessionRows(state);
+        const targetRow = sessionRows[0] || null;
+        const targetSession = targetRow?.sessionId
+            ? state.sessions.byId[targetRow.sessionId] || null
+            : null;
+        if (!targetSession?.sessionId) return false;
+
+        const referenceText = buildPromptSessionReferenceText(targetSession);
+        const insertion = replacePromptReferenceContext(state.ui.prompt, context, referenceText);
+        this.setPrompt(insertion.prompt, insertion.cursor);
+        this.setFocus(FOCUS_REGIONS.PROMPT);
+        this.dispatch({
+            type: "ui/status",
+            text: `Referenced session ${shortSessionIdValue(targetSession.sessionId)}`,
+        });
+        return true;
+    }
+
+    setSessionFilterQuery(query = "") {
+        this.dispatch({
+            type: "sessions/filterQuery",
+            query: String(query || ""),
+        });
+    }
+
+    setFilesFilter(patch = {}) {
+        this.dispatch({
+            type: "files/filter",
+            filter: patch,
+        });
+    }
+
+    clearPromptReferenceBrowser() {
+        this.promptReferenceSignature = null;
+        this.promptReferenceSyncVersion += 1;
+        if (this.getState().sessions.filterQuery) {
+            this.setSessionFilterQuery("");
+        }
+        if (this.getState().files.filter?.query) {
+            this.setFilesFilter({ query: "" });
+        }
+    }
+
+    syncPromptReferenceBrowser() {
+        const state = this.getState();
+        const context = extractPromptReferenceContext(state.ui.prompt, state.ui.promptCursor);
+
+        if (!context) {
+            this.clearPromptReferenceBrowser();
+            return;
+        }
+
+        if (this.promptReferenceSignature === context.signature) {
+            return;
+        }
+        this.promptReferenceSignature = context.signature;
+
+        if (context.kind === "sessions") {
+            this.promptReferenceSyncVersion += 1;
+            this.setFilesFilter({ query: "" });
+            this.setSessionFilterQuery(context.query);
+            return;
+        }
+
+        const sessionId = state.sessions.activeSessionId;
+        this.setSessionFilterQuery("");
+        this.setFilesFilter({
+            scope: "selectedSession",
+            query: context.query,
+        });
+        if (!sessionId) return;
+
+        this.selectInspectorTab("files").catch(() => {});
+        const syncVersion = ++this.promptReferenceSyncVersion;
+        this.ensureFilesForSession(sessionId).then(async () => {
+            if (this.promptReferenceSyncVersion !== syncVersion) return;
+            const items = selectFileBrowserItems(this.getState()).filter((item) => item.sessionId === sessionId);
+            const nextItem = items[0] || null;
+            if (!nextItem?.filename) return;
+            this.dispatch({
+                type: "files/select",
+                sessionId,
+                filename: nextItem.filename,
+            });
+            await this.ensureFilePreview(sessionId, nextItem.filename).catch(() => {});
+        }).catch(() => {});
     }
 
     async start() {
@@ -696,6 +902,69 @@ export class PilotSwarmUiController {
         }
         await this.syncVisibleSessionDetails(syncedIds).catch(() => {});
         this.ensureInspectorData().catch(() => {});
+        this.evictStaleSessionState();
+    }
+
+    /**
+     * Evict cached orchestration, executionHistory, and file-preview state for sessions
+     * that are not the active session and haven't been fetched recently.
+     * Keeps memory bounded when hundreds of sessions accumulate.
+     */
+    evictStaleSessionState() {
+        const state = this.getState();
+        const activeSessionId = state.sessions.activeSessionId;
+        const now = Date.now();
+        const STALE_MS = 60_000; // 1 minute
+        const MAX_CACHED = 20;
+
+        // Evict stale orchestration stats
+        const orchEntries = Object.entries(state.orchestration.bySessionId || {});
+        if (orchEntries.length > MAX_CACHED) {
+            const toEvict = orchEntries
+                .filter(([id, entry]) => id !== activeSessionId && !entry?.loading)
+                .sort((a, b) => (a[1]?.fetchedAt || 0) - (b[1]?.fetchedAt || 0))
+                .slice(0, orchEntries.length - MAX_CACHED)
+                .filter(([, entry]) => (now - (entry?.fetchedAt || 0)) > STALE_MS);
+            if (toEvict.length > 0) {
+                this.dispatch({ type: "orchestration/evict", sessionIds: toEvict.map(([id]) => id) });
+            }
+        }
+
+        // Evict stale executionHistory
+        const execEntries = Object.entries(state.executionHistory?.bySessionId || {});
+        if (execEntries.length > MAX_CACHED) {
+            const toEvict = execEntries
+                .filter(([id, entry]) => id !== activeSessionId && !entry?.loading)
+                .sort((a, b) => (a[1]?.fetchedAt || 0) - (b[1]?.fetchedAt || 0))
+                .slice(0, execEntries.length - MAX_CACHED)
+                .filter(([, entry]) => (now - (entry?.fetchedAt || 0)) > STALE_MS);
+            if (toEvict.length > 0) {
+                this.dispatch({ type: "executionHistory/evict", sessionIds: toEvict.map(([id]) => id) });
+            }
+        }
+
+        // Evict stale file previews (keep entries list, drop preview content)
+        const fileEntries = Object.entries(state.files.bySessionId || {});
+        if (fileEntries.length > MAX_CACHED) {
+            const toEvict = fileEntries
+                .filter(([id]) => id !== activeSessionId)
+                .slice(0, fileEntries.length - MAX_CACHED);
+            if (toEvict.length > 0) {
+                this.dispatch({ type: "files/evictPreviews", sessionIds: toEvict.map(([id]) => id) });
+            }
+        }
+
+        // Evict stale history for non-visible sessions when count is very high
+        const historyEntries = [...state.history.bySessionId.entries()];
+        if (historyEntries.length > MAX_CACHED * 2) {
+            const toEvict = historyEntries
+                .filter(([id]) => id !== activeSessionId)
+                .slice(0, historyEntries.length - MAX_CACHED * 2)
+                .map(([id]) => id);
+            if (toEvict.length > 0) {
+                this.dispatch({ type: "history/evict", sessionIds: toEvict });
+            }
+        }
     }
 
     async syncVisibleSessionDetails(excludedIds = new Set()) {
@@ -708,9 +977,11 @@ export class PilotSwarmUiController {
                 height: state.ui.layout.viewportHeight,
             },
             state.ui.layout.paneAdjust,
-            getPromptInputRows(state.ui.prompt),
+            state.ui.promptRows ?? getPromptInputRows(state.ui.prompt),
+            state.ui.layout.sessionPaneAdjust,
+            state.ui.fullscreenPane,
         );
-        const maxRows = Math.max(3, layout.sessionPaneHeight - 2);
+        const maxRows = this.getSessionListMaxRows(layout);
         const visibleRows = selectVisibleSessionRows(state, maxRows);
         const sessionIds = [...new Set(
             visibleRows
@@ -779,7 +1050,26 @@ export class PilotSwarmUiController {
             return;
         }
         if (targetTab === "nodes") {
-            const sessionIds = Object.keys(this.getState().sessions.byId);
+            // Only fetch history for visible session rows — not the entire catalog.
+            // With hundreds of sessions, fetching all of them every 4s causes unbounded memory growth.
+            const state = this.getState();
+            const layout = computeLegacyLayout(
+                {
+                    width: state.ui.layout.viewportWidth,
+                    height: state.ui.layout.viewportHeight,
+                },
+                state.ui.layout.paneAdjust,
+                state.ui.promptRows ?? getPromptInputRows(state.ui.prompt),
+                state.ui.layout.sessionPaneAdjust,
+                state.ui.fullscreenPane,
+            );
+            const maxRows = this.getSessionListMaxRows(layout);
+            const visibleRows = selectVisibleSessionRows(state, maxRows);
+            const sessionIds = [...new Set(
+                visibleRows
+                    .map((row) => row.sessionId)
+                    .filter(Boolean),
+            )];
             if (sessionIds.length === 0) return;
             await Promise.allSettled(sessionIds.map((sessionId) => this.ensureSessionHistory(sessionId)));
             return;
@@ -1118,6 +1408,25 @@ export class PilotSwarmUiController {
         }
     }
 
+    async downloadSelectedArtifact() {
+        const selectedItem = selectSelectedFileBrowserItem(this.getState());
+        if (!selectedItem?.sessionId || !selectedItem?.filename) {
+            this.dispatch({ type: "ui/status", text: "No artifact selected" });
+            return null;
+        }
+        this.dispatch({
+            type: "ui/status",
+            text: `Downloading ${selectedItem.filename}...`,
+        });
+        const download = await this.saveArtifactDownload(selectedItem.sessionId, selectedItem.filename);
+        if (!download?.localPath) return null;
+        this.dispatch({
+            type: "ui/status",
+            text: `Downloaded ${selectedItem.filename}`,
+        });
+        return download;
+    }
+
     async openArtifactPicker() {
         const state = this.getState();
         const activeSessionId = state.sessions.activeSessionId;
@@ -1279,6 +1588,32 @@ export class PilotSwarmUiController {
         });
     }
 
+    toggleFocusedPaneFullscreen() {
+        const state = this.getState();
+        const focusRegion = state.ui.focusRegion;
+        const currentFullscreenPane = state.ui.fullscreenPane || null;
+        const targetPane = focusRegion === FOCUS_REGIONS.PROMPT
+            ? currentFullscreenPane
+            : focusRegion;
+        if (!FULLSCREENABLE_PANES.has(targetPane)) return;
+        if (targetPane === FOCUS_REGIONS.INSPECTOR && state.ui.inspectorTab === "files") return;
+
+        const nextFullscreenPane = currentFullscreenPane === targetPane ? null : targetPane;
+        this.dispatch({
+            type: "ui/fullscreenPane",
+            fullscreenPane: nextFullscreenPane,
+        });
+        this.dispatch({
+            type: "ui/status",
+            text: nextFullscreenPane
+                ? `Fullscreen ${targetPane} pane`
+                : `Closed fullscreen ${targetPane} pane`,
+        });
+        if (!nextFullscreenPane && focusRegion === FOCUS_REGIONS.PROMPT) {
+            this.setFocus(targetPane);
+        }
+    }
+
     openFilesFilter() {
         const scope = selectFilesScope(this.getState());
         this.dispatch({
@@ -1387,7 +1722,7 @@ export class PilotSwarmUiController {
         const created = await this.transport.createSession(options);
         await this.refreshSessions();
         await this.loadSession(created.sessionId);
-        this.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.PROMPT });
+        this.setFocus(FOCUS_REGIONS.PROMPT);
         this.dispatch({ type: "ui/status", text: `Created session ${created.sessionId.slice(0, 8)}` });
     }
 
@@ -1398,7 +1733,7 @@ export class PilotSwarmUiController {
         const created = await this.transport.createSessionForAgent(agentName, options);
         await this.refreshSessions();
         await this.loadSession(created.sessionId);
-        this.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.PROMPT });
+        this.setFocus(FOCUS_REGIONS.PROMPT);
         this.dispatch({
             type: "ui/status",
             text: `Created ${formatAgentDisplayTitle(agentName, options.title)} session ${created.sessionId.slice(0, 8)}`,
@@ -1575,8 +1910,8 @@ export class PilotSwarmUiController {
             modal: {
                 type: "artifactUpload",
                 title: sessionId
-                    ? `Attach File (${shortSessionIdValue(sessionId)})`
-                    : "Attach File",
+                    ? `Upload Artifact (${shortSessionIdValue(sessionId)})`
+                    : "Upload Artifact",
                 sessionId,
                 previousFocus: state.ui.focusRegion,
                 value: "",
@@ -1586,8 +1921,8 @@ export class PilotSwarmUiController {
         this.dispatch({
             type: "ui/status",
             text: sessionId
-                ? "Paste a local file path and press Enter to attach it to this session prompt"
-                : "Paste a local file path and press Enter to attach it; a new session will be created if needed",
+                ? "Paste a local file path and press Enter to upload it into this session's artifacts"
+                : "Paste a local file path and press Enter to upload it; a new session will be created if needed",
         });
     }
 
@@ -1658,8 +1993,173 @@ export class PilotSwarmUiController {
         const created = await this.transport.createSession({});
         await this.refreshSessions();
         await this.loadSession(created.sessionId);
-        this.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.PROMPT });
+        this.setFocus(FOCUS_REGIONS.PROMPT);
         return created.sessionId;
+    }
+
+    async finalizeArtifactUpload(upload, { sessionId = null, suppressStatus = false } = {}) {
+        const resolvedSessionId = sessionId || upload?.sessionId || await this.ensurePromptAttachmentSessionId();
+        if (!resolvedSessionId || !upload?.filename) {
+            throw new Error("Upload did not return a session id and filename");
+        }
+
+        if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
+            await this.loadSession(resolvedSessionId);
+        }
+
+        await this.ensureFilesForSession(resolvedSessionId, { force: true }).catch(() => null);
+        this.dispatch({
+            type: "files/select",
+            sessionId: resolvedSessionId,
+            filename: upload.filename,
+        });
+        await this.ensureFilePreview(resolvedSessionId, upload.filename, { force: true }).catch(() => null);
+
+        if (!suppressStatus) {
+            this.dispatch({
+                type: "ui/status",
+                text: `Uploaded ${upload.filename}`,
+            });
+        }
+
+        return {
+            sessionId: resolvedSessionId,
+            filename: upload.filename,
+        };
+    }
+
+    async applyUploadedPromptAttachment(upload, { sessionId = null, suppressStatus = false } = {}) {
+        const resolvedSessionId = sessionId || upload?.sessionId || await this.ensurePromptAttachmentSessionId();
+        if (!resolvedSessionId || !upload?.filename) {
+            throw new Error("Upload did not return a session id and filename");
+        }
+
+        const token = buildPromptAttachmentToken(upload.filename);
+        const currentPrompt = this.getState().ui.prompt;
+        const currentCursor = this.getState().ui.promptCursor;
+        const previousAttachments = this.getPromptAttachments();
+        const existingAttachmentIndex = previousAttachments.findIndex((attachment) => (
+            attachment?.sessionId === resolvedSessionId
+            && attachment?.filename === upload.filename
+        ));
+
+        if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
+            await this.loadSession(resolvedSessionId);
+        }
+
+        if (existingAttachmentIndex === -1 || !currentPrompt.includes(previousAttachments[existingAttachmentIndex]?.token || token)) {
+            const insertion = insertPromptTextAtCursor(currentPrompt, currentCursor, `${token} `);
+            this.setPrompt(insertion.prompt, insertion.cursor);
+        }
+
+        const nextAttachments = existingAttachmentIndex >= 0
+            ? previousAttachments.map((attachment, index) => (index === existingAttachmentIndex
+                ? {
+                    ...attachment,
+                    sessionId: resolvedSessionId,
+                    filename: upload.filename,
+                    resolvedPath: upload.resolvedPath || upload.localPath || upload.filename,
+                    sizeBytes: upload.sizeBytes,
+                    token,
+                }
+                : attachment))
+            : [
+                ...previousAttachments,
+                {
+                    id: `${resolvedSessionId}/${upload.filename}`,
+                    sessionId: resolvedSessionId,
+                    filename: upload.filename,
+                    resolvedPath: upload.resolvedPath || upload.localPath || upload.filename,
+                    sizeBytes: upload.sizeBytes,
+                    token,
+                },
+            ];
+        this.setPromptAttachments(nextAttachments);
+
+        await this.ensureFilesForSession(resolvedSessionId, { force: true }).catch(() => null);
+        this.dispatch({
+            type: "files/select",
+            sessionId: resolvedSessionId,
+            filename: upload.filename,
+        });
+        if (this.getState().ui.inspectorTab === "files") {
+            await this.ensureFilePreview(resolvedSessionId, upload.filename, { force: true }).catch(() => null);
+        }
+
+        this.setFocus(FOCUS_REGIONS.PROMPT);
+        if (!suppressStatus) {
+            this.dispatch({
+                type: "ui/status",
+                text: existingAttachmentIndex >= 0
+                    ? `Re-attached ${upload.filename}`
+                    : `Attached ${upload.filename}`,
+            });
+        }
+
+        return {
+            sessionId: resolvedSessionId,
+            existingAttachmentIndex,
+            token,
+        };
+    }
+
+    async uploadArtifactFiles(files = [], { sessionId = null } = {}) {
+        const fileList = Array.isArray(files)
+            ? files.filter((file) => file && typeof file.name === "string")
+            : [];
+        if (fileList.length === 0) {
+            this.dispatch({ type: "ui/status", text: "No files selected" });
+            return [];
+        }
+        if (typeof this.transport.uploadArtifactFromFile !== "function") {
+            this.dispatch({ type: "ui/status", text: "Browser file uploads are not supported by this transport" });
+            return [];
+        }
+
+        this.dispatch({
+            type: "ui/status",
+            text: fileList.length === 1
+                ? `Uploading ${fileList[0].name}...`
+                : `Uploading ${fileList.length} artifact files...`,
+        });
+
+        const resolvedSessionId = sessionId || await this.ensurePromptAttachmentSessionId();
+        const uploads = [];
+        let failures = 0;
+        let lastError = null;
+
+        for (const file of fileList) {
+            try {
+                const upload = await this.transport.uploadArtifactFromFile(resolvedSessionId, file);
+                uploads.push(upload);
+                await this.finalizeArtifactUpload(upload, { sessionId: resolvedSessionId, suppressStatus: true });
+            } catch (error) {
+                failures += 1;
+                lastError = error;
+            }
+        }
+
+        if (uploads.length > 0) {
+            this.dispatch({
+                type: "ui/status",
+                text: failures > 0
+                    ? `Uploaded ${uploads.length}/${fileList.length} file(s); last error: ${lastError?.message || String(lastError)}`
+                    : uploads.length === 1
+                        ? `Uploaded ${uploads[0].filename}`
+                        : `Uploaded ${uploads.length} files`,
+            });
+        } else if (lastError) {
+            this.dispatch({
+                type: "ui/status",
+                text: `Upload failed: ${lastError?.message || String(lastError)}`,
+            });
+        }
+
+        return uploads;
+    }
+
+    async uploadPromptAttachmentFiles(files = []) {
+        return this.uploadArtifactFiles(files);
     }
 
     async confirmArtifactUploadModal() {
@@ -1677,76 +2177,22 @@ export class PilotSwarmUiController {
 
         this.dispatch({
             type: "ui/status",
-            text: "Uploading attachment...",
+            text: "Uploading artifact...",
         });
 
         try {
             const sessionId = modal.sessionId || await this.ensurePromptAttachmentSessionId();
             const upload = await this.transport.uploadArtifactFromPath(sessionId, filePath);
-            const token = buildPromptAttachmentToken(upload.filename);
-            const currentPrompt = this.getState().ui.prompt;
-            const currentCursor = this.getState().ui.promptCursor;
-            const previousAttachments = this.getPromptAttachments();
-            const existingAttachmentIndex = previousAttachments.findIndex((attachment) => (
-                attachment?.sessionId === sessionId
-                && attachment?.filename === upload.filename
-            ));
-
-            if (this.getState().sessions.activeSessionId !== sessionId) {
-                await this.loadSession(sessionId);
-            }
-
-            if (existingAttachmentIndex === -1 || !currentPrompt.includes(previousAttachments[existingAttachmentIndex]?.token || token)) {
-                const insertion = insertPromptTextAtCursor(currentPrompt, currentCursor, `${token} `);
-                this.setPrompt(insertion.prompt, insertion.cursor);
-            }
-
-            const nextAttachments = existingAttachmentIndex >= 0
-                ? previousAttachments.map((attachment, index) => (index === existingAttachmentIndex
-                    ? {
-                        ...attachment,
-                        sessionId,
-                        filename: upload.filename,
-                        resolvedPath: upload.resolvedPath,
-                        sizeBytes: upload.sizeBytes,
-                        token,
-                    }
-                    : attachment))
-                : [
-                    ...previousAttachments,
-                    {
-                        id: `${sessionId}/${upload.filename}`,
-                        sessionId,
-                        filename: upload.filename,
-                        resolvedPath: upload.resolvedPath,
-                        sizeBytes: upload.sizeBytes,
-                        token,
-                    },
-                ];
-            this.setPromptAttachments(nextAttachments);
-
-            await this.ensureFilesForSession(sessionId, { force: true }).catch(() => null);
-            this.dispatch({
-                type: "files/select",
-                sessionId,
-                filename: upload.filename,
-            });
-            if (this.getState().ui.inspectorTab === "files") {
-                await this.ensureFilePreview(sessionId, upload.filename, { force: true }).catch(() => null);
-            }
-
+            const result = await this.finalizeArtifactUpload(upload, { sessionId, suppressStatus: true });
             this.dispatch({ type: "ui/modal", modal: null });
-            this.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.PROMPT });
             this.dispatch({
                 type: "ui/status",
-                text: existingAttachmentIndex >= 0
-                    ? `Re-attached ${upload.filename}`
-                    : `Attached ${upload.filename}`,
+                text: `Uploaded ${result.filename}`,
             });
         } catch (error) {
             this.dispatch({
                 type: "ui/status",
-                text: `Attach failed: ${error?.message || String(error)}`,
+                text: `Upload failed: ${error?.message || String(error)}`,
             });
         }
     }
@@ -1865,7 +2311,7 @@ export class PilotSwarmUiController {
         const previousFocus = modal.previousFocus;
         this.dispatch({ type: "ui/modal", modal: null });
         if (previousFocus) {
-            this.dispatch({ type: "ui/focus", focusRegion: previousFocus });
+            this.setFocus(previousFocus);
         }
 
         this.dispatch({
@@ -1894,7 +2340,7 @@ export class PilotSwarmUiController {
         if (!modal) return;
         this.dispatch({ type: "ui/modal", modal: null });
         if (modal.previousFocus) {
-            this.dispatch({ type: "ui/focus", focusRegion: modal.previousFocus });
+            this.setFocus(modal.previousFocus);
         }
         this.dispatch({ type: "ui/status", text: "Connected" });
     }
@@ -1968,7 +2414,7 @@ export class PilotSwarmUiController {
         if (modal.type === "filesFilter") {
             const previousFocus = modal.previousFocus;
             this.dispatch({ type: "ui/modal", modal: null });
-            if (previousFocus) this.dispatch({ type: "ui/focus", focusRegion: previousFocus });
+            if (previousFocus) this.setFocus(previousFocus);
             return;
         }
         if (modal.type === "themePicker") {
@@ -1982,7 +2428,7 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/modal", modal: null });
             this.dispatch({ type: "ui/theme", themeId: nextTheme.id });
             if (previousFocus) {
-                this.dispatch({ type: "ui/focus", focusRegion: previousFocus });
+                this.setFocus(previousFocus);
             }
             this.dispatch({ type: "ui/status", text: `Applied theme: ${nextTheme.label}` });
             return;
@@ -1992,7 +2438,7 @@ export class PilotSwarmUiController {
             const previousFocus = modal.previousFocus;
             this.dispatch({ type: "ui/modal", modal: null });
             if (previousFocus) {
-                this.dispatch({ type: "ui/focus", focusRegion: previousFocus });
+                this.setFocus(previousFocus);
             }
             await this.openNewSessionFlow(item?.id ? { model: item.id } : {});
             return;
@@ -2003,7 +2449,7 @@ export class PilotSwarmUiController {
             const sessionOptions = modal.sessionOptions || {};
             this.dispatch({ type: "ui/modal", modal: null });
             if (previousFocus) {
-                this.dispatch({ type: "ui/focus", focusRegion: previousFocus });
+                this.setFocus(previousFocus);
             }
             if (!item || item.kind === "generic") {
                 await this.createSession(sessionOptions);
@@ -2187,7 +2633,7 @@ export class PilotSwarmUiController {
             },
         });
 
-        this.dispatch({ type: "ui/prompt", prompt: "", promptCursor: 0 });
+        this.setPrompt("", 0);
         this.dispatch({ type: "ui/status", text: "Sending..." });
         try {
             if (answeringPendingQuestion && typeof this.transport.sendAnswer === "function") {
@@ -2209,7 +2655,7 @@ export class PilotSwarmUiController {
             });
             this.dispatch({ type: "ui/status", text: "Prompt sent" });
         } catch (error) {
-            this.dispatch({ type: "ui/prompt", prompt: rawPrompt, promptCursor });
+            this.setPrompt(rawPrompt, promptCursor);
             this.setPromptAttachments(promptAttachments);
             await this.ensureSessionHistory(sessionId, { force: true }).catch(() => {});
             let latestSession = null;
@@ -2243,7 +2689,17 @@ export class PilotSwarmUiController {
     }
 
     setPrompt(prompt, promptCursor = String(prompt || "").length) {
-        this.dispatch({ type: "ui/prompt", prompt, promptCursor });
+        const nextPrompt = String(prompt || "");
+        const nextCursor = Math.max(0, Math.min(
+            Number.isFinite(promptCursor) ? promptCursor : nextPrompt.length,
+            nextPrompt.length,
+        ));
+        const currentUi = this.getState().ui;
+        if (currentUi.prompt === nextPrompt && currentUi.promptCursor === nextCursor) {
+            return;
+        }
+        this.dispatch({ type: "ui/prompt", prompt: nextPrompt, promptCursor: nextCursor });
+        this.syncPromptReferenceBrowser();
     }
 
     insertPromptText(text) {
@@ -2285,11 +2741,23 @@ export class PilotSwarmUiController {
 
     getCurrentLayout(overrides = {}) {
         const layoutState = this.getState().ui.layout || {};
-        const prompt = overrides.prompt ?? this.getState().ui.prompt;
+        const uiState = this.getState().ui;
+        const prompt = overrides.prompt ?? uiState.prompt;
         return computeLegacyLayout({
             width: overrides.width ?? layoutState.viewportWidth ?? 120,
             height: overrides.height ?? layoutState.viewportHeight ?? 40,
-        }, overrides.paneAdjust ?? layoutState.paneAdjust ?? 0, overrides.promptRows ?? getPromptInputRows(prompt));
+        },
+        overrides.paneAdjust ?? layoutState.paneAdjust ?? 0,
+        overrides.promptRows ?? uiState.promptRows ?? getPromptInputRows(prompt),
+        overrides.sessionPaneAdjust ?? layoutState.sessionPaneAdjust ?? 0,
+        overrides.fullscreenPane ?? uiState.fullscreenPane ?? null);
+    }
+
+    getSessionListMaxRows(layout = this.getCurrentLayout()) {
+        const paneHeight = layout.fullscreenPane === FOCUS_REGIONS.SESSIONS
+            ? layout.bodyHeight
+            : layout.sessionPaneHeight;
+        return Math.max(3, paneHeight - 2);
     }
 
     setViewport(viewport = {}) {
@@ -2312,29 +2780,33 @@ export class PilotSwarmUiController {
     }
 
     setFocus(focusRegion) {
-        this.dispatch({ type: "ui/focus", focusRegion });
+        this.dispatch({ type: "ui/focus", focusRegion: normalizeFocusRegion(focusRegion, this.getCurrentLayout()) });
     }
 
     focusNext() {
-        const current = this.getState().ui.focusRegion;
-        const order = getFocusOrderForLayout(this.getCurrentLayout());
-        this.dispatch({ type: "ui/focus", focusRegion: cycleValue(order, current, 1) });
+        const layout = this.getCurrentLayout();
+        const current = normalizeFocusRegion(this.getState().ui.focusRegion, layout);
+        const order = getFocusOrderForLayout(layout);
+        this.setFocus(cycleValue(order, current, 1));
     }
 
     focusPrev() {
-        const current = this.getState().ui.focusRegion;
-        const order = getFocusOrderForLayout(this.getCurrentLayout());
-        this.dispatch({ type: "ui/focus", focusRegion: cycleValue(order, current, -1) });
+        const layout = this.getCurrentLayout();
+        const current = normalizeFocusRegion(this.getState().ui.focusRegion, layout);
+        const order = getFocusOrderForLayout(layout);
+        this.setFocus(cycleValue(order, current, -1));
     }
 
     focusLeft() {
-        const current = this.getState().ui.focusRegion;
-        this.setFocus(getFocusLeftTarget(current, this.getCurrentLayout()));
+        const layout = this.getCurrentLayout();
+        const current = normalizeFocusRegion(this.getState().ui.focusRegion, layout);
+        this.setFocus(getFocusLeftTarget(current, layout));
     }
 
     focusRight() {
-        const current = this.getState().ui.focusRegion;
-        this.setFocus(getFocusRightTarget(current, this.getCurrentLayout()));
+        const layout = this.getCurrentLayout();
+        const current = normalizeFocusRegion(this.getState().ui.focusRegion, layout);
+        this.setFocus(getFocusRightTarget(current, layout));
     }
 
     adjustPaneSplit(delta) {
@@ -2351,6 +2823,17 @@ export class PilotSwarmUiController {
         if (safeFocus !== currentFocus) {
             this.setFocus(safeFocus);
         }
+    }
+
+    adjustSessionPaneSplit(delta) {
+        const layoutState = this.getState().ui.layout || {};
+        const currentLayout = this.getCurrentLayout();
+        const bodyHeight = currentLayout.bodyHeight ?? (layoutState.viewportHeight ?? 40);
+        const nextAdjust = Math.max(-bodyHeight, Math.min(bodyHeight, (layoutState.sessionPaneAdjust || 0) + delta));
+        this.dispatch({
+            type: "ui/sessionPaneAdjust",
+            sessionPaneAdjust: nextAdjust,
+        });
     }
 
     nextInspectorTab() {
@@ -2396,7 +2879,11 @@ export class PilotSwarmUiController {
     }
 
     getSessionPageSize() {
-        return Math.max(1, this.getCurrentLayout().sessionPaneHeight - 3);
+        const layout = this.getCurrentLayout();
+        const paneHeight = layout.fullscreenPane === FOCUS_REGIONS.SESSIONS
+            ? layout.bodyHeight
+            : layout.sessionPaneHeight;
+        return Math.max(1, paneHeight - 3);
     }
 
     async moveSessionPage(deltaPages) {
@@ -2964,6 +3451,12 @@ export class PilotSwarmUiController {
             case UI_COMMANDS.GROW_RIGHT_PANE:
                 this.adjustPaneSplit(-8);
                 return;
+            case UI_COMMANDS.GROW_SESSION_PANE:
+                this.adjustSessionPaneSplit(2);
+                return;
+            case UI_COMMANDS.SHRINK_SESSION_PANE:
+                this.adjustSessionPaneSplit(-2);
+                return;
             case UI_COMMANDS.OPEN_ARTIFACT_PICKER:
                 await this.openArtifactPicker();
                 return;
@@ -2982,11 +3475,17 @@ export class PilotSwarmUiController {
             case UI_COMMANDS.MOVE_FILE_DOWN:
                 await this.moveFileSelection(1);
                 return;
+            case UI_COMMANDS.DOWNLOAD_SELECTED_FILE:
+                await this.downloadSelectedArtifact();
+                return;
             case UI_COMMANDS.OPEN_SELECTED_FILE:
                 await this.openSelectedFileInDefaultApp();
                 return;
             case UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN:
                 this.toggleFilePreviewFullscreen();
+                return;
+            case UI_COMMANDS.TOGGLE_PANE_FULLSCREEN:
+                this.toggleFocusedPaneFullscreen();
                 return;
             case UI_COMMANDS.SCROLL_UP:
                 this.scrollCurrentPane(1);

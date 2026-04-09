@@ -186,6 +186,12 @@ function buildWorkspacePaneFrames(layout) {
             width: layout.totalWidth,
             height: layout.bodyHeight,
         },
+        fullscreenPane: {
+            x: 0,
+            y: 0,
+            width: layout.totalWidth,
+            height: layout.bodyHeight,
+        },
     };
 }
 
@@ -672,6 +678,7 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         workersOnline: state.connection.workersOnline,
         focusRegion: state.ui.focusRegion,
         inspectorTab: state.ui.inspectorTab,
+        fullscreenPane: state.ui.fullscreenPane || null,
         logsAvailable: state.logs.available,
         logsTailing: state.logs.tailing,
         filesFullscreen: Boolean(state.files.fullscreen),
@@ -690,6 +697,7 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         ui: {
             focusRegion: statusState.focusRegion,
             inspectorTab: statusState.inspectorTab,
+            fullscreenPane: statusState.fullscreenPane,
             statusText: statusState.statusText,
             modal: statusState.modal,
         },
@@ -1188,6 +1196,7 @@ export function SharedPilotSwarmApp({ controller }) {
         promptRows: getPromptInputRows(state.ui.prompt),
         inspectorTab: state.ui.inspectorTab,
         filesFullscreen: Boolean(state.files?.fullscreen),
+        fullscreenPane: state.ui.fullscreenPane || null,
         themeId: state.ui.themeId,
         viewportWidth: state.ui.layout?.viewportWidth ?? 120,
         viewportHeight: state.ui.layout?.viewportHeight ?? 40,
@@ -1195,13 +1204,14 @@ export function SharedPilotSwarmApp({ controller }) {
     const viewportWidth = layoutState.viewportWidth;
     const viewportHeight = layoutState.viewportHeight;
     const layout = React.useMemo(
-        () => computeLegacyLayout({ width: viewportWidth, height: viewportHeight }, layoutState.paneAdjust, layoutState.promptRows),
-        [layoutState.paneAdjust, layoutState.promptRows, viewportHeight, viewportWidth],
+        () => computeLegacyLayout({ width: viewportWidth, height: viewportHeight }, layoutState.paneAdjust, layoutState.promptRows, 0, layoutState.fullscreenPane),
+        [layoutState.fullscreenPane, layoutState.paneAdjust, layoutState.promptRows, viewportHeight, viewportWidth],
     );
     const frames = buildWorkspacePaneFrames(layout);
-    const sessionRows = Math.max(3, layout.sessionPaneHeight - 2);
-    const activityRows = Math.max(3, layout.activityPaneHeight - 2);
+    const sessionRows = Math.max(3, (layout.fullscreenPane === "sessions" ? layout.bodyHeight : layout.sessionPaneHeight) - 2);
+    const activityRows = Math.max(3, (layout.fullscreenPane === "activity" ? layout.bodyHeight : layout.activityPaneHeight) - 2);
     const filesFullscreenActive = layoutState.inspectorTab === "files" && layoutState.filesFullscreen;
+    const fullscreenPaneActive = filesFullscreenActive ? null : layoutState.fullscreenPane;
     const workspaceHeight = Math.max(10, layout.bodyHeight);
 
     React.useEffect(() => {
@@ -1228,6 +1238,36 @@ export function SharedPilotSwarmApp({ controller }) {
                     frame: frames.fullscreenFiles,
                     showFullscreenTitle: true,
                 })
+                : fullscreenPaneActive === "sessions"
+                    ? React.createElement(SessionList, {
+                        controller,
+                        width: layout.totalWidth,
+                        height: workspaceHeight,
+                        maxRows: sessionRows,
+                        frame: frames.fullscreenPane,
+                    })
+                    : fullscreenPaneActive === "chat"
+                        ? React.createElement(ChatPane, {
+                            controller,
+                            width: layout.totalWidth,
+                            height: workspaceHeight,
+                            frame: frames.fullscreenPane,
+                        })
+                        : fullscreenPaneActive === "inspector"
+                            ? React.createElement(InspectorPane, {
+                                controller,
+                                width: layout.totalWidth,
+                                height: workspaceHeight,
+                                frame: frames.fullscreenPane,
+                            })
+                            : fullscreenPaneActive === "activity"
+                                ? React.createElement(ActivityPane, {
+                                    controller,
+                                    width: layout.totalWidth,
+                                    height: workspaceHeight,
+                                    maxLines: activityRows,
+                                    frame: frames.fullscreenPane,
+                                })
                 : [
                     !layout.leftHidden && React.createElement(platform.Column, { key: "left", width: layout.leftWidth, marginRight: layout.rightHidden ? 0 : PANE_GAP_X, flexGrow: 0 },
                         React.createElement(SessionList, {

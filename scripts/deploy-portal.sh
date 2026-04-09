@@ -2,11 +2,11 @@
 # Deploy PilotSwarm web portal to AKS.
 #
 # Usage:
-#   ./scripts/deploy-portal.sh                # full deploy (build + cert + push + apply)
+#   ./scripts/deploy-portal.sh                # full deploy (build + push + apply)
 #   ./scripts/deploy-portal.sh --skip-build   # skip Docker build (re-use existing image)
 #
 # Prerequisites:
-#   - .env.remote with DATABASE_URL, ENTRA_TENANT_ID, ENTRA_CLIENT_ID
+#   - .env.remote with DATABASE_URL, ENTRA_TENANT_ID, ENTRA_CLIENT_ID, K8S_CONTEXT
 #   - az CLI logged in, ACR accessible
 #   - kubectl configured for your AKS cluster
 
@@ -15,10 +15,7 @@ cd "$(dirname "$0")/.."
 
 # ─── Configuration ────────────────────────────────────────────────
 
-ACR_NAME="${ACR_NAME:-toygresaksacr}"
 IMAGE_NAME="pilotswarm-portal"
-NAMESPACE="${NAMESPACE:-copilot-runtime}"
-CERT_DIR="deploy/.portal-tls"
 
 SKIP_BUILD=false
 for arg in "$@"; do
@@ -53,6 +50,15 @@ if [ -z "${ENTRA_TENANT_ID:-}" ] || [ -z "${ENTRA_CLIENT_ID:-}" ]; then
     exit 1
 fi
 
+ACR_NAME="${ACR_NAME:-pilotswarmacr}"
+NAMESPACE="${K8S_NAMESPACE:-${NAMESPACE:-copilot-runtime}}"
+K8S_CONTEXT="${K8S_CONTEXT:-}"
+
+KUBECTL=(kubectl)
+if [ -n "$K8S_CONTEXT" ]; then
+    KUBECTL+=(--context "$K8S_CONTEXT")
+fi
+
 # ─── Step 1: Build TypeScript ─────────────────────────────────────
 
 echo ""
@@ -66,7 +72,8 @@ echo "🔑 Updating K8s secrets (including Entra vars)..."
 
 GH_TOKEN="${GITHUB_TOKEN:-}"
 
-kubectl create secret generic copilot-runtime-secrets \
+"${KUBECTL[@]}" delete secret copilot-runtime-secrets -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+"${KUBECTL[@]}" create secret generic copilot-runtime-secrets \
     -n "$NAMESPACE" \
     --from-literal=DATABASE_URL="$DATABASE_URL" \
     ${GH_TOKEN:+--from-literal=GITHUB_TOKEN="$GH_TOKEN"} \
@@ -84,48 +91,19 @@ kubectl create secret generic copilot-runtime-secrets \
     ${ANTHROPIC_API_KEY:+--from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"} \
     --from-literal=ENTRA_TENANT_ID="$ENTRA_TENANT_ID" \
     --from-literal=ENTRA_CLIENT_ID="$ENTRA_CLIENT_ID" \
-    --dry-run=client -o yaml | kubectl apply -f -
+    ${K8S_CONTEXT:+--from-literal=K8S_CONTEXT="$K8S_CONTEXT"}
 
 echo "🔐 Refreshing ACR pull secret..."
 ACR_SERVER="${ACR_NAME}.azurecr.io"
 ACR_REFRESH_TOKEN="$(az acr login --name "$ACR_NAME" --expose-token --output tsv --query accessToken)"
-kubectl create secret docker-registry acr-pull \
+"${KUBECTL[@]}" delete secret acr-pull -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+"${KUBECTL[@]}" create secret docker-registry acr-pull \
     -n "$NAMESPACE" \
     --docker-server="$ACR_SERVER" \
     --docker-username="00000000-0000-0000-0000-000000000000" \
-    --docker-password="$ACR_REFRESH_TOKEN" \
-    --dry-run=client -o yaml | kubectl apply -f -
+    --docker-password="$ACR_REFRESH_TOKEN"
 
-# ─── Step 3: Generate self-signed TLS cert ────────────────────────
-
-echo ""
-echo "🔒 Generating self-signed TLS certificate..."
-mkdir -p "$CERT_DIR"
-
-# We'll use "pilotswarm.internal" as the CN.
-# After deploy we'll also add the LB IP as a SAN via /etc/hosts.
-CERT_CN="pilotswarm.internal"
-
-# Generate cert with IP SAN placeholder — will be usable via /etc/hosts or nip.io
-openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
-    -keyout "$CERT_DIR/tls.key" \
-    -out "$CERT_DIR/tls.crt" \
-    -subj "/CN=$CERT_CN" \
-    -addext "subjectAltName=DNS:$CERT_CN,DNS:*.nip.io,DNS:*.sslip.io" \
-    2>/dev/null
-
-echo "   ✅ Cert generated: $CERT_CN"
-
-# Create K8s TLS secret
-kubectl create secret tls portal-tls \
-    -n "$NAMESPACE" \
-    --cert="$CERT_DIR/tls.crt" \
-    --key="$CERT_DIR/tls.key" \
-    --dry-run=client -o yaml | kubectl apply -f -
-
-echo "   ✅ TLS secret created"
-
-# ─── Step 4: Build and push Docker image ─────────────────────────
+# ─── Step 3: Build and push Docker image ─────────────────────────
 
 if [ "$SKIP_BUILD" = false ]; then
     echo ""
@@ -141,58 +119,42 @@ else
     echo "⏭️  Skipping Docker build (--skip-build)"
 fi
 
-# ─── Step 5: Deploy to AKS ───────────────────────────────────────
+# ─── Step 4: Deploy to AKS ───────────────────────────────────────
 
 echo ""
 echo "🚀 Deploying portal to AKS..."
 
 # Ensure namespace exists
-kubectl apply -f deploy/k8s/namespace.yaml
+"${KUBECTL[@]}" apply -f deploy/k8s/namespace.yaml
 
-# Apply portal deployment + service
-sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g" deploy/k8s/portal-deployment.yaml | kubectl apply -f -
+# Apply portal deployment + service + canonical ingress
+sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g" deploy/k8s/portal-deployment.yaml | "${KUBECTL[@]}" apply -f -
+sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g" deploy/k8s/portal-ingress.yaml | "${KUBECTL[@]}" apply -f -
 
 # Rollout restart to pick up new image
-kubectl rollout restart deployment/pilotswarm-portal -n "$NAMESPACE" 2>/dev/null || true
+"${KUBECTL[@]}" rollout restart deployment/pilotswarm-portal -n "$NAMESPACE" 2>/dev/null || true
 
 echo ""
 echo "⏳ Waiting for rollout..."
-kubectl rollout status deployment/pilotswarm-portal -n "$NAMESPACE" --timeout=180s
+"${KUBECTL[@]}" rollout status deployment/pilotswarm-portal -n "$NAMESPACE" --timeout=180s
 
-# ─── Step 6: Get the LB IP ───────────────────────────────────────
+# ─── Step 5: Verify ingress-facing portal resources ──────────────
 
-echo ""
-echo "⏳ Waiting for LoadBalancer IP..."
-LB_IP=""
-for i in $(seq 1 60); do
-    LB_IP="$(kubectl get svc pilotswarm-portal -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
-    if [ -n "$LB_IP" ]; then
-        break
-    fi
-    sleep 3
-done
+HEALTH_URL="https://pilotswarm-portal.westus3.cloudapp.azure.com/api/health"
 
 echo ""
 echo "══════════════════════════════════════════════════════════════"
 echo ""
-if [ -n "$LB_IP" ]; then
-    echo "  ✅ PilotSwarm Portal deployed!"
-    echo ""
-    echo "  Internal LB IP:  $LB_IP"
-    echo "  URL (nip.io):    https://pilotswarm.$LB_IP.nip.io"
-    echo "  URL (hosts):     https://pilotswarm.internal"
-    echo ""
-    echo "  To use pilotswarm.internal, add to /etc/hosts:"
-    echo "    $LB_IP  pilotswarm.internal"
-    echo ""
-    echo "  Entra ID redirect URIs to register:"
-    echo "    https://pilotswarm.$LB_IP.nip.io"
-    echo "    https://pilotswarm.internal"
-    echo ""
-    echo "  (Self-signed cert — accept the browser warning)"
-else
-    echo "  ⚠️  Portal deployed but LB IP not yet assigned."
-    echo "  Check with: kubectl get svc pilotswarm-portal -n $NAMESPACE"
-fi
+echo "  ✅ PilotSwarm Portal deployed!"
+echo ""
+echo "  Portal URL:      $HEALTH_URL"
+echo "  Ingress:         pilotswarm-portal-ingress"
+echo "  TLS secret:      keyvault-pilotswarm-portal-tls"
+echo ""
+echo "  Verify:"
+echo "    ${KUBECTL[*]} get pods -n $NAMESPACE -l app.kubernetes.io/component=portal"
+echo "    ${KUBECTL[*]} get ingress pilotswarm-portal-ingress -n $NAMESPACE"
+echo "    ${KUBECTL[*]} get certificate keyvault-pilotswarm-portal-tls -n $NAMESPACE"
+echo "    curl -sS $HEALTH_URL"
 echo ""
 echo "══════════════════════════════════════════════════════════════"

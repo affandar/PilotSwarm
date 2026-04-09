@@ -8,9 +8,23 @@ export const COLLAPSE_RIGHT_THRESHOLD = 18;
 export const PANE_GAP_X = 0;
 export const PANE_GAP_Y = 0;
 export const MAX_PROMPT_INPUT_ROWS = 3;
+export const MIN_SESSION_PANE_HEIGHT = 6;
+export const MIN_CHAT_PANE_HEIGHT = 10;
+export const DEFAULT_SESSION_PANE_RATIO = 0.25;
 
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+}
+
+function normalizeFullscreenPane(fullscreenPane) {
+    return [
+        FOCUS_REGIONS.SESSIONS,
+        FOCUS_REGIONS.CHAT,
+        FOCUS_REGIONS.INSPECTOR,
+        FOCUS_REGIONS.ACTIVITY,
+    ].includes(fullscreenPane)
+        ? fullscreenPane
+        : null;
 }
 
 export function normalizeViewport(viewport = {}) {
@@ -25,11 +39,12 @@ export function getPromptInputRows(prompt = "") {
     return clamp(explicitLines, 1, MAX_PROMPT_INPUT_ROWS);
 }
 
-export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1) {
+export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1, sessionPaneAdjust = 0, fullscreenPane = null) {
     const safeViewport = normalizeViewport(viewport);
     const totalWidth = safeViewport.width;
     const totalHeight = safeViewport.height;
     const safePromptRows = clamp(Number(promptRows) || 1, 1, MAX_PROMPT_INPUT_ROWS);
+    const safeFullscreenPane = normalizeFullscreenPane(fullscreenPane);
     const reservedRows = 5 + safePromptRows;
     const bodyHeight = Math.max(18, totalHeight - reservedRows);
     const baseLeftWidth = Math.floor(totalWidth * DEFAULT_LEFT_PANE_RATIO);
@@ -62,7 +77,12 @@ export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1) {
         rightWidth = Math.max(MIN_RIGHT_WIDTH, totalWidth - leftWidth - PANE_GAP_X);
     }
 
-    const sessionPaneHeight = Math.max(6, Math.floor(bodyHeight * 0.25));
+    const baseSessionPaneHeight = Math.max(MIN_SESSION_PANE_HEIGHT, Math.floor(bodyHeight * DEFAULT_SESSION_PANE_RATIO));
+    const sessionPaneHeight = clamp(
+        baseSessionPaneHeight + (Number(sessionPaneAdjust) || 0),
+        MIN_SESSION_PANE_HEIGHT,
+        Math.max(MIN_SESSION_PANE_HEIGHT, bodyHeight - MIN_CHAT_PANE_HEIGHT),
+    );
     const activityPaneHeight = Math.max(6, Math.floor(bodyHeight * 0.28));
 
     return {
@@ -72,19 +92,24 @@ export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1) {
         reservedRows,
         bodyHeight,
         promptRows: safePromptRows,
+        fullscreenPane: safeFullscreenPane,
         paneAdjust: Number(paneAdjust) || 0,
+        sessionPaneAdjust: Number(sessionPaneAdjust) || 0,
         leftHidden,
         rightHidden,
         leftWidth,
         rightWidth,
         sessionPaneHeight,
-        chatPaneHeight: Math.max(10, bodyHeight - sessionPaneHeight),
+        chatPaneHeight: Math.max(MIN_CHAT_PANE_HEIGHT, bodyHeight - sessionPaneHeight),
         activityPaneHeight,
         inspectorPaneHeight: Math.max(10, bodyHeight - activityPaneHeight),
     };
 }
 
 export function getFocusOrderForLayout(layout) {
+    if (layout?.fullscreenPane) {
+        return [layout.fullscreenPane, FOCUS_REGIONS.PROMPT];
+    }
     if (layout?.leftHidden) {
         return [FOCUS_REGIONS.INSPECTOR, FOCUS_REGIONS.ACTIVITY, FOCUS_REGIONS.PROMPT];
     }
@@ -107,6 +132,9 @@ export function normalizeFocusRegion(focusRegion, layout) {
 }
 
 export function getFocusLeftTarget(focusRegion, layout) {
+    if (layout?.fullscreenPane) {
+        return layout.fullscreenPane;
+    }
     if (layout?.leftHidden) {
         const map = {
             [FOCUS_REGIONS.PROMPT]: FOCUS_REGIONS.PROMPT,
@@ -136,6 +164,9 @@ export function getFocusLeftTarget(focusRegion, layout) {
 }
 
 export function getFocusRightTarget(focusRegion, layout) {
+    if (layout?.fullscreenPane) {
+        return layout.fullscreenPane;
+    }
     if (layout?.leftHidden) {
         const map = {
             [FOCUS_REGIONS.PROMPT]: FOCUS_REGIONS.PROMPT,

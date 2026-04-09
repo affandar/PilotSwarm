@@ -159,11 +159,18 @@ async function testDefaultAgentLayering(env) {
             "devops default instructions layered into investigator",
         );
         assertIncludes(investigator.prompt, "<ACTIVE_AGENT>", "active agent wrapper present");
+        assertIncludes(investigator.prompt, "artifact://", "investigator prompt documents artifact handoff handling");
+        assertIncludes(investigator.prompt, "session://", "investigator prompt documents durable session references");
 
         const builder = worker.loadedAgents.find(a => a.name === "builder");
         assertNotNull(builder, "builder loaded");
         assertIncludes(builder.prompt, "preserveWorkerAffinity: true", "builder prompt explains local build affinity preservation");
         assertIncludes(builder.prompt, "do not preserve worker affinity", "builder prompt explains remote monitoring without affinity");
+
+        const reporter = worker.loadedAgents.find(a => a.name === "reporter");
+        assertNotNull(reporter, "reporter loaded");
+        assertIncludes(reporter.prompt, "write_artifact", "reporter prompt documents artifact creation");
+        assertIncludes(reporter.prompt, "export_artifact", "reporter prompt documents artifact export");
     });
 }
 

@@ -11,6 +11,8 @@
     - proposal: [docs/proposals/entra-auth-gateway.md](docs/proposals/entra-auth-gateway.md)
 - session-store-driven durability cleanup
     - proposal: [docs/proposals/session-store-driven-durability.md](docs/proposals/session-store-driven-durability.md)
+    - implement previous-worker rescue before blob/fresh replay for lossy session recovery after worker restart
+        - proposal: [docs/proposals/lossy-session-recovery-after-worker-restart.md](docs/proposals/lossy-session-recovery-after-worker-restart.md)
 - pilotswarm provider (local + remote) which can support different auth methods
     - proposal: [docs/proposals/entra-auth-gateway.md](docs/proposals/entra-auth-gateway.md)
 - startup/shutdown performance.

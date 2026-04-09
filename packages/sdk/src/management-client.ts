@@ -38,6 +38,8 @@ const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 const STATUS_WAIT_SLICE_MS = 10_000;
 const MAX_SESSION_TITLE_LENGTH = 60;
+const SESSION_COMMAND_SETTLE_TIMEOUT_MS = 65_000;
+const SESSION_STATE_POLL_MS = 500;
 
 function isTerminalOrchestrationStatus(status?: string | null): boolean {
     return status === "Completed" || status === "Failed" || status === "Terminated";
@@ -105,6 +107,14 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
     if (signal?.aborted) {
         throw createAbortError(message, signal.reason);
     }
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildLifecycleCommandId(prefix: string): string {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -277,6 +287,52 @@ export class PilotSwarmManagementClient {
         } catch {
             return null;
         }
+    }
+
+    private async _waitForSession(
+        sessionId: string,
+        predicate: (session: PilotSwarmSessionView | null) => boolean,
+        timeoutMs: number,
+    ): Promise<PilotSwarmSessionView | null> {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const session = await this.getSession(sessionId).catch(() => null);
+            if (predicate(session)) return session;
+
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) break;
+            await sleep(Math.min(SESSION_STATE_POLL_MS, remainingMs));
+        }
+
+        throw new Error(`Timed out waiting for session ${sessionId.slice(0, 8)} to settle`);
+    }
+
+    private async _forceDeleteSession(sessionId: string, reason?: string): Promise<void> {
+        const session = await this._catalog!.getSession(sessionId);
+        if (session?.isSystem) {
+            throw new Error("Cannot delete system session");
+        }
+
+        // Set terminal state in CMS before soft-delete so any last read picks it up
+        await this._catalog!.updateSession(sessionId, {
+            state: "failed",
+            lastError: reason ?? "Deleted by management client",
+            waitReason: null,
+        }).catch(() => {});
+
+        await this._catalog!.softDeleteSession(sessionId);
+
+        if (this._factStore) {
+            try {
+                await this._factStore.deleteSessionFactsForSession(sessionId);
+            } catch (err) {
+                console.error(`[PilotSwarmManagementClient] session fact cleanup failed for ${sessionId}:`, err);
+            }
+        }
+
+        try {
+            await this._duroxideClient.deleteInstance(`session-${sessionId}`, true);
+        } catch {}
     }
 
     // ─── Session Listing ─────────────────────────────────────
@@ -504,27 +560,27 @@ export class PilotSwarmManagementClient {
      */
     async cancelSession(sessionId: string, reason?: string): Promise<void> {
         this._ensureStarted();
-        const session = await this._catalog!.getSession(sessionId);
-        if (session?.isSystem) {
+        const session = await this.getSession(sessionId);
+        if (!session) return;
+        if (session.isSystem) {
             throw new Error("Cannot cancel system session");
         }
-        const cancelReason = reason ?? "Cancelled by management client";
-        const descendantIds = await this._catalog!.getDescendantSessionIds(sessionId).catch(() => []);
-        const targetIds = [...descendantIds, sessionId];
-
-        for (const targetSessionId of targetIds) {
-            try {
-                await this._duroxideClient.cancelInstance(`session-${targetSessionId}`, cancelReason);
-            } catch (error) {
-                if (!isIgnorableCancelError(error)) throw error;
-            }
-
-            await this._catalog!.updateSession(targetSessionId, {
-                state: "cancelled",
-                lastError: cancelReason,
-                waitReason: null,
-            }).catch(() => {});
+        if (session.status === "cancelled" || session.status === "failed" || session.status === "completed") {
+            return;
         }
+
+        const cancelReason = reason ?? "Cancelled by management client";
+        await this.sendCommand(sessionId, {
+            cmd: "cancel",
+            id: buildLifecycleCommandId("cancel"),
+            args: { reason: cancelReason },
+        });
+
+        await this._waitForSession(
+            sessionId,
+            (current) => current != null && (current.status === "cancelled" || current.status === "failed" || current.status === "completed"),
+            SESSION_COMMAND_SETTLE_TIMEOUT_MS,
+        );
     }
 
     /**
@@ -533,33 +589,34 @@ export class PilotSwarmManagementClient {
      */
     async deleteSession(sessionId: string, reason?: string): Promise<void> {
         this._ensureStarted();
-        const session = await this._catalog!.getSession(sessionId);
-        if (session?.isSystem) {
+        const session = await this.getSession(sessionId);
+        if (!session) return;
+        if (session.isSystem) {
             throw new Error("Cannot delete system session");
         }
+        const deleteReason = reason ?? "Deleted by management client";
 
-        // Set terminal state in CMS before soft-delete so any last read picks it up
-        await this._catalog!.updateSession(sessionId, {
-            state: "failed",
-            lastError: reason ?? "Deleted by management client",
-            waitReason: null,
-        });
-
-        // CMS soft-delete
-        await this._catalog!.softDeleteSession(sessionId);
-
-        if (this._factStore) {
-            try {
-                await this._factStore.deleteSessionFactsForSession(sessionId);
-            } catch (err) {
-                console.error(`[PilotSwarmManagementClient] session fact cleanup failed for ${sessionId}:`, err);
-            }
+        if (
+            session.status === "completed"
+            || session.status === "failed"
+            || session.status === "cancelled"
+            || isTerminalOrchestrationStatus(session.orchestrationStatus)
+        ) {
+            await this._forceDeleteSession(sessionId, deleteReason);
+            return;
         }
 
-        // Duroxide: delete instance (best effort)
-        try {
-            await this._duroxideClient.deleteInstance(`session-${sessionId}`, true);
-        } catch {}
+        await this.sendCommand(sessionId, {
+            cmd: "delete",
+            id: buildLifecycleCommandId("delete"),
+            args: { reason: deleteReason },
+        });
+
+        await this._waitForSession(
+            sessionId,
+            (current) => current == null,
+            SESSION_COMMAND_SETTLE_TIMEOUT_MS,
+        );
     }
 
     // ─── Session Events ──────────────────────────────────────
@@ -748,9 +805,9 @@ export class PilotSwarmManagementClient {
         if (!session) {
             throw new Error(`Session ${sessionId.slice(0, 8)} was not found.`);
         }
-        if (session.status === "failed") {
+        if (session.status === "failed" || session.status === "cancelled") {
             throw new Error(
-                `Session ${sessionId.slice(0, 8)} is a failed terminal orchestration and cannot accept new messages.`,
+                `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
             );
         }
         if (
