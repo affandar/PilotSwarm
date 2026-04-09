@@ -1,5 +1,6 @@
 import { formatTimestamp, shortSessionId, stripTerminalMarkupTags, summarizeJson } from "./formatting.js";
 import { formatCompactionActivityRuns } from "./context-usage.js";
+import { canonicalSystemTitle } from "./system-titles.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -44,6 +45,7 @@ function isInternalSystemLikeText(text) {
 
     return /^\[SYSTEM:/i.test(normalized)
         || /^\[CHILD_UPDATE\b/i.test(normalized)
+        || /^Buffered child updates arrived /i.test(normalized)
         || /^Sub-agent spawned successfully\./i.test(normalized)
         || /^Message sent to sub-agent /i.test(normalized)
         || /^No sub-agents have been spawned yet\./i.test(normalized)
@@ -112,6 +114,11 @@ function buildChatMessage(event, role) {
         time: formatTimestamp(event.createdAt),
         createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
     };
+}
+
+function shouldRenderSystemMessageAsActivity(event) {
+    return event?.eventType === "system.message"
+        && isInternalSystemLikeText(messageTextFromEvent(event));
 }
 
 function reconcileOptimisticMessage(chat, incomingMessage) {
@@ -312,7 +319,7 @@ function formatActivity(event) {
             runs = buildLabeledActivityRuns(
                 time,
                 "[lossy handoff]",
-                "red",
+                "yellow",
                 formatLossyHandoffActivityDetail(event, body) || "handoff to a new worker",
             );
             break;
@@ -409,6 +416,10 @@ function formatActivity(event) {
             runs = buildLabeledActivityRuns(time, "[error]", "red", body || "session error", "white");
             break;
 
+        case "system.message":
+            runs = buildLabeledActivityRuns(time, "[system]", "gray", body || "system message");
+            break;
+
         default:
             runs = [
                 ...buildActivityPrefix(time),
@@ -455,8 +466,13 @@ export function buildHistoryModel(events = [], options = {}) {
             continue;
         }
         if (event.eventType === "system.message") {
-            const message = buildChatMessage(event, "system");
-            if (message) chat.push(message);
+            if (shouldRenderSystemMessageAsActivity(event)) {
+                const activityItem = formatActivity(event);
+                if (activityItem) activity.push(activityItem);
+            } else {
+                const message = buildChatMessage(event, "system");
+                if (message) chat.push(message);
+            }
             continue;
         }
         const activityItem = formatActivity(event);
@@ -508,10 +524,18 @@ export function appendEventToHistory(history, event) {
         return next;
     }
     if (event.eventType === "system.message") {
-        const message = buildChatMessage(event, "system");
-        if (!message) return next;
-        next.chat.push(message);
-        next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
+        if (shouldRenderSystemMessageAsActivity(event)) {
+            const activityItem = formatActivity(event);
+            if (activityItem) {
+                next.activity.push(activityItem);
+                next.activity = clampHistoryItems(next.activity, loadedEventLimit);
+            }
+        } else {
+            const message = buildChatMessage(event, "system");
+            if (!message) return next;
+            next.chat.push(message);
+            next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
+        }
         return next;
     }
     const activityItem = formatActivity(event);
@@ -527,7 +551,9 @@ export function createSplashCard(branding, session = null) {
         ? session.splash
         : branding?.splash;
     if (!splash) return [];
-    const title = session?.title || branding?.title || "PilotSwarm";
+    const title = session?.isSystem
+        ? canonicalSystemTitle(session, branding?.title || "PilotSwarm")
+        : (session?.title || branding?.title || "PilotSwarm");
     const hint = "{gray-fg}Start interacting with this session to replace the splash screen.{/gray-fg}";
     return [{
         id: `splash:${title}`,

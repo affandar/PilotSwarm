@@ -5,29 +5,26 @@ function isMobileBrowser() {
     return /Mobi|Android|iPhone|iPad|iPod/i.test(window.navigator.userAgent || "");
 }
 
-async function fetchAuthConfig() {
-    const response = await fetch("/api/auth-config");
-    if (!response.ok) {
-        throw new Error(`Failed to load auth config (${response.status})`);
-    }
-    return response.json();
-}
-
-export function usePortalAuth() {
-    const [state, setState] = React.useState({
+function buildInitialState(authConfig) {
+    return {
         loading: true,
-        authEnabled: false,
+        provider: authConfig?.provider || "none",
+        authEnabled: Boolean(authConfig?.enabled),
         signedIn: false,
         account: null,
         accessToken: null,
         error: null,
-        config: null,
-    });
+        config: authConfig || null,
+    };
+}
+
+export function usePortalAuth(authConfig) {
+    const [state, setState] = React.useState(() => buildInitialState(authConfig));
     const msalRef = React.useRef(null);
 
-    const acquireToken = React.useCallback(async () => {
-        if (!msalRef.current || !state.account || !state.config?.clientId) return null;
-        const scopes = [`${state.config.clientId}/.default`];
+    const acquireEntraToken = React.useCallback(async () => {
+        if (!msalRef.current || !state.account || !state.config?.client?.clientId) return null;
+        const scopes = [`${state.config.client.clientId}/.default`];
         try {
             const response = await msalRef.current.acquireTokenSilent({
                 scopes,
@@ -49,32 +46,59 @@ export function usePortalAuth() {
             setState((current) => ({ ...current, accessToken: token }));
             return token;
         }
-    }, [state.account, state.config?.clientId]);
+    }, [state.account, state.config?.client?.clientId]);
 
     React.useEffect(() => {
         let active = true;
-        (async () => {
-            try {
-                const config = await fetchAuthConfig();
-                if (!active) return;
-                if (!config.enabled) {
-                    setState({
-                        loading: false,
-                        authEnabled: false,
-                        signedIn: true,
-                        account: null,
-                        accessToken: null,
-                        error: null,
-                        config,
-                    });
-                    return;
-                }
 
+        async function initialize() {
+            if (!authConfig) {
+                setState((current) => ({
+                    ...current,
+                    loading: true,
+                }));
+                return;
+            }
+
+            if (!authConfig.enabled || authConfig.provider === "none") {
+                msalRef.current = null;
+                if (!active) return;
+                setState({
+                    loading: false,
+                    provider: authConfig.provider || "none",
+                    authEnabled: false,
+                    signedIn: true,
+                    account: null,
+                    accessToken: null,
+                    error: null,
+                    config: authConfig,
+                });
+                return;
+            }
+
+            if (authConfig.provider !== "entra") {
+                msalRef.current = null;
+                if (!active) return;
+                setState({
+                    loading: false,
+                    provider: authConfig.provider,
+                    authEnabled: true,
+                    signedIn: false,
+                    account: null,
+                    accessToken: null,
+                    error: `Unsupported portal auth provider "${authConfig.provider}"`,
+                    config: authConfig,
+                });
+                return;
+            }
+
+            try {
+                const clientConfig = authConfig.client || {};
                 const msal = new PublicClientApplication({
                     auth: {
-                        clientId: config.clientId,
-                        authority: config.authority,
-                        redirectUri: config.redirectUri,
+                        clientId: clientConfig.clientId,
+                        authority: clientConfig.authority,
+                        redirectUri: clientConfig.redirectUri,
                     },
                     cache: {
                         cacheLocation: "sessionStorage",
@@ -85,66 +109,81 @@ export function usePortalAuth() {
                 await msal.initialize();
                 const redirectResult = await msal.handleRedirectPromise();
                 const account = redirectResult?.account || msal.getAllAccounts()[0] || null;
-                if (!active) return;
-
                 let accessToken = null;
+
                 if (account) {
                     try {
-                        accessToken = await (async () => {
-                            const scopes = [`${config.clientId}/.default`];
-                            const response = await msal.acquireTokenSilent({ scopes, account });
-                            return response.accessToken || response.idToken || null;
-                        })();
+                        const response = await msal.acquireTokenSilent({
+                            scopes: [`${clientConfig.clientId}/.default`],
+                            account,
+                        });
+                        accessToken = response.accessToken || response.idToken || null;
                     } catch {}
                 }
 
+                if (!active) return;
                 setState({
                     loading: false,
+                    provider: authConfig.provider,
                     authEnabled: true,
                     signedIn: Boolean(account),
                     account,
                     accessToken,
                     error: null,
-                    config,
+                    config: authConfig,
                 });
             } catch (error) {
                 if (!active) return;
                 setState({
                     loading: false,
-                    authEnabled: false,
+                    provider: authConfig.provider,
+                    authEnabled: true,
                     signedIn: false,
                     account: null,
                     accessToken: null,
                     error: error?.message || String(error),
-                    config: null,
+                    config: authConfig,
                 });
             }
-        })();
+        }
 
+        initialize();
         return () => {
             active = false;
         };
-    }, []);
+    }, [
+        authConfig?.client?.authority,
+        authConfig?.client?.clientId,
+        authConfig?.client?.redirectUri,
+        authConfig?.enabled,
+        authConfig?.provider,
+    ]);
 
     const signIn = React.useCallback(async () => {
-        if (!msalRef.current || !state.config?.clientId) return;
+        if (!state.authEnabled) return;
+        if (state.provider !== "entra") {
+            throw new Error(`Unsupported portal auth provider "${state.provider}"`);
+        }
+        if (!msalRef.current || !state.config?.client?.clientId) return;
+
         if (isMobileBrowser()) {
             await msalRef.current.loginRedirect({ scopes: ["User.Read"] });
             return;
         }
+
         const result = await msalRef.current.loginPopup({ scopes: ["User.Read"] });
         const account = result.account || msalRef.current.getAllAccounts()[0] || null;
         let token = null;
         if (account) {
             try {
                 const response = await msalRef.current.acquireTokenSilent({
-                    scopes: [`${state.config.clientId}/.default`],
+                    scopes: [`${state.config.client.clientId}/.default`],
                     account,
                 });
                 token = response.accessToken || response.idToken || null;
             } catch {
                 const response = await msalRef.current.acquireTokenPopup({
-                    scopes: [`${state.config.clientId}/.default`],
+                    scopes: [`${state.config.client.clientId}/.default`],
                     account,
                 });
                 token = response.accessToken || response.idToken || null;
@@ -155,10 +194,23 @@ export function usePortalAuth() {
             signedIn: Boolean(account),
             account,
             accessToken: token,
+            error: null,
         }));
-    }, [state.config?.clientId]);
+    }, [state.authEnabled, state.config?.client?.clientId, state.provider]);
 
     const signOut = React.useCallback(async () => {
+        if (!state.authEnabled) {
+            setState((current) => ({
+                ...current,
+                signedIn: false,
+                account: null,
+                accessToken: null,
+            }));
+            return;
+        }
+        if (state.provider !== "entra") {
+            throw new Error(`Unsupported portal auth provider "${state.provider}"`);
+        }
         if (!msalRef.current) {
             setState((current) => ({
                 ...current,
@@ -180,7 +232,7 @@ export function usePortalAuth() {
             account: null,
             accessToken: null,
         }));
-    }, [state.account]);
+    }, [state.account, state.authEnabled, state.provider]);
 
     const handleUnauthorized = React.useCallback(() => {
         setState((current) => ({
@@ -194,8 +246,11 @@ export function usePortalAuth() {
     const getAccessToken = React.useCallback(async () => {
         if (!state.authEnabled) return null;
         if (state.accessToken) return state.accessToken;
-        return acquireToken();
-    }, [acquireToken, state.accessToken, state.authEnabled]);
+        if (state.provider !== "entra") {
+            throw new Error(`Unsupported portal auth provider "${state.provider}"`);
+        }
+        return acquireEntraToken();
+    }, [acquireEntraToken, state.accessToken, state.authEnabled, state.provider]);
 
     return {
         ...state,

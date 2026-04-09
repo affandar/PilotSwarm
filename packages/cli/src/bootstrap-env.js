@@ -3,21 +3,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveTuiBranding } from "./plugin-config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.resolve(__dirname, "..");
-const defaultTuiSplashPath = path.join(pkgRoot, "tui-splash.txt");
-
-function readPluginMetadata(pluginDir) {
-    if (!pluginDir) return null;
-    const pluginJsonPath = path.join(pluginDir, "plugin.json");
-    if (!fs.existsSync(pluginJsonPath)) return null;
-    try {
-        return JSON.parse(fs.readFileSync(pluginJsonPath, "utf-8"));
-    } catch (error) {
-        throw new Error(`Failed to parse plugin metadata: ${pluginJsonPath}: ${error.message}`);
-    }
-}
 
 function resolvePluginDir(flags) {
     if (flags.plugin) return path.resolve(flags.plugin);
@@ -50,31 +39,6 @@ function resolveSystemMessage(flags) {
 
     if (process.env.SYSTEM_MESSAGE) return process.env.SYSTEM_MESSAGE;
     return undefined;
-}
-
-function resolveTuiBranding(pluginDir) {
-    const pluginMeta = readPluginMetadata(pluginDir);
-    const tui = pluginMeta?.tui;
-    let defaultSplash = "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}";
-    if (fs.existsSync(defaultTuiSplashPath)) {
-        defaultSplash = fs.readFileSync(defaultTuiSplashPath, "utf-8").trimEnd();
-    }
-    if (!tui || typeof tui !== "object") {
-        return { title: "PilotSwarm", splash: defaultSplash };
-    }
-
-    const title = typeof tui.title === "string" && tui.title.trim() ? tui.title.trim() : "PilotSwarm";
-    let splash = defaultSplash;
-    if (typeof tui.splash === "string" && tui.splash.trim()) {
-        splash = tui.splash;
-    } else if (typeof tui.splashFile === "string" && tui.splashFile.trim()) {
-        const splashPath = path.resolve(pluginDir, tui.splashFile);
-        if (!fs.existsSync(splashPath)) {
-            throw new Error(`TUI splash file not found: ${splashPath}`);
-        }
-        splash = fs.readFileSync(splashPath, "utf-8").trimEnd();
-    }
-    return { title, splash };
 }
 
 function loadEnvFile(envFile) {

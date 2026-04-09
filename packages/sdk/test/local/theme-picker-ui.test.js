@@ -24,6 +24,11 @@ function createController() {
 }
 
 describe("theme picker UI behavior", () => {
+    it("honors a persisted theme id during initial state creation", () => {
+        const state = createInitialState({ mode: "local", themeId: "noctis-viola" });
+        assertEqual(state.ui.themeId, "noctis-viola", "initial state should honor a persisted theme id");
+    });
+
     it("opens the shared theme picker with the current theme preselected", async () => {
         const { controller, store } = createController();
 

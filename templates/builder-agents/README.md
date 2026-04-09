@@ -7,12 +7,14 @@ They are not active in this repository. Copy them into the target repository you
 ## Included Agents
 
 - `pilotswarm-cli-builder` — scaffolds plugin-driven CLI/TUI apps built on the shipped PilotSwarm UI
+- `pilotswarm-portal-builder` — scaffolds browser-portal customization, portal branding, and auth add-on wiring
 - `pilotswarm-sdk-builder` — scaffolds SDK-first apps and services built around `PilotSwarmClient` and `PilotSwarmWorker`
 - `pilotswarm-azure-deployer` — prepares PilotSwarm-based apps for Azure / AKS deployment, including env templates, manifests, and worker observability
 
 ## Included Skills (split for focused retrieval)
 
 - `pilotswarm-cli-builder` — CLI/TUI scaffold guidance, env files, launcher scripts
+- `pilotswarm-portal-builder` — portal branding, `plugin.json.portal`, auth add-ons, and deployment wiring
 - `pilotswarm-sdk-builder` — SDK app scaffold guidance, client/worker split, tests
 - `pilotswarm-azure-deployer` — deployment workflow, manifests, env checklist, `RUST_LOG` observability
 - `pilotswarm-aks-identity` — cross-cluster AKS access, Workload Identity, kubectl patterns
@@ -51,10 +53,13 @@ Copy these folders into the target repository:
 .github/
 ├── agents/
 │   ├── pilotswarm-cli-builder.agent.md
+│   ├── pilotswarm-portal-builder.agent.md
 │   ├── pilotswarm-sdk-builder.agent.md
 │   └── pilotswarm-azure-deployer.agent.md
 └── skills/
     ├── pilotswarm-cli-builder/
+    │   └── SKILL.md
+    ├── pilotswarm-portal-builder/
     │   └── SKILL.md
     ├── pilotswarm-sdk-builder/
     │   └── SKILL.md
@@ -80,6 +85,8 @@ cp -R templates/builder-agents/skills/* .github/skills/
 
 - CLI guide:
   `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
+- Portal guide:
+  `https://github.com/affandar/pilotswarm/blob/main/packages/portal/README.md`
 - CLI agent guide:
   `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-agents.md`
 - SDK guide:

@@ -1,6 +1,7 @@
 import { describe, it } from "vitest";
 import { NodeSdkTransport } from "../../../cli/src/node-sdk-transport.js";
 import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
+import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
 import { createStore } from "../../../ui-core/src/store.js";
@@ -148,5 +149,41 @@ describe("history pane UI behavior", () => {
         assertEqual(filesState.selectedFilename, filename, "exported history should become the selected file");
         assertEqual(store.getState().files.selectedArtifactId, `${sessionId}/${filename}`, "global files selection should follow the new history artifact");
         assertIncludes(filesState.previews[filename].content, "\"history\": true", "exported history should be previewable in the files pane");
+    });
+
+    it("renders buffered child-update system prompts as activity instead of chat", () => {
+        const createdAt = new Date("2026-04-08T03:00:00.000Z");
+        const history = buildHistoryModel([
+            {
+                seq: 1,
+                sessionId: "session-12345678",
+                eventType: "system.message",
+                data: {
+                    content:
+                        "Buffered child updates arrived while your recurring schedule was waiting for the next wake-up " +
+                        "(\"monitor stress test\"). Review the updates and continue your task now.",
+                },
+                createdAt,
+            },
+            {
+                seq: 2,
+                sessionId: "session-12345678",
+                eventType: "assistant.message",
+                data: { content: "Latest steady-state sample recorded." },
+                createdAt,
+            },
+        ]);
+
+        assertEqual(
+            history.chat.some((message) => message.text.includes("Buffered child updates arrived")),
+            false,
+            "internal child-update prompts should not appear in chat",
+        );
+        assertEqual(
+            history.activity.some((item) => item.text.includes("Buffered child updates arrived")),
+            true,
+            "internal child-update prompts should still appear in activity",
+        );
+        assertEqual(history.chat.some((message) => message.text.includes("Latest steady-state sample recorded.")), true);
     });
 });

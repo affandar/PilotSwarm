@@ -5,7 +5,7 @@ description: "Use when packaging and deploying a PilotSwarm-based app to Azure o
 
 # PilotSwarm Azure Deployer
 
-Prepare PilotSwarm-based apps for Azure deployment, especially AKS worker deployments.
+Prepare PilotSwarm-based apps for Azure deployment, especially AKS worker and browser-portal deployments.
 
 ## Canonical References
 
@@ -19,20 +19,23 @@ Prepare PilotSwarm-based apps for Azure deployment, especially AKS worker deploy
 ```text
 deploy/
 ├── Dockerfile.worker
+├── Dockerfile.portal
 ├── k8s/
 │   ├── namespace.yaml
 │   ├── worker-deployment.yaml
+│   ├── portal-deployment.yaml
 │   └── configmaps-secrets.md
 └── README.md
 ```
 
 ## Workflow
 
-1. Confirm the app's worker entrypoint, plugin paths, and required env vars.
+1. Confirm the app's worker entrypoint, portal entrypoint, plugin paths, and required env vars.
 2. Ensure remote workers package the same plugin files and worker code used locally.
-3. Configure database and blob storage explicitly.
-4. Write manifests, model-catalog/env guidance, and rollout instructions that match the actual app layout.
-5. Call out reset/versioning constraints when orchestration behavior changes.
+3. Ensure remote portal images package the app plugin metadata needed for branding, agent creation, and session policy.
+4. Configure database and blob storage explicitly.
+5. Write manifests, model-catalog/env guidance, and rollout instructions that match the actual app layout.
+6. Call out reset/versioning constraints when orchestration behavior changes.
 
 ## Environment And Azure Resource Checklist
 
@@ -50,6 +53,7 @@ gitignored `.env` copy. Document at least:
 - storage account/container for session dehydration or artifacts
 - container registry and image names/tags
 - workload identity client ID, service account name/namespace, and federated credential name
+- portal ingress host, auth provider, and redirect URI inputs when the browser portal is deployed
 
 Model/provider guidance:
 
@@ -58,6 +62,8 @@ Model/provider guidance:
 - Provider keys belong in `.env`, `.env.remote`, or Kubernetes secrets, not inside the model catalog.
 - For AKS deployments, keep the live Kubernetes secret exactly in sync with local `.env.remote` for worker-facing vars: not more, not less. If a key is present locally, it should be present in AKS; if it is absent locally, it should be absent in AKS.
 - Removing a provider key from AKS only changes selectors after the secret is refreshed and the workers restart.
+- For Kubernetes secret creation, prefer `kubectl create secret generic ... --from-env-file=.env.remote` when values contain semicolons or other shell-significant characters, especially `AZURE_STORAGE_CONNECTION_STRING`.
+- If documentation uses shell exports or `source .env.remote`, require explicit quoting for semicolon-bearing values before recommending `--from-literal`.
 
 Also call out the Azure resources the user must provision:
 
@@ -67,7 +73,32 @@ Also call out the Azure resources the user must provision:
 - federated identity credential
 - Azure Storage account
 - Azure Container Registry
+- public ingress / DNS path for the browser portal when it is exposed
 - worker AKS cluster + namespace (three-tier only — see `pilotswarm-three-tier` skill)
+
+## Portal Deployment Guidance
+
+When the app includes the shipped browser portal:
+
+- package the same app plugin into the portal image that the worker uses for prompts, agent metadata, and session policy
+- set `PLUGIN_DIRS` in the portal deployment so the web process can resolve `plugin.json.portal`, `plugin.json.tui`, and user-creatable agents
+- keep portal branding in `plugin.json.portal`, using `plugin.json.tui` only as a fallback or shared source when that matches the user's intent
+- treat portal auth as an optional provider add-on rather than a built-in Entra requirement
+- document `PORTAL_AUTH_PROVIDER=none|entra|<custom>` explicitly
+- if Entra is selected, document:
+  - `PORTAL_AUTH_PROVIDER=entra`
+  - `PORTAL_AUTH_ENTRA_TENANT_ID`
+  - `PORTAL_AUTH_ENTRA_CLIENT_ID`
+  - SPA redirect URI registration for the portal ingress URL
+- if another provider such as AWS IAM is requested, keep the deployment contract separate from Entra-specific steps and call out which browser-side login flow and server-side validation hooks must be supplied
+
+## Portal Validation Guidance
+
+- verify the portal pod can start with the app plugin mounted or copied into the image
+- verify the portal service resolves live endpoints before declaring the rollout healthy
+- verify `GET /api/health` and `GET /api/portal-config` against the live ingress URL
+- if the rollout briefly returns `502` or `503`, confirm whether the new pod is still registering or whether the container is crashlooping before calling it healthy
+- when the portal still shows default PilotSwarm branding after rollout, inspect `PLUGIN_DIRS`, packaged plugin contents, and `plugin.json.portal` before assuming the UI code is wrong
 
 ## Worker Observability
 
@@ -124,6 +155,7 @@ orchestration lifecycle events the TUI needs.
 ## Guardrails
 
 - Do not assume local plugin directories magically exist in deployed workers.
+- Do not assume local plugin directories magically exist in deployed portal pods.
 - Prefer explicit packaging and env configuration over vague operational guidance.
 - Call out orchestration determinism and database reset requirements when relevant.
 - Call out that clean AKS restarts will immediately recreate built-in system sessions, so a truly empty session list is transient.

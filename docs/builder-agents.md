@@ -15,8 +15,19 @@ That folder is intentionally non-active. Nothing there is loaded into this repos
 ## Included Templates
 
 - `pilotswarm-cli-builder`
+- `pilotswarm-portal-builder`
 - `pilotswarm-sdk-builder`
 - `pilotswarm-azure-deployer`
+
+## Included Skills
+
+- `pilotswarm-cli-builder`
+- `pilotswarm-portal-builder`
+- `pilotswarm-sdk-builder`
+- `pilotswarm-azure-deployer`
+- `pilotswarm-aks-identity`
+- `pilotswarm-azure-lessons`
+- `pilotswarm-three-tier`
 
 ## Install Into Another Repository
 
@@ -40,6 +51,8 @@ cp -R templates/builder-agents/skills/* .github/skills/
 
 - CLI guide:
   `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
+- Portal guide:
+  `https://github.com/affandar/pilotswarm/blob/main/packages/portal/README.md`
 - CLI agent guide:
   `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-agents.md`
 - SDK guide:
@@ -56,6 +69,7 @@ cp -R templates/builder-agents/skills/* .github/skills/
 ## Design Intent
 
 - `pilotswarm-cli-builder` helps users build plugin-driven CLI/TUI apps on top of the shipped PilotSwarm UI.
+- `pilotswarm-portal-builder` helps users customize the shipped browser portal with plugin-driven branding, named-agent exposure, and optional auth add-ons.
 - `pilotswarm-sdk-builder` helps users build SDK-first services and applications around `PilotSwarmClient` and `PilotSwarmWorker`.
 - `pilotswarm-azure-deployer` helps users package and deploy PilotSwarm-based apps to Azure / AKS, with explicit env-template and cross-cluster workload-identity guidance.
 
@@ -68,6 +82,7 @@ Builder templates should assume:
 - app `default.agent.md` files are overlays layered under the embedded PilotSwarm framework base
 - if an app needs a custom model catalog, check in `.model_providers.example.json`, create a local gitignored `.model_providers.json` from it, and keep provider keys in `.env` / `.env.remote`
 - builder templates should scaffold both `.env.example` and `.model_providers.example.json` from PilotSwarm's own example-file shape, then create local `.env` / `.model_providers.json` copies and add those real files to `.gitignore`
+- Azure deployment guidance should prefer `kubectl create secret generic ... --from-env-file=...` when semicolon-bearing values such as Azure Storage connection strings are involved
 
 ## Maintenance Rule
 

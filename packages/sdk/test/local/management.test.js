@@ -114,6 +114,39 @@ async function testCancelSession(env) {
     }
 }
 
+async function testDeleteSession(env) {
+    const catalog = await createCatalog(env);
+    const mgmt = await createManagementClient(env);
+
+    try {
+        await withClient(env, async (client) => {
+            const session = await client.createSession(ONEWORD_CONFIG);
+
+            console.log("  Sending: What is 5+5?");
+            await session.sendAndWait("What is 5+5?", TIMEOUT);
+
+            console.log("  Deleting session...");
+            await mgmt.deleteSession(session.sessionId, "Test deletion");
+
+            const deadline = Date.now() + 30_000;
+            let deleted = false;
+            while (Date.now() < deadline) {
+                const row = await catalog.getSession(session.sessionId);
+                if (!row) {
+                    deleted = true;
+                    break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+
+            assert(deleted, "Expected session to be soft-deleted from CMS");
+        });
+    } finally {
+        await catalog.close();
+        await mgmt.stop();
+    }
+}
+
 describe("Level 4b: Management", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -125,5 +158,8 @@ describe("Level 4b: Management", () => {
     });
     it("Cancel Session", { timeout: TIMEOUT }, async () => {
         await testCancelSession(getEnv());
+    });
+    it("Delete Session", { timeout: TIMEOUT }, async () => {
+        await testDeleteSession(getEnv());
     });
 });

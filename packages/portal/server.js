@@ -5,15 +5,17 @@ import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getAuthConfig, extractToken, validateToken } from "./auth.js";
+import { getPortalAssetFile, getPortalConfig } from "./config.js";
+import { getAuthProvider, getAuthConfig, extractToken, validateToken } from "./auth.js";
 import { PortalRuntime } from "./runtime.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, "../..");
 const DIST_DIR = path.join(__dirname, "dist");
 
 function getPortalMode() {
-    return process.env.PORTAL_TUI_MODE || process.env.PORTAL_MODE || "local";
+    const explicitMode = process.env.PORTAL_TUI_MODE || process.env.PORTAL_MODE;
+    if (explicitMode) return explicitMode;
+    return process.env.KUBERNETES_SERVICE_HOST ? "remote" : "local";
 }
 
 function createPortalServer({ app }) {
@@ -48,8 +50,8 @@ function createJsonRpcError(error, status = 500) {
     };
 }
 
-async function authenticateRequest(req, authConfig) {
-    if (!authConfig) return null;
+async function authenticateRequest(req, authProvider) {
+    if (!authProvider?.enabled) return null;
     const token = extractToken(req);
     if (!token) return null;
     return validateToken(token);
@@ -57,7 +59,8 @@ async function authenticateRequest(req, authConfig) {
 
 export async function startServer(opts = {}) {
     const { port = Number(process.env.PORT) || 3001 } = opts;
-    const authConfig = getAuthConfig();
+    const authProvider = getAuthProvider();
+    const portalConfig = getPortalConfig();
     const mode = getPortalMode();
     const runtime = new PortalRuntime({
         store: process.env.DATABASE_URL || "sqlite::memory:",
@@ -66,17 +69,17 @@ export async function startServer(opts = {}) {
 
     const app = express();
     app.set("trust proxy", true);
-    app.use(express.json({ limit: "1mb" }));
+    app.use(express.json({ limit: "2mb" }));
 
     const { server, protocol } = createPortalServer({ app });
 
     async function requireAuth(req, res, next) {
-        if (!authConfig) {
+        if (!authProvider.enabled) {
             req.authClaims = null;
             next();
             return;
         }
-        const claims = await authenticateRequest(req, authConfig);
+        const claims = await authenticateRequest(req, authProvider);
         if (!claims) {
             res.status(401).json({ ok: false, error: "Unauthorized" });
             return;
@@ -94,18 +97,28 @@ export async function startServer(opts = {}) {
         });
     });
 
-    app.get("/api/auth-config", (req, res) => {
-        if (!authConfig) {
-            res.json({ enabled: false });
-            return;
+    app.get("/api/portal-config", async (req, res) => {
+        try {
+            const auth = await getAuthConfig(req);
+            res.json({
+                ok: true,
+                portal: portalConfig,
+                auth,
+            });
+        } catch (error) {
+            const payload = createJsonRpcError(error, 500);
+            res.status(payload.status).json(payload.body);
         }
-        const host = req.get("x-forwarded-host") || req.get("host");
-        res.json({
-            enabled: true,
-            clientId: authConfig.clientId,
-            authority: `https://login.microsoftonline.com/${authConfig.tenantId}`,
-            redirectUri: `${req.protocol}://${host}`,
-        });
+    });
+
+    app.get("/api/auth-config", async (req, res) => {
+        try {
+            const auth = await getAuthConfig(req);
+            res.json(auth);
+        } catch (error) {
+            const payload = createJsonRpcError(error, 500);
+            res.status(payload.status).json(payload.body);
+        }
     });
 
     app.get("/api/bootstrap", requireAuth, async (_req, res) => {
@@ -150,6 +163,17 @@ export async function startServer(opts = {}) {
         }
     });
 
+    app.get("/api/portal-assets/:assetName", async (req, res) => {
+        const assetFile = getPortalAssetFile(req.params.assetName);
+        if (!assetFile || !fs.existsSync(assetFile)) {
+            res.status(404).end();
+            return;
+        }
+        res.sendFile(assetFile, {
+            maxAge: "1h",
+        });
+    });
+
     if (fs.existsSync(DIST_DIR)) {
         app.use(express.static(DIST_DIR));
         app.get(/^\/(?!api\/).*/, (_req, res) => {
@@ -159,7 +183,7 @@ export async function startServer(opts = {}) {
 
     const wss = new WebSocketServer({ server, path: "/portal-ws" });
     wss.on("connection", async (ws, req) => {
-        if (authConfig) {
+        if (authProvider.enabled) {
             const token = extractToken(req);
             if (!token) {
                 ws.close(4401, "Unauthorized");

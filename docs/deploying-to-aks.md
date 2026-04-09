@@ -94,6 +94,35 @@ kubectl create secret generic copilot-runtime-secrets \
 
 Provider availability in selectors is env-driven at worker startup. If you add or remove a provider key, refresh the secret and restart the workers; changing the checked-in template alone is not enough, and changing the real `.model_providers.json` only takes effect after the updated file is present in the runtime environment.
 
+### Portal Pods
+
+If you also deploy the shipped browser portal, treat it as a separate runtime
+surface from the worker pods:
+
+- package the same app plugin into the portal image
+- set `PLUGIN_DIRS` in the portal deployment so the web process can read
+  `plugin.json.portal`, `plugin.json.tui`, creatable agent metadata, and
+  session policy
+- keep portal branding in `plugin.json.portal`, using `plugin.json.tui` as a
+  fallback or shared source only when that is intentional
+
+If the portal pod cannot see the app plugin, the browser UI falls back to
+generic PilotSwarm branding and generic-session creation even when the worker
+supports named agents.
+
+Portal auth is provider-based. For the shipped Entra add-on, add these env vars
+to the portal deployment or secret:
+
+```bash
+PORTAL_AUTH_PROVIDER=entra
+PORTAL_AUTH_ENTRA_TENANT_ID=<tenant-id>
+PORTAL_AUTH_ENTRA_CLIENT_ID=<client-id>
+```
+
+Register the portal ingress URL as the SPA redirect URI in Entra. The portal
+core does not require Entra specifically, so alternate providers can use the
+same deployment slot without changing the portal shell contract.
+
 ### Refresh GitHub Token
 
 The GitHub token expires periodically. To update:

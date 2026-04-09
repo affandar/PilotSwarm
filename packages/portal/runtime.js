@@ -105,6 +105,13 @@ export class PortalRuntime {
                 return this.transport.listArtifacts(safeParams.sessionId);
             case "downloadArtifact":
                 return this.transport.downloadArtifact(safeParams.sessionId, safeParams.filename);
+            case "uploadArtifact":
+                return this.transport.uploadArtifactContent(
+                    safeParams.sessionId,
+                    safeParams.filename,
+                    safeParams.content,
+                    safeParams.contentType,
+                );
             case "exportExecutionHistory":
                 return this.transport.exportExecutionHistory(safeParams.sessionId);
             case "getModelsByProvider":

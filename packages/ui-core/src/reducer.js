@@ -1,5 +1,7 @@
 import { buildSessionTree } from "./session-tree.js";
+import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
+import { getPromptInputRows } from "./layout.js";
 
 function cloneHistoryMap(historyMap) {
     return new Map(historyMap);
@@ -24,12 +26,24 @@ function cloneOrchestrationBySessionId(bySessionId) {
 function normalizeFilesFilter(filter) {
     return {
         scope: filter?.scope === "allSessions" ? "allSessions" : "selectedSession",
+        query: typeof filter?.query === "string" ? filter.query : "",
     };
 }
 
 function normalizeLogEntries(entries) {
     const list = Array.isArray(entries) ? entries.filter(Boolean) : [];
     return list.slice(-1000);
+}
+
+function normalizeFullscreenPane(fullscreenPane) {
+    return [
+        FOCUS_REGIONS.SESSIONS,
+        FOCUS_REGIONS.CHAT,
+        FOCUS_REGIONS.INSPECTOR,
+        FOCUS_REGIONS.ACTIVITY,
+    ].includes(fullscreenPane)
+        ? fullscreenPane
+        : null;
 }
 
 function clampHistoryItems(items, maxItems) {
@@ -71,6 +85,11 @@ function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
         merged[key] = value;
     }
     return merged;
+}
+
+function pickDefaultActiveSessionId(sessions = []) {
+    const firstNonSystem = (sessions || []).find((session) => session?.sessionId && !session.isSystem);
+    return firstNonSystem?.sessionId || null;
 }
 
 function assignStableSessionOrder(previousOrderById = {}, nextOrderOrdinal = 0, sessions = []) {
@@ -199,12 +218,33 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "ui/sessionPaneAdjust":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    layout: {
+                        ...(state.ui.layout || {}),
+                        sessionPaneAdjust: Number(action.sessionPaneAdjust) || 0,
+                    },
+                },
+            };
+
         case "ui/focus":
             return {
                 ...state,
                 ui: {
                     ...state.ui,
                     focusRegion: action.focusRegion,
+                },
+            };
+
+        case "sessions/filterQuery":
+            return {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    filterQuery: typeof action.query === "string" ? action.query : "",
                 },
             };
 
@@ -244,6 +284,9 @@ export function appReducer(state, action) {
                 ui: {
                     ...state.ui,
                     inspectorTab: action.inspectorTab,
+                    fullscreenPane: action.inspectorTab === "files" && state.ui.fullscreenPane === FOCUS_REGIONS.INSPECTOR
+                        ? null
+                        : state.ui.fullscreenPane,
                     scroll: {
                         ...state.ui.scroll,
                         inspector: 0,
@@ -264,6 +307,7 @@ export function appReducer(state, action) {
                     ...state.ui,
                     prompt: action.prompt,
                     promptCursor: clampPromptCursor(action.prompt, action.promptCursor, state.ui.promptCursor),
+                    promptRows: getPromptInputRows(action.prompt),
                     promptAttachments: normalizePromptAttachments(action.prompt, state.ui.promptAttachments),
                 },
             };
@@ -337,7 +381,7 @@ export function appReducer(state, action) {
             const flat = buildSessionTree(mergedSessions, collapsedIds, orderById);
             const activeSessionId = state.sessions.activeSessionId && flat.some((entry) => entry.sessionId === state.sessions.activeSessionId)
                 ? state.sessions.activeSessionId
-                : (flat[0]?.sessionId || null);
+                : pickDefaultActiveSessionId(mergedSessions);
             return {
                 ...state,
                 sessions: {
@@ -398,6 +442,24 @@ export function appReducer(state, action) {
                     },
                 },
             };
+
+        case "ui/fullscreenPane": {
+            const fullscreenPane = normalizeFullscreenPane(action.fullscreenPane);
+            return {
+                ...state,
+                files: fullscreenPane
+                    ? {
+                        ...state.files,
+                        fullscreen: false,
+                    }
+                    : state.files,
+                ui: {
+                    ...state.ui,
+                    fullscreenPane,
+                    focusRegion: fullscreenPane || state.ui.focusRegion,
+                },
+            };
+        }
 
         case "sessions/collapse": {
             const collapsedIds = cloneCollapsedIds(state.sessions.collapsedIds);
@@ -463,6 +525,20 @@ export function appReducer(state, action) {
             };
         }
 
+        case "history/evict": {
+            const ids = Array.isArray(action.sessionIds) ? action.sessionIds : [];
+            if (ids.length === 0) return state;
+            const nextHistory = cloneHistoryMap(state.history.bySessionId);
+            for (const id of ids) nextHistory.delete(id);
+            return {
+                ...state,
+                history: {
+                    ...state.history,
+                    bySessionId: nextHistory,
+                },
+            };
+        }
+
         case "orchestration/statsLoading": {
             const bySessionId = cloneOrchestrationBySessionId(state.orchestration.bySessionId);
             bySessionId[action.sessionId] = {
@@ -513,6 +589,20 @@ export function appReducer(state, action) {
             };
         }
 
+        case "orchestration/evict": {
+            const ids = Array.isArray(action.sessionIds) ? action.sessionIds : [];
+            if (ids.length === 0) return state;
+            const bySessionId = cloneOrchestrationBySessionId(state.orchestration.bySessionId);
+            for (const id of ids) delete bySessionId[id];
+            return {
+                ...state,
+                orchestration: {
+                    ...state.orchestration,
+                    bySessionId,
+                },
+            };
+        }
+
         case "executionHistory/loading": {
             const bySessionId = { ...(state.executionHistory?.bySessionId || {}) };
             bySessionId[action.sessionId] = {
@@ -528,12 +618,28 @@ export function appReducer(state, action) {
 
         case "executionHistory/loaded": {
             const bySessionId = { ...(state.executionHistory?.bySessionId || {}) };
+            const rawEvents = action.events || [];
+            const MAX_EXECUTION_HISTORY_EVENTS = 1000;
+            const clampedEvents = rawEvents.length > MAX_EXECUTION_HISTORY_EVENTS
+                ? rawEvents.slice(-MAX_EXECUTION_HISTORY_EVENTS)
+                : rawEvents;
             bySessionId[action.sessionId] = {
                 loading: false,
                 error: null,
                 fetchedAt: action.fetchedAt || Date.now(),
-                events: action.events || [],
+                events: clampedEvents,
             };
+            return {
+                ...state,
+                executionHistory: { ...state.executionHistory, bySessionId },
+            };
+        }
+
+        case "executionHistory/evict": {
+            const ids = Array.isArray(action.sessionIds) ? action.sessionIds : [];
+            if (ids.length === 0) return state;
+            const bySessionId = { ...(state.executionHistory?.bySessionId || {}) };
+            for (const id of ids) delete bySessionId[id];
             return {
                 ...state,
                 executionHistory: { ...state.executionHistory, bySessionId },
@@ -560,6 +666,28 @@ export function appReducer(state, action) {
                 executionHistory: {
                     ...state.executionHistory,
                     format: action.format || "pretty",
+                },
+            };
+        }
+
+        case "files/evictPreviews": {
+            const ids = Array.isArray(action.sessionIds) ? action.sessionIds : [];
+            if (ids.length === 0) return state;
+            const bySessionId = cloneFilesBySessionId(state.files.bySessionId);
+            for (const id of ids) {
+                if (bySessionId[id]) {
+                    // Keep entries list (lightweight), drop heavy preview content
+                    bySessionId[id] = {
+                        ...bySessionId[id],
+                        previews: {},
+                    };
+                }
+            }
+            return {
+                ...state,
+                files: {
+                    ...state.files,
+                    bySessionId,
                 },
             };
         }
@@ -810,6 +938,7 @@ export function appReducer(state, action) {
                     ? {
                         ...state.ui,
                         focusRegion: "inspector",
+                        fullscreenPane: null,
                     }
                     : state.ui,
             };

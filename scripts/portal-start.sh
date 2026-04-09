@@ -6,6 +6,7 @@
 #   ./scripts/portal-start.sh local        # same as above
 #   ./scripts/portal-start.sh local --db   # local mode — embedded workers, local PG
 #   ./scripts/portal-start.sh remote       # remote mode — AKS workers, client-only
+#   ./scripts/portal-start.sh --plugin ./plugin
 #   ./scripts/portal-start.sh --port 3001  # custom port
 #
 # Equivalent to ./run.sh but serves the shared browser workspace.
@@ -19,6 +20,7 @@ PIDFILE=".portal.pids"
 PORT=3001
 MODE="local"
 USE_LOCAL_DB=false
+PLUGIN_DIR=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -27,6 +29,7 @@ while [[ $# -gt 0 ]]; do
     remote)  MODE="remote"; shift ;;
     --db)    USE_LOCAL_DB=true; shift ;;
     --port)  PORT="$2"; shift 2 ;;
+    --plugin) PLUGIN_DIR="$2"; shift 2 ;;
     *)       echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -56,6 +59,9 @@ fi
 echo "[portal] Starting server (port $PORT, mode $TUI_MODE)..."
 echo "[portal] Building browser app..."
 npm run build --workspace=packages/portal >/tmp/portal-build.log 2>&1
+if [[ -n "$PLUGIN_DIR" ]]; then
+  export PLUGIN_DIRS="$(cd "$PLUGIN_DIR" && pwd)"
+fi
 PORTAL_ENV_FILE="$ENV_FILE" PORTAL_TUI_MODE="$TUI_MODE" node --env-file="$ENV_FILE" packages/portal/server.js > /tmp/portal-server.log 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$PIDFILE"
@@ -85,6 +91,9 @@ echo "  URL:  http://localhost:$PORT"
 echo "  PID:  $SERVER_PID"
 echo "  Mode: $TUI_MODE"
 echo "  Env:  $ENV_FILE"
+if [[ -n "${PLUGIN_DIRS:-}" ]]; then
+  echo "  Plugin: $PLUGIN_DIRS"
+fi
 echo ""
 echo "  Browser-native workspace is served from packages/portal/dist."
 echo ""

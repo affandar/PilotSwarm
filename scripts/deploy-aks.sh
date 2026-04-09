@@ -18,23 +18,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# ─── Configuration ────────────────────────────────────────────────
-
-ACR_NAME="${ACR_NAME:-toygresaksacr}"
-IMAGE_NAME="${IMAGE_NAME:-copilot-runtime-worker}"
-NAMESPACE="${NAMESPACE:-copilot-runtime}"
-
 wait_for_worker_scale_down() {
     local timeout_seconds="${1:-180}"
     local deployment="copilot-runtime-worker"
     local selector="app.kubernetes.io/component=worker"
     local deadline=$((SECONDS + timeout_seconds))
 
-    kubectl rollout status deployment/"$deployment" -n "$NAMESPACE" --timeout="${timeout_seconds}s" >/dev/null 2>&1 || true
+    "${KUBECTL[@]}" rollout status deployment/"$deployment" -n "$NAMESPACE" --timeout="${timeout_seconds}s" >/dev/null 2>&1 || true
 
     while [ "$SECONDS" -lt "$deadline" ]; do
         local remaining_pods
-        remaining_pods="$(kubectl get pods -n "$NAMESPACE" -l "$selector" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        remaining_pods="$("${KUBECTL[@]}" get pods -n "$NAMESPACE" -l "$selector" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
         if [ "${remaining_pods:-0}" = "0" ]; then
             echo "   ✅ Workers fully terminated"
             return 0
@@ -43,7 +37,7 @@ wait_for_worker_scale_down() {
     done
 
     echo "   ❌ Timed out waiting for workers to terminate before DB reset."
-    kubectl get pods -n "$NAMESPACE" -l "$selector" || true
+    "${KUBECTL[@]}" get pods -n "$NAMESPACE" -l "$selector" || true
     return 1
 }
 
@@ -85,14 +79,27 @@ if [ -z "${DATABASE_URL:-}" ]; then
     exit 1
 fi
 
+# ─── Configuration ────────────────────────────────────────────────
+
+ACR_NAME="${ACR_NAME:-pilotswarmacr}"
+IMAGE_NAME="${IMAGE_NAME:-copilot-runtime-worker}"
+NAMESPACE="${K8S_NAMESPACE:-${NAMESPACE:-copilot-runtime}}"
+K8S_CONTEXT="${K8S_CONTEXT:-}"
+
+KUBECTL=(kubectl)
+if [ -n "$K8S_CONTEXT" ]; then
+    KUBECTL+=(--context "$K8S_CONTEXT")
+fi
+
 # ─── Update K8s secret ────────────────────────────────────────────
 
 # GitHub token is optional — only include if explicitly set in env.
 # BYOK providers (Azure AI, etc.) work without it.
 GH_TOKEN="${GITHUB_TOKEN:-}"
 
-echo "🔑 Updating K8s secret..."
-kubectl create secret generic copilot-runtime-secrets \
+echo "🔑 Replacing K8s secret..."
+"${KUBECTL[@]}" delete secret copilot-runtime-secrets -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+"${KUBECTL[@]}" create secret generic copilot-runtime-secrets \
     -n "$NAMESPACE" \
     --from-literal=DATABASE_URL="$DATABASE_URL" \
     ${GH_TOKEN:+--from-literal=GITHUB_TOKEN="$GH_TOKEN"} \
@@ -108,17 +115,19 @@ kubectl create secret generic copilot-runtime-secrets \
     ${AZURE_GPT51_KEY:+--from-literal=AZURE_GPT51_KEY="$AZURE_GPT51_KEY"} \
     ${AZURE_MODEL_ROUTER_KEY:+--from-literal=AZURE_MODEL_ROUTER_KEY="$AZURE_MODEL_ROUTER_KEY"} \
     ${ANTHROPIC_API_KEY:+--from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"} \
-    --dry-run=client -o yaml | kubectl apply -f -
+    ${ENTRA_TENANT_ID:+--from-literal=ENTRA_TENANT_ID="$ENTRA_TENANT_ID"} \
+    ${ENTRA_CLIENT_ID:+--from-literal=ENTRA_CLIENT_ID="$ENTRA_CLIENT_ID"} \
+    ${K8S_CONTEXT:+--from-literal=K8S_CONTEXT="$K8S_CONTEXT"}
 
 echo "🔐 Refreshing ACR pull secret..."
 ACR_SERVER="${ACR_NAME}.azurecr.io"
 ACR_REFRESH_TOKEN="$(az acr login --name "$ACR_NAME" --expose-token --output tsv --query accessToken)"
-kubectl create secret docker-registry acr-pull \
+"${KUBECTL[@]}" delete secret acr-pull -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+"${KUBECTL[@]}" create secret docker-registry acr-pull \
     -n "$NAMESPACE" \
     --docker-server="$ACR_SERVER" \
     --docker-username="00000000-0000-0000-0000-000000000000" \
-    --docker-password="$ACR_REFRESH_TOKEN" \
-    --dry-run=client -o yaml | kubectl apply -f -
+    --docker-password="$ACR_REFRESH_TOKEN"
 
 # ─── Step 0: Run local integration tests ─────────────────────────
 
@@ -145,7 +154,7 @@ if [ "$SKIP_RESET" = false ]; then
 
     # Scale down workers first so nothing picks up work
     echo "   Scaling workers to 0..."
-    kubectl scale deployment copilot-runtime-worker -n "$NAMESPACE" --replicas=0 2>/dev/null || true
+    "${KUBECTL[@]}" scale deployment copilot-runtime-worker -n "$NAMESPACE" --replicas=0 2>/dev/null || true
     wait_for_worker_scale_down 180
 
     # Reset both duroxide and CMS schemas
@@ -185,20 +194,20 @@ echo ""
 echo "🚀 Deploying to AKS..."
 
 # Ensure namespace exists (substitute NAMESPACE into the template)
-sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g; s/name: copilot-runtime$/name: $NAMESPACE/" deploy/k8s/namespace.yaml | kubectl apply -f -
+sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g; s/name: copilot-runtime$/name: $NAMESPACE/" deploy/k8s/namespace.yaml | "${KUBECTL[@]}" apply -f -
 
 # Apply worker deployment (substitute NAMESPACE into the template)
-sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g" deploy/k8s/worker-deployment.yaml | kubectl apply -f -
+sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g" deploy/k8s/worker-deployment.yaml | "${KUBECTL[@]}" apply -f -
 
 # Rollout restart to pick up the new image
-kubectl rollout restart deployment/copilot-runtime-worker -n "$NAMESPACE"
+"${KUBECTL[@]}" rollout restart deployment/copilot-runtime-worker -n "$NAMESPACE"
 
 echo ""
 echo "⏳ Waiting for rollout..."
-kubectl rollout status deployment/copilot-runtime-worker -n "$NAMESPACE" --timeout=120s
+"${KUBECTL[@]}" rollout status deployment/copilot-runtime-worker -n "$NAMESPACE" --timeout=120s
 
 echo ""
 echo "✅ Deploy complete!"
 echo ""
-kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=worker
+"${KUBECTL[@]}" get pods -n "$NAMESPACE" -l app.kubernetes.io/component=worker
 echo ""

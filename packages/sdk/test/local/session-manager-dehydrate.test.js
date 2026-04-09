@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../../src/session-manager.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 function createSessionStoreMock() {
     return {
@@ -56,6 +59,44 @@ describe("SessionManager dehydrate retries", () => {
             expect(failure.sessionStoreError).toBe("blob unavailable");
         } finally {
             vi.useRealTimers();
+        }
+    });
+
+    it("falls back to the pre-destroy checkpoint when the post-destroy snapshot never appears", async () => {
+        vi.useFakeTimers();
+        const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-session-manager-"));
+        const sessionStateDir = path.join(baseDir, "session-state");
+        const sessionId = "session-checkpoint-fallback";
+        const sessionDir = path.join(sessionStateDir, sessionId);
+
+        try {
+            fs.mkdirSync(sessionDir, { recursive: true });
+
+            const sessionStore = createSessionStoreMock();
+            sessionStore.checkpoint.mockResolvedValue(undefined);
+            sessionStore.dehydrate.mockRejectedValue(
+                new Error(
+                    `Session state directory not ready during dehydrate: ${sessionId} (${sessionDir}). ` +
+                    `Missing: ${sessionId}/`,
+                ),
+            );
+
+            const manager = new SessionManager(undefined, sessionStore, {}, sessionStateDir);
+            manager.sessions.set(sessionId, {
+                destroy: vi.fn(async () => {}),
+            });
+
+            const promise = manager.dehydrate(sessionId, "cron");
+            await vi.runAllTimersAsync();
+            await expect(promise).resolves.toBeUndefined();
+
+            expect(sessionStore.checkpoint).toHaveBeenCalledTimes(1);
+            expect(sessionStore.checkpoint).toHaveBeenCalledWith(sessionId);
+            expect(sessionStore.dehydrate).toHaveBeenCalledTimes(3);
+            expect(fs.existsSync(sessionDir)).toBe(false);
+        } finally {
+            vi.useRealTimers();
+            fs.rmSync(baseDir, { recursive: true, force: true });
         }
     });
 });

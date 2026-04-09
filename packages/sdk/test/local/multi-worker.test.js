@@ -18,7 +18,7 @@
 import { describe, it, beforeAll, afterAll } from "vitest";
 import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, withTwoWorkers, PilotSwarmClient, PilotSwarmWorker } from "../helpers/local-workers.js";
-import { assert, assertEqual, assertIncludes, assertIncludesAny, assertGreaterOrEqual, assertThrows } from "../helpers/assertions.js";
+import { assert, assertEqual, assertIncludes, assertIncludesAny, assertGreaterOrEqual, assertNotNull, assertThrows } from "../helpers/assertions.js";
 import { createCatalog, waitForSessionState, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG, MEMORY_CONFIG } from "../helpers/fixtures.js";
 import { existsSync, rmSync } from "node:fs";
@@ -314,9 +314,9 @@ async function testTurnZeroResetsStaleStoredSession(env) {
     }
 }
 
-// ─── Test: Turn 1+ Fails Without Stored Session ─────────────────
+// ─── Test: Turn 1+ Uses Lossy Replay Without Stored Session ─────
 
-async function testTurnOneFailsWithoutStoredSession(env) {
+async function testTurnOneLossyReplaysWithoutStoredSession(env) {
     const commonOpts = {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
@@ -372,17 +372,20 @@ async function testTurnOneFailsWithoutStoredSession(env) {
 
     try {
         const resumed = await clientB.resumeSession(sessionId);
-        await assertThrows(
-            () => resumed.sendAndWait("What code did I ask you to remember?", 30_000),
-            "expected resumable copilot session state",
-            "turn 1+ should fail when no resumable session state exists",
+        const response = await resumed.sendAndWait(
+            "State may have been lost. Give a short recovery acknowledgement and continue carefully.",
+            60_000,
         );
+        assert(response && response.length > 0, "turn 1+ should recover via lossy replay when no resumable session state exists");
 
         const catalog = await createCatalog(env);
         try {
-            const row = await waitForSessionState(catalog, sessionId, ["failed"], 30_000);
-            assert(row?.lastError, "Expected CMS lastError for missing resumable session state");
-            assertIncludes(row.lastError, "expected resumable Copilot session state", "CMS lastError records missing session state");
+            const row = await waitForSessionState(catalog, sessionId, ["idle"], 30_000);
+            assertEqual(row?.lastError, null, "lossy replay should not leave a terminal lastError");
+            const events = await catalog.getSessionEvents(sessionId);
+            const lossyEvent = events.find((event) => event.eventType === "session.lossy_handoff");
+            assertNotNull(lossyEvent, "missing-state recovery should record a lossy handoff event");
+            assertEqual(lossyEvent.data?.cause, "missing_resumable_state_before_run_turn", "lossy event should explain the recovery cause");
         } finally {
             await catalog.close();
         }
@@ -412,7 +415,7 @@ describe("Level 3: Multi-Worker Tests", () => {
     it("Turn 0 Resets Stale Stored Session", { timeout: TIMEOUT * 2 }, async () => {
         await testTurnZeroResetsStaleStoredSession(getEnv());
     });
-    it("Turn 1+ Fails Without Stored Session", { timeout: TIMEOUT * 2 }, async () => {
-        await testTurnOneFailsWithoutStoredSession(getEnv());
+    it("Turn 1+ Uses Lossy Replay Without Stored Session", { timeout: TIMEOUT * 2 }, async () => {
+        await testTurnOneLossyReplaysWithoutStoredSession(getEnv());
     });
 });

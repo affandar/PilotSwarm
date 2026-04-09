@@ -69,7 +69,7 @@ describe("lossy handoff observability", () => {
         assertIncludes(history.activity[1].text, "Connection is closed.", "dehydration activity should include the raw error");
         const lossyLabelRun = history.activity[0].line.find((run) => run?.text === "[lossy handoff]");
         const dehydratedLabelRun = history.activity[1].line.find((run) => run?.text === "[dehydrated]");
-        assertEqual(lossyLabelRun?.color, "red", "lossy handoffs should remain error-colored in activity");
+        assertEqual(lossyLabelRun?.color, "yellow", "lossy handoffs should render as warnings in activity");
         assertEqual(dehydratedLabelRun?.color, "cyan", "successful dehydration should render as a neutral handoff in activity");
 
         const state = createInitialState({ mode: "local" });
@@ -107,5 +107,16 @@ describe("lossy handoff observability", () => {
             String(run?.text || "").includes("ZZ lossy_handoff"),
         );
         assertEqual(dehydrationSequenceRun?.color, "cyan", "successful dehydration should render cyan in the sequence view");
+        const lossySequenceLine = inspector.lines.find((line) =>
+            Array.isArray(line) && line.some((run) => {
+                const text = String(run?.text || "");
+                return text.includes("lossy ") && !text.includes("ZZ lossy_handoff");
+            }),
+        );
+        assert(lossySequenceLine, "sequence view should include the lossy handoff row");
+        const lossySequenceRun = lossySequenceLine.find((run) =>
+            String(run?.text || "").includes("lossy "),
+        );
+        assertEqual(lossySequenceRun?.color, "yellow", "lossy handoffs should render yellow in the sequence view");
     });
 });

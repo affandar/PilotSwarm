@@ -20,6 +20,8 @@ function makeHarness() {
         getModelSummary: vi.fn(() => undefined),
         invalidateWarmSession: vi.fn(async () => {}),
         dehydrate: vi.fn(async () => {}),
+        hydrate: vi.fn(async () => {}),
+        needsHydration: vi.fn(async () => false),
     };
 
     const recordedEvents = [];
@@ -50,6 +52,8 @@ function makeHarness() {
     return {
         runTurn: handlers.runTurn,
         dehydrateSession: handlers.dehydrateSession,
+        hydrateSession: handlers.hydrateSession,
+        needsHydrationSession: handlers.needsHydrationSession,
         recordedEvents,
         session,
         sessionManager,
@@ -192,18 +196,63 @@ describe("session-proxy CMS prompt classification", () => {
         expect(recoveryNotice).toBeTruthy();
     });
 
-    it("returns an unrecoverable missing-state error when recovery cannot resume or hydrate", async () => {
-        const { runTurn, sessionManager, catalog } = makeHarness();
-        const staleSession = {
+    it("replays the turn from a fresh Copilot session when resumable state is missing", async () => {
+        const { runTurn, sessionManager, recordedEvents } = makeHarness();
+        const recoveredSession = {
             abort: vi.fn(),
-            runTurn: vi.fn(async () => ({
-                type: "error",
-                message: "Execution failed: Session not found: session-fatal",
-            })),
+            runTurn: vi.fn(async (prompt) => {
+                expect(prompt).toContain("worker restart lost the live Copilot session state");
+                expect(prompt).toContain("previous turn may have partially executed");
+                expect(prompt).toContain("continue the deployment");
+                return { type: "completed", content: "replayed ok", events: [] };
+            }),
         };
         sessionManager.getOrCreate = vi
             .fn()
-            .mockResolvedValueOnce(staleSession)
+            .mockRejectedValueOnce(
+                new Error(`${SESSION_STATE_MISSING_PREFIX} turn 7 expected resumable Copilot session state for session-replay, but none was found in memory, on disk, or in the session store.`),
+            )
+            .mockResolvedValueOnce(recoveredSession);
+
+        const result = await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            {
+                sessionId: "session-replay",
+                prompt: "continue the deployment",
+                config: {},
+                turnIndex: 7,
+            },
+        );
+
+        expect(result).toMatchObject({ type: "completed", content: "replayed ok" });
+        expect(sessionManager.getOrCreate).toHaveBeenNthCalledWith(
+            2,
+            "session-replay",
+            expect.any(Object),
+            expect.objectContaining({ turnIndex: 0 }),
+        );
+        expect(recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "session.lossy_handoff",
+            data: expect.objectContaining({
+                cause: "missing_resumable_state_before_run_turn",
+                recoveryMode: "fresh_session_replay",
+            }),
+        }));
+        expect(recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "system.message",
+            data: expect.objectContaining({
+                content: expect.stringContaining("replaying this turn after a worker restart lost the live Copilot session state"),
+            }),
+        }));
+    });
+
+    it("returns an unrecoverable missing-state error when fresh-session replay cannot start", async () => {
+        const { runTurn, sessionManager, catalog } = makeHarness();
+        sessionManager.getOrCreate = vi
+            .fn()
+            .mockRejectedValueOnce(
+                new Error(`${SESSION_STATE_MISSING_PREFIX} turn 7 expected resumable Copilot session state for session-fatal, but none was found in memory, on disk, or in the session store.`),
+            )
             .mockRejectedValueOnce(
                 new Error(`${SESSION_STATE_MISSING_PREFIX} turn 7 expected resumable Copilot session state for session-fatal, but none was found in memory, on disk, or in the session store.`),
             );
@@ -247,7 +296,11 @@ describe("session-proxy CMS prompt classification", () => {
             },
         );
 
-        expect(sessionManager.dehydrate).toHaveBeenCalledWith("session-lossy", "lossy_handoff");
+        expect(sessionManager.dehydrate).toHaveBeenCalledWith(
+            "session-lossy",
+            "lossy_handoff",
+            expect.objectContaining({ trace: expect.any(Function) }),
+        );
         expect(recordedEvents).toContainEqual({
             eventType: "session.dehydrated",
             data: {
@@ -258,6 +311,47 @@ describe("session-proxy CMS prompt classification", () => {
                 retryDelaySeconds: 15,
             },
         });
+    });
+
+    it("records a lossy handoff and continues when dehydrate loses local session files", async () => {
+        const { dehydrateSession, recordedEvents, sessionManager, catalog } = makeHarness();
+        const failure = new Error(
+            "Session-store persistence failed after 3 attempts during dehydrate for session-lossy-dehydrate (reason=timer): " +
+            "Session state directory not ready during dehydrate: session-lossy-dehydrate (/home/node/.copilot/session-state/session-lossy-dehydrate). Missing: session-lossy-dehydrate/",
+        );
+        failure.sessionStoreAttemptCount = 3;
+        failure.sessionStoreError = "Session state directory not ready during dehydrate";
+        sessionManager.dehydrate = vi.fn(async () => {
+            throw failure;
+        });
+
+        await expect(dehydrateSession(
+            { traceInfo: () => {} },
+            {
+                sessionId: "session-lossy-dehydrate",
+                reason: "timer",
+                eventData: {
+                    detail: "Worker restarted during timer handoff.",
+                },
+            },
+        )).resolves.toEqual({
+            lossyHandoff: expect.objectContaining({
+                reason: "timer",
+                cause: "missing_local_session_state_during_dehydrate",
+                recoveryMode: "fresh_session_replay",
+            }),
+        });
+
+        expect(recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "session.lossy_handoff",
+            data: expect.objectContaining({
+                reason: "timer",
+                cause: "missing_local_session_state_during_dehydrate",
+                recoveryMode: "fresh_session_replay",
+                detail: expect.stringContaining("Local session files were unavailable during dehydrate"),
+            }),
+        }));
+        expect(catalog.updateSession).not.toHaveBeenCalled();
     });
 
     it("records terminal dehydration failures as session.error and rethrows", async () => {
@@ -298,5 +392,43 @@ describe("session-proxy CMS prompt classification", () => {
                 lastError: expect.stringContaining("Session-store persistence failed after 3 attempts"),
             }),
         );
+    });
+
+    it("traces hydrate lifecycle with session id and passes a trace callback to SessionManager", async () => {
+        const { hydrateSession, sessionManager } = makeHarness();
+        const traceInfo = vi.fn();
+
+        await hydrateSession(
+            { traceInfo },
+            { sessionId: "session-hydrate-1" },
+        );
+
+        expect(sessionManager.hydrate).toHaveBeenCalledWith(
+            "session-hydrate-1",
+            expect.objectContaining({ trace: expect.any(Function) }),
+        );
+        const traces = traceInfo.mock.calls.map(([message]) => String(message)).join("\n");
+        expect(traces).toContain("[hydrateSession] session=session-hydrate-1 start");
+        expect(traces).toContain("[hydrateSession] session=session-hydrate-1 complete");
+    });
+
+    it("traces needsHydration lifecycle with session id and result", async () => {
+        const { needsHydrationSession, sessionManager } = makeHarness();
+        sessionManager.needsHydration = vi.fn(async () => true);
+        const traceInfo = vi.fn();
+
+        const result = await needsHydrationSession(
+            { traceInfo },
+            { sessionId: "session-needs-hydration-1" },
+        );
+
+        expect(result).toBe(true);
+        expect(sessionManager.needsHydration).toHaveBeenCalledWith(
+            "session-needs-hydration-1",
+            expect.objectContaining({ trace: expect.any(Function) }),
+        );
+        const traces = traceInfo.mock.calls.map(([message]) => String(message)).join("\n");
+        expect(traces).toContain("[needsHydrationSession] session=session-needs-hydration-1 start");
+        expect(traces).toContain("[needsHydrationSession] session=session-needs-hydration-1 result=true");
     });
 });
