@@ -1,54 +1,39 @@
-/**
- * Entra ID token validation for the portal.
- *
- * Uses OIDC discovery + JWKS to validate access tokens server-side.
- * No client secrets needed — the SPA is a public client (PKCE).
- */
+import { createNoAuthProvider } from "./auth/providers/none.js";
+import { createEntraAuthProvider } from "./auth/providers/entra.js";
 
-import * as jose from "jose";
+const PROVIDERS = {
+  none: createNoAuthProvider,
+  entra: createEntraAuthProvider,
+};
 
-let _jwks = null;
-let _issuer = null;
+let cachedProvider = null;
 
-/**
- * Read auth config from environment.
- * Returns null if auth is not configured (ENTRA_TENANT_ID / ENTRA_CLIENT_ID missing).
- */
-export function getAuthConfig() {
-  const tenantId = process.env.ENTRA_TENANT_ID;
-  const clientId = process.env.ENTRA_CLIENT_ID;
-  if (!tenantId || !clientId) return null;
-  return { tenantId, clientId };
-}
-
-/** Initialize JWKS remote key set from Entra OIDC discovery. */
-async function ensureJwks(tenantId) {
-  if (_jwks) return;
-  const issuerUrl = `https://login.microsoftonline.com/${tenantId}/v2.0`;
-  const jwksUri = `https://login.microsoftonline.com/${tenantId}/discovery/v2.0/keys`;
-  _jwks = jose.createRemoteJWKSet(new URL(jwksUri));
-  _issuer = issuerUrl;
-}
-
-/**
- * Validate a Bearer token.
- * Returns the decoded payload on success, or null on failure.
- */
-export async function validateToken(token) {
-  const config = getAuthConfig();
-  if (!config) return null;
-
-  try {
-    await ensureJwks(config.tenantId);
-    const { payload } = await jose.jwtVerify(token, _jwks, {
-      issuer: _issuer,
-      audience: config.clientId,
-    });
-    return payload;
-  } catch (err) {
-    console.error("[auth] Token validation failed:", err.message);
-    return null;
+function resolveProviderId() {
+  const explicitProvider = String(process.env.PORTAL_AUTH_PROVIDER || "").trim().toLowerCase();
+  if (explicitProvider) return explicitProvider;
+  if (process.env.PORTAL_AUTH_ENTRA_TENANT_ID || process.env.ENTRA_TENANT_ID || process.env.PORTAL_AUTH_ENTRA_CLIENT_ID || process.env.ENTRA_CLIENT_ID) {
+    return "entra";
   }
+  return "none";
+}
+
+export function getAuthProvider() {
+  if (cachedProvider) return cachedProvider;
+  const providerId = resolveProviderId();
+  const factory = PROVIDERS[providerId];
+  if (!factory) {
+    throw new Error(`Unsupported portal auth provider: ${providerId}`);
+  }
+  cachedProvider = factory();
+  return cachedProvider;
+}
+
+export async function getAuthConfig(req) {
+  return getAuthProvider().getPublicConfig(req);
+}
+
+export async function validateToken(token) {
+  return getAuthProvider().authenticateRequest(token);
 }
 
 /**

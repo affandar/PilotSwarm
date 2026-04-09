@@ -7,6 +7,7 @@ const DEFAULT_STYLE = {
 };
 
 const ARTIFACT_URI_RE = /artifact:\/\/([a-f0-9-]+)\/([^\s"'{}]+)/g;
+const SESSION_URI_RE = /session:\/\/([A-Za-z0-9-]+)/g;
 
 const COLOR_NAME_MAP = {
     black: "black",
@@ -336,10 +337,15 @@ export function decorateArtifactLinksForChat(text) {
     const source = String(text || "");
     if (!source) return source;
     ARTIFACT_URI_RE.lastIndex = 0;
-    return source.replace(ARTIFACT_URI_RE, (_match, sessionId, rawFilename) => {
+    const withArtifacts = source.replace(ARTIFACT_URI_RE, (_match, sessionId, rawFilename) => {
         const filename = normalizeArtifactFilename(rawFilename);
         if (!sessionId || !filename) return _match;
         return `[artifact: ${filename}](artifact://${sessionId}/${filename}) (press a to download)`;
+    });
+    SESSION_URI_RE.lastIndex = 0;
+    return withArtifacts.replace(SESSION_URI_RE, (_match, sessionId) => {
+        if (!sessionId) return _match;
+        return `[session: ${shortSessionId(sessionId)}](session://${sessionId})`;
     });
 }
 

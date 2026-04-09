@@ -16,6 +16,7 @@ import {
     getContextHeaderBadge,
     getContextListBadge,
 } from "./context-usage.js";
+import { canonicalSystemTitle } from "./system-titles.js";
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
@@ -116,19 +117,6 @@ function sessionStatusIcon(session, mode = "local") {
         case "idle": return ".";
         default: return "";
     }
-}
-
-function canonicalSystemTitle(session, brandingTitle = "PilotSwarm") {
-    const agentId = String(session?.agentId || "");
-    if (agentId === "pilotswarm") return brandingTitle || "PilotSwarm";
-    if (agentId === "sweeper") return "Sweeper Agent";
-    if (agentId === "resourcemgr") return "Resource Manager Agent";
-
-    const rawTitle = String(session?.title || "");
-    if (/^pilotswarm agent$/i.test(rawTitle)) return brandingTitle || "PilotSwarm";
-    if (/^sweeper agent$/i.test(rawTitle) || /^sweeper$/i.test(rawTitle)) return "Sweeper Agent";
-    if (/^resource manager agent$/i.test(rawTitle) || /^resourcemgr$/i.test(rawTitle)) return "Resource Manager Agent";
-    return rawTitle || "System Agent";
 }
 
 function buildSessionTitle(session, brandingTitle) {
@@ -279,9 +267,20 @@ function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visib
     return runs;
 }
 
+function normalizeSearchQuery(value) {
+    return String(value || "").trim().toLowerCase();
+}
+
+function matchesSearchQuery(value, query) {
+    const normalizedQuery = normalizeSearchQuery(query);
+    if (!normalizedQuery) return true;
+    return String(value || "").toLowerCase().includes(normalizedQuery);
+}
+
 export function selectSessionRows(state) {
     const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
     const visibleDescendantCounts = getVisibleDescendantCounts(state.sessions.flat, state.sessions.byId);
+    const query = state.sessions?.filterQuery || "";
 
     return state.sessions.flat.map((entry) => {
         const session = state.sessions.byId[entry.sessionId];
@@ -298,17 +297,21 @@ export function selectSessionRows(state) {
             hasChildren: entry.hasChildren,
             collapsed: entry.collapsed,
         };
-    });
+    }).filter((row) => matchesSearchQuery(row.text, query) || matchesSearchQuery(row.sessionId, query));
 }
 
 export function selectVisibleSessionRows(state, maxRows = 8) {
-    const flat = Array.isArray(state.sessions?.flat) ? state.sessions.flat : [];
-    if (flat.length === 0) return [];
+    const rows = selectSessionRows(state);
+    if (rows.length === 0) return [];
+
+    const filteredSessionIds = new Set(rows.map((row) => row.sessionId));
+    const flat = (Array.isArray(state.sessions?.flat) ? state.sessions.flat : [])
+        .filter((entry) => filteredSessionIds.has(entry.sessionId));
 
     const activeIndexRaw = flat.findIndex((entry) => entry.sessionId === state.sessions.activeSessionId);
     const activeIndex = Math.max(0, activeIndexRaw);
     if (flat.length <= maxRows) {
-        return selectSessionRows(state);
+        return rows;
     }
 
     const half = Math.floor(maxRows / 2);
@@ -324,22 +327,7 @@ export function selectVisibleSessionRows(state, maxRows = 8) {
     const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
     const visibleDescendantCounts = getVisibleDescendantCounts(flat, state.sessions.byId);
 
-    return visibleEntries.map((entry) => {
-        const session = state.sessions.byId[entry.sessionId];
-        const runs = buildSessionRowRuns(entry, session, state, totalDescendantCounts, visibleDescendantCounts);
-        return {
-            sessionId: entry.sessionId,
-            text: flattenRunsText(runs),
-            runs,
-            depth: entry.depth,
-            status: session?.status,
-            statusColor: sessionStatusColor(session, state.connection?.mode || "local"),
-            active: entry.sessionId === state.sessions.activeSessionId,
-            isSystem: Boolean(session?.isSystem),
-            hasChildren: entry.hasChildren,
-            collapsed: entry.collapsed,
-        };
-    });
+    return rows.filter((row) => visibleEntries.some((entry) => entry.sessionId === row.sessionId));
 }
 
 export function selectActiveSession(state) {
@@ -850,6 +838,8 @@ function filterLogEntries(state, session) {
 
 function buildRawLogLine(entry) {
     const podLabel = shortNodeLabel(entry?.podName) || entry?.podName || "node";
+    const sessionId = entry?.sessionId
+        || (String(entry?.orchId || "").startsWith("session-") ? String(entry.orchId).slice("session-".length) : "");
     const level = String(entry?.level || "info").toUpperCase();
     const categoryMarker = entry?.category === "orchestration"
         ? "◆"
@@ -860,14 +850,17 @@ function buildRawLogLine(entry) {
         { text: `[${entry?.time || "--:--:--"}] `, color: "gray" },
         { text: `${categoryMarker} `, color: logCategoryColor(entry?.category, entry?.level) },
         { text: `${podLabel} `, color: "white", bold: true },
+        ...(sessionId ? [{ text: `[${shortSessionId(sessionId)}] `, color: "gray" }] : []),
         { text: `${level} `, color: logLevelColor(entry?.level), bold: true },
         { text: entry?.rawLine || entry?.message || "", color: "white" },
     ];
 }
 
 function buildPrettyLogLine(entry) {
+    const sessionId = entry?.sessionId
+        || (String(entry?.orchId || "").startsWith("session-") ? String(entry.orchId).slice("session-".length) : "");
     return [{
-        text: entry?.prettyMessage || entry?.message || entry?.rawLine || "",
+        text: `${sessionId ? `[${shortSessionId(sessionId)}] ` : ""}${entry?.prettyMessage || entry?.message || entry?.rawLine || ""}`,
         color: logCategoryColor(entry?.category, entry?.level),
         bold: String(entry?.level || "").toLowerCase() === "warn" || String(entry?.level || "").toLowerCase() === "error",
     }];
@@ -968,6 +961,7 @@ export function selectFileBrowserItems(state) {
     const scope = selectFilesScope(state);
     const activeSession = selectActiveSession(state);
     const activeSessionId = activeSession?.sessionId || null;
+    const query = state.files?.filter?.query || "";
     if (scope !== "allSessions") {
         const entries = Array.isArray(state.files?.bySessionId?.[activeSessionId]?.entries)
             ? state.files.bySessionId[activeSessionId].entries
@@ -977,12 +971,12 @@ export function selectFileBrowserItems(state) {
             sessionId: activeSessionId,
             filename,
             label: filename,
-        }));
+        })).filter((item) => matchesSearchQuery(item.filename, query));
     }
 
     const orderedSessionIds = [
         ...new Set([
-            ...(Array.isArray(state.sessions?.flat) ? state.sessions.flat : []),
+            ...(Array.isArray(state.sessions?.flat) ? state.sessions.flat.map((entry) => entry?.sessionId || entry) : []),
             ...Object.keys(state.files?.bySessionId || {}),
         ]),
     ].filter(Boolean);
@@ -1001,7 +995,11 @@ export function selectFileBrowserItems(state) {
             });
         }
     }
-    return items;
+    return items.filter((item) => (
+        matchesSearchQuery(item.filename, query)
+        || matchesSearchQuery(item.sessionId, query)
+        || matchesSearchQuery(item.label, query)
+    ));
 }
 
 export function selectSelectedFileBrowserItem(state) {
@@ -1037,8 +1035,10 @@ export function selectFilesView(state, options = {}) {
     const session = selectActiveSession(state);
     const listWidth = Math.max(12, Number(options?.listWidth) || Number(options?.width) || 24);
     const previewWidth = Math.max(18, Number(options?.previewWidth) || Number(options?.width) || 36);
+    const showHints = options?.showHints !== false;
     const sessionId = session?.sessionId || null;
     const scope = selectFilesScope(state);
+    const query = state.files?.filter?.query || "";
     const fileItems = selectFileBrowserItems(state);
     const selectedItem = selectSelectedFileBrowserItem(state);
     const selectedFilename = selectedItem?.filename || null;
@@ -1048,7 +1048,7 @@ export function selectFilesView(state, options = {}) {
         : null;
     const shortId = session ? shortSessionId(session.sessionId) : "";
     const allSessionIds = [...new Set([
-        ...(Array.isArray(state.sessions?.flat) ? state.sessions.flat : []),
+        ...(Array.isArray(state.sessions?.flat) ? state.sessions.flat.map((entry) => entry?.sessionId || entry) : []),
         ...Object.keys(state.files?.bySessionId || {}),
     ])].filter(Boolean);
     const allSessionsLoading = scope === "allSessions" && allSessionIds.some((id) => !state.files?.bySessionId?.[id]?.loaded || state.files?.bySessionId?.[id]?.loading);
@@ -1069,8 +1069,18 @@ export function selectFilesView(state, options = {}) {
         } else if (allSessionsError && fileItems.length === 0) {
             listLines.push({ text: allSessionsError, color: "red" });
         } else if (fileItems.length === 0) {
-            listLines.push({ text: "No exported files across any session yet.", color: "gray" });
-            listLines.push({ text: "Switch the filter back to the selected session or wait for agents to export artifacts.", color: "gray" });
+            listLines.push({
+                text: query
+                    ? `No artifacts matched "${query}" across any session.`
+                    : "No exported files across any session yet.",
+                color: "gray",
+            });
+            listLines.push({
+                text: query
+                    ? "Clear the query or switch back to the selected session."
+                    : "Switch the filter back to the selected session or wait for agents to export artifacts.",
+                color: "gray",
+            });
         } else {
             listLines.push(...fileItems.map((item, index) => buildFileListEntry(item.filename, {
                 selected: index === selectedIndex,
@@ -1081,15 +1091,26 @@ export function selectFilesView(state, options = {}) {
     } else if (session) {
         const fileState = sessionId ? state.files?.bySessionId?.[sessionId] : null;
         const entries = Array.isArray(fileState?.entries) ? fileState.entries : [];
+        const scopedItems = fileItems.filter((item) => item.sessionId === sessionId);
         if (fileState?.loading) {
             listLines.push({ text: "Loading exported files…", color: "gray" });
         } else if (fileState?.error) {
             listLines.push({ text: fileState.error, color: "red" });
-        } else if (entries.length === 0) {
-            listLines.push({ text: "No exported files for this session yet.", color: "gray" });
-            listLines.push({ text: "Agents must write/export artifacts before they appear here.", color: "gray" });
+        } else if (entries.length === 0 || scopedItems.length === 0) {
+            listLines.push({
+                text: query
+                    ? `No artifacts matched "${query}" for this session.`
+                    : "No exported files for this session yet.",
+                color: "gray",
+            });
+            listLines.push({
+                text: query
+                    ? "Clear the query or upload an artifact to this session."
+                    : "Agents must write/export artifacts before they appear here.",
+                color: "gray",
+            });
         } else {
-            listLines.push(...entries.map((filename, index) => buildFileListEntry(filename, {
+            listLines.push(...scopedItems.map((item, index) => buildFileListEntry(item.filename, {
                 selected: index === selectedIndex,
                 width: listWidth,
             })));
@@ -1147,10 +1168,11 @@ export function selectFilesView(state, options = {}) {
         : session
             ? `Artifacts: ${shortId}${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
             : "Artifacts";
+    const querySuffix = query ? ` · @${query}` : "";
 
     return {
-        panelTitle: [{ text: panelTitleLabel, color: "magenta", bold: true }],
-        listTitle: [{ text: listTitleLabel, color: "cyan", bold: true }],
+        panelTitle: [{ text: `${panelTitleLabel}${querySuffix}`, color: "magenta", bold: true }],
+        listTitle: [{ text: `${listTitleLabel}${querySuffix}`, color: "cyan", bold: true }],
         listLines,
         listBodyLines: listLines.slice(1),
         selectedIndex,
@@ -1159,6 +1181,11 @@ export function selectFilesView(state, options = {}) {
         scope,
         previewTitle,
         previewLines,
+        previewContent: previewState?.content || "",
+        previewContentType: previewState?.contentType || "",
+        previewRenderMode: previewState?.renderMode || null,
+        previewError: previewState?.error || null,
+        previewLoading: Boolean(previewState?.loading),
         previewScrollOffset: state.ui.scroll.filePreview || 0,
         fullscreen: Boolean(state.files?.fullscreen),
         fullscreenTitle: [
@@ -1169,18 +1196,22 @@ export function selectFilesView(state, options = {}) {
                     { text: selectedFilename, color: "cyan", bold: true },
                 ]
                 : []),
-            { text: "  [f filter] [o open] [v/esc close fullscreen]", color: "gray" },
+            ...(showHints
+                ? [{ text: "  [f filter] [u upload] [a download] [o open] [v/esc close fullscreen]", color: "gray" }]
+                : []),
         ],
     };
 }
 
 export function selectStatusBar(state) {
     const focus = state.ui.focusRegion;
+    const paneFullscreen = state.ui.fullscreenPane || null;
     const hasPendingQuestion = Boolean(selectActiveSession(state)?.pendingQuestion?.question);
+    const fullscreenHint = paneFullscreen === focus ? "v/esc close fullscreen" : "v fullscreen";
     if (state.ui.modal?.type === "artifactUpload") {
         return {
-            left: "Attach a local file to the current prompt",
-            right: "type path · left/right move · enter attach · esc cancel",
+            left: "Upload a local file into this session's artifact store",
+            right: "type path · left/right move · enter upload · esc cancel",
         };
     }
     if (state.ui.modal?.type === "renameSession") {
@@ -1226,21 +1257,21 @@ export function selectStatusBar(state) {
         };
     }
     const hints = {
-        [FOCUS_REGIONS.SESSIONS]: "up/down switch · ctrl-u/ctrl-d page · d done · D delete · r refresh · t title · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt",
-        [FOCUS_REGIONS.CHAT]: "j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt",
+        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · d done · D delete · r refresh · t title · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.CHAT]: `j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
-            ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · left/right tab · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane"
+            ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane`
             : state.ui.inspectorTab === "files"
                 ? state.files?.fullscreen
-                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f filter · o open · d done · v close fullscreen · left/right tab · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane"
-                    : "j/k files · ctrl-u/ctrl-d page preview · g/G preview top/bottom · f filter · o open · d done · v fullscreen · left/right tab · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane"
+                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f filter · u/ctrl-a upload · a download · o open · d done · v/esc close fullscreen · left/right tab · {/} session pane · [/] side pane · T themes · tab next pane"
+                    : "j/k files · ctrl-u/ctrl-d page preview · g/G preview top/bottom · f filter · u/ctrl-a upload · a download · o open · d done · v fullscreen · left/right tab · {/} session pane · [/] side pane · T themes · tab next pane"
                 : state.ui.inspectorTab === "history"
-                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f format · r refresh · a save artifact · d done · left/right tab · [/] side pane · T themes · m next tab · tab next pane"
-                    : "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · left/right tab · [/] side pane · T themes · h/l focus · a linked artifacts · drag copy · m next tab · tab next pane",
-        [FOCUS_REGIONS.ACTIVITY]: "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · [/] side pane · T themes · a linked artifacts · drag copy · h left · tab next pane",
+                    ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f format · r refresh · a save artifact · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · m next tab · tab next pane`
+                    : `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · h/l focus · a linked artifacts · drag copy · m next tab · tab next pane`,
+        [FOCUS_REGIONS.ACTIVITY]: `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked artifacts · drag copy · h left · tab next pane`,
         [FOCUS_REGIONS.PROMPT]: hasPendingQuestion
-            ? "type answer · enter reply · alt-enter newline · ctrl-a attach file · T themes · arrows move · alt-left/right word · alt-delete word · esc sessions"
-            : "type message · enter send · alt-enter newline · ctrl-a attach file · T themes · arrows move · alt-left/right word · alt-delete word · esc sessions",
+            ? `type answer · enter reply · alt-enter newline · T themes · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+            : `type message · enter send · alt-enter newline · T themes · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
     };
 
     return {
@@ -1480,7 +1511,7 @@ function mapEventToSequenceEntry(event) {
             return {
                 ...base,
                 type: "dehydrate",
-                color: "red",
+                color: "yellow",
                 detail: detail ? `lossy ${detail}` : "lossy handoff",
             };
         }
@@ -2186,8 +2217,7 @@ export function selectArtifactUploadModal(state, maxWidth = 82) {
     const targetSession = sessionId ? state.sessions?.byId?.[sessionId] || null : null;
     const targetLabel = sessionId
         ? (targetSession ? buildSessionTitle(targetSession, state.branding?.title) : shortSessionId(sessionId))
-        : "A new session will be created on attach";
-    const pendingAttachments = Array.isArray(state.ui.promptAttachments) ? state.ui.promptAttachments : [];
+        : "A new session will be created on upload";
 
     const detailsLines = [
         [{
@@ -2198,34 +2228,21 @@ export function selectArtifactUploadModal(state, maxWidth = 82) {
             color: sessionId ? "white" : "gray",
             bold: Boolean(sessionId),
         }],
-        [{
-            text: "Draft attachments: ",
-            color: "gray",
-        }, {
-            text: String(pendingAttachments.length),
-            color: pendingAttachments.length > 0 ? "white" : "gray",
-        }],
-        ...(pendingAttachments.length > 0
-            ? [[{
-                text: pendingAttachments.map((attachment) => attachment.filename).join(", "),
-                color: "gray",
-            }]]
-            : []),
     ];
 
     return {
-        title: modal.title || "Attach File",
+        title: modal.title || "Upload Artifact",
         value,
         cursorIndex: Math.max(0, Math.min(Number(modal.cursorIndex) || 0, value.length)),
         placeholder: "~/path/to/file.md",
-        helpTitle: "Attach Rules",
+        helpTitle: "Upload Rules",
         helpLines: [
             [{
                 text: "Enter",
                 color: "cyan",
                 bold: true,
             }, {
-                text: " attach  ",
+                text: " upload  ",
                 color: "gray",
             }, {
                 text: "Esc",
@@ -2237,11 +2254,11 @@ export function selectArtifactUploadModal(state, maxWidth = 82) {
             }],
             [{ text: "", color: "gray" }],
             [{
-                text: "The file is uploaded immediately, then inserted into the prompt as a paperclip token.",
+                text: "The file is uploaded into this session's artifact store immediately.",
                 color: "gray",
             }],
             [{
-                text: "When the prompt is sent, the token expands into an artifact:// reference for the selected session.",
+                text: "Use the files browser or @-driven browsing in the prompt to reference it after upload.",
                 color: "gray",
             }],
         ],

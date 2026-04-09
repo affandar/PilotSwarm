@@ -1,7 +1,7 @@
 import { FOCUS_REGIONS, INSPECTOR_TABS } from "./commands.js";
 import { DEFAULT_THEME_ID } from "./themes/index.js";
 
-export function createInitialState({ mode = "local", branding = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, themeId = null } = {}) {
     return {
         branding: branding || {
             title: "PilotSwarm",
@@ -12,12 +12,15 @@ export function createInitialState({ mode = "local", branding = null } = {}) {
             inspectorTab: INSPECTOR_TABS[0],
             prompt: "",
             promptCursor: 0,
+            promptRows: 1,
             promptAttachments: [],
             statusText: "Starting PilotSwarm...",
-            themeId: DEFAULT_THEME_ID,
+            themeId: themeId || DEFAULT_THEME_ID,
             modal: null,
+            fullscreenPane: null,
             layout: {
                 paneAdjust: 0,
+                sessionPaneAdjust: 0,
                 viewportWidth: 120,
                 viewportHeight: 40,
             },
@@ -41,6 +44,7 @@ export function createInitialState({ mode = "local", branding = null } = {}) {
             collapsedIds: new Set(),
             orderById: {},
             nextOrderOrdinal: 0,
+            filterQuery: "",
         },
         history: {
             bySessionId: new Map(),
@@ -58,6 +62,7 @@ export function createInitialState({ mode = "local", branding = null } = {}) {
             selectedArtifactId: null,
             filter: {
                 scope: "selectedSession",
+                query: "",
             },
         },
         logs: {

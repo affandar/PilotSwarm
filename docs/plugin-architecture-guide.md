@@ -15,15 +15,30 @@ A plugin is a directory containing any combination of:
 | Agents | `agents/*.agent.md` | YAML frontmatter + markdown |
 | Skills | `skills/<name>/SKILL.md` | YAML frontmatter + markdown |
 | MCP servers | `.mcp.json` at directory root | JSON object |
-| Metadata + TUI branding | `plugin.json` at directory root | JSON |
+| Metadata + UI branding | `plugin.json` at directory root | JSON |
 
 Tools and model providers are configured in code or JSON rather than inside plugin directories.
 
-`plugin.json` is now used by the CLI/TUI for app branding. In addition to human-readable metadata, it may contain:
+`plugin.json` is now used by the shipped UI layers for app branding. In addition to human-readable metadata, it may contain:
 
 - `tui.title` — app title for the terminal/tab and root system-session heading
 - `tui.splash` — inline terminal-markup splash text
 - `tui.splashFile` — path to a text file containing the splash markup
+- `portal.branding.title` — browser portal title shown in the header and shared UI
+- `portal.branding.pageTitle` — browser tab title
+- `portal.branding.splash` / `portal.branding.splashFile` — browser portal splash markup
+- `portal.branding.logoFile` — brand logo shown on the splash, sign-in gate, and signed-in header
+- `portal.branding.faviconFile` — optional browser tab icon override; if omitted, the portal reuses `logoFile`
+- `portal.ui.loadingMessage` / `portal.ui.loadingCopy` — browser portal startup copy
+- `portal.auth.signInTitle` / `portal.auth.signInMessage` / `portal.auth.signInLabel` — browser sign-in screen copy
+
+Flat legacy `portal.title` / `portal.pageTitle` / `portal.loadingMessage` keys
+are still accepted, but nested `portal.branding` / `portal.ui` is preferred.
+
+Portal auth itself is configured separately from plugin metadata. The portal
+ships with a provider-based auth layer: `none` by default, plus optional Entra
+ID support. That keeps room for alternate providers such as AWS IAM without
+baking a single identity system into portal core.
 
 ---
 

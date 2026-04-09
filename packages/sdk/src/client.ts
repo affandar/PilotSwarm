@@ -459,19 +459,19 @@ export class PilotSwarmClient {
 
         const cmsRow = await this._catalog.getSession(sessionId);
         if (
-            cmsRow?.state === "completed"
+            (cmsRow?.state === "completed" || cmsRow?.state === "cancelled")
             && cmsRow.parentSessionId
             && !cmsRow.isSystem
         ) {
             throw new Error(
-                `Session ${sessionId.slice(0, 8)} is a completed terminal orchestration and cannot accept new messages.`,
+                `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
             );
         }
-        if (cmsRow && (cmsRow.state === "failed" || cmsRow.state === "error")) {
+        if (cmsRow && (cmsRow.state === "failed" || cmsRow.state === "error" || cmsRow.state === "cancelled")) {
             const info = await this._getSessionInfo(sessionId).catch(() => null);
-            if (info?.status === "failed") {
+            if (info?.status === "failed" || info?.status === "cancelled") {
                 throw new Error(
-                    `Session ${sessionId.slice(0, 8)} is a failed terminal orchestration and cannot accept new messages.`,
+                    `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
                 );
             }
         }

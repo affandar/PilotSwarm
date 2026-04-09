@@ -1,11 +1,8 @@
+import { systemSessionSortOrder } from "./system-titles.js";
+
 function systemSessionOrder(session) {
     if (!session?.isSystem) return Number.MAX_SAFE_INTEGER;
-    const agentId = String(session.agentId || "");
-    if (agentId === "pilotswarm") return 0;
-    if (agentId === "sweeper") return 1;
-    if (agentId === "resourcemgr") return 2;
-    if (agentId === "facts-manager") return 3;
-    return 10;
+    return systemSessionSortOrder(session);
 }
 
 function rankSystemSession(session) {

@@ -127,7 +127,24 @@ Your worker can also contribute defaults to every session through:
 
 `default.agent.md` in your app plugin is layered underneath the embedded PilotSwarm framework base prompt. It extends the app-wide instructions for your sessions; it does not replace PilotSwarm's framework rules.
 
-If the same plugin also powers the shipped CLI, `plugin.json` may additionally define TUI branding (`tui.title`, `tui.splash`, `tui.splashFile`). That branding is consumed by the CLI/TUI, not by the SDK runtime itself.
+If the same plugin also powers the shipped UI packages, `plugin.json` may additionally define:
+
+- `tui.title`, `tui.splash`, `tui.splashFile` for the CLI/TUI
+- `portal.branding.title`, `portal.branding.pageTitle`, `portal.branding.splash`,
+  `portal.branding.splashFile`, `portal.branding.logoFile`, and optional
+  `portal.branding.faviconFile` for browser portal branding
+- `portal.ui.loadingMessage` and `portal.ui.loadingCopy` for browser portal
+  startup copy
+- `portal.auth.*` for browser sign-in copy
+
+Flat legacy keys such as `portal.title` and `portal.loadingMessage` are still
+accepted for backwards compatibility, but nested `portal.branding` /
+`portal.ui` / `portal.auth` is the preferred shape.
+
+Portal branding falls back to `portal.*`, then the matching `tui.*` values, and
+finally PilotSwarm defaults. Portal auth is provider-based; the built-in
+optional provider is Entra ID, but the portal core no longer assumes Entra as
+the only supported option.
 
 ## Plugin-Driven vs Inline Configuration
 

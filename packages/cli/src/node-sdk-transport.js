@@ -11,6 +11,7 @@ import {
     SessionBlobStore,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
+import { getPluginDirsFromEnv } from "./plugin-config.js";
 
 const EXPORTS_DIR = path.join(os.homedir(), "pilotswarm-exports");
 fs.mkdirSync(EXPORTS_DIR, { recursive: true });
@@ -161,9 +162,14 @@ function buildLogEntry(line, counter) {
     const prefixMatch = line.match(/^\[pod\/([^/\]]+)/);
     const podName = prefixMatch ? prefixMatch[1] : "unknown";
     const rawLine = trimLogText(stripAnsi(line.replace(/^\[pod\/[^\]]+\]\s*/, "")).trim());
-    const orchMatch = rawLine.match(/\b(instance_id|orchestration_id)=(session-[^\s,]+)/i)
+    const orchMatch = rawLine.match(/\b(?:instance_id|orchestration_id|orch)=(session-[^\s,]+)/i)
         || rawLine.match(/\b(session-[0-9a-f-]{8,})\b/i);
-    const orchId = orchMatch ? orchMatch[2] || orchMatch[1] : null;
+    const parsedOrchId = orchMatch ? orchMatch[1] : null;
+    const sessionIdMatch = rawLine.match(/\b(?:sessionId|session|durableSessionId)=([0-9a-f-]{8,})\b/i);
+    const sessionId = sessionIdMatch
+        ? sessionIdMatch[1]
+        : (parsedOrchId && parsedOrchId.startsWith("session-") ? parsedOrchId.slice("session-".length) : null);
+    const orchId = parsedOrchId || (sessionId ? `session-${sessionId}` : null);
     const category = rawLine.includes("duroxide::activity")
             ? "activity"
             : rawLine.includes("duroxide::orchestration") || rawLine.includes("::orchestration")
@@ -176,6 +182,7 @@ function buildLogEntry(line, counter) {
         podName,
         level: normalizeLogLevel(rawLine),
         orchId,
+        sessionId,
         category,
         rawLine,
         message: extractPrettyLogMessage(rawLine),
@@ -191,6 +198,7 @@ function buildSyntheticLogEntry({ message, level = "info", podName = "k8s", coun
         podName,
         level,
         orchId: null,
+        sessionId: null,
         category: "log",
         rawLine: safeMessage,
         message: safeMessage,
@@ -250,13 +258,6 @@ function isTerminalSendError(error) {
     return /instance is terminal|terminal orchestration|cannot accept new messages/i.test(message);
 }
 
-function getPluginDirsFromEnv() {
-    return String(process.env.PLUGIN_DIRS || "")
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
-}
-
 function normalizeCreatableAgent(agent) {
     const name = String(agent?.name || "").trim();
     if (!name) return null;
@@ -306,8 +307,8 @@ function loadSessionCreationMetadataFromPluginDirs(pluginDirs = []) {
 }
 
 function buildTerminalSendError(sessionId, session) {
-    if (session?.status === "failed" || session?.orchestrationStatus === "Failed") {
-        return `Session ${sessionId.slice(0, 8)} is a failed terminal orchestration and cannot accept new messages.`;
+    if (session?.status === "failed" || session?.status === "cancelled" || session?.orchestrationStatus === "Failed") {
+        return `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`;
     }
 
     const statusLabel = String(session?.orchestrationStatus || session?.status || "Unknown");
@@ -466,11 +467,11 @@ export class NodeSdkTransport {
         if (!session) {
             throw new Error(`Session ${sessionId.slice(0, 8)} was not found.`);
         }
-        if (session.status === "failed" || session.orchestrationStatus === "Failed") {
+        if (session.status === "failed" || session.status === "cancelled" || session.orchestrationStatus === "Failed") {
             throw new Error(buildTerminalSendError(sessionId, session));
         }
         if (
-            session.status === "completed"
+            (session.status === "completed" || session.status === "cancelled")
             && session.parentSessionId
             && !session.isSystem
             && !session.cronActive
@@ -568,6 +569,36 @@ export class NodeSdkTransport {
             resolvedPath,
             sizeBytes: Buffer.byteLength(content, "utf8"),
             contentType,
+        };
+    }
+
+    async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename)) {
+        if (!this.artifactStore) {
+            throw new Error("Artifact store is not available for this transport.");
+        }
+        const safeSessionId = String(sessionId || "").trim();
+        const safeFilename = path.basename(String(filename || "").trim());
+        const safeContent = typeof content === "string" ? content : String(content || "");
+        if (!safeSessionId) {
+            throw new Error("Session id is required for artifact upload.");
+        }
+        if (!safeFilename) {
+            throw new Error("Filename is required for artifact upload.");
+        }
+
+        await this.artifactStore.uploadArtifact(
+            safeSessionId,
+            safeFilename,
+            safeContent,
+            contentType || guessArtifactContentType(safeFilename),
+        );
+
+        return {
+            sessionId: safeSessionId,
+            filename: safeFilename,
+            resolvedPath: safeFilename,
+            sizeBytes: Buffer.byteLength(safeContent, "utf8"),
+            contentType: contentType || guessArtifactContentType(safeFilename),
         };
     }
 
@@ -788,7 +819,7 @@ export class NodeSdkTransport {
                 ca: config.ca,
                 headers: {
                     Authorization: `Bearer ${config.token}`,
-                    Accept: "text/plain",
+                    Accept: "*/*",
                 },
             }, (res) => {
                 response = res;

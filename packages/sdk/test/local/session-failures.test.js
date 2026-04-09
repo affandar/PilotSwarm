@@ -1,9 +1,9 @@
 /**
- * Failed session lifecycle tests.
+ * Session lifecycle tests around stale or missing runtime state.
  *
  * Covers:
- *   - a real failed orchestration path (missing resumable state) settles to failed
- *   - failed sessions reject future messages via both the client and management APIs
+ *   - missing resumable state falls back to lossy replay instead of hard-failing
+ *   - recovered sessions remain usable after lossy replay
  *   - stale CMS error rows self-heal when the orchestration is still running
  *
  * Run: npx vitest run test/local/session-failures.test.js
@@ -12,7 +12,7 @@
 import { describe, it, beforeAll } from "vitest";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmClient, PilotSwarmWorker, createManagementClient, withClient } from "../helpers/local-workers.js";
-import { assert, assertEqual, assertIncludes, assertNotNull, assertThrows } from "../helpers/assertions.js";
+import { assert, assertEqual, assertIncludes, assertNotNull } from "../helpers/assertions.js";
 import { createCatalog, waitForSessionState } from "../helpers/cms-helpers.js";
 import { MEMORY_CONFIG, ONEWORD_CONFIG } from "../helpers/fixtures.js";
 import { dirname, join } from "node:path";
@@ -21,7 +21,7 @@ import { rmSync } from "node:fs";
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
 
-async function createFailedSessionViaMissingState(env) {
+async function createSessionWithDeletedResumableState(env) {
     const commonOpts = {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
@@ -67,13 +67,6 @@ async function createFailedSessionViaMissingState(env) {
     const clientB = new PilotSwarmClient(commonOpts);
     await clientB.start();
 
-    const resumed = await clientB.resumeSession(sessionId);
-    await assertThrows(
-        () => resumed.sendAndWait("What code did I ask you to remember?", 30_000),
-        /expected resumable Copilot session state/i,
-        "missing resumable state should hard-fail the orchestration",
-    );
-
     return {
         sessionId,
         client: clientB,
@@ -85,59 +78,64 @@ async function createFailedSessionViaMissingState(env) {
     };
 }
 
-async function testMissingStateFailureSurfacesAsFailed(env) {
+async function testMissingStateRecoversViaLossyReplay(env) {
     const catalog = await createCatalog(env);
     const mgmt = await createManagementClient(env);
-    const failed = await createFailedSessionViaMissingState(env);
+    const recovered = await createSessionWithDeletedResumableState(env);
 
     try {
-        const row = await waitForSessionState(catalog, failed.sessionId, ["failed"], 30_000);
-        assertEqual(row.state, "failed", "CMS should settle to failed");
-        assert(row.lastError, "failed session should record lastError");
-        assertIncludes(
-            row.lastError,
-            "expected resumable Copilot session state",
-            "CMS lastError should explain the hard failure",
+        const resumed = await recovered.client.resumeSession(recovered.sessionId);
+        const response = await resumed.sendAndWait(
+            "State may have been lost. Explain briefly how you will proceed carefully.",
+            60_000,
         );
+        assert(response && response.length > 0, "lossy replay should still return a response");
 
-        const view = await mgmt.getSession(failed.sessionId);
-        assertNotNull(view, "management view should exist for failed session");
-        assertEqual(view.status, "failed", "management should expose failed status");
-        assertIncludes(
-            view.error || "",
-            "expected resumable Copilot session state",
-            "management should expose the failure reason",
+        const row = await waitForSessionState(catalog, recovered.sessionId, ["idle"], 30_000);
+        assertEqual(row.state, "idle", "CMS should recover back to idle");
+        assertEqual(row.lastError, null, "lossy replay should not leave a terminal lastError");
+
+        const view = await mgmt.getSession(recovered.sessionId);
+        assertNotNull(view, "management view should exist for recovered session");
+        assertEqual(view.status, "idle", "management should expose the recovered session as idle");
+
+        const status = await mgmt.getSessionStatus(recovered.sessionId);
+        assertEqual(status.orchestrationStatus, "Running", "recovered session orchestration should remain live");
+
+        const events = await catalog.getSessionEvents(recovered.sessionId);
+        const lossyEvent = events.find((event) => event.eventType === "session.lossy_handoff");
+        assertNotNull(lossyEvent, "recovery should record a lossy handoff warning");
+        assertEqual(lossyEvent.data?.cause, "missing_resumable_state_before_run_turn", "lossy warning should explain the recovery cause");
+        const replayNotice = events.find((event) =>
+            event.eventType === "system.message"
+            && String(event.data?.content || "").includes("replaying this turn after a worker restart lost the live Copilot session state"),
         );
-
-        const status = await mgmt.getSessionStatus(failed.sessionId);
-        assertEqual(status.orchestrationStatus, "Failed", "orchestration should be terminal failed");
+        assertNotNull(replayNotice, "recovery should record a visible replay notice");
     } finally {
-        await failed.cleanup();
+        await recovered.cleanup();
         await mgmt.stop();
         await catalog.close();
     }
 }
 
-async function testFailedSessionsRejectFurtherMessages(env) {
+async function testRecoveredSessionsAcceptFutureMessages(env) {
     const mgmt = await createManagementClient(env);
-    const failed = await createFailedSessionViaMissingState(env);
+    const recovered = await createSessionWithDeletedResumableState(env);
 
     try {
-        const resumedAgain = await failed.client.resumeSession(failed.sessionId);
-
-        await assertThrows(
-            () => resumedAgain.sendAndWait("hello again", 30_000),
-            /failed terminal orchestration/i,
-            "client should reject sends to failed terminal sessions",
+        const resumed = await recovered.client.resumeSession(recovered.sessionId);
+        const first = await resumed.sendAndWait(
+            "You may have lost some state. In one short sentence, say you will continue carefully.",
+            60_000,
         );
+        assert(first && first.length > 0, "recovery turn should succeed");
 
-        await assertThrows(
-            () => mgmt.sendMessage(failed.sessionId, "hello again"),
-            /failed terminal orchestration/i,
-            "management should reject sends to failed terminal sessions",
-        );
+        const second = await resumed.sendAndWait("Say OK if you can still continue.", 30_000);
+        assert(second && second.length > 0, "client should still accept follow-up messages after recovery");
+
+        await mgmt.sendMessage(recovered.sessionId, "Reply with a short acknowledgement.");
     } finally {
-        await failed.cleanup();
+        await recovered.cleanup();
         await mgmt.stop();
     }
 }
@@ -220,12 +218,12 @@ async function testLiveSessionLossRecoversFromWarmState(env) {
 describe("Failed Session Handling", () => {
     beforeAll(async () => { await preflightChecks(); });
 
-    it("marks missing resumable-state sessions failed and surfaces the error", { timeout: TIMEOUT * 2 }, async () => {
-        await testMissingStateFailureSurfacesAsFailed(getEnv());
+    it("recovers missing resumable-state sessions via lossy replay", { timeout: TIMEOUT * 2 }, async () => {
+        await testMissingStateRecoversViaLossyReplay(getEnv());
     });
 
-    it("rejects future messages to failed terminal sessions", { timeout: TIMEOUT * 2 }, async () => {
-        await testFailedSessionsRejectFurtherMessages(getEnv());
+    it("keeps recovered sessions usable for future messages", { timeout: TIMEOUT * 2 }, async () => {
+        await testRecoveredSessionsAcceptFutureMessages(getEnv());
     });
 
     it("self-heals stale CMS errors when the orchestration is still running", { timeout: TIMEOUT }, async () => {

@@ -103,7 +103,7 @@ The AKS cluster runs on AMD64 Linux nodes. **All Docker image builds must use `d
 
 Both `deploy-aks.sh` and `reset-local.sh remote` build and push images. Any script that builds Docker images for AKS must use `docker buildx build --platform linux/amd64`.
 
-The AKS deployment target is context `toygres-aks`, namespace `copilot-runtime` (not the local `pilotswarm` namespace).
+Checked-in instructions must never hard-code a cluster/context name, namespace, DNS label, or other deployment-specific identifier. Resolve the Kubernetes context and namespace from `.env.remote` via `K8S_CONTEXT` and `K8S_NAMESPACE` before running AKS deploy or reset commands.
 
 ## TUI Boundary Rule
 

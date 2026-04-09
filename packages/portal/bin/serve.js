@@ -8,6 +8,7 @@
  * Usage:
  *   npx pilotswarm-web --env .env.remote
  *   npx pilotswarm-web --port 3001
+ *   npx pilotswarm-web --plugin ./plugin
  *   npx pilotswarm-web --workers 4          # embedded workers
  *   npx pilotswarm-web --workers 0          # remote workers (AKS)
  */
@@ -40,6 +41,11 @@ const { startServer } = await import("../server.js");
 
 const portFlag = process.argv.indexOf("--port");
 const port = portFlag !== -1 ? parseInt(process.argv[portFlag + 1], 10) : 3001;
+
+const pluginFlag = process.argv.indexOf("--plugin");
+if (pluginFlag !== -1 && process.argv[pluginFlag + 1]) {
+  process.env.PLUGIN_DIRS = path.resolve(process.argv[pluginFlag + 1]);
+}
 
 const workersFlag = process.argv.indexOf("--workers");
 const workers = workersFlag !== -1 ? parseInt(process.argv[workersFlag + 1], 10) : 4;

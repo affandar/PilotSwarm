@@ -299,8 +299,8 @@ export class ManagedSession {
 
         const cancelAgentTool = defineTool("cancel_agent", {
             description:
-                "Cancel a running sub-agent immediately. " +
-                "The sub-agent's orchestration is terminated without a graceful shutdown. " +
+                "Gracefully cancel a running sub-agent. " +
+                "Sends a cancel signal to the sub-agent so it can cascade cancellation to its own descendants and stop cleanly. " +
                 "Optionally provide a reason for the cancellation.",
             parameters: {
                 type: "object",
@@ -315,10 +315,9 @@ export class ManagedSession {
 
         const deleteAgentTool = defineTool("delete_agent", {
             description:
-                "Cancel and delete a sub-agent entirely. " +
+                "Gracefully delete a sub-agent entirely. " +
+                "The sub-agent first follows the cancellation route for any live descendants, then deletes itself when the subtree is terminal. " +
                 "ONLY works for sub-agents spawned and tracked by THIS current session via spawn_agent. " +
-                "It does NOT work for arbitrary sessions discovered elsewhere in the system. " +
-                "Terminates the orchestration and removes the session from the catalog. " +
                 "Use this only to clean up your own spawned sub-agents you no longer need.",
             parameters: {
                 type: "object",
@@ -761,8 +760,8 @@ export class ManagedSession {
 
         const cancelAgentTool = defineTool("cancel_agent", {
             description:
-                "Cancel a running sub-agent immediately. " +
-                "The sub-agent's orchestration is terminated without a graceful shutdown. " +
+                "Gracefully cancel a running sub-agent. " +
+                "Sends a cancel signal to the sub-agent so it can cascade cancellation to its own descendants and stop cleanly. " +
                 "Optionally provide a reason for the cancellation.",
             parameters: {
                 type: "object",
@@ -784,8 +783,8 @@ export class ManagedSession {
 
         const deleteAgentTool = defineTool("delete_agent", {
             description:
-                "Cancel and delete a sub-agent entirely. " +
-                "Terminates the orchestration and removes the session from the catalog. " +
+                "Gracefully delete a sub-agent entirely. " +
+                "The sub-agent first follows the cancellation route for any live descendants, then deletes itself when the subtree is terminal. " +
                 "Use this to clean up sub-agents you no longer need.",
             parameters: {
                 type: "object",

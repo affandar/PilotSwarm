@@ -127,6 +127,7 @@ export type PilotSwarmSessionStatus =
     | "waiting"
     | "input_required"
     | "completed"
+    | "cancelled"
     | "failed"
     | "error";
 
@@ -282,6 +283,15 @@ export interface OrchestrationInput {
             content?: string;
             observedAtMs: number;
         }>;
+    };
+    /** Graceful shutdown state carried across continueAsNew while child sessions drain. */
+    pendingShutdown?: {
+        mode: "done" | "cancel" | "delete";
+        reason: string;
+        startedAtMs: number;
+        deadlineAtMs: number;
+        targetAgentIds: string[];
+        commandId?: string;
     };
 
     // ─── Sub-agent state ─────────────────────────────────────

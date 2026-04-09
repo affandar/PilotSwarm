@@ -24,6 +24,30 @@ function normalizeError(error: unknown): Error {
     return new Error(String(error));
 }
 
+type SessionTraceWriter = (message: string) => void;
+
+function emitSessionManagerTrace(
+    sessionId: string,
+    message: string,
+    options?: { trace?: SessionTraceWriter; level?: "info" | "warn" },
+): void {
+    const line = `[SessionManager] session=${sessionId} orch=session-${sessionId} ${message}`;
+    if (typeof options?.trace === "function") {
+        options.trace(line);
+        return;
+    }
+    if (options?.level === "warn") {
+        console.warn(line);
+        return;
+    }
+    console.info(line);
+}
+
+function isMissingDehydrateSnapshotError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    return /Session state directory not ready during dehydrate/i.test(message);
+}
+
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
     frameworkBasePrompt?: string;
@@ -238,9 +262,10 @@ export class SessionManager {
     async getOrCreate(
         sessionId: string,
         serializableConfig: SerializableSessionConfig,
-        options?: { turnIndex?: number },
+        options?: { turnIndex?: number; trace?: SessionTraceWriter },
     ): Promise<ManagedSession> {
         const turnIndex = options?.turnIndex;
+        const trace = options?.trace;
         const inheritedToolNames = Array.from(new Set([
             ...(this.workerDefaults.frameworkBaseToolNames ?? []),
             ...(this.workerDefaults.appDefaultToolNames ?? []),
@@ -352,7 +377,24 @@ export class SessionManager {
         }
 
         const localExists = fs.existsSync(sessionDir);
-        const storedExists = this.sessionStore ? await this.sessionStore.exists(sessionId).catch(() => false) : false;
+        let storedExists = false;
+        if (this.sessionStore) {
+            try {
+                storedExists = await this.sessionStore.exists(sessionId);
+            } catch (error: unknown) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    `session-store exists probe failed turnIndex=${turnIndex ?? "unknown"} error=${normalizeError(error).message}`,
+                    { trace, level: "warn" },
+                );
+                storedExists = false;
+            }
+        }
+        emitSessionManagerTrace(
+            sessionId,
+            `resume probe turnIndex=${turnIndex ?? "unknown"} localExists=${localExists} storedExists=${storedExists} inMemory=${this.sessions.has(sessionId)}`,
+            { trace },
+        );
 
         if (turnIndex === 0) {
             if (localExists || storedExists) {
@@ -366,14 +408,36 @@ export class SessionManager {
             copilotSession = await client.createSession(sessionConfig);
         } else if (turnIndex != null && turnIndex > 0) {
             if (fs.existsSync(sessionDir)) {
+                emitSessionManagerTrace(sessionId, "turn>0 resuming from local session directory", { trace });
                 copilotSession = await client.resumeSession(sessionId, sessionConfig);
             } else if (this.sessionStore && storedExists) {
-                await this.sessionStore.hydrate(sessionId);
+                emitSessionManagerTrace(sessionId, "turn>0 hydrating from session store before resume", { trace });
+                try {
+                    await this.sessionStore.hydrate(sessionId);
+                } catch (error: unknown) {
+                    emitSessionManagerTrace(
+                        sessionId,
+                        `turn>0 hydrate before resume failed error=${normalizeError(error).message}`,
+                        { trace, level: "warn" },
+                    );
+                    throw error;
+                }
                 if (!fs.existsSync(sessionDir)) {
+                    emitSessionManagerTrace(
+                        sessionId,
+                        "turn>0 hydrate reported success but no local session directory was restored",
+                        { trace, level: "warn" },
+                    );
                     throw this._missingSessionStateError(sessionId, turnIndex, " Hydration completed but no local session directory was restored.");
                 }
+                emitSessionManagerTrace(sessionId, "turn>0 hydrate restored local session directory; resuming session", { trace });
                 copilotSession = await client.resumeSession(sessionId, sessionConfig);
             } else {
+                emitSessionManagerTrace(
+                    sessionId,
+                    `turn>0 missing resumable state localExists=${localExists} storedExists=${storedExists}`,
+                    { trace, level: "warn" },
+                );
                 throw this._missingSessionStateError(sessionId, turnIndex);
             }
         } else {
@@ -419,9 +483,33 @@ export class SessionManager {
      * write is retried separately so transient archive/blob failures can
      * recover before we bubble a terminal error back to the orchestration.
      */
-    async dehydrate(sessionId: string, reason: string): Promise<void> {
+    async dehydrate(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter }): Promise<void> {
         const DESTROY_MAX_RETRIES = 3;
+        const trace = options?.trace;
         let lastDestroyError: Error | undefined;
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        let checkpointPrepared = false;
+
+        emitSessionManagerTrace(sessionId, `dehydrate start reason=${reason}`, { trace });
+
+        if (this.sessionStore && fs.existsSync(sessionDir)) {
+            try {
+                emitSessionManagerTrace(sessionId, "pre-dehydrate checkpoint start", { trace });
+                await this.sessionStore.checkpoint(sessionId);
+                checkpointPrepared = true;
+                emitSessionManagerTrace(sessionId, "pre-dehydrate checkpoint complete", { trace });
+            } catch (err: any) {
+                const checkpointError = normalizeError(err);
+                emitSessionManagerTrace(
+                    sessionId,
+                    `pre-dehydrate checkpoint failed error=${checkpointError.message}`,
+                    { trace, level: "warn" },
+                );
+                console.warn(
+                    `[SessionManager] pre-dehydrate checkpoint failed for ${sessionId}: ${checkpointError.message}`,
+                );
+            }
+        }
 
         // Phase 1: Destroy the in-memory session (with retries)
         for (let attempt = 1; attempt <= DESTROY_MAX_RETRIES; attempt++) {
@@ -429,16 +517,22 @@ export class SessionManager {
             if (!session) break; // No in-memory session — nothing to destroy
 
             try {
+                emitSessionManagerTrace(sessionId, `destroy attempt ${attempt}/${DESTROY_MAX_RETRIES}`, { trace });
                 await session.destroy();
                 this.sessions.delete(sessionId);
+                emitSessionManagerTrace(sessionId, `destroy complete on attempt ${attempt}/${DESTROY_MAX_RETRIES}`, { trace });
                 break; // Success
             } catch (err: any) {
                 lastDestroyError = normalizeError(err);
                 this.sessions.delete(sessionId); // Remove broken session from map
+                emitSessionManagerTrace(
+                    sessionId,
+                    `destroy failed on attempt ${attempt}/${DESTROY_MAX_RETRIES} error=${lastDestroyError.message}`,
+                    { trace, level: "warn" },
+                );
 
                 if (attempt < DESTROY_MAX_RETRIES) {
                     // Re-create the session from local files so we can try destroy again.
-                    const sessionDir = path.join(this.sessionStateDir, sessionId);
                     if (fs.existsSync(sessionDir)) {
                         try {
                             const client = await this.ensureClient();
@@ -470,11 +564,26 @@ export class SessionManager {
             for (let attempt = 1; attempt <= DEHYDRATE_STORE_MAX_RETRIES; attempt++) {
                 sessionStoreAttemptCount = attempt;
                 try {
+                    emitSessionManagerTrace(
+                        sessionId,
+                        `session-store dehydrate attempt ${attempt}/${DEHYDRATE_STORE_MAX_RETRIES} reason=${reason}`,
+                        { trace },
+                    );
                     await this.sessionStore.dehydrate(sessionId, { reason });
                     lastStoreError = undefined;
+                    emitSessionManagerTrace(
+                        sessionId,
+                        `session-store dehydrate complete on attempt ${attempt}/${DEHYDRATE_STORE_MAX_RETRIES}`,
+                        { trace },
+                    );
                     break;
                 } catch (storeErr: any) {
                     lastStoreError = normalizeError(storeErr);
+                    emitSessionManagerTrace(
+                        sessionId,
+                        `session-store dehydrate failed on attempt ${attempt}/${DEHYDRATE_STORE_MAX_RETRIES} error=${lastStoreError.message}`,
+                        { trace, level: "warn" },
+                    );
                     if (attempt < DEHYDRATE_STORE_MAX_RETRIES) {
                         console.warn(
                             `[SessionManager] session-store dehydrate failed for ${sessionId} ` +
@@ -486,27 +595,49 @@ export class SessionManager {
             }
 
             if (lastStoreError) {
-                const message = lastDestroyError
-                    ? `Session ${sessionId} is not dehydratable (reason=${reason}): ` +
-                        `destroy failed (${lastDestroyError.message}), ` +
-                        `session-store persistence failed after ${sessionStoreAttemptCount} attempts (${lastStoreError.message}). ` +
-                        `Session state may be lost on worker recycle.`
-                    : `Session-store persistence failed after ${sessionStoreAttemptCount} attempts ` +
-                        `during dehydrate for ${sessionId} (reason=${reason}): ${lastStoreError.message}`;
-                const error = new Error(message);
-                (error as any).sessionStoreAttemptCount = sessionStoreAttemptCount;
-                (error as any).sessionStoreError = lastStoreError.message;
-                (error as any).dehydrateReason = reason;
-                (error as any).sessionId = sessionId;
-                throw error;
+                if (!lastDestroyError && checkpointPrepared && isMissingDehydrateSnapshotError(lastStoreError)) {
+                    emitSessionManagerTrace(
+                        sessionId,
+                        "session-store dehydrate falling back to pre-destroy checkpoint after snapshot-missing error",
+                        { trace, level: "warn" },
+                    );
+                    console.warn(
+                        `[SessionManager] session-store dehydrate snapshot missing after destroy for ${sessionId}; ` +
+                        `using the pre-destroy checkpoint as the durable fallback.`,
+                    );
+                    try {
+                        fs.rmSync(sessionDir, { recursive: true, force: true });
+                    } catch {}
+                } else {
+                    const message = lastDestroyError
+                        ? `Session ${sessionId} is not dehydratable (reason=${reason}): ` +
+                            `destroy failed (${lastDestroyError.message}), ` +
+                            `session-store persistence failed after ${sessionStoreAttemptCount} attempts (${lastStoreError.message}). ` +
+                            `Session state may be lost on worker recycle.`
+                        : `Session-store persistence failed after ${sessionStoreAttemptCount} attempts ` +
+                            `during dehydrate for ${sessionId} (reason=${reason}): ${lastStoreError.message}`;
+                    const error = new Error(message);
+                    (error as any).sessionStoreAttemptCount = sessionStoreAttemptCount;
+                    (error as any).sessionStoreError = lastStoreError.message;
+                    (error as any).dehydrateReason = reason;
+                    (error as any).sessionId = sessionId;
+                    throw error;
+                }
             }
         }
 
         if (lastDestroyError) {
+            emitSessionManagerTrace(
+                sessionId,
+                `destroy exhausted retries but session-store persistence succeeded error=${lastDestroyError.message}`,
+                { trace, level: "warn" },
+            );
             console.warn(
                 `[SessionManager] destroy() failed for ${sessionId} after ${DESTROY_MAX_RETRIES} attempts ` +
                 `(${lastDestroyError.message}), but session-store persistence succeeded. Session state is preserved.`
             );
+        } else {
+            emitSessionManagerTrace(sessionId, `dehydrate complete reason=${reason}`, { trace });
         }
     }
 
@@ -514,9 +645,21 @@ export class SessionManager {
      * Hydrate session state from the configured session store to local disk.
      * The next getOrCreate() will detect local files and resume.
      */
-    async hydrate(sessionId: string): Promise<void> {
+    async hydrate(sessionId: string, options?: { trace?: SessionTraceWriter }): Promise<void> {
+        const trace = options?.trace;
         if (this.sessionStore) {
-            await this.sessionStore.hydrate(sessionId);
+            emitSessionManagerTrace(sessionId, "hydrate start via session store", { trace });
+            try {
+                await this.sessionStore.hydrate(sessionId);
+                emitSessionManagerTrace(sessionId, "hydrate complete via session store", { trace });
+            } catch (error: unknown) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    `hydrate failed error=${normalizeError(error).message}`,
+                    { trace, level: "warn" },
+                );
+                throw error;
+            }
         }
     }
 
@@ -524,16 +667,33 @@ export class SessionManager {
      * Return true when the next turn must hydrate state from the session store.
      * This supports abrupt worker loss and direct worker-side dehydration.
      */
-    async needsHydration(sessionId: string): Promise<boolean> {
-        if (!this.sessionStore) return false;
-        if (this.sessions.has(sessionId)) return false;
+    async needsHydration(sessionId: string, options?: { trace?: SessionTraceWriter }): Promise<boolean> {
+        const trace = options?.trace;
+        if (!this.sessionStore) {
+            emitSessionManagerTrace(sessionId, "needsHydration=false session store disabled", { trace });
+            return false;
+        }
+        if (this.sessions.has(sessionId)) {
+            emitSessionManagerTrace(sessionId, "needsHydration=false session is still warm in memory", { trace });
+            return false;
+        }
 
         const sessionDir = path.join(this.sessionStateDir, sessionId);
-        if (fs.existsSync(sessionDir)) return false;
+        if (fs.existsSync(sessionDir)) {
+            emitSessionManagerTrace(sessionId, "needsHydration=false local session directory already exists", { trace });
+            return false;
+        }
 
         try {
-            return await this.sessionStore.exists(sessionId);
-        } catch {
+            const storedExists = await this.sessionStore.exists(sessionId);
+            emitSessionManagerTrace(sessionId, `needsHydration result=${storedExists}`, { trace });
+            return storedExists;
+        } catch (error: unknown) {
+            emitSessionManagerTrace(
+                sessionId,
+                `needsHydration probe failed error=${normalizeError(error).message}`,
+                { trace, level: "warn" },
+            );
             return false;
         }
     }

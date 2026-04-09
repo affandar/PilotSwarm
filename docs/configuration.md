@@ -43,6 +43,29 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 
 > **Model providers** are configured in the local `.model_providers.json`, which is usually copied from the checked-in `.model_providers.example.json` template. API keys use `env:VAR_NAME` syntax to reference `.env` variables. Providers whose API key is not set are automatically excluded from the model list.
 
+### Portal Auth Add-Ons
+
+The shipped browser portal supports provider-based auth.
+
+- default: `none`
+- built-in optional provider: `entra`
+
+Enable Entra for portal deployments with:
+
+```bash
+PORTAL_AUTH_PROVIDER=entra
+PORTAL_AUTH_ENTRA_TENANT_ID=<tenant-id>
+PORTAL_AUTH_ENTRA_CLIENT_ID=<client-id>
+```
+
+For backwards compatibility, `ENTRA_TENANT_ID` and `ENTRA_CLIENT_ID` are still
+accepted as fallbacks. Portal branding and sign-in copy come from
+`plugin.json.portal`, with `plugin.json.tui` used as a fallback when the portal
+plugin metadata does not provide an override. Preferred portal metadata shape
+is nested under `portal.branding`, `portal.ui`, and `portal.auth`; browser logo
+assets can be supplied with `portal.branding.logoFile` and optional
+`portal.branding.faviconFile`.
+
 ## PostgreSQL Setup
 
 ### Local Development

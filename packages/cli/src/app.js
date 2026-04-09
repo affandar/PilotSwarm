@@ -231,6 +231,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         const focus = controller.getState().ui.focusRegion;
         const modal = controller.getState().ui.modal;
         const inspectorTab = controller.getState().ui.inspectorTab;
+        const fullscreenPane = controller.getState().ui.fullscreenPane || null;
         const plainShortcut = isPlainShortcutKey(key);
         const matchesCtrlKey = (name, controlChar) => key.ctrl
             && (key.name === name || input === name || input === controlChar);
@@ -357,11 +358,23 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             return;
         }
         if (key.tab) {
+            if (focus === "prompt" && controller.acceptPromptReferenceAutocomplete()) {
+                return;
+            }
             controller.handleCommand(UI_COMMANDS.FOCUS_NEXT).catch(() => {});
             return;
         }
         if (key.escape && focus === "inspector" && inspectorTab === "files" && controller.getState().files.fullscreen) {
             controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {});
+            return;
+        }
+        if (key.escape && fullscreenPane) {
+            if (focus === "prompt") {
+                controller.setPrompt("");
+                controller.setFocus(fullscreenPane);
+                return;
+            }
+            controller.handleCommand(UI_COMMANDS.TOGGLE_PANE_FULLSCREEN).catch(() => {});
             return;
         }
         if (key.escape) {
@@ -397,6 +410,14 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.OPEN_FILES_FILTER).catch(() => {});
             return;
         }
+        if (focus === "inspector" && inspectorTab === "files" && input === "u") {
+            controller.handleCommand(UI_COMMANDS.OPEN_ARTIFACT_UPLOAD).catch(() => {});
+            return;
+        }
+        if (focus === "inspector" && inspectorTab === "files" && input === "a") {
+            controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE).catch(() => {});
+            return;
+        }
         if (focus === "inspector" && inspectorTab === "history" && input === "f") {
             controller.handleCommand(UI_COMMANDS.OPEN_HISTORY_FORMAT).catch(() => {});
             return;
@@ -411,6 +432,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (focus === "inspector" && inspectorTab === "files" && input === "v") {
             controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {});
+            return;
+        }
+        if (focus !== "prompt" && input === "v") {
+            controller.handleCommand(UI_COMMANDS.TOGGLE_PANE_FULLSCREEN).catch(() => {});
             return;
         }
         if (focus === "inspector" && inspectorTab === "files" && plainShortcut && input === "o") {
@@ -434,6 +459,14 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (focus !== "prompt" && input === "]") {
             controller.handleCommand(UI_COMMANDS.GROW_RIGHT_PANE).catch(() => {});
+            return;
+        }
+        if (focus !== "prompt" && input === "{") {
+            controller.handleCommand(UI_COMMANDS.SHRINK_SESSION_PANE).catch(() => {});
+            return;
+        }
+        if (focus !== "prompt" && input === "}") {
+            controller.handleCommand(UI_COMMANDS.GROW_SESSION_PANE).catch(() => {});
             return;
         }
 

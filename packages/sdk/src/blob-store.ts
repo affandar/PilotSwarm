@@ -19,6 +19,46 @@ import {
     waitForSessionSnapshot,
 } from "./session-store.js";
 
+function formatBlobLogValue(value: unknown): string {
+    if (value == null) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+function logBlobStore(
+    level: "info" | "warn" | "error",
+    sessionId: string,
+    message: string,
+    details: Record<string, unknown> = {},
+): void {
+    const suffix = Object.entries(details)
+        .filter(([, value]) => value !== undefined && value !== null && value !== "")
+        .map(([key, value]) => `${key}=${formatBlobLogValue(value)}`)
+        .join(" ");
+    const line =
+        `[SessionBlobStore] session=${sessionId} orch=session-${sessionId} ${message}` +
+        (suffix ? ` ${suffix}` : "");
+
+    if (level === "warn") {
+        console.warn(line);
+        return;
+    }
+    if (level === "error") {
+        console.error(line);
+        return;
+    }
+    console.info(line);
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error ?? "");
+}
+
 /**
  * Manages session state in Azure Blob Storage.
  *
@@ -57,8 +97,17 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
      */
     async dehydrate(sessionId: string, meta?: Record<string, unknown>): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
+        logBlobStore("info", sessionId, "dehydrate start", {
+            container: this.containerName,
+            dir: sessionDir,
+            reason: meta?.reason,
+        });
         const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
         if (!snapshot.ready) {
+            logBlobStore("warn", sessionId, "dehydrate snapshot not ready", {
+                container: this.containerName,
+                missing: snapshot.missing.join(", ") || "unknown",
+            });
             throw new Error(
                 `Session state directory not ready during dehydrate: ${sessionId} (${sessionDir}). ` +
                 `Missing: ${snapshot.missing.join(", ") || "unknown"}`,
@@ -68,19 +117,40 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
         const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
         try {
             archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
+            const tarSizeBytes = fs.existsSync(tarPath) ? fs.statSync(tarPath).size : undefined;
 
             // Upload tar
             const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
+            logBlobStore("info", sessionId, "dehydrate upload tar", {
+                container: this.containerName,
+                blob: `${sessionId}.tar.gz`,
+                tarSizeBytes,
+            });
             await tarBlob.uploadFile(tarPath);
 
             // Upload metadata
             const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, meta);
             const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
             const metaJson = JSON.stringify(metadata);
+            logBlobStore("info", sessionId, "dehydrate upload metadata", {
+                container: this.containerName,
+                blob: `${sessionId}.meta.json`,
+                metadataBytes: metaJson.length,
+            });
             await metaBlob.upload(metaJson, metaJson.length);
 
             // Remove local files
             fs.rmSync(sessionDir, { recursive: true, force: true });
+            logBlobStore("info", sessionId, "dehydrate complete", {
+                container: this.containerName,
+                tarSizeBytes,
+            });
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "dehydrate failed", {
+                container: this.containerName,
+                error: errorMessage(error),
+            });
+            throw error;
         } finally {
             // Always clean up temp tar
             try { fs.unlinkSync(tarPath); } catch {}
@@ -93,6 +163,10 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
      */
     async hydrate(sessionId: string): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
+        logBlobStore("info", sessionId, "hydrate start", {
+            container: this.containerName,
+            dir: sessionDir,
+        });
 
         // Always download from blob — overwrite any stale local files
         if (fs.existsSync(sessionDir)) {
@@ -103,8 +177,23 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
         const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
 
         try {
+            logBlobStore("info", sessionId, "hydrate download tar", {
+                container: this.containerName,
+                blob: `${sessionId}.tar.gz`,
+            });
             await tarBlob.downloadToFile(tarPath);
             extractSessionArchive(this.sessionStateDir, tarPath);
+            logBlobStore("info", sessionId, "hydrate complete", {
+                container: this.containerName,
+                restoredDir: sessionDir,
+            });
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "hydrate failed", {
+                container: this.containerName,
+                blob: `${sessionId}.tar.gz`,
+                error: errorMessage(error),
+            });
+            throw error;
         } finally {
             try { fs.unlinkSync(tarPath); } catch {}
         }
@@ -116,11 +205,22 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
      */
     async checkpoint(sessionId: string): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
-        if (!fs.existsSync(sessionDir)) return;
+        if (!fs.existsSync(sessionDir)) {
+            logBlobStore("info", sessionId, "checkpoint skipped", {
+                container: this.containerName,
+                reason: "local session dir missing",
+            });
+            return;
+        }
 
         const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
         try {
+            logBlobStore("info", sessionId, "checkpoint start", {
+                container: this.containerName,
+                dir: sessionDir,
+            });
             archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
+            const tarSizeBytes = fs.existsSync(tarPath) ? fs.statSync(tarPath).size : undefined;
 
             const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
             await tarBlob.uploadFile(tarPath);
@@ -130,6 +230,17 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
             const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
             const metaJson = JSON.stringify(metadata);
             await metaBlob.upload(metaJson, metaJson.length);
+            logBlobStore("info", sessionId, "checkpoint complete", {
+                container: this.containerName,
+                tarSizeBytes,
+                metadataBytes: metaJson.length,
+            });
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "checkpoint failed", {
+                container: this.containerName,
+                error: errorMessage(error),
+            });
+            throw error;
         } finally {
             try { fs.unlinkSync(tarPath); } catch {}
         }
@@ -138,13 +249,42 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
     /** Check if a dehydrated session exists in blob storage. */
     async exists(sessionId: string): Promise<boolean> {
         const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
-        return tarBlob.exists();
+        try {
+            const exists = await tarBlob.exists();
+            logBlobStore("info", sessionId, "exists probe", {
+                container: this.containerName,
+                blob: `${sessionId}.tar.gz`,
+                exists,
+            });
+            return exists;
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "exists probe failed", {
+                container: this.containerName,
+                blob: `${sessionId}.tar.gz`,
+                error: errorMessage(error),
+            });
+            throw error;
+        }
     }
 
     /** Delete a dehydrated session from blob storage. */
     async delete(sessionId: string): Promise<void> {
-        await this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`).deleteIfExists();
-        await this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`).deleteIfExists();
+        logBlobStore("info", sessionId, "delete start", {
+            container: this.containerName,
+        });
+        try {
+            await this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`).deleteIfExists();
+            await this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`).deleteIfExists();
+            logBlobStore("info", sessionId, "delete complete", {
+                container: this.containerName,
+            });
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "delete failed", {
+                container: this.containerName,
+                error: errorMessage(error),
+            });
+            throw error;
+        }
     }
 
     // ─── Artifact Storage ────────────────────────────────────

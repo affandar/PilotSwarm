@@ -71,6 +71,12 @@ That means:
    - Scale back up: `kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=6`
    - **Do not use `kubectl rollout restart`** — it does a rolling replacement that mixes old and new pods, which can cause session-state-not-found failures when in-flight orchestrations cross the old/new boundary.
    - Wait for rollout completion: `kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime --timeout=180s`
+   - Validate worker filesystem ownership before starting tests:
+     ```bash
+     for p in $(kubectl get pods -n copilot-runtime -l app.kubernetes.io/component=worker -o jsonpath='{.items[*].metadata.name}'); do
+       kubectl exec -n copilot-runtime "$p" -- sh -lc 'touch /home/node/.copilot/config.json >/dev/null 2>&1 && echo ok || echo broken'
+     done
+     ```
 
 6. Verify the cluster is truly clean.
    - Pods should come back healthy.
@@ -95,9 +101,9 @@ That means:
   NODE_TLS_REJECT_UNAUTHORIZED=0 node --env-file=.env.remote scripts/db-reset.js --yes
 
   # 3. Build and push new image (if code changed)
-  az acr login --name toygresaksacr
+  az acr login --name "${ACR_NAME:-pilotswarmacr}"
   docker buildx build --platform linux/amd64 -f deploy/Dockerfile.worker \
-    -t toygresaksacr.azurecr.io/copilot-runtime-worker:latest --push .
+    -t "${ACR_NAME:-pilotswarmacr}.azurecr.io/copilot-runtime-worker:latest" --push .
 
   # 4. Apply any manifest changes, then scale back up
   kubectl apply -f deploy/k8s/worker-deployment.yaml
@@ -122,6 +128,7 @@ That means:
 - **Never use `rollout restart` as a substitute for scale-down/scale-up.** A rolling restart replaces pods one at a time, meaning old pods with stale in-memory session state coexist with new pods pulling from a freshly-wiped database. This causes "expected resumable Copilot session state ... but none was found" failures when a session's `continueAsNew` execution lands on a new pod that has no local disk state from the old pod's checkpoint. Always: scale to 0 → reset DB → (push image if needed) → scale back up.
 - An empty post-reset catalog is temporary. Healthy workers will immediately recreate the built-in system sessions.
 - If local `kubectl` auth is unreliable, verify or operate through a cluster-side path instead of guessing whether the reset worked.
+- If fresh sessions fail right after reset with `CLI server exited with code 1` or `Connection is closed`, check whether `/home/node/.copilot` is writable inside each worker pod. Mounting only `/home/node/.copilot/session-state` is not sufficient for the Copilot CLI.
 
 ## Rules
 

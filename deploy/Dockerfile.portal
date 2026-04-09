@@ -39,7 +39,8 @@ COPY packages/ui-core/src/ ./packages/ui-core/src/
 COPY packages/ui-react/src/ ./packages/ui-react/src/
 
 # Copy portal sources
-COPY packages/portal/server.js packages/portal/auth.js packages/portal/runtime.js packages/portal/index.html ./packages/portal/
+COPY packages/portal/server.js packages/portal/auth.js packages/portal/config.js packages/portal/runtime.js packages/portal/index.html ./packages/portal/
+COPY packages/portal/auth/ ./packages/portal/auth/
 COPY packages/portal/src/ ./packages/portal/src/
 COPY packages/portal/vite.config.ts packages/portal/tsconfig.json ./packages/portal/
 

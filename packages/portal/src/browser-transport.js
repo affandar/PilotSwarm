@@ -251,6 +251,19 @@ export class BrowserPortalTransport {
         return this.rpc("downloadArtifact", { sessionId, filename });
     }
 
+    async uploadArtifactFromFile(sessionId, file) {
+        if (!file || typeof file.name !== "string") {
+            throw new Error("A browser File is required for upload");
+        }
+        const content = await file.text();
+        return this.rpc("uploadArtifact", {
+            sessionId,
+            filename: file.name,
+            content,
+            contentType: file.type || undefined,
+        });
+    }
+
     getArtifactExportDirectory() {
         return "Browser downloads";
     }
