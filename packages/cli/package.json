@@ -9,7 +9,8 @@
   },
   "main": "./src/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./portal": "./src/portal.js"
   },
   "scripts": {
     "build": "echo 'pilotswarm-cli: no build step (plain JS)'",

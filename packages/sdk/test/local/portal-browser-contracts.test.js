@@ -53,5 +53,6 @@ describe("portal browser contracts", () => {
         assertIncludes(state, "themeId: themeId || DEFAULT_THEME_ID", "shared initial state should honor persisted theme ids");
         assertIncludes(css, ".ps-workspace-full", "portal stylesheet should size the fullscreen files workspace");
         assertIncludes(css, ".ps-markdown-preview", "portal stylesheet should style markdown previews");
+        assertIncludes(css, ".ps-chat-focus-body .ps-line", "chat focus mode should keep transcript lines wrapped within the viewport");
     });
 });

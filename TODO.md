@@ -1,14 +1,7 @@
 
 # TODO
 
-- reduce size of orchestrations. Reaching ~4MB+ 
-- OOM in the TUI
-- Calls fail to find session, 
 - evals for prompts
-- update the packages/portal to host the new Ink based TUI, add entraid auth to the portal
-    - proposal: [docs/proposals/portal-native-web-experience.md](docs/proposals/portal-native-web-experience.md)
-    - proposal: [docs/proposals/portal-web-experience.md](docs/proposals/portal-web-experience.md)
-    - proposal: [docs/proposals/entra-auth-gateway.md](docs/proposals/entra-auth-gateway.md)
 - session-store-driven durability cleanup
     - proposal: [docs/proposals/session-store-driven-durability.md](docs/proposals/session-store-driven-durability.md)
     - implement previous-worker rescue before blob/fresh replay for lossy session recovery after worker restart
@@ -38,6 +31,13 @@
 - agent to agent messaging
 
 # DONE
+- update the packages/portal to host the new Ink based TUI, add entraid auth to the portal
+    - proposal: [docs/proposals/portal-native-web-experience.md](docs/proposals/portal-native-web-experience.md)
+    - proposal: [docs/proposals/portal-web-experience.md](docs/proposals/portal-web-experience.md)
+    - proposal: [docs/proposals/entra-auth-gateway.md](docs/proposals/entra-auth-gateway.md)
+- OOM in the TUI
+- Calls fail to find session, 
+- reduce size of orchestrations. Reaching ~4MB+ 
 - junk / stray text on the panes
 - spin up all system agents via orchestrations, don't depend on bootstrapping agent
 - stabilize `system-prompt-refactor` branch after regressions before merging it

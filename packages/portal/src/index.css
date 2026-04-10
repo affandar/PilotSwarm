@@ -448,6 +448,17 @@ button {
 .ps-chat-focus-body > .ps-panel {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+}
+
+.ps-chat-focus-body .ps-panel-body,
+.ps-chat-focus-body .ps-scroll-panel {
+  min-width: 0;
+}
+
+.ps-chat-focus-body .ps-line,
+.ps-chat-focus-body .ps-chat-card-line {
+  overflow-wrap: anywhere;
 }
 
 .ps-chat-focus-overlay {

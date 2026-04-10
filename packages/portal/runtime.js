@@ -1,4 +1,4 @@
-import { NodeSdkTransport } from "../cli/src/node-sdk-transport.js";
+import { NodeSdkTransport } from "pilotswarm-cli/portal";
 
 function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};

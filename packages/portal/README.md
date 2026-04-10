@@ -119,15 +119,17 @@ module imports.
 
 ```
 pilotswarm-web         (this package)
-  ├── pilotswarm-sdk   (peer dependency)
+  ├── pilotswarm-cli   (shared node/runtime host glue)
+  │   ├── pilotswarm-sdk
+  │   ├── pilotswarm-ui-core
+  │   └── pilotswarm-ui-react
   ├── express
   ├── ws
   ├── react, react-dom
   └── vite             (devDependency)
-
-pilotswarm-cli         (TUI — separate package)
-  └── pilotswarm-sdk
-
-pilotswarm-sdk         (runtime — shared)
-  └── duroxide, copilot-sdk, etc.
 ```
+
+`pilotswarm-web` now consumes a small supported portal-facing surface from
+`pilotswarm-cli` rather than importing monorepo-relative source files. That
+keeps the publishable package graph explicit and lets the portal reuse the same
+Node transport and plugin-config behavior as the TUI.

@@ -5,6 +5,7 @@ import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
 import { createStore } from "../../../ui-core/src/store.js";
+import { selectChatLines } from "../../../ui-core/src/selectors.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 function createController(transportOverrides = {}) {
@@ -185,5 +186,39 @@ describe("history pane UI behavior", () => {
             "internal child-update prompts should still appear in activity",
         );
         assertEqual(history.chat.some((message) => message.text.includes("Latest steady-state sample recorded.")), true);
+    });
+
+    it("collapses the default rehydration system notice into a compact chat divider", () => {
+        const sessionId = "session-12345678";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "idle",
+            title: "Rehydration Test",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "system.message",
+                data: {
+                    content:
+                        "The session was dehydrated and has been rehydrated on a new worker. " +
+                        "The LLM conversation history is preserved.",
+                },
+                createdAt: new Date("2026-04-08T09:15:06.000Z"),
+            },
+        ]));
+
+        const text = selectChatLines(state, 120).map((line) =>
+            (line || []).map((run) => run?.text || "").join(""),
+        ).join("\n");
+
+        assertIncludes(text, "------ rehydrated ------", "rehydration should render as a compact divider");
+        assertEqual(text.includes("The session was dehydrated"), false, "noisy rehydration text should be hidden from chat");
+        assertEqual(text.includes("SYSTEM"), false, "rehydration divider should not be rendered as a system card");
     });
 });

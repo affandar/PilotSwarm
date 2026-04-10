@@ -201,22 +201,22 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.39).
+ * Flat event loop durable session orchestration (v1.0.38).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.39";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.38";
 
-export function* durableSessionOrchestration_1_0_39(
+export function* durableSessionOrchestration_1_0_38(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.39] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.38] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 30;
     const idleTimeout = input.idleTimeout ?? 30;
@@ -629,7 +629,6 @@ export function* durableSessionOrchestration_1_0_39(
                 reason: activeTimer.reason,
                 shouldRehydrate: activeTimer.shouldRehydrate ?? false,
                 waitPlan: activeTimer.waitPlan,
-                interruptKind: "child",
             };
             activeTimer = null;
             clearPendingChildDigest();
@@ -781,13 +780,6 @@ export function* durableSessionOrchestration_1_0_39(
                 eventType: "session.lossy_handoff",
                 data: lossyHandoff,
             }]);
-            needsHydration = false;
-            preserveAffinityOnHydrate = false;
-            if (resetAffinity) {
-                affinityKey = yield ctx.newGuid();
-                session = createSessionProxy(ctx, input.sessionId, affinityKey, config);
-            }
-            return;
         }
         needsHydration = true;
         preserveAffinityOnHydrate = !resetAffinity;
@@ -863,7 +855,6 @@ export function* durableSessionOrchestration_1_0_39(
         reason: string;
         shouldRehydrate: boolean;
         waitPlan?: ActiveTimer["waitPlan"];
-        interruptKind?: "child" | "user";
     } | null = input.interruptedWaitTimer ?? null;
     let pendingChildDigest: NonNullable<OrchestrationInput["pendingChildDigest"]> | null =
         input.pendingChildDigest
@@ -1552,7 +1543,6 @@ export function* durableSessionOrchestration_1_0_39(
                         reason: activeTimer.reason,
                         shouldRehydrate: activeTimer.shouldRehydrate ?? false,
                         waitPlan: activeTimer.waitPlan,
-                        interruptKind: "user",
                     };
 
                     // Just tell the LLM about the context, not what to do next
@@ -1660,12 +1650,7 @@ export function* durableSessionOrchestration_1_0_39(
                     break;
                 } catch (hydrateErr: any) {
                     const hMsg = hydrateErr.message || String(hydrateErr);
-                    if (
-                        hMsg.includes("blob does not exist")
-                        || hMsg.includes("BlobNotFound")
-                        || hMsg.includes("Session archive not found")
-                        || hMsg.includes("404")
-                    ) {
+                    if (hMsg.includes("blob does not exist") || hMsg.includes("BlobNotFound") || hMsg.includes("404")) {
                         ctx.traceInfo(`[orch] hydrate skipped — blob not found, starting fresh session`);
                         needsHydration = false;
                         preserveAffinityOnHydrate = false;
@@ -1879,24 +1864,6 @@ export function* durableSessionOrchestration_1_0_39(
                 content: result.content.trim(),
                 model: (result as any).model,
             } as TurnResult;
-        }
-
-        if (
-            interruptedWaitTimer?.interruptKind === "user"
-            && (result.type === "completed" || result.type === "wait")
-            && !(typeof result.content === "string" && result.content.trim())
-        ) {
-            const content = "I'm here. Resuming the timer.";
-            result = { ...result, content } as TurnResult;
-            yield manager.recordSessionEvent(input.sessionId, [{
-                eventType: "assistant.message",
-                data: {
-                    content,
-                    synthetic: true,
-                    reason: "wait_interrupt_empty_reply",
-                },
-            }]);
-            ctx.traceInfo("[orch] synthesized visible assistant reply for wait interrupt");
         }
 
         switch (result.type) {
@@ -2712,17 +2679,7 @@ export function* durableSessionOrchestration_1_0_39(
                     data: { seconds },
                 }]);
                 const timerPrompt = `The ${seconds} second wait is now complete. Continue with your task.`;
-                const resumeSystemPrompt = [
-                    timer.reason ? `Wait reason: "${timer.reason}".` : undefined,
-                    taskContext ? `Original user request: "${taskContext}".` : undefined,
-                    "Resume the interrupted task now.",
-                    "Do not treat this as a new unrelated user request.",
-                    "Do not call wait() again for the delay that already finished.",
-                ].filter(Boolean).join(" ");
-                yield* processPrompt(
-                    appendSystemContext(timerPrompt, resumeSystemPrompt) ?? timerPrompt,
-                    false,
-                );
+                yield* processPrompt(timerPrompt, false);
                 return;
             }
             case "cron": {

@@ -12,6 +12,7 @@ import { createTempSessionLayout } from "./helpers/temp-session-layout.js";
 
 const TIMEOUT = 120_000;
 const STORE = process.env.DATABASE_URL;
+process.env.PS_MODEL_PROVIDERS_PATH ||= new URL("./fixtures/model-providers.test.json", import.meta.url).pathname;
 
 async function preflightChecks() {
     if (!process.env.GITHUB_TOKEN) {
