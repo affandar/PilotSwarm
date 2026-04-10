@@ -6,7 +6,8 @@
 #   ./scripts/deploy-portal.sh --skip-build   # skip Docker build (re-use existing image)
 #
 # Prerequisites:
-#   - .env.remote with DATABASE_URL, ENTRA_TENANT_ID, ENTRA_CLIENT_ID, K8S_CONTEXT
+#   - .env.remote with DATABASE_URL, PORTAL_AUTH_PROVIDER, PORTAL_AUTH_ENTRA_TENANT_ID,
+#     PORTAL_AUTH_ENTRA_CLIENT_ID, K8S_CONTEXT
 #   - az CLI logged in, ACR accessible
 #   - kubectl configured for your AKS cluster
 
@@ -45,14 +46,18 @@ if [ -z "${DATABASE_URL:-}" ]; then
     echo "ERROR: DATABASE_URL not set."
     exit 1
 fi
-if [ -z "${ENTRA_TENANT_ID:-}" ] || [ -z "${ENTRA_CLIENT_ID:-}" ]; then
-    echo "ERROR: ENTRA_TENANT_ID and ENTRA_CLIENT_ID must be set in $ENV_FILE."
-    exit 1
-fi
 
 ACR_NAME="${ACR_NAME:-pilotswarmacr}"
 NAMESPACE="${K8S_NAMESPACE:-${NAMESPACE:-copilot-runtime}}"
 K8S_CONTEXT="${K8S_CONTEXT:-}"
+PORTAL_AUTH_PROVIDER="${PORTAL_AUTH_PROVIDER:-none}"
+
+if [ "$PORTAL_AUTH_PROVIDER" = "entra" ]; then
+    if [ -z "${PORTAL_AUTH_ENTRA_TENANT_ID:-}" ] || [ -z "${PORTAL_AUTH_ENTRA_CLIENT_ID:-}" ]; then
+        echo "ERROR: PORTAL_AUTH_ENTRA_TENANT_ID and PORTAL_AUTH_ENTRA_CLIENT_ID must be set in $ENV_FILE when PORTAL_AUTH_PROVIDER=entra."
+        exit 1
+    fi
+fi
 
 KUBECTL=(kubectl)
 if [ -n "$K8S_CONTEXT" ]; then
@@ -68,7 +73,8 @@ npm run build -w packages/sdk
 # ─── Step 2: Update K8s secrets ───────────────────────────────────
 
 echo ""
-echo "🔑 Updating K8s secrets (including Entra vars)..."
+echo ""
+echo "🔑 Updating K8s secrets (including portal auth vars)..."
 
 GH_TOKEN="${GITHUB_TOKEN:-}"
 
@@ -89,8 +95,15 @@ GH_TOKEN="${GITHUB_TOKEN:-}"
     ${AZURE_GPT51_KEY:+--from-literal=AZURE_GPT51_KEY="$AZURE_GPT51_KEY"} \
     ${AZURE_MODEL_ROUTER_KEY:+--from-literal=AZURE_MODEL_ROUTER_KEY="$AZURE_MODEL_ROUTER_KEY"} \
     ${ANTHROPIC_API_KEY:+--from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"} \
-    --from-literal=ENTRA_TENANT_ID="$ENTRA_TENANT_ID" \
-    --from-literal=ENTRA_CLIENT_ID="$ENTRA_CLIENT_ID" \
+    ${PORTAL_AUTH_PROVIDER:+--from-literal=PORTAL_AUTH_PROVIDER="$PORTAL_AUTH_PROVIDER"} \
+    ${PORTAL_AUTH_ENTRA_TENANT_ID:+--from-literal=PORTAL_AUTH_ENTRA_TENANT_ID="$PORTAL_AUTH_ENTRA_TENANT_ID"} \
+    ${PORTAL_AUTH_ENTRA_CLIENT_ID:+--from-literal=PORTAL_AUTH_ENTRA_CLIENT_ID="$PORTAL_AUTH_ENTRA_CLIENT_ID"} \
+    ${PORTAL_AUTHZ_DEFAULT_ROLE:+--from-literal=PORTAL_AUTHZ_DEFAULT_ROLE="$PORTAL_AUTHZ_DEFAULT_ROLE"} \
+    ${PORTAL_AUTHZ_ADMIN_GROUPS:+--from-literal=PORTAL_AUTHZ_ADMIN_GROUPS="$PORTAL_AUTHZ_ADMIN_GROUPS"} \
+    ${PORTAL_AUTHZ_USER_GROUPS:+--from-literal=PORTAL_AUTHZ_USER_GROUPS="$PORTAL_AUTHZ_USER_GROUPS"} \
+    ${PORTAL_AUTH_ALLOW_UNAUTHENTICATED:+--from-literal=PORTAL_AUTH_ALLOW_UNAUTHENTICATED="$PORTAL_AUTH_ALLOW_UNAUTHENTICATED"} \
+    ${PORTAL_AUTH_ENTRA_ADMIN_GROUPS:+--from-literal=PORTAL_AUTH_ENTRA_ADMIN_GROUPS="$PORTAL_AUTH_ENTRA_ADMIN_GROUPS"} \
+    ${PORTAL_AUTH_ENTRA_USER_GROUPS:+--from-literal=PORTAL_AUTH_ENTRA_USER_GROUPS="$PORTAL_AUTH_ENTRA_USER_GROUPS"} \
     ${K8S_CONTEXT:+--from-literal=K8S_CONTEXT="$K8S_CONTEXT"}
 
 echo "🔐 Refreshing ACR pull secret..."

@@ -111,17 +111,29 @@ generic PilotSwarm branding and generic-session creation even when the worker
 supports named agents.
 
 Portal auth is provider-based. For the shipped Entra add-on, add these env vars
-to the portal deployment or secret:
+to `copilot-runtime-secrets` (or the portal deployment env) before restarting
+the portal:
 
 ```bash
 PORTAL_AUTH_PROVIDER=entra
 PORTAL_AUTH_ENTRA_TENANT_ID=<tenant-id>
 PORTAL_AUTH_ENTRA_CLIENT_ID=<client-id>
+PORTAL_AUTHZ_ADMIN_GROUPS=admin1@contoso.com,admin2@contoso.com
+PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
 ```
 
 Register the portal ingress URL as the SPA redirect URI in Entra. The portal
 core does not require Entra specifically, so alternate providers can use the
 same deployment slot without changing the portal shell contract.
+
+Use the canonical `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` keys only. The portal no
+longer reads legacy `ENTRA_*` aliases.
+
+Current authz is Phase 1 only:
+
+- authenticated users whose email appears in the configured admin/user allowlists are allowed in
+- `admin` and `user` have the same portal permissions today
+- per-user session visibility is a later phase
 
 ### Refresh GitHub Token
 

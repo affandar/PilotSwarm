@@ -109,6 +109,12 @@ Checked-in instructions must never hard-code a cluster/context name, namespace, 
 
 The TUI (`packages/cli/`) must interact with PilotSwarm **exclusively through the public `PilotSwarmClient`, `PilotSwarmWorker`, and management APIs**. It must never import or call internal runtime modules (`session-manager.ts`, `managed-session.ts`, `cms.ts`, `session-proxy.ts`, `orchestration.ts`, etc.) directly. The only exception is logging/diagnostics (for example reading duroxide trace logs for display). If the TUI needs new data or capabilities, expose them through the client/worker API surface first.
 
+## Portal Boundary Rule
+
+The portal (`packages/portal/`) must interact with PilotSwarm **exclusively through the public `PilotSwarmClient`, `PilotSwarmWorker`, `PilotSwarmManagementClient`, and the CLI's `PortalRuntime` API**. It must never import or call internal SDK modules (`session-manager.ts`, `managed-session.ts`, `cms.ts`, `session-proxy.ts`, `orchestration.ts`, etc.) directly.
+
+Portal auth is provider-based (`packages/portal/auth/`). Auth providers live in `auth/providers/`, token normalization in `auth/normalize/`, and authorization policy in `auth/authz/engine.js`. Configuration uses **canonical env vars only**: `PORTAL_AUTH_*` and `PORTAL_AUTHZ_*` — never legacy `ENTRA_*` aliases.
+
 ### TUI Keybindings
 
 If you add or change a TUI keybinding, you must update all user-facing keybinding surfaces together:

@@ -6,7 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPortalAssetFile, getPortalConfig } from "./config.js";
-import { getAuthProvider, getAuthConfig, extractToken, validateToken } from "./auth.js";
+import { authenticateRequest, extractToken, getAuthConfig, authenticateToken } from "./auth.js";
+import { getPublicAuthContext } from "./auth/authz/engine.js";
 import { PortalRuntime } from "./runtime.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -50,16 +51,8 @@ function createJsonRpcError(error, status = 500) {
     };
 }
 
-async function authenticateRequest(req, authProvider) {
-    if (!authProvider?.enabled) return null;
-    const token = extractToken(req);
-    if (!token) return null;
-    return validateToken(token);
-}
-
 export async function startServer(opts = {}) {
     const { port = Number(process.env.PORT) || 3001 } = opts;
-    const authProvider = getAuthProvider();
     const portalConfig = getPortalConfig();
     const mode = getPortalMode();
     const runtime = new PortalRuntime({
@@ -74,17 +67,13 @@ export async function startServer(opts = {}) {
     const { server, protocol } = createPortalServer({ app });
 
     async function requireAuth(req, res, next) {
-        if (!authProvider.enabled) {
-            req.authClaims = null;
-            next();
+        const auth = await authenticateRequest(req);
+        if (!auth.ok) {
+            res.status(auth.status).json({ ok: false, error: auth.error || (auth.status === 403 ? "Forbidden" : "Unauthorized") });
             return;
         }
-        const claims = await authenticateRequest(req, authProvider);
-        if (!claims) {
-            res.status(401).json({ ok: false, error: "Unauthorized" });
-            return;
-        }
-        req.authClaims = claims;
+        req.auth = auth;
+        req.authClaims = auth.principal?.rawClaims || null;
         next();
     }
 
@@ -121,10 +110,21 @@ export async function startServer(opts = {}) {
         }
     });
 
+    app.get("/api/auth/me", requireAuth, async (req, res) => {
+        res.json({
+            ok: true,
+            ...getPublicAuthContext(req.auth),
+        });
+    });
+
     app.get("/api/bootstrap", requireAuth, async (_req, res) => {
         try {
             const bootstrap = await runtime.getBootstrap();
-            res.json({ ok: true, ...bootstrap });
+            res.json({
+                ok: true,
+                ...bootstrap,
+                auth: getPublicAuthContext(_req.auth),
+            });
         } catch (error) {
             const payload = createJsonRpcError(error, 500);
             res.status(payload.status).json(payload.body);
@@ -183,17 +183,10 @@ export async function startServer(opts = {}) {
 
     const wss = new WebSocketServer({ server, path: "/portal-ws" });
     wss.on("connection", async (ws, req) => {
-        if (authProvider.enabled) {
-            const token = extractToken(req);
-            if (!token) {
-                ws.close(4401, "Unauthorized");
-                return;
-            }
-            const claims = await validateToken(token);
-            if (!claims) {
-                ws.close(4401, "Unauthorized");
-                return;
-            }
+        const auth = await authenticateToken(extractToken(req), req);
+        if (!auth.ok) {
+            ws.close(auth.status === 403 ? 4403 : 4401, auth.error || (auth.status === 403 ? "Forbidden" : "Unauthorized"));
+            return;
         }
 
         const sessionSubscriptions = new Map();

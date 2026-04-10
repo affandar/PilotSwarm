@@ -1,7 +1,7 @@
 {
   "name": "pilotswarm-ui-react",
   "version": "0.1.0",
-  "private": false,
+  "private": true,
   "type": "module",
   "description": "Shared React screens and panes for PilotSwarm hosts.",
   "main": "./src/index.js",

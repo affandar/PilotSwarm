@@ -117,7 +117,9 @@ Logo notes:
   - `PORTAL_AUTH_PROVIDER=entra`
   - `PORTAL_AUTH_ENTRA_TENANT_ID`
   - `PORTAL_AUTH_ENTRA_CLIENT_ID`
+  - `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS` as comma-delimited email allowlists when admission gating is requested
   - redirect URI registration for the portal host
+- Use only the canonical `PORTAL_AUTH_*` and `PORTAL_AUTHZ_*` env vars; do not document or scaffold legacy `ENTRA_*` fallbacks.
 - If the user wants another provider such as AWS IAM, do not force Entra-specific language into the scaffold.
 - For custom providers, separate:
   - browser-side sign-in initiation

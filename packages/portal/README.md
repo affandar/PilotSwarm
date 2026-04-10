@@ -49,6 +49,7 @@ Supported keys:
       "loadingCopy": "Connecting dashboards, session feeds, and orchestration state..."
     },
     "auth": {
+      "provider": "entra",
       "signInTitle": "Sign in to DevOps Command Center",
       "signInMessage": "Use your organization's identity provider to open the shared operations workspace.",
       "signInLabel": "Sign In"
@@ -61,6 +62,7 @@ Notes:
 
 - Preferred schema is nested: `portal.branding`, `portal.ui`, and `portal.auth`.
 - Flat legacy keys such as `portal.title` and `portal.loadingMessage` are still accepted for backwards compatibility.
+- `portal.auth.provider` selects the active auth provider when the deployment does not override it with `PORTAL_AUTH_PROVIDER`.
 - `branding.logoFile` is used on the loading splash, sign-in card, and signed-in header.
 - If `branding.faviconFile` is omitted, the browser tab icon reuses `branding.logoFile`.
 - Keep logo assets inside the plugin directory so the portal image can package and serve them alongside `plugin.json`.
@@ -82,6 +84,7 @@ Portal authentication is provider-based.
 
 - Default: `none`
 - Built-in optional provider: `entra`
+- AuthZ is common across providers and currently supports Phase 1 group-based admission control
 
 Enable Entra ID with env vars:
 
@@ -89,13 +92,19 @@ Enable Entra ID with env vars:
 PORTAL_AUTH_PROVIDER=entra
 PORTAL_AUTH_ENTRA_TENANT_ID=<tenant-id>
 PORTAL_AUTH_ENTRA_CLIENT_ID=<client-id>
+PORTAL_AUTHZ_ADMIN_GROUPS=admin1@contoso.com,admin2@contoso.com
+PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
 ```
 
-For backwards compatibility, `ENTRA_TENANT_ID` and `ENTRA_CLIENT_ID` are still
-accepted as fallbacks.
+Notes:
+
+- `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS` are currently comma-delimited email allowlists despite the historical variable names.
+- If no admin/user groups are configured, any successfully authenticated user is allowed in as the default `user` role.
+- Phase 1 keeps `admin` and `user` permissions the same inside the portal; the email allowlists act as an admission gate and role assignment surface.
 
 The portal core no longer assumes Entra specifically. New providers can plug
-into the same public-config and request-validation interfaces.
+into the same browser/server provider interfaces, while sharing the same common
+authz layer.
 
 ## Architecture
 

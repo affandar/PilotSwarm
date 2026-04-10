@@ -11,6 +11,10 @@
   "exports": {
     ".": "./server.js"
   },
+  "bundledDependencies": [
+    "pilotswarm-ui-core",
+    "pilotswarm-ui-react"
+  ],
   "files": [
     "auth.js",
     "auth/**/*",
@@ -23,7 +27,7 @@
   ],
   "scripts": {
     "build": "vite build",
-    "prepack": "npm run build",
+    "prepack": "npm run build && node -e \"const fs=require('fs');const cp=(s,d)=>{fs.mkdirSync(d,{recursive:true});for(const e of fs.readdirSync(s,{withFileTypes:true})){const sp=s+'/'+e.name,dp=d+'/'+e.name;e.isDirectory()?cp(sp,dp):fs.copyFileSync(sp,dp)}};for(const p of ['pilotswarm-ui-core','pilotswarm-ui-react']){const src='../'+p.replace('pilotswarm-','');const dst='node_modules/'+p;fs.rmSync(dst,{recursive:true,force:true});fs.mkdirSync(dst,{recursive:true});fs.copyFileSync(src+'/package.json',dst+'/package.json');fs.copyFileSync(src+'/README.md',dst+'/README.md');cp(src+'/src',dst+'/src')}\"",
     "start": "node server.js",
     "dev": "vite --host 0.0.0.0",
     "dev:server": "node server.js",
@@ -33,7 +37,7 @@
     "@azure/msal-browser": "^4.26.1",
     "express": "^5.1.0",
     "jose": "^6.2.2",
-    "pilotswarm-cli": "^0.1.14",
+    "pilotswarm-cli": "^0.1.15",
     "pilotswarm-ui-core": "0.1.0",
     "pilotswarm-ui-react": "0.1.0",
     "react": "^19.2.4",

@@ -56,15 +56,44 @@ Enable Entra for portal deployments with:
 PORTAL_AUTH_PROVIDER=entra
 PORTAL_AUTH_ENTRA_TENANT_ID=<tenant-id>
 PORTAL_AUTH_ENTRA_CLIENT_ID=<client-id>
+PORTAL_AUTHZ_ADMIN_GROUPS=admin1@contoso.com,admin2@contoso.com
+PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
 ```
 
-For backwards compatibility, `ENTRA_TENANT_ID` and `ENTRA_CLIENT_ID` are still
-accepted as fallbacks. Portal branding and sign-in copy come from
-`plugin.json.portal`, with `plugin.json.tui` used as a fallback when the portal
-plugin metadata does not provide an override. Preferred portal metadata shape
-is nested under `portal.branding`, `portal.ui`, and `portal.auth`; browser logo
-assets can be supplied with `portal.branding.logoFile` and optional
+For now, `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS` are interpreted
+as comma-delimited user email allowlists, not Entra group IDs.
+
+Portal branding and sign-in copy come from `plugin.json.portal`, with
+`plugin.json.tui` used as a fallback when the portal plugin metadata does not
+provide an override. Preferred portal metadata shape is nested under
+`portal.branding`, `portal.ui`, and `portal.auth`; browser logo assets can be
+supplied with `portal.branding.logoFile` and optional
 `portal.branding.faviconFile`.
+
+The provider can also be selected in plugin metadata:
+
+```json
+{
+  "portal": {
+    "auth": {
+      "provider": "entra"
+    }
+  }
+}
+```
+
+Selection precedence is:
+
+1. `PORTAL_AUTH_PROVIDER`
+2. `plugin.json.portal.auth.provider`
+3. provider inference from provider-specific env vars
+4. `none`
+
+Current authorization is Phase 1 only:
+
+- group-based allow/deny
+- normalized `admin` / `user` role assignment
+- no session ownership filtering yet
 
 ## PostgreSQL Setup
 

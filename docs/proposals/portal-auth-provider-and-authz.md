@@ -498,30 +498,17 @@ These variables are provider-neutral and should be preferred over provider-speci
 
 ```bash
 PORTAL_AUTH_PROVIDER=entra
-PORTAL_AUTHZ_MODE=phase1
 PORTAL_AUTHZ_DEFAULT_ROLE=user
 PORTAL_AUTHZ_ADMIN_GROUPS=
 PORTAL_AUTHZ_USER_GROUPS=
 PORTAL_AUTH_ALLOW_UNAUTHENTICATED=false
 ```
 
-### Backwards-Compatible Aliases
-
-For Entra-first deployments, we may also accept:
-
-```bash
-ENTRA_ADMIN_GROUPS=
-ENTRA_USER_GROUPS=
-```
-
-But these should be aliases only, not the canonical long-term interface.
-
 ### `none`
 
 ```bash
 PORTAL_AUTH_PROVIDER=none
 PORTAL_AUTH_ALLOW_UNAUTHENTICATED=true
-PORTAL_AUTHZ_MODE=phase1
 ```
 
 ### `entra`
@@ -531,10 +518,9 @@ PORTAL_AUTH_PROVIDER=entra
 PORTAL_AUTH_ENTRA_TENANT_ID=<tenant-id>
 PORTAL_AUTH_ENTRA_CLIENT_ID=<client-id>
 
-PORTAL_AUTHZ_MODE=phase1
 PORTAL_AUTHZ_DEFAULT_ROLE=user
-PORTAL_AUTHZ_ADMIN_GROUPS=<group-id-1>,<group-id-2>
-PORTAL_AUTHZ_USER_GROUPS=<group-id-3>,<group-id-4>
+PORTAL_AUTHZ_ADMIN_GROUPS=admin1@contoso.com,admin2@contoso.com
+PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
 ```
 
 ### `iam`
@@ -546,9 +532,8 @@ PORTAL_AUTH_IAM_ISSUER=https://your-issuer.example.com
 PORTAL_AUTH_IAM_CLIENT_ID=<client-id>
 PORTAL_AUTH_IAM_JWKS_URI=https://your-issuer.example.com/.well-known/jwks.json
 
-PORTAL_AUTHZ_MODE=phase1
-PORTAL_AUTHZ_ADMIN_GROUPS=<group-id-1>,<group-id-2>
-PORTAL_AUTHZ_USER_GROUPS=<group-id-3>,<group-id-4>
+PORTAL_AUTHZ_ADMIN_GROUPS=admin1@contoso.com,admin2@contoso.com
+PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
 ```
 
 Alternative trusted-proxy mode:
@@ -569,9 +554,8 @@ PORTAL_AUTH_PROVIDER=gcp
 PORTAL_AUTH_GCP_ISSUER=https://accounts.google.com
 PORTAL_AUTH_GCP_CLIENT_ID=<client-id>
 
-PORTAL_AUTHZ_MODE=phase1
-PORTAL_AUTHZ_ADMIN_GROUPS=<group-id-1>,<group-id-2>
-PORTAL_AUTHZ_USER_GROUPS=<group-id-3>,<group-id-4>
+PORTAL_AUTHZ_ADMIN_GROUPS=admin1@contoso.com,admin2@contoso.com
+PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
 ```
 
 ### Provider Selection Rules
@@ -597,7 +581,7 @@ Phase 1 introduces authorization but keeps admin/user permissions effectively th
 |---|---|---|
 | `admin` | Member of admin groups | Same as `user` in Phase 1 |
 | `user` | Member of user groups or default authenticated role | Same as `admin` in Phase 1 |
-| denied | Authenticated but not in allowed groups when group gate configured | No access |
+| denied | Authenticated but email not in allowed admin/user list when authz gate configured | No access |
 
 ### Phase 1 Permissions
 
@@ -882,7 +866,6 @@ This distinction is important for operator clarity and browser UX.
 2. Add provider-neutral envs:
    - `PORTAL_AUTHZ_ADMIN_GROUPS`
    - `PORTAL_AUTHZ_USER_GROUPS`
-   - `PORTAL_AUTHZ_MODE=phase1`
 3. Add Entra group-based allow/deny
 4. Return `403` on denied principals
 5. Surface role and auth status in `/api/bootstrap` or `/api/auth/me`
@@ -980,7 +963,7 @@ Mitigation:
 
 Risk:
 
-- some providers, especially Entra, may omit group claims in large memberships
+- email-allowlist authz avoids group-claim overage problems but depends on a usable email claim
 
 Mitigation:
 
@@ -1040,7 +1023,6 @@ This gets us a clean provider architecture without overcommitting to a full ente
 ```bash
 PORTAL_AUTH_PROVIDER=none
 PORTAL_AUTH_ALLOW_UNAUTHENTICATED=true
-PORTAL_AUTHZ_MODE=phase1
 ```
 
 ### Example: Entra-secured production
@@ -1065,7 +1047,6 @@ PORTAL_AUTHZ_MODE=phase1
 PORTAL_AUTH_PROVIDER=entra
 PORTAL_AUTH_ENTRA_TENANT_ID=00000000-0000-0000-0000-000000000000
 PORTAL_AUTH_ENTRA_CLIENT_ID=11111111-1111-1111-1111-111111111111
-PORTAL_AUTHZ_MODE=phase1
 PORTAL_AUTHZ_ADMIN_GROUPS=22222222-2222-2222-2222-222222222222
 PORTAL_AUTHZ_USER_GROUPS=33333333-3333-3333-3333-333333333333
 ```
@@ -1094,7 +1075,6 @@ PORTAL_AUTH_IAM_MODE=oidc
 PORTAL_AUTH_IAM_ISSUER=https://your-issuer.example.com
 PORTAL_AUTH_IAM_CLIENT_ID=pilotswarm-portal
 PORTAL_AUTH_IAM_JWKS_URI=https://your-issuer.example.com/.well-known/jwks.json
-PORTAL_AUTHZ_MODE=phase1
 PORTAL_AUTHZ_ADMIN_GROUPS=platform-admins
 PORTAL_AUTHZ_USER_GROUPS=platform-users
 ```

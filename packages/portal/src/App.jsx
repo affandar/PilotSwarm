@@ -250,6 +250,23 @@ function PortalSignedOut({ branding, authUi, authConfig, error, onSignIn, shellS
         ));
 }
 
+function PortalForbidden({ branding, authUi, authConfig, error, onSignOut, shellStyle }) {
+    const providerDisplayName = authConfig?.displayName || branding?.title || "Authentication";
+    return React.createElement("div", { className: "portal-gate", style: shellStyle },
+        React.createElement("div", { className: "portal-gate-card" },
+            React.createElement("div", { className: "portal-gate-brand" },
+                React.createElement(PortalBrandMark, { branding, size: "large" }),
+                React.createElement("div", { className: "portal-gate-kicker" }, providerDisplayName)),
+            React.createElement("h1", { className: "portal-gate-title" }, `Access denied for ${getWorkspaceTitle(branding)}`),
+            React.createElement("p", { className: "portal-gate-copy" }, error || "This signed-in account is not authorized to access this workspace."),
+            React.createElement("button", {
+                type: "button",
+                className: "portal-primary-button",
+                onClick: () => onSignOut().catch(() => {}),
+            }, "Sign Out"),
+        ));
+}
+
 function PortalHeader({ account, authEnabled, branding, onSignOut }) {
     const name = account?.name || account?.username || "Signed in";
     const email = account?.username || account?.idTokenClaims?.preferred_username || "";
@@ -280,7 +297,8 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
     const transport = React.useMemo(() => new BrowserPortalTransport({
         getAccessToken: auth.getAccessToken,
         onUnauthorized: auth.handleUnauthorized,
-    }), [auth.getAccessToken, auth.handleUnauthorized]);
+        onForbidden: auth.handleForbidden,
+    }), [auth.getAccessToken, auth.handleForbidden, auth.handleUnauthorized]);
     const controller = React.useMemo(() => createWebPilotSwarmController({
         transport,
         mode: "remote",
@@ -350,6 +368,16 @@ export default function App() {
             authConfig: publicConfig.config?.auth,
             error: auth.error,
             onSignIn: auth.signIn,
+            shellStyle,
+        });
+    }
+    if (auth.forbidden) {
+        return React.createElement(PortalForbidden, {
+            branding: publicConfig.config?.portal?.branding,
+            authUi: publicConfig.config?.portal?.auth,
+            authConfig: publicConfig.config?.auth,
+            error: auth.error,
+            onSignOut: auth.signOut,
             shellStyle,
         });
     }

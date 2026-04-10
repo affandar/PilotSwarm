@@ -1,8 +1,14 @@
-export function createNoAuthProvider() {
+export function createNoAuthProvider({ pluginAuthConfig } = {}) {
+    const displayName = String(
+        pluginAuthConfig?.providers?.none?.displayName
+        || pluginAuthConfig?.displayName
+        || "No auth",
+    ).trim() || "No auth";
+
     return {
         id: "none",
         enabled: false,
-        displayName: "No auth",
+        displayName,
         async authenticateRequest() {
             return null;
         },
@@ -10,7 +16,7 @@ export function createNoAuthProvider() {
             return {
                 enabled: false,
                 provider: "none",
-                displayName: "No auth",
+                displayName,
                 client: null,
             };
         },

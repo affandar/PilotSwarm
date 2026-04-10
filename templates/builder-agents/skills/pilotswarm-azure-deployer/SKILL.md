@@ -89,7 +89,9 @@ When the app includes the shipped browser portal:
   - `PORTAL_AUTH_PROVIDER=entra`
   - `PORTAL_AUTH_ENTRA_TENANT_ID`
   - `PORTAL_AUTH_ENTRA_CLIENT_ID`
+  - `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS` as comma-delimited email allowlists when admission gating is enabled
   - SPA redirect URI registration for the portal ingress URL
+- update `copilot-runtime-secrets` with the canonical `PORTAL_AUTH_*` and `PORTAL_AUTHZ_*` keys; do not rely on legacy `ENTRA_*` aliases
 - if another provider such as AWS IAM is requested, keep the deployment contract separate from Entra-specific steps and call out which browser-side login flow and server-side validation hooks must be supplied
 
 ## Portal Validation Guidance
