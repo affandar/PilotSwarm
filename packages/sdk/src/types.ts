@@ -508,6 +508,7 @@ export interface PilotSwarmClientOptions {
     waitThreshold?: number;
     dehydrateThreshold?: number;
     dehydrateOnInputRequired?: number;
+    /** Seconds to keep an idle top-level session warm before dehydrating. Default: 60. */
     dehydrateOnIdle?: number;
 
     /**

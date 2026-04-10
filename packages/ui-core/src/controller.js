@@ -887,6 +887,7 @@ export class PilotSwarmUiController {
                 this.attachActiveSession(selected);
             }
             await this.syncSessionDetail(selected).catch(() => {});
+            await this.syncSessionEvents(selected).catch(() => {});
             syncedIds.add(selected);
             const state = this.getState();
             const activeSession = state.sessions.byId[selected] || null;
@@ -1654,6 +1655,50 @@ export class PilotSwarmUiController {
         this.ensureInspectorData().catch(() => {});
     }
 
+    mergeSessionEvent(sessionId, event) {
+        if (!sessionId || !event) return false;
+        const state = this.getState();
+        const existing = state.history.bySessionId.get(sessionId) || { chat: [], activity: [], lastSeq: 0 };
+        if (event.seq <= (existing.lastSeq || 0)) return false;
+        this.dispatch({
+            type: "history/set",
+            sessionId,
+            history: appendEventToHistory(existing, event),
+        });
+        const derivedModel = extractSessionModelFromEvent(event);
+        const currentSession = this.getState().sessions.byId[sessionId] || { sessionId };
+        const derivedContextUsage = applySessionUsageEvent(currentSession.contextUsage, event.eventType, event.data, {
+            timestamp: event.createdAt,
+        });
+        if (derivedModel || derivedContextUsage) {
+            this.dispatch({
+                type: "sessions/merged",
+                session: {
+                    sessionId,
+                    ...(derivedModel ? { model: derivedModel } : {}),
+                    ...(derivedContextUsage ? { contextUsage: derivedContextUsage } : {}),
+                },
+            });
+        }
+        this.scheduleSessionDetailSync(sessionId);
+        return true;
+    }
+
+    async syncSessionEvents(sessionId) {
+        if (!sessionId || typeof this.transport.getSessionEvents !== "function") return;
+        const existing = this.getState().history.bySessionId.get(sessionId);
+        if (!existing?.events) {
+            await this.ensureSessionHistory(sessionId, { force: true });
+            return;
+        }
+        const afterSeq = Number(existing.lastSeq || 0);
+        const events = await this.transport.getSessionEvents(sessionId, afterSeq, 200);
+        if (!Array.isArray(events) || events.length === 0) return;
+        for (const event of events) {
+            this.mergeSessionEvent(sessionId, event);
+        }
+    }
+
     attachActiveSession(sessionId) {
         if (this.activeSessionSubscriptionId === sessionId && this.activeSessionUnsub) {
             return;
@@ -1661,31 +1706,9 @@ export class PilotSwarmUiController {
         this.detachActiveSession();
         this.activeSessionSubscriptionId = sessionId;
         this.activeSessionUnsub = this.transport.subscribeSession(sessionId, (event) => {
-            const state = this.getState();
-            const existing = state.history.bySessionId.get(sessionId) || { chat: [], activity: [], lastSeq: 0 };
-            if (event.seq <= (existing.lastSeq || 0)) return;
-            this.dispatch({
-                type: "history/set",
-                sessionId,
-                history: appendEventToHistory(existing, event),
-            });
-            const derivedModel = extractSessionModelFromEvent(event);
-            const currentSession = this.getState().sessions.byId[sessionId] || { sessionId };
-            const derivedContextUsage = applySessionUsageEvent(currentSession.contextUsage, event.eventType, event.data, {
-                timestamp: event.createdAt,
-            });
-            if (derivedModel || derivedContextUsage) {
-                this.dispatch({
-                    type: "sessions/merged",
-                    session: {
-                        sessionId,
-                        ...(derivedModel ? { model: derivedModel } : {}),
-                        ...(derivedContextUsage ? { contextUsage: derivedContextUsage } : {}),
-                    },
-                });
-            }
-            this.scheduleSessionDetailSync(sessionId);
+            this.mergeSessionEvent(sessionId, event);
         });
+        this.syncSessionEvents(sessionId).catch(() => {});
     }
 
     scheduleSessionDetailSync(sessionId, delayMs = 250) {
@@ -2646,6 +2669,8 @@ export class PilotSwarmUiController {
                     },
                 });
                 this.scheduleSessionDetailSync(sessionId, 100);
+                this.syncSessionEvents(sessionId).catch(() => {});
+                this.scheduleSessionsRefresh(1000);
                 this.dispatch({ type: "ui/status", text: "Answer sent" });
                 return;
             }
@@ -2653,6 +2678,8 @@ export class PilotSwarmUiController {
             await this.transport.sendMessage(sessionId, prompt, {
                 enqueueOnly: Boolean(activeSession?.isSystem || activeSession?.status === "running"),
             });
+            this.syncSessionEvents(sessionId).catch(() => {});
+            this.scheduleSessionsRefresh(1000);
             this.dispatch({ type: "ui/status", text: "Prompt sent" });
         } catch (error) {
             this.setPrompt(rawPrompt, promptCursor);

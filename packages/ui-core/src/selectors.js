@@ -547,6 +547,22 @@ function splitSystemNoticeSegments(text) {
     return segments;
 }
 
+const REHYDRATION_DIVIDER_TEXT = "------ rehydrated ------";
+
+function isRehydrationSystemNoticeText(text) {
+    const normalized = String(text || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    return normalized === REHYDRATION_DIVIDER_TEXT
+        || normalized === "The session was dehydrated and has been rehydrated on a new worker. The LLM conversation history is preserved.";
+}
+
+function buildRehydrationDividerLines() {
+    return [[
+        { text: REHYDRATION_DIVIDER_TEXT, color: "green", bold: true },
+    ]];
+}
+
 function startsWithCardBlock(lines) {
     const firstVisibleLine = (lines || []).find((line) => flattenLineText(line).trim().length > 0);
     if (!firstVisibleLine) return false;
@@ -609,6 +625,10 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
 
             for (const segment of segments) {
                 if (segment.kind === "system") {
+                    if (isRehydrationSystemNoticeText(segment.text)) {
+                        appendChatBlockLines(rendered, buildRehydrationDividerLines());
+                        continue;
+                    }
                     appendChatBlockLines(rendered, buildMessageCardLines({
                         title: "System",
                         timestamp: formatTimestamp(message?.createdAt || message?.time),
@@ -640,6 +660,9 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
     }
 
     if (message?.role !== "user" && message?.role !== "assistant") {
+        if (message?.role === "system" && isRehydrationSystemNoticeText(message?.text)) {
+            return buildRehydrationDividerLines();
+        }
         const isSystemCard = message?.role === "system"
             && (!message?.cardTitle || String(message.cardTitle).toLowerCase() === "system");
         return buildMessageCardLines({

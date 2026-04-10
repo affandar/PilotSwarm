@@ -22,6 +22,9 @@ npx pilotswarm local --env .env --plugin ./plugin --worker ./worker-module.js
 
 `pilotswarm-cli` provides the shipped TUI. Your app customizes it with `plugin/plugin.json`, `plugin/agents/*.agent.md`, `plugin/skills/*/SKILL.md`, and optional worker-side tools.
 
+Portal/runtime helpers that are intentionally shared with `pilotswarm-web`
+are exported from `pilotswarm-cli/portal`.
+
 Common docs:
 
 - CLI apps: `https://github.com/affandar/PilotSwarm/blob/main/docs/cli/building-cli-apps.md`

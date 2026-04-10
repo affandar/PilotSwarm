@@ -358,8 +358,10 @@ export function registerActivities(
             });
         } catch (err: any) {
             const message = err?.message || String(err);
-            if (isMissingSessionStateErrorMessage(message)) {
-                const detail = stripMissingSessionStatePrefix(message);
+            if (isMissingSessionStateErrorMessage(message) || isLiveSessionLostErrorMessage(message)) {
+                const detail = isMissingSessionStateErrorMessage(message)
+                    ? stripMissingSessionStatePrefix(message)
+                    : message;
                 trace(
                     `session=${input.sessionId} missing resumable state before turn ${input.turnIndex ?? "unknown"}; ` +
                     "starting lossy fresh-session replay",
@@ -1203,16 +1205,57 @@ export function registerActivities(
 
             // Build a condensed conversation transcript
             const lines: string[] = [];
+            const userMessages: string[] = [];
+            const assistantMessages: string[] = [];
             for (const evt of events) {
                 if (evt.eventType === "user.message") {
                     const content = (evt.data as any)?.content;
-                    if (content) lines.push(`User: ${content.slice(0, 200)}`);
+                    if (content) {
+                        const trimmed = String(content).trim();
+                        if (trimmed) {
+                            lines.push(`User: ${trimmed.slice(0, 200)}`);
+                            userMessages.push(trimmed);
+                        }
+                    }
                 } else if (evt.eventType === "assistant.message") {
                     const content = (evt.data as any)?.content;
-                    if (content) lines.push(`Assistant: ${content.slice(0, 200)}`);
+                    if (content) {
+                        const trimmed = String(content).trim();
+                        if (trimmed) {
+                            lines.push(`Assistant: ${trimmed.slice(0, 200)}`);
+                            assistantMessages.push(trimmed);
+                        }
+                    }
                 }
             }
             if (lines.length === 0) return "";
+
+            const persistSummaryTitle = async (
+                rawTitle: string,
+                source: "llm" | "fallback",
+            ): Promise<string> => {
+                const title = rawTitle.slice(0, 60).trim();
+                if (!title) return "";
+                const finalTitle = agentTitlePrefix ? `${agentTitlePrefix}: ${title}` : title;
+                if (finalTitle === session?.title) return "";
+                await catalog.updateSession(input.sessionId, { title: finalTitle });
+                activityCtx.traceInfo(`[summarizeSession] ${source} title="${finalTitle}"`);
+                return title;
+            };
+
+            const buildFallbackSummaryTitle = (): string => {
+                const sourceText = userMessages[0] || assistantMessages[0] || transcript;
+                const cleanedWords = String(sourceText)
+                    .replace(/\s+/g, " ")
+                    .trim()
+                    .split(" ")
+                    .map((word) => word.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, ""))
+                    .filter(Boolean);
+                if (cleanedWords.length === 0) return "Recent Conversation";
+                const desiredWords = Math.min(5, Math.max(3, cleanedWords.length >= 3 ? 3 : cleanedWords.length));
+                const summary = cleanedWords.slice(0, desiredWords).join(" ");
+                return summary || "Recent Conversation";
+            };
 
             const transcript = lines.join("\n");
             const summaryPrompt =
@@ -1253,19 +1296,15 @@ export function registerActivities(
                 });
                 await sdk.stop();
 
-                // Truncate to 60 chars max
-                title = title.slice(0, 60);
-                if (title) {
-                    // Preserve named agent prefix: "Alpha Agent: <summary>"
-                    const finalTitle = agentTitlePrefix ? `${agentTitlePrefix}: ${title}` : title;
-                    await catalog.updateSession(input.sessionId, { title: finalTitle });
-                    activityCtx.traceInfo(`[summarizeSession] title="${finalTitle}"`);
-                }
-                return title;
+                const savedTitle = await persistSummaryTitle(title, "llm");
+                if (savedTitle) return savedTitle;
+
+                const fallbackTitle = await persistSummaryTitle(buildFallbackSummaryTitle(), "fallback");
+                return fallbackTitle;
             } catch (err: any) {
                 activityCtx.traceInfo(`[summarizeSession] failed: ${err.message}`);
                 try { await sdk.stop(); } catch {}
-                return "";
+                return await persistSummaryTitle(buildFallbackSummaryTitle(), "fallback");
             }
         });
     }

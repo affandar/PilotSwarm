@@ -1296,16 +1296,18 @@ function FilesPane({ controller, focused, mobile = false }) {
             paneKey: "filePreview",
             className: "is-preview is-wrapped",
         });
+    const view = viewState;
 
     return React.createElement(Panel, {
-        title: filesView.fullscreen ? filesView.fullscreenTitle : filesView.panelTitle,
+        title: view.fullscreen ? filesView.fullscreenTitle : filesView.panelTitle,
         color: "magenta",
-        focused: viewState.focused,
+        focused: view.focused,
         actions: panelActions,
         theme,
     },
     React.createElement(InspectorTabs, { activeTab: "files", controller }),
-    viewState.fullscreen
+    // Fullscreen files mode shows only the preview pane; the list stays hidden.
+    view.fullscreen
         ? previewPane
         : React.createElement("div", { className: "ps-files-grid" },
             React.createElement(Panel, { title: filesView.listTitle, color: "cyan", theme },

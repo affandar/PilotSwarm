@@ -374,7 +374,7 @@ async function testTurnOneLossyReplaysWithoutStoredSession(env) {
         const resumed = await clientB.resumeSession(sessionId);
         const response = await resumed.sendAndWait(
             "State may have been lost. Give a short recovery acknowledgement and continue carefully.",
-            60_000,
+            TIMEOUT,
         );
         assert(response && response.length > 0, "turn 1+ should recover via lossy replay when no resumable session state exists");
 

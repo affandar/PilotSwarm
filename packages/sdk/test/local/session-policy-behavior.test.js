@@ -136,9 +136,14 @@ async function testOrchAllowsSubAgentSpawns(env) {
         assertNotNull(session, "session created");
 
         console.log("  Asking parent to spawn a sub-agent...");
-        await session.send(
-            "Spawn a sub-agent with the task: 'Say hello world'",
+        const response = await session.sendAndWait(
+            "Use the spawn_agent tool to create exactly one sub-agent with the task 'Say hello world'. " +
+            "Do not answer until the spawn_agent call succeeds.",
+            TIMEOUT,
+            undefined,
+            { requiredTool: "spawn_agent" },
         );
+        assertNotNull(response, "parent returned after spawn_agent request");
 
         const catalog = await createCatalog(env);
         try {

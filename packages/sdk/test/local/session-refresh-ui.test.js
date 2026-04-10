@@ -1,5 +1,6 @@
 import { describe, it } from "vitest";
 import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
+import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
 import { selectActiveChat, selectChatPaneChrome, selectVisibleSessionRows } from "../../../ui-core/src/selectors.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
@@ -156,5 +157,69 @@ describe("session refresh UI recovery", () => {
 
         const splash = selectActiveChat(store.getState());
         assertEqual(splash[0]?.id, "splash:Waldemort", "empty system-session splash should use the branded root title");
+    });
+
+    it("incrementally refreshes active chat from CMS when live subscription misses events", async () => {
+        const sessionId = "session-active";
+        const createdAt = new Date("2026-04-09T10:00:00.000Z");
+        const afterSeqsSeen = [];
+        const { controller, store } = createController({
+            listSessions: async () => [{
+                sessionId,
+                title: "Active Session",
+                status: "idle",
+                createdAt,
+                updatedAt: createdAt,
+            }],
+            getSession: async () => ({
+                sessionId,
+                title: "Active Session",
+                status: "idle",
+                createdAt,
+                updatedAt: createdAt,
+            }),
+            getSessionEvents: async (_sessionId, afterSeq) => {
+                afterSeqsSeen.push(afterSeq);
+                return afterSeq === 1
+                    ? [{
+                        seq: 2,
+                        sessionId,
+                        eventType: "assistant.message",
+                        data: { content: "The response arrived in CMS." },
+                        createdAt,
+                    }]
+                    : [];
+            },
+        });
+
+        store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId, title: "Active Session", status: "idle", createdAt, updatedAt: createdAt }] });
+        store.dispatch({ type: "sessions/selected", sessionId });
+        store.dispatch({
+            type: "history/set",
+            sessionId,
+            history: {
+                ...buildHistoryModel([{
+                    seq: 1,
+                    sessionId,
+                    eventType: "user.message",
+                    data: { content: "hello" },
+                    createdAt,
+                }]),
+                lastSeq: 1,
+            },
+        });
+
+        await controller.refreshSessions();
+
+        assertEqual(
+            afterSeqsSeen.includes(1),
+            true,
+            "active refresh should poll CMS after the latest loaded event",
+        );
+        assertEqual(
+            selectActiveChat(store.getState()).some((message) => message.text === "The response arrived in CMS."),
+            true,
+            "active chat should include CMS events even when the subscription callback never fired",
+        );
     });
 });

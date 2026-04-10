@@ -1,16 +1,30 @@
 {
   "name": "pilotswarm-ui-core",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "description": "Framework-free shared UI core for PilotSwarm hosts.",
   "main": "./src/index.js",
   "exports": {
     ".": "./src/index.js"
   },
+  "files": [
+    "src/**/*",
+    "README.md"
+  ],
   "scripts": {
     "build": "echo 'pilotswarm-ui-core: no build step (plain JS)'",
     "clean": "true"
+  },
+  "author": "Affan Dar",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/affandar/PilotSwarm"
+  },
+  "homepage": "https://github.com/affandar/PilotSwarm",
+  "bugs": {
+    "url": "https://github.com/affandar/PilotSwarm/issues"
   },
   "engines": {
     "node": ">=24.0.0"

@@ -90,10 +90,13 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 
 ## Current Package Surface
 
-At the time this skill was added, PilotSwarm publishes:
+PilotSwarm publishes the following packages (in dependency/publish order):
 
-- `pilotswarm-sdk`
-- `pilotswarm-cli`
+1. `pilotswarm-ui-core` — shared UI state, themes, controller logic
+2. `pilotswarm-ui-react` — React component library (depends on ui-core)
+3. `pilotswarm-sdk` — SDK runtime (depends on ui-react)
+4. `pilotswarm-cli` — terminal UI (depends on sdk)
+5. `pilotswarm-web` — browser portal (depends on cli, ui-core, ui-react)
 
 If package names change later, update this skill in the same change.
 

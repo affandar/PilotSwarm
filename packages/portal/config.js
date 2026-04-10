@@ -1,4 +1,4 @@
-import { getPluginDirsFromEnv, resolvePortalConfigBundleFromPluginDirs } from "../cli/src/plugin-config.js";
+import { getPluginDirsFromEnv, resolvePortalConfigBundleFromPluginDirs } from "pilotswarm-cli/portal";
 
 let cachedPortalBundle = null;
 
