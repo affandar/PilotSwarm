@@ -878,10 +878,22 @@ body.is-resizing-pane-y * {
   max-width: 100%;
 }
 
+.ps-chat-table-wrap.is-fit-width,
+.ps-md-table-wrap.is-fit-width {
+  width: 100%;
+  max-width: 100%;
+}
+
 .ps-chat-table {
   width: max-content;
   border-collapse: collapse;
   table-layout: auto;
+}
+
+.ps-chat-table.is-fit-width,
+.ps-md-table.is-fit-width {
+  width: 100%;
+  table-layout: fixed;
 }
 
 .ps-chat-table th,
@@ -892,6 +904,16 @@ body.is-resizing-pane-y * {
   white-space: pre-wrap;
   word-break: break-word;
   vertical-align: top;
+}
+
+.ps-chat-table.is-fit-width th,
+.ps-chat-table.is-fit-width td,
+.ps-md-table.is-fit-width th,
+.ps-md-table.is-fit-width td {
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .ps-chat-table th:last-child,
@@ -1149,6 +1171,9 @@ body.is-resizing-pane-y * {
   border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 25%, transparent);
   text-align: left;
   vertical-align: top;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .ps-md-table th {

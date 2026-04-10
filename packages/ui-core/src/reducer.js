@@ -783,6 +783,9 @@ export function appReducer(state, action) {
                 files: {
                     ...state.files,
                     bySessionId,
+                    selectedArtifactId: action.sessionId && action.filename
+                        ? `${action.sessionId}/${action.filename}`
+                        : state.files.selectedArtifactId,
                 },
                 ui: {
                     ...state.ui,

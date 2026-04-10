@@ -429,6 +429,34 @@ function renderInlineMarkdown(source, theme, keyPrefix = "md") {
     });
 }
 
+function normalizeTableCellText(value = "") {
+    return String(value || "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function computeFitWidthColumnPercentages(rows = []) {
+    const columnCount = Math.max(0, ...rows.map((row) => row.length));
+    if (columnCount <= 0) return null;
+
+    const maxLengths = Array.from({ length: columnCount }, () => 0);
+    for (const row of rows) {
+        for (let index = 0; index < columnCount; index += 1) {
+            const cellText = normalizeTableCellText(row[index] || "");
+            maxLengths[index] = Math.max(maxLengths[index], cellText.length);
+        }
+    }
+
+    const weights = maxLengths.map((length) => {
+        const normalizedLength = Math.max(6, Math.min(196, length || 0));
+        return Math.sqrt(normalizedLength);
+    });
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+    if (!(totalWeight > 0)) return null;
+
+    return weights.map((weight) => `${((weight / totalWeight) * 100).toFixed(2)}%`);
+}
+
 function isMarkdownSpecialLine(line = "", nextLine = "") {
     const value = String(line || "");
     return /^\s*#{1,6}\s+/.test(value)
@@ -576,8 +604,25 @@ function MarkdownPreviewContent({ content, theme }) {
                 }, renderInlineMarkdown(item, theme, `list:${index}:${itemIndex}`))));
             }
             if (block.type === "table") {
-                return React.createElement("div", { key: `block:${index}`, className: "ps-md-table-wrap" },
-                    React.createElement("table", { className: "ps-md-table" },
+                const columnCount = Math.max(block.header.length || 0, ...block.rows.map((row) => row.length));
+                const fitToWidth = columnCount > 0 && columnCount <= 4;
+                const columnWidths = fitToWidth
+                    ? computeFitWidthColumnPercentages([block.header, ...block.rows])
+                    : null;
+                return React.createElement("div", {
+                    key: `block:${index}`,
+                    className: `ps-md-table-wrap${fitToWidth ? " is-fit-width" : ""}`,
+                },
+                    React.createElement("table", {
+                        className: `ps-md-table${fitToWidth ? " is-fit-width" : ""}`,
+                    },
+                        columnWidths
+                            ? React.createElement("colgroup", null,
+                                columnWidths.map((width, columnIndex) => React.createElement("col", {
+                                    key: `col:${columnIndex}`,
+                                    style: width ? { width } : undefined,
+                                })))
+                            : null,
                         React.createElement("thead", null,
                             React.createElement("tr", null,
                                 block.header.map((cell, cellIndex) => React.createElement("th", { key: `head:${cellIndex}` },
@@ -852,8 +897,24 @@ function StructuredChatBlocks({ lines, theme }) {
                     ...headerRows.map((row) => row.length),
                     ...bodyRows.map((row) => row.length),
                 );
-                return React.createElement("div", { key: `table:${index}`, className: "ps-chat-table-wrap" },
-                    React.createElement("table", { className: "ps-chat-table" },
+                const fitToWidth = columnCount <= 4;
+                const columnWidths = fitToWidth
+                    ? computeFitWidthColumnPercentages([...headerRows, ...bodyRows])
+                    : null;
+                return React.createElement("div", {
+                    key: `table:${index}`,
+                    className: `ps-chat-table-wrap${fitToWidth ? " is-fit-width" : ""}`,
+                },
+                    React.createElement("table", {
+                        className: `ps-chat-table${fitToWidth ? " is-fit-width" : ""}`,
+                    },
+                        columnWidths
+                            ? React.createElement("colgroup", null,
+                                columnWidths.map((width, columnIndex) => React.createElement("col", {
+                                    key: `col:${columnIndex}`,
+                                    style: width ? { width } : undefined,
+                                })))
+                            : null,
                         headerRows.length > 0
                             ? React.createElement("thead", null,
                                 headerRows.map((row, rowIndex) => React.createElement("tr", { key: `thead:${rowIndex}` },

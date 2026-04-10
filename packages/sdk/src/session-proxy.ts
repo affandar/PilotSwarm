@@ -208,8 +208,8 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string) {
-            return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash });
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean) {
+            return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit });
         },
     /** Resolve a loaded agent config by name. Returns null if not found. */
     resolveAgentConfig(agentName: string) {
@@ -504,6 +504,7 @@ export function registerActivities(
                 model?: string;
                 system_message?: string;
                 tool_names?: string[];
+                title?: string;
             }) => {
                 try {
                     const childNestingLevel = (input.nestingLevel ?? 0) + 1;
@@ -524,7 +525,9 @@ export function registerActivities(
                     let agentToolNames = args.tool_names;
                     let agentModel = args.model;
                     let agentIsSystem = false;
-                    let agentTitle: string | undefined;
+                    const explicitAgentTitle = typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined;
+                    let agentTitle: string | undefined = explicitAgentTitle;
+                    let agentTitleIsExplicit = Boolean(explicitAgentTitle);
                     let agentId: string | undefined;
                     let agentSplash: string | undefined;
                     let boundAgentName: string | undefined;
@@ -540,7 +543,7 @@ export function registerActivities(
                             ? (agentDef.tools ?? undefined)
                             : (args.tool_names ?? agentDef.tools ?? undefined);
                         agentIsSystem = agentDef.system ?? false;
-                        agentTitle = agentDef.title;
+                        if (!agentTitleIsExplicit) agentTitle = agentDef.title;
                         agentId = agentDef.id ?? resolvedAgentName;
                         agentSplash = agentDef.splash;
                         boundAgentName = agentDef.name;
@@ -643,8 +646,11 @@ export function registerActivities(
 
                     if (catalog) {
                         const meta: Record<string, any> = {};
-                        if (agentTitle && !agentIsSystem) meta.title = `${agentTitle}: ${childSession.sessionId.slice(0, 8)}`;
-                        else if (agentTitle) meta.title = agentTitle;
+                        if (agentTitle) {
+                            meta.title = (agentTitleIsExplicit || agentIsSystem)
+                                ? agentTitle
+                                : `${agentTitle}: ${childSession.sessionId.slice(0, 8)}`;
+                        }
                         if (agentId) meta.agentId = agentId;
                         if (agentSplash) meta.splash = agentSplash;
                         if (Object.keys(meta).length > 0) {
@@ -1364,7 +1370,7 @@ export function registerActivities(
     // Goes through the full SDK path: CMS registration + orchestration startup.
     runtime.registerActivity("spawnChildSession", async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean },
     ): Promise<string> => {
         const startedAt = Date.now();
         const trace = (message: string) => {
@@ -1434,10 +1440,10 @@ export function registerActivities(
             if (input.isSystem) meta.isSystem = true;
             // Named agents get a prefixed title: "Agent Title: <shortId>"
             // System agents keep their fixed title as-is.
-            if (input.title && !input.isSystem) {
-                meta.title = `${input.title}: ${childSessionId.slice(0, 8)}`;
-            } else if (input.title) {
+            if (input.title && (input.titleIsExplicit || input.isSystem)) {
                 meta.title = input.title;
+            } else if (input.title) {
+                meta.title = `${input.title}: ${childSessionId.slice(0, 8)}`;
             }
             if (input.agentId) meta.agentId = input.agentId;
             if (input.splash) meta.splash = input.splash;
