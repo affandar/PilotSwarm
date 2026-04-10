@@ -201,22 +201,22 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.42).
+ * Flat event loop durable session orchestration (v1.0.41).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.42";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.41";
 
-export function* durableSessionOrchestration_1_0_42(
+export function* durableSessionOrchestration_1_0_41(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.42] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.41] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 29;
     const idleTimeout = input.idleTimeout ?? 60;
@@ -2179,9 +2179,7 @@ export function* durableSessionOrchestration_1_0_42(
                 let agentToolNames = result.toolNames;
                 let agentModel = result.model;
                 let agentIsSystem = false;
-                const explicitAgentTitle = typeof result.title === "string" && result.title.trim() ? result.title.trim() : undefined;
-                let agentTitle: string | undefined = explicitAgentTitle;
-                let agentTitleIsExplicit = Boolean(explicitAgentTitle);
+                let agentTitle: string | undefined;
                 let agentId: string | undefined;
                 let agentSplash: string | undefined;
                 let boundAgentName: string | undefined;
@@ -2197,7 +2195,7 @@ export function* durableSessionOrchestration_1_0_42(
                         ? (agentDef.tools ?? undefined)
                         : (result.toolNames ?? agentDef.tools ?? undefined);
                     agentIsSystem = agentDef.system ?? false;
-                    if (!agentTitleIsExplicit) agentTitle = agentDef.title;
+                    agentTitle = agentDef.title;
                     agentId = agentDef.id ?? resolvedAgentName;
                     agentSplash = agentDef.splash;
                     boundAgentName = agentDef.name;
@@ -2317,17 +2315,7 @@ export function* durableSessionOrchestration_1_0_42(
 
                 let childSessionId: string;
                 try {
-                    childSessionId = yield manager.spawnChildSession(
-                        input.sessionId,
-                        childConfig,
-                        agentTask,
-                        childNestingLevel,
-                        agentIsSystem,
-                        agentTitle,
-                        agentId,
-                        agentSplash,
-                        agentTitleIsExplicit,
-                    );
+                    childSessionId = yield manager.spawnChildSession(input.sessionId, childConfig, agentTask, childNestingLevel, agentIsSystem, agentTitle, agentId, agentSplash);
                 } catch (err: any) {
                     ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);
                     queueFollowup(`[SYSTEM: spawn_agent failed: ${err.message}]`);

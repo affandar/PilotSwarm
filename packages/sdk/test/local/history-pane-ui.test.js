@@ -5,7 +5,7 @@ import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
 import { createStore } from "../../../ui-core/src/store.js";
-import { selectChatLines } from "../../../ui-core/src/selectors.js";
+import { selectChatLines, selectFileBrowserItems } from "../../../ui-core/src/selectors.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 function createController(transportOverrides = {}) {
@@ -264,5 +264,185 @@ describe("history pane UI behavior", () => {
         assertEqual(Boolean(systemNotice), true, "mixed notices should collapse to a single system summary");
         assertIncludes(text, "System: Session rehydrated on a new worker.", "summary should use the compact rehydration phrasing");
         assertIncludes(systemNotice?.body || "", "active recurring schedule every 60 seconds", "expanded notice body should preserve the full reminder text");
+    });
+
+    it("collapses trailing multiline [SYSTEM: ...] wrappers appended to user-visible text", () => {
+        const sessionId = "session-12345678";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "idle",
+            title: "Wrapped System Prompt",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "user.message",
+                data: {
+                    content: [
+                        "hey there",
+                        "",
+                        "[SYSTEM: The session was dehydrated and has been rehydrated on a new worker. The LLM conversation history is preserved.",
+                        "There is an active recurring schedule every 180 seconds for \"Refresh HN and Reddit trend summaries\".",
+                        "Buffered child updates arrived during the last 30 seconds:",
+                        "• Agent 22c8cd06 completed",
+                        "]",
+                    ].join("\n"),
+                },
+                createdAt: new Date("2026-04-10T07:03:45.000Z"),
+            },
+        ]));
+
+        const lines = selectChatLines(state, 120);
+        const text = flattenChatLines(lines);
+        const systemNotice = lines.find((line) => !Array.isArray(line) && line?.kind === "systemNotice");
+
+        assertEqual(Boolean(systemNotice), true, "wrapped system tail should collapse into a system notice");
+        assertIncludes(text, "You: hey there", "the visible user text should remain in chat");
+        assertIncludes(text, "System: Session rehydrated on a new worker.", "the system tail should be summarized");
+        assertEqual(text.includes("[SYSTEM:"), false, "raw wrapped system prompts should not leak into chat");
+    });
+
+    it("keeps consecutive agent lines tight while preserving spacing between speaker changes", () => {
+        const sessionId = "session-12345678";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "idle",
+            title: "Speaker Spacing",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "assistant.message",
+                data: { content: "First agent update." },
+                createdAt: new Date("2026-04-10T07:00:00.000Z"),
+            },
+            {
+                seq: 2,
+                sessionId,
+                eventType: "assistant.message",
+                data: { content: "Second agent update." },
+                createdAt: new Date("2026-04-10T07:00:05.000Z"),
+            },
+            {
+                seq: 3,
+                sessionId,
+                eventType: "user.message",
+                data: { content: "User follow-up." },
+                createdAt: new Date("2026-04-10T07:00:10.000Z"),
+            },
+        ]));
+
+        const lines = selectChatLines(state, 120);
+        const flattened = lines.map((line) => Array.isArray(line)
+            ? line.map((run) => run?.text || "").join("")
+            : String(line?.text || ""));
+        const firstAgentIndex = flattened.findIndex((line) => line.includes("Agent: First agent update."));
+        const secondAgentIndex = flattened.findIndex((line) => line.includes("Agent: Second agent update."));
+        const userIndex = flattened.findIndex((line) => line.includes("You: User follow-up."));
+
+        assertEqual(secondAgentIndex, firstAgentIndex + 1, "consecutive agent updates should not get an extra blank spacer");
+        assertEqual(flattened[userIndex - 1].trim(), "", "speaker changes should still leave a small spacer");
+    });
+
+    it("renders user prefixes and body text with the shared yellow tint", () => {
+        const sessionId = "session-12345678";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "idle",
+            title: "User Tint",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "user.message",
+                data: { content: "Track these flights." },
+                createdAt: new Date("2026-04-10T11:30:24.000Z"),
+            },
+        ]));
+
+        const lines = selectChatLines(state, 120);
+        const userLine = lines.find((line) => Array.isArray(line) && line.some((run) => String(run?.text || "").includes("You:")));
+
+        assertEqual(Boolean(userLine), true, "expected a rendered user line");
+        const labelRun = userLine.find((run) => String(run?.text || "") === "You: ");
+        const bodyRun = userLine.find((run) => String(run?.text || "").includes("Track these flights."));
+
+        assertEqual(labelRun?.color, "#ffec99", "user label should use the brighter yellow tint");
+        assertEqual(bodyRun?.color, "#ffd866", "user body should use the shared yellow tint");
+    });
+
+    it("shows child-session artifacts in the selected session tree and still offers all-sessions scope", async () => {
+        const parentSessionId = "session-parent1234";
+        const childSessionId = "session-child5678";
+        const siblingSessionId = "session-sibling90ab";
+        const requestedSessionIds = [];
+        const { controller, store } = createController({
+            listArtifacts: async (sessionId) => {
+                requestedSessionIds.push(sessionId);
+                if (sessionId === parentSessionId) return ["brief.md"];
+                if (sessionId === childSessionId) return ["child-notes.md"];
+                if (sessionId === siblingSessionId) return ["sibling.md"];
+                return [];
+            },
+        });
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [
+                {
+                    sessionId: parentSessionId,
+                    title: "Root",
+                    status: "idle",
+                    createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                },
+                {
+                    sessionId: childSessionId,
+                    parentSessionId,
+                    title: "Child",
+                    status: "idle",
+                    createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                },
+                {
+                    sessionId: siblingSessionId,
+                    title: "Sibling",
+                    status: "idle",
+                    createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                },
+            ],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: parentSessionId });
+
+        await controller.ensureFilesForScope("selectedSession");
+
+        const items = selectFileBrowserItems(store.getState());
+        assertEqual(requestedSessionIds.includes(parentSessionId), true, "parent artifacts should be loaded");
+        assertEqual(requestedSessionIds.includes(childSessionId), true, "child artifacts should be loaded in session-tree scope");
+        assertEqual(requestedSessionIds.includes(siblingSessionId), false, "unrelated sessions should not be loaded in session-tree scope");
+        assertEqual(items.some((item) => item.id === `${parentSessionId}/brief.md`), true, "parent artifact should be listed");
+        assertEqual(items.some((item) => item.id === `${childSessionId}/child-notes.md`), true, "child artifact should be listed");
+        assertEqual(items.some((item) => item.id === `${siblingSessionId}/sibling.md`), false, "sibling artifact should not be listed");
+        assertEqual(items.some((item) => item.label === `[${childSessionId.slice(0, 8)}] child-notes.md`), true, "child artifacts should be labeled with their session id inside the parent tree");
+
+        controller.openFilesFilter();
+        const scopeOptions = store.getState().ui.modal?.items?.[0]?.options || [];
+        assertEqual(scopeOptions.some((option) => option.id === "allSessions"), true, "files filter should still offer all-sessions scope");
     });
 });

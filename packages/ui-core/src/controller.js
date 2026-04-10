@@ -21,6 +21,7 @@ import {
     selectActivityPane,
     selectChatLines,
     selectFileBrowserItems,
+    selectFileSessionIdsForScope,
     selectFilesScope,
     selectFilesView,
     selectInspector,
@@ -774,17 +775,18 @@ export class PilotSwarmUiController {
 
         this.selectInspectorTab("files").catch(() => {});
         const syncVersion = ++this.promptReferenceSyncVersion;
-        this.ensureFilesForSession(sessionId).then(async () => {
+        this.ensureFilesForScope("selectedSession").then(async () => {
             if (this.promptReferenceSyncVersion !== syncVersion) return;
-            const items = selectFileBrowserItems(this.getState()).filter((item) => item.sessionId === sessionId);
+            const scopedSessionIds = new Set(selectFileSessionIdsForScope(this.getState(), "selectedSession"));
+            const items = selectFileBrowserItems(this.getState()).filter((item) => scopedSessionIds.has(item.sessionId));
             const nextItem = items[0] || null;
             if (!nextItem?.filename) return;
             this.dispatch({
                 type: "files/select",
-                sessionId,
+                sessionId: nextItem.sessionId,
                 filename: nextItem.filename,
             });
-            await this.ensureFilePreview(sessionId, nextItem.filename).catch(() => {});
+            await this.ensureFilePreview(nextItem.sessionId, nextItem.filename).catch(() => {});
         }).catch(() => {});
     }
 
@@ -1164,17 +1166,14 @@ export class PilotSwarmUiController {
     }
 
     async ensureFilesForScope(scope = selectFilesScope(this.getState()), { force = false } = {}) {
-        if (scope === "allSessions") {
-            const sessionIds = [...new Set([
-                ...(Array.isArray(this.getState().sessions.flat) ? this.getState().sessions.flat : []),
-                ...Object.keys(this.getState().files.bySessionId || {}),
-            ])].filter(Boolean);
-            if (sessionIds.length === 0) return [];
+        const sessionIds = selectFileSessionIdsForScope(this.getState(), scope);
+        if (sessionIds.length === 0) {
+            return scope === "allSessions" ? [] : null;
+        }
+        if (scope === "allSessions" || sessionIds.length > 1) {
             return Promise.allSettled(sessionIds.map((sessionId) => this.ensureFilesForSession(sessionId, { force })));
         }
-        const sessionId = this.getState().sessions.activeSessionId;
-        if (!sessionId) return null;
-        return this.ensureFilesForSession(sessionId, { force });
+        return this.ensureFilesForSession(sessionIds[0], { force });
     }
 
     async ensureSelectedFilePreview() {
@@ -1628,9 +1627,9 @@ export class PilotSwarmUiController {
                     {
                         id: "scope",
                         label: "Scope",
-                        description: "Choose whether the files browser shows only the selected session or aggregates exported files across all sessions.",
+                        description: "Choose whether the files browser shows the selected session tree or aggregates exported files across all sessions.",
                         options: [
-                            { id: "selectedSession", label: "Selected session" },
+                            { id: "selectedSession", label: "Selected session tree" },
                             { id: "allSessions", label: "All sessions" },
                         ],
                     },
@@ -1639,7 +1638,7 @@ export class PilotSwarmUiController {
         });
         this.dispatch({
             type: "ui/status",
-            text: `Editing files filter: Scope = ${scope === "allSessions" ? "All sessions" : "Selected session"}`,
+            text: `Editing files filter: Scope = ${scope === "allSessions" ? "All sessions" : "Selected session tree"}`,
         });
     }
 

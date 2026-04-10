@@ -20,8 +20,8 @@ import { canonicalSystemTitle } from "./system-titles.js";
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
-const USER_CHAT_COLOR = "#b392f0";
-const USER_CHAT_LABEL_COLOR = "#d2b9ff";
+const USER_CHAT_COLOR = "#ffd866";
+const USER_CHAT_LABEL_COLOR = "#ffec99";
 
 const totalDescendantCountsCache = new WeakMap();
 const visibleDescendantCountsCache = new WeakMap();
@@ -491,7 +491,52 @@ function trimLeadingBlankLines(lines) {
     return source;
 }
 
+function extractWrappedSystemNotice(text) {
+    const normalized = String(text || "").replace(/\r\n/g, "\n");
+    const trimmed = normalized.trim();
+    if (!trimmed) return null;
+
+    if (trimmed.startsWith("[SYSTEM:") && trimmed.endsWith("]")) {
+        return {
+            leadingText: "",
+            systemText: trimmed.slice("[SYSTEM:".length, -1).trim(),
+        };
+    }
+
+    const marker = normalized.lastIndexOf("\n\n[SYSTEM:");
+    if (marker >= 0 && normalized.trimEnd().endsWith("]")) {
+        const leadingText = normalized.slice(0, marker).trimEnd();
+        const systemBlock = normalized.slice(marker + 2).trim();
+        if (systemBlock.startsWith("[SYSTEM:")) {
+            return {
+                leadingText,
+                systemText: systemBlock.slice("[SYSTEM:".length, -1).trim(),
+            };
+        }
+    }
+
+    return null;
+}
+
 function splitSystemNoticeSegments(text) {
+    const wrapped = extractWrappedSystemNotice(text);
+    if (wrapped) {
+        const segments = [];
+        if (wrapped.leadingText) {
+            segments.push({
+                kind: "text",
+                text: wrapped.leadingText,
+            });
+        }
+        if (wrapped.systemText) {
+            segments.push({
+                kind: "system",
+                text: wrapped.systemText,
+            });
+        }
+        return segments;
+    }
+
     const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
     const segments = [];
     let textLines = [];
@@ -532,6 +577,16 @@ function splitSystemNoticeSegments(text) {
                 closingIndex = cursor;
                 break;
             }
+
+            if (/\]\s*$/.test(closingLine.trim())) {
+                const closingContent = closingLine.replace(/\]\s*$/, "");
+                if (closingContent.trim()) {
+                    noticeLines.push(closingContent);
+                }
+                closingIndex = cursor;
+                break;
+            }
+
             noticeLines.push(closingLine);
         }
 
@@ -551,6 +606,23 @@ function splitSystemNoticeSegments(text) {
 
     flushText();
     return segments;
+}
+
+function messageHasSystemNotice(message) {
+    if (!message) return false;
+    if (message?.role === "system") return true;
+    if (message?.role !== "user" && message?.role !== "assistant") return false;
+    return splitSystemNoticeSegments(message?.text || "").some((segment) => segment.kind === "system");
+}
+
+function chatMessageSpacingKind(message) {
+    if (messageHasSystemNotice(message)) return "system";
+    return message?.role || "other";
+}
+
+function shouldInsertChatSpacer(currentMessage, nextMessage) {
+    if (!currentMessage || !nextMessage) return false;
+    return chatMessageSpacingKind(currentMessage) !== chatMessageSpacingKind(nextMessage);
 }
 
 function summarizeSystemNoticeText(text) {
@@ -729,7 +801,11 @@ export function selectChatLines(state, maxWidth = 80) {
         const messageLines = buildChatMessageLines(message, maxWidth);
         appendChatBlockLines(lines, messageLines);
         const nextMessage = messages[index + 1];
-        if (nextMessage && flattenLineText(lines[lines.length - 1]).trim().length > 0) {
+        if (
+            nextMessage
+            && shouldInsertChatSpacer(message, nextMessage)
+            && flattenLineText(lines[lines.length - 1]).trim().length > 0
+        ) {
             lines.push(createBlankLine());
         }
     }
@@ -1000,29 +1076,60 @@ export function selectFilesScope(state) {
     return state.files?.filter?.scope === "allSessions" ? "allSessions" : "selectedSession";
 }
 
-export function selectFileBrowserItems(state) {
-    const scope = selectFilesScope(state);
-    const activeSession = selectActiveSession(state);
-    const activeSessionId = activeSession?.sessionId || null;
-    const query = state.files?.filter?.query || "";
-    if (scope !== "allSessions") {
-        const entries = Array.isArray(state.files?.bySessionId?.[activeSessionId]?.entries)
-            ? state.files.bySessionId[activeSessionId].entries
-            : [];
-        return entries.map((filename) => ({
-            id: `${activeSessionId || "none"}/${filename}`,
-            sessionId: activeSessionId,
-            filename,
-            label: filename,
-        })).filter((item) => matchesSearchQuery(item.filename, query));
+function buildDescendantSessionIdSet(rootSessionId, byId = {}) {
+    if (!rootSessionId) return new Set();
+    const { childMap } = buildChildMaps(byId);
+    const seen = new Set([rootSessionId]);
+    const queue = [rootSessionId];
+    while (queue.length > 0) {
+        const current = queue.shift();
+        const childIds = childMap.get(current) || [];
+        for (const childId of childIds) {
+            if (!childId || seen.has(childId)) continue;
+            seen.add(childId);
+            queue.push(childId);
+        }
+    }
+    return seen;
+}
+
+export function selectFileSessionIdsForScope(state, scope = selectFilesScope(state)) {
+    const activeSessionId = selectActiveSession(state)?.sessionId || null;
+    const flatSessionIds = Array.isArray(state.sessions?.flat)
+        ? state.sessions.flat.map((entry) => entry?.sessionId || entry).filter(Boolean)
+        : [];
+    const fileSessionIds = Object.keys(state.files?.bySessionId || {}).filter(Boolean);
+
+    if (scope === "allSessions") {
+        return [...new Set([
+            ...flatSessionIds,
+            ...fileSessionIds,
+        ])];
     }
 
-    const orderedSessionIds = [
-        ...new Set([
-            ...(Array.isArray(state.sessions?.flat) ? state.sessions.flat.map((entry) => entry?.sessionId || entry) : []),
-            ...Object.keys(state.files?.bySessionId || {}),
-        ]),
-    ].filter(Boolean);
+    const scopedSessionIds = buildDescendantSessionIdSet(activeSessionId, state.sessions?.byId || {});
+    if (scopedSessionIds.size === 0) return [];
+
+    const ordered = [];
+    const seen = new Set();
+    for (const sessionId of [activeSessionId, ...flatSessionIds, ...Object.keys(state.sessions?.byId || {}), ...fileSessionIds]) {
+        if (!sessionId || seen.has(sessionId) || !scopedSessionIds.has(sessionId)) continue;
+        ordered.push(sessionId);
+        seen.add(sessionId);
+    }
+    for (const sessionId of scopedSessionIds) {
+        if (seen.has(sessionId)) continue;
+        ordered.push(sessionId);
+    }
+    return ordered;
+}
+
+export function selectFileBrowserItems(state) {
+    const scope = selectFilesScope(state);
+    const activeSessionId = selectActiveSession(state)?.sessionId || null;
+    const query = state.files?.filter?.query || "";
+    const orderedSessionIds = selectFileSessionIdsForScope(state, scope);
+    const showSessionPrefixes = scope === "allSessions" || orderedSessionIds.length > 1;
 
     const items = [];
     for (const sessionId of orderedSessionIds) {
@@ -1034,7 +1141,9 @@ export function selectFileBrowserItems(state) {
                 id: `${sessionId}/${filename}`,
                 sessionId,
                 filename,
-                label: `[${shortSessionId(sessionId)}] ${filename}`,
+                label: showSessionPrefixes
+                    ? `[${shortSessionId(sessionId)}] ${filename}`
+                    : filename,
             });
         }
     }
@@ -1049,13 +1158,14 @@ export function selectSelectedFileBrowserItem(state) {
     const items = selectFileBrowserItems(state);
     if (items.length === 0) return null;
 
+    const preferredId = state.files?.selectedArtifactId || null;
+    if (preferredId) {
+        const selected = items.find((item) => item.id === preferredId);
+        if (selected) return selected;
+    }
+
     const scope = selectFilesScope(state);
     if (scope === "allSessions") {
-        const preferredId = state.files?.selectedArtifactId || null;
-        if (preferredId) {
-            const selected = items.find((item) => item.id === preferredId);
-            if (selected) return selected;
-        }
         const activeSessionId = selectActiveSession(state)?.sessionId || null;
         const activeFilename = activeSessionId
             ? state.files?.bySessionId?.[activeSessionId]?.selectedFilename || null
@@ -1071,7 +1181,8 @@ export function selectSelectedFileBrowserItem(state) {
     const selectedFilename = activeSessionId
         ? state.files?.bySessionId?.[activeSessionId]?.selectedFilename || null
         : null;
-    return items.find((item) => item.filename === selectedFilename) || items[0];
+    return items.find((item) => item.sessionId === activeSessionId && item.filename === selectedFilename)
+        || items[0];
 }
 
 export function selectFilesView(state, options = {}) {
@@ -1090,6 +1201,8 @@ export function selectFilesView(state, options = {}) {
         ? state.files?.bySessionId?.[selectedItem.sessionId]?.previews?.[selectedFilename] || null
         : null;
     const shortId = session ? shortSessionId(session.sessionId) : "";
+    const scopedSessionIds = selectFileSessionIdsForScope(state, scope);
+    const subtreeScope = scope !== "allSessions" && scopedSessionIds.some((id) => id && id !== sessionId);
     const allSessionIds = [...new Set([
         ...(Array.isArray(state.sessions?.flat) ? state.sessions.flat.map((entry) => entry?.sessionId || entry) : []),
         ...Object.keys(state.files?.bySessionId || {}),
@@ -1134,28 +1247,34 @@ export function selectFilesView(state, options = {}) {
     } else if (session) {
         const fileState = sessionId ? state.files?.bySessionId?.[sessionId] : null;
         const entries = Array.isArray(fileState?.entries) ? fileState.entries : [];
-        const scopedItems = fileItems.filter((item) => item.sessionId === sessionId);
+        const scopedItems = fileItems.filter((item) => scopedSessionIds.includes(item.sessionId));
         if (fileState?.loading) {
             listLines.push({ text: "Loading exported files…", color: "gray" });
         } else if (fileState?.error) {
             listLines.push({ text: fileState.error, color: "red" });
-        } else if (entries.length === 0 || scopedItems.length === 0) {
+        } else if (scopedItems.length === 0 && scopedSessionIds.every((id) => {
+            const scopedEntries = state.files?.bySessionId?.[id]?.entries;
+            return !Array.isArray(scopedEntries) || scopedEntries.length === 0;
+        })) {
             listLines.push({
                 text: query
-                    ? `No artifacts matched "${query}" for this session.`
-                    : "No exported files for this session yet.",
+                    ? `No artifacts matched "${query}" for this ${subtreeScope ? "session tree" : "session"}.`
+                    : `No exported files for this ${subtreeScope ? "session tree" : "session"} yet.`,
                 color: "gray",
             });
             listLines.push({
                 text: query
                     ? "Clear the query or upload an artifact to this session."
-                    : "Agents must write/export artifacts before they appear here.",
+                    : subtreeScope
+                        ? "Artifacts exported by this session or any child session will appear here."
+                        : "Agents must write/export artifacts before they appear here.",
                 color: "gray",
             });
         } else {
             listLines.push(...scopedItems.map((item, index) => buildFileListEntry(item.filename, {
                 selected: index === selectedIndex,
                 width: listWidth,
+                label: item.label,
             })));
         }
     }
@@ -1171,7 +1290,8 @@ export function selectFilesView(state, options = {}) {
     } else if (previewState?.loading) {
         previewTitle = [
             { text: `Preview: ${selectedFilename}`, color: "cyan", bold: true },
-            ...(scope === "allSessions" && selectedItem?.sessionId
+            ...(((scope === "allSessions") || (selectedItem?.sessionId && selectedItem.sessionId !== sessionId))
+                && selectedItem?.sessionId
                 ? [{ text: ` · ${shortSessionId(selectedItem.sessionId)}`, color: "gray" }]
                 : []),
         ];
@@ -1179,7 +1299,8 @@ export function selectFilesView(state, options = {}) {
     } else if (previewState?.error) {
         previewTitle = [
             { text: `Preview: ${selectedFilename}`, color: "cyan", bold: true },
-            ...(scope === "allSessions" && selectedItem?.sessionId
+            ...(((scope === "allSessions") || (selectedItem?.sessionId && selectedItem.sessionId !== sessionId))
+                && selectedItem?.sessionId
                 ? [{ text: ` · ${shortSessionId(selectedItem.sessionId)}`, color: "gray" }]
                 : []),
         ];
@@ -1187,7 +1308,8 @@ export function selectFilesView(state, options = {}) {
     } else {
         previewTitle = [
             { text: `Preview: ${selectedFilename}`, color: "cyan", bold: true },
-            ...(scope === "allSessions" && selectedItem?.sessionId
+            ...(((scope === "allSessions") || (selectedItem?.sessionId && selectedItem.sessionId !== sessionId))
+                && selectedItem?.sessionId
                 ? [{ text: ` · ${shortSessionId(selectedItem.sessionId)}`, color: "gray" }]
                 : []),
             ...(previewState?.renderMode === "markdown"
@@ -1204,12 +1326,12 @@ export function selectFilesView(state, options = {}) {
     const panelTitleLabel = scope === "allSessions"
         ? `Files: all sessions${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
         : session
-            ? `Files: ${shortId}${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
+            ? `Files: ${shortId}${subtreeScope ? " tree" : ""}${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
             : "Files";
     const listTitleLabel = scope === "allSessions"
         ? `Artifacts: all sessions${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
         : session
-            ? `Artifacts: ${shortId}${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
+            ? `Artifacts: ${shortId}${subtreeScope ? " tree" : ""}${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
             : "Artifacts";
     const querySuffix = query ? ` · @${query}` : "";
 
@@ -2426,7 +2548,7 @@ export function selectFilesFilterModal(state, maxWidth = 88) {
         state.files?.filter || {},
         maxWidth,
         "Files Filter",
-        "Choose whether the files browser shows only the selected session or aggregates artifacts across all sessions.",
+        "Choose whether the files browser shows the selected session tree or aggregates artifacts across all sessions.",
     );
 }
 

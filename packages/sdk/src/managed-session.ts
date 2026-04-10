@@ -611,9 +611,13 @@ export class ManagedSession {
                         items: { type: "string" },
                         description: "Optional tool names list. Only for custom agents.",
                     },
+                    title: {
+                        type: "string",
+                        description: "Optional session title for the spawned sub-agent. Omit it to let the agent definition or later title summarization decide the name.",
+                    },
                 },
             },
-            handler: async (args: { agent_name?: string; task?: string; model?: string; system_message?: string; tool_names?: string[] }) => {
+            handler: async (args: { agent_name?: string; task?: string; model?: string; system_message?: string; tool_names?: string[]; title?: string }) => {
                 if (!args.agent_name && !args.task) {
                     return "Error: either agent_name or task is required.";
                 }
@@ -627,6 +631,7 @@ export class ManagedSession {
                     systemMessage: args.system_message,
                     toolNames: args.tool_names,
                     agentName: args.agent_name,
+                    title: typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined,
                 });
                 if (turnState.session) turnState.session.abort();
                 return "aborted";
