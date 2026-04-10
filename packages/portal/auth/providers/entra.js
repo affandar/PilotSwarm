@@ -1,37 +1,47 @@
 import * as jose from "jose";
+import { normalizeEntraPrincipal } from "../normalize/entra.js";
 
-let jwks = null;
-let issuer = null;
+const JWKS_CACHE = new Map();
 
-function getEntraConfig() {
-    const tenantId = process.env.PORTAL_AUTH_ENTRA_TENANT_ID || process.env.ENTRA_TENANT_ID;
-    const clientId = process.env.PORTAL_AUTH_ENTRA_CLIENT_ID || process.env.ENTRA_CLIENT_ID;
+function getEntraConfig(pluginAuthConfig = {}) {
+    const tenantId = process.env.PORTAL_AUTH_ENTRA_TENANT_ID;
+    const clientId = process.env.PORTAL_AUTH_ENTRA_CLIENT_ID;
+    const displayName = String(
+        pluginAuthConfig?.providers?.entra?.displayName
+        || pluginAuthConfig?.displayName
+        || "Entra ID",
+    ).trim() || "Entra ID";
     if (!tenantId || !clientId) return null;
-    return { tenantId, clientId };
+    return { tenantId, clientId, displayName };
 }
 
 async function ensureJwks(tenantId) {
-    if (jwks && issuer) return;
-    issuer = `https://login.microsoftonline.com/${tenantId}/v2.0`;
-    jwks = jose.createRemoteJWKSet(new URL(`https://login.microsoftonline.com/${tenantId}/discovery/v2.0/keys`));
+    const cached = JWKS_CACHE.get(tenantId);
+    if (cached) return cached;
+
+    const issuer = `https://login.microsoftonline.com/${tenantId}/v2.0`;
+    const jwks = jose.createRemoteJWKSet(new URL(`https://login.microsoftonline.com/${tenantId}/discovery/v2.0/keys`));
+    const bundle = { issuer, jwks };
+    JWKS_CACHE.set(tenantId, bundle);
+    return bundle;
 }
 
 async function validateToken(token, config) {
-    await ensureJwks(config.tenantId);
+    const { issuer, jwks } = await ensureJwks(config.tenantId);
     const { payload } = await jose.jwtVerify(token, jwks, {
         issuer,
         audience: config.clientId,
     });
-    return payload;
+    return normalizeEntraPrincipal(payload);
 }
 
-export function createEntraAuthProvider() {
-    const config = getEntraConfig();
+export function createEntraAuthProvider({ pluginAuthConfig } = {}) {
+    const config = getEntraConfig(pluginAuthConfig);
 
     return {
         id: "entra",
         enabled: Boolean(config),
-        displayName: "Entra ID",
+        displayName: config?.displayName || "Entra ID",
         async authenticateRequest(token) {
             if (!config || !token) return null;
             try {
@@ -46,7 +56,7 @@ export function createEntraAuthProvider() {
                 return {
                     enabled: false,
                     provider: "entra",
-                    displayName: "Entra ID",
+                    displayName: config?.displayName || "Entra ID",
                     client: null,
                 };
             }
@@ -54,7 +64,7 @@ export function createEntraAuthProvider() {
             return {
                 enabled: true,
                 provider: "entra",
-                displayName: "Entra ID",
+                displayName: config.displayName,
                 client: {
                     clientId: config.clientId,
                     authority: `https://login.microsoftonline.com/${config.tenantId}`,

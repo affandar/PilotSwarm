@@ -69,7 +69,8 @@ describe("system agent cron contracts", () => {
         const orchestration = readRepoFile("packages/sdk/src/orchestration.ts");
         const selectors = readRepoFile("packages/ui-core/src/selectors.js");
 
-        assertIncludes(orchestration, 'yield* dehydrateForNextTurn("cron", true);', "cron waits should release worker affinity");
+        assertIncludes(orchestration, "const cronPlan = planWaitHandling({", "cron waits should compute dehydration behavior through the shared wait planner");
+        assertIncludes(orchestration, 'yield* dehydrateForNextTurn("cron", cronPlan.resetAffinityOnDehydrate);', "cron waits should pass the planner affinity decision into dehydration");
         assertIncludes(orchestration, "[orch] cron timer:", "cron waits should emit a dedicated trace event");
         assertIncludes(selectors, 'case "cron_waiting": return "yellow";', "cron wait sessions should render like normal waiting rows");
         assertIncludes(selectors, 'detail: `ZZ ${formatDehydrateSequenceDetail(event, preview)}`.trim()', "sequence view should show a reason-prefixed dehydration marker");

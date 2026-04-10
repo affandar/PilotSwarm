@@ -1,7 +1,7 @@
 {
   "name": "pilotswarm-ui-core",
   "version": "0.1.0",
-  "private": false,
+  "private": true,
   "type": "module",
   "description": "Framework-free shared UI core for PilotSwarm hosts.",
   "main": "./src/index.js",

@@ -308,9 +308,26 @@ function Runs({ runs, theme }) {
     );
 }
 
+function SystemNoticeLine({ line, theme }) {
+    const body = String(line?.body || "").trim();
+    return React.createElement("details", { className: "ps-system-notice" },
+        React.createElement("summary", {
+            className: "ps-system-notice-summary",
+            style: { color: resolveColor(theme, line?.color) || "var(--ps-muted)" },
+        },
+        React.createElement("span", { className: "ps-system-notice-summary-text" }, line?.text || "System notice")),
+        body
+            ? React.createElement("div", { className: "ps-system-notice-body" },
+                React.createElement(MarkdownPreviewContent, { content: body, theme }))
+            : null);
+}
+
 function Line({ line, theme }) {
     if (!line) {
         return React.createElement("div", { className: "ps-line" }, " ");
+    }
+    if (line.kind === "systemNotice") {
+        return React.createElement(SystemNoticeLine, { line, theme });
     }
     if (line.kind === "runs") {
         return React.createElement("div", { className: "ps-line" },

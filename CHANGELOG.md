@@ -1,12 +1,48 @@
 # Changelog
 
+## 0.1.15 — 2026-04-10
+
+### Portal Auth & Authorization
+
+- **Provider-based auth architecture** — refactored portal auth into a modular provider system (`packages/portal/auth/`). Auth providers, token normalization, and authorization policy are cleanly separated. New files: `auth/index.js`, `auth/config.js`, `auth/providers/`, `auth/normalize/`, `auth/authz/engine.js`.
+- **Authorization engine** — group-based allow/deny with email allowlists (Phase 1). Configuration via `PORTAL_AUTHZ_*` env vars and `plugin.json.portal.auth`.
+- **Client-side auth providers** — browser-side auth modules (`src/auth/providers/entra.js`, `src/auth/providers/none.js`) and `usePortalAuth()` hook for React integration.
+- **Canonical env vars** — all portal auth config uses `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` prefixes. Legacy `ENTRA_*` aliases are removed.
+
+### SDK / Orchestration
+
+- **Orchestration v1.0.40** — frozen v1.0.39, current v1.0.40. Continued hardening of the durable event loop, session-proxy, session-manager, and blob-store.
+- **Code cleanup** — removed ~19K lines of dead code: pruned frozen orchestration versions 1.0.36–1.0.38, removed unused test fixtures, deleted stale proposals and bug reports, and cleaned up legacy theme/controller code across ui-core and ui-react.
+
+### Shared UI
+
+- **Theme refresh** — added Catppuccin Latte, GitHub Light High Contrast, and Solarized Light themes. Removed stale Hacker X and Noctis variants.
+- **Selector and controller cleanup** — streamlined ui-core selectors, controller, and reducer for the shared layout.
+
+### Deploy / Ops
+
+- **Deploy script updates** — `deploy-aks.sh` and `deploy-portal.sh` updated for the refactored portal auth architecture.
+- **Builder template updates** — portal-builder and azure-deployer agent templates updated for auth/authz architecture.
+
+### npm
+
+- **First npm publish of `pilotswarm-web` (0.1.0)** — the browser portal ships as a standalone npm package.
+- **`pilotswarm-ui-core` and `pilotswarm-ui-react` are now bundled** into `pilotswarm-cli` and `pilotswarm-web` via `bundledDependencies` instead of being published separately. Both are marked `"private": true`.
+- **Publish pipeline simplified** — workflow publishes 3 packages: sdk → cli → web.
+
+### Tests
+
+- **Portal authz contract tests** — new `portal-authz.test.js` covering authz engine and config.
+- **System agent cron contract tests** — new `system-agent-cron-contracts.test.js`.
+- **History pane UI tests** — updated `history-pane-ui.test.js`.
+
 ## 0.1.14 — 2026-04-06
 
 ### Web Portal
 
 - **Browser-native web portal** — replaced the xterm.js PTY-based terminal emulator with a full React SPA. Each browser tab now connects over RPC + WebSocket instead of spawning a separate TUI process.
 - **React workspace UI** — new `PilotSwarmWebApp` component with responsive desktop (3-column resizable grid) and mobile (tabbed navigation) layouts. Includes all inspector tabs (sequence, logs, nodes, history, files), modals, prompt composer, and keyboard shortcuts.
-- **Entra ID authentication** — optional MSAL-based auth gate with PKCE flow and mobile redirect support. Enable by setting `ENTRA_TENANT_ID` and `ENTRA_CLIENT_ID`; omit both to run without auth.
+- **Entra ID authentication** — optional MSAL-based auth gate with PKCE flow and mobile redirect support. Enable by setting `PORTAL_AUTH_PROVIDER=entra`, `PORTAL_AUTH_ENTRA_TENANT_ID`, and `PORTAL_AUTH_ENTRA_CLIENT_ID`; omit them to run without auth.
 - **Browser transport** — `BrowserPortalTransport` class handles RPC dispatch over `/api/rpc` and live session/log subscriptions over WebSocket (`/portal-ws`).
 - **Portal server rewrite** — Express server now serves the Vite-built SPA, dispatches RPC calls to `PortalRuntime`, and bridges WebSocket subscriptions for session events and logs.
 - **Artifact downloads** — portal supports file artifact downloads through a dedicated endpoint.

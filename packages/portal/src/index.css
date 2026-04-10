@@ -747,9 +747,9 @@ body.is-resizing-pane-y * {
 }
 
 .ps-line {
-  min-height: 1.02rem;
+  min-height: 1.16rem;
   white-space: pre-wrap;
-  line-height: 1.02rem;
+  line-height: 1.16rem;
   word-break: break-word;
 }
 
@@ -799,6 +799,69 @@ body.is-resizing-pane-y * {
 
 .ps-chat-card-line + .ps-chat-card-line {
   margin-top: 6px;
+}
+
+.ps-chat-panel .ps-line,
+.ps-chat-panel .ps-chat-card-line {
+  min-height: 1.24rem;
+  line-height: 1.24rem;
+}
+
+.ps-system-notice {
+  margin: 10px 0 12px;
+  color: var(--ps-muted);
+}
+
+.ps-system-notice[open] {
+  margin-bottom: 14px;
+}
+
+.ps-system-notice-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  opacity: 0.86;
+  transition: opacity 120ms ease;
+}
+
+.ps-system-notice-summary:hover,
+.ps-system-notice[open] .ps-system-notice-summary {
+  opacity: 1;
+}
+
+.ps-system-notice-summary::-webkit-details-marker {
+  display: none;
+}
+
+.ps-system-notice-summary-text {
+  display: inline-block;
+  white-space: pre-wrap;
+}
+
+.ps-system-notice-summary::before {
+  content: "▸ ";
+  color: color-mix(in srgb, var(--ps-muted) 84%, transparent);
+}
+
+.ps-system-notice[open] .ps-system-notice-summary::before {
+  content: "▾ ";
+}
+
+.ps-system-notice-body {
+  margin-top: 8px;
+  padding-left: 12px;
+  border-left: 1px solid color-mix(in srgb, var(--ps-border) 42%, transparent);
+  color: var(--ps-muted);
+}
+
+.ps-system-notice-body .ps-markdown-preview {
+  gap: 10px;
+}
+
+.ps-system-notice-body .ps-md-paragraph,
+.ps-system-notice-body .ps-md-list,
+.ps-system-notice-body .ps-md-quote {
+  color: var(--ps-muted);
 }
 
 .ps-chat-table-wrap {

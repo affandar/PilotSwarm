@@ -38,6 +38,7 @@ Your job is to create or update application code in the user's repository, not t
 - prefer `plugin.json.portal.branding.logoFile` for app-supplied logo assets, with `faviconFile` used only when the browser tab icon must differ from the in-app logo
 - use `plugin.json.tui` as a fallback or shared source only when the user wants the portal and TUI to match
 - do not assume Entra ID is mandatory; auth must stay pluggable
+- use only canonical `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` env vars when documenting portal auth; do not rely on legacy `ENTRA_*` aliases
 - do not assume the portal can infer named agents from remote workers alone; explicitly wire plugin packaging and `PLUGIN_DIRS`
 - do not silently reuse credentials or identity-provider settings from another project without user approval
 - do not invent app-specific auth protocols when the user really wants auth disabled; `none` is a valid first-class choice

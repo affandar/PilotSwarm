@@ -39,6 +39,13 @@ function seedSession(store, sessionId = "session-12345678") {
     return sessionId;
 }
 
+function flattenChatLines(lines = []) {
+    return (lines || []).map((line) => Array.isArray(line)
+        ? line.map((run) => run?.text || "").join("")
+        : String(line?.text || ""))
+        .join("\n");
+}
+
 describe("history pane UI behavior", () => {
     it("loads execution history once per selected session until the user refreshes", async () => {
         let historyFetchCount = 0;
@@ -188,7 +195,7 @@ describe("history pane UI behavior", () => {
         assertEqual(history.chat.some((message) => message.text.includes("Latest steady-state sample recorded.")), true);
     });
 
-    it("collapses the default rehydration system notice into a compact chat divider", () => {
+    it("collapses rehydration notices into a dimmed expandable system summary line", () => {
         const sessionId = "session-12345678";
         const state = createInitialState({ mode: "local" });
         state.sessions.byId[sessionId] = {
@@ -213,12 +220,49 @@ describe("history pane UI behavior", () => {
             },
         ]));
 
-        const text = selectChatLines(state, 120).map((line) =>
-            (line || []).map((run) => run?.text || "").join(""),
-        ).join("\n");
+        const lines = selectChatLines(state, 120);
+        const text = flattenChatLines(lines);
+        const systemNotice = lines.find((line) => !Array.isArray(line) && line?.kind === "systemNotice");
 
-        assertIncludes(text, "------ rehydrated ------", "rehydration should render as a compact divider");
-        assertEqual(text.includes("The session was dehydrated"), false, "noisy rehydration text should be hidden from chat");
-        assertEqual(text.includes("SYSTEM"), false, "rehydration divider should not be rendered as a system card");
+        assertEqual(Boolean(systemNotice), true, "rehydration should render as a collapsed system notice");
+        assertIncludes(text, "System: Session rehydrated on a new worker.", "rehydration summary should stay visible in chat");
+        assertEqual(text.includes("SYSTEM"), false, "rehydration should not be rendered as a boxed system card");
+    });
+
+    it("collapses mixed rehydration and recurring-schedule notices into a single system summary", () => {
+        const sessionId = "session-12345678";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "idle",
+            title: "Facts Manager",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "system.message",
+                data: {
+                    content: [
+                        "The session was dehydrated and has been rehydrated on a new worker. The LLM conversation history is preserved.",
+                        "",
+                        "There is an active recurring schedule every 60 seconds for \"facts-manager curation cycle\".",
+                        "It remains active automatically after this turn completes, so do NOT call wait() just to keep the recurring loop alive.",
+                    ].join("\n"),
+                },
+                createdAt: new Date("2026-04-08T09:15:06.000Z"),
+            },
+        ]));
+
+        const lines = selectChatLines(state, 120);
+        const text = flattenChatLines(lines);
+        const systemNotice = lines.find((line) => !Array.isArray(line) && line?.kind === "systemNotice");
+
+        assertEqual(Boolean(systemNotice), true, "mixed notices should collapse to a single system summary");
+        assertIncludes(text, "System: Session rehydrated on a new worker.", "summary should use the compact rehydration phrasing");
+        assertIncludes(systemNotice?.body || "", "active recurring schedule every 60 seconds", "expanded notice body should preserve the full reminder text");
     });
 });

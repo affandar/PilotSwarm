@@ -12,9 +12,10 @@ async function readErrorMessage(response) {
 }
 
 export class BrowserPortalTransport {
-    constructor({ getAccessToken, onUnauthorized }) {
+    constructor({ getAccessToken, onUnauthorized, onForbidden }) {
         this.getAccessToken = typeof getAccessToken === "function" ? getAccessToken : async () => null;
         this.onUnauthorized = typeof onUnauthorized === "function" ? onUnauthorized : () => {};
+        this.onForbidden = typeof onForbidden === "function" ? onForbidden : () => {};
         this.bootstrap = null;
         this.socket = null;
         this.socketOpenPromise = null;
@@ -78,6 +79,11 @@ export class BrowserPortalTransport {
         if (response.status === 401) {
             this.onUnauthorized();
             throw new Error("Unauthorized");
+        }
+        if (response.status === 403) {
+            const message = await readErrorMessage(response);
+            this.onForbidden(message || "Forbidden");
+            throw new Error(message || "Forbidden");
         }
         if (!response.ok) {
             throw new Error(await readErrorMessage(response));
@@ -145,6 +151,10 @@ export class BrowserPortalTransport {
                     this.onUnauthorized();
                     return;
                 }
+                if (event.code === 4403) {
+                    this.onForbidden(event.reason || "Forbidden");
+                    return;
+                }
                 this.scheduleReconnect();
             });
 
@@ -157,6 +167,7 @@ export class BrowserPortalTransport {
                 socket.addEventListener("error", () => reject(new Error("WebSocket connection failed")), { once: true });
                 socket.addEventListener("close", (event) => {
                     if (event.code === 4401) reject(new Error("Unauthorized"));
+                    if (event.code === 4403) reject(new Error(event.reason || "Forbidden"));
                 }, { once: true });
             });
 
@@ -280,6 +291,11 @@ export class BrowserPortalTransport {
         if (response.status === 401) {
             this.onUnauthorized();
             throw new Error("Unauthorized");
+        }
+        if (response.status === 403) {
+            const message = await readErrorMessage(response);
+            this.onForbidden(message || "Forbidden");
+            throw new Error(message || "Forbidden");
         }
         if (!response.ok) {
             throw new Error(await readErrorMessage(response));

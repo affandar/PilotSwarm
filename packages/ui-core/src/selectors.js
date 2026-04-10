@@ -20,6 +20,8 @@ import { canonicalSystemTitle } from "./system-titles.js";
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
+const USER_CHAT_COLOR = "#b392f0";
+const USER_CHAT_LABEL_COLOR = "#d2b9ff";
 
 const totalDescendantCountsCache = new WeakMap();
 const visibleDescendantCountsCache = new WeakMap();
@@ -451,7 +453,7 @@ function buildChatMessagePrefix(message) {
                 ? "System"
                 : "PilotSwarm";
     const roleColor = message?.role === "user"
-        ? "blue"
+        ? USER_CHAT_LABEL_COLOR
         : message?.role === "assistant"
             ? "green"
             : message?.role === "system"
@@ -467,6 +469,10 @@ function buildChatMessagePrefix(message) {
 function flattenLineText(lineRuns) {
     if (!Array.isArray(lineRuns)) return String(lineRuns?.text || "");
     return (lineRuns || []).map((run) => run?.text || "").join("");
+}
+
+function createBlankLine() {
+    return [{ text: "", color: null }];
 }
 
 function startsWithStructuredBlock(lines) {
@@ -547,20 +553,42 @@ function splitSystemNoticeSegments(text) {
     return segments;
 }
 
-const REHYDRATION_DIVIDER_TEXT = "------ rehydrated ------";
-
-function isRehydrationSystemNoticeText(text) {
+function summarizeSystemNoticeText(text) {
     const normalized = String(text || "")
         .replace(/\s+/g, " ")
         .trim();
-    return normalized === REHYDRATION_DIVIDER_TEXT
-        || normalized === "The session was dehydrated and has been rehydrated on a new worker. The LLM conversation history is preserved.";
+    if (!normalized) return "System notice.";
+    if (normalized.startsWith("The session was dehydrated and has been rehydrated on a new worker.")) {
+        return "Session rehydrated on a new worker.";
+    }
+
+    const sentenceMatch = /^(.{1,160}?[.!?])(?:\s|$)/.exec(normalized);
+    const firstSentence = sentenceMatch?.[1]?.trim() || normalized;
+    if (firstSentence.length >= normalized.length) {
+        return firstSentence.length > 160
+            ? `${firstSentence.slice(0, 159).trimEnd()}…`
+            : firstSentence;
+    }
+    return `${firstSentence}…`;
 }
 
-function buildRehydrationDividerLines() {
-    return [[
-        { text: REHYDRATION_DIVIDER_TEXT, color: "green", bold: true },
-    ]];
+function buildCollapsedSystemNoticeLine(text, timestamp = "") {
+    const summary = summarizeSystemNoticeText(text);
+    return {
+        kind: "systemNotice",
+        text: `${timestamp ? `[${timestamp}] ` : ""}System: ${summary}`,
+        summary,
+        body: decorateArtifactLinksForChat(text),
+        color: "gray",
+    };
+}
+
+function tintRunsIfUnset(lines, color) {
+    if (!color) return lines;
+    return (lines || []).map((lineRuns) => (lineRuns || []).map((run) => ({
+        ...run,
+        color: run?.color || color,
+    })));
 }
 
 function startsWithCardBlock(lines) {
@@ -581,17 +609,6 @@ function appendChatBlockLines(targetLines, nextLines) {
     targetLines.push(...nextLines);
 }
 
-function isDialogRole(role) {
-    return role === "user" || role === "assistant";
-}
-
-function shouldInsertChatSpacer(currentMessage, nextMessage) {
-    if (!isDialogRole(currentMessage?.role) || !isDialogRole(nextMessage?.role)) {
-        return false;
-    }
-    return currentMessage.role !== nextMessage.role;
-}
-
 function buildChatMessageLines(message, maxWidth, options = {}) {
     if (message?.splash) {
         return [{ kind: "markup", value: message.text }];
@@ -606,8 +623,8 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
                     timestamp: formatTimestamp(message?.createdAt || message?.time),
                     body: askedAndAnswered.question,
                     width: Math.max(20, maxWidth),
-                    titleColor: "cyan",
-                    borderColor: "cyan",
+                    titleColor: USER_CHAT_COLOR,
+                    borderColor: USER_CHAT_COLOR,
                 }),
                 ...buildChatMessageLines({
                     ...message,
@@ -622,23 +639,19 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
         if (segments.some((segment) => segment.kind === "system")) {
             const rendered = [];
             let renderedSpeakerText = false;
-
-            for (const segment of segments) {
+            for (const [segmentIndex, segment] of segments.entries()) {
                 if (segment.kind === "system") {
-                    if (isRehydrationSystemNoticeText(segment.text)) {
-                        appendChatBlockLines(rendered, buildRehydrationDividerLines());
-                        continue;
+                    if (rendered.length > 0 && flattenLineText(rendered[rendered.length - 1]).trim().length > 0) {
+                        rendered.push(createBlankLine());
                     }
-                    appendChatBlockLines(rendered, buildMessageCardLines({
-                        title: "System",
-                        timestamp: formatTimestamp(message?.createdAt || message?.time),
-                        body: decorateArtifactLinksForChat(segment.text),
-                        width: Math.max(20, maxWidth),
-                        titleColor: "yellow",
-                        borderColor: "gray",
-                        bodyColor: "gray",
-                        fitToContent: true,
-                    }));
+                    rendered.push(buildCollapsedSystemNoticeLine(
+                        segment.text,
+                        formatTimestamp(message?.createdAt || message?.time),
+                    ));
+                    const hasLaterContent = segments.slice(segmentIndex + 1).some((candidate) => candidate.kind !== "text" || candidate.text.trim());
+                    if (hasLaterContent) {
+                        rendered.push(createBlankLine());
+                    }
                     continue;
                 }
 
@@ -660,8 +673,11 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
     }
 
     if (message?.role !== "user" && message?.role !== "assistant") {
-        if (message?.role === "system" && isRehydrationSystemNoticeText(message?.text)) {
-            return buildRehydrationDividerLines();
+        if (message?.role === "system") {
+            return [buildCollapsedSystemNoticeLine(
+                message?.text || "",
+                formatTimestamp(message?.createdAt || message?.time),
+            )];
         }
         const isSystemCard = message?.role === "system"
             && (!message?.cardTitle || String(message.cardTitle).toLowerCase() === "system");
@@ -680,17 +696,21 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
         decorateArtifactLinksForChat(message?.text || ""),
         { width: maxWidth },
     ));
+    const tintedMarkdownLines = tintRunsIfUnset(
+        markdownLines,
+        message?.role === "user" ? USER_CHAT_COLOR : null,
+    );
     const prefix = options.skipPrefix ? [] : buildChatMessagePrefix(message);
 
-    if (markdownLines.length === 0) {
+    if (tintedMarkdownLines.length === 0) {
         return prefix.length > 0 ? [prefix] : [];
     }
 
-    if (startsWithStructuredBlock(markdownLines)) {
-        return prefix.length > 0 ? [prefix, ...markdownLines] : markdownLines;
+    if (startsWithStructuredBlock(tintedMarkdownLines)) {
+        return prefix.length > 0 ? [prefix, ...tintedMarkdownLines] : tintedMarkdownLines;
     }
 
-    return markdownLines.map((lineRuns, index) => {
+    return tintedMarkdownLines.map((lineRuns, index) => {
         if (index === 0 && prefix.length > 0) {
             return [...prefix, ...lineRuns];
         }
@@ -709,8 +729,8 @@ export function selectChatLines(state, maxWidth = 80) {
         const messageLines = buildChatMessageLines(message, maxWidth);
         appendChatBlockLines(lines, messageLines);
         const nextMessage = messages[index + 1];
-        if (nextMessage && shouldInsertChatSpacer(message, nextMessage)) {
-            lines.push([{ text: "", color: null }]);
+        if (nextMessage && flattenLineText(lines[lines.length - 1]).trim().length > 0) {
+            lines.push(createBlankLine());
         }
     }
     return lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }];

@@ -88,7 +88,9 @@ When the app includes the shipped browser portal:
   - `PORTAL_AUTH_PROVIDER=entra`
   - `PORTAL_AUTH_ENTRA_TENANT_ID=<tenant-id>`
   - `PORTAL_AUTH_ENTRA_CLIENT_ID=<client-id>`
+  - `PORTAL_AUTHZ_ADMIN_GROUPS=admin1@contoso.com,admin2@contoso.com` and/or `PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com` as comma-delimited email allowlists when authz gating is needed
   - register the portal ingress URL as the SPA redirect URI
+- push portal auth settings into `copilot-runtime-secrets` using the canonical `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` keys only
 - if the user wants another provider such as AWS IAM, call out that the portal core supports add-on auth providers and keep the deployment contract separated from Entra-specific instructions
 
 ## AKS Cross-Cluster Guidance

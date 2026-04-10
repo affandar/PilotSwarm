@@ -153,6 +153,8 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
             loadingCopy: "Connecting the shared workspace and live session feeds...",
         },
         auth: {
+            provider: null,
+            providers: {},
             signInTitle: "Sign in to PilotSwarm",
             signInMessage: null,
             signInLabel: "Sign In",
@@ -215,6 +217,8 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
                     loadingCopy: firstNonEmptyString(portalUi.loadingCopy, portal.loadingCopy, defaults.ui.loadingCopy) || defaults.ui.loadingCopy,
                 },
                 auth: {
+                    provider: firstNonEmptyString(portalAuth.provider, portal.provider),
+                    providers: getObject(portalAuth.providers),
                     signInTitle: firstNonEmptyString(portalAuth.signInTitle, portal.signInTitle, `Sign in to ${title}`) || `Sign in to ${title}`,
                     signInMessage: firstNonEmptyString(portalAuth.signInMessage, portal.signInMessage, defaults.auth.signInMessage),
                     signInLabel: firstNonEmptyString(portalAuth.signInLabel, defaults.auth.signInLabel) || defaults.auth.signInLabel,

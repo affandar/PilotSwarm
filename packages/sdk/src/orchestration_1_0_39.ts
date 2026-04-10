@@ -201,25 +201,25 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.40).
+ * Flat event loop durable session orchestration (v1.0.39).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = "1.0.40";
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.39";
 
-export function* durableSessionOrchestration_1_0_40(
+export function* durableSessionOrchestration_1_0_39(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.40] ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.39] ${message}`);
     }
-    const dehydrateThreshold = input.dehydrateThreshold ?? 60;
-    const idleTimeout = input.idleTimeout ?? 60;
+    const dehydrateThreshold = input.dehydrateThreshold ?? 30;
+    const idleTimeout = input.idleTimeout ?? 30;
     const inputGracePeriod = input.inputGracePeriod ?? 30;
     const checkpointInterval = input.checkpointInterval ?? -1;
     const rehydrationMessage = input.rehydrationMessage;
@@ -1983,13 +1983,9 @@ export function* durableSessionOrchestration_1_0_40(
 
                 if (cronSchedule) {
                     const activeCron = { ...cronSchedule };
-                    const cronPlan = planWaitHandling({
-                        blobEnabled,
-                        seconds: activeCron.intervalSeconds,
-                        dehydrateThreshold,
-                    });
-                    if (cronPlan.shouldDehydrate) {
-                        yield* dehydrateForNextTurn("cron", cronPlan.resetAffinityOnDehydrate);
+                    const shouldDehydrate = blobEnabled;
+                    if (shouldDehydrate) {
+                        yield* dehydrateForNextTurn("cron", true);
                     }
                     yield manager.recordSessionEvent(input.sessionId, [{
                         eventType: "session.cron_started",
@@ -2002,14 +1998,14 @@ export function* durableSessionOrchestration_1_0_40(
                         waitReason: activeCron.reason,
                         waitStartedAt: cronStartedAt,
                     });
-                    if (!cronPlan.shouldDehydrate) yield* maybeCheckpoint();
+                    if (!shouldDehydrate) yield* maybeCheckpoint();
 
                     activeTimer = {
                         deadlineMs: cronStartedAt + activeCron.intervalSeconds * 1000,
                         originalDurationMs: activeCron.intervalSeconds * 1000,
                         reason: activeCron.reason,
                         type: "cron",
-                        shouldRehydrate: cronPlan.shouldDehydrate,
+                        shouldRehydrate: shouldDehydrate,
                     };
                     return;
                 }
