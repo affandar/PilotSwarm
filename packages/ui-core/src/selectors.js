@@ -2906,3 +2906,13 @@ export function selectThemePickerModal(state, maxWidth = 80) {
         detailsLines,
     };
 }
+
+export function selectConfirmModal(state) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "confirm") return null;
+    return {
+        title: modal.title || "Confirm",
+        message: modal.message || "Are you sure?",
+        confirmLabel: modal.confirmLabel || "Confirm",
+    };
+}

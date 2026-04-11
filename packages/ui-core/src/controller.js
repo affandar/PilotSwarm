@@ -2425,6 +2425,19 @@ export class PilotSwarmUiController {
     async confirmModal() {
         const modal = this.getState().ui.modal;
         if (!modal) return;
+        if (modal.type === "confirm") {
+            const previousFocus = modal.previousFocus;
+            this.dispatch({ type: "ui/modal", modal: null });
+            if (previousFocus) this.setFocus(previousFocus);
+            if (modal.action === "cancelSession") {
+                await this.cancelActiveSession({ confirmed: true });
+            } else if (modal.action === "completeSession") {
+                await this.completeActiveSession("Completed by user", { confirmed: true });
+            } else if (modal.action === "deleteSession") {
+                await this.deleteActiveSession({ confirmed: true });
+            }
+            return;
+        }
         if (modal.type === "artifactUpload") {
             await this.confirmArtifactUploadModal();
             return;
@@ -3342,15 +3355,32 @@ export class PilotSwarmUiController {
         return loadPromise;
     }
 
-    async cancelActiveSession() {
+    async cancelActiveSession({ confirmed = false } = {}) {
         const sessionId = this.getState().sessions.activeSessionId;
         if (!sessionId) return;
+        if (!confirmed) {
+            const session = this.getState().sessions.byId[sessionId];
+            const label = session?.title || sessionId.slice(0, 8);
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "confirm",
+                    title: "Cancel Session",
+                    message: `Cancel session "${label}"? The session will stop processing.`,
+                    confirmLabel: "Cancel Session",
+                    action: "cancelSession",
+                    sessionId,
+                    previousFocus: this.getState().ui.focusRegion,
+                },
+            });
+            return;
+        }
         await this.transport.cancelSession(sessionId);
         this.dispatch({ type: "ui/status", text: `Cancelled ${sessionId.slice(0, 8)}` });
         await this.refreshSessions();
     }
 
-    async completeActiveSession(reason = "Completed by user") {
+    async completeActiveSession(reason = "Completed by user", { confirmed = false } = {}) {
         const sessionId = this.getState().sessions.activeSessionId;
         if (!sessionId) return;
         if (typeof this.transport.completeSession !== "function") {
@@ -3361,6 +3391,23 @@ export class PilotSwarmUiController {
         const activeSession = this.getState().sessions.byId[sessionId];
         if (activeSession?.status === "completed" && !activeSession?.cronActive && !activeSession?.cronInterval) {
             this.dispatch({ type: "ui/status", text: `${sessionId.slice(0, 8)} is already completed` });
+            return;
+        }
+
+        if (!confirmed) {
+            const label = activeSession?.title || sessionId.slice(0, 8);
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "confirm",
+                    title: "Complete Session",
+                    message: `Complete session "${label}"? This will cascade to all sub-agents.`,
+                    confirmLabel: "Complete",
+                    action: "completeSession",
+                    sessionId,
+                    previousFocus: this.getState().ui.focusRegion,
+                },
+            });
             return;
         }
 
@@ -3383,9 +3430,26 @@ export class PilotSwarmUiController {
         }
     }
 
-    async deleteActiveSession() {
+    async deleteActiveSession({ confirmed = false } = {}) {
         const sessionId = this.getState().sessions.activeSessionId;
         if (!sessionId) return;
+        if (!confirmed) {
+            const session = this.getState().sessions.byId[sessionId];
+            const label = session?.title || sessionId.slice(0, 8);
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "confirm",
+                    title: "Delete Session",
+                    message: `Delete session "${label}"? This action cannot be undone.`,
+                    confirmLabel: "Delete",
+                    action: "deleteSession",
+                    sessionId,
+                    previousFocus: this.getState().ui.focusRegion,
+                },
+            });
+            return;
+        }
         await this.transport.deleteSession(sessionId);
         this.dispatch({ type: "ui/status", text: `Deleted ${sessionId.slice(0, 8)}` });
         await this.refreshSessions();

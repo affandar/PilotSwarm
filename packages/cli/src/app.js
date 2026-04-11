@@ -281,6 +281,17 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
                 return;
             }
+            if (modal.type === "confirm") {
+                if (key.escape || input === "n" || input === "q") {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (key.return || input === "y") {
+                    controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
+                    return;
+                }
+                return;
+            }
             if (modal.type === "renameSession" || modal.type === "artifactUpload") {
                 if (key.escape) {
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});

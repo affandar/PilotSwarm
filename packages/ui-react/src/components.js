@@ -20,6 +20,7 @@ import {
     selectSessionAgentPickerModal,
     selectStatusBar,
     selectThemePickerModal,
+    selectConfirmModal,
     selectVisibleSessionRows,
 } from "pilotswarm-ui-core";
 import { useUiPlatform } from "./platform.js";
@@ -49,6 +50,46 @@ function shallowEqualArray(left, right, itemEqual = Object.is) {
         if (!itemEqual(left[index], right[index])) return false;
     }
     return true;
+}
+
+function countWrappedTextLines(text, width) {
+    const safeWidth = Math.max(1, Number(width) || 1);
+    const value = String(text || "");
+    if (!value) return 1;
+
+    const segments = value.split("\n");
+    let total = 0;
+
+    for (const segment of segments) {
+        if (!segment) {
+            total += 1;
+            continue;
+        }
+
+        let start = 0;
+        while (start < segment.length) {
+            const maxEnd = Math.min(start + safeWidth, segment.length);
+            let end = maxEnd;
+
+            if (maxEnd < segment.length) {
+                for (let index = maxEnd - 1; index > start; index -= 1) {
+                    if (!/\s/u.test(segment[index] || "")) continue;
+                    if (!/\S/u.test(segment[index - 1] || "")) continue;
+                    end = index;
+                    break;
+                }
+            }
+
+            if (end <= start) end = maxEnd;
+            total += 1;
+            start = end;
+            while (start < segment.length && /\s/u.test(segment[start] || "")) {
+                start += 1;
+            }
+        }
+    }
+
+    return Math.max(1, total);
 }
 
 function shallowEqualChatChrome(left, right) {
@@ -1189,6 +1230,61 @@ function HistoryFormatModalContainer({ controller }) {
     return React.createElement(HistoryFormatModal, { state });
 }
 
+function ConfirmModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectConfirmModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(52, Math.min(72, (viewport.width || 120) - 12));
+    const contentWidth = Math.max(24, width - 4);
+    const messageLineCount = countWrappedTextLines(modal.message, contentWidth);
+    const lines = [
+        [{ text: modal.message, color: "white" }],
+        [{ text: "", color: "gray" }],
+        [
+            { text: "Confirm:", color: "gray" },
+            { text: " Enter", color: "green", bold: true },
+            { text: ` or y to ${String(modal.confirmLabel || "confirm").toLowerCase()}`, color: "white" },
+        ],
+        [
+            { text: "Cancel :", color: "gray" },
+            { text: " Esc", color: "red", bold: true },
+            { text: " or n to cancel", color: "white" },
+        ],
+    ];
+    const height = Math.max(
+        7,
+        Math.min((viewport.height || 40) - 8, messageLineCount + 5),
+    );
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "yellow",
+                focused: true,
+                width,
+                height,
+                lines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ConfirmModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ConfirmModal, { state });
+}
+
 export function SharedPilotSwarmApp({ controller }) {
     const platform = useUiPlatform();
     const layoutState = useControllerSelector(controller, (state) => ({
@@ -1312,5 +1408,6 @@ export function SharedPilotSwarmApp({ controller }) {
         React.createElement(LogFilterModalContainer, { controller }),
         React.createElement(FilesFilterModalContainer, { controller }),
         React.createElement(HistoryFormatModalContainer, { controller }),
+        React.createElement(ConfirmModalContainer, { controller }),
     );
 }

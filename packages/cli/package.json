@@ -14,7 +14,7 @@
   },
   "scripts": {
     "build": "echo 'pilotswarm-cli: no build step (plain JS)'",
-    "prepack": "node -e \"const fs=require('fs');const cp=(s,d)=>{fs.mkdirSync(d,{recursive:true});for(const e of fs.readdirSync(s,{withFileTypes:true})){const sp=s+'/'+e.name,dp=d+'/'+e.name;e.isDirectory()?cp(sp,dp):fs.copyFileSync(sp,dp)}};for(const p of ['pilotswarm-ui-core','pilotswarm-ui-react']){const src='../'+p.replace('pilotswarm-','');const dst='node_modules/'+p;fs.rmSync(dst,{recursive:true,force:true});fs.mkdirSync(dst,{recursive:true});fs.copyFileSync(src+'/package.json',dst+'/package.json');fs.copyFileSync(src+'/README.md',dst+'/README.md');cp(src+'/src',dst+'/src')}\"",
+    "prepack": "node ./src/sync-workspace-ui.js",
     "start": "node ./bin/tui.js local --env ../../.env.remote",
     "start:remote": "node ./bin/tui.js remote --env ../../.env.remote",
     "clean": "true"
