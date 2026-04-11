@@ -28,6 +28,7 @@ import {
     selectSessionRows,
     selectStatusBar,
     selectThemePickerModal,
+    selectConfirmModal,
 } from "pilotswarm-ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 
@@ -2059,6 +2060,7 @@ function ModalLayer({ controller }) {
         historyFormat: selectHistoryFormatModal(state),
         renameSession: selectRenameSessionModal(state),
         artifactUpload: selectArtifactUploadModal(state),
+        confirm: selectConfirmModal(state),
         logsFilter: state.logs.filter,
         filesFilterState: state.files.filter,
         historyFormatState: state.executionHistory?.format || "pretty",
@@ -2105,6 +2107,26 @@ function ModalLayer({ controller }) {
                 }, confirmLabel)),
         ));
 
+    if (modal.type === "confirm" && modalState.confirm) {
+        const isDestructive = modal.action === "deleteSession";
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title" }, modalState.confirm.title),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                ),
+                React.createElement("div", { className: "ps-modal-body", style: { padding: "16px 20px" } },
+                    React.createElement("p", { style: { color: "#94a3b8", margin: 0 } }, modalState.confirm.message),
+                ),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
+                    React.createElement("button", {
+                        type: "button",
+                        className: `ps-modal-button ${isDestructive ? "is-danger" : "is-primary"}`,
+                        onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
+                    }, modalState.confirm.confirmLabel)),
+            ));
+    }
     if (modal.type === "themePicker" && modalState.themePicker) {
         return renderListModal(modalState.themePicker, "Apply Theme");
     }
@@ -2291,12 +2313,12 @@ function useKeyboardShortcuts(
             }
 
             if (modal && !editable) {
-                if (event.key === "Escape") {
+                if (event.key === "Escape" || (modal.type === "confirm" && event.key === "n")) {
                     event.preventDefault();
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
                     return;
                 }
-                if (event.key === "Enter") {
+                if (event.key === "Enter" || (modal.type === "confirm" && event.key === "y")) {
                     event.preventDefault();
                     controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
                     return;
