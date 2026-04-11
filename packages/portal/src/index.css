@@ -146,6 +146,16 @@ button {
   color: var(--ps-highlight-foreground);
 }
 
+.ps-modal-button.is-danger {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+}
+.ps-modal-button.is-danger:hover {
+  background: #ef4444;
+  border-color: #ef4444;
+}
+
 .portal-primary-button,
 .portal-secondary-button {
   padding: 10px 14px;
