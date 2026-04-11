@@ -19,6 +19,11 @@ What it does **not** have yet is a truly minimal, productized "try it now" entry
 
 This proposal introduces a new starter image: a **single Docker container** that can be run with only a GitHub token and a persistent data volume. By default, it also boots a local PostgreSQL instance inside the same container unless `DATABASE_URL` is explicitly provided.
 
+Blob storage is also optional:
+
+- if `AZURE_STORAGE_CONNECTION_STRING` is provided, the starter uses blob-backed dehydration and blob-backed artifacts
+- otherwise it uses the local filesystem under `/data`
+
 The starter image exposes two access paths to the same PilotSwarm runtime:
 
 - **Browser portal** via `http://localhost:3001`
@@ -35,6 +40,7 @@ The portal owns the embedded workers. The SSH TUI connects as a **client-only** 
   - `GITHUB_TOKEN`
   - a persistent filestore mount
   - optionally `DATABASE_URL`
+- Optionally accept blob storage configuration via environment variables.
 - Expose both:
   - browser-native portal on localhost
   - SSH-based TUI from the same container
@@ -87,6 +93,23 @@ docker run --rm \
   ghcr.io/affandar/pilotswarm-starter:latest
 ```
 
+### Optional Blob Storage
+
+If the user wants shared dehydration and shared artifact storage across containers:
+
+```bash
+docker run --rm \
+  -p 127.0.0.1:3001:3001 \
+  -p 127.0.0.1:2222:2222 \
+  -e GITHUB_TOKEN=... \
+  -e DATABASE_URL=postgresql://... \
+  -e AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net" \
+  -e AZURE_STORAGE_CONTAINER=pilotswarm-sessions \
+  -v pilotswarm-data:/data \
+  -v $HOME/.ssh/id_ed25519.pub:/run/pilotswarm/authorized_keys:ro \
+  ghcr.io/affandar/pilotswarm-starter:latest
+```
+
 ### What the User Gets
 
 After startup, the user can either:
@@ -126,6 +149,7 @@ Both surfaces connect to the same PilotSwarm instance:
 6. **Safe resource behavior**
    - Rotate logs.
    - Keep PostgreSQL private to the container unless explicitly externalized.
+   - Reuse the existing blob-store env contract instead of inventing starter-only storage knobs.
 
 ---
 
@@ -230,6 +254,11 @@ DATABASE_URL=postgresql://pilotswarm:pilotswarm@127.0.0.1:5432/pilotswarm
 
 This gives a real zero-to-first-chat path with no database prerequisite.
 
+Important:
+
+- containers using their own embedded local PostgreSQL instances are **not** part of the same cluster
+- each such container is an isolated PilotSwarm appliance
+
 ### External PostgreSQL
 
 If `DATABASE_URL` **is** provided:
@@ -243,6 +272,43 @@ This gives us the best of both worlds:
 
 - lowest-friction first run for new users
 - no dead-end for users who already have a managed PostgreSQL instance
+
+---
+
+## Artifact and Session Storage Behavior
+
+The starter image should follow the existing storage contract already used by the worker:
+
+- `AZURE_STORAGE_CONNECTION_STRING`
+- `AZURE_STORAGE_CONTAINER`
+
+### When Blob Storage Is Configured
+
+If `AZURE_STORAGE_CONNECTION_STRING` is present:
+
+- use Azure Blob-backed session dehydration
+- use Azure Blob-backed artifact storage
+- enable cross-container handoff for dehydrated sessions
+- make artifacts visible across all starter containers pointing at the same store
+
+### When Blob Storage Is Not Configured
+
+If `AZURE_STORAGE_CONNECTION_STRING` is absent:
+
+- use filesystem-backed artifacts under `/data/artifacts`
+- use filesystem-backed session snapshots/session-store data under `/data`
+- sessions and artifacts are local to that container's mounted volume
+
+This is the right default for a single-container starter, but it is **not** enough for a true shared multi-container cluster unless the containers also share a filesystem volume.
+
+### Why Reuse the Existing Env Vars
+
+The current worker already understands:
+
+- `AZURE_STORAGE_CONNECTION_STRING`
+- `AZURE_STORAGE_CONTAINER`
+
+Reusing those names avoids a second storage configuration dialect just for the starter image.
 
 ---
 
@@ -271,6 +337,13 @@ The starter image should treat `/data` as its filestore root.
 - `exports/` holds exported histories or user-downloadable bundles
 - `logs/` is the source for local log tailing
 - `postgres/` exists only when using embedded PostgreSQL
+
+If blob storage is configured, `/data` still remains useful for:
+
+- logs
+- exports
+- temporary session-state scratch
+- optional embedded PostgreSQL when not using an external DB
 
 ---
 
@@ -386,6 +459,8 @@ The container may still mirror logs to stdout for `docker logs`, but the in-prod
 ### Optional
 
 - `DATABASE_URL`
+- `AZURE_STORAGE_CONNECTION_STRING`
+- `AZURE_STORAGE_CONTAINER`
 - SSH authorized key mount
 
 ### Required Persistent Mount
@@ -418,6 +493,86 @@ The SSH-launched TUI must also inherit:
 - `PILOTSWARM_LOG_DIR`
 - `PS_MODEL_PROVIDERS_PATH`
 
+### Storage Selection Rules
+
+At startup:
+
+1. If `DATABASE_URL` is set:
+   - use external PostgreSQL
+2. Else:
+   - start embedded PostgreSQL and synthesize `DATABASE_URL`
+3. If `AZURE_STORAGE_CONNECTION_STRING` is set:
+   - use blob-backed dehydration + artifact storage
+   - respect `AZURE_STORAGE_CONTAINER` or default it to `copilot-sessions`
+4. Else:
+   - use local filesystem-backed dehydration/artifact storage under `/data`
+
+---
+
+## Multi-Container Behavior
+
+### Can Multiple Starter Containers Form a Cluster?
+
+Yes, **if** they share the right backing services.
+
+For multiple starter containers to behave as one logical PilotSwarm cluster, they must share:
+
+- the same `DATABASE_URL`
+- the same session schemas
+- the same blob storage configuration, or another truly shared artifact/session store
+
+In that shape, each container contributes:
+
+- one portal instance
+- one SSH entrypoint
+- two embedded workers
+
+and the workers all compete on the same durable orchestration/task hub.
+
+### What If They Do Not Share Postgres?
+
+If each container uses its own embedded local PostgreSQL:
+
+- they are **not** clustered
+- each container is its own isolated PilotSwarm deployment
+
+### What If They Share Postgres But Not Blob Storage?
+
+Then clustering is partial and operationally fragile:
+
+- workers can still share some durable orchestration work through PostgreSQL
+- but dehydrated sessions and artifacts are not truly portable across containers
+- sessions may become effectively pinned to the container whose local filesystem holds the needed state
+
+For a real multi-container cluster, shared blob storage should be considered the recommended path.
+
+### Portal URL Behavior
+
+If multiple all-in-one starter containers are run on the same Docker host and published directly:
+
+- each container needs a different published host port
+- for example `3001`, `3002`, `3003`
+
+If they are fronted by a reverse proxy or load balancer:
+
+- they can share one external hostname
+- the proxy routes requests to multiple backend containers
+
+For anything beyond a small experiment, one stable portal URL in front of multiple containers is the preferred user experience.
+
+### Practical Recommendation
+
+Technically, multiple starter containers can cluster. Operationally, this is more of a convenience scale-out path than the ideal long-term topology.
+
+The better production shape remains:
+
+- dedicated portal instances
+- dedicated worker instances
+- shared PostgreSQL
+- shared blob storage
+
+The starter cluster path is useful because it lets users scale from "one appliance" to "a few cooperating appliances" without changing images.
+
 ---
 
 ## Networking Contract
@@ -437,6 +592,31 @@ The docs should recommend:
 ```
 
 This makes the starter image localhost-first and reduces accidental exposure.
+
+### Who Assigns the Host Port?
+
+The host-side port is assigned by whoever starts the container.
+
+In plain Docker usage, that means the operator chooses it via `-p`:
+
+```bash
+docker run -p 3001:3001 ...
+```
+
+Here:
+
+- the left side is the host port
+- the right side is the container port
+
+If multiple starter containers are run directly on one host, the operator must choose distinct host ports for each published portal and SSH endpoint, for example:
+
+```bash
+docker run -p 3001:3001 -p 2222:2222 ...
+docker run -p 3002:3001 -p 2223:2222 ...
+docker run -p 3003:3001 -p 2224:2222 ...
+```
+
+If Docker Compose, a reverse proxy, or an orchestrator is used instead, that layer becomes responsible for assigning or routing the host-facing ports.
 
 ---
 
