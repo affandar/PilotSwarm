@@ -1,0 +1,51 @@
+FROM node:24-bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    NPM_CONFIG_UPDATE_NOTIFIER=false
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    g++ \
+    make \
+    openssh-server \
+    postgresql \
+    postgresql-client \
+    python3 \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install workspace dependencies first for better layer reuse.
+COPY package.json package-lock.json ./
+COPY scripts/postinstall.js ./scripts/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/portal/package.json ./packages/portal/
+COPY packages/ui-core/package.json ./packages/ui-core/
+COPY packages/ui-react/package.json ./packages/ui-react/
+
+RUN npm ci --force
+
+# Copy the runtime sources and starter appliance assets.
+COPY packages/sdk ./packages/sdk
+COPY packages/cli ./packages/cli
+COPY packages/portal ./packages/portal
+COPY packages/ui-core ./packages/ui-core
+COPY packages/ui-react ./packages/ui-react
+COPY deploy ./deploy
+
+RUN npm run build --workspace=packages/sdk \
+    && npm run build --workspace=packages/portal \
+    && useradd --create-home --shell /bin/bash pilotswarm \
+    && passwd -d pilotswarm \
+    && mkdir -p /data /run/pilotswarm /run/sshd /app/config \
+    && cp /app/deploy/config/model_providers.local-docker.json /app/config/model_providers.local-docker.json \
+    && chmod +x /app/deploy/bin/*.sh \
+    && chown -R pilotswarm:pilotswarm /home/pilotswarm /data /run/pilotswarm /app/packages/cli
+
+EXPOSE 3001 2222
+VOLUME ["/data"]
+
+ENTRYPOINT ["/app/deploy/bin/start-starter.sh"]

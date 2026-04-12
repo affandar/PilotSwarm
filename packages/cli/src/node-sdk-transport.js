@@ -13,7 +13,9 @@ import {
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
 
-const EXPORTS_DIR = path.join(os.homedir(), "pilotswarm-exports");
+const EXPORTS_DIR = path.resolve(
+    expandUserPath(process.env.PILOTSWARM_EXPORT_DIR || path.join(os.homedir(), "pilotswarm-exports")),
+);
 fs.mkdirSync(EXPORTS_DIR, { recursive: true });
 const K8S_SERVICE_ACCOUNT_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
 
@@ -218,6 +220,73 @@ function expandUserPath(filePath) {
         : value;
 }
 
+function getLocalLogDir() {
+    const configured = expandUserPath(process.env.PILOTSWARM_LOG_DIR || "");
+    return configured ? path.resolve(configured) : "";
+}
+
+function listLocalLogFiles(logDir) {
+    if (!logDir || !fileExists(logDir)) return [];
+    try {
+        return fs.readdirSync(logDir, { withFileTypes: true })
+            .filter((entry) => entry.isFile() && entry.name.endsWith(".log"))
+            .map((entry) => path.join(logDir, entry.name))
+            .sort();
+    } catch {
+        return [];
+    }
+}
+
+function readRecentLogLines(filePath, maxBytes = 128 * 1024, maxLines = 200) {
+    try {
+        const stats = fs.statSync(filePath);
+        if (!stats.isFile() || stats.size <= 0) return [];
+        const fd = fs.openSync(filePath, "r");
+        try {
+            const bytesToRead = Math.min(stats.size, maxBytes);
+            const buffer = Buffer.alloc(bytesToRead);
+            fs.readSync(fd, buffer, 0, bytesToRead, stats.size - bytesToRead);
+            let text = buffer.toString("utf8");
+            if (bytesToRead < stats.size) {
+                const newlineIndex = text.indexOf("\n");
+                text = newlineIndex >= 0 ? text.slice(newlineIndex + 1) : "";
+            }
+            return text
+                .split(/\r?\n/u)
+                .map((line) => line.trimEnd())
+                .filter(Boolean)
+                .slice(-maxLines);
+        } finally {
+            fs.closeSync(fd);
+        }
+    } catch {
+        return [];
+    }
+}
+
+function readLogChunk(filePath, start, end) {
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return "";
+    try {
+        const fd = fs.openSync(filePath, "r");
+        try {
+            const length = end - start;
+            const buffer = Buffer.alloc(length);
+            const bytesRead = fs.readSync(fd, buffer, 0, length, start);
+            return buffer.toString("utf8", 0, bytesRead);
+        } finally {
+            fs.closeSync(fd);
+        }
+    } catch {
+        return "";
+    }
+}
+
+function getLocalLogPollIntervalMs() {
+    const value = Number.parseInt(process.env.PILOTSWARM_LOG_POLL_INTERVAL_MS || "", 10);
+    if (Number.isFinite(value) && value >= 50) return value;
+    return 500;
+}
+
 function guessArtifactContentType(filename) {
     const ext = path.extname(String(filename || "")).toLowerCase();
     if (ext === ".md" || ext === ".markdown" || ext === ".mdx") return "text/markdown";
@@ -388,6 +457,17 @@ export class NodeSdkTransport {
     }
 
     getLogConfig() {
+        const localLogDir = getLocalLogDir();
+        if (localLogDir) {
+            const exists = fileExists(localLogDir);
+            return {
+                available: exists,
+                availabilityReason: exists
+                    ? ""
+                    : `Log tailing disabled: local log directory ${JSON.stringify(localLogDir)} does not exist.`,
+            };
+        }
+
         const hasInClusterConfig = hasInClusterK8sAccess();
         const hasKubectlConfig = hasExplicitKubectlConfig();
         if (hasInClusterConfig) {
@@ -970,9 +1050,102 @@ export class NodeSdkTransport {
         });
     }
 
+    startLocalLogProcess() {
+        const logDir = getLocalLogDir();
+        if (!logDir || this.logTailHandle) return;
+
+        const handle = {
+            stopped: false,
+            files: new Map(),
+            interval: null,
+            stop: () => {
+                if (handle.stopped) return;
+                handle.stopped = true;
+                if (handle.interval) {
+                    clearInterval(handle.interval);
+                    handle.interval = null;
+                }
+                handle.files.clear();
+            },
+        };
+        this.logTailHandle = handle;
+
+        const emitLine = (filePath, line) => {
+            const text = String(line || "").trim();
+            if (!text) return;
+            const pseudoPod = path.basename(filePath, path.extname(filePath));
+            this.logEntryCounter += 1;
+            this.emitLogEntry(buildLogEntry(`[pod/${pseudoPod}] ${text}`, this.logEntryCounter));
+        };
+
+        const refresh = () => {
+            if (handle.stopped || this.logTailHandle !== handle) return;
+            for (const filePath of listLocalLogFiles(logDir)) {
+                let state = handle.files.get(filePath);
+                let stats;
+                try {
+                    stats = fs.statSync(filePath);
+                } catch {
+                    continue;
+                }
+                if (!stats.isFile()) continue;
+
+                if (!state) {
+                    state = {
+                        position: stats.size,
+                        inode: stats.ino,
+                        buffer: "",
+                    };
+                    handle.files.set(filePath, state);
+                    for (const line of readRecentLogLines(filePath)) {
+                        emitLine(filePath, line);
+                    }
+                    state.position = stats.size;
+                    state.inode = stats.ino;
+                    continue;
+                }
+
+                if (state.inode !== stats.ino || stats.size < state.position) {
+                    state.position = 0;
+                    state.buffer = "";
+                    state.inode = stats.ino;
+                }
+
+                if (stats.size <= state.position) continue;
+
+                const chunk = readLogChunk(filePath, state.position, stats.size);
+                state.position = stats.size;
+                if (!chunk) continue;
+                const combined = state.buffer + chunk;
+                const lines = combined.split(/\r?\n/u);
+                state.buffer = lines.pop() || "";
+                for (const line of lines) {
+                    emitLine(filePath, line);
+                }
+            }
+        };
+
+        try {
+            refresh();
+            handle.interval = setInterval(refresh, getLocalLogPollIntervalMs());
+            if (typeof handle.interval.unref === "function") {
+                handle.interval.unref();
+            }
+        } catch (error) {
+            this.logTailHandle = null;
+            handle.stop();
+            this.emitSyntheticLogMessage(error?.message || String(error), "error", "local-log");
+        }
+    }
+
     startLogProcess() {
         const config = this.getLogConfig();
         if (!config.available || this.logProc || this.logTailHandle) return;
+
+        if (getLocalLogDir()) {
+            this.startLocalLogProcess();
+            return;
+        }
 
         if (hasInClusterK8sAccess()) {
             this.startInClusterLogProcess();

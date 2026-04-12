@@ -630,8 +630,11 @@ function summarizeSystemNoticeText(text) {
         .replace(/\s+/g, " ")
         .trim();
     if (!normalized) return "System notice.";
-    if (normalized.startsWith("The session was dehydrated and has been rehydrated on a new worker.")) {
-        return "Session rehydrated on a new worker.";
+    const rehydratedMatch = /^The session was dehydrated and has been rehydrated on a new worker(?: \(([^)]+)\))?\./.exec(normalized);
+    if (rehydratedMatch) {
+        return rehydratedMatch[1]
+            ? `Session rehydrated on a new worker (${rehydratedMatch[1]}).`
+            : "Session rehydrated on a new worker.";
     }
 
     const sentenceMatch = /^(.{1,160}?[.!?])(?:\s|$)/.exec(normalized);

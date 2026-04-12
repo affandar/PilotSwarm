@@ -15,6 +15,8 @@
  *   LOG_LEVEL                       — Tracing level (default: "info")
  *   AZURE_STORAGE_CONNECTION_STRING — Blob storage for session dehydration
  *   AZURE_STORAGE_CONTAINER         — Blob container name (default: "copilot-sessions")
+ *   SESSION_STATE_DIR               — Shared session scratch directory
+ *   PS_MODEL_PROVIDERS_PATH         — Explicit model provider config path
  *   POD_NAME                        — K8s pod name (default: hostname)
  *   PLUGIN_DIRS                     — Comma-separated plugin directories (default: /app/plugin)
  *
@@ -41,6 +43,10 @@ if (pluginDirs.length === 0 && fs.existsSync("/app/plugin/plugin.json")) {
 console.log(`[worker] Pod: ${podName}`);
 console.log(`[worker] Store: ${process.env.DATABASE_URL?.replace(/\/\/.*@/, "//***@")}`);
 if (pluginDirs.length > 0) console.log(`[worker] Plugin dirs: ${pluginDirs.join(", ")}`);
+if (process.env.SESSION_STATE_DIR) console.log(`[worker] Session state dir: ${process.env.SESSION_STATE_DIR}`);
+if (process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH) {
+    console.log(`[worker] Model providers: ${process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH}`);
+}
 
 // Model providers: auto-discovered from model_providers.json or env vars.
 // The worker loads them automatically — just log what it finds after start.
@@ -55,6 +61,8 @@ const worker = new PilotSwarmWorker({
     logLevel,
     blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
     blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
+    sessionStateDir: process.env.SESSION_STATE_DIR || undefined,
+    modelProvidersPath: process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH || undefined,
     workerNodeId: podName,
     systemMessage: SYSTEM_MESSAGE,
     pluginDirs,

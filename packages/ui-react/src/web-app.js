@@ -1617,11 +1617,22 @@ function ChatFocusOverlay({ controller, pane, onClose }) {
     }, content);
 }
 
-function ChatFocusWorkspace({ controller, openPane, onTogglePane, mobile = false }) {
+function ChatFocusWorkspace({ controller, openPane, onTogglePane, onExitFocus, mobile = false }) {
     const focusRegion = useControllerSelector(controller, (state) => state.ui.focusRegion);
 
-    return React.createElement("div", { className: "ps-chat-focus-shell" },
-        React.createElement("div", { className: "ps-chat-focus-rail" },
+    const rail = mobile
+        ? React.createElement("div", { className: "ps-chat-focus-rail" },
+            React.createElement("button", {
+                type: "button",
+                className: "ps-mini-button ps-chat-focus-button",
+                onClick: onExitFocus,
+            }, "Exit Focus"),
+            React.createElement("button", {
+                type: "button",
+                className: `ps-mini-button ps-chat-focus-button${openPane === "sessions" ? " is-active" : ""}`,
+                onClick: () => onTogglePane("sessions"),
+            }, "Sessions"))
+        : React.createElement("div", { className: "ps-chat-focus-rail" },
             CHAT_FOCUS_PANES.map((pane) => React.createElement("button", {
                 key: pane.id,
                 type: "button",
@@ -1632,7 +1643,10 @@ function ChatFocusWorkspace({ controller, openPane, onTogglePane, mobile = false
             React.createElement("div", { className: "ps-chat-focus-status" },
                 openPane
                     ? `Focused: ${CHAT_FOCUS_PANES.find((pane) => pane.id === openPane)?.label || openPane}`
-                    : `Focused: ${focusRegion === "prompt" ? "Prompt" : "Chat"}`)),
+                    : `Focused: ${focusRegion === "prompt" ? "Prompt" : "Chat"}`));
+
+    return React.createElement("div", { className: "ps-chat-focus-shell" },
+        rail,
         React.createElement("div", { className: "ps-chat-focus-body" },
             React.createElement(ChatPane, { controller, mobile, fullWidth: true }),
             React.createElement(ChatFocusOverlay, {
@@ -2692,6 +2706,7 @@ export function PilotSwarmWebApp({ controller }) {
         controller,
         openPane: chatFocusPane,
         onTogglePane: toggleChatFocusPane,
+        onExitFocus: toggleChatFocusMode,
         mobile,
     });
     const fullscreenWorkspace = React.createElement("div", { className: "ps-workspace-full" },
@@ -2711,7 +2726,7 @@ export function PilotSwarmWebApp({ controller }) {
     });
 
     return React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
-        React.createElement(Toolbar, {
+        !(mobile && chatFocusMode) ? React.createElement(Toolbar, {
             controller,
             mobile,
             onToggleLegend: () => setShowKeyLegend((current) => !current),
@@ -2719,7 +2734,7 @@ export function PilotSwarmWebApp({ controller }) {
             chatFocusMode,
             onToggleChatFocus: toggleChatFocusMode,
             chatFocusDisabled: filesFullscreenActive,
-        }),
+        }) : null,
         React.createElement("div", { className: "ps-workspace" },
             filesFullscreenActive
                 ? fullscreenWorkspace

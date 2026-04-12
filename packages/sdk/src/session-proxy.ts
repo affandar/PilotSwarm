@@ -21,6 +21,19 @@ function normalizePromptText(text?: string): string {
     return String(text || "").replace(/\r\n/g, "\n").trim();
 }
 
+function decorateRehydrationSystemPrompt(text?: string, workerNodeId?: string): string | undefined {
+    if (!text || !workerNodeId) return text;
+
+    const rehydrationPrefix = "The session was dehydrated and has been rehydrated on a new worker";
+    if (!text.startsWith(`${rehydrationPrefix}.`)) return text;
+    if (text.startsWith(`${rehydrationPrefix} (${workerNodeId}).`)) return text;
+
+    return text.replace(
+        `${rehydrationPrefix}.`,
+        `${rehydrationPrefix} (${workerNodeId}).`,
+    );
+}
+
 function isInternalSystemPrompt(text?: string): boolean {
     const normalized = normalizePromptText(text);
     if (!normalized) return false;
@@ -839,9 +852,13 @@ export function registerActivities(
             const isTimerPrompt = /^The \d+ second wait is now complete\./i.test(input.prompt);
             const isRetryAttempt = (input.retryCount ?? 0) > 0;
             if (catalog && input.config.turnSystemPrompt && !isRetryAttempt) {
+                const persistedSystemPrompt = decorateRehydrationSystemPrompt(
+                    input.config.turnSystemPrompt,
+                    workerNodeId,
+                );
                 catalog.recordEvents(input.sessionId, [{
                     eventType: "system.message",
-                    data: { content: input.config.turnSystemPrompt },
+                    data: { content: persistedSystemPrompt },
                 }], workerNodeId).catch((err: any) => {
                     activityCtx.traceInfo(`[runTurn] CMS recordEvent (system) failed: ${err}`);
                 });

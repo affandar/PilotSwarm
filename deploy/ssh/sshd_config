@@ -1,0 +1,29 @@
+Port 2222
+Protocol 2
+ListenAddress 0.0.0.0
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+PidFile /run/sshd.pid
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+PermitRootLogin no
+PermitEmptyPasswords no
+StrictModes yes
+AllowUsers pilotswarm
+X11Forwarding no
+AllowTcpForwarding no
+PermitTunnel no
+PrintMotd no
+PermitTTY yes
+ClientAliveInterval 30
+ClientAliveCountMax 3
+AcceptEnv TERM COLORTERM
+Subsystem sftp internal-sftp
+
+Match User pilotswarm
+    ForceCommand /app/deploy/bin/pilotswarm-tui.sh

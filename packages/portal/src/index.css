@@ -883,7 +883,6 @@ body.is-resizing-pane-y * {
   overflow-y: hidden;
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-x;
   width: fit-content;
   max-width: 100%;
 }
@@ -1588,11 +1587,22 @@ body.is-resizing-pane-y * {
     max-width: none;
   }
 
+  .ps-chat-focus-shell .ps-chat-table-wrap {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .ps-chat-focus-shell .ps-chat-table {
+    width: 100%;
+    table-layout: fixed;
+  }
+
   .ps-chat-focus-shell .ps-chat-table th,
   .ps-chat-focus-shell .ps-chat-table td {
-    white-space: nowrap;
-    word-break: normal;
-    overflow-wrap: normal;
+    min-width: 0;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 
   .ps-footer-shell {

@@ -1,0 +1,85 @@
+name: Publish Starter Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: Push image to Docker Hub
+        required: true
+        default: false
+        type: boolean
+      image_tag:
+        description: Optional extra tag, for example test or rc1
+        required: false
+        default: ""
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/pilotswarm-starter
+
+jobs:
+  build-and-publish:
+    name: Build starter image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'release' || inputs.push
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        env:
+          EXTRA_TAG: ${{ inputs.image_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tags=("${IMAGE_NAME}:sha-${GITHUB_SHA::12}")
+
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+            version_tag="${release_tag#v}"
+            tags+=("${IMAGE_NAME}:${release_tag}")
+            if [[ "${version_tag}" != "${release_tag}" ]]; then
+              tags+=("${IMAGE_NAME}:${version_tag}")
+            fi
+            tags+=("${IMAGE_NAME}:latest")
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${EXTRA_TAG}" ]]; then
+            tags+=("${IMAGE_NAME}:${EXTRA_TAG}")
+          fi
+
+          {
+            echo "tags<<EOF"
+            printf '%s\n' "${tags[@]}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build and optionally push starter image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.starter
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'release' || inputs.push }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

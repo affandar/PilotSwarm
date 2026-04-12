@@ -858,18 +858,62 @@ export class ManagedSession {
         let finalContent: string | undefined;
         const collectedEvents: CapturedEvent[] = [];
         const unsubscribers: (() => void)[] = [];
+        const toolEventMetadataByKey = new Map<string, { toolName?: string; arguments?: unknown }>();
+
+        function getToolEventKey(eventData: any): string | null {
+            if (!eventData || typeof eventData !== "object") return null;
+            if (typeof eventData.toolCallId === "string" && eventData.toolCallId.trim()) {
+                return `tool:${eventData.toolCallId}`;
+            }
+            if (typeof eventData.requestId === "string" && eventData.requestId.trim()) {
+                return `request:${eventData.requestId}`;
+            }
+            return null;
+        }
 
         const turnComplete = new Promise<void>((resolve, reject) => {
             // Catch-all event handler — captures every event and fires onEvent immediately.
             unsubscribers.push(
                 this.copilotSession.on((event: any) => {
                     const eventType = event.type ?? event.eventType ?? "unknown";
-                    const eventData = event.data ?? event;
+                    const rawEventData = event.data ?? event;
+                    let eventData = rawEventData;
 
-                    // Augment tool execution events with the durable session ID
-                    // so CMS consumers can correlate tool calls to durable sessions.
-                    if (eventType === "tool.execution_start" || eventType === "tool.execution_complete") {
-                        if (typeof eventData === "object" && eventData !== null) {
+                    if (typeof rawEventData === "object" && rawEventData !== null) {
+                        eventData = { ...rawEventData };
+
+                        const toolEventKey = getToolEventKey(eventData);
+                        const toolName = typeof eventData.toolName === "string" && eventData.toolName.trim()
+                            ? eventData.toolName
+                            : typeof eventData.name === "string" && eventData.name.trim()
+                                ? eventData.name
+                                : undefined;
+                        const toolArguments = eventData.arguments ?? eventData.args;
+
+                        if (toolEventKey && (toolName || toolArguments !== undefined)) {
+                            const previous = toolEventMetadataByKey.get(toolEventKey) || {};
+                            toolEventMetadataByKey.set(toolEventKey, {
+                                toolName: toolName ?? previous.toolName,
+                                arguments: toolArguments !== undefined ? toolArguments : previous.arguments,
+                            });
+                        }
+
+                        if (toolEventKey) {
+                            const metadata = toolEventMetadataByKey.get(toolEventKey);
+                            if (metadata?.toolName && !eventData.toolName && !eventData.name) {
+                                eventData.toolName = metadata.toolName;
+                            }
+                            if (metadata?.arguments !== undefined && eventData.arguments == null && eventData.args == null) {
+                                eventData.arguments = metadata.arguments;
+                            }
+                        }
+
+                        if (
+                            eventType === "tool.execution_start"
+                            || eventType === "tool.execution_complete"
+                            || eventType === "tool.execution_partial_result"
+                            || eventType.startsWith("external_tool.")
+                        ) {
                             eventData.durableSessionId = durableSessionId;
                         }
                     }

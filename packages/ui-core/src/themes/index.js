@@ -9,6 +9,7 @@ import tokyoNightTheme from "./tokyo-night.js";
 import gruvboxDarkTheme from "./gruvbox-dark.js";
 import solarizedDarkTheme from "./solarized-dark.js";
 import noctisTheme from "./noctis.js";
+import noctisObscuroTheme from "./noctis-obscuro.js";
 import noctisViolaTheme from "./noctis-viola.js";
 import darkHighContrastTheme from "./dark-high-contrast.js";
 
@@ -24,9 +25,10 @@ const THEMES = Object.freeze([
     gruvboxDarkTheme,
     solarizedDarkTheme,
     noctisTheme,
+    noctisObscuroTheme,
     noctisViolaTheme,
     darkHighContrastTheme,
-]);
+].sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: "base" })));
 
 const THEME_MAP = new Map(THEMES.map((theme) => [theme.id, theme]));
 

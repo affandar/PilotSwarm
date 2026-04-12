@@ -258,19 +258,33 @@ function formatEventSnippet(event, maxLen = 96) {
 }
 
 function formatToolActivityRuns(time, event, phase = "start") {
-    const toolName = event?.data?.toolName || event?.data?.name || "tool";
+    const toolCallId = typeof event?.data?.toolCallId === "string" ? event.data.toolCallId : "";
+    const requestId = typeof event?.data?.requestId === "string" ? event.data.requestId : "";
+    const toolName = event?.data?.toolName
+        || event?.data?.name
+        || (toolCallId ? `tool call ${toolCallId.slice(0, 8)}` : requestId ? `tool request ${requestId.slice(0, 8)}` : "tool");
     const args = event?.data?.arguments || event?.data?.args;
     const durableSessionId = event?.data?.durableSessionId;
     const summary = formatToolArgsSummary(toolName, args);
+    const phasePrefix = phase === "start"
+        ? "▶"
+        : phase === "partial"
+            ? "…"
+            : "✓";
+    const phaseColor = phase === "start"
+        ? "yellow"
+        : phase === "partial"
+            ? "cyan"
+            : "green";
 
     return [
         ...buildActivityPrefix(time),
         {
-            text: phase === "start" ? `▶ ${toolName}${summary}` : `✓ ${toolName}`,
-            color: phase === "start" ? "yellow" : "green",
+            text: `${phasePrefix} ${toolName}${summary}`,
+            color: phaseColor,
         },
         ...(durableSessionId
-            ? [{ text: ` [${shortSessionId(durableSessionId)}]`, color: "gray" }]
+            ? [{ text: ` [sess ${shortSessionId(durableSessionId)}]`, color: "gray" }]
             : []),
     ];
 }
@@ -296,6 +310,10 @@ function formatActivity(event) {
 
         case "tool.execution_complete":
             runs = formatToolActivityRuns(time, event, "complete");
+            break;
+
+        case "tool.execution_partial_result":
+            runs = formatToolActivityRuns(time, event, "partial");
             break;
 
         case "assistant.reasoning":

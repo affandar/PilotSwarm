@@ -6,7 +6,7 @@ import { selectStatusBar, selectThemePickerModal } from "../../../ui-core/src/se
 import { createInitialState } from "../../../ui-core/src/state.js";
 import { createStore } from "../../../ui-core/src/store.js";
 import { DEFAULT_THEME_ID, listThemes } from "../../../ui-core/src/themes/index.js";
-import { assertEqual, assertIncludes, assertNotNull } from "../helpers/assertions.js";
+import { assert, assertEqual, assertIncludes, assertNotNull } from "../helpers/assertions.js";
 
 function createController() {
     const transport = {
@@ -40,6 +40,11 @@ describe("theme picker UI behavior", () => {
         assertEqual(modal.type, "themePicker", "modal type should be themePicker");
         assertEqual(modal.items.length, listThemes().length, "theme picker should list all shared themes");
         assertEqual(modal.items[modal.selectedIndex]?.id, DEFAULT_THEME_ID, "current theme should be preselected");
+        assertNotNull(modal.items.find((theme) => theme.id === "noctis-obscuro"), "theme picker should include Noctis Obscuro");
+
+        const labels = modal.items.map((theme) => theme.label);
+        const sortedLabels = [...labels].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+        assert(JSON.stringify(labels) === JSON.stringify(sortedLabels), "theme picker should list themes alphabetically");
 
         const selector = selectThemePickerModal(state);
         assertNotNull(selector, "theme picker selector should render");

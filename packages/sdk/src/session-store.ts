@@ -60,7 +60,40 @@ async function waitForPath(pathToCheck: string, timeoutMs = 5_000, pollMs = 100)
     return fs.existsSync(pathToCheck);
 }
 
-const CORE_SESSION_FILES = ["events.jsonl", "workspace.yaml"];
+const LEGACY_SESSION_FILES = ["events.jsonl", "workspace.yaml"];
+const REQUIRED_SESSION_FILES = ["workspace.yaml"];
+const SESSION_LOCK_FILE = /^inuse\..+\.lock$/i;
+
+function isIgnoredSessionEntry(relativePath: string): boolean {
+    const baseName = path.basename(relativePath);
+    return SESSION_LOCK_FILE.test(baseName);
+}
+
+function collectSessionSnapshotEntries(sessionDir: string): string[] {
+    const entries: string[] = [];
+
+    function walk(currentDir: string, relativeDir = ""): void {
+        for (const dirent of fs.readdirSync(currentDir, { withFileTypes: true })) {
+            const relativePath = relativeDir ? path.join(relativeDir, dirent.name) : dirent.name;
+            if (isIgnoredSessionEntry(relativePath)) continue;
+
+            const absolutePath = path.join(currentDir, dirent.name);
+            const stat = fs.statSync(absolutePath);
+
+            if (dirent.isDirectory()) {
+                entries.push(`dir:${relativePath}:${stat.mtimeMs}`);
+                walk(absolutePath, relativePath);
+                continue;
+            }
+
+            entries.push(`file:${relativePath}:${stat.size}:${stat.mtimeMs}`);
+        }
+    }
+
+    walk(sessionDir);
+    entries.sort();
+    return entries;
+}
 
 async function waitForSessionSnapshot(
     sessionStateDir: string,
@@ -81,17 +114,39 @@ async function waitForSessionSnapshot(
             stableCount = 0;
             lastSignature = "";
         } else {
-            missing = CORE_SESSION_FILES
+            missing = REQUIRED_SESSION_FILES
                 .filter((file) => !fs.existsSync(path.join(sessionDir, file)))
                 .map((file) => `${sessionId}/${file}`);
 
             if (missing.length === 0) {
-                const signature = CORE_SESSION_FILES
-                    .map((file) => {
-                        const stat = fs.statSync(path.join(sessionDir, file));
-                        return `${file}:${stat.size}:${stat.mtimeMs}`;
-                    })
-                    .join("|");
+                const snapshotEntries = collectSessionSnapshotEntries(sessionDir);
+
+                // Support both the current Copilot session layout and older
+                // layouts that included events.jsonl. We intentionally ignore
+                // inuse.*.lock churn so active sessions can stabilize.
+                const hasCurrentLayoutSignal = snapshotEntries.some((entry) => {
+                    const relPath = entry.split(":")[1] || "";
+                    return relPath === "workspace.yaml"
+                        || relPath === "checkpoints"
+                        || relPath.startsWith("checkpoints/")
+                        || relPath === "files"
+                        || relPath.startsWith("files/")
+                        || relPath === "research"
+                        || relPath.startsWith("research/");
+                });
+                const hasLegacyLayoutSignal = LEGACY_SESSION_FILES.every((file) =>
+                    fs.existsSync(path.join(sessionDir, file)),
+                );
+
+                if (!hasCurrentLayoutSignal && !hasLegacyLayoutSignal) {
+                    missing = [`${sessionId}/workspace.yaml or legacy session files`];
+                    stableCount = 0;
+                    lastSignature = "";
+                    await new Promise((resolve) => setTimeout(resolve, pollMs));
+                    continue;
+                }
+
+                const signature = snapshotEntries.join("|");
 
                 if (signature === lastSignature) {
                     stableCount += 1;
@@ -112,6 +167,9 @@ async function waitForSessionSnapshot(
         await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
 
+    if (missing.length === 0) {
+        missing = [`${sessionId}/snapshot still changing`];
+    }
     return { ready: false, missing };
 }
 
