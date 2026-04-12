@@ -222,7 +222,7 @@ export function* durableSessionOrchestration_1_0_42(
     const idleTimeout = input.idleTimeout ?? 60;
     const inputGracePeriod = input.inputGracePeriod ?? 30;
     const checkpointInterval = input.checkpointInterval ?? -1;
-    const rehydrationMessage = input.rehydrationMessage;
+    let pendingRehydrationMessage = input.rehydrationMessage;
     const blobEnabled = input.blobEnabled ?? false;
     let needsHydration = input.needsHydration ?? false;
     let affinityKey = input.affinityKey ?? input.sessionId;
@@ -348,9 +348,10 @@ export function* durableSessionOrchestration_1_0_42(
 
     // ─── Helper: wrap prompt with resume context after dehydration ──
     function wrapWithResumeContext(userPrompt: string, extra?: string): string {
-        const base = rehydrationMessage ??
+        const base = pendingRehydrationMessage ??
             `The session was dehydrated and has been rehydrated on a new worker. ` +
             `The LLM conversation history is preserved.`;
+        pendingRehydrationMessage = undefined;
         const parts = [userPrompt, ``, `[SYSTEM: ${base}`];
         if (extra) parts.push(extra);
         parts.push(`]`);
@@ -439,11 +440,13 @@ export function* durableSessionOrchestration_1_0_42(
             requiredTool: overrideRequiredTool,
             systemPrompt: overrideSystemPrompt,
             bootstrapPrompt: overrideBootstrapPrompt,
+            rehydrationMessage: overrideRehydrationMessage,
             ...restOverrides
         } = overrides;
         const carriedPrompt = overridePrompt ?? pendingPrompt;
         const carriedRequiredTool = overrideRequiredTool ?? pendingRequiredTool;
         const carriedSystemPrompt = overrideSystemPrompt ?? pendingSystemPrompt;
+        const carriedRehydrationMessage = overrideRehydrationMessage ?? pendingRehydrationMessage;
         const promptForInput = carriedPrompt ?? (carriedSystemPrompt ? INTERNAL_SYSTEM_TURN_PROMPT : undefined);
         const bootstrapForInput = overrideBootstrapPrompt
             ?? (carriedPrompt ? bootstrapPrompt : carriedSystemPrompt ? true : undefined);
@@ -459,7 +462,7 @@ export function* durableSessionOrchestration_1_0_42(
             idleTimeout,
             inputGracePeriod,
             checkpointInterval,
-            rehydrationMessage,
+            ...(carriedRehydrationMessage ? { rehydrationMessage: carriedRehydrationMessage } : {}),
             nextSummarizeAt,
             taskContext,
             baseSystemMessage,

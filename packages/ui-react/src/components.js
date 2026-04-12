@@ -124,6 +124,17 @@ function formatProcessRssTitleRuns(rssBytes) {
     ];
 }
 
+function buildSessionTitleRightRuns(rssRuns, versionLabel = null) {
+    const titleRuns = [...(Array.isArray(rssRuns) ? rssRuns : [])];
+    const normalizedVersionLabel = typeof versionLabel === "string" ? versionLabel.trim() : "";
+    if (!normalizedVersionLabel) return titleRuns.length > 0 ? titleRuns : null;
+    if (titleRuns.length > 0) {
+        titleRuns.push({ text: "  ", color: "gray" });
+    }
+    titleRuns.push({ text: normalizedVersionLabel, color: "cyan", bold: true });
+    return titleRuns;
+}
+
 function useProcessRssTitleRuns(sampleIntervalMs = 2000) {
     const [rssBytes, setRssBytes] = React.useState(() => readProcessRssBytes());
 
@@ -236,9 +247,13 @@ function buildWorkspacePaneFrames(layout) {
     };
 }
 
-const SessionList = React.memo(function SessionList({ controller, maxRows, width, height, frame }) {
+const SessionList = React.memo(function SessionList({ controller, maxRows, width, height, frame, versionLabel = null }) {
     const platform = useUiPlatform();
     const rssTitleRuns = useProcessRssTitleRuns();
+    const titleRightRuns = React.useMemo(
+        () => buildSessionTitleRightRuns(rssTitleRuns, versionLabel),
+        [rssTitleRuns, versionLabel],
+    );
     const sessionView = useControllerSelector(controller, (state) => ({
         sessions: state.sessions,
         mode: state.connection?.mode || "local",
@@ -264,7 +279,7 @@ const SessionList = React.memo(function SessionList({ controller, maxRows, width
 
     return React.createElement(platform.Panel, {
         title: "Sessions",
-        titleRight: rssTitleRuns,
+        titleRight: titleRightRuns,
         color: "yellow",
         focused: sessionView.focused,
         width,
@@ -1285,7 +1300,7 @@ function ConfirmModalContainer({ controller }) {
     return React.createElement(ConfirmModal, { state });
 }
 
-export function SharedPilotSwarmApp({ controller }) {
+export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
     const platform = useUiPlatform();
     const layoutState = useControllerSelector(controller, (state) => ({
         paneAdjust: state.ui.layout?.paneAdjust ?? 0,
@@ -1341,6 +1356,7 @@ export function SharedPilotSwarmApp({ controller }) {
                         height: workspaceHeight,
                         maxRows: sessionRows,
                         frame: frames.fullscreenPane,
+                        versionLabel,
                     })
                     : fullscreenPaneActive === "chat"
                         ? React.createElement(ChatPane, {
@@ -1372,6 +1388,7 @@ export function SharedPilotSwarmApp({ controller }) {
                             height: layout.sessionPaneHeight,
                             maxRows: sessionRows,
                             frame: frames.sessions,
+                            versionLabel,
                         }),
                         React.createElement(ChatPane, {
                             controller,

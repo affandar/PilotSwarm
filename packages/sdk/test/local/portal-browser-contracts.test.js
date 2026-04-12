@@ -24,11 +24,15 @@ describe("portal browser contracts", () => {
     });
 
     it("keeps portal-only UI features aligned with browser constraints", () => {
+        const portalApp = readRepoFile("packages/portal/src/App.jsx");
         const webApp = readRepoFile("packages/ui-react/src/web-app.js");
+        const sharedTui = readRepoFile("packages/ui-react/src/components.js");
+        const cliApp = readRepoFile("packages/cli/src/app.js");
         const layout = readRepoFile("packages/ui-core/src/layout.js");
         const state = readRepoFile("packages/ui-core/src/state.js");
         const css = readRepoFile("packages/portal/src/index.css");
 
+        assertIncludes(portalApp, "portal-header-version", "portal header should render a version indicator near sign-out");
         assertIncludes(webApp, 'controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER)', "web app should expose new-session model selection");
         assertIncludes(webApp, "controller.uploadArtifactFiles(nextFiles)", "portal uploads should flow through the shared artifact-upload controller path");
         assert(!webApp.includes("controller.uploadPromptAttachmentFiles(nextFiles)"), "prompt composer should no longer own browser artifact uploads");
@@ -51,6 +55,9 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "controller.adjustSessionPaneSplit", "web app should support resizing the session list vertically");
         assertIncludes(layout, "sessionPaneAdjust", "layout computation should persist vertical session-pane adjustments");
         assertIncludes(state, "themeId: themeId || DEFAULT_THEME_ID", "shared initial state should honor persisted theme ids");
+        assertIncludes(sharedTui, "buildSessionTitleRightRuns", "shared TUI shell should compose RSS and version chrome");
+        assertIncludes(cliApp, "PILOTSWARM_CLI_VERSION_LABEL", "TUI host should pass its version label into the shared app");
+        assertIncludes(css, ".portal-header-version", "portal stylesheet should style the header version badge");
         assertIncludes(css, ".ps-workspace-full", "portal stylesheet should size the fullscreen files workspace");
         assertIncludes(css, ".ps-markdown-preview", "portal stylesheet should style markdown previews");
         assertIncludes(css, ".ps-chat-focus-body .ps-line", "chat focus mode should keep transcript lines wrapped within the viewport");

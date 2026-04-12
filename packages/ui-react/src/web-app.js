@@ -2080,6 +2080,22 @@ function ModalLayer({ controller }) {
         historyFormatState: state.executionHistory?.format || "pretty",
     }), shallowEqualObject);
     const modal = modalState.rawModal;
+    const renameInputRef = React.useRef(null);
+
+    React.useEffect(() => {
+        if (modal?.type !== "renameSession" || !modalState.renameSession) return;
+        const inputNode = renameInputRef.current;
+        if (!inputNode) return;
+        if (document.activeElement !== inputNode) {
+            try {
+                inputNode.focus({ preventScroll: true });
+            } catch {
+                inputNode.focus();
+            }
+        }
+        inputNode.setSelectionRange(modalState.renameSession.cursorIndex, modalState.renameSession.cursorIndex);
+    }, [modal?.type, modalState.renameSession?.cursorIndex, modalState.renameSession?.value]);
+
     if (!modal) return null;
 
     const close = () => controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
@@ -2161,10 +2177,11 @@ function ModalLayer({ controller }) {
                     React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
                 ),
                 React.createElement("input", {
+                    ref: renameInputRef,
                     className: "ps-modal-input",
                     value: modalState.renameSession.value,
                     placeholder: modalState.renameSession.placeholder,
-                    onChange: (event) => controller.setRenameSessionValue(event.currentTarget.value, event.currentTarget.selectionStart || event.currentTarget.value.length),
+                    onChange: (event) => controller.setRenameSessionValue(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length),
                     onKeyDown: (event) => {
                         if (event.key === "Enter") {
                             event.preventDefault();

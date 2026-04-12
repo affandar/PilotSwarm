@@ -2,6 +2,7 @@ import React from "react";
 import { createWebPilotSwarmController, PilotSwarmWebApp } from "pilotswarm-ui-react";
 import { BrowserPortalTransport } from "./browser-transport.js";
 import { usePortalAuth } from "./auth-client.js";
+import { PILOTSWARM_PORTAL_VERSION_LABEL } from "./version.js";
 
 const DEFAULT_PORTAL_LOGO_SVG = `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
@@ -267,7 +268,7 @@ function PortalForbidden({ branding, authUi, authConfig, error, onSignOut, shell
         ));
 }
 
-function PortalHeader({ account, authEnabled, branding, onSignOut }) {
+function PortalHeader({ account, authEnabled, branding, onSignOut, versionLabel = null }) {
     const name = account?.name || account?.username || "Signed in";
     const email = account?.username || account?.idTokenClaims?.preferred_username || "";
     return React.createElement("header", { className: "portal-header" },
@@ -282,13 +283,18 @@ function PortalHeader({ account, authEnabled, branding, onSignOut }) {
                             ? React.createElement("span", { className: "portal-header-email" }, email)
                             : null)
                     : React.createElement("span", { className: "portal-header-identity is-muted" }, "Auth disabled"))),
-        authEnabled
+        (authEnabled || versionLabel)
             ? React.createElement("div", { className: "portal-header-user" },
-                React.createElement("button", {
-                    type: "button",
-                    className: "portal-secondary-button",
-                    onClick: () => onSignOut().catch(() => {}),
-                }, "Sign Out"))
+                versionLabel
+                    ? React.createElement("span", { className: "portal-header-version" }, versionLabel)
+                    : null,
+                authEnabled
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "portal-secondary-button",
+                        onClick: () => onSignOut().catch(() => {}),
+                    }, "Sign Out")
+                    : null)
             : null,
     );
 }
@@ -331,6 +337,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             authEnabled: auth.authEnabled,
             branding: portal?.branding,
             onSignOut: auth.signOut,
+            versionLabel: PILOTSWARM_PORTAL_VERSION_LABEL,
         }),
         React.createElement("main", { className: "portal-main" },
             React.createElement(PilotSwarmWebApp, { controller })),

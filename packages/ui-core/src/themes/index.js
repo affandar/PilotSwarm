@@ -32,7 +32,7 @@ const THEMES = Object.freeze([
 
 const THEME_MAP = new Map(THEMES.map((theme) => [theme.id, theme]));
 
-export const DEFAULT_THEME_ID = draculaTheme.id;
+export const DEFAULT_THEME_ID = noctisObscuroTheme.id;
 
 export function listThemes() {
     return THEMES;
