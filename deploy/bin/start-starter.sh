@@ -18,6 +18,7 @@ DB_WAIT_SECONDS=${PILOTSWARM_DB_WAIT_SECONDS:-90}
 MODEL_PROVIDERS_PATH=${PS_MODEL_PROVIDERS_PATH:-/app/config/model_providers.local-docker.json}
 AUTHORIZED_KEYS_SOURCE=${AUTHORIZED_KEYS_PATH:-/run/pilotswarm/authorized_keys}
 PORTAL_AUTH_PROVIDER=${PORTAL_AUTH_PROVIDER:-none}
+SSH_PASSWORD=${PILOTSWARM_SSH_PASSWORD:-pilotswarm}
 
 mkdir -p "${DATA_DIR}" "${LOG_DIR}" "${SESSION_STATE_DIR}" "${ARTIFACT_DIR}" "${EXPORT_DIR}" /run/pilotswarm /run/sshd
 touch "${LOG_DIR}/starter.log"
@@ -27,20 +28,29 @@ if [[ -z "${GITHUB_TOKEN:-}" ]]; then
     exit 1
 fi
 
-copy_authorized_keys() {
+configure_ssh_access() {
     local target_dir=/home/pilotswarm/.ssh
     local target_file=${target_dir}/authorized_keys
     install -d -m 700 -o pilotswarm -g pilotswarm "${target_dir}"
+
+    echo "pilotswarm:${SSH_PASSWORD}" | chpasswd
+
+    if [[ -n "${PILOTSWARM_SSH_PASSWORD:-}" ]]; then
+        echo "[starter] Enabled SSH password login for user pilotswarm from PILOTSWARM_SSH_PASSWORD."
+    else
+        echo "[starter] Enabled default SSH password login for user pilotswarm (password: pilotswarm)."
+    fi
+
     if [[ -f "${AUTHORIZED_KEYS_SOURCE}" ]]; then
         cp "${AUTHORIZED_KEYS_SOURCE}" "${target_file}"
         chown pilotswarm:pilotswarm "${target_file}"
         chmod 600 "${target_file}"
-        echo "[starter] Installed SSH authorized_keys from ${AUTHORIZED_KEYS_SOURCE}"
+        echo "[starter] Installed SSH authorized_keys from ${AUTHORIZED_KEYS_SOURCE}; both key-based and password login are available."
     else
         : > "${target_file}"
         chown pilotswarm:pilotswarm "${target_file}"
         chmod 600 "${target_file}"
-        echo "[starter] No SSH authorized_keys file found at ${AUTHORIZED_KEYS_SOURCE}; portal will work, SSH logins will be denied."
+        echo "[starter] No SSH authorized_keys file found at ${AUTHORIZED_KEYS_SOURCE}; using password login fallback for local SSH access."
     fi
 }
 
@@ -135,13 +145,17 @@ prepare_directories() {
 main() {
     configure_database
     prepare_directories
-    copy_authorized_keys
+    configure_ssh_access
     ssh-keygen -A
     write_env
     render_supervisor_config
 
     echo "[starter] Portal: http://localhost:${PORT}"
-    echo "[starter] SSH TUI: ssh -p ${SSH_PORT} pilotswarm@localhost"
+    if [[ -n "${PILOTSWARM_SSH_PASSWORD:-}" ]]; then
+        echo "[starter] SSH TUI: ssh -p ${SSH_PORT} pilotswarm@localhost (password from PILOTSWARM_SSH_PASSWORD)"
+    else
+        echo "[starter] SSH TUI: ssh -p ${SSH_PORT} pilotswarm@localhost (default password: pilotswarm)"
+    fi
     echo "[starter] Logs: ${LOG_DIR}"
     exec /usr/bin/supervisord -n -c "${SUPERVISOR_CONF}"
 }
