@@ -14,7 +14,9 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 1. Inspect the release surface.
    - Run `git status --short`.
    - Check changed runtime, docs, templates, examples, and workflow files.
+   - Check the latest existing git tag with `git tag --sort=-version:refname | head`.
    - Check current package names and versions in `packages/sdk/package.json` and `packages/cli/package.json`.
+   - Report the current latest tag and the proposed next tag to the user before any tag is created.
    - Check whether each published workspace package has its own `README.md`.
 
 2. Verify feature-completeness around the change.
@@ -45,15 +47,18 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 
 4. Validate npm-release wiring.
    - Check `.github/workflows/publish-npm.yml`.
+   - Check `.github/workflows/publish-starter-docker.yml` if the starter appliance or Docker release path changed.
    - Confirm publish targets, access level, provenance flags, and required secrets still match the intended release.
    - Confirm each published package has correct `repository`, `homepage`, and `bugs` metadata for npm provenance verification.
    - Confirm built-in PilotSwarm plugins that must ship with the SDK are included by package `files` config.
    - Confirm package-local `README.md` files are actually present in `npm pack --dry-run` output for each workspace package.
-   - If package names, publish workflow wiring, or npm metadata changed, run the CI publish workflow in dry-run mode from `main` before tagging a real release.
+   - If package names, publish workflow wiring, Docker publish wiring, or npm metadata changed, run the relevant CI workflow in dry-run or manual mode from `main` before tagging a real release when practical.
 
 5. Prepare release notes for the user.
    - Summarize what changed.
    - List what was verified.
+   - State the current latest git tag and the proposed next tag.
+   - Ask whether the user wants the GitHub Release to trigger the starter Docker image publish as well.
    - Call out blockers or skipped checks explicitly.
 
 6. Commit and push only with explicit user approval.
@@ -65,6 +70,8 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
    - Create an annotated tag for the release version.
    - Push the commit and tag.
    - Create a **GitHub Release** from the tag using `gh release create`. The npm publish workflow (`publish-npm.yml`) triggers on `release: [published]`, **not** on tag push alone. Without a GitHub Release, the publish will not run.
+   - If the user opted in, note that the same GitHub Release should also trigger `.github/workflows/publish-starter-docker.yml`.
+   - If the user does not want the Docker starter published as part of the release, call that out explicitly and use the manual starter Docker workflow later if needed.
    - Include a concise release notes summary in the GitHub Release body.
    - If a manual workflow dispatch is used instead, report the exact inputs used.
 
@@ -85,6 +92,8 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 - `npm pack --dry-run` looks right
 - package-local `README.md` files are present for published workspaces
 - provenance metadata (`repository`, `homepage`, `bugs`) is correct
+- latest tag and proposed next tag were reported
+- Docker starter publish intent was confirmed with the user
 - commit, push, and tag are complete
 - publish workflow ran successfully
 

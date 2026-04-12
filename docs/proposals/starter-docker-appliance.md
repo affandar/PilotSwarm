@@ -2,7 +2,7 @@
 
 > **Status:** Proposal  
 > **Date:** 2026-04-10  
-> **Goal:** Provide an extremely simple first-run PilotSwarm experience via a single self-contained Docker container with browser access, SSH-accessible TUI, two embedded workers, container-local log tailing, and optional embedded PostgreSQL.
+> **Goal:** Provide an extremely simple first-run PilotSwarm experience via a single self-contained Docker container with browser access, SSH-accessible TUI, two separate headless worker processes, container-local log tailing, and optional embedded PostgreSQL.
 
 ---
 
@@ -11,7 +11,7 @@
 PilotSwarm already has the pieces for a great local experience:
 
 - a browser portal
-- embedded workers
+- headless workers
 - filesystem-backed artifacts and session state
 - a TUI that can run as a lightweight client
 
@@ -29,7 +29,7 @@ The starter image exposes two access paths to the same PilotSwarm runtime:
 - **Browser portal** via `http://localhost:3001`
 - **TUI over SSH** via `ssh -p 2222 pilotswarm@localhost`
 
-The portal owns the embedded workers. The SSH TUI connects as a **client-only** terminal against the same runtime and database, so both surfaces share sessions, artifacts, and agent state without starting competing worker pools.
+The container runs two separate headless PilotSwarm worker processes. Both the portal and the SSH TUI connect as clients against the same runtime and database, so both surfaces share sessions, artifacts, and agent state without either UI process owning a worker pool.
 
 ---
 
@@ -45,7 +45,7 @@ The portal owns the embedded workers. The SSH TUI connects as a **client-only** 
   - browser-native portal on localhost
   - SSH-based TUI from the same container
 - Keep the starter footprint intentionally small:
-  - exactly **2 embedded workers**
+  - exactly **2 worker processes**
   - only a small GHCP model catalog
 - Support container-local log tailing for both portal and TUI.
 - Rotate logs so the starter image does not slowly consume disk.
@@ -136,8 +136,9 @@ Both surfaces connect to the same PilotSwarm instance:
    - The browser portal is the primary first-run surface.
    - The TUI remains available for terminal-native users.
 
-3. **One worker pool**
-   - The container must not accidentally start separate embedded workers for the portal and the SSH TUI.
+3. **One worker pool, zero client-owned workers**
+   - The container should run a dedicated shared worker pool.
+   - The portal and the SSH TUI should both behave like clients.
 
 4. **Small and predictable**
    - Limit to 2 workers.
@@ -159,15 +160,22 @@ Both surfaces connect to the same PilotSwarm instance:
 Browser
   -> localhost:3001
   -> Portal Server
-  -> Embedded PilotSwarm runtime
+  -> client/runtime gateway
   -> PostgreSQL
+  -> shared artifact/session stores
 
 SSH
   -> localhost:2222
   -> sshd
   -> client-only TUI
   -> same PostgreSQL
-  -> same portal-owned runtime state
+  -> same shared artifact/session stores
+
+Workers
+  -> worker-a
+  -> worker-b
+  -> same PostgreSQL
+  -> same shared artifact/session stores
 ```
 
 ### Process Layout Inside the Container
@@ -175,10 +183,14 @@ SSH
 ```text
 starter container
 ├── portal server
-│   ├── local mode
-│   ├── WORKERS=2
-│   ├── filesystem artifacts/session scratch under /data
+│   ├── client-only mode
 │   └── writes logs to /data/logs/portal.log
+├── worker-a
+│   ├── headless PilotSwarm worker
+│   └── writes logs to /data/logs/worker-a.log
+├── worker-b
+│   ├── headless PilotSwarm worker
+│   └── writes logs to /data/logs/worker-b.log
 ├── sshd
 │   ├── key-based auth only
 │   ├── auto-launches TUI on login
@@ -194,29 +206,48 @@ starter container
 
 ---
 
-## Worker Ownership Model
+## Process Separation Model
 
-The starter image should use exactly one worker pool.
+The starter image should use exactly one shared worker pool, but the workers should run as their own processes.
 
 ### Portal
 
-The portal runs in:
+The portal runs as a **client-only** process:
 
-- `PORTAL_MODE=local`
-- `WORKERS=2`
-
-This makes the portal process the owner of the embedded workers.
-
-### SSH TUI
-
-The SSH-launched TUI must run as **client-only**:
-
-- `WORKERS=0`
+- no embedded workers
 - same `DATABASE_URL`
 - same model/provider configuration
 - same plugin and branding configuration
 
-This avoids a dangerous split-brain condition where browser sessions and TUI sessions each start their own embedded workers.
+### SSH TUI
+
+The SSH-launched TUI also runs as a **client-only** process:
+
+- no embedded workers
+- same `DATABASE_URL`
+- same model/provider configuration
+- same plugin and branding configuration
+
+### Workers
+
+The appliance runs exactly two separate worker processes under supervision, for example:
+
+- `worker-a`
+- `worker-b`
+
+Each worker points at the same:
+
+- `DATABASE_URL`
+- blob storage configuration, if present
+- plugin configuration
+- model-provider configuration
+
+This is a cleaner tiny-cluster model than having the portal own embedded workers:
+
+- the portal can restart without being the worker host
+- the TUI can connect exactly like any other client
+- the process topology more closely resembles a real shared-worker deployment
+- scaling out to multiple containers becomes conceptually straightforward
 
 ### Recommended TUI Behavior
 
@@ -312,6 +343,38 @@ Reusing those names avoids a second storage configuration dialect just for the s
 
 ---
 
+## Image Updates and Data Persistence
+
+Updating the Docker image does **not** delete persistent data by itself.
+
+Data survives image updates as long as it lives outside the container's ephemeral writable layer, for example in:
+
+- a named Docker volume such as `-v pilotswarm-data:/data`
+- a bind mount
+- an external PostgreSQL instance
+- external blob storage
+
+For the starter appliance, this means:
+
+- embedded PostgreSQL data persists if `/data/postgres` is on a persistent volume
+- filesystem artifacts persist if `/data/artifacts` is on a persistent volume
+- logs persist if `/data/logs` is on a persistent volume
+
+What does **not** persist automatically:
+
+- data written only into the container filesystem without a mounted volume
+- data from containers started with no persistent mount and then removed
+
+So the recommended update model is:
+
+1. stop the old container
+2. start a new container from the new image
+3. reuse the same mounted `/data` volume and the same external service configuration
+
+This lets the image be replaced while the durable state remains intact.
+
+---
+
 ## Storage Layout
 
 The starter image should treat `/data` as its filestore root.
@@ -354,7 +417,7 @@ The starter image should not rely on broad environment fallback for model provid
 Instead, it should bake a small explicit model catalog via:
 
 ```bash
-PS_MODEL_PROVIDERS_PATH=/app/config/model_providers.ghcp.json
+PS_MODEL_PROVIDERS_PATH=/app/config/model_providers.local-docker.json
 ```
 
 ### Initial Catalog
@@ -362,10 +425,17 @@ PS_MODEL_PROVIDERS_PATH=/app/config/model_providers.ghcp.json
 Keep the first-run list intentionally short and high-signal:
 
 - `claude-sonnet-4.6` as default
-- `gpt-5.1`
+- `gpt-5.4`
+- `gpt-5-mini`
+- `gpt-5.4-mini`
 - `claude-opus-4.6`
 
 All models should come from the GitHub Copilot provider path only.
+
+At the time of writing, the live GHCP catalog exposed by `listModels()` did **not**
+include a GPT nano variant for this starter path, so the starter appliance should
+only advertise models that are currently available through the GitHub Copilot
+provider.
 
 ---
 
@@ -472,24 +542,34 @@ The container may still mirror logs to stdout for `docker logs`, but the in-prod
 ```bash
 PORTAL_MODE=local
 PORTAL_AUTH_PROVIDER=none
-WORKERS=2
+WORKERS=0
 SESSION_STATE_DIR=/data/session-state
 SESSION_STORE_DIR=/data/session-store
 ARTIFACT_DIR=/data/artifacts
 PILOTSWARM_EXPORT_DIR=/data/exports
 PILOTSWARM_LOG_DIR=/data/logs
-PS_MODEL_PROVIDERS_PATH=/app/config/model_providers.ghcp.json
+PS_MODEL_PROVIDERS_PATH=/app/config/model_providers.local-docker.json
 ```
 
-### SSH TUI Launcher Overrides
+### Client Process Defaults
 
 ```bash
 WORKERS=0
 ```
 
-The SSH-launched TUI must also inherit:
+Both the portal and the SSH-launched TUI should inherit:
 
 - `DATABASE_URL`
+- `PILOTSWARM_LOG_DIR`
+- `PS_MODEL_PROVIDERS_PATH`
+
+### Worker Process Defaults
+
+Each worker process should inherit:
+
+- `DATABASE_URL`
+- `AZURE_STORAGE_CONNECTION_STRING`, if present
+- `AZURE_STORAGE_CONTAINER`, if present
 - `PILOTSWARM_LOG_DIR`
 - `PS_MODEL_PROVIDERS_PATH`
 
@@ -525,7 +605,7 @@ In that shape, each container contributes:
 
 - one portal instance
 - one SSH entrypoint
-- two embedded workers
+- two worker processes
 
 and the workers all compete on the same durable orchestration/task hub.
 
@@ -628,10 +708,11 @@ The implementation should likely add:
 - `deploy/bin/start-starter.sh`
 - `deploy/bin/start-embedded-postgres.sh`
 - `deploy/bin/pilotswarm-tui.sh`
-- `deploy/config/model_providers.ghcp.json`
+- `deploy/bin/start-worker.sh`
+- `deploy/config/model_providers.local-docker.json`
 - `deploy/ssh/sshd_config`
 - `deploy/supervisor/supervisord.conf`
-- `docs/getting-started-docker.md`
+- `docs/getting-started-docker-appliance.md`
 
 Potential code changes:
 
@@ -639,7 +720,7 @@ Potential code changes:
   - add local file-tail log support
   - allow client-only local TUI path cleanly
 - `packages/portal/server.js`
-  - no conceptual change required beyond starter env
+  - run cleanly in client-only mode with no embedded workers
 - `packages/portal/runtime.js`
   - likely unchanged
 
@@ -652,6 +733,7 @@ Potential code changes:
 - Add `Dockerfile.starter`
 - Add supervisor config
 - Add startup scripts
+- Add two worker-process entries under supervisor
 - Add SSH config
 - Add GHCP-only provider config
 
@@ -662,25 +744,33 @@ Potential code changes:
   - if `DATABASE_URL` is set, skip local Postgres
 - Persist DB files under `/data/postgres`
 
-### Phase 3: SSH TUI Path
+### Phase 3: Client Process Wiring
 
+- Run portal in client-only mode
 - Add key-based SSH login
 - Auto-launch the TUI on login
 - Ensure SSH TUI starts with `WORKERS=0`
-- Ensure it shares the same runtime store and config
+- Ensure both client surfaces share the same runtime store and config
 
-### Phase 4: File-Based Log Tailing
+### Phase 4: Worker Process Wiring
+
+- Launch exactly two headless worker processes
+- Ensure both workers share the same runtime store and config
+- Give each worker a distinct worker node ID / process identity
+
+### Phase 5: File-Based Log Tailing
 
 - Add log file destinations under `/data/logs`
 - Add rotation policy
 - Extend transport log tailing to read local files
 - Make both portal and SSH TUI surface those logs
 
-### Phase 5: Docs and First-Run UX
+### Phase 6: Docs and First-Run UX
 
-- Add `docs/getting-started-docker.md`
+- Add `docs/getting-started-docker-appliance.md`
 - Add a one-command quickstart
 - Add external-DB variant docs
+- Add shared-Postgres + shared-storage scale-out docs
 - Add SSH key mount guidance
 
 ---
@@ -691,11 +781,11 @@ Potential code changes:
 
 Risk:
 
-- The SSH TUI accidentally starts embedded workers too.
+- The portal or SSH TUI accidentally starts embedded workers too.
 
 Mitigation:
 
-- hard-force `WORKERS=0` for the SSH launcher
+- hard-force `WORKERS=0` for both client launchers
 - add tests around client-only startup behavior
 
 ### Log Growth

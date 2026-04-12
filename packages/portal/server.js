@@ -52,7 +52,10 @@ function createJsonRpcError(error, status = 500) {
 }
 
 export async function startServer(opts = {}) {
-    const { port = Number(process.env.PORT) || 3001 } = opts;
+    const { port = Number(process.env.PORT) || 3001, workers } = opts;
+    if (Number.isFinite(workers) && !process.env.WORKERS) {
+        process.env.WORKERS = String(workers);
+    }
     const portalConfig = getPortalConfig();
     const mode = getPortalMode();
     const runtime = new PortalRuntime({

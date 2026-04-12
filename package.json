@@ -29,6 +29,9 @@
     "tui:remote": "npm run start:remote --workspace=packages/cli",
     "portal:start": "./scripts/portal-start.sh",
     "portal:stop": "./scripts/portal-stop.sh",
+    "docker:local:start": "bash ./scripts/docker-local-start.sh",
+    "docker:local:stop": "bash ./scripts/docker-local-stop.sh",
+    "docker:local:reset": "bash ./scripts/docker-local-reset.sh",
     "worker": "node --env-file=.env.remote packages/sdk/examples/worker.js",
     "db:reset": "node --env-file=.env scripts/db-reset.js",
     "postinstall": "node scripts/postinstall.js"
