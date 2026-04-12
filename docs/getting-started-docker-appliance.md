@@ -14,52 +14,6 @@ If you want the fastest path to seeing PilotSwarm do real work, start with the p
 
 ---
 
-## What You Are Launching
-
-```text
-                    ┌──────────────────────────────┐
-                    │        Your Browser          │
-                    │    http://localhost:3001     │
-                    └──────────────┬───────────────┘
-                                   │
-                    ┌──────────────▼───────────────┐
-                    │       Portal Process         │
-                    │   browser UI + API server    │
-                    └──────────────┬───────────────┘
-                                   │
-     ┌─────────────────────────────┼─────────────────────────────┐
-     │                             │                             │
-┌────▼─────┐                 ┌─────▼─────┐                 ┌────▼─────┐
-│ Worker A │                 │ PostgreSQL│                 │ Worker B │
-│ runtime  │                 │ session   │                 │ runtime  │
-│ process  │                 │ catalog   │                 │ process  │
-└────┬─────┘                 └─────┬─────┘                 └────┬─────┘
-     │                             │                             │
-     └──────────────┬──────────────┴──────────────┬──────────────┘
-                    │                             │
-           ┌────────▼────────┐           ┌────────▼────────┐
-           │ Local filestore │           │ Azure Blob      │
-           │ default         │           │ optional        │
-           │ /data           │           │ if configured   │
-           └─────────────────┘           └─────────────────┘
-
-                    ┌──────────────────────────────┐
-                    │          SSH TUI             │
-                    │ ssh -p 2222 pilotswarm@...   │
-                    └──────────────────────────────┘
-```
-
-The important mental model is simple:
-
-- the portal and TUI are clients
-- the two workers do the actual orchestration work
-- PostgreSQL stores the durable session state
-- artifacts and dehydrated session files live in local storage by default, or Blob if configured
-
-That means a session can pause, wake up, move between workers, and keep going without you babysitting it.
-
----
-
 ## Step 1: Pull The Image
 
 ```bash
@@ -76,7 +30,8 @@ docker pull affandar/pilotswarm-starter:0.1.17
 
 ## Step 2: Run PilotSwarm
 
-Replace `YOUR_GITHUB_TOKEN` with your GitHub Copilot-enabled token.
+Replace `YOUR_GITHUB_TOKEN` with your GitHub Copilot-enabled token. If you do
+not have one yet, jump to [How to get a GitHub token](#how-to-get-a-github-token).
 
 ```bash
 docker run -d \
@@ -115,64 +70,23 @@ pilotswarm
 
 ---
 
-## Optional: Use External PostgreSQL Or Blob Storage
-
-If you already have a shared PostgreSQL instance:
-
-```bash
-docker run -d \
-  --name pilotswarm-starter \
-  -p 127.0.0.1:3001:3001 \
-  -p 127.0.0.1:2222:2222 \
-  -e GITHUB_TOKEN=YOUR_GITHUB_TOKEN \
-  -e DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME \
-  -v pilotswarm-data:/data \
-  affandar/pilotswarm-starter:latest
-```
-
-If you also want shared blob-backed artifacts and dehydration:
-
-```bash
-docker run -d \
-  --name pilotswarm-starter \
-  -p 127.0.0.1:3001:3001 \
-  -p 127.0.0.1:2222:2222 \
-  -e GITHUB_TOKEN=YOUR_GITHUB_TOKEN \
-  -e DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME \
-  -e AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net" \
-  -v pilotswarm-data:/data \
-  affandar/pilotswarm-starter:latest
-```
-
-Storage behavior is:
-
-- `AZURE_STORAGE_CONNECTION_STRING` set: use Azure Blob storage
-- not set: use local filesystem storage under `/data`
-
----
-
 ## Step 3: Create Your First Generic Agent
 
 Once the portal opens:
 
-1. Click `New + Model`
-2. Pick a model
-3. Press `Create Session`
-4. Give the agent a plain-English job in the chat
+1. Click `New`
+2. Let PilotSwarm use the starter image’s default model: `claude-sonnet-4.6`
+3. Start chatting and give the agent a plain-English job
 
-Starter-image model catalog currently includes:
+The point of the first run is to remove decisions, not add them. The starter image already defaults to `claude-sonnet-4.6`, which is a strong everyday model for chat, coding, and long-running orchestration.
+
+If you want to explore other models later, the starter image also includes:
 
 - `claude-sonnet-4.6`
 - `gpt-5.4`
 - `gpt-5-mini`
 - `gpt-5.4-mini`
 - `claude-opus-4.6`
-
-If you just want a strong first-run default:
-
-- `claude-sonnet-4.6` is the safest general pick
-- `gpt-5.4` is a strong reasoning/coding pick
-- `claude-opus-4.6` is the heavyweight option for deeper analysis
 
 ---
 
@@ -216,6 +130,52 @@ What this does:
 - creates a parent session plus child sessions
 - lets you see model-specific work fan out
 - makes the session tree, node map, and artifact flow much more interesting immediately
+
+---
+
+## What You Are Launching
+
+```text
+                    ┌──────────────────────────────┐
+                    │        Your Browser          │
+                    │    http://localhost:3001     │
+                    └──────────────┬───────────────┘
+                                   │
+                    ┌──────────────▼───────────────┐
+                    │       Portal Process         │
+                    │   browser UI + API server    │
+                    └──────────────┬───────────────┘
+                                   │
+     ┌─────────────────────────────┼─────────────────────────────┐
+     │                             │                             │
+┌────▼─────┐                 ┌─────▼─────┐                 ┌────▼─────┐
+│ Worker A │                 │ PostgreSQL│                 │ Worker B │
+│ runtime  │                 │ session   │                 │ runtime  │
+│ process  │                 │ catalog   │                 │ process  │
+└────┬─────┘                 └─────┬─────┘                 └────┬─────┘
+     │                             │                             │
+     └──────────────┬──────────────┴──────────────┬──────────────┘
+                    │                             │
+           ┌────────▼────────┐           ┌────────▼────────┐
+           │ Local filestore │           │ Azure Blob      │
+           │ default         │           │ optional        │
+           │ /data           │           │ if configured   │
+           └─────────────────┘           └─────────────────┘
+
+                    ┌──────────────────────────────┐
+                    │          SSH TUI             │
+                    │ ssh -p 2222 pilotswarm@...   │
+                    └──────────────────────────────┘
+```
+
+The important mental model is simple:
+
+- the portal and TUI are clients
+- the two workers do the actual orchestration work
+- PostgreSQL stores the durable session state
+- artifacts and dehydrated session files live in local storage by default, or Blob if configured
+
+That means a session can pause, wake up, move between workers, and keep going without you babysitting it.
 
 ---
 
@@ -401,3 +361,85 @@ After you are comfortable in the portal:
 - watch the same session tree, activity, and artifacts appear in both places
 
 That is when the architecture really lands: two interfaces, one durable runtime, shared state underneath.
+
+---
+
+## Optional: Use External PostgreSQL Or Blob Storage
+
+If you already have a shared PostgreSQL instance:
+
+```bash
+docker run -d \
+  --name pilotswarm-starter \
+  -p 127.0.0.1:3001:3001 \
+  -p 127.0.0.1:2222:2222 \
+  -e GITHUB_TOKEN=YOUR_GITHUB_TOKEN \
+  -e DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME \
+  -v pilotswarm-data:/data \
+  affandar/pilotswarm-starter:latest
+```
+
+If you also want shared blob-backed artifacts and dehydration:
+
+```bash
+docker run -d \
+  --name pilotswarm-starter \
+  -p 127.0.0.1:3001:3001 \
+  -p 127.0.0.1:2222:2222 \
+  -e GITHUB_TOKEN=YOUR_GITHUB_TOKEN \
+  -e DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME \
+  -e AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net" \
+  -v pilotswarm-data:/data \
+  affandar/pilotswarm-starter:latest
+```
+
+Storage behavior is:
+
+- `AZURE_STORAGE_CONNECTION_STRING` set: use Azure Blob storage
+- not set: use local filesystem storage under `/data`
+
+---
+
+## How To Get A GitHub Token
+
+PilotSwarm starter expects a GitHub personal access token from a GitHub
+account that already has GitHub Copilot access.
+
+The shortest path is usually:
+
+1. Sign in to GitHub with the account that has Copilot enabled
+2. Open `Settings`
+3. Open `Developer settings`
+4. Open `Personal access tokens`
+5. Create a new token
+6. Copy it immediately and keep it somewhere safe
+7. Paste it into the `docker run` command as `GITHUB_TOKEN=...`
+
+GitHub currently recommends **fine-grained personal access tokens** when your
+scenario supports them. The usual path is:
+
+1. In GitHub, go to `Settings` -> `Developer settings` -> `Personal access tokens` -> `Fine-grained tokens`
+2. Click `Generate new token`
+3. Give it a name like `pilotswarm-starter-local`
+4. Pick an expiration
+5. Choose the correct resource owner
+6. Select the minimum repository access you need for your use case
+7. Generate the token and copy it immediately
+
+If your organization requires approval for fine-grained tokens, the token may
+show up as pending until an org admin approves it.
+
+If your org policy or GitHub setup does not allow the fine-grained route for
+your workflow, you may need to create a classic personal access token instead:
+
+1. Go to `Settings` -> `Developer settings` -> `Personal access tokens` -> `Tokens (classic)`
+2. Click `Generate new token (classic)`
+3. Name it, pick an expiration, generate it, and copy it immediately
+
+Keep the token out of git, chat logs, screenshots, and committed `.env` files.
+Treat it like a password.
+
+Official GitHub docs:
+
+- GitHub Docs: Managing your personal access tokens  
+  https://docs.github.com/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token
