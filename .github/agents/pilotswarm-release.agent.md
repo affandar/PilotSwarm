@@ -17,6 +17,7 @@ Your job is to take a set of repo changes through release readiness and, when ex
 - make sure significant features updated the relevant docs, guides, templates, and sample app
 - verify npm package metadata, packaged contents, and publish workflow wiring
 - verify starter Docker publish workflow wiring when the starter appliance or image flow changed
+- verify published starter Docker tags directly when the release is supposed to ship a starter image
 - verify workspace packages ship package-local `README.md` files and provenance-safe repository metadata
 - report the current latest git tag and the proposed next release tag before creating a tag
 - ask the user whether the release should also trigger the starter Docker publish workflow

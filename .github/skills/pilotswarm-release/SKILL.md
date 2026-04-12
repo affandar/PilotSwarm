@@ -79,6 +79,11 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
    - Check that the GitHub Actions publish workflow started and completed using `gh run list --workflow=publish-npm.yml`.
    - Report the published package names and versions.
    - Verify the registry directly with `npm view <package> version`.
+   - If the release included the starter Docker image, also verify the published image tags directly with:
+     ```bash
+     docker buildx imagetools inspect docker.io/<user>/pilotswarm-starter:<tag>
+     ```
+     Confirm at least the release tag, bare version tag, and `latest` resolve successfully.
    - If publish failed, surface the workflow error rather than guessing.
 
 ## Release Checklist
@@ -94,6 +99,7 @@ Keep the workflow tight and deterministic. The goal is to verify what will ship,
 - provenance metadata (`repository`, `homepage`, `bugs`) is correct
 - latest tag and proposed next tag were reported
 - Docker starter publish intent was confirmed with the user
+- release Docker tags were verified directly when applicable
 - commit, push, and tag are complete
 - publish workflow ran successfully
 
