@@ -24,6 +24,12 @@ function createController() {
 }
 
 describe("theme picker UI behavior", () => {
+    it("defaults new workspaces to Noctis Obscuro", () => {
+        assertEqual(DEFAULT_THEME_ID, "noctis-obscuro", "shared default theme should be Noctis Obscuro");
+        const state = createInitialState({ mode: "local" });
+        assertEqual(state.ui.themeId, "noctis-obscuro", "new state should inherit the shared default theme");
+    });
+
     it("honors a persisted theme id during initial state creation", () => {
         const state = createInitialState({ mode: "local", themeId: "noctis-viola" });
         assertEqual(state.ui.themeId, "noctis-viola", "initial state should honor a persisted theme id");

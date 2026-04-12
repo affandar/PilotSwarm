@@ -2,6 +2,7 @@ import React from "react";
 import { useInput, useStdin } from "ink";
 import { UiPlatformProvider, SharedPilotSwarmApp } from "pilotswarm-ui-react";
 import { UI_COMMANDS } from "pilotswarm-ui-core";
+import { PILOTSWARM_CLI_VERSION_LABEL } from "./version.js";
 
 const MOUSE_INPUT_PATTERN = /\u001b\[<(\d+);(\d+);(\d+)([mM])/gu;
 const MOUSE_INPUT_FRAGMENT_PATTERN = /(?:\u001b)?\[<\d+;\d+;\d+[mM]/u;
@@ -657,5 +658,8 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
     });
 
     return React.createElement(UiPlatformProvider, { platform },
-        React.createElement(SharedPilotSwarmApp, { controller }));
+        React.createElement(SharedPilotSwarmApp, {
+            controller,
+            versionLabel: PILOTSWARM_CLI_VERSION_LABEL,
+        }));
 }

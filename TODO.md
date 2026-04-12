@@ -1,6 +1,9 @@
 
 # TODO
 
+- tool to enumerate all workers, and to run an agent so all activities land on a specific worker, so resource manager can schedule an agent which specifically targets health checks for all nodes.
+- deyhdrate timer should be sensitive to the size of the data being dehydrated. larger sessions should be stickier
+- simple hello pilotswarm world docker container
 - evals for prompts
 - session-store-driven durability cleanup
     - proposal: [docs/proposals/session-store-driven-durability.md](docs/proposals/session-store-driven-durability.md)

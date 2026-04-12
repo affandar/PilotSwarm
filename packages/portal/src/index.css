@@ -285,7 +285,23 @@ button {
 }
 
 .portal-header-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   align-self: start;
+}
+
+.portal-header-version {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 48%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-surface) 90%, transparent);
+  color: var(--ps-muted);
+  font-size: 0.72rem;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .portal-header-identity,
@@ -1559,6 +1575,7 @@ body.is-resizing-pane-y * {
   }
 
   .portal-header-user {
+    gap: 8px;
     align-self: start;
   }
 
