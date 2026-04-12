@@ -16,6 +16,7 @@ Start with the path that matches what you are trying to do.
 
 ### I want to build an app with the SDK
 
+- [Starter Docker Quickstart](./getting-started-docker-appliance.md) — fastest browser-first path with the self-contained `pilotswarm-starter` image
 - [Getting Started](./getting-started.md) — install, configure PostgreSQL, and run locally
 - [Building SDK Apps](./sdk/building-apps.md) — the recommended path for app developers using `PilotSwarmClient` and `PilotSwarmWorker`
 - [Building Agents For SDK Apps](./sdk/building-agents.md) — the canonical guide for `default.agent.md`, named agents, skills, tools, and system agents
@@ -25,6 +26,7 @@ Start with the path that matches what you are trying to do.
 
 ### I want to build an app with the CLI/TUI
 
+- [Starter Docker Quickstart](./getting-started-docker-appliance.md) — run the browser portal and SSH TUI from one Docker image with two bundled workers
 - [Building CLI Apps](./cli/building-cli-apps.md) — how the shipped TUI works today, local vs remote mode, and where plugins and worker modules fit
 - [Building Agents For CLI Apps](./cli/building-agents.md) — the agent-authoring path for plugin-driven CLI apps
 - [Builder Agent Templates](./builder-agents.md) — distributable Copilot custom agents for users building layered PilotSwarm apps

@@ -3,6 +3,10 @@
 This guide walks through setting up a fully working PilotSwarm environment
 from scratch — the durable execution runtime for GitHub Copilot SDK agents.
 
+If you want the fastest possible first-run path, start with the
+[Starter Docker Quickstart](./getting-started-docker-appliance.md) and come
+back here when you want the full source-based setup.
+
 By the end you'll have:
 
 - A PostgreSQL database (local or Azure)
