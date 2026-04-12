@@ -74,9 +74,21 @@ docker run --rm \
   -p 127.0.0.1:2222:2222 \
   -e GITHUB_TOKEN=... \
   -v pilotswarm-data:/data \
-  -v $HOME/.ssh/id_ed25519.pub:/run/pilotswarm/authorized_keys:ro \
   ghcr.io/affandar/pilotswarm-starter:latest
 ```
+
+For out-of-box local use, SSH should also work without mounting a public key:
+
+- default SSH user: `pilotswarm`
+- default SSH password: `pilotswarm`
+
+If the operator wants a different password, they can set:
+
+```bash
+-e PILOTSWARM_SSH_PASSWORD=...
+```
+
+If the operator mounts `authorized_keys`, key-based SSH should also work.
 
 ### Optional External Database
 
@@ -89,7 +101,6 @@ docker run --rm \
   -e GITHUB_TOKEN=... \
   -e DATABASE_URL=postgresql://... \
   -v pilotswarm-data:/data \
-  -v $HOME/.ssh/id_ed25519.pub:/run/pilotswarm/authorized_keys:ro \
   ghcr.io/affandar/pilotswarm-starter:latest
 ```
 
@@ -106,7 +117,6 @@ docker run --rm \
   -e AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net" \
   -e AZURE_STORAGE_CONTAINER=pilotswarm-sessions \
   -v pilotswarm-data:/data \
-  -v $HOME/.ssh/id_ed25519.pub:/run/pilotswarm/authorized_keys:ro \
   ghcr.io/affandar/pilotswarm-starter:latest
 ```
 
@@ -116,6 +126,13 @@ After startup, the user can either:
 
 - open `http://localhost:3001` in a browser
 - run `ssh -p 2222 pilotswarm@localhost`
+
+By default, the starter appliance should allow relaxed localhost SSH login with:
+
+- username: `pilotswarm`
+- password: `pilotswarm`
+
+Mounting `authorized_keys` remains optional for users who prefer key-based login.
 
 Both surfaces connect to the same PilotSwarm instance:
 
@@ -192,7 +209,8 @@ starter container
 │   ├── headless PilotSwarm worker
 │   └── writes logs to /data/logs/worker-b.log
 ├── sshd
-│   ├── key-based auth only
+│   ├── relaxed localhost password auth by default
+│   ├── optional authorized_keys support
 │   ├── auto-launches TUI on login
 │   └── writes logs to /data/logs/sshd.log
 ├── optional local postgres
