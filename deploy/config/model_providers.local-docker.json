@@ -16,14 +16,14 @@
                     "cost": "high"
                 },
                 {
-                    "name": "gpt-5-mini",
-                    "description": "GPT-5 Mini. Fast lightweight GPT model for quick iteration, short drafting, and lower-cost local runs.",
+                    "name": "gpt-5.4-mini",
+                    "description": "GPT-5.4 Mini. Faster, lighter-weight GPT option for everyday chat, drafting, and cheaper iteration in the local starter appliance.",
                     "cost": "low"
                 },
                 {
-                    "name": "gpt-5.4-mini",
-                    "description": "GPT-5.4 Mini. Faster, lighter-weight GPT option for everyday chat, drafting, and cheaper iteration.",
-                    "cost": "medium"
+                    "name": "gpt-5.4-nano",
+                    "description": "GPT-5.4 Nano. Smallest low-cost GPT option for lightweight recurring monitors and quick local background tasks.",
+                    "cost": "low"
                 },
                 {
                     "name": "claude-opus-4.6",

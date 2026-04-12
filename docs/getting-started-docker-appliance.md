@@ -84,8 +84,8 @@ If you want to explore other models later, the starter image also includes:
 
 - `claude-sonnet-4.6`
 - `gpt-5.4`
-- `gpt-5-mini`
 - `gpt-5.4-mini`
+- `gpt-5.4-nano`
 - `claude-opus-4.6`
 
 ---
