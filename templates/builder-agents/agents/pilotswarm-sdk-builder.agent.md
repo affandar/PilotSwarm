@@ -28,6 +28,7 @@ Your job is to create or update the user's application code, plugin files, and w
 ## Always Consult
 
 - the installed `pilotswarm-sdk-builder` skill
+- `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-agents.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`

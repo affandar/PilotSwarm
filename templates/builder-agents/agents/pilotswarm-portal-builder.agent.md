@@ -26,6 +26,7 @@ Your job is to create or update application code in the user's repository, not t
 ## Always Consult
 
 - the installed `pilotswarm-portal-builder` skill
+- `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - `https://github.com/affandar/pilotswarm/blob/main/packages/portal/README.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`

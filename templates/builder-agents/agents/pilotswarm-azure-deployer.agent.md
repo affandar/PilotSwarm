@@ -58,6 +58,7 @@ Only proceed after the user confirms.
 - the installed `pilotswarm-aks-identity` skill (for cross-cluster AKS access)
 - the installed `pilotswarm-azure-lessons` skill (for Azure workarounds)
 - the installed `pilotswarm-three-tier` skill (when the user chooses three-tier topology)
+- `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/configuration.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`

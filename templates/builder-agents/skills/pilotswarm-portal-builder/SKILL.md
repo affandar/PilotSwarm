@@ -9,6 +9,7 @@ Build browser portal experiences on top of the shipped PilotSwarm web portal.
 
 ## Canonical References
 
+- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - Portal guide: `https://github.com/affandar/pilotswarm/blob/main/packages/portal/README.md`
 - SDK guide: `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
 - Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`

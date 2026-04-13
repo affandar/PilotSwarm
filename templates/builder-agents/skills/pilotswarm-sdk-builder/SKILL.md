@@ -9,6 +9,7 @@ Build layered SDK-first applications on top of PilotSwarm.
 
 ## Canonical References
 
+- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - SDK guide: `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
 - SDK agent guide: `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-agents.md`
 - Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`

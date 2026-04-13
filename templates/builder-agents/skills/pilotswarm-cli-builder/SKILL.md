@@ -9,6 +9,7 @@ Build layered CLI/TUI apps on top of the shipped PilotSwarm interface.
 
 ## Canonical References
 
+- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - CLI guide: `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
 - CLI agent guide: `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-agents.md`
 - Keybindings: `https://github.com/affandar/pilotswarm/blob/main/docs/keybindings.md`
