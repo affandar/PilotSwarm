@@ -30,15 +30,18 @@ docker pull affandar/pilotswarm-starter:0.1.17
 
 ## Step 2: Run PilotSwarm
 
-Replace `YOUR_GITHUB_TOKEN` with your GitHub Copilot-enabled token. If you do
-not have one yet, jump to [How to get a GitHub token](#how-to-get-a-github-token).
+Set `GITHUB_TOKEN` in your shell to a GitHub Copilot-enabled token before you
+run Docker. If you do not have one yet, jump to
+[How to get a GitHub token](#how-to-get-a-github-token).
 
 ```bash
+export GITHUB_TOKEN=your_github_token
+
 docker run -d \
   --name pilotswarm-starter \
   -p 127.0.0.1:3001:3001 \
   -p 127.0.0.1:2222:2222 \
-  -e GITHUB_TOKEN=YOUR_GITHUB_TOKEN \
+  -e GITHUB_TOKEN \
   -v pilotswarm-data:/data \
   affandar/pilotswarm-starter:latest
 ```
@@ -372,7 +375,7 @@ docker run -d \
   --name pilotswarm-starter \
   -p 127.0.0.1:3001:3001 \
   -p 127.0.0.1:2222:2222 \
-  -e GITHUB_TOKEN=YOUR_GITHUB_TOKEN \
+  -e GITHUB_TOKEN \
   -e DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME \
   -v pilotswarm-data:/data \
   affandar/pilotswarm-starter:latest
@@ -385,7 +388,7 @@ docker run -d \
   --name pilotswarm-starter \
   -p 127.0.0.1:3001:3001 \
   -p 127.0.0.1:2222:2222 \
-  -e GITHUB_TOKEN=YOUR_GITHUB_TOKEN \
+  -e GITHUB_TOKEN \
   -e DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME \
   -e AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net" \
   -v pilotswarm-data:/data \
@@ -412,7 +415,11 @@ The shortest path is usually:
 4. Open `Personal access tokens`
 5. Create a new token
 6. Copy it immediately and keep it somewhere safe
-7. Paste it into the `docker run` command as `GITHUB_TOKEN=...`
+7. Export it in your shell before running Docker, for example:
+
+```bash
+export GITHUB_TOKEN=your_github_token
+```
 
 GitHub currently recommends **fine-grained personal access tokens** when your
 scenario supports them. The usual path is:
