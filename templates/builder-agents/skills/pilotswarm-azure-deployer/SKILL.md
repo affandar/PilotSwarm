@@ -9,6 +9,7 @@ Prepare PilotSwarm-based apps for Azure deployment, especially AKS worker and br
 
 ## Canonical References
 
+- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - AKS deployment guide: `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
 - Configuration guide: `https://github.com/affandar/pilotswarm/blob/main/docs/configuration.md`
 - Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`

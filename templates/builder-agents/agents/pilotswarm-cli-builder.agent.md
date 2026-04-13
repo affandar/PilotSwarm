@@ -30,6 +30,7 @@ Your job is to create or update application code in the user's repository, not t
 ## Always Consult
 
 - the installed `pilotswarm-cli-builder` skill
+- `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-agents.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/keybindings.md`

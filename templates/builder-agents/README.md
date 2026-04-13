@@ -83,6 +83,8 @@ cp -R templates/builder-agents/skills/* .github/skills/
 
 ## Canonical References
 
+- Starter Docker quickstart:
+  `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - CLI guide:
   `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
 - Portal guide:
