@@ -2100,7 +2100,46 @@ function ModalLayer({ controller }) {
 
     const close = () => controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
 
-    const renderListModal = (presentation, confirmLabel = "Apply") => React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+    const renderListModal = (presentation, confirmLabel = "Apply") => {
+        const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
+        const rowItemIndexes = Array.isArray(presentation.rowItemIndexes) ? presentation.rowItemIndexes : null;
+        const renderedList = rowItemIndexes && rowItemIndexes.length === rows.length
+            ? rows.map((row, rowIndex) => {
+                const itemIndex = rowItemIndexes[rowIndex];
+                const runs = Array.isArray(row)
+                    ? row
+                    : normalizeLines([row])[0]?.runs || [{ text: row?.text || "", color: row?.color }];
+                if (itemIndex == null || itemIndex < 0) {
+                    return React.createElement("div", {
+                        key: `row:${rowIndex}`,
+                        className: "ps-line",
+                    }, React.createElement(Runs, { runs, theme }));
+                }
+                const item = modal.items?.[itemIndex];
+                return React.createElement("button", {
+                    key: item?.id || `row:${rowIndex}`,
+                    type: "button",
+                    className: `ps-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}`,
+                    onClick: () => controller.dispatch({ type: "ui/modalSelection", index: itemIndex }),
+                },
+                React.createElement("div", { className: "ps-line" },
+                    React.createElement(Runs, { runs, theme })));
+            })
+            : (modal.items || []).map((item, index) => React.createElement("button", {
+                key: item.id || index,
+                type: "button",
+                className: `ps-list-button${index === modal.selectedIndex ? " is-selected" : ""}`,
+                onClick: () => controller.dispatch({ type: "ui/modalSelection", index }),
+            },
+            React.createElement("div", { className: "ps-line" },
+                React.createElement(Runs, {
+                    runs: Array.isArray(rows?.[index])
+                        ? rows[index]
+                        : normalizeLines([rows?.[index]])[0]?.runs || [{ text: rows?.[index]?.text || "", color: rows?.[index]?.color }],
+                    theme,
+                }))));
+
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
         React.createElement("div", { className: "ps-modal", onClick: (event) => event.stopPropagation() },
             React.createElement("div", { className: "ps-modal-header" },
                 React.createElement("div", { className: "ps-modal-title" }, presentation.title),
@@ -2108,20 +2147,7 @@ function ModalLayer({ controller }) {
             ),
             React.createElement("div", { className: "ps-modal-grid" },
                 React.createElement("div", { className: "ps-modal-list" },
-                    (modal.items || []).map((item, index) => React.createElement("button", {
-                        key: item.id || index,
-                        type: "button",
-                        className: `ps-list-button${index === modal.selectedIndex ? " is-selected" : ""}`,
-                        onClick: () => controller.dispatch({ type: "ui/modalSelection", index }),
-                    },
-                    React.createElement("div", { className: "ps-line" },
-                        React.createElement(Runs, {
-                            runs: Array.isArray(presentation.rows?.[index])
-                                ? presentation.rows[index]
-                                : normalizeLines([presentation.rows?.[index]])[0]?.runs || [{ text: presentation.rows?.[index]?.text || "", color: presentation.rows?.[index]?.color }],
-                            theme,
-                        })),
-                    )),
+                    renderedList,
                 ),
                 React.createElement("div", { className: "ps-modal-details" },
                     React.createElement("div", { className: "ps-modal-details-title" }, presentation.detailsTitle || "Details"),
@@ -2136,6 +2162,7 @@ function ModalLayer({ controller }) {
                     onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
                 }, confirmLabel)),
         ));
+    };
 
     if (modal.type === "confirm" && modalState.confirm) {
         const isDestructive = modal.action === "deleteSession";

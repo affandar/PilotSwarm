@@ -2155,6 +2155,7 @@ export function selectModelPickerModal(state, maxWidth = 72) {
     const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
     const contentWidth = Math.max(24, maxWidth - 4);
     const rows = [];
+    const rowItemIndexes = [];
     let selectedRowIndex = 0;
 
     for (const group of groups) {
@@ -2163,6 +2164,7 @@ export function selectModelPickerModal(state, maxWidth = 72) {
             { text: ` (${group.providerType || "provider"})`, color: "gray" },
         ], contentWidth);
         rows.push(headerRuns);
+        rowItemIndexes.push(null);
 
         for (const model of group.models || []) {
             const itemIndex = Array.isArray(modal.items)
@@ -2182,6 +2184,7 @@ export function selectModelPickerModal(state, maxWidth = 72) {
 
             if (isSelected) selectedRowIndex = rows.length;
             rows.push(line);
+            rowItemIndexes.push(itemIndex >= 0 ? itemIndex : null);
         }
     }
 
@@ -2209,6 +2212,7 @@ export function selectModelPickerModal(state, maxWidth = 72) {
     return {
         title: modal.title || "Select model for new session",
         rows,
+        rowItemIndexes,
         selectedRowIndex,
         detailsTitle: "Model Details",
         detailsLines,

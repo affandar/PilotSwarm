@@ -30,10 +30,12 @@ describe("portal browser contracts", () => {
         const cliApp = readRepoFile("packages/cli/src/app.js");
         const layout = readRepoFile("packages/ui-core/src/layout.js");
         const state = readRepoFile("packages/ui-core/src/state.js");
+        const selectors = readRepoFile("packages/ui-core/src/selectors.js");
         const css = readRepoFile("packages/portal/src/index.css");
 
         assertIncludes(portalApp, "portal-header-version", "portal header should render a version indicator near sign-out");
         assertIncludes(webApp, 'controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER)', "web app should expose new-session model selection");
+        assertIncludes(webApp, "presentation.rowItemIndexes", "portal list modal should support row-to-item mapping for grouped pickers");
         assertIncludes(webApp, "controller.uploadArtifactFiles(nextFiles)", "portal uploads should flow through the shared artifact-upload controller path");
         assert(!webApp.includes("controller.uploadPromptAttachmentFiles(nextFiles)"), "prompt composer should no longer own browser artifact uploads");
         assertIncludes(webApp, "document.cookie =", "portal theme persistence should be cookie-backed");
@@ -61,5 +63,6 @@ describe("portal browser contracts", () => {
         assertIncludes(css, ".ps-workspace-full", "portal stylesheet should size the fullscreen files workspace");
         assertIncludes(css, ".ps-markdown-preview", "portal stylesheet should style markdown previews");
         assertIncludes(css, ".ps-chat-focus-body .ps-line", "chat focus mode should keep transcript lines wrapped within the viewport");
+        assertIncludes(selectors, "rowItemIndexes", "model picker presentation should preserve grouped-row to item-index mapping");
     });
 });

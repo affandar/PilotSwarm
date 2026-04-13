@@ -21,11 +21,6 @@
                     "cost": "low"
                 },
                 {
-                    "name": "gpt-5.4-nano",
-                    "description": "GPT-5.4 Nano. Smallest low-cost GPT option for lightweight recurring monitors and quick local background tasks.",
-                    "cost": "low"
-                },
-                {
                     "name": "claude-opus-4.6",
                     "description": "Claude Opus 4.6. Most capable option for deeper analysis and harder tasks in the starter appliance.",
                     "cost": "high"
