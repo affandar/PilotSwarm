@@ -129,6 +129,8 @@ export interface PilotSwarmSessionView {
     status: PilotSwarmSessionStatus;
     /** Duroxide orchestration runtime status (Running, Completed, Failed, Terminated). */
     orchestrationStatus?: string;
+    /** Registered duroxide orchestration version for the current instance execution. */
+    orchestrationVersion?: string;
     createdAt: number;
     updatedAt?: number;
     iterations?: number;
@@ -364,6 +366,7 @@ export class PilotSwarmManagementClient {
                 splash: row.splash ?? undefined,
                 status: liveStatus,
                 orchestrationStatus: undefined, // not available in CMS-only path
+                orchestrationVersion: undefined, // not available in CMS-only path
                 createdAt: row.createdAt.getTime(),
                 updatedAt: row.updatedAt?.getTime(),
                 iterations: row.currentIteration ?? 0,
@@ -387,17 +390,27 @@ export class PilotSwarmManagementClient {
 
         const orchId = `session-${sessionId}`;
         let orchStatus = "Unknown";
+        let orchestrationVersion: string | undefined;
         let createdAt = row.createdAt.getTime();
         let customStatus: any = {};
         let statusVersion = 0;
         let latestResponse: SessionResponsePayload | null = null;
 
-        try {
-            const [info, status] = await Promise.all([
-                this._duroxideClient.getInstanceInfo(orchId),
-                this._duroxideClient.getStatus(orchId),
-            ]);
+        const [infoResult, statusResult] = await Promise.allSettled([
+            this._duroxideClient.getInstanceInfo(orchId),
+            this._duroxideClient.getStatus(orchId),
+        ]);
+
+        if (infoResult.status === "fulfilled") {
+            const info = infoResult.value;
             orchStatus = info?.status || "Unknown";
+            if (typeof info?.orchestrationVersion === "string" && info.orchestrationVersion.trim()) {
+                orchestrationVersion = info.orchestrationVersion;
+            }
+        }
+
+        if (statusResult.status === "fulfilled") {
+            const status = statusResult.value;
             statusVersion = status?.customStatusVersion || 0;
             if (status?.customStatus) {
                 try {
@@ -409,7 +422,7 @@ export class PilotSwarmManagementClient {
             if (customStatus?.responseVersion) {
                 latestResponse = await this._readJsonValue<SessionResponsePayload>(sessionId, RESPONSE_LATEST_KEY);
             }
-        } catch {}
+        }
 
         const terminalOrchestration = isTerminalOrchestrationStatus(orchStatus);
         const rawCronActive = customStatus.cronActive === true;
@@ -493,6 +506,7 @@ export class PilotSwarmManagementClient {
             splash: row.splash ?? undefined,
             status: liveStatus,
             orchestrationStatus: orchStatus,
+            orchestrationVersion,
             createdAt,
             updatedAt: row.updatedAt?.getTime(),
             iterations: customStatus.iteration ?? row.currentIteration ?? 0,
