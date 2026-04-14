@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.18 — 2026-04-14
+
+### Portal / Management
+
+- **Sequence stats show orchestration version** — the shared portal/TUI sequence stats panel now renders the duroxide orchestration version when it is available.
+- **Management stats are partial-success tolerant** — `PilotSwarmManagementClient.getOrchestrationStats()` now fetches runtime stats and instance info in parallel, includes `orchestrationVersion`, and still returns partial data if either underlying duroxide management call fails.
+- **Session views expose orchestration version** — `PilotSwarmManagementClient.getSession()` now carries `orchestrationVersion` on the broader session view and preserves available duroxide data even if one management call fails.
+
+### Tests
+
+- **Management and sequence stats coverage** — updated local tests cover orchestration-version display in sequence stats and the broader management session view.
+
 ## 0.1.15 — 2026-04-10
 
 ### Portal Auth & Authorization
