@@ -71,6 +71,8 @@ async function testManagementSessionOps(env) {
             const view = await mgmt.getSession(session.sessionId);
             assertNotNull(view, "Session should be visible via management client");
             console.log(`  Session state: ${view.status}`);
+            console.log(`  Orchestration version: ${view.orchestrationVersion}`);
+            assert(typeof view.orchestrationVersion === "string" && view.orchestrationVersion.length > 0, "Expected orchestrationVersion on management session view");
 
             await mgmt.renameSession(session.sessionId, "Test Session");
             const renamed = await mgmt.getSession(session.sessionId);

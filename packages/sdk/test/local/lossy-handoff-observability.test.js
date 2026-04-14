@@ -96,7 +96,9 @@ describe("lossy handoff observability", () => {
         };
 
         const inspector = selectInspector(state, { width: 180 });
-        const sequenceText = inspector.lines.map(flattenLine).join("\n");
+        const stickyText = (inspector.stickyLines || []).map(flattenLine).join("\n");
+        const sequenceText = [...(inspector.stickyLines || []), ...(inspector.lines || [])].map(flattenLine).join("\n");
+        assertIncludes(stickyText, "1.0.43", "sequence stats should include orchestration version when available");
         assertIncludes(sequenceText, "1.0.43", "sequence stats should include orchestration version when available");
         assertIncludes(sequenceText, "lossy", "sequence view should show the lossy handoff row");
         assertIncludes(sequenceText, "closed", "sequence view should expose the connection failure detail");
@@ -143,8 +145,8 @@ describe("lossy handoff observability", () => {
         };
 
         const inspector = selectInspector(state, { width: 100 });
-        const sequenceText = inspector.lines.map(flattenLine).join("\n");
-        assertIncludes(sequenceText, "1.0.43", "sequence stats should show version-only payloads");
-        assertEqual(sequenceText.includes("loading orchestration stats"), false, "version-only stats should not look like a loading state");
+        const stickyText = (inspector.stickyLines || []).map(flattenLine).join("\n");
+        assertIncludes(stickyText, "1.0.43", "sequence stats should show version-only payloads");
+        assertEqual(stickyText.includes("loading orchestration stats"), false, "version-only stats should not look like a loading state");
     });
 });
