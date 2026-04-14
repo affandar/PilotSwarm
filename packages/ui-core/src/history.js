@@ -20,6 +20,127 @@ function normalizeMessageText(text) {
     return String(text || "").replace(/\r\n/g, "\n").trim();
 }
 
+const REHYDRATION_NOTICE_PREFIX_RE = /^The session was dehydrated and has been rehydrated on a new worker(?: \([^)]+\))?\./i;
+const REHYDRATION_NOTICE_FULL_RE = /^The session was dehydrated and has been rehydrated on a new worker(?: \([^)]+\))?\.\s*The LLM conversation history is preserved\.?/i;
+
+export function isRehydrationNoticeText(text) {
+    return REHYDRATION_NOTICE_PREFIX_RE.test(normalizeMessageText(text));
+}
+
+export function stripLeadingRehydrationNoticeText(text) {
+    const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
+    if (!normalized) return "";
+
+    const stripped = normalized.replace(REHYDRATION_NOTICE_FULL_RE, "").trimStart();
+    if (stripped !== normalized) return stripped.trim();
+    if (isRehydrationNoticeText(normalized)) {
+        return normalized.replace(REHYDRATION_NOTICE_PREFIX_RE, "").trim();
+    }
+    return normalized;
+}
+
+function splitSystemNoticeSegments(text) {
+    const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+    const segments = [];
+    let textLines = [];
+
+    function flushText() {
+        if (textLines.length === 0) return;
+        segments.push({
+            kind: "text",
+            text: textLines.join("\n"),
+        });
+        textLines = [];
+    }
+
+    for (let index = 0; index < lines.length;) {
+        const line = lines[index];
+        if (!/^\s*\[SYSTEM:/i.test(line)) {
+            textLines.push(line);
+            index += 1;
+            continue;
+        }
+
+        const singleLineMatch = /^\s*\[SYSTEM:\s*(.*?)\]\s*$/i.exec(line);
+        if (singleLineMatch) {
+            flushText();
+            segments.push({
+                kind: "system",
+                text: singleLineMatch[1].trim(),
+            });
+            index += 1;
+            continue;
+        }
+
+        const noticeLines = [line.replace(/^\s*\[SYSTEM:\s*/i, "")];
+        let closingIndex = -1;
+        for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+            const closingLine = lines[cursor];
+            if (closingLine.trim() === "]") {
+                closingIndex = cursor;
+                break;
+            }
+
+            if (/\]\s*$/.test(closingLine.trim())) {
+                const closingContent = closingLine.replace(/\]\s*$/, "");
+                if (closingContent.trim()) {
+                    noticeLines.push(closingContent);
+                }
+                closingIndex = cursor;
+                break;
+            }
+
+            noticeLines.push(closingLine);
+        }
+
+        if (closingIndex === -1) {
+            textLines.push(line);
+            index += 1;
+            continue;
+        }
+
+        flushText();
+        segments.push({
+            kind: "system",
+            text: noticeLines.join("\n").trim(),
+        });
+        index = closingIndex + 1;
+    }
+
+    flushText();
+    return segments;
+}
+
+function extractVisibleChatText(text, role) {
+    const normalized = String(text || "").replace(/\r\n/g, "\n");
+    if (role === "user" || role === "assistant") {
+        return splitSystemNoticeSegments(normalized)
+            .filter((segment) => segment.kind === "text")
+            .map((segment) => segment.text)
+            .join("\n")
+            .trim();
+    }
+    return normalized.trim();
+}
+
+function extractEmbeddedSystemNoticeTexts(text, role) {
+    if (role !== "user" && role !== "assistant") return [];
+    return splitSystemNoticeSegments(text)
+        .filter((segment) => segment.kind === "system")
+        .map((segment) => segment.text)
+        .filter(Boolean);
+}
+
+function comparableMessageText(message) {
+    const normalized = normalizeMessageText(message?.text || "");
+    if (!normalized) return "";
+    if (message?.role === "user" || message?.role === "assistant") {
+        const visibleText = extractVisibleChatText(normalized, message.role);
+        if (visibleText) return visibleText;
+    }
+    return stripLeadingRehydrationNoticeText(normalized);
+}
+
 export function parseAskedAndAnsweredExchange(text) {
     const source = String(text || "").replace(/\r\n/g, "\n").trim();
     const prefix = 'The user was asked: "';
@@ -46,6 +167,8 @@ function isInternalSystemLikeText(text) {
     return /^\[SYSTEM:/i.test(normalized)
         || /^\[CHILD_UPDATE\b/i.test(normalized)
         || /^Buffered child updates arrived /i.test(normalized)
+        || /^There is an active recurring schedule every /i.test(normalized)
+        || /^It remains active automatically after this turn completes/i.test(normalized)
         || /^Sub-agent spawned successfully\./i.test(normalized)
         || /^Message sent to sub-agent /i.test(normalized)
         || /^No sub-agents have been spawned yet\./i.test(normalized)
@@ -53,6 +176,10 @@ function isInternalSystemLikeText(text) {
         || /^Active sessions \(/i.test(normalized)
         || /^Sub-agents completed:/i.test(normalized)
         || /^Sub-agent .* has been (completed gracefully|cancelled|deleted)\./i.test(normalized)
+        || /^The runtime recovered this session after the worker lost the live Copilot session\./i.test(normalized)
+        || /^The runtime recovered this session after the live Copilot session was lost on a worker\./i.test(normalized)
+        || /^The runtime is replaying this turn after a worker restart/i.test(normalized)
+        || /^The runtime detected missing Copilot session state for /i.test(normalized)
         || /^(spawn_agent|message_agent|check_agents|wait_for_agents|complete_agent|cancel_agent|delete_agent) failed/i.test(normalized);
 }
 
@@ -66,15 +193,15 @@ function areMessagesEquivalent(left, right) {
     if (!left || !right) return false;
     if (left.role !== right.role) return false;
 
-    const leftText = normalizeMessageText(left.text);
-    const rightText = normalizeMessageText(right.text);
+    const leftText = comparableMessageText(left);
+    const rightText = comparableMessageText(right);
     if (!leftText || !rightText || leftText !== rightText) return false;
 
     const leftTime = Number(left.createdAt || 0);
     const rightTime = Number(right.createdAt || 0);
     if (left.optimistic || right.optimistic) return true;
     if (!leftTime || !rightTime) return false;
-    return Math.abs(leftTime - rightTime) <= 5_000;
+    return Math.abs(leftTime - rightTime) <= 10_000;
 }
 
 export function dedupeChatMessages(chat = []) {
@@ -105,7 +232,7 @@ export function dedupeChatMessages(chat = []) {
 }
 
 function buildChatMessage(event, role) {
-    const text = String(messageTextFromEvent(event) || "").replace(/\r\n/g, "\n");
+    const text = extractVisibleChatText(messageTextFromEvent(event), role);
     if (!hasVisibleMessageText(text)) return null;
     return {
         id: `${event.sessionId}:${event.seq}`,
@@ -118,7 +245,19 @@ function buildChatMessage(event, role) {
 
 function shouldRenderSystemMessageAsActivity(event) {
     return event?.eventType === "system.message"
-        && isInternalSystemLikeText(messageTextFromEvent(event));
+        && (isInternalSystemLikeText(messageTextFromEvent(event))
+            || isRehydrationNoticeText(messageTextFromEvent(event)));
+}
+
+function buildEmbeddedSystemNoticeActivityItems(event, role) {
+    return extractEmbeddedSystemNoticeTexts(messageTextFromEvent(event), role)
+        .map((text, index) => formatActivity({
+            ...event,
+            seq: `${event?.seq ?? "?"}:system:${index + 1}`,
+            eventType: "system.message",
+            data: { content: text },
+        }))
+        .filter(Boolean);
 }
 
 function reconcileOptimisticMessage(chat, incomingMessage) {
@@ -197,6 +336,17 @@ function formatLossyHandoffActivityDetail(event, fallbackBody = "") {
         event?.data?.detail,
         event?.data?.error,
         fallbackBody,
+    ]);
+}
+
+function formatRehydrationActivityDetail(event, fallbackBody = "") {
+    const rawBody = messageTextFromEvent(event);
+    const stripped = stripLeadingRehydrationNoticeText(fallbackBody);
+    return joinUniqueActivityDetail([
+        stripLeadingRehydrationNoticeText(rawBody),
+        stripped,
+        event?.data?.detail,
+        event?.data?.message,
     ]);
 }
 
@@ -435,7 +585,16 @@ function formatActivity(event) {
             break;
 
         case "system.message":
-            runs = buildLabeledActivityRuns(time, "[system]", "gray", body || "system message");
+            if (isRehydrationNoticeText(messageTextFromEvent(event))) {
+                runs = buildLabeledActivityRuns(
+                    time,
+                    "[rehydrated]",
+                    "green",
+                    formatRehydrationActivityDetail(event, body) || "conversation preserved",
+                );
+            } else {
+                runs = buildLabeledActivityRuns(time, "[system]", "gray", body || "system message");
+            }
             break;
 
         default:
@@ -474,11 +633,13 @@ export function buildHistoryModel(events = [], options = {}) {
     for (const event of events) {
         storedEvents.push(event);
         if (event.eventType === "user.message") {
+            activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
             const message = buildChatMessage(event, "user");
             if (message) chat.push(message);
             continue;
         }
         if (event.eventType === "assistant.message") {
+            activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "assistant"));
             const message = buildChatMessage(event, "assistant");
             if (message) chat.push(message);
             continue;
@@ -527,6 +688,8 @@ export function appendEventToHistory(history, event) {
     };
 
     if (event.eventType === "user.message") {
+        next.activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
+        next.activity = clampHistoryItems(next.activity, loadedEventLimit);
         const message = buildChatMessage(event, "user");
         if (!message) return next;
         next.chat = reconcileOptimisticMessage(next.chat, message);
@@ -535,6 +698,8 @@ export function appendEventToHistory(history, event) {
         return next;
     }
     if (event.eventType === "assistant.message") {
+        next.activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "assistant"));
+        next.activity = clampHistoryItems(next.activity, loadedEventLimit);
         const message = buildChatMessage(event, "assistant");
         if (!message) return next;
         next.chat.push(message);

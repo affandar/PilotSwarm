@@ -202,29 +202,22 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.43).
+ * Flat event loop durable session orchestration (v1.0.42).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.42";
 
-export function* durableSessionOrchestration_1_0_43(
+export function* durableSessionOrchestration_1_0_42(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
-    const sourceOrchestrationVersion =
-        typeof input.sourceOrchestrationVersion === "string" && input.sourceOrchestrationVersion
-            ? input.sourceOrchestrationVersion
-            : CURRENT_ORCHESTRATION_VERSION;
     const rawTraceInfo = typeof ctx.traceInfo === "function" ? ctx.traceInfo.bind(ctx) : null;
     if (rawTraceInfo) {
-        const versionPrefix = sourceOrchestrationVersion === CURRENT_ORCHESTRATION_VERSION
-            ? `[v${CURRENT_ORCHESTRATION_VERSION}]`
-            : `[v${CURRENT_ORCHESTRATION_VERSION} from=${sourceOrchestrationVersion}]`;
-        ctx.traceInfo = (message: string) => rawTraceInfo(`${versionPrefix} ${message}`);
+        ctx.traceInfo = (message: string) => rawTraceInfo(`[v1.0.42] ${message}`);
     }
     const dehydrateThreshold = input.dehydrateThreshold ?? 29;
     const idleTimeout = input.idleTimeout ?? 60;
@@ -372,8 +365,7 @@ export function* durableSessionOrchestration_1_0_43(
         return `${existingPrompt}\n\n${nextPrompt}`;
     }
 
-    const INTERNAL_SYSTEM_TURN_PROMPT =
-        "Internal orchestration wake-up. The user did not send a new message. Continue with the latest system instructions.";
+    const INTERNAL_SYSTEM_TURN_PROMPT = "Continue with the latest system instructions.";
 
     function extractPromptSystemContext(rawPrompt?: string): { prompt?: string; systemPrompt?: string } {
         if (!rawPrompt) return {};
@@ -422,7 +414,6 @@ export function* durableSessionOrchestration_1_0_43(
     }
 
     function applyCronAction(action: Extract<TurnAction, { type: "cron" }>, sourcePrompt?: string): void {
-        interruptedCronTimer = null;
         if (action.action === "cancel") {
             ctx.traceInfo("[orch] cron cancelled");
             cronSchedule = undefined;
@@ -491,7 +482,6 @@ export function* durableSessionOrchestration_1_0_43(
             ...(pendingInputQuestion ? { pendingInputQuestion } : {}),
             ...(waitingForAgentIds ? { waitingForAgentIds } : {}),
             ...(interruptedWaitTimer ? { interruptedWaitTimer } : {}),
-            ...(interruptedCronTimer ? { interruptedCronTimer } : {}),
             ...(pendingChildDigest ? { pendingChildDigest } : {}),
             ...(pendingShutdown ? { pendingShutdown } : {}),
             ...restOverrides,
@@ -659,19 +649,10 @@ export function* durableSessionOrchestration_1_0_43(
 
         if (activeTimer?.type === "cron") {
             const activeCron = cronSchedule;
-            const now: number = yield ctx.utcNow();
-            const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
-            interruptedCronTimer = {
-                remainingMs,
-                reason: activeTimer.reason,
-                originalDurationMs: activeTimer.originalDurationMs,
-                ...(activeTimer.shouldRehydrate ? { shouldRehydrate: true } : {}),
-            };
             activeTimer = null;
             clearPendingChildDigest();
             yield* processPrompt(
-                `[SYSTEM: This is an internal orchestration wake-up caused by child session updates; the user did not send a new message. ` +
-                    `Buffered child updates arrived while your recurring schedule was waiting for the next wake-up${activeCron ? ` ("${activeCron.reason}")` : ""}. ` +
+                `[SYSTEM: Buffered child updates arrived while your recurring schedule was waiting for the next wake-up${activeCron ? ` ("${activeCron.reason}")` : ""}. ` +
                     `Review the updates and continue your task now. The recurring cron schedule remains active and will be re-armed automatically after this turn completes.\n\n${digestPrompt}]`,
                 true,
             );
@@ -889,12 +870,6 @@ export function* durableSessionOrchestration_1_0_43(
         waitPlan?: ActiveTimer["waitPlan"];
         interruptKind?: "child" | "user";
     } | null = input.interruptedWaitTimer ?? null;
-    let interruptedCronTimer: {
-        remainingMs: number;
-        reason: string;
-        originalDurationMs?: number;
-        shouldRehydrate?: boolean;
-    } | null = input.interruptedCronTimer ?? null;
     let pendingChildDigest: NonNullable<OrchestrationInput["pendingChildDigest"]> | null =
         input.pendingChildDigest
             ? {
@@ -1197,20 +1172,13 @@ export function* durableSessionOrchestration_1_0_43(
         });
     }
 
-    let legacyPendingMessage: unknown = undefined;
-
-    // Handle legacy pendingMessage from older versions.
-    // Pre-v1.0.32 handlers sometimes carried raw queue messages instead of
-    // the newer flat-loop prompt/tool state. Route those through the latest
-    // drain logic instead of silently dropping non-prompt payloads.
+    // Handle legacy pendingMessage from older versions
     if (input.pendingMessage) {
         const legacyMsg = input.pendingMessage as any;
         if (legacyMsg.prompt && !pendingPrompt) {
             pendingPrompt = legacyMsg.prompt;
             bootstrapPrompt = Boolean(legacyMsg.bootstrap);
             pendingRequiredTool = legacyMsg.requiredTool;
-        } else {
-            legacyPendingMessage = legacyMsg;
         }
     }
 
@@ -1219,8 +1187,6 @@ export function* durableSessionOrchestration_1_0_43(
     const MAX_BUCKET_BYTES = 14 * 1024;
     const MAX_DRAIN_PER_TURN = 50;
     const MAX_ITERATIONS_PER_EXECUTION = 10;
-    const MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES = 800 * 1024;
-    const HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS = 3;
     const NON_BLOCKING_TIMER_MS = 10;
 
     function nextTimerCandidate(now: number): {
@@ -1464,7 +1430,6 @@ export function* durableSessionOrchestration_1_0_43(
 
     function needsBlockingDequeue(): boolean {
         return (
-            legacyPendingMessage === undefined &&
             !activeTimer &&
             pendingToolActions.length === 0 &&
             !pendingPrompt &&
@@ -1479,13 +1444,8 @@ export function* durableSessionOrchestration_1_0_43(
         for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
             let msg: any = null;
 
-            // ─── Mode 0: Legacy carry-forward message from older versions ───
-            if (legacyPendingMessage !== undefined) {
-                msg = legacyPendingMessage;
-                legacyPendingMessage = undefined;
-
             // ─── Mode 1: Active Timer / Child Digest — race dequeue vs timer ───
-            } else if (activeTimer || (pendingChildDigest && !pendingChildDigest.ready)) {
+            if (activeTimer || (pendingChildDigest && !pendingChildDigest.ready)) {
                 const now: number = yield ctx.utcNow();
                 const candidate = nextTimerCandidate(now);
                 if (!candidate) continue;
@@ -1617,19 +1577,9 @@ export function* durableSessionOrchestration_1_0_43(
                     activeTimer = null;
                 } else if (activeTimer?.type === "cron") {
                     const activeCron = cronSchedule;
-                    const now: number = yield ctx.utcNow();
-                    const remainingMs = Math.max(0, activeTimer.deadlineMs - now);
-                    interruptedCronTimer = {
-                        remainingMs,
-                        reason: activeTimer.reason,
-                        originalDurationMs: activeTimer.originalDurationMs,
-                        ...(activeTimer.shouldRehydrate ? { shouldRehydrate: true } : {}),
-                    };
                     const cronResumeNote =
-                        `This is an internal recurring schedule, not a new user prompt. ` +
                         `There is an active recurring schedule every ${activeCron?.intervalSeconds ?? "?"} seconds for "${activeCron?.reason ?? activeTimer.reason}". ` +
-                        `The next cron wake-up will keep the original schedule and resume after the remaining ${Math.round(remainingMs / 1000)} seconds unless you explicitly reset cron. ` +
-                        `Do NOT call wait() just to keep the recurring loop alive. ` +
+                        `It remains active automatically after this turn completes, so do NOT call wait() just to keep the recurring loop alive. ` +
                         `Call cron(action="cancel") only if you need to stop it.`;
                     if (activeTimer.shouldRehydrate && userPrompt) {
                         userPrompt = wrapWithResumeContext(userPrompt, cronResumeNote);
@@ -1693,7 +1643,7 @@ export function* durableSessionOrchestration_1_0_43(
         turnSystemPrompt = mergePrompt(turnSystemPrompt, extractedPrompt.systemPrompt);
         const systemOnlyTurn = !prompt && !!turnSystemPrompt;
         if (systemOnlyTurn) {
-            prompt = INTERNAL_SYSTEM_TURN_PROMPT;
+            prompt = "Continue with the latest system instructions.";
             promptIsBootstrap = true;
         }
         config.turnSystemPrompt = turnSystemPrompt;
@@ -2032,41 +1982,6 @@ export function* durableSessionOrchestration_1_0_43(
                         type: "wait",
                         shouldRehydrate: saved.shouldRehydrate,
                         waitPlan: saved.waitPlan,
-                    };
-                    return;
-                }
-
-                if (interruptedCronTimer && interruptedCronTimer.remainingMs > 0) {
-                    const saved = interruptedCronTimer;
-                    interruptedCronTimer = null;
-                    const remainingMs = Math.max(0, saved.remainingMs);
-                    const remainingSec = Math.max(1, Math.round(remainingMs / 1000));
-                    ctx.traceInfo(`[orch] auto-resuming interrupted cron: ${remainingSec}s remain (${saved.reason})`);
-
-                    const cronResumePlan = planWaitHandling({
-                        blobEnabled,
-                        seconds: remainingSec,
-                        dehydrateThreshold,
-                    });
-                    if (cronResumePlan.shouldDehydrate) {
-                        yield* dehydrateForNextTurn("cron", cronResumePlan.resetAffinityOnDehydrate);
-                    }
-
-                    const resumeNow: number = yield ctx.utcNow();
-                    publishStatus("waiting", {
-                        waitSeconds: remainingSec,
-                        waitReason: saved.reason,
-                        waitStartedAt: resumeNow,
-                    });
-
-                    if (!cronResumePlan.shouldDehydrate) yield* maybeCheckpoint();
-
-                    activeTimer = {
-                        deadlineMs: resumeNow + remainingMs,
-                        originalDurationMs: remainingMs,
-                        reason: saved.reason,
-                        type: "cron",
-                        shouldRehydrate: cronResumePlan.shouldDehydrate,
                     };
                     return;
                 }
@@ -3022,23 +2937,6 @@ export function* durableSessionOrchestration_1_0_43(
             ctx.traceInfo(`[orch] iteration cap (${MAX_ITERATIONS_PER_EXECUTION}) — continuing as new`);
             yield* versionedContinueAsNew(continueInput());
             return "";
-        }
-
-        if (loopIteration % HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS === 0) {
-            try {
-                const stats = yield manager.getOrchestrationStats(input.sessionId);
-                const historySizeBytes = Number(stats?.historySizeBytes) || 0;
-                if (historySizeBytes >= MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES) {
-                    ctx.traceInfo(
-                        `[orch] history size cap (${historySizeBytes} >= ${MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES}) ` +
-                        `at loop ${loopIteration} — continuing as new`,
-                    );
-                    yield* versionedContinueAsNew(continueInput());
-                    return "";
-                }
-            } catch (err: any) {
-                ctx.traceInfo(`[orch] history size check failed at loop ${loopIteration}: ${err?.message ?? err}`);
-            }
         }
 
         // DRAIN: greedily move queue events + timer fires into KV FIFO

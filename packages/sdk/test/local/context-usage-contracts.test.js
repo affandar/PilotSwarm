@@ -24,10 +24,10 @@ describe("context usage contracts", () => {
     it("carries context usage through orchestration state and custom status", () => {
         const orchestration = readRepoFile("packages/sdk/src/orchestration.ts");
         const registry = readRepoFile("packages/sdk/src/orchestration-registry.ts");
+        const versions = readRepoFile("packages/sdk/src/orchestration-version.ts");
 
-        expect(orchestration).toMatch(
-            /export const CURRENT_ORCHESTRATION_VERSION = "\d+\.\d+\.\d+";/,
-        );
+        assertIncludes(versions, 'export const DURABLE_SESSION_LATEST_VERSION = "', "shared version file should define the canonical latest version");
+        assertIncludes(orchestration, "export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;", "orchestration should read the latest version from the shared constant");
         assertIncludes(orchestration, "function updateContextUsageFromEvents(", "orchestration should derive context usage from turn events");
         assertIncludes(orchestration, "...(contextUsage ? { contextUsage } : {}),", "context usage should be carried into status and continueAsNew state");
         assertIncludes(registry, "version: DURABLE_SESSION_LATEST_VERSION", "registry should expose the latest orchestration via the shared alias");

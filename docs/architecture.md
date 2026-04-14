@@ -1602,7 +1602,7 @@ src/orchestration_1_0_3.ts   — v1.0.3 (added agent management tools)
 src/orchestration.ts         — current development version (1.0.4)
 ```
 
-All versions are registered in the duroxide runtime. In-flight orchestrations continue using their original version. New orchestrations use the latest.
+All versions are registered in the duroxide runtime. A running execution replays under the version it started on, but every new start and every `continueAsNewVersioned(...)` handoff targets the shared latest version. That means the latest handler must treat `OrchestrationInput` as a backward-compatible wire format for every version that is still registered in the repo.
 
 ### 9.2 When to Create a New Version
 
@@ -1610,6 +1610,7 @@ All versions are registered in the duroxide runtime. In-flight orchestrations co
 - Changing the order of yielded actions
 - Adding or removing `setCustomStatus()` calls (these are recorded in duroxide history)
 - Changing the `continueAsNew` input shape in a way that breaks deserialization
+- Changing `continueAsNew` semantics in a way that makes older carried state resume incorrectly under the new latest handler
 
 ### 9.3 Safe Changes (No New Version Needed)
 
@@ -1707,4 +1708,4 @@ MCP servers support both local (stdio) and remote (HTTP/SSE) transports. Environ
 
 9. **Sub-agent TurnResults abort the current turn.** Like `wait` and `ask_user`, sub-agent tools (`spawn_agent`, `message_agent`, etc.) abort the in-flight CopilotSession turn. The `ManagedSession` captures the tool arguments and returns a typed `TurnResult` to the orchestration, which performs the durable operation and resumes the LLM with the result.
 
-10. **Orchestration versions are immutable.** Once an orchestration version is deployed and has in-flight instances, its yield sequence cannot change. New versions are separate files. All versions remain registered so in-flight instances continue on their original version.
+10. **Orchestration versions are immutable, and the carried input is a compatibility contract.** Once an orchestration version is deployed and has in-flight instances, its yield sequence cannot change. New versions are separate files. The latest handler must continue to understand carried input from the oldest version that is still registered, and that compatibility must be behavioral as well as syntactic.

@@ -1005,6 +1005,7 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
         sessionsFlat: state.sessions.flat,
         filterQuery: state.sessions.filterQuery || "",
         connectionMode: state.connection?.mode || "local",
+        modalOpen: Boolean(state.ui.modal),
         focused: state.ui.focusRegion === "sessions",
     }), shallowEqualObject);
     const rows = React.useMemo(() => selectSessionRows({
@@ -1033,7 +1034,7 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
     }, []);
 
     React.useEffect(() => {
-        if (!viewState.focused || !viewState.activeSessionId) return;
+        if (viewState.modalOpen || !viewState.focused || !viewState.activeSessionId) return;
         const activeButton = sessionButtonRefs.current.get(viewState.activeSessionId);
         if (!activeButton) return;
 
@@ -1041,7 +1042,7 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
             activeButton.focus({ preventScroll: true });
         }
         activeButton.scrollIntoView({ block: "nearest" });
-    }, [rows, viewState.activeSessionId, viewState.focused]);
+    }, [rows, viewState.activeSessionId, viewState.focused, viewState.modalOpen]);
 
     const panelActions = React.createElement(React.Fragment, null,
         React.createElement("button", {
@@ -1664,6 +1665,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             value: state.ui.prompt,
             cursor: state.ui.promptCursor,
             focused: state.ui.focusRegion === "prompt",
+            modalOpen: Boolean(state.ui.modal),
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
         };
     }, shallowEqualObject);
@@ -1671,7 +1673,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
 
     React.useEffect(() => {
         const inputNode = inputRef.current;
-        if (!active || !promptState.focused || !inputNode) return;
+        if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;
         if (document.activeElement !== inputNode) {
             try {
                 inputNode.focus({ preventScroll: true });
@@ -1680,7 +1682,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             }
         }
         inputNode.setSelectionRange(promptState.cursor, promptState.cursor);
-    }, [active, promptState.cursor, promptState.focused]);
+    }, [active, promptState.cursor, promptState.focused, promptState.modalOpen]);
 
     const sendPrompt = React.useCallback(() => {
         controller.handleCommand(UI_COMMANDS.SEND_PROMPT)
@@ -2081,6 +2083,7 @@ function ModalLayer({ controller }) {
     }), shallowEqualObject);
     const modal = modalState.rawModal;
     const renameInputRef = React.useRef(null);
+    const listModalRef = React.useRef(null);
 
     React.useEffect(() => {
         if (modal?.type !== "renameSession" || !modalState.renameSession) return;
@@ -2095,6 +2098,38 @@ function ModalLayer({ controller }) {
         }
         inputNode.setSelectionRange(modalState.renameSession.cursorIndex, modalState.renameSession.cursorIndex);
     }, [modal?.type, modalState.renameSession?.cursorIndex, modalState.renameSession?.value]);
+
+    React.useEffect(() => {
+        if (!modal) return;
+        if (![
+            "themePicker",
+            "modelPicker",
+            "sessionAgentPicker",
+            "artifactPicker",
+            "logFilter",
+            "filesFilter",
+            "historyFormat",
+        ].includes(modal.type)) {
+            return;
+        }
+
+        const listNode = listModalRef.current;
+        if (!listNode) return;
+        const selected = listNode.querySelector(".ps-list-button.is-selected");
+        if (selected && typeof selected.scrollIntoView === "function") {
+            selected.scrollIntoView({ block: "nearest" });
+        }
+    }, [
+        modal?.type,
+        modal?.selectedIndex,
+        modalState.themePicker?.selectedRowIndex,
+        modalState.modelPicker?.selectedRowIndex,
+        modalState.sessionAgentPicker?.selectedRowIndex,
+        modalState.artifactPicker?.selectedRowIndex,
+        modalState.logFilter?.selectedRowIndex,
+        modalState.filesFilter?.selectedRowIndex,
+        modalState.historyFormat?.selectedRowIndex,
+    ]);
 
     if (!modal) return null;
 
@@ -2146,7 +2181,7 @@ function ModalLayer({ controller }) {
                 React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
             ),
             React.createElement("div", { className: "ps-modal-grid" },
-                React.createElement("div", { className: "ps-modal-list" },
+                React.createElement("div", { ref: listModalRef, className: "ps-modal-list" },
                     renderedList,
                 ),
                 React.createElement("div", { className: "ps-modal-details" },

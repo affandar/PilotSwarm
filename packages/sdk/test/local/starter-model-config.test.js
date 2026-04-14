@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 function loadStarterModelConfig() {
-    const configPath = path.resolve(process.cwd(), "deploy/config/model_providers.local-docker.json");
+    const configPath = path.resolve(__dirname, "../../../../deploy/config/model_providers.local-docker.json");
     return JSON.parse(fs.readFileSync(configPath, "utf8"));
 }
 

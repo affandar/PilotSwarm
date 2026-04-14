@@ -22,6 +22,7 @@ import type {
     SessionContextUsage,
 } from "./types.js";
 import { createSessionProxy, createSessionManagerProxy } from "./session-proxy.js";
+import { DURABLE_SESSION_LATEST_VERSION } from "./orchestration-version.js";
 import { planWaitHandling } from "./wait-affinity.js";
 
 /**
@@ -537,7 +538,8 @@ export function* durableSessionOrchestration_1_0_36(
         if (!canInput.needsHydration) {
             yield* ensureWarmResumeCheckpoint();
         }
-        yield ctx.continueAsNewVersioned(canInput, CURRENT_ORCHESTRATION_VERSION);
+        canInput.sourceOrchestrationVersion = CURRENT_ORCHESTRATION_VERSION;
+        yield ctx.continueAsNewVersioned(canInput, DURABLE_SESSION_LATEST_VERSION);
     }
 
     function parseChildUpdate(promptText?: string): { sessionId: string; updateType: string; content: string } | null {

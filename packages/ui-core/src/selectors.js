@@ -1,5 +1,10 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
-import { createSplashCard, parseAskedAndAnsweredExchange } from "./history.js";
+import {
+    createSplashCard,
+    isRehydrationNoticeText,
+    parseAskedAndAnsweredExchange,
+    stripLeadingRehydrationNoticeText,
+} from "./history.js";
 import {
     buildMessageCardLines,
     decorateArtifactLinksForChat,
@@ -7,9 +12,11 @@ import {
     formatDisplayDateTime,
     formatHumanDurationSeconds,
     formatTimestamp,
+    padRunsToDisplayWidth,
     parseMarkdownLines,
     shortModelName,
     shortSessionId,
+    wrapRunsToDisplayWidth,
 } from "./formatting.js";
 import {
     getContextCompactionBadge,
@@ -408,6 +415,60 @@ function buildSessionErrorMessage(session) {
     };
 }
 
+function latestEventSeq(events = [], eventType) {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+        const event = events[index];
+        if (event?.eventType === eventType) {
+            return Number(event?.seq || 0);
+        }
+    }
+    return 0;
+}
+
+function buildThinkingMessage(session, history, chat = []) {
+    if (!session || session?.pendingQuestion?.question) return null;
+
+    const status = String(session?.status || "").toLowerCase();
+    if (status === "idle" || status === "waiting" || status === "input_required" || status === "completed" || status === "failed" || status === "cancelled") {
+        return null;
+    }
+
+    const visibleChat = (chat || []).filter((message) => message?.role === "user" || message?.role === "assistant");
+    const lastVisibleMessage = visibleChat[visibleChat.length - 1] || null;
+    const waitingOnAssistantFromChat = lastVisibleMessage?.role === "user";
+
+    const events = Array.isArray(history?.events) ? history.events : [];
+    const lastUserSeq = latestEventSeq(events, "user.message");
+    const lastAssistantSeq = latestEventSeq(events, "assistant.message");
+    const waitingOnAssistantFromEvents = lastUserSeq > lastAssistantSeq;
+    if (!waitingOnAssistantFromChat && !waitingOnAssistantFromEvents && status !== "running") {
+        return null;
+    }
+
+    const floorSeq = Math.max(lastUserSeq, lastAssistantSeq);
+    const reasoningEvents = events.filter((event) => (
+        event?.eventType === "assistant.reasoning"
+        && Number(event?.seq || 0) > floorSeq
+    ));
+    const latestReasoning = reasoningEvents[reasoningEvents.length - 1] || null;
+    const reasoningText = String(
+        latestReasoning?.data?.content
+        || latestReasoning?.data?.text
+        || latestReasoning?.data?.message
+        || "",
+    ).trim();
+    if (!reasoningText) return null;
+
+    return {
+        id: `thinking:${session.sessionId}:${lastUserSeq}:${lastAssistantSeq}:${latestReasoning?.seq || 0}`,
+        role: "assistant",
+        text: reasoningText,
+        time: "",
+        createdAt: latestReasoning?.createdAt || session.updatedAt || Date.now(),
+        thinking: true,
+    };
+}
+
 export function selectActiveChat(state) {
     const sessionId = state.sessions.activeSessionId;
     const session = sessionId ? state.sessions.byId[sessionId] || null : null;
@@ -430,6 +491,10 @@ export function selectActiveChat(state) {
     }
     if (sessionErrorMessage) {
         messages.push(sessionErrorMessage);
+    }
+    const thinkingMessage = buildThinkingMessage(session, history, messages);
+    if (thinkingMessage) {
+        messages.push(thinkingMessage);
     }
     return messages;
 }
@@ -528,10 +593,11 @@ function splitSystemNoticeSegments(text) {
                 text: wrapped.leadingText,
             });
         }
-        if (wrapped.systemText) {
+        const strippedWrappedSystemText = stripLeadingRehydrationNoticeText(wrapped.systemText);
+        if (strippedWrappedSystemText) {
             segments.push({
                 kind: "system",
-                text: wrapped.systemText,
+                text: strippedWrappedSystemText,
             });
         }
         return segments;
@@ -561,9 +627,14 @@ function splitSystemNoticeSegments(text) {
         const singleLineMatch = /^\s*\[SYSTEM:\s*(.*?)\]\s*$/i.exec(line);
         if (singleLineMatch) {
             flushText();
+            const systemText = stripLeadingRehydrationNoticeText(singleLineMatch[1].trim());
+            if (!systemText) {
+                index += 1;
+                continue;
+            }
             segments.push({
                 kind: "system",
-                text: singleLineMatch[1].trim(),
+                text: systemText,
             });
             index += 1;
             continue;
@@ -597,9 +668,14 @@ function splitSystemNoticeSegments(text) {
         }
 
         flushText();
+        const systemText = stripLeadingRehydrationNoticeText(noticeLines.join("\n").trim());
+        if (!systemText) {
+            index = closingIndex + 1;
+            continue;
+        }
         segments.push({
             kind: "system",
-            text: noticeLines.join("\n").trim(),
+            text: systemText,
         });
         index = closingIndex + 1;
     }
@@ -610,7 +686,10 @@ function splitSystemNoticeSegments(text) {
 
 function messageHasSystemNotice(message) {
     if (!message) return false;
-    if (message?.role === "system") return true;
+    if (message?.role === "system") {
+        return !isRehydrationNoticeText(message?.text || "")
+            || Boolean(stripLeadingRehydrationNoticeText(message?.text || ""));
+    }
     if (message?.role !== "user" && message?.role !== "assistant") return false;
     return splitSystemNoticeSegments(message?.text || "").some((segment) => segment.kind === "system");
 }
@@ -684,9 +763,52 @@ function appendChatBlockLines(targetLines, nextLines) {
     targetLines.push(...nextLines);
 }
 
+function buildThinkingCardLines(message, maxWidth) {
+    const safeWidth = Math.max(12, Math.min(72, Number(maxWidth) || 12));
+    const contentWidth = Math.max(1, safeWidth - 4);
+    const timestamp = formatTimestamp(message?.createdAt || message?.time);
+    const titleRuns = fitRuns([
+        { text: " ⠋ Thinking… ", color: "cyan", bold: true },
+        ...(timestamp ? [{ text: ` ${timestamp} `, color: "gray" }] : []),
+    ], Math.max(1, safeWidth - 3));
+    const titleWidth = titleRuns.reduce((sum, run) => sum + String(run?.text || "").length, 0);
+    const topFill = Math.max(0, safeWidth - titleWidth - 3);
+    const bodyLines = String(message?.text || "").trim()
+        ? trimLeadingBlankLines(parseMarkdownLines(
+            decorateArtifactLinksForChat(message.text),
+            { width: contentWidth },
+        )).flatMap((lineRuns) => wrapRunsToDisplayWidth(lineRuns, contentWidth))
+        : [];
+
+    const lines = [[
+        { text: "┌─", color: "gray" },
+        ...titleRuns,
+        { text: `${"─".repeat(topFill)}┐`, color: "gray" },
+    ]];
+
+    for (const lineRuns of bodyLines) {
+        lines.push([
+            { text: "│ ", color: "gray" },
+            ...padRunsToDisplayWidth(lineRuns.map((run) => ({
+                ...run,
+                color: run?.color && run.color !== "white" ? run.color : "gray",
+            })), contentWidth),
+            { text: " │", color: "gray" },
+        ]);
+    }
+
+    lines.push([{ text: `└${"─".repeat(Math.max(1, safeWidth - 2))}┘`, color: "gray" }]);
+    lines.push([{ text: "", color: null }]);
+    return lines;
+}
+
 function buildChatMessageLines(message, maxWidth, options = {}) {
     if (message?.splash) {
         return [{ kind: "markup", value: message.text }];
+    }
+
+    if (message?.thinking) {
+        return buildThinkingCardLines(message, maxWidth);
     }
 
     if (message?.role === "user") {
@@ -714,22 +836,8 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
         if (segments.some((segment) => segment.kind === "system")) {
             const rendered = [];
             let renderedSpeakerText = false;
-            for (const [segmentIndex, segment] of segments.entries()) {
-                if (segment.kind === "system") {
-                    if (rendered.length > 0 && flattenLineText(rendered[rendered.length - 1]).trim().length > 0) {
-                        rendered.push(createBlankLine());
-                    }
-                    rendered.push(buildCollapsedSystemNoticeLine(
-                        segment.text,
-                        formatTimestamp(message?.createdAt || message?.time),
-                    ));
-                    const hasLaterContent = segments.slice(segmentIndex + 1).some((candidate) => candidate.kind !== "text" || candidate.text.trim());
-                    if (hasLaterContent) {
-                        rendered.push(createBlankLine());
-                    }
-                    continue;
-                }
-
+            for (const segment of segments) {
+                if (segment.kind === "system") continue;
                 if (!segment.text.trim()) continue;
                 appendChatBlockLines(rendered, buildChatMessageLines({
                     ...message,
@@ -748,9 +856,13 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
     }
 
     if (message?.role !== "user" && message?.role !== "assistant") {
+        const strippedSystemText = stripLeadingRehydrationNoticeText(message?.text || "");
+        if (message?.role === "system" && !strippedSystemText) {
+            return [];
+        }
         if (message?.role === "system") {
             return [buildCollapsedSystemNoticeLine(
-                message?.text || "",
+                strippedSystemText || message?.text || "",
                 formatTimestamp(message?.createdAt || message?.time),
             )];
         }
@@ -1883,23 +1995,37 @@ function buildSequenceStatsLines(state, session, maxWidth) {
     } else if (statsEntry.loading && !statsEntry.stats) {
         body = "loading orchestration stats...";
     } else if (!statsEntry.stats) {
-        body = statsEntry.error ? "orchestration stats unavailable" : "loading orchestration stats...";
+        body = "orchestration stats unavailable";
     } else {
         const stats = statsEntry.stats;
-        const fullParts = [
-            `hist ${Number(stats.historyEventCount) || 0} ev`,
-            formatCompactBytes(stats.historySizeBytes),
-            `q ${Number(stats.queuePendingCount) || 0}`,
-            `kv ${Number(stats.kvUserKeyCount) || 0} keys`,
-            formatCompactBytes(stats.kvTotalValueBytes),
-        ];
-        const compactParts = [
-            `h${Number(stats.historyEventCount) || 0}`,
-            formatCompactBytes(stats.historySizeBytes),
-            `q${Number(stats.queuePendingCount) || 0}`,
-            `kv${Number(stats.kvUserKeyCount) || 0}`,
-        ];
+        const fullParts = [];
+        const compactParts = [];
+        if (typeof stats.orchestrationVersion === "string" && stats.orchestrationVersion) {
+            fullParts.push(`v ${stats.orchestrationVersion}`);
+            compactParts.push(`v${stats.orchestrationVersion}`);
+        }
+        if (stats.historyEventCount != null) {
+            fullParts.push(`hist ${Number(stats.historyEventCount) || 0} ev`);
+            compactParts.push(`h${Number(stats.historyEventCount) || 0}`);
+        }
+        if (stats.historySizeBytes != null) {
+            const formatted = formatCompactBytes(stats.historySizeBytes);
+            fullParts.push(formatted);
+            compactParts.push(formatted);
+        }
+        if (stats.queuePendingCount != null) {
+            fullParts.push(`q ${Number(stats.queuePendingCount) || 0}`);
+            compactParts.push(`q${Number(stats.queuePendingCount) || 0}`);
+        }
+        if (stats.kvUserKeyCount != null) {
+            fullParts.push(`kv ${Number(stats.kvUserKeyCount) || 0} keys`);
+            compactParts.push(`kv${Number(stats.kvUserKeyCount) || 0}`);
+        }
+        if (stats.kvTotalValueBytes != null) {
+            fullParts.push(formatCompactBytes(stats.kvTotalValueBytes));
+        }
         body = maxWidth <= 40 ? compactParts.join(" · ") : fullParts.join(" | ");
+        if (!body) body = "orchestration stats unavailable";
     }
 
     if (maxWidth <= 52) {

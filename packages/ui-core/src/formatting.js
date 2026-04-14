@@ -218,7 +218,7 @@ function fitRunsToDisplayWidth(runs, maxWidth) {
     return output;
 }
 
-function padRunsToDisplayWidth(runs, width) {
+export function padRunsToDisplayWidth(runs, width) {
     const safeWidth = Math.max(0, Number(width) || 0);
     const fitted = fitRunsToDisplayWidth(runs, safeWidth);
     const used = measureRunsWidth(fitted);
@@ -229,7 +229,7 @@ function padRunsToDisplayWidth(runs, width) {
     return fitted;
 }
 
-function wrapRunsToDisplayWidth(runs, width) {
+export function wrapRunsToDisplayWidth(runs, width) {
     const safeWidth = Math.max(1, Number(width) || 1);
     const wrapped = [];
     let currentRuns = [];

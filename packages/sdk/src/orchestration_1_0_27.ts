@@ -21,6 +21,7 @@ import type {
     SessionStatusSignal,
 } from "./types.js";
 import { createSessionProxy, createSessionManagerProxy } from "./session-proxy.js";
+import { DURABLE_SESSION_LATEST_VERSION } from "./orchestration-version.js";
 import { planWaitHandling } from "./wait-affinity.js";
 
 /**
@@ -298,7 +299,8 @@ export function* durableSessionOrchestration_1_0_27(
 
     /** Yield this to continueAsNew into the current (latest) orchestration version. */
     function versionedContinueAsNew(input: OrchestrationInput) {
-        return ctx.continueAsNewVersioned(input, CURRENT_ORCHESTRATION_VERSION);
+        input.sourceOrchestrationVersion = CURRENT_ORCHESTRATION_VERSION;
+        return ctx.continueAsNewVersioned(input, DURABLE_SESSION_LATEST_VERSION);
     }
 
     function parseChildUpdate(promptText?: string): { sessionId: string; updateType: string; content: string } | null {

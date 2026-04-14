@@ -86,6 +86,7 @@ describe("lossy handoff observability", () => {
         state.history.bySessionId.set(sessionId, history);
         state.orchestration.bySessionId[sessionId] = {
             stats: {
+                orchestrationVersion: "1.0.43",
                 historyEventCount: 2,
                 historySizeBytes: 1024,
                 queuePendingCount: 0,
@@ -96,6 +97,7 @@ describe("lossy handoff observability", () => {
 
         const inspector = selectInspector(state, { width: 180 });
         const sequenceText = inspector.lines.map(flattenLine).join("\n");
+        assertIncludes(sequenceText, "1.0.43", "sequence stats should include orchestration version when available");
         assertIncludes(sequenceText, "lossy", "sequence view should show the lossy handoff row");
         assertIncludes(sequenceText, "closed", "sequence view should expose the connection failure detail");
         assertIncludes(sequenceText, "lossy_handoff", "sequence view should include the special dehydration reason");
@@ -118,5 +120,31 @@ describe("lossy handoff observability", () => {
             String(run?.text || "").includes("lossy "),
         );
         assertEqual(lossySequenceRun?.color, "yellow", "lossy handoffs should render yellow in the sequence view");
+    });
+
+    it("renders partial orchestration stats when only the version is available", () => {
+        const sessionId = "session-version-only";
+        const state = createInitialState({ mode: "local" });
+        state.ui.inspectorTab = "sequence";
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "idle",
+            title: "Version only",
+            createdAt: new Date("2026-04-05T09:49:00.000Z"),
+            updatedAt: new Date("2026-04-05T09:50:11.000Z"),
+            iterations: 1,
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.history.bySessionId.set(sessionId, buildHistoryModel([]));
+        state.orchestration.bySessionId[sessionId] = {
+            stats: {
+                orchestrationVersion: "1.0.43",
+            },
+        };
+
+        const inspector = selectInspector(state, { width: 100 });
+        const sequenceText = inspector.lines.map(flattenLine).join("\n");
+        assertIncludes(sequenceText, "1.0.43", "sequence stats should show version-only payloads");
+        assertEqual(sequenceText.includes("loading orchestration stats"), false, "version-only stats should not look like a loading state");
     });
 });
