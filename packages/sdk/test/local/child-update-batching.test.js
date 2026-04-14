@@ -53,6 +53,7 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
         recordSessionEvent: vi.fn(() => ({ effect: "recordSessionEvent" })),
         summarizeSession: vi.fn(() => ({ effect: "summarizeSession" })),
         listChildSessions: vi.fn(() => ({ effect: "listChildSessions" })),
+        getOrchestrationStats: vi.fn((sessionId) => ({ effect: "getOrchestrationStats", sessionId })),
         getSessionStatus: vi.fn((sessionId) => ({ effect: "getSessionStatus", sessionId })),
         sendCommandToSession: vi.fn((sessionId, command) => ({ effect: "sendCommandToSession", sessionId, command })),
         updateCmsState: vi.fn((sessionId, nextState, lastError, waitReason) => ({
@@ -131,6 +132,14 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
                 return undefined;
             case "listChildSessions":
                 return JSON.stringify(inputOverrides.subAgents ?? []);
+            case "getOrchestrationStats":
+                return inputOverrides.orchestrationStats ?? {
+                    historyEventCount: 0,
+                    historySizeBytes: 0,
+                    queuePendingCount: 0,
+                    kvUserKeyCount: 0,
+                    kvTotalValueBytes: 0,
+                };
             case "getSessionStatus": {
                 if (typeof inputOverrides.getSessionStatus === "function") {
                     const value = inputOverrides.getSessionStatus(effect.sessionId, state);
@@ -225,6 +234,134 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
         throw new Error("Exceeded step limit before reaching runTurn.");
     }
 
+    async function runThroughTurn(turnResult) {
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`Could not resolve latest orchestration handler: ${handlerName}`);
+        }
+        let currentInput = {
+            sessionId: "parent-session",
+            config: {},
+            iteration: 5,
+            isSystem: true,
+            blobEnabled: false,
+            cronSchedule: {
+                intervalSeconds: 180,
+                reason: "refresh summary",
+            },
+            activeTimerState: {
+                remainingMs: 180_000,
+                originalDurationMs: 180_000,
+                reason: "refresh summary",
+                type: "cron",
+            },
+            ...inputOverrides,
+        };
+
+        for (let execution = 0; execution < 10; execution += 1) {
+            const gen = handler(ctx, currentInput);
+            let input;
+            for (let step = 0; step < 800; step += 1) {
+                const next = gen.next(input);
+                if (next.done) {
+                    return {
+                        done: true,
+                        value: next.value,
+                        state,
+                    };
+                }
+
+                state.continueAsNew = null;
+                const resolved = resolve(next.value);
+                if (resolved === STOP) {
+                    input = turnResult;
+                    continue;
+                }
+                input = resolved;
+
+                if (state.continueAsNew) {
+                    return {
+                        done: false,
+                        continueAsNew: state.continueAsNew,
+                        state,
+                    };
+                }
+            }
+        }
+
+        throw new Error("Exceeded step limit before orchestration continued as new.");
+    }
+
+    async function runUntilSecondRunTurn(firstTurnResult) {
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`Could not resolve latest orchestration handler: ${handlerName}`);
+        }
+        let currentInput = {
+            sessionId: "parent-session",
+            config: {},
+            iteration: 5,
+            isSystem: true,
+            blobEnabled: false,
+            cronSchedule: {
+                intervalSeconds: 180,
+                reason: "refresh summary",
+            },
+            activeTimerState: {
+                remainingMs: 180_000,
+                originalDurationMs: 180_000,
+                reason: "refresh summary",
+                type: "cron",
+            },
+            ...inputOverrides,
+        };
+        let runTurnCount = 0;
+
+        for (let execution = 0; execution < 10; execution += 1) {
+            const gen = handler(ctx, currentInput);
+            let input;
+            for (let step = 0; step < 1000; step += 1) {
+                const next = gen.next(input);
+                if (next.done) {
+                    return {
+                        done: true,
+                        value: next.value,
+                        state,
+                    };
+                }
+
+                state.continueAsNew = null;
+                const resolved = resolve(next.value);
+                if (resolved === STOP) {
+                    runTurnCount += 1;
+                    if (runTurnCount === 1) {
+                        input = firstTurnResult;
+                        continue;
+                    }
+                    return {
+                        done: false,
+                        runTurnCall: state.runTurnCall,
+                        state,
+                    };
+                }
+                input = resolved;
+
+                if (state.continueAsNew) {
+                    currentInput = state.continueAsNew.input;
+                    break;
+                }
+            }
+        }
+
+        throw new Error("Exceeded step limit before reaching the second runTurn.");
+    }
+
     async function runUntilDone() {
         const orchestrationModule = await import("../../src/orchestration.ts");
         const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
@@ -279,6 +416,8 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
 
     return {
         runUntilRunTurn,
+        runThroughTurn,
+        runUntilSecondRunTurn,
         runUntilDone,
         state,
         values,
@@ -316,8 +455,11 @@ describe("orchestration child update batching", () => {
 
         const result = await harness.runUntilRunTurn();
 
-        expect(result.runTurnCall.prompt).toBe("Continue with the latest system instructions.");
+        expect(result.runTurnCall.prompt).toBe(
+            "Internal orchestration wake-up. The user did not send a new message. Continue with the latest system instructions.",
+        );
         expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("This is an internal orchestration wake-up caused by child session updates");
         expect(result.runTurnCall.systemPrompt).toContain("Agent agent-1");
         expect(result.runTurnCall.systemPrompt).toContain("Agent agent-2");
         expect(result.runTurnCall.systemPrompt).toContain("Child two done");
@@ -418,6 +560,35 @@ describe("orchestration child update batching", () => {
         expect(result.runTurnCall.systemPrompt).toContain("Waiting on reporter");
         expect(result.runTurnCall.systemPrompt).toContain('There is an active recurring schedule every 180 seconds for "refresh summary".');
         expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires the next interrupted cron wake-up at the original scheduled time", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 60_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=9]\nFinished a chunk",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track source", status: "running" },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilSecondRunTurn({
+            type: "completed",
+            content: "Still monitoring.",
+        });
+
+        expect(result.runTurnCall.prompt).toBe(
+            "Internal orchestration wake-up. The user did not send a new message. Continue with the latest system instructions.",
+        );
+        expect(result.state.nowMs).toBe(180_000);
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(2);
     });
 });
 

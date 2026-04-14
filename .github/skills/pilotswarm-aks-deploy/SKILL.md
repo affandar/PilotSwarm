@@ -9,6 +9,8 @@ Use this skill when the user wants to deploy PilotSwarm to AKS, refresh AKS env/
 
 Keep the workflow repo-specific and explicit. Prefer the repo-owned scripts, and treat secret/env changes as part of the deploy surface, not as an afterthought.
 
+This skill deploys `pilotswarm` only. Do not roll the same change into downstream projects or other clusters (for example `waldemort` or an app repo with a vendored PilotSwarm copy) unless the user explicitly asks for that separate deployment.
+
 ## Canonical Targets
 
 - Kubernetes context: `toygres-aks`

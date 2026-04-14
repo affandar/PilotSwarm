@@ -16,6 +16,7 @@ They are not active in this repository. Copy them into the target repository you
 - `pilotswarm-cli-builder` — CLI/TUI scaffold guidance, env files, launcher scripts
 - `pilotswarm-portal-builder` — portal branding, `plugin.json.portal`, auth add-ons, and deployment wiring
 - `pilotswarm-sdk-builder` — SDK app scaffold guidance, client/worker split, tests
+- `pilotswarm-duroxide-versioning` — durable orchestration versioning, continue-as-new upgrades, compatibility rules
 - `pilotswarm-azure-deployer` — deployment workflow, manifests, env checklist, `RUST_LOG` observability
 - `pilotswarm-aks-identity` — cross-cluster AKS access, Workload Identity, kubectl patterns
 - `pilotswarm-azure-lessons` — RBAC conditional access workaround, PostgreSQL region restrictions, Key Vault + CSI
@@ -62,6 +63,8 @@ Copy these folders into the target repository:
     ├── pilotswarm-portal-builder/
     │   └── SKILL.md
     ├── pilotswarm-sdk-builder/
+    │   └── SKILL.md
+    ├── pilotswarm-duroxide-versioning/
     │   └── SKILL.md
     ├── pilotswarm-azure-deployer/
     │   └── SKILL.md

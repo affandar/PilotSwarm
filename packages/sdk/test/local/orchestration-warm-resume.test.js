@@ -67,17 +67,101 @@ describe("orchestration warm resume durability", () => {
         const third = gen.next(undefined);
         expect(third.value).toMatchObject({
             effect: "continueAsNew",
-            version: "1.0.30",
+            version: "1.0.43",
         });
         expect(third.value.input.prompt).toContain("Sub-agent spawned successfully");
+        expect(third.value.input.sourceOrchestrationVersion).toBe("1.0.30");
         expect(calls).toEqual([
             "spawnChildSession",
             "checkpoint",
-            "continueAsNew:1.0.30",
+            "continueAsNew:1.0.43",
         ]);
 
         const done = gen.next();
         expect(done.done).toBe(true);
         expect(done.value).toBe("");
+    });
+
+    it("preserves legacy carried command messages when upgrading into the latest orchestration", async () => {
+        const values = new Map();
+        const events = [];
+
+        mockSession = {
+            checkpoint: vi.fn(() => ({ effect: "checkpoint" })),
+            destroy: vi.fn(() => ({ effect: "destroy" })),
+        };
+        mockManager = {
+            recordSessionEvent: vi.fn((_sessionId, batch) => {
+                events.push(...batch);
+                return { effect: "recordSessionEvent" };
+            }),
+        };
+
+        const { durableSessionOrchestration_1_0_43 } = await import("../../src/orchestration.ts");
+        const { commandResponseKey } = await import("../../src/types.ts");
+
+        const ctx = {
+            traceInfo: () => {},
+            setCustomStatus: () => {},
+            getValue: (key) => (values.has(key) ? values.get(key) : null),
+            setValue: (key, value) => values.set(key, value),
+            clearValue: (key) => values.delete(key),
+            utcNow: () => ({ effect: "utcNow" }),
+            dequeueEvent: () => ({ effect: "dequeueEvent" }),
+            scheduleTimer: (ms) => ({ effect: "scheduleTimer", ms }),
+            race: (left, right) => ({ effect: "race", left, right }),
+            continueAsNewVersioned: (nextInput, version) => ({ effect: "continueAsNew", input: nextInput, version }),
+            newGuid: () => ({ effect: "newGuid" }),
+        };
+
+        const gen = durableSessionOrchestration_1_0_43(ctx, {
+            sessionId: "upgrade-session",
+            config: { model: "github-copilot:gpt-5.4" },
+            sourceOrchestrationVersion: "1.0.30",
+            iteration: 5,
+            isSystem: true,
+            blobEnabled: false,
+            pendingMessage: {
+                type: "cmd",
+                cmd: "get_info",
+                id: "legacy-cmd-1",
+            },
+        });
+
+        let input;
+        let followupEffect = null;
+        for (let step = 0; step < 50; step += 1) {
+            const next = gen.next(input);
+            if (next.done) break;
+            const effect = next.value;
+            if (effect?.effect === "utcNow") {
+                input = 1234567890;
+                continue;
+            }
+            if (effect?.effect === "recordSessionEvent") {
+                input = undefined;
+                continue;
+            }
+            if (effect?.effect === "dequeueEvent" || effect?.effect === "continueAsNew") {
+                followupEffect = effect;
+                break;
+            }
+            throw new Error(`Unexpected effect: ${JSON.stringify(effect)}`);
+        }
+
+        expect(followupEffect).toBeTruthy();
+        const response = JSON.parse(values.get(commandResponseKey("legacy-cmd-1")));
+        expect(response).toMatchObject({
+            cmd: "get_info",
+            id: "legacy-cmd-1",
+            result: {
+                sessionId: "upgrade-session",
+                iteration: 5,
+            },
+        });
+        expect(events).toEqual([
+            { eventType: "session.command_received", data: { cmd: "get_info", id: "legacy-cmd-1" } },
+            { eventType: "session.command_completed", data: { cmd: "get_info", id: "legacy-cmd-1" } },
+        ]);
     });
 });

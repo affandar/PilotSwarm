@@ -167,7 +167,7 @@ async function testResumePendingSessionBeforeFirstSend(env) {
         console.log("  Sending first prompt through resumed handle: What is 2+2?");
         const response = await resumed.sendAndWait("What is 2+2?", TIMEOUT);
         console.log(`  Response: \"${response}\"`);
-        assertIncludes(response, "4", "Expected first prompt after pending resume to succeed");
+        assertIncludesAny(response, ["4", "four"], "Expected first prompt after pending resume to succeed");
 
         const v = await validateSessionAfterTurn(env, session.sessionId, {
             minIteration: 1,

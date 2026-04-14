@@ -482,6 +482,7 @@ export class PilotSwarmClient {
             const input: OrchestrationInput = {
                 sessionId,
                 config: serializableConfig,
+                sourceOrchestrationVersion: DURABLE_SESSION_LATEST_VERSION,
                 iteration: 0,
                 // Client-created sessions are always durable. The worker's
                 // configured session store determines how that durability is

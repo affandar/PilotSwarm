@@ -41,6 +41,7 @@ function createHarness() {
         recordSessionEvent: vi.fn(() => ({ effect: "recordSessionEvent" })),
         summarizeSession: vi.fn(() => ({ effect: "summarizeSession" })),
         listChildSessions: vi.fn(() => ({ effect: "listChildSessions" })),
+        getOrchestrationStats: vi.fn(() => ({ effect: "getOrchestrationStats" })),
     };
 
     const values = new Map();
@@ -82,6 +83,14 @@ function createHarness() {
                 return undefined;
             case "listChildSessions":
                 return JSON.stringify([]);
+            case "getOrchestrationStats":
+                return {
+                    historyEventCount: 0,
+                    historySizeBytes: 0,
+                    queuePendingCount: 0,
+                    kvUserKeyCount: 0,
+                    kvTotalValueBytes: 0,
+                };
             case "newGuid":
                 return "new-affinity";
             case "dequeueEvent": {

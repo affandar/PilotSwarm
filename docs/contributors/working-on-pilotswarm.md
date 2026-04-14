@@ -85,10 +85,17 @@ When you change orchestration behavior:
 1. Freeze the current latest orchestration into `packages/sdk/src/orchestration_<version>.ts`
 2. Update `packages/sdk/src/orchestration.ts` to the new latest version
 3. Wire the new version in `packages/sdk/src/orchestration-registry.ts`
-4. Keep the client and worker on the shared registry constants instead of hard-coding versions in multiple files
-5. Keep version-specific logs obvious in orchestration tracing
+4. Keep the client, worker, and every `continueAsNewVersioned(...)` target on the shared latest-version constant instead of hard-coding latest targets in multiple files
+5. Stamp the source orchestration version into the carried `OrchestrationInput` so the new latest handler can normalize older state when needed
+6. Keep version-specific logs obvious in orchestration tracing
 
 If the change affects replay behavior, `continueAsNew`, KV state, or command/event handling, treat it as a version bump even if the diff looks small.
+
+The compatibility bar is higher than “old JSON still parses”:
+
+- The latest handler must accept input snapshots from the oldest orchestration version that is still registered in the repo.
+- Compatibility is behavioral, not just syntactic. If version `N` can `continueAsNew` from state point `X`, version `N+1` must resume correctly from `X`.
+- If the new handler only works when resumed from a new point `Y`, keep the older handoff on the frozen handler or add explicit source-version normalization in the new handler.
 
 ### Changing the TUI
 

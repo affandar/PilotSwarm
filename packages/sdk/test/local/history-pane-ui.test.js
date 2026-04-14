@@ -117,7 +117,7 @@ describe("history pane UI behavior", () => {
                     timestampMs: 1_710_000_000_000,
                     data: "{\"step\":\"start\"}",
                 }],
-                getOrchestrationStats: async () => ({ historyEventCount: 1 }),
+                getOrchestrationStats: async () => ({ historyEventCount: 1, orchestrationVersion: "1.0.43" }),
                 getSession: async () => ({ title: "History Test", agentId: "tester", model: "gpt-test" }),
             },
             artifactStore: {
@@ -134,6 +134,7 @@ describe("history pane UI behavior", () => {
         assertEqual(uploaded[0].sessionId, "session-12345678", "artifact should belong to the exported session");
         assertEqual(uploaded[0].contentType, "application/json", "history export should be stored as json");
         assertIncludes(uploaded[0].content, "\"eventCount\": 1", "artifact payload should include the event count");
+        assertIncludes(uploaded[0].content, "\"orchestrationVersion\": \"1.0.43\"", "artifact payload should include orchestration version when present");
         assertIncludes(result.artifactLink, "artifact://session-12345678/", "export should return an artifact link");
     });
 
@@ -195,7 +196,7 @@ describe("history pane UI behavior", () => {
         assertEqual(history.chat.some((message) => message.text.includes("Latest steady-state sample recorded.")), true);
     });
 
-    it("collapses rehydration notices into a dimmed expandable system summary line", () => {
+    it("routes rehydration notices out of chat and into activity", () => {
         const sessionId = "session-12345678";
         const state = createInitialState({ mode: "local" });
         state.sessions.byId[sessionId] = {
@@ -222,14 +223,17 @@ describe("history pane UI behavior", () => {
 
         const lines = selectChatLines(state, 120);
         const text = flattenChatLines(lines);
-        const systemNotice = lines.find((line) => !Array.isArray(line) && line?.kind === "systemNotice");
+        const history = state.history.bySessionId.get(sessionId);
 
-        assertEqual(Boolean(systemNotice), true, "rehydration should render as a collapsed system notice");
-        assertIncludes(text, "System: Session rehydrated on a new worker.", "rehydration summary should stay visible in chat");
-        assertEqual(text.includes("SYSTEM"), false, "rehydration should not be rendered as a boxed system card");
+        assertEqual(text.includes("Session rehydrated on a new worker."), false, "rehydration should not stay visible in chat");
+        assertEqual(
+            history.activity.some((item) => item.text.includes("[rehydrated]")),
+            true,
+            "rehydration should stay visible in activity",
+        );
     });
 
-    it("collapses mixed rehydration and recurring-schedule notices into a single system summary", () => {
+    it("keeps mixed rehydration reminders out of chat while preserving them in activity", () => {
         const sessionId = "session-12345678";
         const state = createInitialState({ mode: "local" });
         state.sessions.byId[sessionId] = {
@@ -259,11 +263,15 @@ describe("history pane UI behavior", () => {
 
         const lines = selectChatLines(state, 120);
         const text = flattenChatLines(lines);
-        const systemNotice = lines.find((line) => !Array.isArray(line) && line?.kind === "systemNotice");
+        const history = state.history.bySessionId.get(sessionId);
 
-        assertEqual(Boolean(systemNotice), true, "mixed notices should collapse to a single system summary");
-        assertIncludes(text, "System: Session rehydrated on a new worker.", "summary should use the compact rehydration phrasing");
-        assertIncludes(systemNotice?.body || "", "active recurring schedule every 60 seconds", "expanded notice body should preserve the full reminder text");
+        assertEqual(text.includes("Session rehydrated on a new worker."), false, "rehydration summary should not appear in chat");
+        assertEqual(text.includes("active recurring schedule every 60 seconds"), false, "internal recurring schedule reminders should stay out of chat");
+        assertEqual(
+            history.activity.some((item) => item.text.includes("facts-manager curation cycle")),
+            true,
+            "the mixed reminder should remain inspectable in activity",
+        );
     });
 
     it("collapses trailing multiline [SYSTEM: ...] wrappers appended to user-visible text", () => {
@@ -299,12 +307,149 @@ describe("history pane UI behavior", () => {
 
         const lines = selectChatLines(state, 120);
         const text = flattenChatLines(lines);
-        const systemNotice = lines.find((line) => !Array.isArray(line) && line?.kind === "systemNotice");
+        const history = state.history.bySessionId.get(sessionId);
 
-        assertEqual(Boolean(systemNotice), true, "wrapped system tail should collapse into a system notice");
         assertIncludes(text, "You: hey there", "the visible user text should remain in chat");
-        assertIncludes(text, "System: Session rehydrated on a new worker.", "the system tail should be summarized");
+        assertEqual(text.includes("Session rehydrated on a new worker."), false, "rehydration notice should be removed from the chat pane");
+        assertEqual(text.includes("active recurring schedule every 180 seconds"), false, "wrapped internal reminders should stay out of chat");
+        assertEqual(
+            history.activity.some((item) => item.text.includes("active recurring schedule every 180 seconds")),
+            true,
+            "wrapped internal reminders should remain inspectable in activity",
+        );
         assertEqual(text.includes("[SYSTEM:"), false, "raw wrapped system prompts should not leak into chat");
+    });
+
+    it("deduplicates replayed user messages after a rehydration notice is routed out of chat", () => {
+        const history = buildHistoryModel([
+            {
+                seq: 1,
+                sessionId: "session-12345678",
+                eventType: "user.message",
+                data: { content: "yea sweep at <=450 VU." },
+                createdAt: new Date("2026-04-10T15:43:37.000Z"),
+            },
+            {
+                seq: 2,
+                sessionId: "session-12345678",
+                eventType: "system.message",
+                data: {
+                    content: "The session was dehydrated and has been rehydrated on a new worker.",
+                },
+                createdAt: new Date("2026-04-10T15:43:43.000Z"),
+            },
+            {
+                seq: 3,
+                sessionId: "session-12345678",
+                eventType: "user.message",
+                data: { content: "yea sweep at <=450 VU." },
+                createdAt: new Date("2026-04-10T15:43:43.000Z"),
+            },
+        ]);
+
+        assertEqual(history.chat.length, 1, "replayed user messages should collapse into one visible chat line");
+        assertEqual(
+            history.activity.some((item) => item.text.includes("[rehydrated]")),
+            true,
+            "the rehydration event should still be visible in activity",
+        );
+    });
+
+    it("shows an inline Thinking card with reasoning while a response is still pending", () => {
+        const sessionId = "session-12345678";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "running",
+            title: "Reasoning Test",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "user.message",
+                data: { content: "diagnose the worker stall" },
+                createdAt: new Date("2026-04-10T08:00:00.000Z"),
+            },
+            {
+                seq: 2,
+                sessionId,
+                eventType: "assistant.reasoning",
+                data: { content: "Checking the latest hydration and CPU signals first." },
+                createdAt: new Date("2026-04-10T08:00:02.000Z"),
+            },
+        ]));
+
+        const lines = selectChatLines(state, 120);
+        const text = flattenChatLines(lines);
+        const reasoningRun = lines
+            .flatMap((line) => Array.isArray(line) ? line : [line])
+            .find((run) => String(run?.text || "").includes("Checking the latest hydration and CPU signals first."));
+        const narrowLines = selectChatLines(state, 20);
+        const thinkingStart = narrowLines.findIndex((line) => (Array.isArray(line)
+            ? line.some((run) => String(run?.text || "").includes("Thinking…"))
+            : String(line?.text || "").includes("Thinking…")));
+        const thinkingBlock = thinkingStart >= 0
+            ? narrowLines.slice(thinkingStart, narrowLines.findIndex((line, index) => index > thinkingStart && !Array.isArray(line) && !String(line?.text || "").trim()) >= 0
+                ? narrowLines.findIndex((line, index) => index > thinkingStart && !Array.isArray(line) && !String(line?.text || "").trim())
+                : narrowLines.length)
+            : [];
+        const widestNarrowThinkingLine = thinkingBlock.reduce((max, line) => Math.max(
+            max,
+            Array.isArray(line)
+                ? line.reduce((sum, run) => sum + String(run?.text || "").length, 0)
+                : String(line?.text || "").length,
+        ), 0);
+
+        assertIncludes(text, "⠋ Thinking…", "pending turns should show the inline Thinking card");
+        assertIncludes(text, "Checking the latest hydration and CPU signals first.", "latest reasoning should appear inside the Thinking card");
+        assertEqual(reasoningRun?.color, "gray", "thinking body text should render dimmed");
+        assert(widestNarrowThinkingLine <= 20, "thinking card should honor narrow chat widths");
+    });
+
+    it("replaces the Thinking card once the final assistant response arrives", () => {
+        const sessionId = "session-12345678";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "idle",
+            title: "Reasoning Complete",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "user.message",
+                data: { content: "diagnose the worker stall" },
+                createdAt: new Date("2026-04-10T08:00:00.000Z"),
+            },
+            {
+                seq: 2,
+                sessionId,
+                eventType: "assistant.reasoning",
+                data: { content: "Checking the latest hydration and CPU signals first." },
+                createdAt: new Date("2026-04-10T08:00:02.000Z"),
+            },
+            {
+                seq: 3,
+                sessionId,
+                eventType: "assistant.message",
+                data: { content: "The stall is coming from blob-storage I/O during hydration." },
+                createdAt: new Date("2026-04-10T08:00:05.000Z"),
+            },
+        ]));
+
+        const lines = selectChatLines(state, 120);
+        const text = flattenChatLines(lines);
+
+        assertEqual(text.includes("⠋ Thinking…"), false, "the Thinking card should disappear once the assistant responds");
+        assertIncludes(text, "Agent: The stall is coming from blob-storage I/O during hydration.", "the final assistant message should replace the pending Thinking state");
     });
 
     it("keeps consecutive agent lines tight while preserving spacing between speaker changes", () => {

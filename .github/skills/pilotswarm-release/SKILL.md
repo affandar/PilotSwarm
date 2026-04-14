@@ -9,6 +9,8 @@ Use this skill when a user wants to prepare or cut a release of PilotSwarm.
 
 Keep the workflow tight and deterministic. The goal is to verify what will ship, fix release blockers, and only then commit, push, tag, and publish.
 
+Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downstream consumers, sample app forks outside this repo, or vendored PilotSwarm copies in other repositories unless the user explicitly asks for that separate follow-up.
+
 ## Release Workflow
 
 1. Inspect the release surface.

@@ -62,6 +62,7 @@ export function buildSystemAgentBootstrapPayload(
     const input: OrchestrationInput = {
         sessionId: opts.sessionId,
         config: serializableConfig,
+        sourceOrchestrationVersion: DURABLE_SESSION_LATEST_VERSION,
         iteration: 0,
         ...(agent.initialPrompt ? { prompt: agent.initialPrompt, bootstrapPrompt: true } : {}),
         blobEnabled: opts.blobEnabled,

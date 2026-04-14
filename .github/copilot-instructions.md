@@ -7,6 +7,14 @@
 > explicitly saying "commit", "push", or "deploy". Stage files and describe what
 > you'd commit, then ask. This applies to ALL agents including Squad members.
 
+## Repo Scope Boundary
+
+When the user asks for changes, releases, or deploys in this repository, operate on `pilotswarm` only unless they explicitly ask to update a downstream consumer as well.
+
+- Do **not** propagate PilotSwarm changes into downstream repos such as `waldemort`, app repos, or vendored SDK mirrors by default.
+- Do **not** deploy downstream projects as part of a PilotSwarm deploy unless the user explicitly asks for that separate rollout.
+- If a downstream project is out of sync, call it out clearly instead of silently patching it.
+
 ## Sensitive Local Files
 
 **Do NOT modify `.model_providers.json`, `.env`, or `.env.remote` without the user explicitly asking.** The real `.model_providers.json` is a local gitignored config file that may contain personal service URLs, while `.env` / `.env.remote` hold credentials. Never read env files to extract secrets, never commit the real `.model_providers.json`, and never overwrite local config with placeholder content unless the user asked for that exact reset.

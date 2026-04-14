@@ -166,11 +166,12 @@ export interface SessionStatusChange {
 
 /** Per-orchestration runtime stats from duroxide. */
 export interface SessionOrchestrationStats {
-    historyEventCount: number;
-    historySizeBytes: number;
-    queuePendingCount: number;
-    kvUserKeyCount: number;
-    kvTotalValueBytes: number;
+    orchestrationVersion?: string;
+    historyEventCount?: number;
+    historySizeBytes?: number;
+    queuePendingCount?: number;
+    kvUserKeyCount?: number;
+    kvTotalValueBytes?: number;
 }
 
 /** A single duroxide execution history event. */
@@ -666,19 +667,41 @@ export class PilotSwarmManagementClient {
     async getOrchestrationStats(sessionId: string): Promise<SessionOrchestrationStats | null> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
-        try {
-            const stats = await this._duroxideClient.getOrchestrationStats(orchId);
-            if (!stats || typeof stats !== "object") return null;
-            return {
-                historyEventCount: Number(stats.historyEventCount) || 0,
-                historySizeBytes: Number(stats.historySizeBytes) || 0,
-                queuePendingCount: Number(stats.queuePendingCount) || 0,
-                kvUserKeyCount: Number(stats.kvUserKeyCount) || 0,
-                kvTotalValueBytes: Number(stats.kvTotalValueBytes) || 0,
-            };
-        } catch {
-            return null;
+        const [statsResult, infoResult] = await Promise.allSettled([
+            this._duroxideClient.getOrchestrationStats(orchId),
+            this._duroxideClient.getInstanceInfo(orchId),
+        ]);
+
+        const output: SessionOrchestrationStats = {};
+
+        if (statsResult.status === "fulfilled") {
+            const stats = statsResult.value;
+            if (stats && typeof stats === "object") {
+                const historyEventCount = Number(stats.historyEventCount);
+                if (Number.isFinite(historyEventCount)) output.historyEventCount = historyEventCount;
+
+                const historySizeBytes = Number(stats.historySizeBytes);
+                if (Number.isFinite(historySizeBytes)) output.historySizeBytes = historySizeBytes;
+
+                const queuePendingCount = Number(stats.queuePendingCount);
+                if (Number.isFinite(queuePendingCount)) output.queuePendingCount = queuePendingCount;
+
+                const kvUserKeyCount = Number(stats.kvUserKeyCount);
+                if (Number.isFinite(kvUserKeyCount)) output.kvUserKeyCount = kvUserKeyCount;
+
+                const kvTotalValueBytes = Number(stats.kvTotalValueBytes);
+                if (Number.isFinite(kvTotalValueBytes)) output.kvTotalValueBytes = kvTotalValueBytes;
+            }
         }
+
+        if (infoResult.status === "fulfilled") {
+            const info = infoResult.value;
+            if (info && typeof info.orchestrationVersion === "string" && info.orchestrationVersion.trim()) {
+                output.orchestrationVersion = info.orchestrationVersion;
+            }
+        }
+
+        return Object.keys(output).length > 0 ? output : null;
     }
 
     /**

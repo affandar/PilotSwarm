@@ -209,6 +209,12 @@ export interface CronSchedule {
 export interface OrchestrationInput {
     sessionId: string;
     config: SerializableSessionConfig;
+    /**
+     * Version of the orchestration handler that produced this input snapshot.
+     * New starts set this to the latest version; continue-as-new handoffs stamp
+     * the source version before targeting the shared latest handler.
+     */
+    sourceOrchestrationVersion?: string;
     // Carried across continueAsNew
     iteration?: number;
     responseVersion?: number;
@@ -274,6 +280,13 @@ export interface OrchestrationInput {
         reason: string;
         shouldRehydrate: boolean;
         waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
+    };
+    /** Saved interrupted cron timer. The orchestration auto-resumes the remaining time unless cron is explicitly reset. */
+    interruptedCronTimer?: {
+        remainingMs: number;
+        reason: string;
+        originalDurationMs?: number;
+        shouldRehydrate?: boolean;
     };
     /** Buffered child updates waiting to be coalesced into a single parent turn. */
     pendingChildDigest?: {

@@ -5,6 +5,7 @@ import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type Turn
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
+import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./management-client.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
 import os from "node:os";
@@ -239,6 +240,10 @@ export function createSessionManagerProxy(ctx: any) {
         /** Get the status of a session via the PilotSwarmClient SDK. */
         getSessionStatus(sessionId: string) {
             return ctx.scheduleActivity("getSessionStatus", { sessionId });
+        },
+        /** Get orchestration runtime stats for a session. */
+        getOrchestrationStats(sessionId: string) {
+            return ctx.scheduleActivity("getOrchestrationStats", { sessionId });
         },
         /** List all sessions via the PilotSwarmClient SDK. */
         listSessions() {
@@ -1593,6 +1598,29 @@ export function registerActivities(
             });
         } finally {
             await sdkClient.stop();
+        }
+    });
+
+    // ── getOrchestrationStats ───────────────────────────────
+    // Gets duroxide orchestration runtime stats for a session.
+    runtime.registerActivity("getOrchestrationStats", async (
+        activityCtx: any,
+        input: { sessionId: string },
+    ): Promise<SessionOrchestrationStats | null> => {
+        activityCtx.traceInfo(`[getOrchestrationStats] session=${input.sessionId}`);
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmManagementClient");
+
+        const managementClient = new PilotSwarmManagementClient({
+            store: storeUrl,
+            cmsSchema,
+            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
+            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
+        });
+        try {
+            await managementClient.start();
+            return await managementClient.getOrchestrationStats(input.sessionId);
+        } finally {
+            await managementClient.stop();
         }
     });
 

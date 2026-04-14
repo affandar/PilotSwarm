@@ -859,6 +859,9 @@ export class ManagedSession {
         const collectedEvents: CapturedEvent[] = [];
         const unsubscribers: (() => void)[] = [];
         const toolEventMetadataByKey = new Map<string, { toolName?: string; arguments?: unknown }>();
+        let currentReasoning = "";
+        let lastPublishedReasoning = "";
+        let lastReasoningPublishAt = 0;
 
         function getToolEventKey(eventData: any): string | null {
             if (!eventData || typeof eventData !== "object") return null;
@@ -869,6 +872,53 @@ export class ManagedSession {
                 return `request:${eventData.requestId}`;
             }
             return null;
+        }
+
+        function extractReasoningText(payload: any): string {
+            if (typeof payload === "string") return payload;
+            if (!payload || typeof payload !== "object") return "";
+            return String(
+                payload.deltaContent
+                ?? payload.content
+                ?? payload.text
+                ?? payload.message
+                ?? payload.delta
+                ?? payload.reasoning
+                ?? "",
+            );
+        }
+
+        function mergeReasoningText(existing: string, incoming: string): string {
+            const next = String(incoming || "");
+            if (!next) return existing;
+            if (!existing) return next;
+            if (next.startsWith(existing)) return next;
+            if (existing.endsWith(next)) return existing;
+            return `${existing}${next}`;
+        }
+
+        function publishReasoningSnapshot(eventType: string, force = false) {
+            const content = currentReasoning.trim();
+            if (!content || content === lastPublishedReasoning) return;
+
+            const now = Date.now();
+            const lengthDelta = Math.abs(content.length - lastPublishedReasoning.length);
+            if (!force && lengthDelta < 24 && now - lastReasoningPublishAt < 250) return;
+
+            const captured: CapturedEvent = {
+                eventType: "assistant.reasoning",
+                data: {
+                    content,
+                    synthetic: true,
+                    sourceEventType: eventType,
+                },
+            };
+            collectedEvents.push(captured);
+            lastPublishedReasoning = content;
+            lastReasoningPublishAt = now;
+            if (opts?.onEvent) {
+                try { opts.onEvent(captured); } catch {}
+            }
         }
 
         const turnComplete = new Promise<void>((resolve, reject) => {
@@ -931,8 +981,31 @@ export class ManagedSession {
             unsubscribers.push(
                 this.copilotSession.on("assistant.message", (event: any) => {
                     finalContent = event.data?.content ?? finalContent;
+                    publishReasoningSnapshot("assistant.message", true);
                 }),
             );
+
+            unsubscribers.push(
+                this.copilotSession.on("assistant.reasoning", (event: any) => {
+                    currentReasoning = String(extractReasoningText(event?.data ?? event) || "").trim();
+                    if (currentReasoning) {
+                        lastPublishedReasoning = currentReasoning;
+                        lastReasoningPublishAt = Date.now();
+                    }
+                }),
+            );
+
+            for (const eventType of ["assistant.reasoning_delta", "reasoning_delta"] as const) {
+                unsubscribers.push(
+                    (this.copilotSession as any).on(eventType, (event: any) => {
+                        currentReasoning = mergeReasoningText(
+                            currentReasoning,
+                            extractReasoningText(event?.data ?? event),
+                        );
+                        publishReasoningSnapshot(eventType);
+                    }),
+                );
+            }
 
             // Stream deltas to the caller if requested
             if (opts?.onDelta) {
@@ -957,6 +1030,7 @@ export class ManagedSession {
             // session.idle = turn finished (normal completion or post-abort)
             unsubscribers.push(
                 this.copilotSession.on("session.idle", () => {
+                    publishReasoningSnapshot("session.idle", true);
                     resolve();
                 }),
             );
