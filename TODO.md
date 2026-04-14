@@ -1,6 +1,8 @@
 
 # TODO
 
+- move all data access for facts behind a provider layer
+- stored procs for data access in PG provider rather than direct SQL queries
 - review /test/local/child-update-batching.test.js
 - tool to enumerate all workers, and to run an agent so all activities land on a specific worker, so resource manager can schedule an agent which specifically targets health checks for all nodes.
 - deyhdrate timer should be sensitive to the size of the data being dehydrated. larger sessions should be stickier
