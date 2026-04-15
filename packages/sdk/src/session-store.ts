@@ -20,6 +20,7 @@ export interface SessionStateStore {
     dehydrate(sessionId: string, meta?: Record<string, unknown>): Promise<void>;
     hydrate(sessionId: string): Promise<void>;
     checkpoint(sessionId: string): Promise<void>;
+    getSnapshotSizeBytes(sessionId: string): Promise<number | undefined>;
     exists(sessionId: string): Promise<boolean>;
     delete(sessionId: string): Promise<void>;
 }
@@ -231,6 +232,26 @@ export class FilesystemSessionStore implements SessionStateStore {
         archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
         const metadata = buildMetadata(tarPath, sessionId, { reason: "checkpoint" });
         fs.writeFileSync(this.metaPath(sessionId), JSON.stringify(metadata));
+    }
+    async getSnapshotSizeBytes(sessionId: string): Promise<number | undefined> {
+        try {
+            const metadataPath = this.metaPath(sessionId);
+            if (fs.existsSync(metadataPath)) {
+                const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as SessionMetadata;
+                const sizeBytes = Number(metadata?.sizeBytes);
+                if (Number.isFinite(sizeBytes)) return sizeBytes;
+            }
+        } catch {}
+
+        try {
+            const tarPath = this.tarPath(sessionId);
+            if (fs.existsSync(tarPath)) {
+                const sizeBytes = fs.statSync(tarPath).size;
+                if (Number.isFinite(sizeBytes)) return sizeBytes;
+            }
+        } catch {}
+
+        return undefined;
     }
 
     async exists(sessionId: string): Promise<boolean> {

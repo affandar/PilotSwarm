@@ -6,7 +6,7 @@ export const FOCUS_REGIONS = {
     PROMPT: "prompt",
 };
 
-export const INSPECTOR_TABS = ["sequence", "logs", "nodes", "history", "files"];
+export const INSPECTOR_TABS = ["sequence", "logs", "nodes", "history", "files", "stats"];
 
 export const UI_COMMANDS = {
     REFRESH: "refresh",
@@ -41,6 +41,7 @@ export const UI_COMMANDS = {
     SHRINK_SESSION_PANE: "shrinkSessionPane",
     OPEN_ARTIFACT_PICKER: "openArtifactPicker",
     TOGGLE_LOG_TAIL: "toggleLogTail",
+    TOGGLE_STATS_VIEW: "toggleStatsView",
     OPEN_LOG_FILTER: "openLogFilter",
     OPEN_FILES_FILTER: "openFilesFilter",
     MOVE_FILE_UP: "moveFileUp",

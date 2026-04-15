@@ -507,6 +507,22 @@ export class NodeSdkTransport {
         return this.mgmt.getOrchestrationStats(sessionId);
     }
 
+    async getSessionMetricSummary(sessionId) {
+        return this.mgmt.getSessionMetricSummary(sessionId);
+    }
+
+    async getSessionTreeStats(sessionId) {
+        return this.mgmt.getSessionTreeStats(sessionId);
+    }
+
+    async getFleetStats(opts) {
+        return this.mgmt.getFleetStats(opts);
+    }
+
+    async pruneDeletedSummaries(olderThan) {
+        return this.mgmt.pruneDeletedSummaries(olderThan);
+    }
+
     async getExecutionHistory(sessionId, executionId) {
         return this.mgmt.getExecutionHistory(sessionId, executionId);
     }

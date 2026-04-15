@@ -8,6 +8,8 @@
  * @module
  */
 
+import { runCmsMigrations } from "./cms-migrator.js";
+
 // ─── Types ───────────────────────────────────────────────────────
 
 /** A persisted session event (non-ephemeral). */
@@ -62,6 +64,85 @@ export interface SessionRowUpdates {
     splash?: string | null;
 }
 
+// ─── Session Metric Summary Types ────────────────────────────────
+
+/** Per-session metric summary — one row per session, updated in place. */
+export interface SessionMetricSummary {
+    sessionId: string;
+    agentId: string | null;
+    model: string | null;
+    parentSessionId: string | null;
+    snapshotSizeBytes: number;
+    dehydrationCount: number;
+    hydrationCount: number;
+    lossyHandoffCount: number;
+    lastDehydratedAt: number | null;
+    lastHydratedAt: number | null;
+    lastCheckpointAt: number | null;
+    tokensInput: number;
+    tokensOutput: number;
+    tokensCacheRead: number;
+    tokensCacheWrite: number;
+    deletedAt: number | null;
+    createdAt: number;
+    updatedAt: number;
+}
+
+/** Fields for atomic upsert — increments are additive, absolutes are set. */
+export interface SessionMetricSummaryUpsert {
+    snapshotSizeBytes?: number;
+    dehydrationCountIncrement?: number;
+    hydrationCountIncrement?: number;
+    lossyHandoffCountIncrement?: number;
+    lastDehydratedAt?: boolean;
+    lastHydratedAt?: boolean;
+    lastCheckpointAt?: boolean;
+    tokensInputIncrement?: number;
+    tokensOutputIncrement?: number;
+    tokensCacheReadIncrement?: number;
+    tokensCacheWriteIncrement?: number;
+}
+
+/** Fleet-wide aggregate stats. */
+export interface FleetStats {
+    windowStart: number | null;
+    earliestSessionCreatedAt: number | null;
+    byAgent: Array<{
+        agentId: string | null;
+        model: string | null;
+        sessionCount: number;
+        totalSnapshotSizeBytes: number;
+        totalDehydrationCount: number;
+        totalHydrationCount: number;
+        totalLossyHandoffCount: number;
+        totalTokensInput: number;
+        totalTokensOutput: number;
+    }>;
+    totals: {
+        sessionCount: number;
+        totalSnapshotSizeBytes: number;
+        totalTokensInput: number;
+        totalTokensOutput: number;
+    };
+}
+
+/** Aggregate of a session and all its descendants. */
+export interface SessionTreeStats {
+    rootSessionId: string;
+    self: SessionMetricSummary;
+    tree: {
+        sessionCount: number;
+        totalTokensInput: number;
+        totalTokensOutput: number;
+        totalTokensCacheRead: number;
+        totalTokensCacheWrite: number;
+        totalDehydrationCount: number;
+        totalHydrationCount: number;
+        totalLossyHandoffCount: number;
+        totalSnapshotSizeBytes: number;
+    };
+}
+
 // ─── Provider Interface ──────────────────────────────────────────
 
 /**
@@ -110,6 +191,23 @@ export interface SessionCatalogProvider {
     /** Get events before a sequence number, ordered ascending by seq. */
     getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<SessionEvent[]>;
 
+    // ── Session Metric Summaries ──────────────────────────────
+
+    /** Get the metric summary for a single session. */
+    getSessionMetricSummary(sessionId: string): Promise<SessionMetricSummary | null>;
+
+    /** Get a session's own stats plus rolled-up totals of all descendants. */
+    getSessionTreeStats(sessionId: string): Promise<SessionTreeStats | null>;
+
+    /** Get fleet-wide aggregate stats, optionally filtered. */
+    getFleetStats(opts?: { includeDeleted?: boolean; since?: Date }): Promise<FleetStats>;
+
+    /** Upsert a session metric summary with atomic increments. */
+    upsertSessionMetricSummary(sessionId: string, updates: SessionMetricSummaryUpsert): Promise<void>;
+
+    /** Hard-delete summary rows for sessions deleted before the cutoff. Returns count removed. */
+    pruneDeletedSummaries(olderThan: Date): Promise<number>;
+
     /** Cleanup / close connections. */
     close(): Promise<void>;
 }
@@ -123,13 +221,15 @@ const DEFAULT_SCHEMA = "copilot_sessions";
  * Allows multiple deployments to coexist on the same database.
  */
 function sqlForSchema(schema: string) {
-    const table = `${schema}.sessions`;
-    const eventsTable = `${schema}.session_events`;
+    const table = `"${schema}".sessions`;
+    const eventsTable = `"${schema}".session_events`;
+    const summaryTable = `"${schema}".session_metric_summaries`;
     return {
         schema,
         table,
         eventsTable,
-        createSchema: `CREATE SCHEMA IF NOT EXISTS ${schema}`,
+        summaryTable,
+        createSchema: `CREATE SCHEMA IF NOT EXISTS "${schema}"`,
         createTable: `
 CREATE TABLE IF NOT EXISTS ${table} (
     session_id        TEXT PRIMARY KEY,
@@ -208,54 +308,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
 
     async initialize(): Promise<void> {
         if (this.initialized) return;
-        await this.pool.query(this.sql.createSchema);
-        await this.pool.query(this.sql.createTable);
-        await this.pool.query(this.sql.createEventsTable);
-        for (const idx of this.sql.createIndexes) {
-            await this.pool.query(idx);
-        }
-        // Migration: add parent_session_id if missing (safe for existing DBs)
-        try {
-            await this.pool.query(
-                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS parent_session_id TEXT`
-            );
-        } catch {}
-        // Migration: add is_system column if missing
-        try {
-            await this.pool.query(
-                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT FALSE`
-            );
-        } catch {}
-        // Migration: add wait_reason column if missing
-        try {
-            await this.pool.query(
-                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS wait_reason TEXT`
-            );
-        } catch {}
-        // Migration: add agent_id column if missing
-        try {
-            await this.pool.query(
-                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS agent_id TEXT`
-            );
-        } catch {}
-        // Migration: add splash column if missing
-        try {
-            await this.pool.query(
-                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS splash TEXT`
-            );
-        } catch {}
-        // Migration: add title_locked column if missing
-        try {
-            await this.pool.query(
-                `ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS title_locked BOOLEAN NOT NULL DEFAULT FALSE`
-            );
-        } catch {}
-        // Migration: add worker_node_id to events table if missing
-        try {
-            await this.pool.query(
-                `ALTER TABLE ${this.sql.eventsTable} ADD COLUMN IF NOT EXISTS worker_node_id TEXT`
-            );
-        } catch {}
+        await runCmsMigrations(this.pool, this.sql.schema);
         this.initialized = true;
     }
 
@@ -282,6 +335,14 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
                  title_locked = FALSE
              WHERE ${this.sql.table}.deleted_at IS NOT NULL`,
             [sessionId, opts?.model ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null],
+        );
+
+        // Seed zeroed metric summary row
+        await this.pool.query(
+            `INSERT INTO ${this.sql.summaryTable} (session_id, agent_id, model, parent_session_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (session_id) DO NOTHING`,
+            [sessionId, opts?.agentId ?? null, opts?.model ?? null, opts?.parentSessionId ?? null],
         );
     }
 
@@ -359,6 +420,11 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         }
         await this.pool.query(
             `UPDATE ${this.sql.table} SET deleted_at = now(), updated_at = now() WHERE session_id = $1`,
+            [sessionId],
+        );
+        // Mirror soft-delete to summary row
+        await this.pool.query(
+            `UPDATE ${this.sql.summaryTable} SET deleted_at = now(), updated_at = now() WHERE session_id = $1`,
             [sessionId],
         );
     }
@@ -464,6 +530,223 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         return rows.map(rowToSessionEvent);
     }
 
+    // ── Session Metric Summaries ─────────────────────────────
+
+    async getSessionMetricSummary(sessionId: string): Promise<SessionMetricSummary | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.summaryTable} WHERE session_id = $1`,
+            [sessionId],
+        );
+        return rows.length > 0 ? rowToSessionMetricSummary(rows[0]) : null;
+    }
+
+    async getSessionTreeStats(sessionId: string): Promise<SessionTreeStats | null> {
+        const self = await this.getSessionMetricSummary(sessionId);
+        if (!self) return null;
+
+        const { rows } = await this.pool.query(
+            `WITH RECURSIVE tree AS (
+                SELECT session_id FROM ${this.sql.summaryTable}
+                WHERE session_id = $1
+                UNION ALL
+                SELECT m.session_id FROM ${this.sql.summaryTable} m
+                INNER JOIN tree t ON m.parent_session_id = t.session_id
+            )
+            SELECT
+                COUNT(*)::int                                    AS session_count,
+                COALESCE(SUM(tokens_input), 0)::bigint           AS total_tokens_input,
+                COALESCE(SUM(tokens_output), 0)::bigint          AS total_tokens_output,
+                COALESCE(SUM(tokens_cache_read), 0)::bigint      AS total_tokens_cache_read,
+                COALESCE(SUM(tokens_cache_write), 0)::bigint     AS total_tokens_cache_write,
+                COALESCE(SUM(dehydration_count), 0)::int         AS total_dehydration_count,
+                COALESCE(SUM(hydration_count), 0)::int           AS total_hydration_count,
+                COALESCE(SUM(lossy_handoff_count), 0)::int       AS total_lossy_handoff_count,
+                COALESCE(SUM(snapshot_size_bytes), 0)::bigint    AS total_snapshot_size_bytes
+            FROM ${this.sql.summaryTable}
+            WHERE session_id IN (SELECT session_id FROM tree)`,
+            [sessionId],
+        );
+
+        const r = rows[0];
+        return {
+            rootSessionId: sessionId,
+            self,
+            tree: {
+                sessionCount: Number(r.session_count) || 0,
+                totalTokensInput: Number(r.total_tokens_input) || 0,
+                totalTokensOutput: Number(r.total_tokens_output) || 0,
+                totalTokensCacheRead: Number(r.total_tokens_cache_read) || 0,
+                totalTokensCacheWrite: Number(r.total_tokens_cache_write) || 0,
+                totalDehydrationCount: Number(r.total_dehydration_count) || 0,
+                totalHydrationCount: Number(r.total_hydration_count) || 0,
+                totalLossyHandoffCount: Number(r.total_lossy_handoff_count) || 0,
+                totalSnapshotSizeBytes: Number(r.total_snapshot_size_bytes) || 0,
+            },
+        };
+    }
+
+    async getFleetStats(opts?: { includeDeleted?: boolean; since?: Date }): Promise<FleetStats> {
+        const conditions: string[] = [];
+        const params: unknown[] = [];
+        let idx = 1;
+
+        if (!opts?.includeDeleted) {
+            conditions.push("deleted_at IS NULL");
+        }
+        if (opts?.since) {
+            conditions.push(`created_at >= $${idx++}`);
+            params.push(opts.since);
+        }
+
+        const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+        // Per-group breakdown
+        const { rows: groups } = await this.pool.query(
+            `SELECT
+                agent_id,
+                model,
+                COUNT(*)::int                                          AS session_count,
+                COALESCE(SUM(snapshot_size_bytes), 0)::bigint          AS total_snapshot_size_bytes,
+                COALESCE(SUM(dehydration_count), 0)::int               AS total_dehydration_count,
+                COALESCE(SUM(hydration_count), 0)::int                 AS total_hydration_count,
+                COALESCE(SUM(lossy_handoff_count), 0)::int             AS total_lossy_handoff_count,
+                COALESCE(SUM(tokens_input), 0)::bigint                 AS total_tokens_input,
+                COALESCE(SUM(tokens_output), 0)::bigint                AS total_tokens_output
+            FROM ${this.sql.summaryTable}
+            ${whereClause}
+            GROUP BY agent_id, model`,
+            params,
+        );
+
+        // Totals + earliest date
+        const { rows: totalsRows } = await this.pool.query(
+            `SELECT
+                COUNT(*)::int                                          AS session_count,
+                COALESCE(SUM(snapshot_size_bytes), 0)::bigint          AS total_snapshot_size_bytes,
+                COALESCE(SUM(tokens_input), 0)::bigint                 AS total_tokens_input,
+                COALESCE(SUM(tokens_output), 0)::bigint                AS total_tokens_output,
+                MIN(created_at)                                        AS earliest_session_created_at
+            FROM ${this.sql.summaryTable}
+            ${whereClause}`,
+            params,
+        );
+
+        const t = totalsRows[0];
+        return {
+            windowStart: opts?.since ? opts.since.getTime() : null,
+            earliestSessionCreatedAt: t.earliest_session_created_at
+                ? new Date(t.earliest_session_created_at).getTime()
+                : null,
+            byAgent: groups.map((g: any) => ({
+                agentId: g.agent_id ?? null,
+                model: g.model ?? null,
+                sessionCount: Number(g.session_count) || 0,
+                totalSnapshotSizeBytes: Number(g.total_snapshot_size_bytes) || 0,
+                totalDehydrationCount: Number(g.total_dehydration_count) || 0,
+                totalHydrationCount: Number(g.total_hydration_count) || 0,
+                totalLossyHandoffCount: Number(g.total_lossy_handoff_count) || 0,
+                totalTokensInput: Number(g.total_tokens_input) || 0,
+                totalTokensOutput: Number(g.total_tokens_output) || 0,
+            })),
+            totals: {
+                sessionCount: Number(t.session_count) || 0,
+                totalSnapshotSizeBytes: Number(t.total_snapshot_size_bytes) || 0,
+                totalTokensInput: Number(t.total_tokens_input) || 0,
+                totalTokensOutput: Number(t.total_tokens_output) || 0,
+            },
+        };
+    }
+
+    async upsertSessionMetricSummary(sessionId: string, updates: SessionMetricSummaryUpsert): Promise<void> {
+        const setClauses: string[] = ["updated_at = now()"];
+        const insertCols: string[] = ["session_id"];
+        const insertVals: string[] = ["$1"];
+        const values: unknown[] = [sessionId];
+        let idx = 2;
+
+        if (updates.snapshotSizeBytes !== undefined) {
+            setClauses.push(`snapshot_size_bytes = $${idx}`);
+            insertCols.push("snapshot_size_bytes");
+            insertVals.push(`$${idx}`);
+            values.push(updates.snapshotSizeBytes);
+            idx++;
+        }
+        if (updates.dehydrationCountIncrement) {
+            setClauses.push(`dehydration_count = ${this.sql.summaryTable}.dehydration_count + $${idx}`);
+            insertCols.push("dehydration_count");
+            insertVals.push(`$${idx}`);
+            values.push(updates.dehydrationCountIncrement);
+            idx++;
+        }
+        if (updates.hydrationCountIncrement) {
+            setClauses.push(`hydration_count = ${this.sql.summaryTable}.hydration_count + $${idx}`);
+            insertCols.push("hydration_count");
+            insertVals.push(`$${idx}`);
+            values.push(updates.hydrationCountIncrement);
+            idx++;
+        }
+        if (updates.lossyHandoffCountIncrement) {
+            setClauses.push(`lossy_handoff_count = ${this.sql.summaryTable}.lossy_handoff_count + $${idx}`);
+            insertCols.push("lossy_handoff_count");
+            insertVals.push(`$${idx}`);
+            values.push(updates.lossyHandoffCountIncrement);
+            idx++;
+        }
+        if (updates.lastDehydratedAt) {
+            setClauses.push("last_dehydrated_at = now()");
+        }
+        if (updates.lastHydratedAt) {
+            setClauses.push("last_hydrated_at = now()");
+        }
+        if (updates.lastCheckpointAt) {
+            setClauses.push("last_checkpoint_at = now()");
+        }
+        if (updates.tokensInputIncrement) {
+            setClauses.push(`tokens_input = ${this.sql.summaryTable}.tokens_input + $${idx}`);
+            insertCols.push("tokens_input");
+            insertVals.push(`$${idx}`);
+            values.push(updates.tokensInputIncrement);
+            idx++;
+        }
+        if (updates.tokensOutputIncrement) {
+            setClauses.push(`tokens_output = ${this.sql.summaryTable}.tokens_output + $${idx}`);
+            insertCols.push("tokens_output");
+            insertVals.push(`$${idx}`);
+            values.push(updates.tokensOutputIncrement);
+            idx++;
+        }
+        if (updates.tokensCacheReadIncrement) {
+            setClauses.push(`tokens_cache_read = ${this.sql.summaryTable}.tokens_cache_read + $${idx}`);
+            insertCols.push("tokens_cache_read");
+            insertVals.push(`$${idx}`);
+            values.push(updates.tokensCacheReadIncrement);
+            idx++;
+        }
+        if (updates.tokensCacheWriteIncrement) {
+            setClauses.push(`tokens_cache_write = ${this.sql.summaryTable}.tokens_cache_write + $${idx}`);
+            insertCols.push("tokens_cache_write");
+            insertVals.push(`$${idx}`);
+            values.push(updates.tokensCacheWriteIncrement);
+            idx++;
+        }
+
+        await this.pool.query(
+            `INSERT INTO ${this.sql.summaryTable} (${insertCols.join(", ")})
+             VALUES (${insertVals.join(", ")})
+             ON CONFLICT (session_id) DO UPDATE SET ${setClauses.join(", ")}`,
+            values,
+        );
+    }
+
+    async pruneDeletedSummaries(olderThan: Date): Promise<number> {
+        const { rowCount } = await this.pool.query(
+            `DELETE FROM ${this.sql.summaryTable}
+             WHERE deleted_at IS NOT NULL AND deleted_at < $1`,
+            [olderThan],
+        );
+        return rowCount ?? 0;
+    }
+
     async close(): Promise<void> {
         if (this.pool) {
             await this.pool.end();
@@ -506,5 +789,29 @@ function rowToSessionEvent(row: any): SessionEvent {
         data: row.data,
         createdAt: new Date(row.created_at),
         workerNodeId: row.worker_node_id ?? undefined,
+    };
+}
+
+/** Map a PG row to SessionMetricSummary. */
+function rowToSessionMetricSummary(row: any): SessionMetricSummary {
+    return {
+        sessionId: row.session_id,
+        agentId: row.agent_id ?? null,
+        model: row.model ?? null,
+        parentSessionId: row.parent_session_id ?? null,
+        snapshotSizeBytes: Number(row.snapshot_size_bytes) || 0,
+        dehydrationCount: Number(row.dehydration_count) || 0,
+        hydrationCount: Number(row.hydration_count) || 0,
+        lossyHandoffCount: Number(row.lossy_handoff_count) || 0,
+        lastDehydratedAt: row.last_dehydrated_at ? new Date(row.last_dehydrated_at).getTime() : null,
+        lastHydratedAt: row.last_hydrated_at ? new Date(row.last_hydrated_at).getTime() : null,
+        lastCheckpointAt: row.last_checkpoint_at ? new Date(row.last_checkpoint_at).getTime() : null,
+        tokensInput: Number(row.tokens_input) || 0,
+        tokensOutput: Number(row.tokens_output) || 0,
+        tokensCacheRead: Number(row.tokens_cache_read) || 0,
+        tokensCacheWrite: Number(row.tokens_cache_write) || 0,
+        deletedAt: row.deleted_at ? new Date(row.deleted_at).getTime() : null,
+        createdAt: new Date(row.created_at).getTime(),
+        updatedAt: new Date(row.updated_at).getTime(),
     };
 }

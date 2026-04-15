@@ -706,13 +706,19 @@ function Panel({
                 )),
             ])
         : React.createElement(Box, {
-            flexDirection: "column",
-            borderStyle: "round",
-            borderColor: resolveColorToken(borderColor),
-            paddingX: 1,
+            flexDirection: "row",
             flexGrow: 1,
             backgroundColor: resolveColorToken(fillColor),
+        },
+        React.createElement(Text, { color: resolveColorToken(borderColor) }, "│ "),
+        React.createElement(Box, {
+            flexDirection: "column",
+            width: contentWidth,
+            flexGrow: 1,
+            minHeight: contentHeight,
+            backgroundColor: resolveColorToken(fillColor),
         }, children),
+        React.createElement(Text, { color: resolveColorToken(borderColor) }, " │")),
     renderBorderBottom(borderColor, safeWidth));
 }
 

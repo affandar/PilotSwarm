@@ -6,6 +6,7 @@ class FakeCopilotSession {
     listeners = new Map();
     catchAllHandlers = [];
     scriptedToolCalls = [];
+    scriptedEvents = [];
     assistantContent = "ok";
     aborted = false;
 
@@ -50,6 +51,9 @@ class FakeCopilotSession {
             }
             if (!this.aborted && this.assistantContent != null) {
                 this.emit("assistant.message", { data: { content: this.assistantContent } });
+            }
+            for (const event of this.scriptedEvents) {
+                this.emit(event.type, { data: event.data ?? {} });
             }
             this.emit("session.idle", { data: {} });
         });
@@ -142,5 +146,121 @@ describe("inline control tool execution", () => {
         expect(result.type).toBe("wait_for_agents");
         expect(controlToolBridge.resolveWaitForAgents).toHaveBeenCalledTimes(1);
         expect(fakeSession.aborted).toBe(false);
+    });
+
+    it("does not abort the session for long wait() and still lets later tool calls run", async () => {
+        const fakeSession = new FakeCopilotSession();
+        const regularToolHandler = vi.fn(async () => "ok");
+        fakeSession.scriptedToolCalls = [
+            { name: "wait", args: { seconds: 120, reason: "pause work" } },
+            { name: "regular_tool", args: { value: 1 } },
+        ];
+
+        const managed = new ManagedSession("inline-wait", fakeSession, {
+            tools: [{
+                name: "regular_tool",
+                description: "test tool",
+                parameters: { type: "object", properties: {} },
+                handler: regularToolHandler,
+            }],
+        });
+
+        const result = await managed.runTurn("pause and keep transcript valid");
+
+        expect(result.type).toBe("wait");
+        expect(regularToolHandler).toHaveBeenCalledTimes(1);
+        expect(fakeSession.aborted).toBe(false);
+    });
+
+    it("does not abort the session for ask_user() and still lets later tool calls run", async () => {
+        const fakeSession = new FakeCopilotSession();
+        const regularToolHandler = vi.fn(async () => "ok");
+        fakeSession.scriptedToolCalls = [
+            { name: "ask_user", args: { question: "Need approval?" } },
+            { name: "regular_tool", args: { value: 1 } },
+        ];
+
+        const managed = new ManagedSession("inline-ask-user", fakeSession, {
+            tools: [{
+                name: "regular_tool",
+                description: "test tool",
+                parameters: { type: "object", properties: {} },
+                handler: regularToolHandler,
+            }],
+        });
+
+        const result = await managed.runTurn("ask the user and keep transcript valid");
+
+        expect(result.type).toBe("input_required");
+        expect(regularToolHandler).toHaveBeenCalledTimes(1);
+        expect(fakeSession.aborted).toBe(false);
+    });
+
+    it("converts thrown user tool errors into failure tool results instead of surfacing SDK tool errors", async () => {
+        const fakeSession = new FakeCopilotSession();
+        const failingToolHandler = vi.fn(async () => {
+            throw new Error("HTTP 404");
+        });
+        fakeSession.scriptedToolCalls = [
+            { name: "regular_tool", args: { value: 1 } },
+        ];
+        fakeSession.assistantContent = "Handled the tool failure.";
+
+        const managed = new ManagedSession("inline-tool-failure", fakeSession, {
+            tools: [{
+                name: "regular_tool",
+                description: "test tool",
+                parameters: { type: "object", properties: {} },
+                handler: failingToolHandler,
+            }],
+        });
+
+        const result = await managed.runTurn("run a tool that fails");
+
+        expect(failingToolHandler).toHaveBeenCalledTimes(1);
+        expect(result.type).toBe("completed");
+        expect(result.content).toBe("Handled the tool failure.");
+        expect(fakeSession.aborted).toBe(false);
+    });
+
+    it("suppresses the benign post-completion null-length query error when the assistant already replied", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.assistantContent = "Hello! I'm here and ready to help.";
+        fakeSession.scriptedEvents = [{
+            type: "session.error",
+            data: {
+                message: "Cannot read properties of null (reading 'length')",
+                errorType: "query",
+            },
+        }];
+        const onEvent = vi.fn();
+
+        const managed = new ManagedSession("benign-query-error", fakeSession, {});
+        const result = await managed.runTurn("say hello", { onEvent });
+
+        expect(result.type).toBe("completed");
+        expect(result.content).toBe("Hello! I'm here and ready to help.");
+        expect(result.events?.some((event) => event.eventType === "session.error")).toBe(false);
+        expect(onEvent.mock.calls.some(([event]) => event?.eventType === "session.error")).toBe(false);
+    });
+
+    it("still surfaces the null-length query error when the turn produced no assistant message", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.assistantContent = null;
+        fakeSession.scriptedEvents = [{
+            type: "session.error",
+            data: {
+                message: "Cannot read properties of null (reading 'length')",
+                errorType: "query",
+            },
+        }];
+        const onEvent = vi.fn();
+
+        const managed = new ManagedSession("fatal-query-error", fakeSession, {});
+        const result = await managed.runTurn("say hello", { onEvent });
+
+        expect(result.type).toBe("error");
+        expect(result.message).toContain("Cannot read properties of null");
+        expect(onEvent.mock.calls.some(([event]) => event?.eventType === "session.error")).toBe(true);
     });
 });

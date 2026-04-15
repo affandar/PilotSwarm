@@ -24,6 +24,7 @@ import type {
 } from "./types.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
+import type { SessionMetricSummary, SessionTreeStats, FleetStats } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { createFactStoreForUrl } from "./facts-store.js";
 import { SessionDumper } from "./session-dumper.js";
@@ -752,6 +753,28 @@ export class PilotSwarmManagementClient {
     async getLatestResponse(sessionId: string): Promise<SessionResponsePayload | null> {
         this._ensureStarted();
         return this._readJsonValue<SessionResponsePayload>(sessionId, RESPONSE_LATEST_KEY);
+    }
+
+    // ── Session Metric Summaries ──────────────────────────────
+
+    async getSessionMetricSummary(sessionId: string): Promise<SessionMetricSummary | null> {
+        this._ensureStarted();
+        return this._catalog!.getSessionMetricSummary(sessionId);
+    }
+
+    async getSessionTreeStats(sessionId: string): Promise<SessionTreeStats | null> {
+        this._ensureStarted();
+        return this._catalog!.getSessionTreeStats(sessionId);
+    }
+
+    async getFleetStats(opts?: { includeDeleted?: boolean; since?: Date }): Promise<FleetStats> {
+        this._ensureStarted();
+        return this._catalog!.getFleetStats(opts);
+    }
+
+    async pruneDeletedSummaries(olderThan: Date): Promise<number> {
+        this._ensureStarted();
+        return this._catalog!.pruneDeletedSummaries(olderThan);
     }
 
     /**

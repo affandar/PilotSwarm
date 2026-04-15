@@ -45,6 +45,9 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Mouse copy must stay pane-local.
 - Prompt/question behavior and keybinding help must stay synchronized with actual bindings.
 - Files, logs, sequence, nodes, activity, and chat are all product surfaces and should not silently regress.
+- In the stats inspector, `f` toggles between the session view and fleet view; keep terminal and portal behavior aligned.
+- In the native TUI, the files inspector should render inside the standard outer inspector shell rather than introducing a second files-specific top-level shell.
+- In the portal inspector, reserve a consistent header row height so tabs with header actions and tabs without them start their tab strip at the same vertical position; keep inspector tab/action buttons compact rather than oversized.
 
 ## Keybinding Rule
 

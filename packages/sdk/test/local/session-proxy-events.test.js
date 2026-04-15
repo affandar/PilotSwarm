@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { registerActivities } from "../../src/session-proxy.ts";
 import { SESSION_STATE_MISSING_PREFIX } from "../../src/types.ts";
 
-function makeHarness() {
+function makeHarness(options = {}) {
     const handlers = {};
     const runtime = {
         registerActivity(name, handler) {
@@ -19,6 +19,7 @@ function makeHarness() {
         getOrCreate: vi.fn(async () => session),
         getModelSummary: vi.fn(() => undefined),
         invalidateWarmSession: vi.fn(async () => {}),
+        resetSessionState: vi.fn(async () => {}),
         dehydrate: vi.fn(async () => {}),
         hydrate: vi.fn(async () => {}),
         needsHydration: vi.fn(async () => false),
@@ -29,13 +30,16 @@ function makeHarness() {
         recordEvents: vi.fn(async (_sessionId, events) => {
             recordedEvents.push(...events);
         }),
+        upsertSessionMetricSummary: vi.fn(async () => {}),
         updateSession: vi.fn(async () => {}),
     };
+
+    const sessionStore = options.sessionStore ?? null;
 
     registerActivities(
         runtime,
         sessionManager,
-        null,
+        sessionStore,
         undefined,
         catalog,
         undefined,
@@ -196,6 +200,61 @@ describe("session-proxy CMS prompt classification", () => {
         expect(recoveryNotice).toBeTruthy();
     });
 
+    it("recovers a corrupted tool-call transcript by resetting stored session state and replaying once", async () => {
+        const { runTurn, recordedEvents, sessionManager } = makeHarness();
+        const staleSession = {
+            abort: vi.fn(),
+            runTurn: vi.fn(async () => ({
+                type: "error",
+                message: "400 An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. The following tool_call_ids did not have response messages: call_a, call_b",
+            })),
+        };
+        const recoveredSession = {
+            abort: vi.fn(),
+            runTurn: vi.fn(async (prompt) => {
+                expect(prompt).toContain("live Copilot transcript became inconsistent");
+                expect(prompt).toContain("continue carefully");
+                expect(prompt).toContain("check the session tree");
+                return { type: "completed", content: "recovered from transcript corruption", events: [] };
+            }),
+        };
+        sessionManager.getOrCreate = vi
+            .fn()
+            .mockResolvedValueOnce(staleSession)
+            .mockResolvedValueOnce(recoveredSession);
+
+        const result = await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            {
+                sessionId: "session-corrupt-transcript",
+                prompt: "check the session tree",
+                config: {},
+                turnIndex: 3,
+            },
+        );
+
+        expect(result).toMatchObject({ type: "completed", content: "recovered from transcript corruption" });
+        expect(sessionManager.resetSessionState).toHaveBeenCalledWith("session-corrupt-transcript");
+        expect(sessionManager.getOrCreate).toHaveBeenNthCalledWith(
+            2,
+            "session-corrupt-transcript",
+            expect.any(Object),
+            expect.objectContaining({ turnIndex: 0 }),
+        );
+        expect(recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "session.lossy_handoff",
+            data: expect.objectContaining({
+                cause: "corrupted_tool_call_transcript_during_run_turn",
+                recoveryMode: "fresh_session_replay",
+            }),
+        }));
+        const recoveryNotice = recordedEvents.find((event) =>
+            event.eventType === "system.message"
+            && String(event.data?.content || "").includes("live Copilot transcript became inconsistent"),
+        );
+        expect(recoveryNotice).toBeTruthy();
+    });
+
     it("replays the turn from a fresh Copilot session when resumable state is missing", async () => {
         const { runTurn, sessionManager, recordedEvents } = makeHarness();
         const recoveredSession = {
@@ -311,6 +370,36 @@ describe("session-proxy CMS prompt classification", () => {
                 retryDelaySeconds: 15,
             },
         });
+    });
+
+    it("records snapshot size in the summary update when the session store provides it", async () => {
+        const sessionStore = {
+            getSnapshotSizeBytes: vi.fn(async () => 4096),
+        };
+        const { dehydrateSession, sessionManager, catalog } = makeHarness({ sessionStore });
+
+        await dehydrateSession(
+            { traceInfo: () => {} },
+            {
+                sessionId: "session-with-size",
+                reason: "timer",
+            },
+        );
+
+        expect(sessionManager.dehydrate).toHaveBeenCalledWith(
+            "session-with-size",
+            "timer",
+            expect.objectContaining({ trace: expect.any(Function) }),
+        );
+        expect(sessionStore.getSnapshotSizeBytes).toHaveBeenCalledWith("session-with-size");
+        expect(catalog.upsertSessionMetricSummary).toHaveBeenCalledWith(
+            "session-with-size",
+            expect.objectContaining({
+                snapshotSizeBytes: 4096,
+                dehydrationCountIncrement: 1,
+                lastDehydratedAt: true,
+            }),
+        );
     });
 
     it("records a lossy handoff and continues when dehydrate loses local session files", async () => {

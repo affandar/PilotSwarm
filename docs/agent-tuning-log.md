@@ -60,6 +60,8 @@ Timer context: {seconds}s timer (reason: "{reason}"), {elapsed}s elapsed, {remai
 
 - 2026-03-26: Hardened the default agent and sub-agent skill prompts so models, including GPT-5.4-mini, are told explicitly that they can start indefinite recurring durable loops in the current turn, can delegate recurring work to sub-agents, and can send follow-up instructions to running sub-agents with `message_agent`. Added a regression test that asks for a recurring sub-agent loop, rejects "need another prompt/nudge" disclaimers, and verifies a child session enters a waiting state.
 
+- 2026-04-15: Azure OpenAI `gpt-5.4` filtered the Resource Manager system agent at turn 0 with `Execution failed: 400 The response was filtered due to the prompt triggering Azure OpenAI's content management policy.` The likely trigger was violent or aggressive wording in the bootstrap prompt and exposed tool descriptions, especially `killing a stuck session`, plus permanence phrasing like `run FOREVER` / `run eternally`. Softened `packages/sdk/plugins/mgmt/agents/resourcemgr.agent.md` and `packages/sdk/src/resourcemgr-tools.ts` to use neutral monitoring language (`long-running`, `unresponsive`, `stop`, `unreferenced blobs`, `0 running pods available`). This is a prompt-hardening mitigation, not proof that Azure's content filter is fully solved.
+
 ### Other Options Considered (not implemented)
 - **Option A (dual-action):** "You MUST do BOTH: 1. Reply with text. 2. Call wait." — Not tried, likely same result with GPT-5.1.
 - **Option C (role-based):** "You are in a conversation — respond naturally." — Not tried.

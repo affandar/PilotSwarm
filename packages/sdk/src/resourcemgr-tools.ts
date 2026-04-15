@@ -415,15 +415,15 @@ export function createResourceManagerTools(opts: {
 
     const purgeOrphansTool = defineTool("purge_orphaned_blobs", {
         description:
-            "Delete blobs (session state .tar.gz + .meta.json) whose session ID has no " +
-            "matching CMS entry. Dry-run by default — returns what WOULD be deleted. " +
+            "Delete unreferenced blobs (session state .tar.gz + .meta.json) whose session ID has no " +
+            "matching CMS entry. Dry-run by default — returns what would be deleted. " +
             "Pass confirm=true to actually delete.",
         parameters: {
             type: "object" as const,
             properties: {
                 confirm: {
                     type: "boolean",
-                    description: "Actually delete orphaned blobs. Default: false (dry-run).",
+                    description: "Actually delete unreferenced blobs. Default: false (dry-run).",
                 },
             },
         },
@@ -637,15 +637,15 @@ export function createResourceManagerTools(opts: {
 
     const forceTerminateTool = defineTool("force_terminate_session", {
         description:
-            "Force-terminate a stuck session: soft-deletes CMS entry and destroys the " +
-            "duroxide orchestration instance. Use for sessions that are unresponsive or " +
-            "stuck in a loop. Refuses to terminate system sessions.",
+            "Stop an unresponsive session by soft-deleting its CMS entry and removing the " +
+            "duroxide orchestration instance. Use only for sessions that have been inactive " +
+            "for an extended period. Refuses to act on system sessions.",
         parameters: {
             type: "object" as const,
             properties: {
                 sessionId: {
                     type: "string",
-                    description: "The session ID to terminate. Required.",
+                    description: "The session ID to stop. Required.",
                 },
             },
             required: ["sessionId"],

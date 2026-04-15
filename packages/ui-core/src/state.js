@@ -10,6 +10,7 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         ui: {
             focusRegion: FOCUS_REGIONS.SESSIONS,
             inspectorTab: INSPECTOR_TABS[0],
+            statsViewMode: "session",
             prompt: "",
             promptCursor: 0,
             promptRows: 1,
@@ -75,6 +76,14 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
                 level: "all",
                 format: "pretty",
             },
+        },
+        sessionStats: {
+            bySessionId: {},
+        },
+        fleetStats: {
+            loading: false,
+            data: null,
+            fetchedAt: 0,
         },
     };
 }

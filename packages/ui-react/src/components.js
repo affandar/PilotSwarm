@@ -363,7 +363,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
     });
 });
 
-const FilesBrowser = React.memo(function FilesBrowser({ controller, width, height, shellTitle, focused = false, frame, showFullscreenTitle = false }) {
+const FilesBrowser = React.memo(function FilesBrowser({ controller, width, height, shellTitle, focused = false, frame, showFullscreenTitle = false, embedded = false }) {
     const platform = useUiPlatform();
     const filesState = useControllerSelector(controller, (state) => ({
         activeSessionId: state.sessions.activeSessionId,
@@ -415,7 +415,7 @@ const FilesBrowser = React.memo(function FilesBrowser({ controller, width, heigh
     }
     const listContentRows = Math.max(1, listPanelHeight - 2);
     const listScrollOffset = Math.max(0, filesView.selectedIndex - Math.floor(listContentRows / 2));
-    const listFrame = frame
+    const listFrame = !embedded && frame
         ? {
             x: frame.x + 2,
             y: frame.y + 2,
@@ -423,7 +423,7 @@ const FilesBrowser = React.memo(function FilesBrowser({ controller, width, heigh
             height: listPanelHeight,
         }
         : null;
-    const previewFrame = frame
+    const previewFrame = !embedded && frame
         ? {
             x: frame.x + 2,
             y: frame.y + 2 + listPanelHeight + 1,
@@ -438,14 +438,7 @@ const FilesBrowser = React.memo(function FilesBrowser({ controller, width, heigh
         bold: tab === "files",
     }));
 
-    return React.createElement(platform.Panel, {
-        title,
-        color: "magenta",
-        focused,
-        width,
-        height,
-    },
-    React.createElement(platform.Column, { width: contentWidth },
+    const content = React.createElement(platform.Column, { width: contentWidth },
         React.createElement(platform.Lines, {
             lines: [tabLine],
         }),
@@ -476,7 +469,64 @@ const FilesBrowser = React.memo(function FilesBrowser({ controller, width, heigh
             paneLabel: "File preview",
             frame: previewFrame,
         }),
-    ));
+    );
+
+    if (embedded) {
+        return content;
+    }
+
+    return React.createElement(platform.Panel, {
+        title,
+        color: "magenta",
+        focused,
+        width,
+        height,
+        marginBottom: PANE_GAP_Y,
+        paneId: "inspector",
+        paneLabel: "Inspector",
+        frame,
+    }, content);
+});
+
+const InspectorFilesPane = React.memo(function InspectorFilesPane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const shellState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: shellState.activeSessionId,
+            byId: buildSingleSessionMap(shellState.activeSessionId, shellState.activeSession),
+        },
+        ui: {
+            inspectorTab: "files",
+        },
+    }), [shellState.activeSession, shellState.activeSessionId]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return React.createElement(platform.Panel, {
+        title: inspector.title,
+        color: "magenta",
+        focused: meta.focused,
+        width,
+        height,
+        marginBottom: PANE_GAP_Y,
+        paneId: "inspector",
+        paneLabel: "Inspector",
+        frame,
+    }, React.createElement(FilesBrowser, {
+        controller,
+        width,
+        height,
+        frame,
+        focused: meta.focused,
+        embedded: true,
+    }));
 });
 
 const InspectorSequencePane = React.memo(function InspectorSequencePane({ controller, width, height, frame, meta }) {
@@ -607,6 +657,42 @@ const InspectorNodesPane = React.memo(function InspectorNodesPane({ controller, 
     return renderInspectorPanel(platform, inspector, meta, width, height, frame);
 });
 
+const InspectorStatsPane = React.memo(function InspectorStatsPane({ controller, width, height, frame, meta }) {
+    const platform = useUiPlatform();
+    const contentWidth = Math.max(20, width - 4);
+    const statsState = useControllerSelector(controller, (state) => ({
+        activeSessionId: state.sessions.activeSessionId,
+        activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+        sessionStats: state.sessionStats,
+        fleetStats: state.fleetStats,
+        statsViewMode: state.ui.statsViewMode,
+    }), shallowEqualObject);
+    const selectorState = React.useMemo(() => ({
+        sessions: {
+            activeSessionId: statsState.activeSessionId,
+            byId: buildSingleSessionMap(statsState.activeSessionId, statsState.activeSession),
+        },
+        sessionStats: statsState.sessionStats,
+        fleetStats: statsState.fleetStats,
+        ui: {
+            inspectorTab: "stats",
+            statsViewMode: statsState.statsViewMode,
+        },
+    }), [
+        statsState.activeSession,
+        statsState.activeSessionId,
+        statsState.fleetStats,
+        statsState.sessionStats,
+        statsState.statsViewMode,
+    ]);
+    const inspector = React.useMemo(
+        () => selectInspector(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+
+    return renderInspectorPanel(platform, inspector, meta, width, height, frame);
+});
+
 const InspectorPane = React.memo(function InspectorPane({ controller, width, height, frame }) {
     const inspectorMeta = useControllerSelector(controller, (state) => ({
         inspectorTab: state.ui.inspectorTab,
@@ -614,12 +700,12 @@ const InspectorPane = React.memo(function InspectorPane({ controller, width, hei
         focused: state.ui.focusRegion === "inspector",
     }), shallowEqualObject);
     if (inspectorMeta.inspectorTab === "files") {
-        return React.createElement(FilesBrowser, {
+        return React.createElement(InspectorFilesPane, {
             controller,
             width,
             height,
-            focused: inspectorMeta.focused,
             frame,
+            meta: inspectorMeta,
         });
     }
     if (inspectorMeta.inspectorTab === "sequence") {
@@ -642,6 +728,15 @@ const InspectorPane = React.memo(function InspectorPane({ controller, width, hei
     }
     if (inspectorMeta.inspectorTab === "history") {
         return React.createElement(InspectorHistoryPane, {
+            controller,
+            width,
+            height,
+            frame,
+            meta: inspectorMeta,
+        });
+    }
+    if (inspectorMeta.inspectorTab === "stats") {
+        return React.createElement(InspectorStatsPane, {
             controller,
             width,
             height,

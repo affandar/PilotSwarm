@@ -302,6 +302,12 @@ loop:
 
 ## Agent Context Injection
 
+> Follow-on note: [skill-materialization-to-filesystem.md](./skill-materialization-to-filesystem.md)
+> supersedes the `read_facts`-based full skill retrieval path described in this
+> section by materializing curated skills under `plugin/skills/learned/` so the
+> Copilot SDK can load them natively. The design below describes the
+> pre-materialization phase of the shared-skills pipeline.
+
 ### Curated Skills as SDK Skills
 
 The `loadKnowledgeIndex` activity does not just build a text index — it returns curated skills in the same `Skill` shape that the Copilot SDK uses for file-based SKILL.md skills. The orchestration passes these to the session config alongside the static `skillDirectories` skills.

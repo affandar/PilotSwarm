@@ -32,6 +32,9 @@ import {
 import { getTheme, listThemes } from "./themes/index.js";
 
 const ORCHESTRATION_STATS_REFRESH_MS = 20_000;
+const SESSION_STATS_REFRESH_MS = 20_000;
+const FLEET_STATS_REFRESH_MS = 30_000;
+const FLEET_STATS_DEFAULT_WINDOW_DAYS = 30;
 const SESSION_REFRESH_FAILED_STATUS = "Session refresh failed";
 const FULLSCREENABLE_PANES = new Set([
     FOCUS_REGIONS.SESSIONS,
@@ -1089,6 +1092,10 @@ export class PilotSwarmUiController {
                 await this.ensureExecutionHistory(activeSessionId);
             }
         }
+        if (targetTab === "stats") {
+            await this.ensureSessionStats().catch(() => {});
+            await this.ensureFleetStats().catch(() => {});
+        }
     }
 
     async ensureOrchestrationStats(sessionId, { force = false } = {}) {
@@ -1134,6 +1141,48 @@ export class PilotSwarmUiController {
         });
         this.sessionOrchestrationStatsLoads.set(sessionId, loadPromise);
         return loadPromise;
+    }
+
+    async ensureSessionStats({ force = false } = {}) {
+        const sessionId = this.getState().sessions.activeSessionId;
+        if (!sessionId || typeof this.transport.getSessionMetricSummary !== "function") return;
+
+        const current = this.getState().sessionStats?.bySessionId?.[sessionId] || null;
+        const now = Date.now();
+        if (!force && current?.loading) return;
+        if (!force && current && Number.isFinite(current.fetchedAt) && (now - current.fetchedAt) < SESSION_STATS_REFRESH_MS) return;
+
+        this.dispatch({ type: "sessionStats/loading", sessionId });
+        try {
+            const [summary, treeStats] = await Promise.all([
+                this.transport.getSessionMetricSummary(sessionId),
+                typeof this.transport.getSessionTreeStats === "function"
+                    ? this.transport.getSessionTreeStats(sessionId)
+                    : null,
+            ]);
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, treeStats });
+        } catch {
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, treeStats: null });
+        }
+    }
+
+    async ensureFleetStats({ force = false } = {}) {
+        if (typeof this.transport.getFleetStats !== "function") return;
+
+        const current = this.getState().fleetStats;
+        const now = Date.now();
+        if (!force && current?.loading) return;
+        if (!force && current?.data && Number.isFinite(current.fetchedAt) && (now - current.fetchedAt) < FLEET_STATS_REFRESH_MS) return;
+
+        this.dispatch({ type: "fleetStats/loading" });
+        try {
+            const data = await this.transport.getFleetStats({
+                since: new Date(Date.now() - FLEET_STATS_DEFAULT_WINDOW_DAYS * 86400_000),
+            });
+            this.dispatch({ type: "fleetStats/loaded", data });
+        } catch {
+            this.dispatch({ type: "fleetStats/loaded", data: null });
+        }
     }
 
     async ensureExecutionHistory(sessionId, { force = false } = {}) {
@@ -2876,7 +2925,8 @@ export class PilotSwarmUiController {
     }
 
     nextInspectorTab() {
-        const inspectorTab = cycleValue(INSPECTOR_TABS, this.getState().ui.inspectorTab, 1);
+        const current = this.getState().ui.inspectorTab;
+        const inspectorTab = cycleValue(INSPECTOR_TABS, current, 1);
         this.dispatch({
             type: "ui/inspectorTab",
             inspectorTab,
@@ -2895,6 +2945,18 @@ export class PilotSwarmUiController {
 
     cycleInspectorTab() {
         this.nextInspectorTab();
+    }
+
+    toggleStatsView() {
+        const current = this.getState().ui.statsViewMode === "fleet" ? "fleet" : "session";
+        const statsViewMode = current === "session" ? "fleet" : "session";
+        this.dispatch({
+            type: "ui/statsViewMode",
+            statsViewMode,
+        });
+        if (this.getState().ui.inspectorTab === "stats") {
+            this.ensureInspectorData("stats").catch(() => {});
+        }
     }
 
     async selectInspectorTab(inspectorTab) {
@@ -3100,8 +3162,11 @@ export class PilotSwarmUiController {
                     : {},
             },
             logs: state.logs,
+            sessionStats: state.sessionStats,
+            fleetStats: state.fleetStats,
             ui: {
                 inspectorTab: state.ui.inspectorTab,
+                statsViewMode: state.ui.statsViewMode,
             },
             executionHistory: state.executionHistory,
         };
@@ -3552,6 +3617,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.TOGGLE_LOG_TAIL:
                 this.toggleLogTail();
+                return;
+            case UI_COMMANDS.TOGGLE_STATS_VIEW:
+                this.toggleStatsView();
                 return;
             case UI_COMMANDS.OPEN_LOG_FILTER:
                 this.openLogFilter();
