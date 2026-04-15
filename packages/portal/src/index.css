@@ -131,6 +131,9 @@ button {
 .ps-filter-option,
 .ps-list-button,
 .ps-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--ps-modal-border);
   border-radius: var(--ps-radius-sm);
   background: color-mix(in srgb, var(--ps-surface) 94%, transparent);
@@ -395,7 +398,9 @@ button {
 .ps-filter-option,
 .ps-modal-close {
   padding: 6px 10px;
+  min-height: 34px;
   font-size: 0.92rem;
+  line-height: 1;
 }
 
 .ps-workspace {
@@ -709,8 +714,9 @@ body.is-resizing-pane-y * {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 6px 10px 0;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 10px 0;
   margin-bottom: 0;
 }
 
@@ -727,7 +733,9 @@ body.is-resizing-pane-y * {
 
 .ps-panel-actions {
   display: inline-flex;
-  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
   padding-left: 0;
   background: transparent;
 }
@@ -999,6 +1007,7 @@ body.is-resizing-pane-y * {
 }
 
 .ps-session-pane .ps-session-list-button {
+  display: block;
   border: 0;
   border-radius: 2px;
   background: transparent;
@@ -1054,9 +1063,15 @@ body.is-resizing-pane-y * {
 .ps-tab-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
-  padding: 4px 10px 6px;
+  gap: 4px;
+  padding: 2px 10px 4px;
   align-items: center;
+}
+
+.ps-panel .ps-mini-button,
+.ps-panel .ps-tab {
+  padding: 4px 8px;
+  min-height: 30px;
 }
 
 .ps-files-grid {

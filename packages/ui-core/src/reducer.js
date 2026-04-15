@@ -300,6 +300,19 @@ export function appReducer(state, action) {
                     },
             };
 
+        case "ui/statsViewMode":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    statsViewMode: action.statsViewMode === "fleet" ? "fleet" : "session",
+                    scroll: {
+                        ...state.ui.scroll,
+                        inspector: 0,
+                    },
+                },
+            };
+
         case "ui/prompt":
             return {
                 ...state,
@@ -666,6 +679,55 @@ export function appReducer(state, action) {
                 executionHistory: {
                     ...state.executionHistory,
                     format: action.format || "pretty",
+                },
+            };
+        }
+
+        // ── Session Stats ────────────────────────────────────
+
+        case "sessionStats/loading": {
+            const bySessionId = { ...(state.sessionStats?.bySessionId || {}) };
+            bySessionId[action.sessionId] = {
+                ...(bySessionId[action.sessionId] || {}),
+                loading: true,
+            };
+            return {
+                ...state,
+                sessionStats: { ...state.sessionStats, bySessionId },
+            };
+        }
+
+        case "sessionStats/loaded": {
+            const bySessionId = { ...(state.sessionStats?.bySessionId || {}) };
+            bySessionId[action.sessionId] = {
+                loading: false,
+                fetchedAt: Date.now(),
+                summary: action.summary || null,
+                treeStats: action.treeStats || null,
+            };
+            return {
+                ...state,
+                sessionStats: { ...state.sessionStats, bySessionId },
+            };
+        }
+
+        case "fleetStats/loading": {
+            return {
+                ...state,
+                fleetStats: {
+                    ...state.fleetStats,
+                    loading: true,
+                },
+            };
+        }
+
+        case "fleetStats/loaded": {
+            return {
+                ...state,
+                fleetStats: {
+                    loading: false,
+                    data: action.data || null,
+                    fetchedAt: Date.now(),
                 },
             };
         }

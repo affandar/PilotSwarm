@@ -12,6 +12,27 @@ interface TurnState {
     waitThreshold: number;
 }
 
+function acknowledgeTurnBoundary(action: string): string {
+    return `[SYSTEM: ${action} acknowledged. The runtime will suspend at the end of this turn. ` +
+        `Finish any remaining tool results for the current step, then stop.]`;
+}
+
+function failureToolResult(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error ?? "Tool failed");
+    return {
+        textResultForLlm: `Tool failed: ${message}`,
+        resultType: "failure",
+        error: message,
+        toolTelemetry: {},
+    };
+}
+
+function isBenignPostCompletionQueryError(eventData: any): boolean {
+    if (!eventData || typeof eventData !== "object") return false;
+    return eventData.errorType === "query"
+        && String(eventData.message || "").includes("Cannot read properties of null (reading 'length')");
+}
+
 /**
  * ManagedSession — wraps a CopilotSession and provides the interface
  * that the orchestration calls into (via SessionProxy).
@@ -404,8 +425,7 @@ export class ManagedSession {
                     reason,
                     preserveWorkerAffinity: args.preserveWorkerAffinity ?? false,
                 });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("wait");
             },
         });
 
@@ -448,8 +468,7 @@ export class ManagedSession {
                     reason,
                     preserveWorkerAffinity: true,
                 });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("wait_on_worker");
             },
         });
 
@@ -550,8 +569,7 @@ export class ManagedSession {
                     choices: args.choices,
                     allowFreeform: args.allowFreeform ?? true,
                 });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("ask_user");
             },
         });
 
@@ -633,8 +651,7 @@ export class ManagedSession {
                     agentName: args.agent_name,
                     title: typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined,
                 });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("spawn_agent");
             },
         });
 
@@ -660,8 +677,7 @@ export class ManagedSession {
                     agentId: args.agent_id,
                     message: args.message,
                 });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("message_agent");
             },
         });
 
@@ -679,8 +695,7 @@ export class ManagedSession {
                     return await controlBridge.checkAgents();
                 }
                 turnState.pendingActions.push({ type: "check_agents" });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("check_agents");
             },
         });
 
@@ -717,8 +732,7 @@ export class ManagedSession {
                     type: "wait_for_agents",
                     agentIds: args.agent_ids ?? [],
                 });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("wait_for_agents");
             },
         });
 
@@ -736,8 +750,7 @@ export class ManagedSession {
                     return await controlBridge.listSessions();
                 }
                 turnState.pendingActions.push({ type: "list_sessions" });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("list_sessions");
             },
         });
 
@@ -758,8 +771,7 @@ export class ManagedSession {
                     return await controlBridge.completeAgent(args);
                 }
                 turnState.pendingActions.push({ type: "complete_agent", agentId: args.agent_id });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("complete_agent");
             },
         });
 
@@ -781,8 +793,7 @@ export class ManagedSession {
                     return await controlBridge.cancelAgent(args);
                 }
                 turnState.pendingActions.push({ type: "cancel_agent", agentId: args.agent_id, reason: args.reason });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("cancel_agent");
             },
         });
 
@@ -804,8 +815,7 @@ export class ManagedSession {
                     return await controlBridge.deleteAgent(args);
                 }
                 turnState.pendingActions.push({ type: "delete_agent", agentId: args.agent_id, reason: args.reason });
-                if (turnState.session) turnState.session.abort();
-                return "aborted";
+                return acknowledgeTurnBoundary("delete_agent");
             },
         });
 
@@ -828,9 +838,13 @@ export class ManagedSession {
             })
             .map(t => ({
                 ...t,
-                handler: (args: any, invocation: any) => {
+                handler: async (args: any, invocation: any) => {
                     const augmented = { ...invocation, durableSessionId };
-                    return (t as any).handler(args, augmented);
+                    try {
+                        return await (t as any).handler(args, augmented);
+                    } catch (error) {
+                        return failureToolResult(error);
+                    }
                 },
             }));
 
@@ -862,6 +876,7 @@ export class ManagedSession {
         let currentReasoning = "";
         let lastPublishedReasoning = "";
         let lastReasoningPublishAt = 0;
+        let deferredSessionError: CapturedEvent | null = null;
 
         function getToolEventKey(eventData: any): string | null {
             if (!eventData || typeof eventData !== "object") return null;
@@ -969,6 +984,10 @@ export class ManagedSession {
                     }
 
                     const captured: CapturedEvent = { eventType, data: eventData };
+                    if (eventType === "session.error" && isBenignPostCompletionQueryError(eventData)) {
+                        deferredSessionError = captured;
+                        return;
+                    }
                     collectedEvents.push(captured);
                     // Fire immediately so callers can write to CMS in real-time
                     if (opts?.onEvent) {
@@ -1117,6 +1136,13 @@ export class ManagedSession {
         }
 
         const completedQueuedActions = turnState.queuedActions.length > 0 ? turnState.queuedActions : undefined;
+
+        if (deferredSessionError && !finalContent) {
+            collectedEvents.push(deferredSessionError);
+            if (opts?.onEvent) {
+                try { opts.onEvent(deferredSessionError); } catch {}
+            }
+        }
 
         // Check if the SDK emitted a session.error — if so, treat as an error
         // even though session.idle fired (the SDK fires idle after retries exhaust).

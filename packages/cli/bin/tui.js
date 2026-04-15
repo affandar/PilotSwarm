@@ -5,7 +5,7 @@
 process.env.NODE_ENV ??= "production";
 
 const { syncBundledWorkspaceUiPackages } = await import("../src/sync-workspace-ui.js");
-syncBundledWorkspaceUiPackages();
+syncBundledWorkspaceUiPackages({ linkWorkspacePackages: true });
 
 const { parseCliIntoEnv } = await import("../src/bootstrap-env.js");
 const config = parseCliIntoEnv(process.argv.slice(2));

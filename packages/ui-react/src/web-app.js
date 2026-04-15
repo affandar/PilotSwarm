@@ -45,6 +45,7 @@ const INSPECTOR_TAB_LABELS = {
     nodes: "Node Map",
     history: "History",
     files: "Files",
+    stats: "Stats",
 };
 
 function cycleTabs(tabs, current, delta) {
@@ -1404,10 +1405,13 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
             : layout.rightWidth;
         return {
             inspectorTab: state.ui.inspectorTab,
+            statsViewMode: state.ui.statsViewMode,
             activeSessionId: state.sessions.activeSessionId,
             sessionsById: state.sessions.byId,
             sessionsFlat: state.sessions.flat,
             historyBySessionId: state.history.bySessionId,
+            sessionStats: state.sessionStats,
+            fleetStats: state.fleetStats,
             connection: state.connection,
             orchestrationBySessionId: state.orchestration.bySessionId,
             executionHistoryBySessionId: state.executionHistory?.bySessionId || {},
@@ -1430,9 +1434,12 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         history: {
             bySessionId: viewState.historyBySessionId,
         },
+        sessionStats: viewState.sessionStats,
+        fleetStats: viewState.fleetStats,
         connection: viewState.connection,
         ui: {
             inspectorTab: viewState.inspectorTab,
+            statsViewMode: viewState.statsViewMode,
             scroll: {
                 inspector: viewState.scroll,
             },
@@ -1451,9 +1458,12 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         viewState.connection,
         viewState.executionHistoryBySessionId,
         viewState.executionHistoryFormat,
+        viewState.fleetStats,
         viewState.files,
         viewState.historyBySessionId,
         viewState.inspectorTab,
+        viewState.sessionStats,
+        viewState.statsViewMode,
         viewState.logs,
         viewState.orchestrationBySessionId,
         viewState.scroll,
@@ -1496,6 +1506,13 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
             className: "ps-mini-button",
             onClick: () => controller.handleCommand(UI_COMMANDS.EXPORT_EXECUTION_HISTORY).catch(() => {}),
         }, "Artifact"));
+    } else if (viewState.inspectorTab === "stats") {
+        actions.push(React.createElement("button", {
+            key: "toggle-stats-view",
+            type: "button",
+            className: "ps-mini-button",
+            onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_STATS_VIEW).catch(() => {}),
+        }, viewState.statsViewMode === "fleet" ? "Session" : "Fleet"));
     }
 
     const panelActions = extraActions
@@ -2482,6 +2499,11 @@ function useKeyboardShortcuts(
             if (focusRegion === "inspector" && currentInspectorTab === "files" && event.key === "f" && isPlainShortcut) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.OPEN_FILES_FILTER).catch(() => {});
+                return;
+            }
+            if (focusRegion === "inspector" && currentInspectorTab === "stats" && event.key === "f" && isPlainShortcut) {
+                event.preventDefault();
+                controller.handleCommand(UI_COMMANDS.TOGGLE_STATS_VIEW).catch(() => {});
                 return;
             }
             if (focusRegion === "inspector" && currentInspectorTab === "files" && event.key === "v" && isPlainShortcut) {

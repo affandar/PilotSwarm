@@ -18,7 +18,17 @@ function copyTree(sourceDir, targetDir) {
     }
 }
 
-export function syncBundledWorkspaceUiPackages({ cliPackageDir = path.resolve(__dirname, "..") } = {}) {
+function linkTree(sourceDir, targetDir) {
+    const parentDir = path.dirname(targetDir);
+    fs.mkdirSync(parentDir, { recursive: true });
+    const relativeSourceDir = path.relative(parentDir, sourceDir);
+    fs.symlinkSync(relativeSourceDir, targetDir, process.platform === "win32" ? "junction" : "dir");
+}
+
+export function syncBundledWorkspaceUiPackages({
+    cliPackageDir = path.resolve(__dirname, ".."),
+    linkWorkspacePackages = false,
+} = {}) {
     const packagesDir = path.resolve(cliPackageDir, "..");
     const syncedPackages = [];
 
@@ -33,6 +43,18 @@ export function syncBundledWorkspaceUiPackages({ cliPackageDir = path.resolve(__
 
         const targetDir = path.join(cliPackageDir, "node_modules", packageName);
         fs.rmSync(targetDir, { recursive: true, force: true });
+
+        if (linkWorkspacePackages) {
+            try {
+                linkTree(workspaceDir, targetDir);
+                syncedPackages.push(packageName);
+                continue;
+            } catch {
+                // Fall back to a real copy if symlinks are unavailable.
+                fs.rmSync(targetDir, { recursive: true, force: true });
+            }
+        }
+
         fs.mkdirSync(targetDir, { recursive: true });
         fs.copyFileSync(sourcePackageJson, path.join(targetDir, "package.json"));
         if (fs.existsSync(sourceReadme)) {

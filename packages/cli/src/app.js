@@ -418,6 +418,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.OPEN_LOG_FILTER).catch(() => {});
             return;
         }
+        if (focus === "inspector" && inspectorTab === "stats" && input === "f") {
+            controller.handleCommand(UI_COMMANDS.TOGGLE_STATS_VIEW).catch(() => {});
+            return;
+        }
         if (focus === "inspector" && inspectorTab === "files" && input === "f") {
             controller.handleCommand(UI_COMMANDS.OPEN_FILES_FILTER).catch(() => {});
             return;

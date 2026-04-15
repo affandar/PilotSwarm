@@ -1439,15 +1439,13 @@ export function selectFilesView(state, options = {}) {
     }
 
     const panelTitleLabel = scope === "allSessions"
-        ? `Files: all sessions${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
+        ? "Files: all sessions"
         : session
-            ? `Files: ${shortId}${subtreeScope ? " tree" : ""}${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
+            ? `Files: ${shortId}${subtreeScope ? " tree" : ""}`
             : "Files";
     const listTitleLabel = scope === "allSessions"
-        ? `Artifacts: all sessions${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
-        : session
-            ? `Artifacts: ${shortId}${subtreeScope ? " tree" : ""}${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
-            : "Artifacts";
+        ? `Artifacts${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
+        : `Artifacts${subtreeScope ? " tree" : ""}${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`;
     const querySuffix = query ? ` · @${query}` : "";
 
     return {
@@ -1541,6 +1539,8 @@ export function selectStatusBar(state) {
         [FOCUS_REGIONS.CHAT]: `j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
             ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane`
+            : state.ui.inspectorTab === "stats"
+                ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f toggle session/fleet · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · m next tab · tab next pane`
             : state.ui.inspectorTab === "files"
                 ? state.files?.fullscreen
                     ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f filter · u/ctrl-a upload · a download · o open · d done · v/esc close fullscreen · left/right tab · {/} session pane · [/] side pane · T themes · tab next pane"
@@ -2777,6 +2777,232 @@ export function selectArtifactPickerModal(state, maxWidth = 88) {
     };
 }
 
+// ── Stats Inspector Pane ────────────────────────────────────────────
+
+function formatCompactNumber(n) {
+    if (n == null || !Number.isFinite(n)) return "0";
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 10_000) return `${(n / 1_000).toFixed(1)}K`;
+    if (n >= 1_000) return n.toLocaleString("en-US");
+    return String(n);
+}
+
+function formatRelativeTime(ts) {
+    if (!ts) return "—";
+    const ms = Date.now() - ts;
+    if (ms < 60_000) return `${Math.max(1, Math.floor(ms / 1000))}s ago`;
+    if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+    if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+    return `${Math.floor(ms / 86_400_000)}d ago`;
+}
+
+function formatLocalTimestamp(ts) {
+    if (!ts) return "—";
+    return new Date(ts).toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZoneName: "short",
+    });
+}
+
+function buildSessionStatsLines(state, session, maxWidth) {
+    if (!session) return [plainInspectorLine("No session selected.")];
+
+    const entry = state.sessionStats?.bySessionId?.[session.sessionId] || null;
+    if (!entry || entry.loading) {
+        return [plainInspectorLine("Loading session stats...")];
+    }
+    const summary = entry.summary;
+    if (!summary) {
+        return [plainInspectorLine("Session stats unavailable.")];
+    }
+
+    const lines = [];
+    const w = Math.max(24, maxWidth);
+
+    lines.push(fitRuns([
+        { text: "View ", color: "cyan", bold: true },
+        { text: "[session] ", color: "magenta", bold: true },
+        { text: "fleet", color: "gray" },
+        { text: "  [f toggle]", color: "gray" },
+    ], w));
+    lines.push(plainInspectorLine(""));
+
+    // Session identity
+    lines.push(fitRuns([
+        { text: "Session  ", color: "cyan", bold: true },
+        { text: shortSessionId(session.sessionId), color: "white" },
+    ], w));
+    if (summary.agentId) {
+        lines.push(fitRuns([
+            { text: "Agent    ", color: "cyan", bold: true },
+            { text: summary.agentId, color: "white" },
+        ], w));
+    }
+    if (summary.model) {
+        lines.push(fitRuns([
+            { text: "Model    ", color: "cyan", bold: true },
+            { text: summary.model, color: "white" },
+        ], w));
+    }
+    lines.push(plainInspectorLine(""));
+
+    // Token usage card
+    const tokTotal = (summary.tokensInput || 0) + (summary.tokensOutput || 0);
+    lines.push(...buildMessageCardLines({
+        title: "Tokens",
+        body: [
+            `Input  ${formatCompactNumber(summary.tokensInput).padStart(12)}    Cache Read   ${formatCompactNumber(summary.tokensCacheRead).padStart(8)}`,
+            `Output ${formatCompactNumber(summary.tokensOutput).padStart(12)}    Cache Write  ${formatCompactNumber(summary.tokensCacheWrite).padStart(8)}`,
+            `Total  ${formatCompactNumber(tokTotal).padStart(12)}`,
+        ].join("\n"),
+        width: w,
+        titleColor: "green",
+        borderColor: "gray",
+        fitToContent: true,
+    }));
+    lines.push(plainInspectorLine(""));
+
+    // Persistence card
+    const persLines = [
+        `Snapshot       ${formatCompactBytes(summary.snapshotSizeBytes).padStart(10)}`,
+        `Dehydrations   ${String(summary.dehydrationCount).padStart(10)}    Hydrations  ${String(summary.hydrationCount).padStart(6)}`,
+        `Lossy Handoffs ${String(summary.lossyHandoffCount).padStart(10)}`,
+    ];
+    if (summary.lastDehydratedAt) {
+        persLines.push(`Last Dehydrated ${formatLocalTimestamp(summary.lastDehydratedAt)}`);
+    }
+    if (summary.lastHydratedAt) {
+        persLines.push(`Last Hydrated   ${formatLocalTimestamp(summary.lastHydratedAt)}`);
+    }
+    lines.push(...buildMessageCardLines({
+        title: "Persistence",
+        body: persLines.join("\n"),
+        width: w,
+        titleColor: "yellow",
+        borderColor: "gray",
+        fitToContent: true,
+    }));
+
+    // Tree stats (if has children)
+    const tree = entry.treeStats?.tree;
+    if (tree && tree.sessionCount > 1) {
+        lines.push(plainInspectorLine(""));
+        lines.push(...buildMessageCardLines({
+            title: `Tree (${tree.sessionCount} sessions)`,
+            body: [
+                `Total Tokens   ${formatCompactNumber(tree.totalTokensInput)} in / ${formatCompactNumber(tree.totalTokensOutput)} out`,
+                `Total Snapshot ${formatCompactBytes(tree.totalSnapshotSizeBytes).padStart(10)}`,
+                `Dehydrations   ${String(tree.totalDehydrationCount).padStart(10)}    Hydrations  ${String(tree.totalHydrationCount).padStart(6)}`,
+            ].join("\n"),
+            width: w,
+            titleColor: "magenta",
+            borderColor: "gray",
+            fitToContent: true,
+        }));
+    }
+
+    return lines;
+}
+
+function buildFleetStatsLines(state, maxWidth) {
+    const fleet = state.fleetStats;
+    if (!fleet || fleet.loading) {
+        return [plainInspectorLine("Loading fleet stats...")];
+    }
+    const data = fleet.data;
+    if (!data) {
+        return [plainInspectorLine("Fleet stats unavailable.")];
+    }
+
+    const lines = [];
+    const w = Math.max(24, maxWidth);
+
+    lines.push(fitRuns([
+        { text: "View ", color: "cyan", bold: true },
+        { text: "session ", color: "gray" },
+        { text: "[fleet]", color: "magenta", bold: true },
+        { text: "  [f toggle]", color: "gray" },
+    ], w));
+    lines.push(plainInspectorLine(""));
+
+    // Header
+    const sinceLabel = data.windowStart
+        ? `Since: ${formatRelativeTime(data.windowStart).replace(" ago", "")}`
+        : "All time";
+    const earliestLabel = data.earliestSessionCreatedAt
+        ? `Earliest: ${new Date(data.earliestSessionCreatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+        : "";
+    lines.push(fitRuns([
+        { text: sinceLabel, color: "cyan" },
+        { text: earliestLabel ? `  ${earliestLabel}` : "", color: "gray" },
+    ], w));
+    lines.push(fitRuns([
+        { text: `Sessions: ${data.totals.sessionCount}`, color: "white" },
+        { text: `   Tokens: ${formatCompactNumber(data.totals.totalTokensInput)} in / ${formatCompactNumber(data.totals.totalTokensOutput)} out`, color: "white" },
+    ], w));
+    lines.push(plainInspectorLine(""));
+
+    const byModel = new Map();
+    for (const group of data.byAgent || []) {
+        const modelLabel = group.model || "(default)";
+        const current = byModel.get(modelLabel) || {
+            totalTokensInput: 0,
+            totalTokensOutput: 0,
+            totalSnapshotSizeBytes: 0,
+        };
+        current.totalTokensInput += Number(group.totalTokensInput) || 0;
+        current.totalTokensOutput += Number(group.totalTokensOutput) || 0;
+        current.totalSnapshotSizeBytes += Number(group.totalSnapshotSizeBytes) || 0;
+        byModel.set(modelLabel, current);
+    }
+
+    if (byModel.size > 0) {
+        const groupLines = [];
+        for (const [modelLabel, totals] of byModel.entries()) {
+            groupLines.push(modelLabel);
+            groupLines.push(
+                `  ${formatCompactNumber(totals.totalTokensInput)} in / ${formatCompactNumber(totals.totalTokensOutput)} out / ${formatCompactNumber(totals.totalTokensInput + totals.totalTokensOutput)} total`,
+            );
+            groupLines.push(
+                `  snapshot ${formatCompactBytes(totals.totalSnapshotSizeBytes)}`,
+            );
+            groupLines.push("");
+        }
+        lines.push(...buildMessageCardLines({
+            title: "Tokens By Model",
+            body: groupLines.join("\n").trimEnd(),
+            width: w,
+            titleColor: "cyan",
+            borderColor: "gray",
+            fitToContent: true,
+        }));
+        lines.push(plainInspectorLine(""));
+    }
+
+    // Fleet totals card
+    lines.push(...buildMessageCardLines({
+        title: "Fleet Totals",
+        body: [
+            `Sessions     ${String(data.totals.sessionCount).padStart(12)}`,
+            `Tokens In    ${formatCompactNumber(data.totals.totalTokensInput).padStart(12)}`,
+            `Tokens Out   ${formatCompactNumber(data.totals.totalTokensOutput).padStart(12)}`,
+            `Total Tokens ${formatCompactNumber(data.totals.totalTokensInput + data.totals.totalTokensOutput).padStart(12)}`,
+            `Snapshots    ${formatCompactBytes(data.totals.totalSnapshotSizeBytes).padStart(12)}`,
+        ].join("\n"),
+        width: w,
+        titleColor: "green",
+        borderColor: "gray",
+        fitToContent: true,
+    }));
+
+    return lines;
+}
+
 export function selectInspector(state, options = {}) {
     const session = selectActiveSession(state);
     const activeTab = state.ui.inspectorTab;
@@ -2792,19 +3018,30 @@ export function selectInspector(state, options = {}) {
             { text: ` [${recentWindow.label}]`, color: "gray" },
         ]
         : !session
-            ? "No session selected"
+            ? (activeTab === "stats"
+                ? `Stats: ${state.ui?.statsViewMode === "fleet" ? "Fleet" : "Session"}`
+                : "No session selected")
             : activeTab === "sequence"
             ? [
                 { text: `Sequence: ${shortId}`, color: "magenta", bold: true },
                 { text: ` [${recentWindow.label}]`, color: "gray" },
             ]
             : activeTab === "logs"
-                ? `Logs: ${shortId}`
+                ? [
+                    { text: `Logs: ${shortId}`, color: "magenta", bold: true },
+                ]
                 : activeTab === "history"
                     ? [
                         { text: `History: ${shortId}`, color: "magenta", bold: true },
                     ]
-                    : `Files: ${shortId}`;
+                    : activeTab === "stats"
+                        ? [
+                            { text: `Stats: ${shortId}`, color: "magenta", bold: true },
+                            { text: ` [${state.ui?.statsViewMode === "fleet" ? "fleet" : "session"}]`, color: "gray" },
+                        ]
+                        : [
+                            { text: `Files: ${shortId}`, color: "magenta", bold: true },
+                        ];
 
     let lines;
     let stickyLines = [];
@@ -2834,6 +3071,22 @@ export function selectInspector(state, options = {}) {
             lines = session
                 ? selectExecutionHistoryPane(state, session)
                 : ["No session selected."];
+            break;
+        case "stats":
+            lines = state.ui?.statsViewMode === "fleet"
+                ? buildFleetStatsLines(state, maxWidth)
+                : session
+                    ? buildSessionStatsLines(state, session, maxWidth)
+                    : [
+                        fitRuns([
+                            { text: "View ", color: "cyan", bold: true },
+                            { text: "[session] ", color: "magenta", bold: true },
+                            { text: "fleet", color: "gray" },
+                            { text: "  [f toggle]", color: "gray" },
+                        ], Math.max(24, maxWidth)),
+                        plainInspectorLine(""),
+                        plainInspectorLine("No session selected. Press f to switch to fleet view."),
+                    ];
             break;
         default:
             lines = ["Inspector view is scaffolded in the new architecture."];

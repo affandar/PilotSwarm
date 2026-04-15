@@ -206,6 +206,27 @@ export class BrowserPortalTransport {
         return this.rpc("getOrchestrationStats", { sessionId });
     }
 
+    async getSessionMetricSummary(sessionId) {
+        return this.rpc("getSessionMetricSummary", { sessionId });
+    }
+
+    async getSessionTreeStats(sessionId) {
+        return this.rpc("getSessionTreeStats", { sessionId });
+    }
+
+    async getFleetStats(opts) {
+        return this.rpc("getFleetStats", {
+            includeDeleted: opts?.includeDeleted,
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+        });
+    }
+
+    async pruneDeletedSummaries(olderThan) {
+        return this.rpc("pruneDeletedSummaries", {
+            olderThan: olderThan instanceof Date ? olderThan.toISOString() : olderThan,
+        });
+    }
+
     async getExecutionHistory(sessionId, executionId) {
         return this.rpc("getExecutionHistory", { sessionId, executionId });
     }

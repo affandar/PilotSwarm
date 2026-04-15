@@ -724,6 +724,15 @@ export class SessionManager {
     }
 
     /**
+     * Fully reset a session's live and persisted Copilot state.
+     * Used when the stored transcript/session state becomes unusable and the
+     * runtime must recreate a fresh Copilot session for lossy replay.
+     */
+    async resetSessionState(sessionId: string): Promise<void> {
+        await this._resetSessionState(sessionId);
+    }
+
+    /**
      * Checkpoint session state without destroying the session or
      * releasing affinity. Used for crash resilience — session stays warm.
      */

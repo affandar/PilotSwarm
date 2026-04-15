@@ -75,6 +75,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
     private containerName: string;
     private credential: StorageSharedKeyCredential | null = null;
     private sessionStateDir: string;
+    private snapshotSizeBySession = new Map<string, number>();
 
     constructor(connectionString: string, containerName = "copilot-sessions", sessionStateDir?: string) {
         this.connectionString = connectionString;
@@ -130,6 +131,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
 
             // Upload metadata
             const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, meta);
+            this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
             const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
             const metaJson = JSON.stringify(metadata);
             logBlobStore("info", sessionId, "dehydrate upload metadata", {
@@ -227,6 +229,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
 
             // Update metadata to reflect checkpoint (not full dehydration)
             const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, { reason: "checkpoint" });
+            this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
             const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
             const metaJson = JSON.stringify(metadata);
             await metaBlob.upload(metaJson, metaJson.length);
@@ -244,6 +247,37 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
         } finally {
             try { fs.unlinkSync(tarPath); } catch {}
         }
+    }
+
+    async getSnapshotSizeBytes(sessionId: string): Promise<number | undefined> {
+        const cached = this.snapshotSizeBySession.get(sessionId);
+        if (Number.isFinite(cached)) return cached;
+
+        const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
+        try {
+            if (!(await metaBlob.exists())) {
+                return undefined;
+            }
+            const response = await metaBlob.download(0);
+            const chunks: Buffer[] = [];
+            for await (const chunk of response.readableStreamBody!) {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            }
+            const metadata = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as SessionMetadata;
+            const sizeBytes = Number(metadata?.sizeBytes);
+            if (Number.isFinite(sizeBytes)) {
+                this.snapshotSizeBySession.set(sessionId, sizeBytes);
+                return sizeBytes;
+            }
+        } catch (error: unknown) {
+            logBlobStore("warn", sessionId, "snapshot size read failed", {
+                container: this.containerName,
+                blob: `${sessionId}.meta.json`,
+                error: errorMessage(error),
+            });
+        }
+
+        return undefined;
     }
 
     /** Check if a dehydrated session exists in blob storage. */

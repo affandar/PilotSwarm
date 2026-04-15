@@ -72,6 +72,17 @@ export class PortalRuntime {
                 return this.transport.getSession(safeParams.sessionId);
             case "getOrchestrationStats":
                 return this.transport.getOrchestrationStats(safeParams.sessionId);
+            case "getSessionMetricSummary":
+                return this.transport.getSessionMetricSummary(safeParams.sessionId);
+            case "getSessionTreeStats":
+                return this.transport.getSessionTreeStats(safeParams.sessionId);
+            case "getFleetStats":
+                return this.transport.getFleetStats({
+                    includeDeleted: safeParams.includeDeleted,
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                });
+            case "pruneDeletedSummaries":
+                return this.transport.pruneDeletedSummaries(new Date(safeParams.olderThan));
             case "getExecutionHistory":
                 return this.transport.getExecutionHistory(safeParams.sessionId, safeParams.executionId);
             case "createSession":

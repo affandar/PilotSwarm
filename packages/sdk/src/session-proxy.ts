@@ -9,6 +9,7 @@ import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./ma
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
 import os from "node:os";
+import fs from "node:fs";
 
 const SESSION_RECOVERY_NOTICE =
     "[SYSTEM: The runtime recovered this session after the live Copilot session was lost on a worker. " +
@@ -17,6 +18,10 @@ const LOSSY_SESSION_REPLAY_NOTICE =
     "[SYSTEM: The runtime is replaying this turn after a worker restart lost the live Copilot session state before it could be durably dehydrated. " +
     "Some recent in-memory work may be missing, and the previous turn may have partially executed. " +
     "Re-read the visible conversation and durable facts, avoid blindly repeating destructive actions, and if the correct next step is unclear, stop and ask the user how to proceed.]";
+const CORRUPTED_TRANSCRIPT_REPLAY_NOTICE =
+    "[SYSTEM: The runtime recreated this session after the live Copilot transcript became inconsistent. " +
+    "Some recent in-memory work may be missing, and the previous turn may have partially executed. " +
+    "Re-read the visible conversation and continue carefully from the latest durable state.]";
 
 function normalizePromptText(text?: string): string {
     return String(text || "").replace(/\r\n/g, "\n").trim();
@@ -55,6 +60,11 @@ function isInternalSystemPrompt(text?: string): boolean {
 function isLiveSessionLostErrorMessage(message?: string): boolean {
     const normalized = String(message || "");
     return /\bSession not found\b/i.test(normalized);
+}
+
+function isToolCallTranscriptCorruptionErrorMessage(message?: string): boolean {
+    const normalized = String(message || "");
+    return normalized.includes("assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'");
 }
 
 function isMissingSessionStateErrorMessage(message?: string): boolean {
@@ -112,6 +122,79 @@ async function recordLossyHandoffEvent(
     }], workerNodeId).catch((error: unknown) => {
         traceFailure(`CMS lossy handoff event failed: ${errorMessage(error)}`);
     });
+    await catalog.upsertSessionMetricSummary(sessionId, {
+        lossyHandoffCountIncrement: 1,
+    }).catch((error: unknown) => {
+        traceFailure(`CMS lossy handoff summary update failed: ${errorMessage(error)}`);
+    });
+}
+
+function finiteMetricNumber(value: unknown): number | null {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function buildUsageSummaryUpsert(data: unknown): {
+    tokensInputIncrement?: number;
+    tokensOutputIncrement?: number;
+    tokensCacheReadIncrement?: number;
+    tokensCacheWriteIncrement?: number;
+} | null {
+    const usage = (data ?? {}) as Record<string, unknown>;
+    const tokensInputIncrement = finiteMetricNumber(usage.inputTokens ?? usage.prompt_tokens);
+    const tokensOutputIncrement = finiteMetricNumber(usage.outputTokens ?? usage.completion_tokens);
+    const tokensCacheReadIncrement = finiteMetricNumber(usage.cacheReadTokens ?? usage.cached_prompt_tokens);
+    const tokensCacheWriteIncrement = finiteMetricNumber(usage.cacheWriteTokens);
+
+    if (
+        tokensInputIncrement == null
+        && tokensOutputIncrement == null
+        && tokensCacheReadIncrement == null
+        && tokensCacheWriteIncrement == null
+    ) {
+        return null;
+    }
+
+    return {
+        ...(tokensInputIncrement != null ? { tokensInputIncrement } : {}),
+        ...(tokensOutputIncrement != null ? { tokensOutputIncrement } : {}),
+        ...(tokensCacheReadIncrement != null ? { tokensCacheReadIncrement } : {}),
+        ...(tokensCacheWriteIncrement != null ? { tokensCacheWriteIncrement } : {}),
+    };
+}
+
+async function tryReadSnapshotSizeBytes(sessionStore: SessionStateStore | null | undefined, sessionId: string): Promise<number | undefined> {
+    if (!sessionStore) return undefined;
+
+    try {
+        const store = sessionStore as any;
+        if (typeof store.getSnapshotSizeBytes === "function") {
+            const sizeBytes = finiteMetricNumber(await store.getSnapshotSizeBytes(sessionId));
+            if (sizeBytes != null) return sizeBytes;
+        }
+
+        if (typeof store.metaPath === "function") {
+            const metadataPath = store.metaPath(sessionId);
+            if (metadataPath && fs.existsSync(metadataPath)) {
+                const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+                const sizeBytes = finiteMetricNumber(metadata?.sizeBytes);
+                if (sizeBytes != null) return sizeBytes;
+            }
+        }
+    } catch {}
+
+    try {
+        const store = sessionStore as any;
+        if (typeof store.tarPath === "function") {
+            const tarPath = store.tarPath(sessionId);
+            if (tarPath && fs.existsSync(tarPath)) {
+                const sizeBytes = finiteMetricNumber(fs.statSync(tarPath).size);
+                if (sizeBytes != null) return sizeBytes;
+            }
+        }
+    } catch {}
+
+    return undefined;
 }
 
 // ─── SessionProxy ────────────────────────────────────────────────
@@ -846,6 +929,14 @@ export function registerActivities(
                             activityCtx.traceInfo(`[runTurn] CMS input_required_started status update failed: ${err}`);
                         });
                     }
+                    if (event.eventType === "assistant.usage") {
+                        const usageUpsert = buildUsageSummaryUpsert(event.data);
+                        if (usageUpsert) {
+                            catalog.upsertSessionMetricSummary(input.sessionId, usageUpsert).catch((err: any) => {
+                                activityCtx.traceInfo(`[runTurn] CMS assistant.usage summary update failed: ${err}`);
+                            });
+                        }
+                    }
                     catalog.recordEvents(input.sessionId, [event], workerNodeId).catch((err: any) => {
                         activityCtx.traceInfo(`[runTurn] CMS recordEvent failed: ${err}`);
                     });
@@ -959,6 +1050,63 @@ export function registerActivities(
                     activityCtx.traceInfo(`[runTurn] recovery re-run still reported lost session for ${input.sessionId}: ${fatalMessage}`);
                     return await failForMissingState(fatalMessage);
                 }
+            }
+
+            if (result.type === "error" && isToolCallTranscriptCorruptionErrorMessage((result as any).message)) {
+                const transcriptError = (result as any).message;
+                activityCtx.traceInfo(
+                    `[runTurn] corrupted live Copilot transcript for ${input.sessionId}; resetting stored session state and attempting fresh-session replay`,
+                );
+
+                await sessionManager.resetSessionState(input.sessionId).catch((err: any) => {
+                    activityCtx.traceInfo(`[runTurn] stored-session reset failed (non-fatal): ${err?.message ?? err}`);
+                });
+
+                await recordLossyHandoffEvent(
+                    catalog,
+                    input.sessionId,
+                    workerNodeId,
+                    {
+                        cause: "corrupted_tool_call_transcript_during_run_turn",
+                        message:
+                            "The runtime detected an inconsistent live Copilot transcript and recreated a fresh session to replay the pending turn.",
+                        detail: transcriptError,
+                        error: transcriptError,
+                        recoveryMode: "fresh_session_replay",
+                        nextStep: "replay_pending_turn_with_recreated_copilot_session",
+                        ...(input.turnIndex != null ? { iteration: input.turnIndex } : {}),
+                    },
+                    (failureMessage) => activityCtx.traceInfo(`[runTurn] ${failureMessage}`),
+                );
+
+                if (catalog) {
+                    await catalog.recordEvents(input.sessionId, [{
+                        eventType: "system.message",
+                        data: {
+                            content:
+                                "The runtime recreated this session after the live Copilot transcript became inconsistent. " +
+                                "Some recent in-memory work may be missing or partially executed.",
+                        },
+                    }], workerNodeId).catch((err: any) => {
+                        activityCtx.traceInfo(`[runTurn] CMS corrupted-transcript recovery notice failed: ${err}`);
+                    });
+                }
+
+                try {
+                    session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
+                        turnIndex: 0,
+                        trace,
+                    });
+                } catch (err: any) {
+                    const recoveryMessage = err?.message || String(err);
+                    const fatalMessage =
+                        `Live Copilot transcript became inconsistent for ${input.sessionId}, and fresh-session recovery failed. ${recoveryMessage}`;
+                    activityCtx.traceInfo(`[runTurn] unrecoverable corrupted transcript for ${input.sessionId}: ${fatalMessage}`);
+                    return { type: "error", message: fatalMessage } as TurnResult;
+                }
+
+                const recoveredPrompt = mergePromptSections([CORRUPTED_TRANSCRIPT_REPLAY_NOTICE, input.prompt]) || input.prompt;
+                result = await runTurnWithPrompt(session, recoveredPrompt);
             }
 
             if (
@@ -1112,6 +1260,14 @@ export function registerActivities(
         trace(`session=${input.sessionId} complete reason=${reason}`);
 
         if (catalog) {
+            const snapshotSizeBytes = await tryReadSnapshotSizeBytes(_sessionStore, input.sessionId);
+            await catalog.upsertSessionMetricSummary(input.sessionId, {
+                ...(snapshotSizeBytes != null ? { snapshotSizeBytes } : {}),
+                dehydrationCountIncrement: 1,
+                lastDehydratedAt: true,
+            }).catch((err: any) => {
+                activityCtx.traceInfo(`[dehydrateSession] CMS summary update failed: ${err}`);
+            });
             await catalog.recordEvents(input.sessionId, [{
                 eventType: "session.dehydrated",
                 data: {
@@ -1155,6 +1311,12 @@ export function registerActivities(
         }
         trace(`session=${input.sessionId} complete`);
         if (catalog) {
+            await catalog.upsertSessionMetricSummary(input.sessionId, {
+                hydrationCountIncrement: 1,
+                lastHydratedAt: true,
+            }).catch((err: any) => {
+                activityCtx.traceInfo(`[hydrateSession] CMS summary update failed: ${err}`);
+            });
             catalog.recordEvents(input.sessionId, [{
                 eventType: "session.hydrated",
                 data: {},
@@ -1172,10 +1334,19 @@ export function registerActivities(
 
     // ── checkpointSession ───────────────────────────────────
     runtime.registerActivity("checkpointSession", async (
-        _ctx: any,
+        activityCtx: any,
         input: { sessionId: string },
     ): Promise<void> => {
         await sessionManager.checkpoint(input.sessionId);
+        if (catalog) {
+            const snapshotSizeBytes = await tryReadSnapshotSizeBytes(_sessionStore, input.sessionId);
+            await catalog.upsertSessionMetricSummary(input.sessionId, {
+                ...(snapshotSizeBytes != null ? { snapshotSizeBytes } : {}),
+                lastCheckpointAt: true,
+            }).catch((err: any) => {
+                activityCtx.traceInfo(`[checkpointSession] CMS summary update failed: ${err}`);
+            });
+        }
     });
 
     // ── listModels ──────────────────────────────────────────

@@ -18,7 +18,7 @@ These keys work whenever focus is not in the prompt editor.
 | `Shift+N` | Open the model picker before creating a session |
 | `r` | Refresh sessions and visible data |
 | `a` | Open the linked-artifact download picker |
-| `m` | Cycle inspector tab (`sequence` → `logs` → `nodes` → `files`) |
+| `m` | Cycle inspector tab (`sequence` → `logs` → `nodes` → `history` → `files` → `stats`) |
 | `[` / `]` | Resize the main split |
 | `c` | Cancel the selected session |
 | `d` | Mark the selected session done |
@@ -56,6 +56,12 @@ These keys work whenever focus is not in the prompt editor.
 |-----|--------|
 | `t` | Toggle tail mode |
 | `f` | Open the log-filter dialog |
+
+## Stats Inspector
+
+| Key | Action |
+|-----|--------|
+| `f` | Toggle between `session` and `fleet` stats views |
 
 ## Files Inspector
 
