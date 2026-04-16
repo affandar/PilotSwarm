@@ -63,6 +63,7 @@ async function testLongWaitRotatesAffinity(env) {
                         "You have a wait tool. If the user says exactly 'default-wait-test', " +
                         "you must call wait with seconds=5 and reason='default wait test'. " +
                         "Do not include preserveWorkerAffinity. After the wait completes, reply with exactly 'done'. " +
+                        "If you receive an internal resume after a completed wait whose reason is 'default wait test', reply with exactly 'done'. " +
                         "For any other prompt, reply with exactly the single word 'ready'.",
                 },
             });
@@ -113,6 +114,7 @@ async function testLongWaitPreservesAffinity(env) {
                         "If the user says exactly 'preserve-wait-test', you must call wait_on_worker with " +
                         "seconds=5 and reason='preserve wait test'. " +
                         "After the wait completes, reply with exactly 'done'. " +
+                        "If you receive an internal resume after a completed wait whose reason is 'preserve wait test', reply with exactly 'done'. " +
                         "For any other prompt, reply with exactly the single word 'ready'.",
                 },
             });

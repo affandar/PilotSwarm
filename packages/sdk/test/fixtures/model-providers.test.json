@@ -6,6 +6,11 @@
       "githubToken": "env:GITHUB_TOKEN",
       "models": [
         {
+          "name": "gpt-5.4",
+          "description": "Primary default test model for PilotSwarm local and integration suites via GitHub Copilot.",
+          "cost": "high"
+        },
+        {
           "name": "gpt-5.1",
           "description": "Primary deterministic test model for PilotSwarm local and integration suites.",
           "cost": "high"
@@ -33,5 +38,5 @@
       ]
     }
   ],
-  "defaultModel": "github-copilot:gpt-5.1"
+  "defaultModel": "github-copilot:gpt-5.4"
 }

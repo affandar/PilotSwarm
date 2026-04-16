@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.19 — 2026-04-16
+
+### SDK / Storage
+
+- **Stored-procedure-backed CMS and Facts access** — the PostgreSQL CMS and Facts providers now route reads and writes through schema-owned stored procedures instead of inline SQL.
+- **Shared migration runner** — extracted a reusable advisory-lock migration runner for CMS and Facts, added versioned Facts migrations, and added review diff docs for stored-procedure changes.
+
+### Maintainer Workflow
+
+- **Schema migration maintainer guidance** — contributor instructions now document the stored-procedure migration rules and the repo includes a `schema-migration` skill for future CMS/Facts schema work.
+
+### Tests
+
+- **GitHub Copilot GPT-5.4 test default** — the checked-in test provider fixture now defaults generic test runs to `github-copilot:gpt-5.4`.
+- **Contract and wait-affinity hardening** — release test surfaces were updated for the current tool alias set and the orchestration-owned wait resume path.
+
 ## 0.1.18 — 2026-04-14
 
 ### Portal / Management
