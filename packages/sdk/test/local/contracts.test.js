@@ -22,7 +22,7 @@ import { withClient, defineTool, PilotSwarmWorker, composeSystemPrompt } from ".
 import { SessionManager } from "../../src/session-manager.ts";
 import { assert, assertEqual, assertIncludes, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
 import { validateSessionAfterTurn } from "../helpers/cms-helpers.js";
-import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG, TEST_CLAUDE_MODEL } from "../helpers/fixtures.js";
+import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG } from "../helpers/fixtures.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -60,16 +60,16 @@ const EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES = [
 ];
 const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     ...EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES,
+    "apply_patch",
     "bash",
-    "create",
-    "edit",
     "glob",
-    "grep",
     "list_agents",
     "list_bash",
     "read_agent",
     "read_bash",
     "report_intent",
+    "parallel",
+    "rg",
     "skill",
     "sql",
     "stop_bash",
@@ -638,7 +638,6 @@ async function testLlmSeesExactAlwaysOnTools(env) {
     }, async (client) => {
         const session = await client.createSession({
             agentId: "coordinator",
-            model: TEST_CLAUDE_MODEL,
             systemMessage: {
                 mode: "append",
                 content:

@@ -1,6 +1,7 @@
 
 # TODO
 
+- give parent access to all sub agents events/chat history etc.
 - move all data access for facts behind a provider layer
 - stored procs for data access in PG provider rather than direct SQL queries
 - review /test/local/child-update-batching.test.js

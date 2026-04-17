@@ -60,7 +60,13 @@ src/
   session-proxy.ts   — Activity definitions (runTurn, hydrate, dehydrate)
   session-manager.ts — SessionManager (CopilotSession lifecycle, tool resolution)
   managed-session.ts — ManagedSession (wraps CopilotSession, runTurn logic)
-  cms.ts             — PostgreSQL session catalog (CMS)
+  cms.ts             — PostgreSQL session catalog (CMS) — calls stored procs
+  cms-migrations.ts  — Versioned CMS schema migrations + stored procedure definitions
+  cms-migrator.ts    — CMS migration runner (wraps pg-migrator)
+  facts-store.ts     — PostgreSQL facts store — calls stored procs
+  facts-migrations.ts — Versioned Facts schema migrations + stored procedure definitions
+  facts-migrator.ts  — Facts migration runner (wraps pg-migrator)
+  pg-migrator.ts     — Shared advisory-lock migration runner
   blob-store.ts      — Azure Blob session dehydration/hydration
   types.ts           — All TypeScript interfaces and types
 test/
@@ -298,6 +304,23 @@ Each test function should:
 **No custom system prompts to compensate for product behavior.** Tests should use `client.createSession()` without overriding `systemMessage` unless the test is specifically testing custom system messages. The default agent prompt and tool schemas should be sufficient for the LLM to use tools correctly. If the LLM isn't calling a tool, that's a product bug in the default prompt or tool schema — fix it there, not in the test.
 
 **Raise failures loudly.** When a test fails, investigate and report the root cause. Do not silence it. Flag the issue to the user.
+
+## Database Schema & Stored Procedures
+
+All PostgreSQL data access (reads and writes) in the CMS and Facts stores goes through **stored procedures**. No inline SQL in TypeScript — the provider methods call `SELECT schema.proc_name(...)`.
+
+### Migration System
+
+Both CMS (`copilot_sessions` schema) and Facts (`pilotswarm_facts` schema) use the same versioned migration runner (`pg-migrator.ts`) with PostgreSQL advisory locks for concurrent worker safety. Migrations are defined as TypeScript functions in `cms-migrations.ts` and `facts-migrations.ts`, applied automatically on `initialize()`.
+
+### Schema Change Rules
+
+1. **Never edit a previous migration.** Add a new one with `CREATE OR REPLACE FUNCTION`.
+2. **Every migration needs a companion diff file** (`packages/sdk/src/migrations/NNNN_diff.md`). Git diffs for SQL-in-TypeScript only show new code, not the delta from the previous version. The diff file makes stored procedure changes reviewable.
+3. **All new data-access queries must be stored procedures.** No new inline SQL in the provider classes.
+4. **Migration SQL must be idempotent** — `IF NOT EXISTS`, `CREATE OR REPLACE`, etc.
+
+Use the [`schema-migration` skill](./skills/schema-migration/SKILL.md) for the full step-by-step process.
 
 ## Common Patterns
 
