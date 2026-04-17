@@ -2298,7 +2298,7 @@ export function selectModelPickerModal(state, maxWidth = 72) {
                 : -1;
             const isSelected = itemIndex === selectedIndex;
             const labelRuns = fitRuns([
-                { text: "   · ", color: "gray" },
+                { text: "· ", color: "gray" },
                 { text: model.modelName || model.qualifiedName || model.id, color: "white", bold: Boolean(model.isDefault) },
                 ...(model.cost ? [{ text: ` [${model.cost}]`, color: "gray" }] : []),
                 ...(model.isDefault ? [{ text: " ← current default", color: "gray" }] : []),
@@ -2365,7 +2365,7 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     const rows = items.map((item, index) => {
         const isSelected = index === selectedIndex;
         const labelRuns = fitRuns([
-            { text: item?.kind === "generic" ? "   ○ " : "   · ", color: "gray" },
+            { text: item?.kind === "generic" ? "○ " : "· ", color: "gray" },
             { text: item?.title || item?.agentName || item?.id || "Agent", color: "white", bold: true },
             ...(item?.kind === "generic"
                 ? [{ text: " [generic]", color: "gray" }]
