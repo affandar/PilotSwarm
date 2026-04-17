@@ -13,7 +13,7 @@ A complete source-level map of the PilotSwarm codebase. Complements `architectur
 | **Runtime** | Node.js 24+ |
 | **Language** | TypeScript (src), plain JS (tests, examples, CLI) |
 | **Build** | `tsc` → `dist/`, ES2022 target, NodeNext resolution |
-| **Key deps** | `@github/copilot-sdk` v0.1.32, `duroxide` v0.1.18, `pg` v8.18, `@azure/storage-blob` v12.31 |
+| **Key deps** | `@github/copilot-sdk` v0.2.1, `duroxide` v0.1.19, `pg` v8.18, `@azure/storage-blob` v12.31 |
 
 ### Build & Run
 

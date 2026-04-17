@@ -324,19 +324,20 @@ function SystemNoticeLine({ line, theme }) {
             : null);
 }
 
-function Line({ line, theme }) {
+function Line({ line, theme, className = "" }) {
+    const lineClassName = className ? `ps-line ${className}` : "ps-line";
     if (!line) {
-        return React.createElement("div", { className: "ps-line" }, " ");
+        return React.createElement("div", { className: lineClassName }, " ");
     }
     if (line.kind === "systemNotice") {
         return React.createElement(SystemNoticeLine, { line, theme });
     }
     if (line.kind === "runs") {
-        return React.createElement("div", { className: "ps-line" },
+        return React.createElement("div", { className: lineClassName },
             React.createElement(Runs, { runs: line.runs, theme }));
     }
     return React.createElement("div", {
-        className: "ps-line",
+        className: lineClassName,
         style: {
             color: resolveColor(theme, line.color),
             backgroundColor: resolveColor(theme, line.backgroundColor),
@@ -2155,6 +2156,7 @@ function ModalLayer({ controller }) {
     const renderListModal = (presentation, confirmLabel = "Apply") => {
         const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
         const rowItemIndexes = Array.isArray(presentation.rowItemIndexes) ? presentation.rowItemIndexes : null;
+        const usesHangingIndent = modal.type === "modelPicker" || modal.type === "sessionAgentPicker";
         const renderedList = rowItemIndexes && rowItemIndexes.length === rows.length
             ? rows.map((row, rowIndex) => {
                 const itemIndex = rowItemIndexes[rowIndex];
@@ -2164,26 +2166,26 @@ function ModalLayer({ controller }) {
                 if (itemIndex == null || itemIndex < 0) {
                     return React.createElement("div", {
                         key: `row:${rowIndex}`,
-                        className: "ps-line",
+                        className: "ps-line ps-modal-list-heading-line",
                     }, React.createElement(Runs, { runs, theme }));
                 }
                 const item = modal.items?.[itemIndex];
                 return React.createElement("button", {
                     key: item?.id || `row:${rowIndex}`,
                     type: "button",
-                    className: `ps-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}`,
+                    className: `ps-list-button ps-modal-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}`,
                     onClick: () => controller.dispatch({ type: "ui/modalSelection", index: itemIndex }),
                 },
-                React.createElement("div", { className: "ps-line" },
+                React.createElement("div", { className: "ps-line ps-modal-list-line" },
                     React.createElement(Runs, { runs, theme })));
             })
             : (modal.items || []).map((item, index) => React.createElement("button", {
                 key: item.id || index,
                 type: "button",
-                className: `ps-list-button${index === modal.selectedIndex ? " is-selected" : ""}`,
+                className: `ps-list-button ps-modal-list-button${index === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}`,
                 onClick: () => controller.dispatch({ type: "ui/modalSelection", index }),
             },
-            React.createElement("div", { className: "ps-line" },
+            React.createElement("div", { className: "ps-line ps-modal-list-line" },
                 React.createElement(Runs, {
                     runs: Array.isArray(rows?.[index])
                         ? rows[index]
@@ -2203,7 +2205,7 @@ function ModalLayer({ controller }) {
                 ),
                 React.createElement("div", { className: "ps-modal-details" },
                     React.createElement("div", { className: "ps-modal-details-title" }, presentation.detailsTitle || "Details"),
-                    normalizeLines(presentation.detailsLines || []).map((line, index) => React.createElement(Line, { key: `detail:${index}`, line, theme })),
+                    normalizeLines(presentation.detailsLines || []).map((line, index) => React.createElement(Line, { key: `detail:${index}`, line, theme, className: "ps-modal-detail-line" })),
                 ),
             ),
             React.createElement("div", { className: "ps-modal-footer" },
@@ -2270,7 +2272,7 @@ function ModalLayer({ controller }) {
                     autoFocus: true,
                 }),
                 React.createElement("div", { className: "ps-modal-details" },
-                    normalizeLines(modalState.renameSession.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme })),
+                    normalizeLines(modalState.renameSession.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
                 ),
                 React.createElement("div", { className: "ps-modal-footer" },
                     React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
@@ -2296,7 +2298,7 @@ function ModalLayer({ controller }) {
                     autoFocus: true,
                 }),
                 React.createElement("div", { className: "ps-modal-details" },
-                    normalizeLines(modalState.artifactUpload.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme })),
+                    normalizeLines(modalState.artifactUpload.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
                 ),
                 React.createElement("div", { className: "ps-modal-footer" },
                     React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),

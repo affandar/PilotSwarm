@@ -1484,6 +1484,19 @@ body.is-resizing-pane-y * {
   gap: 10px;
 }
 
+.ps-modal-list-heading-line,
+.ps-modal-list-line,
+.ps-modal-detail-line {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+
+.ps-modal-list-button.is-hanging .ps-modal-list-line {
+  padding-left: 1.5rem;
+  text-indent: -1.15rem;
+}
+
 .ps-keybinding-modal {
   width: min(860px, 100%);
 }
@@ -1551,6 +1564,12 @@ body.is-resizing-pane-y * {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.ps-list-button,
+.ps-filter-option {
+  justify-content: flex-start;
+  text-align: left;
 }
 
 .ps-modal-close {
