@@ -519,6 +519,30 @@ export class NodeSdkTransport {
         return this.mgmt.getFleetStats(opts);
     }
 
+    async getSessionSkillUsage(sessionId, opts) {
+        return this.mgmt.getSessionSkillUsage(sessionId, opts);
+    }
+
+    async getSessionTreeSkillUsage(sessionId, opts) {
+        return this.mgmt.getSessionTreeSkillUsage(sessionId, opts);
+    }
+
+    async getFleetSkillUsage(opts) {
+        return this.mgmt.getFleetSkillUsage(opts);
+    }
+
+    async getSessionFactsStats(sessionId) {
+        return this.mgmt.getSessionFactsStats(sessionId);
+    }
+
+    async getSessionTreeFactsStats(sessionId) {
+        return this.mgmt.getSessionTreeFactsStats(sessionId);
+    }
+
+    async getSharedFactsStats() {
+        return this.mgmt.getSharedFactsStats();
+    }
+
     async pruneDeletedSummaries(olderThan) {
         return this.mgmt.pruneDeletedSummaries(olderThan);
     }

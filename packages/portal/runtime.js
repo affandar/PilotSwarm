@@ -81,6 +81,25 @@ export class PortalRuntime {
                     includeDeleted: safeParams.includeDeleted,
                     since: safeParams.since ? new Date(safeParams.since) : undefined,
                 });
+            case "getSessionSkillUsage":
+                return this.transport.getSessionSkillUsage(safeParams.sessionId, {
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                });
+            case "getSessionTreeSkillUsage":
+                return this.transport.getSessionTreeSkillUsage(safeParams.sessionId, {
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                });
+            case "getFleetSkillUsage":
+                return this.transport.getFleetSkillUsage({
+                    includeDeleted: safeParams.includeDeleted,
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                });
+            case "getSessionFactsStats":
+                return this.transport.getSessionFactsStats(safeParams.sessionId);
+            case "getSessionTreeFactsStats":
+                return this.transport.getSessionTreeFactsStats(safeParams.sessionId);
+            case "getSharedFactsStats":
+                return this.transport.getSharedFactsStats();
             case "pruneDeletedSummaries":
                 return this.transport.pruneDeletedSummaries(new Date(safeParams.olderThan));
             case "getExecutionHistory":

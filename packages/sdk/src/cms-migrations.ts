@@ -35,6 +35,21 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "stored_procedures",
             sql: migration_0004_stored_procedures(schema),
         },
+        {
+            version: "0005",
+            name: "skill_usage_procs",
+            sql: migration_0005_skill_usage_procs(schema),
+        },
+        {
+            version: "0006",
+            name: "fleet_cache_columns",
+            sql: migration_0006_fleet_cache_columns(schema),
+        },
+        {
+            version: "0007",
+            name: "session_tree_stats_by_model",
+            sql: migration_0007_session_tree_stats_by_model(schema),
+        },
     ];
 }
 
@@ -558,6 +573,281 @@ BEGIN
     WHERE deleted_at IS NOT NULL AND deleted_at < p_older_than;
     GET DIAGNOSTICS deleted_count = ROW_COUNT;
     RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0005: Skill Usage Procs ───────────────────────────
+
+function migration_0005_skill_usage_procs(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0005_skill_usage_procs: per-session, tree, and fleet skill-usage queries.
+-- Two source event types, both rare relative to assistant.delta /
+-- tool.execution_*:
+--   * 'skill.invoked'      — Copilot SDK fires this when the model expands
+--                             a static skill from a plugin's skills/ dir.
+--                             Payload: { name, pluginName?, pluginVersion?, ... }
+--   * 'learned_skill.read' — emitted by the read_facts tool wrapper when
+--                             the call touches the 'skills/' fact namespace.
+--                             Payload: { name (key|keyPattern), scope, matchCount, ... }
+--
+-- Each row carries a 'kind' discriminator so callers can distinguish the
+-- two flavors without inspecting event_type. 'name' is the static skill
+-- name OR the requested learned-skill key/keyPattern. Plugin metadata is
+-- only meaningful for static skills.
+
+-- ── Unified partial index for skill-signal rows ──────────────────
+CREATE INDEX IF NOT EXISTS idx_${schema}_events_skill_signals
+    ON ${s}.session_events (session_id, created_at DESC)
+    WHERE event_type IN ('skill.invoked', 'learned_skill.read');
+
+-- ── cms_get_session_skill_usage ──────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_skill_usage(
+    p_session_id TEXT,
+    p_since      TIMESTAMPTZ
+) RETURNS TABLE (
+    kind           TEXT,
+    name           TEXT,
+    plugin_name    TEXT,
+    plugin_version TEXT,
+    invocations    BIGINT,
+    first_used_at  TIMESTAMPTZ,
+    last_used_at   TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        CASE WHEN e.event_type = 'skill.invoked'
+             THEN 'static' ELSE 'learned' END::TEXT    AS kind,
+        COALESCE(e.data->>'name', '')::TEXT            AS name,
+        NULLIF(e.data->>'pluginName', '')::TEXT        AS plugin_name,
+        NULLIF(e.data->>'pluginVersion', '')::TEXT     AS plugin_version,
+        COUNT(*)::BIGINT                               AS invocations,
+        MIN(e.created_at)                              AS first_used_at,
+        MAX(e.created_at)                              AS last_used_at
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND e.event_type IN ('skill.invoked', 'learned_skill.read')
+      AND (p_since IS NULL OR e.created_at >= p_since)
+    GROUP BY 1, 2, 3, 4
+    ORDER BY invocations DESC, last_used_at DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_session_tree_skill_usage ─────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_tree_skill_usage(
+    p_session_id TEXT,
+    p_since      TIMESTAMPTZ
+) RETURNS TABLE (
+    session_id     TEXT,
+    agent_id       TEXT,
+    kind           TEXT,
+    name           TEXT,
+    plugin_name    TEXT,
+    plugin_version TEXT,
+    invocations    BIGINT,
+    first_used_at  TIMESTAMPTZ,
+    last_used_at   TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH RECURSIVE tree AS (
+        SELECT s0.session_id, s0.agent_id FROM ${s}.sessions s0 WHERE s0.session_id = p_session_id
+        UNION ALL
+        SELECT s1.session_id, s1.agent_id FROM ${s}.sessions s1
+        INNER JOIN tree t ON s1.parent_session_id = t.session_id
+    )
+    SELECT
+        e.session_id                                   AS session_id,
+        t.agent_id                                     AS agent_id,
+        CASE WHEN e.event_type = 'skill.invoked'
+             THEN 'static' ELSE 'learned' END::TEXT    AS kind,
+        COALESCE(e.data->>'name', '')::TEXT            AS name,
+        NULLIF(e.data->>'pluginName', '')::TEXT        AS plugin_name,
+        NULLIF(e.data->>'pluginVersion', '')::TEXT     AS plugin_version,
+        COUNT(*)::BIGINT                               AS invocations,
+        MIN(e.created_at)                              AS first_used_at,
+        MAX(e.created_at)                              AS last_used_at
+    FROM ${s}.session_events e
+    INNER JOIN tree t ON e.session_id = t.session_id
+    WHERE e.event_type IN ('skill.invoked', 'learned_skill.read')
+      AND (p_since IS NULL OR e.created_at >= p_since)
+    GROUP BY e.session_id, t.agent_id, kind, name, plugin_name, plugin_version
+    ORDER BY e.session_id, invocations DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_fleet_skill_usage ────────────────────────────────────
+-- Joined to the sessions row for agent_id. p_include_deleted controls
+-- whether soft-deleted sessions contribute. p_since bounds the scan.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_fleet_skill_usage(
+    p_since           TIMESTAMPTZ,
+    p_include_deleted BOOLEAN
+) RETURNS TABLE (
+    agent_id       TEXT,
+    kind           TEXT,
+    name           TEXT,
+    plugin_name    TEXT,
+    plugin_version TEXT,
+    session_count  BIGINT,
+    invocations    BIGINT,
+    last_used_at   TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        s.agent_id                                     AS agent_id,
+        CASE WHEN e.event_type = 'skill.invoked'
+             THEN 'static' ELSE 'learned' END::TEXT    AS kind,
+        COALESCE(e.data->>'name', '')::TEXT            AS name,
+        NULLIF(e.data->>'pluginName', '')::TEXT        AS plugin_name,
+        NULLIF(e.data->>'pluginVersion', '')::TEXT     AS plugin_version,
+        COUNT(DISTINCT e.session_id)::BIGINT           AS session_count,
+        COUNT(*)::BIGINT                               AS invocations,
+        MAX(e.created_at)                              AS last_used_at
+    FROM ${s}.session_events e
+    INNER JOIN ${s}.sessions s ON s.session_id = e.session_id
+    WHERE e.event_type IN ('skill.invoked', 'learned_skill.read')
+      AND (p_include_deleted OR s.deleted_at IS NULL)
+      AND (p_since IS NULL OR e.created_at >= p_since)
+    GROUP BY s.agent_id, kind, name, plugin_name, plugin_version
+    ORDER BY invocations DESC, last_used_at DESC;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0006: Fleet Cache Columns ─────────────────────────
+
+function migration_0006_fleet_cache_columns(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0006_fleet_cache_columns: surface prompt-cache token counts at the fleet
+-- aggregation level. Data is already collected per session in
+-- session_metric_summaries.tokens_cache_read / tokens_cache_write; the prior
+-- fleet procs simply ignored those columns. This migration adds them to the
+-- two fleet read paths.
+--
+-- PostgreSQL refuses CREATE OR REPLACE FUNCTION when the RETURNS TABLE shape
+-- changes. We DROP-then-CREATE for both procs. Idempotent via IF EXISTS.
+
+-- ── cms_get_fleet_stats_by_agent (drop + recreate) ───────────────
+DROP FUNCTION IF EXISTS ${s}.cms_get_fleet_stats_by_agent(BOOLEAN, TIMESTAMPTZ);
+CREATE FUNCTION ${s}.cms_get_fleet_stats_by_agent(
+    p_include_deleted BOOLEAN,
+    p_since           TIMESTAMPTZ
+) RETURNS TABLE (
+    agent_id                    TEXT,
+    model                       TEXT,
+    session_count               INT,
+    total_snapshot_size_bytes    BIGINT,
+    total_dehydration_count     INT,
+    total_hydration_count       INT,
+    total_lossy_handoff_count   INT,
+    total_tokens_input          BIGINT,
+    total_tokens_output         BIGINT,
+    total_tokens_cache_read     BIGINT,
+    total_tokens_cache_write    BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        m.agent_id,
+        m.model,
+        COUNT(*)::int                                          AS session_count,
+        COALESCE(SUM(m.snapshot_size_bytes), 0)::bigint        AS total_snapshot_size_bytes,
+        COALESCE(SUM(m.dehydration_count), 0)::int             AS total_dehydration_count,
+        COALESCE(SUM(m.hydration_count), 0)::int               AS total_hydration_count,
+        COALESCE(SUM(m.lossy_handoff_count), 0)::int           AS total_lossy_handoff_count,
+        COALESCE(SUM(m.tokens_input), 0)::bigint               AS total_tokens_input,
+        COALESCE(SUM(m.tokens_output), 0)::bigint              AS total_tokens_output,
+        COALESCE(SUM(m.tokens_cache_read), 0)::bigint          AS total_tokens_cache_read,
+        COALESCE(SUM(m.tokens_cache_write), 0)::bigint         AS total_tokens_cache_write
+    FROM ${s}.session_metric_summaries m
+    WHERE (p_include_deleted OR m.deleted_at IS NULL)
+      AND (p_since IS NULL OR m.created_at >= p_since)
+    GROUP BY m.agent_id, m.model;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_fleet_stats_totals (drop + recreate) ─────────────────
+DROP FUNCTION IF EXISTS ${s}.cms_get_fleet_stats_totals(BOOLEAN, TIMESTAMPTZ);
+CREATE FUNCTION ${s}.cms_get_fleet_stats_totals(
+    p_include_deleted BOOLEAN,
+    p_since           TIMESTAMPTZ
+) RETURNS TABLE (
+    session_count                INT,
+    total_snapshot_size_bytes     BIGINT,
+    total_tokens_input           BIGINT,
+    total_tokens_output          BIGINT,
+    total_tokens_cache_read      BIGINT,
+    total_tokens_cache_write     BIGINT,
+    earliest_session_created_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COUNT(*)::int                                          AS session_count,
+        COALESCE(SUM(m.snapshot_size_bytes), 0)::bigint        AS total_snapshot_size_bytes,
+        COALESCE(SUM(m.tokens_input), 0)::bigint               AS total_tokens_input,
+        COALESCE(SUM(m.tokens_output), 0)::bigint              AS total_tokens_output,
+        COALESCE(SUM(m.tokens_cache_read), 0)::bigint          AS total_tokens_cache_read,
+        COALESCE(SUM(m.tokens_cache_write), 0)::bigint         AS total_tokens_cache_write,
+        MIN(m.created_at)                                      AS earliest_session_created_at
+    FROM ${s}.session_metric_summaries m
+    WHERE (p_include_deleted OR m.deleted_at IS NULL)
+      AND (p_since IS NULL OR m.created_at >= p_since);
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0007: Session-Tree Stats By Model ─────────────────
+
+function migration_0007_session_tree_stats_by_model(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0007_session_tree_stats_by_model: per-model breakdown across the
+-- spawn tree rooted at a session. Mirrors the shape of
+-- cms_get_fleet_stats_by_agent so the TUI/portal "By Model" card can
+-- render uniformly for both the fleet view and the per-session tree
+-- view. Uses the same recursive-descendant CTE pattern as
+-- cms_get_session_tree_stats so they stay in sync.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_tree_stats_by_model(
+    p_session_id TEXT
+) RETURNS TABLE (
+    model                       TEXT,
+    session_count               INT,
+    total_tokens_input          BIGINT,
+    total_tokens_output         BIGINT,
+    total_tokens_cache_read     BIGINT,
+    total_tokens_cache_write    BIGINT,
+    total_snapshot_size_bytes   BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH RECURSIVE tree AS (
+        SELECT m.session_id FROM ${s}.session_metric_summaries m
+        WHERE m.session_id = p_session_id
+        UNION ALL
+        SELECT m.session_id FROM ${s}.session_metric_summaries m
+        INNER JOIN tree t ON m.parent_session_id = t.session_id
+    )
+    SELECT
+        COALESCE(m.model, '(unknown)')                  AS model,
+        COUNT(*)::int                                    AS session_count,
+        COALESCE(SUM(m.tokens_input), 0)::bigint        AS total_tokens_input,
+        COALESCE(SUM(m.tokens_output), 0)::bigint       AS total_tokens_output,
+        COALESCE(SUM(m.tokens_cache_read), 0)::bigint   AS total_tokens_cache_read,
+        COALESCE(SUM(m.tokens_cache_write), 0)::bigint  AS total_tokens_cache_write,
+        COALESCE(SUM(m.snapshot_size_bytes), 0)::bigint AS total_snapshot_size_bytes
+    FROM ${s}.session_metric_summaries m
+    WHERE m.session_id IN (SELECT tree.session_id FROM tree)
+    GROUP BY m.model
+    ORDER BY total_tokens_input DESC, model;
 END;
 $$ LANGUAGE plpgsql;
 `;

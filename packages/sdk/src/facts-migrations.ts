@@ -24,6 +24,16 @@ export function FACTS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "stored_procedures",
             sql: migration_0002_stored_procedures(schema),
         },
+        {
+            version: "0003",
+            name: "facts_stats_procs",
+            sql: migration_0003_facts_stats_procs(schema),
+        },
+        {
+            version: "0004",
+            name: "facts_read_unrestricted",
+            sql: migration_0004_facts_read_unrestricted(schema),
+        },
     ];
 }
 
@@ -213,6 +223,227 @@ BEGIN
       AND shared = FALSE;
     GET DIAGNOSTICS deleted_count = ROW_COUNT;
     RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0003: Facts Stats Procs ───────────────────────────
+
+function migration_0003_facts_stats_procs(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0003_facts_stats_procs: per-session, tree, and shared facts aggregates.
+-- Bucketed by knowledge namespace (the first path segment of the key —
+-- 'skills', 'asks', 'intake', 'config', or '(other)'), with row counts,
+-- byte totals (pg_column_size of the JSONB value), and timestamps.
+--
+-- These power the agent-tuner's facts-observability tools and the
+-- TUI/portal stats pane "Facts" cards. They never expose fact values.
+
+-- Helper: classify a key into a namespace bucket.
+-- Top-level segment for the curated/intake namespaces; '(other)' otherwise.
+CREATE OR REPLACE FUNCTION ${s}.facts_namespace_for_key(p_key TEXT)
+    RETURNS TEXT AS $$
+DECLARE
+    v_first TEXT;
+BEGIN
+    IF p_key IS NULL OR p_key = '' THEN
+        RETURN '(other)';
+    END IF;
+    v_first := split_part(p_key, '/', 1);
+    IF v_first IN ('skills', 'asks', 'intake', 'config') THEN
+        RETURN v_first;
+    END IF;
+    RETURN '(other)';
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- ── facts_get_session_facts_stats ────────────────────────────────
+-- Aggregates non-shared facts owned by a single session.
+DROP FUNCTION IF EXISTS ${s}.facts_get_session_facts_stats(TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION ${s}.facts_get_session_facts_stats(
+    p_session_id TEXT
+) RETURNS TABLE (
+    namespace          TEXT,
+    fact_count         BIGINT,
+    total_value_bytes  BIGINT,
+    oldest_created_at  TIMESTAMPTZ,
+    newest_updated_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        ${s}.facts_namespace_for_key(f.key)             AS namespace,
+        COUNT(*)::BIGINT                                AS fact_count,
+        COALESCE(SUM(pg_column_size(f.value)), 0)::BIGINT AS total_value_bytes,
+        MIN(f.created_at)                               AS oldest_created_at,
+        MAX(f.updated_at)                               AS newest_updated_at
+    FROM ${t} f
+    WHERE f.session_id = p_session_id
+      AND f.shared = FALSE
+    GROUP BY 1
+    ORDER BY fact_count DESC, namespace;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── facts_get_facts_stats_for_sessions ───────────────────────────
+-- Same row shape as the per-session form, aggregated across an array of
+-- session ids (used by the management API to roll up a spawn tree after
+-- it has resolved the lineage from the CMS).
+DROP FUNCTION IF EXISTS ${s}.facts_get_facts_stats_for_sessions(TEXT[]) CASCADE;
+CREATE OR REPLACE FUNCTION ${s}.facts_get_facts_stats_for_sessions(
+    p_session_ids TEXT[]
+) RETURNS TABLE (
+    namespace          TEXT,
+    fact_count         BIGINT,
+    total_value_bytes  BIGINT,
+    oldest_created_at  TIMESTAMPTZ,
+    newest_updated_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        ${s}.facts_namespace_for_key(f.key)             AS namespace,
+        COUNT(*)::BIGINT                                AS fact_count,
+        COALESCE(SUM(pg_column_size(f.value)), 0)::BIGINT AS total_value_bytes,
+        MIN(f.created_at)                               AS oldest_created_at,
+        MAX(f.updated_at)                               AS newest_updated_at
+    FROM ${t} f
+    WHERE f.session_id = ANY(p_session_ids)
+      AND f.shared = FALSE
+    GROUP BY 1
+    ORDER BY fact_count DESC, namespace;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── facts_get_shared_facts_stats ─────────────────────────────────
+-- Shared facts (cross-session) bucketed by namespace.
+DROP FUNCTION IF EXISTS ${s}.facts_get_shared_facts_stats() CASCADE;
+CREATE OR REPLACE FUNCTION ${s}.facts_get_shared_facts_stats(
+) RETURNS TABLE (
+    namespace          TEXT,
+    fact_count         BIGINT,
+    total_value_bytes  BIGINT,
+    oldest_created_at  TIMESTAMPTZ,
+    newest_updated_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        ${s}.facts_namespace_for_key(f.key)             AS namespace,
+        COUNT(*)::BIGINT                                AS fact_count,
+        COALESCE(SUM(pg_column_size(f.value)), 0)::BIGINT AS total_value_bytes,
+        MIN(f.created_at)                               AS oldest_created_at,
+        MAX(f.updated_at)                               AS newest_updated_at
+    FROM ${t} f
+    WHERE f.shared = TRUE
+    GROUP BY 1
+    ORDER BY fact_count DESC, namespace;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0004: facts_read_facts unrestricted bypass ───────
+
+function migration_0004_facts_read_unrestricted(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0004_facts_read_unrestricted: bumps facts_read_facts to support an
+-- explicit "unrestricted" reader path used by the agent-tuner system
+-- agent. Tuner is read-only by definition (no store_fact / delete_fact
+-- access), but its job is to investigate ARBITRARY sessions, not just
+-- those in its own spawn lineage. The previous proc enforced lineage
+-- visibility for any reader_session_id, which silently returned 0 rows
+-- for the tuner — the exact failure that prompted this migration.
+--
+-- When p_unrestricted = TRUE the visibility OR-group is replaced with
+-- TRUE; optional filters (key_pattern, session_id, agent_id, tags)
+-- still apply normally so tuner queries remain targeted.
+
+DROP FUNCTION IF EXISTS ${s}.facts_read_facts(TEXT, TEXT, TEXT[], TEXT, TEXT[], TEXT, TEXT, INT) CASCADE;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_read_facts(
+    p_scope              TEXT,
+    p_reader_session_id  TEXT,
+    p_granted_ids        TEXT[],
+    p_key_pattern        TEXT,
+    p_tags               TEXT[],
+    p_session_id         TEXT,
+    p_agent_id           TEXT,
+    p_limit              INT,
+    p_unrestricted       BOOLEAN DEFAULT FALSE
+) RETURNS TABLE (
+    key        TEXT,
+    value      JSONB,
+    agent_id   TEXT,
+    session_id TEXT,
+    shared     BOOLEAN,
+    tags       TEXT[],
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+) AS $$
+DECLARE
+    base_sql TEXT;
+    where_clauses TEXT[] := ARRAY[]::TEXT[];
+    final_sql TEXT;
+BEGIN
+    base_sql := 'SELECT f.key, f.value, f.agent_id, f.session_id, f.shared, f.tags, f.created_at, f.updated_at FROM ${t} f WHERE ';
+
+    IF p_unrestricted THEN
+        -- Bypass visibility entirely; only optional filters apply.
+        where_clauses := array_append(where_clauses, 'TRUE');
+    ELSIF p_scope = 'shared' THEN
+        where_clauses := array_append(where_clauses, 'f.shared = TRUE');
+    ELSIF p_scope = 'session' THEN
+        IF p_reader_session_id IS NULL THEN
+            RETURN;
+        END IF;
+        where_clauses := array_append(where_clauses,
+            'f.shared = FALSE AND f.session_id = ' || quote_literal(p_reader_session_id));
+    ELSIF p_reader_session_id IS NOT NULL THEN
+        -- "accessible" or "descendants"
+        DECLARE
+            vis_parts TEXT[] := ARRAY[
+                'f.shared = TRUE',
+                '(f.shared = FALSE AND f.session_id = ' || quote_literal(p_reader_session_id) || ')'
+            ];
+        BEGIN
+            IF p_granted_ids IS NOT NULL AND array_length(p_granted_ids, 1) > 0 THEN
+                vis_parts := array_append(vis_parts,
+                    '(f.shared = FALSE AND f.session_id = ANY(' || quote_literal(p_granted_ids)::TEXT || '::TEXT[]))');
+            END IF;
+            where_clauses := array_append(where_clauses, '(' || array_to_string(vis_parts, ' OR ') || ')');
+        END;
+    ELSE
+        where_clauses := array_append(where_clauses, 'f.shared = TRUE');
+    END IF;
+
+    -- Optional filters
+    IF p_key_pattern IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.key LIKE ' || quote_literal(p_key_pattern));
+    END IF;
+    IF p_tags IS NOT NULL AND array_length(p_tags, 1) > 0 THEN
+        where_clauses := array_append(where_clauses,
+            'f.tags @> ' || quote_literal(p_tags)::TEXT || '::TEXT[]');
+    END IF;
+    IF p_session_id IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.session_id = ' || quote_literal(p_session_id));
+    END IF;
+    IF p_agent_id IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.agent_id = ' || quote_literal(p_agent_id));
+    END IF;
+
+    final_sql := base_sql || array_to_string(where_clauses, ' AND ')
+        || ' ORDER BY f.updated_at DESC LIMIT ' || p_limit;
+
+    RETURN QUERY EXECUTE final_sql;
 END;
 $$ LANGUAGE plpgsql;
 `;

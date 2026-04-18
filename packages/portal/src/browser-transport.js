@@ -221,6 +221,39 @@ export class BrowserPortalTransport {
         });
     }
 
+    async getSessionSkillUsage(sessionId, opts) {
+        return this.rpc("getSessionSkillUsage", {
+            sessionId,
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+        });
+    }
+
+    async getSessionTreeSkillUsage(sessionId, opts) {
+        return this.rpc("getSessionTreeSkillUsage", {
+            sessionId,
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+        });
+    }
+
+    async getFleetSkillUsage(opts) {
+        return this.rpc("getFleetSkillUsage", {
+            includeDeleted: opts?.includeDeleted,
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+        });
+    }
+
+    async getSessionFactsStats(sessionId) {
+        return this.rpc("getSessionFactsStats", { sessionId });
+    }
+
+    async getSessionTreeFactsStats(sessionId) {
+        return this.rpc("getSessionTreeFactsStats", { sessionId });
+    }
+
+    async getSharedFactsStats() {
+        return this.rpc("getSharedFactsStats", {});
+    }
+
     async pruneDeletedSummaries(olderThan) {
         return this.rpc("pruneDeletedSummaries", {
             olderThan: olderThan instanceof Date ? olderThan.toISOString() : olderThan,

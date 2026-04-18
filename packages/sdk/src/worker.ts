@@ -285,6 +285,7 @@ export class PilotSwarmWorker {
         await this.factStore.initialize();
         this.sessionManager.setFactStore(this.factStore);
         if (this._catalog) {
+            this.sessionManager.setSessionCatalog(this._catalog);
             this.sessionManager.setLineageSessionLookup(async (sessionId) => {
                 const seen = new Set([sessionId]);
                 const lineage: string[] = [];
@@ -309,6 +310,12 @@ export class PilotSwarmWorker {
                 return lineage;
             });
         }
+
+        // Inspect tools (e.g. agent-tuner read tools) need a duroxide client
+        // for orchestration stats and execution-history reads. Use a dedicated
+        // client; tuner tools are read-only.
+        const inspectClient = new Client(this._provider);
+        this.sessionManager.setDuroxideClient(inspectClient);
 
         this.runtime = new Runtime(this._provider, {
             dispatcherPollIntervalMs: 10,

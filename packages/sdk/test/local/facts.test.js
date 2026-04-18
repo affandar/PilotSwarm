@@ -546,6 +546,94 @@ async function testAccessibleScopeIncludesFullLineage(env) {
     }
 }
 
+/**
+ * The agent-tuner is read-only at the namespace gate level (write/delete
+ * blocked) but its job is to investigate ANY session, not just its own
+ * spawn lineage. The lineage gate that limits normal task agents must
+ * be bypassed for it. This regression test reproduces the failure mode
+ * captured in the screenshot that prompted facts migration 0004:
+ * the tuner queried four sibling session IDs and got 0 rows because
+ * none were in its own lineage. With the bypass, all of them resolve.
+ */
+async function testTunerUnrestrictedReads(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+    try {
+        const tunerSession = `sess-tuner-${Math.random().toString(36).slice(2, 10)}`;
+        const targetA = `sess-target-a-${Math.random().toString(36).slice(2, 10)}`;
+        const targetB = `sess-target-b-${Math.random().toString(36).slice(2, 10)}`;
+
+        // Seed three unrelated private facts plus one shared. Tuner is in
+        // its own lineage; targetA and targetB are siblings to nothing.
+        await factStore.storeFact({ key: "build/status", value: { v: "running" }, sessionId: targetA });
+        await factStore.storeFact({ key: "build/status", value: { v: "queued" }, sessionId: targetB });
+        await factStore.storeFact({ key: "tuning/findings/x", value: { v: "self" }, sessionId: tunerSession });
+        await factStore.storeFact({ key: "shared/reference", value: { v: 1 }, shared: true, sessionId: null });
+
+        // ── Baseline: a NORMAL agent in tunerSession sees only its own +
+        // shared facts; the targets are invisible. ─────────────────────────
+        const [, normalRead] = createFactTools({
+            factStore,
+            agentIdentity: "task-agent",
+        });
+        const normalSession = await normalRead.handler(
+            { scope: "session" },
+            { sessionId: tunerSession },
+        );
+        assertEqual(normalSession.count, 1, "normal agent session-only sees its own");
+
+        const normalTargetedFails = await normalRead.handler(
+            { scope: "accessible", session_id: targetA },
+            { sessionId: tunerSession },
+        );
+        assertEqual(normalTargetedFails.count, 0, "normal agent cannot read targetA's private facts");
+
+        // ── Tuner: lineage bypass is active. ────────────────────────────
+        const [, tunerRead] = createFactTools({
+            factStore,
+            agentIdentity: "agent-tuner",
+        });
+
+        // Direct session_id read of targetA's private fact succeeds.
+        const tunerTargetA = await tunerRead.handler(
+            { session_id: targetA },
+            { sessionId: tunerSession },
+        );
+        console.log("  tuner sees targetA private:", tunerTargetA.count, "rows");
+        assertEqual(tunerTargetA.count, 1, "tuner must see targetA's private fact");
+        assertEqual(tunerTargetA.facts[0].sessionId, targetA);
+
+        // Direct session_id read of targetB's private fact succeeds.
+        const tunerTargetB = await tunerRead.handler(
+            { session_id: targetB },
+            { sessionId: tunerSession },
+        );
+        assertEqual(tunerTargetB.count, 1, "tuner must see targetB's private fact");
+
+        // Pattern read across all sessions returns all four facts.
+        const tunerAll = await tunerRead.handler(
+            { key_pattern: "%" },
+            { sessionId: tunerSession },
+        );
+        console.log("  tuner pattern read total:", tunerAll.count, "rows");
+        assertEqual(tunerAll.count, 4, "tuner pattern read sees every fact in the schema");
+
+        // Namespace WRITE gate is still active for tuner (sanity).
+        const [tunerStore] = createFactTools({
+            factStore,
+            agentIdentity: "agent-tuner",
+        });
+        const writeBlocked = await tunerStore.handler(
+            { key: "skills/should-not-write", value: { v: 0 } },
+            { sessionId: tunerSession, agentId: "agent-tuner" },
+        );
+        assert(writeBlocked.error, "tuner write to skills/ namespace must still be blocked");
+        assert(/reserved for the Facts Manager/.test(writeBlocked.error), "tuner sees the standard reservation error");
+    } finally {
+        await factStore.close();
+    }
+}
+
 describe("Level 3/4: Facts", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -583,5 +671,9 @@ describe("Level 3/4: Facts", () => {
 
     it("scope=descendants with no sub-agents equals accessible", { timeout: TIMEOUT }, async () => {
         await testDescendantsScopeWithNoSubAgents(getEnv());
+    });
+
+    it("agent-tuner reads private facts of unrelated sessions (lineage bypass)", { timeout: TIMEOUT }, async () => {
+        await testTunerUnrestrictedReads(getEnv());
     });
 });

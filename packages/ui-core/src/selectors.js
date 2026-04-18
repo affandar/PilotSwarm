@@ -2853,13 +2853,20 @@ function buildSessionStatsLines(state, session, maxWidth) {
 
     // Token usage card
     const tokTotal = (summary.tokensInput || 0) + (summary.tokensOutput || 0);
+    const hitRatio = summary.cacheHitRatio;
+    const hitRatioLabel = hitRatio == null
+        ? "—"
+        : `${(hitRatio * 100).toFixed(1)}%`;
     lines.push(...buildMessageCardLines({
         title: "Tokens",
-        body: [
-            `Input  ${formatCompactNumber(summary.tokensInput).padStart(12)}    Cache Read   ${formatCompactNumber(summary.tokensCacheRead).padStart(8)}`,
-            `Output ${formatCompactNumber(summary.tokensOutput).padStart(12)}    Cache Write  ${formatCompactNumber(summary.tokensCacheWrite).padStart(8)}`,
-            `Total  ${formatCompactNumber(tokTotal).padStart(12)}`,
-        ].join("\n"),
+        body: formatKeyValueTable([
+            ["Input",       formatCompactNumber(summary.tokensInput)],
+            ["Output",      formatCompactNumber(summary.tokensOutput)],
+            ["Total",       formatCompactNumber(tokTotal)],
+            ["Cache Read",  formatCompactNumber(summary.tokensCacheRead)],
+            ["Cache Write", formatCompactNumber(summary.tokensCacheWrite)],
+            ["Hit Ratio",   hitRatioLabel],
+        ]),
         width: w,
         titleColor: "green",
         borderColor: "gray",
@@ -2868,20 +2875,16 @@ function buildSessionStatsLines(state, session, maxWidth) {
     lines.push(plainInspectorLine(""));
 
     // Persistence card
-    const persLines = [
-        `Snapshot       ${formatCompactBytes(summary.snapshotSizeBytes).padStart(10)}`,
-        `Dehydrations   ${String(summary.dehydrationCount).padStart(10)}    Hydrations  ${String(summary.hydrationCount).padStart(6)}`,
-        `Lossy Handoffs ${String(summary.lossyHandoffCount).padStart(10)}`,
-    ];
-    if (summary.lastDehydratedAt) {
-        persLines.push(`Last Dehydrated ${formatLocalTimestamp(summary.lastDehydratedAt)}`);
-    }
-    if (summary.lastHydratedAt) {
-        persLines.push(`Last Hydrated   ${formatLocalTimestamp(summary.lastHydratedAt)}`);
-    }
     lines.push(...buildMessageCardLines({
         title: "Persistence",
-        body: persLines.join("\n"),
+        body: formatKeyValueTable([
+            ["Snapshot",        formatCompactBytes(summary.snapshotSizeBytes)],
+            ["Dehydrations",    String(summary.dehydrationCount)],
+            ["Hydrations",      String(summary.hydrationCount)],
+            ["Lossy Handoffs",  String(summary.lossyHandoffCount)],
+            ["Last Dehydrated", summary.lastDehydratedAt ? formatLocalTimestamp(summary.lastDehydratedAt) : null],
+            ["Last Hydrated",   summary.lastHydratedAt ? formatLocalTimestamp(summary.lastHydratedAt) : null],
+        ]),
         width: w,
         titleColor: "yellow",
         borderColor: "gray",
@@ -2891,22 +2894,184 @@ function buildSessionStatsLines(state, session, maxWidth) {
     // Tree stats (if has children)
     const tree = entry.treeStats?.tree;
     if (tree && tree.sessionCount > 1) {
+        const treeHit = tree.cacheHitRatio;
+        const treeHitLabel = treeHit == null ? "—" : `${(treeHit * 100).toFixed(1)}%`;
+        const treeTotal = (tree.totalTokensInput || 0) + (tree.totalTokensOutput || 0);
         lines.push(plainInspectorLine(""));
         lines.push(...buildMessageCardLines({
             title: `Tree (${tree.sessionCount} sessions)`,
-            body: [
-                `Total Tokens   ${formatCompactNumber(tree.totalTokensInput)} in / ${formatCompactNumber(tree.totalTokensOutput)} out`,
-                `Total Snapshot ${formatCompactBytes(tree.totalSnapshotSizeBytes).padStart(10)}`,
-                `Dehydrations   ${String(tree.totalDehydrationCount).padStart(10)}    Hydrations  ${String(tree.totalHydrationCount).padStart(6)}`,
-            ].join("\n"),
+            body: formatKeyValueTable([
+                ["Input",        formatCompactNumber(tree.totalTokensInput)],
+                ["Output",       formatCompactNumber(tree.totalTokensOutput)],
+                ["Total",        formatCompactNumber(treeTotal)],
+                ["Cache Read",   formatCompactNumber(tree.totalTokensCacheRead)],
+                ["Cache Write",  formatCompactNumber(tree.totalTokensCacheWrite)],
+                ["Hit Ratio",    treeHitLabel],
+                ["Snapshot",     formatCompactBytes(tree.totalSnapshotSizeBytes)],
+                ["Dehydrations", String(tree.totalDehydrationCount)],
+                ["Hydrations",   String(tree.totalHydrationCount)],
+            ]),
             width: w,
             titleColor: "magenta",
             borderColor: "gray",
             fitToContent: true,
         }));
+
+        // Tree breakdown by model (mirrors fleet "Tokens By Model" card).
+        const byModel = Array.isArray(entry.treeStats?.byModel) ? entry.treeStats.byModel : [];
+        if (byModel.length > 1) {
+            lines.push(plainInspectorLine(""));
+            lines.push(...buildMessageCardLines({
+                title: "Tree By Model",
+                body: buildTreeByModelBody(byModel),
+                width: w,
+                titleColor: "cyan",
+                borderColor: "gray",
+                fitToContent: true,
+            }));
+        }
+    }
+
+    // Skills usage card (static + learned)
+    const skills = Array.isArray(entry.skillUsage) ? entry.skillUsage : [];
+    if (skills.length > 0) {
+        lines.push(plainInspectorLine(""));
+        lines.push(...buildMessageCardLines({
+            title: `Skills (${skills.length})`,
+            body: buildSkillsBody(skills),
+            width: w,
+            titleColor: "cyan",
+            borderColor: "gray",
+            fitToContent: true,
+        }));
+    }
+
+    // Tree skills card — only when there are descendants and the tree's
+    // rolled-up skill usage diverges from the session's own. Same row format
+    // as the per-session Skills card.
+    const treeSkillUsage = entry.treeSkillUsage;
+    const treeSkillRolled = Array.isArray(treeSkillUsage?.rolledUp) ? treeSkillUsage.rolledUp : [];
+    const treeSessionCount = Array.isArray(treeSkillUsage?.perSession) ? treeSkillUsage.perSession.length : 0;
+    if (treeSkillRolled.length > 0 && treeSessionCount > 1) {
+        lines.push(plainInspectorLine(""));
+        lines.push(...buildMessageCardLines({
+            title: `Tree Skills (${treeSkillRolled.length})`,
+            body: buildSkillsBody(treeSkillRolled),
+            width: w,
+            titleColor: "cyan",
+            borderColor: "gray",
+            fitToContent: true,
+        }));
+    }
+
+    // Facts card — per-session non-shared facts grouped by namespace.
+    // When the session has descendants and tree facts differ from per-session
+    // facts, append a "Tree" line so investigators can see lineage growth.
+    const facts = entry.factsStats;
+    const treeFacts = entry.treeFactsStats;
+    if (facts && Array.isArray(facts.rows) && facts.rows.length > 0) {
+        lines.push(plainInspectorLine(""));
+        const body = buildFactsBody(facts.rows);
+        const lineCount = body ? body.split("\n").length : 0;
+        const titleSuffix = `${facts.totalCount} · ${formatCompactBytes(facts.totalBytes)}`;
+        let composedBody = body;
+        if (treeFacts && treeFacts.totalCount > facts.totalCount) {
+            composedBody += `\n  Tree (${treeFacts.sessionIds.length} sessions): ${treeFacts.totalCount} · ${formatCompactBytes(treeFacts.totalBytes)}`;
+        }
+        if (lineCount > 0) {
+            lines.push(...buildMessageCardLines({
+                title: `Facts (${titleSuffix})`,
+                body: composedBody,
+                width: w,
+                titleColor: "blue",
+                borderColor: "gray",
+                fitToContent: true,
+            }));
+        }
     }
 
     return lines;
+}
+
+/**
+ * Render a flat list of `[label, value]` pairs as a single-column key/value
+ * table where labels are left-aligned to the longest label and values are
+ * right-aligned to the longest value. This is the canonical layout for stats
+ * cards — multi-column rows with mixed-width labels never line up cleanly,
+ * so all stats cards normalize to this single-column form.
+ *
+ * Pairs whose value is null/undefined are dropped so the card scales when
+ * a row is unavailable (e.g. no `lastDehydratedAt` yet).
+ */
+function formatKeyValueTable(pairs, options = {}) {
+    const gap = options.gap ?? 2;
+    const rows = (pairs || []).filter((row) => Array.isArray(row) && row[1] != null && row[1] !== "");
+    if (rows.length === 0) return "";
+    const labelWidth = rows.reduce((max, [label]) => Math.max(max, String(label).length), 0);
+    const valueWidth = rows.reduce((max, [, value]) => Math.max(max, String(value).length), 0);
+    const filler = " ".repeat(gap);
+    return rows
+        .map(([label, value]) => `${String(label).padEnd(labelWidth)}${filler}${String(value).padStart(valueWidth)}`)
+        .join("\n");
+}
+
+/**
+ * Render a list of rows (each an array of cell strings) as a left-aligned
+ * column table. The width of each column is derived from the widest cell
+ * in that column. The first column is left-aligned (the label); every
+ * other column is right-aligned (the count/byte value).
+ *
+ * Cells whose value is null/undefined are rendered as an empty string.
+ */
+function formatColumnTable(rows, options = {}) {
+    const gap = options.gap ?? 2;
+    const cleaned = (rows || []).filter((row) => Array.isArray(row) && row.length > 0);
+    if (cleaned.length === 0) return "";
+    const colCount = cleaned.reduce((max, row) => Math.max(max, row.length), 0);
+    const widths = new Array(colCount).fill(0);
+    for (const row of cleaned) {
+        for (let i = 0; i < colCount; i += 1) {
+            const cell = row[i] == null ? "" : String(row[i]);
+            if (cell.length > widths[i]) widths[i] = cell.length;
+        }
+    }
+    const filler = " ".repeat(gap);
+    return cleaned
+        .map((row) => row
+            .map((cell, i) => {
+                const text = cell == null ? "" : String(cell);
+                if (i === 0) return text.padEnd(widths[i]);
+                return text.padStart(widths[i]);
+            })
+            .join(filler))
+        .join("\n");
+}
+
+/** Render a list of SkillUsageRow into a compact body string. */
+function buildSkillsBody(rows) {
+    // Truncate to top 12 by invocations to keep the card short.
+    const top = rows.slice().sort((a, b) => (b.invocations || 0) - (a.invocations || 0)).slice(0, 12);
+    const tableRows = top.map((r) => {
+        const tag = r.kind === "learned" ? "L" : "S";
+        const name = String(r.name || "(unknown)");
+        return [`${tag} ${name}`, `${r.invocations || 0} inv`];
+    });
+    const body = formatColumnTable(tableRows);
+    if (rows.length > top.length) {
+        return `${body}\n… ${rows.length - top.length} more`;
+    }
+    return body;
+}
+
+/** Render facts-stats rows (per session, tree, or shared) into a compact body. */
+function buildFactsBody(rows) {
+    const sorted = rows.slice().sort((a, b) => (b.factCount || 0) - (a.factCount || 0));
+    const tableRows = sorted.map((r) => [
+        String(r.namespace || "(other)"),
+        String(r.factCount || 0),
+        formatCompactBytes(r.totalValueBytes || 0),
+    ]);
+    return formatColumnTable(tableRows);
 }
 
 function buildFleetStatsLines(state, maxWidth) {
@@ -2953,10 +3118,14 @@ function buildFleetStatsLines(state, maxWidth) {
         const current = byModel.get(modelLabel) || {
             totalTokensInput: 0,
             totalTokensOutput: 0,
+            totalTokensCacheRead: 0,
+            totalTokensCacheWrite: 0,
             totalSnapshotSizeBytes: 0,
         };
         current.totalTokensInput += Number(group.totalTokensInput) || 0;
         current.totalTokensOutput += Number(group.totalTokensOutput) || 0;
+        current.totalTokensCacheRead += Number(group.totalTokensCacheRead) || 0;
+        current.totalTokensCacheWrite += Number(group.totalTokensCacheWrite) || 0;
         current.totalSnapshotSizeBytes += Number(group.totalSnapshotSizeBytes) || 0;
         byModel.set(modelLabel, current);
     }
@@ -2964,13 +3133,11 @@ function buildFleetStatsLines(state, maxWidth) {
     if (byModel.size > 0) {
         const groupLines = [];
         for (const [modelLabel, totals] of byModel.entries()) {
+            const ratio = totals.totalTokensInput > 0
+                ? (totals.totalTokensCacheRead / totals.totalTokensInput)
+                : null;
             groupLines.push(modelLabel);
-            groupLines.push(
-                `  ${formatCompactNumber(totals.totalTokensInput)} in / ${formatCompactNumber(totals.totalTokensOutput)} out / ${formatCompactNumber(totals.totalTokensInput + totals.totalTokensOutput)} total`,
-            );
-            groupLines.push(
-                `  snapshot ${formatCompactBytes(totals.totalSnapshotSizeBytes)}`,
-            );
+            groupLines.push(formatModelTotalsTable(totals, ratio));
             groupLines.push("");
         }
         lines.push(...buildMessageCardLines({
@@ -2985,22 +3152,117 @@ function buildFleetStatsLines(state, maxWidth) {
     }
 
     // Fleet totals card
+    const fleetHitRatio = data.totals.cacheHitRatio;
+    const fleetHitLabel = fleetHitRatio == null
+        ? "—"
+        : `${(fleetHitRatio * 100).toFixed(1)}%`;
     lines.push(...buildMessageCardLines({
         title: "Fleet Totals",
-        body: [
-            `Sessions     ${String(data.totals.sessionCount).padStart(12)}`,
-            `Tokens In    ${formatCompactNumber(data.totals.totalTokensInput).padStart(12)}`,
-            `Tokens Out   ${formatCompactNumber(data.totals.totalTokensOutput).padStart(12)}`,
-            `Total Tokens ${formatCompactNumber(data.totals.totalTokensInput + data.totals.totalTokensOutput).padStart(12)}`,
-            `Snapshots    ${formatCompactBytes(data.totals.totalSnapshotSizeBytes).padStart(12)}`,
-        ].join("\n"),
+        body: formatKeyValueTable([
+            ["Sessions",     String(data.totals.sessionCount)],
+            ["Tokens In",    formatCompactNumber(data.totals.totalTokensInput)],
+            ["Tokens Out",   formatCompactNumber(data.totals.totalTokensOutput)],
+            ["Total Tokens", formatCompactNumber(data.totals.totalTokensInput + data.totals.totalTokensOutput)],
+            ["Cache Read",   formatCompactNumber(data.totals.totalTokensCacheRead)],
+            ["Cache Write",  formatCompactNumber(data.totals.totalTokensCacheWrite)],
+            ["Hit Ratio",    fleetHitLabel],
+            ["Snapshots",    formatCompactBytes(data.totals.totalSnapshotSizeBytes)],
+        ]),
         width: w,
         titleColor: "green",
         borderColor: "gray",
         fitToContent: true,
     }));
 
+    // Fleet skills usage (top static + learned across the window).
+    // Filter out facts-manager skills/% rows: these are facts namespace
+    // accounting, not real skill invocations.
+    const fleetSkillRows = (Array.isArray(fleet.skillUsage?.rows) ? fleet.skillUsage.rows : [])
+        .filter((r) => !(r && r.agentId === "facts-manager" && String(r.name || "").startsWith("skills/")));
+    if (fleetSkillRows.length > 0) {
+        lines.push(plainInspectorLine(""));
+        lines.push(...buildMessageCardLines({
+            title: `Fleet Skills (${fleetSkillRows.length})`,
+            body: buildFleetSkillsBody(fleetSkillRows),
+            width: w,
+            titleColor: "cyan",
+            borderColor: "gray",
+            fitToContent: true,
+        }));
+    }
+
+    // Shared facts card (Facts Manager output, fleet-wide)
+    const sharedFacts = fleet.sharedFactsStats;
+    if (sharedFacts && Array.isArray(sharedFacts.rows) && sharedFacts.rows.length > 0) {
+        lines.push(plainInspectorLine(""));
+        const titleSuffix = `${sharedFacts.totalCount} · ${formatCompactBytes(sharedFacts.totalBytes)}`;
+        lines.push(...buildMessageCardLines({
+            title: `Shared Facts (${titleSuffix})`,
+            body: buildFactsBody(sharedFacts.rows),
+            width: w,
+            titleColor: "blue",
+            borderColor: "gray",
+            fitToContent: true,
+        }));
+    }
+
     return lines;
+}
+
+/** Render fleet skill rows: groups by skill kind/name across agents. */
+function buildFleetSkillsBody(rows) {
+    // Sort: kind S before L, then alphabetical by name. Agent attribution is
+    // intentionally omitted — the fleet view shows skill usage globally.
+    const sorted = rows.slice().sort((a, b) => {
+        const kindRank = (k) => (k === "learned" ? 1 : 0); // S=0, L=1
+        const dk = kindRank(a.kind) - kindRank(b.kind);
+        if (dk !== 0) return dk;
+        return String(a.name || "").localeCompare(String(b.name || ""));
+    });
+    const top = sorted.slice(0, 15);
+    const tableRows = top.map((r) => {
+        const tag = r.kind === "learned" ? "L" : "S";
+        const name = String(r.name || "(unknown)");
+        return [`${tag} ${name}`, `${r.invocations || 0} inv`, `${r.sessionCount || 0} sess`];
+    });
+    const body = formatColumnTable(tableRows);
+    if (rows.length > top.length) {
+        return `${body}\n… ${rows.length - top.length} more`;
+    }
+    return body;
+}
+
+/** Render the per-tree by-model breakdown (mirrors fleet "Tokens By Model"). */
+function buildTreeByModelBody(rows) {
+    const sorted = rows.slice().sort((a, b) => (b.totalTokensInput || 0) - (a.totalTokensInput || 0));
+    const out = [];
+    for (const r of sorted) {
+        const ratio = r.cacheHitRatio;
+        out.push(`${String(r.model || "(unknown)")}  · ${r.sessionCount || 0} sess`);
+        out.push(formatModelTotalsTable(r, ratio));
+        out.push("");
+    }
+    return out.join("\n").trimEnd();
+}
+
+/**
+ * Single-model totals as a compact key/value table, indented two spaces so
+ * it sits visually under the model header line. Used by both the fleet
+ * "Tokens By Model" card and the per-session "Tree By Model" card.
+ */
+function formatModelTotalsTable(totals, cacheHitRatio) {
+    const ratioLabel = cacheHitRatio == null ? "—" : `${(cacheHitRatio * 100).toFixed(1)}%`;
+    const total = (Number(totals.totalTokensInput) || 0) + (Number(totals.totalTokensOutput) || 0);
+    const body = formatKeyValueTable([
+        ["Input",       formatCompactNumber(totals.totalTokensInput || 0)],
+        ["Output",      formatCompactNumber(totals.totalTokensOutput || 0)],
+        ["Total",       formatCompactNumber(total)],
+        ["Cache Read",  formatCompactNumber(totals.totalTokensCacheRead || 0)],
+        ["Cache Write", formatCompactNumber(totals.totalTokensCacheWrite || 0)],
+        ["Hit Ratio",   ratioLabel],
+        ["Snapshot",    formatCompactBytes(totals.totalSnapshotSizeBytes || 0)],
+    ]);
+    return body.split("\n").map((line) => `  ${line}`).join("\n");
 }
 
 export function selectInspector(state, options = {}) {

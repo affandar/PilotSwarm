@@ -1154,15 +1154,27 @@ export class PilotSwarmUiController {
 
         this.dispatch({ type: "sessionStats/loading", sessionId });
         try {
-            const [summary, treeStats] = await Promise.all([
+            const [summary, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats] = await Promise.all([
                 this.transport.getSessionMetricSummary(sessionId),
                 typeof this.transport.getSessionTreeStats === "function"
                     ? this.transport.getSessionTreeStats(sessionId)
                     : null,
+                typeof this.transport.getSessionSkillUsage === "function"
+                    ? this.transport.getSessionSkillUsage(sessionId).catch(() => null)
+                    : null,
+                typeof this.transport.getSessionTreeSkillUsage === "function"
+                    ? this.transport.getSessionTreeSkillUsage(sessionId).catch(() => null)
+                    : null,
+                typeof this.transport.getSessionFactsStats === "function"
+                    ? this.transport.getSessionFactsStats(sessionId).catch(() => null)
+                    : null,
+                typeof this.transport.getSessionTreeFactsStats === "function"
+                    ? this.transport.getSessionTreeFactsStats(sessionId).catch(() => null)
+                    : null,
             ]);
-            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, treeStats });
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats });
         } catch {
-            this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, treeStats: null });
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, treeStats: null, skillUsage: null, treeSkillUsage: null, factsStats: null, treeFactsStats: null });
         }
     }
 
@@ -1176,12 +1188,19 @@ export class PilotSwarmUiController {
 
         this.dispatch({ type: "fleetStats/loading" });
         try {
-            const data = await this.transport.getFleetStats({
-                since: new Date(Date.now() - FLEET_STATS_DEFAULT_WINDOW_DAYS * 86400_000),
-            });
-            this.dispatch({ type: "fleetStats/loaded", data });
+            const since = new Date(Date.now() - FLEET_STATS_DEFAULT_WINDOW_DAYS * 86400_000);
+            const [data, skillUsage, sharedFactsStats] = await Promise.all([
+                this.transport.getFleetStats({ since }),
+                typeof this.transport.getFleetSkillUsage === "function"
+                    ? this.transport.getFleetSkillUsage({ since }).catch(() => null)
+                    : null,
+                typeof this.transport.getSharedFactsStats === "function"
+                    ? this.transport.getSharedFactsStats().catch(() => null)
+                    : null,
+            ]);
+            this.dispatch({ type: "fleetStats/loaded", data, skillUsage, sharedFactsStats });
         } catch {
-            this.dispatch({ type: "fleetStats/loaded", data: null });
+            this.dispatch({ type: "fleetStats/loaded", data: null, skillUsage: null, sharedFactsStats: null });
         }
     }
 
