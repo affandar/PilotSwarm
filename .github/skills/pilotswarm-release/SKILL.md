@@ -26,6 +26,8 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
    - Confirm the DevOps sample in `examples/devops-command-center/` still reflects the shipped behavior.
    - Confirm relevant builder templates in `templates/builder-agents/` were updated when builder-facing behavior changed.
    - Confirm `.github/copilot-instructions.md` was updated if contributor workflow or maintenance expectations changed.
+   - **Update `CHANGELOG.md`** with a new top entry for the proposed version, dated, summarizing what shipped (SDK / Portal / TUI / Tests / Maintainer Workflow / npm sections as appropriate). The CHANGELOG entry is a release blocker, not optional.
+   - **Update the repo-root `README.md` banner line** that calls out the latest version (e.g. `**v0.1.X** — ...`) so the repo landing page matches the version about to ship.
 
 3. Run build and full test suite.
    - Start with `npm run build`.
@@ -95,6 +97,8 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
 - sample app still reflects shipped behavior
 - relevant docs and guides are updated
 - relevant builder templates are updated
+- **`CHANGELOG.md` has a new top entry for the proposed version**
+- **repo-root `README.md` banner line names the proposed version**
 - package metadata is correct
 - `npm pack --dry-run` looks right
 - package-local `README.md` files are present for published workspaces

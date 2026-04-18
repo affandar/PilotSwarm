@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.20 — 2026-04-18
+
+### SDK / Inspection Toolset
+
+- **Agent inspection toolset** — new tools for cross-session inspection by descendant agents and the agent-tuner: `read_agent_events` (lineage-gated descendant transcripts), `read_session_metric_summary`, `read_session_tree_stats`, `read_fleet_stats`, `read_session_skill_usage`, `read_fleet_skill_usage`, `read_session_facts_stats`, `read_fleet_facts_stats`, `read_orchestration_stats`, `read_execution_history`. Tools are registered only on tuner sessions or on descendants with a verified lineage to the requested target.
+- **`agent-tuner` system agent** — new auto-spawned permanent child under PilotSwarm with a read-only diagnostic toolset for incident investigation, prompt drift analysis, and reliability/cost/performance forensics. Ships with the new `orchestration-session-lifecycle` skill.
+- **Tuner-only `read_facts` lineage bypass** — the agent-tuner can read facts across the fleet without lineage gating; all other callers remain lineage-restricted.
+
+### SDK / Stats Observability
+
+- **Per-session and fleet stats expose** skill usage (static + learned), cache observability (input / output / cache_read / cache_write / hit_ratio), and facts stats (per-session, tree, and shared).
+- **Surfaced via `PilotSwarmManagementClient`** as typed read methods, and via the inspect-tools toolset as `read_*` tools so the agent-tuner can reason about the same signals operators see in the stats pane.
+- **CMS migrations 0005–0007 and Facts migrations 0003–0004** — stored-procedure–backed reads/writes for the new metric-summary, skill-usage, and facts-stats surfaces. Companion `*_diff.md` files cover the SQL deltas.
+
+### TUI / Portal
+
+- **Stats pane cards** — Tokens, Persistence, Tree, Tokens-By-Model, Skills, Fleet Skills, and Facts cards now render as aligned key/value tables instead of mixed multi-column hand-padded text.
+- **Fleet-skills sort** — S (static skill) rows before L (learned skill) rows; named-agent rows before unscoped (`./`); alphabetical within each tier.
+- **Fix: scroll resets on stats refresh** — the inspector pane no longer jumps back to the top during a stats refresh. Browser auto-clamp during the transient loading state was overwriting the saved scroll offset; `onScroll` now ignores events that fire while the pane has no scrollable content.
+- **System messages routed to activity, not chat** — the per-turn system prompt sent to the LLM is no longer rendered in the chat pane (it was noisy and identical turn-to-turn). It remains recorded in CMS as `system.message` events; the agent-tuner reads them via `read_agent_events` filtered to `event_types: ["system.message"]`.
+
+### Other
+
+- **Bump duroxide** to ^0.1.21.
+- **CI workflows** — added `tests.yml` and `copilot-setup-steps.yml`.
+
 ## 0.1.19 — 2026-04-16
 
 ### SDK / Storage
