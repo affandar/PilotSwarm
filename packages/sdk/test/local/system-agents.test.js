@@ -86,7 +86,7 @@ async function testPilotswarmRootCreated(env) {
     }
 }
 
-const EXPECTED_CHILD_AGENT_IDS = ["sweeper", "resourcemgr", "facts-manager"];
+const EXPECTED_CHILD_AGENT_IDS = ["sweeper", "resourcemgr", "facts-manager", "agent-tuner"];
 
 // ─── Test: Child System Agents Spawned ───────────────────────────
 

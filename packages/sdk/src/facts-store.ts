@@ -44,6 +44,18 @@ export interface DeleteFactInput {
     sessionId?: string | null;
 }
 
+/** Knowledge-namespace bucket used by facts stats aggregations. */
+export type FactsNamespace = "skills" | "asks" | "intake" | "config" | "(other)";
+
+/** One row of facts-stats aggregation, returned by all three facts-stats procs. */
+export interface FactsStatsRow {
+    namespace: FactsNamespace;
+    factCount: number;
+    totalValueBytes: number;
+    oldestCreatedAt: Date | null;
+    newestUpdatedAt: Date | null;
+}
+
 export interface FactStore {
     initialize(): Promise<void>;
     storeFact(input: StoreFactInput): Promise<{
@@ -51,7 +63,7 @@ export interface FactStore {
         shared: boolean;
         stored: true;
     }>;
-    readFacts(query: ReadFactsQuery, access?: { readerSessionId?: string | null; grantedSessionIds?: string[] }): Promise<{
+    readFacts(query: ReadFactsQuery, access?: { readerSessionId?: string | null; grantedSessionIds?: string[]; unrestricted?: boolean }): Promise<{
         count: number;
         facts: FactRecord[];
     }>;
@@ -61,6 +73,12 @@ export interface FactStore {
         deleted: boolean;
     }>;
     deleteSessionFactsForSession(sessionId: string): Promise<number>;
+    /** Per-session non-shared facts, bucketed by namespace. */
+    getSessionFactsStats(sessionId: string): Promise<FactsStatsRow[]>;
+    /** Same shape, aggregated across an array of session ids (used for spawn trees). */
+    getFactsStatsForSessions(sessionIds: string[]): Promise<FactsStatsRow[]>;
+    /** Shared (cross-session) facts bucketed by namespace. */
+    getSharedFactsStats(): Promise<FactsStatsRow[]>;
     close(): Promise<void>;
 }
 
@@ -70,10 +88,13 @@ function sqlForSchema(schema: string) {
     return {
         schema,
         fn: {
-            storeFact:            `${schema}.facts_store_fact`,
-            readFacts:            `${schema}.facts_read_facts`,
-            deleteFact:           `${schema}.facts_delete_fact`,
-            deleteSessionFacts:   `${schema}.facts_delete_session_facts`,
+            storeFact:                 `${schema}.facts_store_fact`,
+            readFacts:                 `${schema}.facts_read_facts`,
+            deleteFact:                `${schema}.facts_delete_fact`,
+            deleteSessionFacts:        `${schema}.facts_delete_session_facts`,
+            getSessionFactsStats:      `${schema}.facts_get_session_facts_stats`,
+            getFactsStatsForSessions:  `${schema}.facts_get_facts_stats_for_sessions`,
+            getSharedFactsStats:       `${schema}.facts_get_shared_facts_stats`,
         },
     };
 }
@@ -165,16 +186,17 @@ export class PgFactStore implements FactStore {
 
     async readFacts(
         query: ReadFactsQuery,
-        access?: { readerSessionId?: string | null; grantedSessionIds?: string[] },
+        access?: { readerSessionId?: string | null; grantedSessionIds?: string[]; unrestricted?: boolean },
     ): Promise<{ count: number; facts: FactRecord[] }> {
         const readerSessionId = access?.readerSessionId ?? null;
         const grantedSessionIds = access?.grantedSessionIds ?? [];
+        const unrestricted = access?.unrestricted === true;
         const scope = query.scope ?? "accessible";
         const keyPattern = normalizeLikePattern(query.keyPattern) ?? null;
         const maxRows = query.limit ?? 50;
 
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.readFacts}($1, $2, $3, $4, $5, $6, $7, $8)`,
+            `SELECT * FROM ${this.sql.fn.readFacts}($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [
                 scope,
                 readerSessionId,
@@ -184,6 +206,7 @@ export class PgFactStore implements FactStore {
                 query.sessionId ?? null,
                 query.agentId ?? null,
                 maxRows,
+                unrestricted,
             ],
         );
 
@@ -224,9 +247,49 @@ export class PgFactStore implements FactStore {
         return Number(rows[0]?.deleted_count) || 0;
     }
 
+    async getSessionFactsStats(sessionId: string): Promise<FactsStatsRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionFactsStats}($1)`,
+            [sessionId],
+        );
+        return rows.map(rowToFactsStatsRow);
+    }
+
+    async getFactsStatsForSessions(sessionIds: string[]): Promise<FactsStatsRow[]> {
+        if (!sessionIds || sessionIds.length === 0) return [];
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getFactsStatsForSessions}($1)`,
+            [sessionIds],
+        );
+        return rows.map(rowToFactsStatsRow);
+    }
+
+    async getSharedFactsStats(): Promise<FactsStatsRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSharedFactsStats}()`,
+        );
+        return rows.map(rowToFactsStatsRow);
+    }
+
     async close(): Promise<void> {
         try {
             await this.pool.end();
         } catch {}
     }
+}
+
+/** Map a PG row to FactsStatsRow. Used by all three facts-stats procs. */
+function rowToFactsStatsRow(row: any): FactsStatsRow {
+    const ns = String(row.namespace ?? "(other)");
+    const namespace: FactsNamespace =
+        ns === "skills" || ns === "asks" || ns === "intake" || ns === "config"
+            ? ns
+            : "(other)";
+    return {
+        namespace,
+        factCount: Number(row.fact_count) || 0,
+        totalValueBytes: Number(row.total_value_bytes) || 0,
+        oldestCreatedAt: row.oldest_created_at ? new Date(row.oldest_created_at) : null,
+        newestUpdatedAt: row.newest_updated_at ? new Date(row.newest_updated_at) : null,
+    };
 }

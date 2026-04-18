@@ -265,6 +265,12 @@ function computeGridViewport(viewport) {
 
 function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
+    // Programmatic scrollTop assignments fire a 'scroll' event that would
+    // otherwise call onScroll → dispatch ui/scroll → clobber the user's
+    // offset (especially when content briefly shrinks during a refresh
+    // and clamps nextScrollTop downward). The flag tells onScroll to
+    // ignore the next scroll event after we set scrollTop ourselves.
+    const programmaticScrollRef = React.useRef(false);
 
     React.useLayoutEffect(() => {
         const node = ref.current;
@@ -275,14 +281,28 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             ? Math.max(0, maxScroll - offsetPixels)
             : Math.min(maxScroll, offsetPixels);
         if (Math.abs(node.scrollTop - nextScrollTop) > 2) {
+            programmaticScrollRef.current = true;
             node.scrollTop = nextScrollTop;
+            // Clear on the next frame — the scroll event from the assignment
+            // above is queued synchronously and handled in the same task.
+            window.requestAnimationFrame(() => {
+                programmaticScrollRef.current = false;
+            });
         }
     }, [normalizedLines, ref, scrollMode, scrollOffset]);
 
     const onScroll = React.useCallback(() => {
+        if (programmaticScrollRef.current) return;
         const node = ref.current;
         if (!node || !paneKey) return;
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        // When the pane has no scrollable content (transient loading state
+        // that briefly collapses the body to one line), the browser auto-
+        // clamps scrollTop to 0 and fires a scroll event we did NOT trigger.
+        // Writing that into state would clobber the user's saved offset.
+        // Skip the dispatch — next render with real content will restore
+        // the desired scroll position from preserved state.
+        if (maxScroll <= 0) return;
         const pixels = scrollMode === "bottom"
             ? Math.max(0, maxScroll - node.scrollTop)
             : Math.max(0, node.scrollTop);
@@ -354,19 +374,30 @@ function lineText(line) {
 }
 
 function usePanePixelScroll(ref, scrollOffset, paneKey, controller) {
+    // See useScrollSync for rationale on the programmatic-scroll guard.
+    const programmaticScrollRef = React.useRef(false);
+
     React.useLayoutEffect(() => {
         const node = ref.current;
         if (!node) return;
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
         const nextScrollTop = Math.min(maxScroll, Math.max(0, Number(scrollOffset) || 0) * SCROLL_ROW_HEIGHT);
         if (Math.abs(node.scrollTop - nextScrollTop) > 2) {
+            programmaticScrollRef.current = true;
             node.scrollTop = nextScrollTop;
+            window.requestAnimationFrame(() => {
+                programmaticScrollRef.current = false;
+            });
         }
     }, [ref, scrollOffset]);
 
     return React.useCallback(() => {
+        if (programmaticScrollRef.current) return;
         const node = ref.current;
         if (!node || !paneKey) return;
+        // See useScrollSync — ignore browser auto-clamp during a
+        // transient empty/loading body.
+        if (node.scrollHeight <= node.clientHeight) return;
         controller.dispatch({
             type: "ui/scroll",
             pane: paneKey,

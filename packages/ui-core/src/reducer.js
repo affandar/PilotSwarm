@@ -704,6 +704,10 @@ export function appReducer(state, action) {
                 fetchedAt: Date.now(),
                 summary: action.summary || null,
                 treeStats: action.treeStats || null,
+                skillUsage: action.skillUsage || null,
+                treeSkillUsage: action.treeSkillUsage || null,
+                factsStats: action.factsStats || null,
+                treeFactsStats: action.treeFactsStats || null,
             };
             return {
                 ...state,
@@ -727,6 +731,8 @@ export function appReducer(state, action) {
                 fleetStats: {
                     loading: false,
                     data: action.data || null,
+                    skillUsage: action.skillUsage || null,
+                    sharedFactsStats: action.sharedFactsStats || null,
                     fetchedAt: Date.now(),
                 },
             };

@@ -83,6 +83,8 @@ export interface SessionMetricSummary {
     tokensOutput: number;
     tokensCacheRead: number;
     tokensCacheWrite: number;
+    /** Cached-prompt hit ratio (0..1), null when tokensInput is 0. Derived. */
+    cacheHitRatio: number | null;
     deletedAt: number | null;
     createdAt: number;
     updatedAt: number;
@@ -117,12 +119,19 @@ export interface FleetStats {
         totalLossyHandoffCount: number;
         totalTokensInput: number;
         totalTokensOutput: number;
+        totalTokensCacheRead: number;
+        totalTokensCacheWrite: number;
+        /** Derived: cache_read / input. Null when input is 0. */
+        cacheHitRatio: number | null;
     }>;
     totals: {
         sessionCount: number;
         totalSnapshotSizeBytes: number;
         totalTokensInput: number;
         totalTokensOutput: number;
+        totalTokensCacheRead: number;
+        totalTokensCacheWrite: number;
+        cacheHitRatio: number | null;
     };
 }
 
@@ -136,11 +145,81 @@ export interface SessionTreeStats {
         totalTokensOutput: number;
         totalTokensCacheRead: number;
         totalTokensCacheWrite: number;
+        /** Derived: cache_read / input across the tree. Null when input is 0. */
+        cacheHitRatio: number | null;
         totalDehydrationCount: number;
         totalHydrationCount: number;
         totalLossyHandoffCount: number;
         totalSnapshotSizeBytes: number;
     };
+    /** Per-model breakdown across the tree, sorted by total input tokens. */
+    byModel: Array<{
+        model: string;
+        sessionCount: number;
+        totalTokensInput: number;
+        totalTokensOutput: number;
+        totalTokensCacheRead: number;
+        totalTokensCacheWrite: number;
+        totalSnapshotSizeBytes: number;
+        /** Derived per model. Null when input is 0. */
+        cacheHitRatio: number | null;
+    }>;
+}
+
+/**
+ * Compute prompt-cache hit ratio with the inclusive token convention.
+ * Returns a value in [0, 1] or null when tokensInput is 0 / negative / missing.
+ * Defined once so per-session, tree, and fleet surfaces report identical values.
+ */
+export function computeCacheHitRatio(
+    tokensInput: number | null | undefined,
+    tokensCacheRead: number | null | undefined,
+): number | null {
+    const input = Number(tokensInput);
+    const read = Number(tokensCacheRead);
+    if (!Number.isFinite(input) || input <= 0) return null;
+    if (!Number.isFinite(read) || read <= 0) return 0;
+    const ratio = read / input;
+    return Math.max(0, Math.min(1, ratio));
+}
+
+/** Discriminator: 'static' = SDK skill.invoked, 'learned' = read_facts on skills/. */
+export type SkillKind = "static" | "learned";
+
+/** One row of skill-usage aggregation for a single session. */
+export interface SkillUsageRow {
+    kind: SkillKind;
+    /** Static: skill name. Learned: requested key or keyPattern (e.g. "skills/foo/%"). */
+    name: string;
+    pluginName: string | null;     // static skills only
+    pluginVersion: string | null;  // static skills only
+    invocations: number;
+    firstUsedAt: Date;
+    lastUsedAt: Date;
+}
+
+/** Skill usage rolled up across the spawn tree rooted at a session. */
+export interface SessionTreeSkillUsage {
+    rootSessionId: string;
+    perSession: Array<{
+        sessionId: string;
+        agentId: string | null;
+        skills: SkillUsageRow[];
+    }>;
+    rolledUp: SkillUsageRow[];
+    totalInvocations: number;
+}
+
+/** One row of skill-usage aggregation across the fleet, by agent. */
+export interface FleetSkillUsageRow extends SkillUsageRow {
+    agentId: string | null;
+    sessionCount: number;
+}
+
+/** Fleet-wide skill usage. */
+export interface FleetSkillUsage {
+    windowStart: number | null;
+    rows: FleetSkillUsageRow[];
 }
 
 // ─── Provider Interface ──────────────────────────────────────────
@@ -202,6 +281,15 @@ export interface SessionCatalogProvider {
     /** Get fleet-wide aggregate stats, optionally filtered. */
     getFleetStats(opts?: { includeDeleted?: boolean; since?: Date }): Promise<FleetStats>;
 
+    /** Get skill usage (skill.invoked event aggregation) for a single session. */
+    getSessionSkillUsage(sessionId: string, opts?: { since?: Date }): Promise<SkillUsageRow[]>;
+
+    /** Get skill usage rolled across the spawn tree rooted at the given session. */
+    getSessionTreeSkillUsage(sessionId: string, opts?: { since?: Date }): Promise<SessionTreeSkillUsage>;
+
+    /** Get fleet-wide skill usage broken down by agent. Tuner / management surface. */
+    getFleetSkillUsage(opts?: { since?: Date; includeDeleted?: boolean }): Promise<FleetSkillUsage>;
+
     /** Upsert a session metric summary with atomic increments. */
     upsertSessionMetricSummary(sessionId: string, updates: SessionMetricSummaryUpsert): Promise<void>;
 
@@ -237,10 +325,14 @@ function sqlForSchema(schema: string) {
             getSessionEventsBefore:     `${s}.cms_get_session_events_before`,
             getSessionMetricSummary:    `${s}.cms_get_session_metric_summary`,
             getSessionTreeStats:        `${s}.cms_get_session_tree_stats`,
+            getSessionTreeStatsByModel: `${s}.cms_get_session_tree_stats_by_model`,
             getFleetStatsByAgent:       `${s}.cms_get_fleet_stats_by_agent`,
             getFleetStatsTotals:        `${s}.cms_get_fleet_stats_totals`,
             upsertSessionMetricSummary: `${s}.cms_upsert_session_metric_summary`,
             pruneDeletedSummaries:      `${s}.cms_prune_deleted_summaries`,
+            getSessionSkillUsage:       `${s}.cms_get_session_skill_usage`,
+            getSessionTreeSkillUsage:   `${s}.cms_get_session_tree_skill_usage`,
+            getFleetSkillUsage:         `${s}.cms_get_fleet_skill_usage`,
         },
     };
 }
@@ -415,26 +507,50 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         const self = await this.getSessionMetricSummary(sessionId);
         if (!self) return null;
 
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.getSessionTreeStats}($1)`,
-            [sessionId],
-        );
+        const [{ rows }, { rows: modelRows }] = await Promise.all([
+            this.pool.query(
+                `SELECT * FROM ${this.sql.fn.getSessionTreeStats}($1)`,
+                [sessionId],
+            ),
+            this.pool.query(
+                `SELECT * FROM ${this.sql.fn.getSessionTreeStatsByModel}($1)`,
+                [sessionId],
+            ),
+        ]);
 
         const r = rows[0];
+        const treeTokensInput = Number(r.total_tokens_input) || 0;
+        const treeTokensCacheRead = Number(r.total_tokens_cache_read) || 0;
+        const byModel = modelRows.map((mr: any) => {
+            const input = Number(mr.total_tokens_input) || 0;
+            const cacheRead = Number(mr.total_tokens_cache_read) || 0;
+            return {
+                model: String(mr.model || "(unknown)"),
+                sessionCount: Number(mr.session_count) || 0,
+                totalTokensInput: input,
+                totalTokensOutput: Number(mr.total_tokens_output) || 0,
+                totalTokensCacheRead: cacheRead,
+                totalTokensCacheWrite: Number(mr.total_tokens_cache_write) || 0,
+                totalSnapshotSizeBytes: Number(mr.total_snapshot_size_bytes) || 0,
+                cacheHitRatio: computeCacheHitRatio(input, cacheRead),
+            };
+        });
         return {
             rootSessionId: sessionId,
             self,
             tree: {
                 sessionCount: Number(r.session_count) || 0,
-                totalTokensInput: Number(r.total_tokens_input) || 0,
+                totalTokensInput: treeTokensInput,
                 totalTokensOutput: Number(r.total_tokens_output) || 0,
-                totalTokensCacheRead: Number(r.total_tokens_cache_read) || 0,
+                totalTokensCacheRead: treeTokensCacheRead,
                 totalTokensCacheWrite: Number(r.total_tokens_cache_write) || 0,
+                cacheHitRatio: computeCacheHitRatio(treeTokensInput, treeTokensCacheRead),
                 totalDehydrationCount: Number(r.total_dehydration_count) || 0,
                 totalHydrationCount: Number(r.total_hydration_count) || 0,
                 totalLossyHandoffCount: Number(r.total_lossy_handoff_count) || 0,
                 totalSnapshotSizeBytes: Number(r.total_snapshot_size_bytes) || 0,
             },
+            byModel,
         };
     }
 
@@ -455,27 +571,39 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         );
 
         const t = totalsRows[0];
+        const totalsTokensInput = Number(t.total_tokens_input) || 0;
+        const totalsTokensCacheRead = Number(t.total_tokens_cache_read) || 0;
         return {
             windowStart: opts?.since ? opts.since.getTime() : null,
             earliestSessionCreatedAt: t.earliest_session_created_at
                 ? new Date(t.earliest_session_created_at).getTime()
                 : null,
-            byAgent: groups.map((g: any) => ({
-                agentId: g.agent_id ?? null,
-                model: g.model ?? null,
-                sessionCount: Number(g.session_count) || 0,
-                totalSnapshotSizeBytes: Number(g.total_snapshot_size_bytes) || 0,
-                totalDehydrationCount: Number(g.total_dehydration_count) || 0,
-                totalHydrationCount: Number(g.total_hydration_count) || 0,
-                totalLossyHandoffCount: Number(g.total_lossy_handoff_count) || 0,
-                totalTokensInput: Number(g.total_tokens_input) || 0,
-                totalTokensOutput: Number(g.total_tokens_output) || 0,
-            })),
+            byAgent: groups.map((g: any) => {
+                const tokensInput = Number(g.total_tokens_input) || 0;
+                const tokensCacheRead = Number(g.total_tokens_cache_read) || 0;
+                return {
+                    agentId: g.agent_id ?? null,
+                    model: g.model ?? null,
+                    sessionCount: Number(g.session_count) || 0,
+                    totalSnapshotSizeBytes: Number(g.total_snapshot_size_bytes) || 0,
+                    totalDehydrationCount: Number(g.total_dehydration_count) || 0,
+                    totalHydrationCount: Number(g.total_hydration_count) || 0,
+                    totalLossyHandoffCount: Number(g.total_lossy_handoff_count) || 0,
+                    totalTokensInput: tokensInput,
+                    totalTokensOutput: Number(g.total_tokens_output) || 0,
+                    totalTokensCacheRead: tokensCacheRead,
+                    totalTokensCacheWrite: Number(g.total_tokens_cache_write) || 0,
+                    cacheHitRatio: computeCacheHitRatio(tokensInput, tokensCacheRead),
+                };
+            }),
             totals: {
                 sessionCount: Number(t.session_count) || 0,
                 totalSnapshotSizeBytes: Number(t.total_snapshot_size_bytes) || 0,
-                totalTokensInput: Number(t.total_tokens_input) || 0,
+                totalTokensInput: totalsTokensInput,
                 totalTokensOutput: Number(t.total_tokens_output) || 0,
+                totalTokensCacheRead: totalsTokensCacheRead,
+                totalTokensCacheWrite: Number(t.total_tokens_cache_write) || 0,
+                cacheHitRatio: computeCacheHitRatio(totalsTokensInput, totalsTokensCacheRead),
             },
         };
     }
@@ -493,6 +621,79 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
             [olderThan],
         );
         return Number(rows[0]?.deleted_count) || 0;
+    }
+
+    async getSessionSkillUsage(sessionId: string, opts?: { since?: Date }): Promise<SkillUsageRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionSkillUsage}($1, $2)`,
+            [sessionId, opts?.since ?? null],
+        );
+        return rows.map(rowToSkillUsageRow);
+    }
+
+    async getSessionTreeSkillUsage(sessionId: string, opts?: { since?: Date }): Promise<SessionTreeSkillUsage> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionTreeSkillUsage}($1, $2)`,
+            [sessionId, opts?.since ?? null],
+        );
+
+        const perSessionMap = new Map<string, { agentId: string | null; skills: SkillUsageRow[] }>();
+        const rolledUpMap = new Map<string, SkillUsageRow>();
+        let totalInvocations = 0;
+
+        for (const r of rows) {
+            const sid = String(r.session_id);
+            const item = rowToSkillUsageRow(r);
+            const bucket = perSessionMap.get(sid)
+                ?? ({ agentId: (r.agent_id ?? null) as string | null, skills: [] as SkillUsageRow[] });
+            bucket.skills.push(item);
+            perSessionMap.set(sid, bucket);
+
+            const key = `${item.kind}\u0001${item.name}\u0001${item.pluginName ?? ""}\u0001${item.pluginVersion ?? ""}`;
+            const existing = rolledUpMap.get(key);
+            if (existing) {
+                existing.invocations += item.invocations;
+                if (item.firstUsedAt < existing.firstUsedAt) existing.firstUsedAt = item.firstUsedAt;
+                if (item.lastUsedAt > existing.lastUsedAt) existing.lastUsedAt = item.lastUsedAt;
+            } else {
+                rolledUpMap.set(key, { ...item });
+            }
+            totalInvocations += item.invocations;
+        }
+
+        const rolledUp = Array.from(rolledUpMap.values()).sort((a, b) =>
+            b.invocations - a.invocations || b.lastUsedAt.getTime() - a.lastUsedAt.getTime(),
+        );
+
+        const perSession = Array.from(perSessionMap.entries()).map(([sid, bucket]) => ({
+            sessionId: sid,
+            agentId: bucket.agentId,
+            skills: bucket.skills,
+        }));
+
+        return {
+            rootSessionId: sessionId,
+            perSession,
+            rolledUp,
+            totalInvocations,
+        };
+    }
+
+    async getFleetSkillUsage(opts?: { since?: Date; includeDeleted?: boolean }): Promise<FleetSkillUsage> {
+        const since = opts?.since ?? null;
+        const includeDeleted = opts?.includeDeleted ?? false;
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getFleetSkillUsage}($1, $2)`,
+            [since, includeDeleted],
+        );
+        return {
+            windowStart: opts?.since ? opts.since.getTime() : null,
+            rows: rows.map((r: any): FleetSkillUsageRow => ({
+                ...rowToSkillUsageRow(r),
+                agentId: r.agent_id ?? null,
+                sessionCount: Number(r.session_count) || 0,
+            })),
+        };
     }
 
     async close(): Promise<void> {
@@ -542,6 +743,8 @@ function rowToSessionEvent(row: any): SessionEvent {
 
 /** Map a PG row to SessionMetricSummary. */
 function rowToSessionMetricSummary(row: any): SessionMetricSummary {
+    const tokensInput = Number(row.tokens_input) || 0;
+    const tokensCacheRead = Number(row.tokens_cache_read) || 0;
     return {
         sessionId: row.session_id,
         agentId: row.agent_id ?? null,
@@ -554,12 +757,27 @@ function rowToSessionMetricSummary(row: any): SessionMetricSummary {
         lastDehydratedAt: row.last_dehydrated_at ? new Date(row.last_dehydrated_at).getTime() : null,
         lastHydratedAt: row.last_hydrated_at ? new Date(row.last_hydrated_at).getTime() : null,
         lastCheckpointAt: row.last_checkpoint_at ? new Date(row.last_checkpoint_at).getTime() : null,
-        tokensInput: Number(row.tokens_input) || 0,
+        tokensInput,
         tokensOutput: Number(row.tokens_output) || 0,
-        tokensCacheRead: Number(row.tokens_cache_read) || 0,
+        tokensCacheRead,
         tokensCacheWrite: Number(row.tokens_cache_write) || 0,
+        cacheHitRatio: computeCacheHitRatio(tokensInput, tokensCacheRead),
         deletedAt: row.deleted_at ? new Date(row.deleted_at).getTime() : null,
         createdAt: new Date(row.created_at).getTime(),
         updatedAt: new Date(row.updated_at).getTime(),
+    };
+}
+
+/** Map a PG row to SkillUsageRow. Used for per-session, tree, and fleet rows. */
+function rowToSkillUsageRow(row: any): SkillUsageRow {
+    const kind: SkillKind = row.kind === "learned" ? "learned" : "static";
+    return {
+        kind,
+        name: String(row.name ?? ""),
+        pluginName: row.plugin_name ?? null,
+        pluginVersion: row.plugin_version ?? null,
+        invocations: Number(row.invocations) || 0,
+        firstUsedAt: new Date(row.first_used_at ?? row.last_used_at),
+        lastUsedAt: new Date(row.last_used_at),
     };
 }

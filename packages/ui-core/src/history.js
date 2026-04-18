@@ -244,9 +244,13 @@ function buildChatMessage(event, role) {
 }
 
 function shouldRenderSystemMessageAsActivity(event) {
-    return event?.eventType === "system.message"
-        && (isInternalSystemLikeText(messageTextFromEvent(event))
-            || isRehydrationNoticeText(messageTextFromEvent(event)));
+    // We never surface system.message events in the chat pane. The chat
+    // pane is reserved for the user/assistant dialogue. System messages
+    // include the per-turn system prompt sent to the LLM (which is large,
+    // repetitive, and operator-noise) plus internal rehydration notices.
+    // The full content remains in CMS — the agent-tuner reads them via
+    // `read_agent_events` filtered to `event_types: ["system.message"]`.
+    return event?.eventType === "system.message";
 }
 
 function buildEmbeddedSystemNoticeActivityItems(event, role) {

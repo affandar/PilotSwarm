@@ -9,6 +9,7 @@ tools:
   - store_fact
   - read_facts
   - delete_fact
+  - read_agent_events
   - write_artifact
   - export_artifact
   - read_artifact
@@ -104,6 +105,15 @@ When you have spawned sub-agents and need to wait for them:
 2. **Avoid**: `wait_for_agents` blocks the entire turn silently until all agents finish. The user sees no progress. Only use it if you truly have nothing else to do and don't need to report intermediate status.
 3. Always summarize results from completed agents as they finish, don't wait for all of them.
 4. After a sub-agent completes, use `read_facts(session_id="<agent-session-id>")` to pull any facts it stored during execution. Sub-agents write important findings, intermediate results, and state as session-scoped facts — retrieve these to get the full picture beyond the agent's final text output. Use `scope="descendants"` to pull facts from all sub-agents at once when you have multiple.
+
+## Inspecting Sub-Agent Conversations
+
+Prefer `check_agents` for status, `wait_for_agents` for synchronization, and `read_facts(session_id=...)` for the structured findings a child deliberately published. If those are NOT enough — for example you need to see the child's reasoning, what tools it called, why it produced a particular result, or where it went off track — use `read_agent_events`.
+
+- `read_agent_events(agent_id="<descendant-session-id>")` returns the most recent page of durable events from a descendant in your spawn tree, newest first within each page.
+- Walk further back in time by passing the returned `prevCursor` as the next call's `cursor`.
+- Pass `event_types=["assistant.message","tool.invoked","turn completed"]` (or a subset) to keep token cost low; very narrow filters may return fewer rows than `limit`.
+- You can only read events for sessions you (directly or transitively) spawned. Non-descendants and system agents are off-limits.
 
 ## Sub-Agent Task Instructions
 

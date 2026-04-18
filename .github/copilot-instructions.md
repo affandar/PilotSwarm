@@ -210,6 +210,53 @@ When you change an agent prompt, tune timer interrupt wording, or test a new LLM
 
 Record: the model tested, which agent type, observed behavior, expected behavior, and whether the change worked. Keep the model compatibility matrix current. Use the `pilotswarm-agent-tuner` agent for structured tuning workflows.
 
+## Observability Surface for the Agent Tuner
+
+The `agent-tuner` agent is the canonical investigator for reliability, cost,
+performance, and correctness issues. Any new monitoring signal, metric,
+aggregate, or diagnostic that is useful for those investigations **must
+be reachable by the tuner through a tool**, not just through SQL or a dashboard.
+
+When you add or change an observability surface, follow this checklist:
+
+1. **Persist the signal durably.** Either as a column on
+   `session_metric_summaries`, a row in `session_events` (preferred for
+   per-event signals), or a counter in the relevant store schema (CMS or
+   facts).
+2. **Expose it through `PilotSwarmManagementClient`.** A typed read
+   method on the management client is the canonical API surface — no
+   tuner-only side channels, no raw SQL helpers in scripts.
+3. **Wrap it as a tuner inspect-tool.** Add a `read_*` tool in
+   [`packages/sdk/src/inspect-tools.ts`](../packages/sdk/src/inspect-tools.ts)
+   inside the `if (!isTuner) return [readAgentEventsTool];` guard so it
+   is registered only on tuner sessions. Mirror the existing patterns:
+   `read_session_*` for per-session, `read_session_tree_*` for spawn
+   trees, `read_fleet_*` for fleet-wide.
+4. **Surface it in the TUI/portal stats pane** if it is operator-grade.
+   Selectors live in [`packages/ui-core/src/selectors.js`](../packages/ui-core/src/selectors.js)
+   and render in both the native TUI and the portal automatically.
+5. **Test it.** A `*-stats.test.js` (or similar) under `test/local/` that
+   seeds data and verifies the management API + the inspect-tool
+   handler.
+
+Examples already in the codebase to follow:
+
+- `getSessionMetricSummary` / `read_session_metric_summary` (tokens,
+  snapshot, hydration counters)
+- `getSessionTreeStats` / `read_session_tree_stats` (spawn-tree roll-up)
+- `getFleetStats` / `read_fleet_stats` (fleet-wide aggregates)
+- `getSessionSkillUsage` / `read_session_skill_usage` (static + learned
+  skill consumption)
+- `getFleetSkillUsage` / `read_fleet_skill_usage` (skill usage across
+  the fleet)
+- Cache-hit ratio fields on every stats surface
+  ([`computeCacheHitRatio`](../packages/sdk/src/cms.ts))
+
+If a new signal is **not** wired through these layers, the tuner cannot
+reason about it during incident investigations, and operators have to
+fall back to ad-hoc SQL — which is the exact gap this rule exists to
+prevent.
+
 ## Duroxide Bugs
 
 When a bug is identified as originating in **duroxide** (the Rust-based durable orchestration runtime), do NOT attempt to work around it in the runtime or TUI layer. Instead:
