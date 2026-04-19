@@ -1269,7 +1269,21 @@ function createArtifactStore() {
     const artifactDir = (process.env.ARTIFACT_DIR || "").trim() || undefined;
 
     if (blobConnectionString) {
-        return new SessionBlobStore(blobConnectionString, blobContainer, sessionStateDir);
+        try {
+            return new SessionBlobStore(blobConnectionString, blobContainer, sessionStateDir);
+        } catch (err) {
+            // AZURE_STORAGE_CONNECTION_STRING is set but unparseable
+            // (typically a truncated or placeholder value left over in the
+            // shell — e.g. "DefaultEndpointsProtocol=https" with no
+            // AccountName/AccountKey). Halt with an actionable error
+            // instead of silently falling back to disk: silent fallback
+            // would mask blob-storage misconfiguration in production.
+            const reason = err?.message || String(err);
+            throw new Error(
+                `AZURE_STORAGE_CONNECTION_STRING is set but cannot be parsed as a valid Azure Storage connection string (reason: ${reason}). ` +
+                `Either fix the value (it must include AccountName, AccountKey, and EndpointSuffix) or unset the variable to fall back to the local filesystem artifact store.`,
+            );
+        }
     }
 
     return new FilesystemArtifactStore(artifactDir);

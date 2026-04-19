@@ -527,7 +527,7 @@ button {
 }
 
 .ps-mobile-session-pane {
-  max-height: min(18vh, 124px);
+  max-height: min(14vh, 96px);
 }
 
 .ps-mobile-session-pane .ps-action-list {
@@ -1195,7 +1195,12 @@ body.is-resizing-pane-y * {
   overflow-x: auto;
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-x;
+  /* Allow both vertical scrolling of the surrounding pane and
+   * horizontal scrolling of the table. `pan-x` alone made tables
+   * "trap" the finger on mobile: when the user touched a table, the
+   * outer scroll container could not pan vertically, so the file
+   * preview appeared frozen. */
+  touch-action: pan-x pan-y;
   border: 1px solid color-mix(in srgb, var(--ps-border) 40%, transparent);
   border-radius: var(--ps-radius-sm);
 }
@@ -1676,12 +1681,60 @@ body.is-resizing-pane-y * {
     grid-template-rows: minmax(160px, 1fr) minmax(260px, 1.4fr);
   }
 
+  /* Force the panel header to stay on a single row on phones. The
+   * title shrinks (with ellipsis) and the actions keep their width so
+   * Upload / Download / Filter / Focus stay reachable. */
+  .ps-panel-header {
+    flex-wrap: nowrap;
+  }
+  .ps-panel-title {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ps-panel-actions {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+  }
+
   .ps-column-resizer {
     display: none;
   }
 
   .ps-mobile-session-pane {
-    max-height: min(16vh, 108px);
+    /* Fit 4 full session rows. Header (~36px) + 4 rows (~26px each
+     * after panel padding) ≈ 144px. */
+    max-height: min(22vh, 148px);
+  }
+
+  .ps-mobile-session-pane .ps-panel-body,
+  .ps-mobile-session-pane .ps-action-list {
+    /* Force the inner list to actually scroll inside the capped pane
+     * height. Without min-height: 0 on the flex children, the list
+     * grew to its content height and overflowed off-screen with no
+     * scrollbar. */
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+  }
+
+  .ps-modal {
+    /* iOS Safari toolbars eat 12-15vh of viewport in addition to
+     * dynamic URL-bar resizing. The previous 86vh ceiling pushed the
+     * footer (Cancel / Create Session, Close) below the visible fold
+     * on small phones. Use small-vh and shrink padding so the modal
+     * always shows its action row. */
+    max-height: 82svh;
+    padding: 12px;
+  }
+
+  .ps-modal-header,
+  .ps-modal-footer {
+    flex-wrap: wrap;
+    row-gap: 8px;
   }
 
   .ps-mobile-pane-fill > .ps-panel .ps-scroll-panel,

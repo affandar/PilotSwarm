@@ -1084,6 +1084,13 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_RENAME_SESSION).catch(() => {}),
             disabled: !canRenameActiveSession,
         }, "Rename"),
+        React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_TERMINATE_PICKER).catch(() => {}),
+            disabled: !canRenameActiveSession,
+            title: "Mark Completed, Cancel, or Delete the active session",
+        }, "Terminate"),
         actions);
 
     return React.createElement(Panel, {
@@ -1233,6 +1240,17 @@ function MobileWorkspace({ controller, sessionsCollapsed, setSessionsCollapsed }
 
 function InspectorTabs({ activeTab, controller }) {
     const visibleTabs = React.useMemo(() => getVisibleInspectorTabs(controller), [controller]);
+    // Tab labels in mobile fall on a single row only when each label is
+    // short. "Node Map" is the only multi-word label, so we shorten it
+    // to "Map" below the mobile breakpoint to keep all six tabs on one
+    // line.
+    const isMobile = typeof window !== "undefined"
+        && (window.innerWidth || 0) > 0
+        && (window.innerWidth || 0) < MOBILE_BREAKPOINT;
+    const labelFor = (tab) => {
+        if (isMobile && tab === "nodes") return "Map";
+        return INSPECTOR_TAB_LABELS[tab] || tab;
+    };
     return React.createElement("div", { className: "ps-tab-row" },
         visibleTabs.map((tab) => React.createElement("button", {
             key: tab,
@@ -1244,7 +1262,7 @@ function InspectorTabs({ activeTab, controller }) {
                 controller.setFocus("inspector");
                 controller.selectInspectorTab(tab).catch(() => {});
             },
-        }, INSPECTOR_TAB_LABELS[tab] || tab)));
+        }, labelFor(tab))));
 }
 
 function FilesPane({ controller, focused, mobile = false }) {
@@ -1364,7 +1382,7 @@ function FilesPane({ controller, focused, mobile = false }) {
             type: "button",
             className: "ps-mini-button",
             onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}),
-        }, viewState.fullscreen ? "Close" : "Fullscreen"));
+        }, viewState.fullscreen ? "Close" : (mobile ? "Focus" : "Fullscreen")));
 
     const listContent = items.length === 0
         ? normalizeLines(filesView.listBodyLines || []).map((line, index) => React.createElement(Line, {
@@ -1412,7 +1430,11 @@ function FilesPane({ controller, focused, mobile = false }) {
     const view = viewState;
 
     return React.createElement(Panel, {
-        title: view.fullscreen ? filesView.fullscreenTitle : filesView.panelTitle,
+        title: view.fullscreen
+            ? filesView.fullscreenTitle
+            : (mobile && filesView.panelTitleMobile)
+                ? filesView.panelTitleMobile
+                : filesView.panelTitle,
         color: "magenta",
         focused: view.focused,
         actions: panelActions,
@@ -2314,6 +2336,47 @@ function ModalLayer({ controller }) {
                     }, "Save")),
             ));
     }
+    if (modal.type === "terminatePicker") {
+        const sessionLabel = String(modal.sessionTitle || "").trim() || "this session";
+        const pick = (action) => () => {
+            controller.pickTerminateAction(action).catch(() => {});
+        };
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title" }, modal.title || "Terminate session"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                ),
+                React.createElement("div", { className: "ps-modal-body", style: { padding: "12px 16px 4px" } },
+                    React.createElement("p", { style: { color: "#94a3b8", margin: 0 } },
+                        `What should happen to "${sessionLabel}"? Choose an action; you'll be asked to confirm.`)),
+                React.createElement("div", {
+                    className: "ps-modal-body",
+                    style: { padding: "10px 16px 16px", display: "flex", flexDirection: "column", gap: 8 },
+                },
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button is-primary",
+                        style: { width: "100%", justifyContent: "flex-start" },
+                        onClick: pick("complete"),
+                    }, "Mark Completed"),
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button",
+                        style: { width: "100%", justifyContent: "flex-start" },
+                        onClick: pick("cancel"),
+                    }, "Cancel Session"),
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button is-danger",
+                        style: { width: "100%", justifyContent: "flex-start" },
+                        onClick: pick("delete"),
+                    }, "Delete Session"),
+                ),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Close")),
+            ));
+    }
     if (modal.type === "artifactUpload" && modalState.artifactUpload) {
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
@@ -2860,7 +2923,15 @@ export function PilotSwarmWebApp({ controller }) {
     });
 
     return React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
-        !(mobile && chatFocusMode) ? React.createElement(Toolbar, {
+        // Hide the top toolbar on mobile inspector/activity panes (and in
+        // chat-focus mode). Those panes are pure read-only surfaces;
+        // session/model/theme actions stay reachable from the Main pane,
+        // and dropping the toolbar buys ~3 lines of vertical real estate
+        // on a phone, which matters for the fleet-skills card and the
+        // logs/sequence inspectors.
+        (mobile && (chatFocusMode || mobilePane === "inspector" || mobilePane === "activity"))
+            ? null
+            : React.createElement(Toolbar, {
             controller,
             mobile,
             onToggleLegend: () => setShowKeyLegend((current) => !current),
@@ -2868,15 +2939,22 @@ export function PilotSwarmWebApp({ controller }) {
             chatFocusMode,
             onToggleChatFocus: toggleChatFocusMode,
             chatFocusDisabled: filesFullscreenActive,
-        }) : null,
+        }),
         React.createElement("div", { className: "ps-workspace" },
             filesFullscreenActive
                 ? fullscreenWorkspace
                 : (chatFocusMode
                     ? chatFocusWorkspace
                     : (mobile ? mobileContent : desktopWorkspace))),
-        React.createElement("div", { className: "ps-footer-shell" },
-            React.createElement(PromptComposer, { controller, mobile, active: !showPromptOverlay })),
+        // Hide the prompt composer on mobile when on the inspector or
+        // activity pane. Those panes are read-only inspection surfaces;
+        // the prompt is only useful in the Main pane. Hiding it gives
+        // the inspector roughly 5 more lines of vertical real estate on
+        // a phone.
+        (mobile && !chatFocusMode && (mobilePane === "inspector" || mobilePane === "activity"))
+            ? null
+            : React.createElement("div", { className: "ps-footer-shell" },
+                React.createElement(PromptComposer, { controller, mobile, active: !showPromptOverlay })),
         mobile && !chatFocusMode ? React.createElement(MobileNav, { activePane: mobilePane, setActivePane: setMobilePane, controller }) : null,
         React.createElement(ModalLayer, { controller }),
         React.createElement(KeybindingLegend, {

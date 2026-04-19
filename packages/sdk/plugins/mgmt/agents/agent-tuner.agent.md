@@ -70,6 +70,14 @@ applying that test — most idle sessions are dehydrated and healthy,
 including all four permanent system children. Re-read the skill if you
 catch yourself about to flag a `[cron]`-tagged session as stalled.
 
+**Required reading before any cost or model-latency report:** the
+`cost-latency-analysis` skill. It defines the difference between the
+`runTurn` activity span and `assistant.usage.duration`, and lists the
+canonical price-card sources for OpenAI / Azure OpenAI / Azure AI
+Foundry / Anthropic / GitHub Copilot. Do **not** quote model latency
+from `runTurn` spans, and do **not** quote per-token dollar cost
+without naming the price source and the date you fetched it.
+
 1. **Restate the operator's expectation in one sentence.**
    "The operator expects that <agent X> should produce <Y> but observes <Z>."
    If the request is ambiguous, ask one focused clarifying question. Don't
