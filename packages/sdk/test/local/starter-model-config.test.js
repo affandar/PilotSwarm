@@ -23,9 +23,11 @@ describe("starter docker model config", () => {
             "claude-sonnet-4.6",
             "gpt-5.4",
             "gpt-5.4-mini",
+            "claude-opus-4.7",
             "claude-opus-4.6",
         ]);
         expect(names).not.toContain("gpt-5-mini");
         expect(names).not.toContain("gpt-5.4-nano");
+        expect(names).not.toContain("gpt-5.1");
     });
 });

@@ -1438,10 +1438,19 @@ export function selectFilesView(state, options = {}) {
             : buildPlainFilePreviewLines(previewState?.content || "");
     }
 
+    // Mobile-friendly title: drop the redundant "Files: " prefix
+    // because the active inspector tab below already says "Files".
+    // The shorter title leaves room for action buttons (Upload /
+    // Download / Filter / Focus) on a single header row on phones.
     const panelTitleLabel = scope === "allSessions"
         ? "Files: all sessions"
         : session
             ? `Files: ${shortId}${subtreeScope ? " tree" : ""}`
+            : "Files";
+    const panelTitleLabelMobile = scope === "allSessions"
+        ? "all sessions"
+        : session
+            ? `${shortId}${subtreeScope ? " tree" : ""}`
             : "Files";
     const listTitleLabel = scope === "allSessions"
         ? `Artifacts${fileItems.length > 0 ? ` [${fileItems.length}]` : ""}`
@@ -1450,6 +1459,7 @@ export function selectFilesView(state, options = {}) {
 
     return {
         panelTitle: [{ text: `${panelTitleLabel}${querySuffix}`, color: "magenta", bold: true }],
+        panelTitleMobile: [{ text: `${panelTitleLabelMobile}${querySuffix}`, color: "magenta", bold: true }],
         listTitle: [{ text: `${listTitleLabel}${querySuffix}`, color: "cyan", bold: true }],
         listLines,
         listBodyLines: listLines.slice(1),
@@ -2938,7 +2948,7 @@ function buildSessionStatsLines(state, session, maxWidth) {
         lines.push(plainInspectorLine(""));
         lines.push(...buildMessageCardLines({
             title: `Skills (${skills.length})`,
-            body: buildSkillsBody(skills),
+            body: buildSkillsBody(skills, w),
             width: w,
             titleColor: "cyan",
             borderColor: "gray",
@@ -2956,7 +2966,7 @@ function buildSessionStatsLines(state, session, maxWidth) {
         lines.push(plainInspectorLine(""));
         lines.push(...buildMessageCardLines({
             title: `Tree Skills (${treeSkillRolled.length})`,
-            body: buildSkillsBody(treeSkillRolled),
+            body: buildSkillsBody(treeSkillRolled, w),
             width: w,
             titleColor: "cyan",
             borderColor: "gray",
@@ -3016,6 +3026,20 @@ function formatKeyValueTable(pairs, options = {}) {
 }
 
 /**
+ * Truncate a string to a maximum visible width, appending an
+ * ellipsis if it had to be cut. Used by mobile-aware label
+ * formatters that need to keep table rows on a single line.
+ */
+function ellipsize(value, maxWidth) {
+    const text = String(value == null ? "" : value);
+    if (!Number.isFinite(maxWidth) || maxWidth <= 0) return text;
+    const limit = Math.floor(maxWidth);
+    if (text.length <= limit) return text;
+    if (limit <= 1) return text.slice(0, limit);
+    return `${text.slice(0, limit - 1)}…`;
+}
+
+/**
  * Render a list of rows (each an array of cell strings) as a left-aligned
  * column table. The width of each column is derived from the widest cell
  * in that column. The first column is left-aligned (the label); every
@@ -3048,13 +3072,26 @@ function formatColumnTable(rows, options = {}) {
 }
 
 /** Render a list of SkillUsageRow into a compact body string. */
-function buildSkillsBody(rows) {
+function buildSkillsBody(rows, maxWidth) {
     // Truncate to top 12 by invocations to keep the card short.
     const top = rows.slice().sort((a, b) => (b.invocations || 0) - (a.invocations || 0)).slice(0, 12);
-    const tableRows = top.map((r) => {
+    // Build the right-side column first so we know how much horizontal
+    // space the label has left. Card chrome eats 4 chars (│ + space
+    // each side); each gap between columns is 2 chars (matches
+    // formatColumnTable's default).
+    const rightCells = top.map((r) => `${r.invocations || 0} inv`);
+    const rightWidth = rightCells.reduce((m, c) => Math.max(m, c.length), 0);
+    const cardChrome = 4;
+    const colGap = 2;
+    const reserve = cardChrome + colGap + rightWidth;
+    const labelMax = Number.isFinite(maxWidth) && maxWidth > 0
+        ? Math.max(8, Math.floor(maxWidth) - reserve)
+        : Infinity;
+    const tableRows = top.map((r, i) => {
         const tag = r.kind === "learned" ? "L" : "S";
         const name = String(r.name || "(unknown)");
-        return [`${tag} ${name}`, `${r.invocations || 0} inv`];
+        const label = ellipsize(`${tag} ${name}`, labelMax);
+        return [label, rightCells[i]];
     });
     const body = formatColumnTable(tableRows);
     if (rows.length > top.length) {
@@ -3183,7 +3220,7 @@ function buildFleetStatsLines(state, maxWidth) {
         lines.push(plainInspectorLine(""));
         lines.push(...buildMessageCardLines({
             title: `Fleet Skills (${fleetSkillRows.length})`,
-            body: buildFleetSkillsBody(fleetSkillRows),
+            body: buildFleetSkillsBody(fleetSkillRows, maxWidth),
             width: w,
             titleColor: "cyan",
             borderColor: "gray",
@@ -3210,20 +3247,40 @@ function buildFleetStatsLines(state, maxWidth) {
 }
 
 /** Render fleet skill rows: groups by skill kind/name across agents. */
-function buildFleetSkillsBody(rows) {
-    // Sort: kind S before L, then alphabetical by name. Agent attribution is
-    // intentionally omitted — the fleet view shows skill usage globally.
+function buildFleetSkillsBody(rows, maxWidth) {
+    // Sort: kind S before L, then named agents before unscoped (./), then
+    // alphabetical by agent then by name.
     const sorted = rows.slice().sort((a, b) => {
         const kindRank = (k) => (k === "learned" ? 1 : 0); // S=0, L=1
         const dk = kindRank(a.kind) - kindRank(b.kind);
         if (dk !== 0) return dk;
+        const aNamed = a.agentId ? 0 : 1;
+        const bNamed = b.agentId ? 0 : 1;
+        if (aNamed !== bNamed) return aNamed - bNamed;
+        const da = String(a.agentId || "").localeCompare(String(b.agentId || ""));
+        if (da !== 0) return da;
         return String(a.name || "").localeCompare(String(b.name || ""));
     });
     const top = sorted.slice(0, 15);
-    const tableRows = top.map((r) => {
+    // Compute the right-side column widths from real data so the label
+    // reserve is exact, not a guess. Card chrome is 4 chars; each gap
+    // between formatColumnTable columns is 2 chars (default).
+    const invCells  = top.map((r) => `${r.invocations  || 0} inv`);
+    const sessCells = top.map((r) => `${r.sessionCount || 0} sess`);
+    const invW  = invCells.reduce((m, c) => Math.max(m, c.length), 0);
+    const sessW = sessCells.reduce((m, c) => Math.max(m, c.length), 0);
+    const cardChrome = 4;
+    const colGap = 2;
+    const reserve = cardChrome + colGap + invW + colGap + sessW;
+    const labelMax = Number.isFinite(maxWidth) && maxWidth > 0
+        ? Math.max(10, Math.floor(maxWidth) - reserve)
+        : Infinity;
+    const tableRows = top.map((r, i) => {
         const tag = r.kind === "learned" ? "L" : "S";
+        const agent = r.agentId || ".";
         const name = String(r.name || "(unknown)");
-        return [`${tag} ${name}`, `${r.invocations || 0} inv`, `${r.sessionCount || 0} sess`];
+        const label = ellipsize(`${tag} ${agent}/${name}`, labelMax);
+        return [label, invCells[i], sessCells[i]];
     });
     const body = formatColumnTable(tableRows);
     if (rows.length > top.length) {
