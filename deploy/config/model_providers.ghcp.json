@@ -21,8 +21,8 @@
                     "cost": "medium"
                 },
                 {
-                    "name": "gpt-5.1",
-                    "description": "GPT-5.1. High-capability reasoning and coding model through GitHub Copilot.",
+                    "name": "claude-opus-4.7",
+                    "description": "Claude Opus 4.7 (latest). Most capable Claude option for the hardest analysis and reasoning tasks through GitHub Copilot.",
                     "cost": "high"
                 },
                 {
