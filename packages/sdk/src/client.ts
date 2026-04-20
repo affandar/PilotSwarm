@@ -1087,15 +1087,12 @@ export class PilotSwarmSession {
 
     private _startPolling(): void {
         if (this.pollTimer) return;
-        const interval = this.client._supportsEventNotifications()
-            ? PilotSwarmSession.FALLBACK_POLL_INTERVAL
-            : PilotSwarmSession.POLL_INTERVAL;
         this.pollTimer = setInterval(() => {
             if (this.client._supportsEventNotifications() && !this.listenerClient && !this.listenerSetupPromise) {
                 void this._ensureListener();
             }
             void this._poll();
-        }, interval);
+        }, PilotSwarmSession.POLL_INTERVAL);
         if (this.client._supportsEventNotifications()) {
             void this._ensureListener();
         }
@@ -1108,6 +1105,20 @@ export class PilotSwarmSession {
             this.pollTimer = null;
         }
         void this._teardownListener();
+    }
+
+    private _adjustPollInterval(): void {
+        if (!this.pollTimer) return;
+        const desired = this.listenerClient
+            ? PilotSwarmSession.FALLBACK_POLL_INTERVAL
+            : PilotSwarmSession.POLL_INTERVAL;
+        clearInterval(this.pollTimer);
+        this.pollTimer = setInterval(() => {
+            if (this.client._supportsEventNotifications() && !this.listenerClient && !this.listenerSetupPromise) {
+                void this._ensureListener();
+            }
+            void this._poll();
+        }, desired);
     }
 
     private async _ensureListener(): Promise<void> {
@@ -1126,6 +1137,7 @@ export class PilotSwarmSession {
                 if (this.listenerSetupPromise) {
                     this.listenerSetupPromise = null;
                 }
+                this._adjustPollInterval();
             };
 
             listener.on("error", () => {
@@ -1148,6 +1160,7 @@ export class PilotSwarmSession {
                 await listener.connect();
                 await listener.query(`LISTEN ${SESSION_EVENTS_NOTIFY_CHANNEL}`);
                 this.listenerClient = listener;
+                this._adjustPollInterval();
             } catch {
                 handleListenerReset();
                 try { listener.end(); } catch {}

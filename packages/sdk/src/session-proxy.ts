@@ -139,9 +139,12 @@ async function maybeClassifyWithDetector(
             `<UNTRUSTED_CONTENT>\n${sanitizedPrompt}\n</UNTRUSTED_CONTENT>`;
         let response = "";
         detectorSession.on("assistant.message_delta", (evt: any) => { response += evt?.content ?? ""; });
-        await new Promise<void>((resolve) => {
-            detectorSession.on("session.idle", () => resolve());
-            detectorSession.send(detectorPrompt);
+        const DETECTOR_TIMEOUT_MS = 15_000;
+        await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("detector timeout")), DETECTOR_TIMEOUT_MS);
+            detectorSession.on("session.idle", () => { clearTimeout(timer); resolve(); });
+            detectorSession.on("session.error", (err: any) => { clearTimeout(timer); reject(err); });
+            detectorSession.send(detectorPrompt).catch((err: any) => { clearTimeout(timer); reject(err); });
         });
         const normalized = response.trim().toLowerCase();
         const verdict: import("./types.js").PromptGuardrailVerdict =
