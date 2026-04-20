@@ -369,20 +369,29 @@ export const SESSION_EVENTS_NOTIFY_CHANNEL = "session_events";
 
 export function buildPgConnectionConfig(connectionString: string): {
     connectionString: string;
-    ssl?: { rejectUnauthorized: false };
+    ssl?: { rejectUnauthorized: boolean; checkServerIdentity?: () => undefined };
 } {
     // pg v8 treats sslmode=require as verify-full, which rejects some managed/self-signed certs.
-    // Strip URL SSL params and drive SSL through the config object instead.
+    // For require/prefer: strip sslmode and use rejectUnauthorized: false.
+    // For verify-ca: validate cert chain but skip hostname check.
+    // For verify-full: validate cert chain + hostname (Node TLS default).
     const parsed = new URL(connectionString);
-    const needsSsl = ["require", "prefer", "verify-ca", "verify-full"]
-        .includes(parsed.searchParams.get("sslmode") ?? "");
+    const sslmode = parsed.searchParams.get("sslmode") ?? "";
+    const relaxedSsl = ["require", "prefer"].includes(sslmode);
+    const verifyCa = sslmode === "verify-ca";
+    const verifyFull = sslmode === "verify-full";
     parsed.searchParams.delete("sslmode");
     parsed.searchParams.delete("channel_binding");
 
-    return {
-        connectionString: parsed.toString(),
-        ...(needsSsl ? { ssl: { rejectUnauthorized: false as const } } : {}),
-    };
+    const sslConfig = relaxedSsl
+        ? { ssl: { rejectUnauthorized: false } }
+        : verifyCa
+            ? { ssl: { rejectUnauthorized: true, checkServerIdentity: () => undefined as undefined } }
+            : verifyFull
+                ? { ssl: { rejectUnauthorized: true } }
+                : {};
+
+    return { connectionString: parsed.toString(), ...sslConfig };
 }
 
 /**
