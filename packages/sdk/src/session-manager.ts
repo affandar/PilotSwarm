@@ -575,11 +575,11 @@ export class SessionManager {
                     if (fs.existsSync(sessionDir)) {
                         try {
                             const client = await this.ensureClient();
+                            const config = this.sessionConfigs.get(sessionId) ?? {};
                             const copilotSession = await client.resumeSession(sessionId, {
                                 tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
                                 onPermissionRequest: async () => ({ kind: "approved" as const }),
                             });
-                            const config = this.sessionConfigs.get(sessionId) ?? {};
                             const managed = new ManagedSession(sessionId, copilotSession, config);
                             this.sessions.set(sessionId, managed);
                             // Brief pause before retry

@@ -202,16 +202,16 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.44).
+ * Flat event loop durable session orchestration (v1.0.43).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.43";
 
-export function* durableSessionOrchestration_1_0_44(
+export function* durableSessionOrchestration_1_0_43(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -2303,7 +2303,7 @@ export function* durableSessionOrchestration_1_0_44(
                     ctx.traceInfo(`[orch] resolving agent config for: ${resolvedAgentName}`);
                     const agentDef = yield manager.resolveAgentConfig(resolvedAgentName);
                     if (!agentDef) {
-                        queueFollowup(`[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use ps_list_agents to see available agents.]`);
+                        queueFollowup(`[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use list_agents to see available agents.]`);
                         return;
                     }
                     if (agentDef.system && agentDef.creatable === false) {

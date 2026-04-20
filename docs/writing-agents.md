@@ -380,7 +380,7 @@ These tools are automatically registered by the worker and don't need explicit r
 | `message_agent` | Always | Send message to sub-agent |
 | `wait_for_agents` | Always | Block until sub-agents complete |
 | `complete_agent` | Always | Terminate a sub-agent |
-| `list_agents` | Always | List loaded agent definitions |
+| `ps_list_agents` | Always | List loaded agent definitions (prefixed `ps_` to avoid collision with Copilot SDK 1.0.32+ built-in `list_agents`) |
 | `list_sessions` | Always | List all sessions |
 | `scan_completed_sessions` | CMS available | Find stale sessions |
 | `cleanup_session` | CMS available | Delete a stale session |

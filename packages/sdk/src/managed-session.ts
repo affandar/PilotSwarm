@@ -12,6 +12,18 @@ interface TurnState {
     waitThreshold: number;
 }
 
+const DEFAULT_WAIT_TOOL_DESCRIPTION =
+    "REQUIRED: The ONLY way to wait, pause, sleep, or delay inside a turn. " +
+    "You MUST call this tool whenever you need to wait, pause, delay, " +
+    "poll, check back later, or pause before retrying. " +
+    "Do NOT keep burning tokens in an in-turn polling loop; after one brief immediate re-check at most, yield with a durable timer. " +
+    "For recurring or periodic schedules, use the cron tool instead. " +
+    "If it is genuinely ambiguous whether the task should become an ongoing monitor, clarify before choosing a recurring schedule. " +
+    "NEVER use bash sleep, setTimeout, setInterval, or any other external timing mechanism. " +
+    "This tool enables durable waiting that survives process restarts. " +
+    "Long waits may resume on a different worker unless you set " +
+    "`preserveWorkerAffinity: true` for node-local work.";
+
 function acknowledgeTurnBoundary(action: string): string {
     return `[SYSTEM: ${action} acknowledged. The runtime will suspend at the end of this turn. ` +
         `Finish any remaining tool results for the current step, then stop.]`;
@@ -69,17 +81,12 @@ export class ManagedSession {
      */
     static systemToolDefs(): Tool<any>[] {
         const waitTool = defineTool("wait", {
-            description:
-                "REQUIRED: The ONLY way to wait, pause, sleep, or delay inside a turn. " +
-                "You MUST call this tool whenever you need to wait, pause, delay, " +
-                "poll, check back later, or pause before retrying. " +
-                "Do NOT keep burning tokens in an in-turn polling loop; after one brief immediate re-check at most, yield with a durable timer. " +
-                "For recurring or periodic schedules, use the cron tool instead. " +
-                "If it is genuinely ambiguous whether the task should become an ongoing monitor, clarify before choosing a recurring schedule. " +
-                "NEVER use bash sleep, setTimeout, setInterval, or any other external timing mechanism. " +
-                "This tool enables durable waiting that survives process restarts. " +
-                "Long waits may resume on a different worker unless you set " +
-                "`preserveWorkerAffinity: true` for node-local work.",
+            // Defensive override: the Copilot SDK ships built-in tools named
+            // `wait` in some configurations (e.g. the desktop-automation MCP
+            // server). PilotSwarm's `wait` is the durable-timer version and
+            // must always win in our worker.
+            overridesBuiltInTool: true,
+            description: DEFAULT_WAIT_TOOL_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {
@@ -146,6 +153,11 @@ export class ManagedSession {
         });
 
         const askUserTool = defineTool("ask_user", {
+            // Defensive override: the Copilot SDK exposes an `ask_user` MCP
+            // prompt and may surface it as a built-in tool in some configs.
+            // PilotSwarm's `ask_user` routes through the durable orchestration
+            // (so the request survives worker restarts) and must always win.
+            overridesBuiltInTool: true,
             description:
                 "Ask the user a question and wait for their response. " +
                 "Use this when you need clarification or user input before proceeding.",
@@ -204,7 +216,7 @@ export class ManagedSession {
                 "For KNOWN user-creatable agents, pass agent_name. The agent's prompt, tools, and task load automatically. " +
                 "Worker-managed system agents are NOT valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
                 "For CUSTOM agents (ad-hoc tasks), pass task instead. " +
-                "Call list_agents to see all available named agents you CAN spawn. " +
+                "Call ps_list_agents to see all available named agents you CAN spawn. " +
                 "By default, sub-agents inherit the parent's model. " +
                 "If you want to override the model, call list_available_models first and use only an exact provider:model value returned there. " +
                 "Never invent, guess, or shorten model names.",
@@ -213,7 +225,7 @@ export class ManagedSession {
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known user-creatable agent to spawn (from list_agents). The agent's system message, tools, and initial prompt are loaded automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
+                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's system message, tools, and initial prompt are loaded automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
                     },
                     task: {
                         type: "string",
@@ -256,7 +268,7 @@ export class ManagedSession {
             description:
                 "Check the current status and latest output of your RUNNING sub-agents (spawned with spawn_agent). " +
                 "Returns each sub-agent's ID, task, status (running/completed/failed), and result. " +
-                "This is NOT the same as list_agents — list_agents shows available agent blueprints, check_agents shows your live sub-agent instances.",
+                "This is NOT the same as ps_list_agents — ps_list_agents shows available agent blueprints, check_agents shows your live sub-agent instances.",
             parameters: {
                 type: "object",
                 properties: {},
@@ -375,17 +387,9 @@ export class ManagedSession {
 
         // Build system tools (wait tool + ask_user tool)
         const waitTool = defineTool("wait", {
-            description:
-                "REQUIRED: The ONLY way to wait, pause, sleep, or delay inside a turn. " +
-                "You MUST call this tool whenever you need to wait, pause, delay, " +
-                "poll, check back later, or pause before retrying. " +
-                "Do NOT keep burning tokens in an in-turn polling loop; after one brief immediate re-check at most, yield with a durable timer. " +
-                "For recurring or periodic schedules, use the cron tool instead. " +
-                "If it is genuinely ambiguous whether the task should become an ongoing monitor, clarify before choosing a recurring schedule. " +
-                "NEVER use bash sleep, setTimeout, setInterval, or any other external timing mechanism. " +
-                "This tool enables durable waiting that survives process restarts. " +
-                "Long waits may resume on a different worker unless you set " +
-                "`preserveWorkerAffinity: true` for node-local work.",
+            // Keep in sync with systemToolDefs() — defensive override.
+            overridesBuiltInTool: true,
+            description: DEFAULT_WAIT_TOOL_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {
@@ -531,6 +535,8 @@ export class ManagedSession {
         });
 
         const askUserTool = defineTool("ask_user", {
+            // Keep in sync with systemToolDefs() — defensive override.
+            overridesBuiltInTool: true,
             description:
                 "Ask the user a question and wait for their response. " +
                 "Use this when you need clarification or user input before proceeding.",
@@ -599,7 +605,7 @@ export class ManagedSession {
                 "The agent's system message, tools, and initial prompt are loaded automatically from agent_name. " +
                 "Do NOT pass task or system_message when using agent_name. " +
                 "Calling spawn_agent does NOT finish your turn. After it succeeds, continue executing the rest of your workflow in the SAME turn unless you intentionally call wait, wait_for_agents, ask_user, or give your final answer. " +
-                "Call list_agents to see all available named agents you CAN spawn. " +
+                "Call ps_list_agents to see all available named agents you CAN spawn. " +
                 "Worker-managed system agents are not valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
                 "For CUSTOM agents (ad-hoc tasks), pass task instead — no agent_name is needed. " +
                 "Any task you can describe can be spawned as a custom agent; you do not need a skill or pre-configured definition. " +
@@ -610,7 +616,7 @@ export class ManagedSession {
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known user-creatable agent to spawn (from list_agents). The agent's prompt, tools, and task load automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
+                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's prompt, tools, and task load automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
                     },
                     task: {
                         type: "string",
@@ -685,7 +691,7 @@ export class ManagedSession {
             description:
                 "Check the current status and latest output of your RUNNING sub-agents (spawned with spawn_agent). " +
                 "Returns each sub-agent's ID, task, status (running/completed/failed), and result. " +
-                "This is NOT the same as list_agents — list_agents shows available agent blueprints, check_agents shows your live sub-agent instances.",
+                "This is NOT the same as ps_list_agents — ps_list_agents shows available agent blueprints, check_agents shows your live sub-agent instances.",
             parameters: {
                 type: "object",
                 properties: {},

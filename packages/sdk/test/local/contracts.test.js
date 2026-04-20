@@ -71,6 +71,7 @@ const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     "report_intent",
     "parallel",
     "rg",
+    "session_store_sql",
     "skill",
     "sql",
     "stop_bash",
@@ -656,7 +657,11 @@ async function testGenericSessionsInheritFrameworkDefaultToolNames(env) {
 
 async function testLlmSeesExactAlwaysOnTools(env) {
     const expectedSorted = [...EXPECTED_LLM_VISIBLE_TOOL_NAMES].sort();
-    const normalizeReportedToolNames = (response) => [...new Set(parseToolNameArray(response))].sort();
+    const normalizeReportedToolNames = (response) => [...new Set(
+        parseToolNameArray(response).map((name) =>
+            name === "multi_tool_use.parallel" ? "parallel" : name,
+        ),
+    )].sort();
 
     await withClient(env, {
         worker: { pluginDirs: [NO_TOOLS_AGENT_PLUGIN_DIR] },

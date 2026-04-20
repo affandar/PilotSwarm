@@ -49,9 +49,11 @@ function createCtx(values, queue = []) {
 }
 
 async function loadHandler(version) {
-    if (version === "1.0.43") {
+    const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
+    if (version === DURABLE_SESSION_LATEST_VERSION) {
         const mod = await import("../../src/orchestration.ts");
-        return mod.durableSessionOrchestration_1_0_43;
+        const fileVersion = version.replace(/\./g, "_");
+        return mod[`durableSessionOrchestration_${fileVersion}`];
     }
     const fileVersion = version.replace(/\./g, "_");
     const mod = await import(`../../src/orchestration_${fileVersion}.ts`);
