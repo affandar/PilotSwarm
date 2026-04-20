@@ -36,6 +36,8 @@
 - standalone docker container version of pilotswarm
 - profiling, why is it slow
 - evals, prompt validations & hardening, various models
+- strict PRE/WAIT/POST boundary fix for wait tool (accepted limitation: at-least-once delivery for now)
+    - bug report: [docs/bugreports/wait-boundary-leakage-before-resume.md](docs/bugreports/wait-boundary-leakage-before-resume.md)
 
 - for diagnostics and reporting, put all sessions in a markdown file in blob. do it on a key press. 
 - agent to agent messaging

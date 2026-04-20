@@ -66,7 +66,7 @@ Every loaded agent gets a namespace qualifier derived from its source:
 ### Qualified agent names
 
 - `resolveAgentConfig` accepts both `supervisor` and `smelter:supervisor`.
-- `list_agents` returns qualified names: `{ name: "supervisor", namespace: "smelter", qualifiedName: "smelter:supervisor" }`.
+- `ps_list_agents` returns qualified names: `{ name: "supervisor", namespace: "smelter", qualifiedName: "smelter:supervisor" }`.
 - CMS `agent_id` stores the unqualified name for backward compatibility.
 - The namespace is metadata — it does not affect agent behavior.
 
@@ -140,7 +140,7 @@ For each creatable agent, the following metadata comes from `.agent.md` frontmat
 1. Add `namespace` field to `AgentConfig` in `agent-loader.ts`.
 2. In `_loadPluginDir()`, detect namespace from `plugin.json` name or dir basename.
 3. Tag each loaded agent with its namespace.
-4. Update `list_agents` tool to include `namespace` and `qualifiedName`.
+4. Update `ps_list_agents` tool to include `namespace` and `qualifiedName`.
 5. Update `resolveAgentConfig` to accept qualified names (`smelter:supervisor`).
 
 ### Phase 2: Policy loading + enforcement
@@ -165,7 +165,7 @@ New test file: `test/local/session-policy.test.js`
 | Orch allows named agent | Orch | Session with valid agentId → orchestration runs normally |
 | Orch allows sub-agent spawn | Orch | `spawn_agent` inside session → not blocked by policy |
 | No policy = open behavior | Both | No `session-policy.json` → all creation paths work |
-| System agents omitted from creatable list | Worker | `list_agents` with `creatableOnly=true` omits system agents |
+| System agents omitted from creatable list | Worker | `ps_list_agents` with `creatableOnly=true` omits system agents |
 | Agent namespacing | Worker | Agents have correct namespace from plugin source |
 | Deletion still protects system | CMS | `deleteSession()` on system session → rejected |
 
@@ -237,7 +237,7 @@ Assertions:
   - assert(built-in sweeper has namespace "pilotswarm") [only if mgmt agents loaded]
 ```
 
-### L10-2: list_agents Omits System Agents from Creatable List
+### L10-2: ps_list_agents Omits System Agents from Creatable List
 
 **Purpose:** Verify system agents are not in the user-creatable list.
 
@@ -246,7 +246,7 @@ Setup:
   - withClient(env, { worker: { pluginDirs: ["test/fixtures/policy-plugin"] } })
 
 Steps:
-  1. Create session, send "Call list_agents and tell me the agent names"
+  1. Create session, send "Call ps_list_agents and tell me the agent names"
   2. Parse response
 
 Assertions:
@@ -656,7 +656,7 @@ All 20 tests (L10-1 through L10-20) are implemented and passing.
 | L5 sub-agents | Verify `testSpawnNamedAgents` still passes — namespace is metadata-only, doesn't change spawn behavior |
 | L6 kv-transport | None |
 | L7 cms-consistency | None |
-| L8 contracts | Add assertion: `list_agents` response includes `namespace` and `qualifiedName` fields |
+| L8 contracts | Add assertion: `ps_list_agents` response includes `namespace` and `qualifiedName` fields |
 | L9 chaos | None |
 | System agents | Verify system agents have `namespace: "pilotswarm"` |
 

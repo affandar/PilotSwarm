@@ -665,7 +665,7 @@ export function registerActivities(
                     if (resolvedAgentName) {
                         const agentDef = resolveAgentConfigInline(resolvedAgentName);
                         if (!agentDef) {
-                            return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use list_agents to see available agents.]`;
+                            return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use ps_list_agents to see available agents.]`;
                         }
                         if (agentDef.system && agentDef.creatable === false) {
                             return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" is a worker-managed system agent and cannot be spawned from a session. ` +

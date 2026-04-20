@@ -31,6 +31,7 @@ describe("orchestration warm resume durability", () => {
         });
 
         const { durableSessionOrchestration_1_0_30 } = await import("../../src/orchestration_1_0_30.ts");
+    const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
 
         const ctx = {
             traceInfo: () => {},
@@ -67,14 +68,14 @@ describe("orchestration warm resume durability", () => {
         const third = gen.next(undefined);
         expect(third.value).toMatchObject({
             effect: "continueAsNew",
-            version: "1.0.43",
+            version: DURABLE_SESSION_LATEST_VERSION,
         });
         expect(third.value.input.prompt).toContain("Sub-agent spawned successfully");
         expect(third.value.input.sourceOrchestrationVersion).toBe("1.0.30");
         expect(calls).toEqual([
             "spawnChildSession",
             "checkpoint",
-            "continueAsNew:1.0.43",
+            `continueAsNew:${DURABLE_SESSION_LATEST_VERSION}`,
         ]);
 
         const done = gen.next();
@@ -97,7 +98,7 @@ describe("orchestration warm resume durability", () => {
             }),
         };
 
-        const { durableSessionOrchestration_1_0_43 } = await import("../../src/orchestration.ts");
+        const { durableSessionOrchestration_1_0_43 } = await import("../../src/orchestration_1_0_43.ts");
         const { commandResponseKey } = await import("../../src/types.ts");
 
         const ctx = {

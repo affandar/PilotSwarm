@@ -391,6 +391,26 @@ When a new version of `duroxide` is published to npm (after the Node.js SDK is u
 
 > ⚠️ **Never push without explicit user permission**
 
+### Updating Copilot SDK (`@github/copilot`, `@github/copilot-sdk`)
+
+When a new version of the Copilot SDK is pulled in, run the tool-collision regression check **before** rolling the new version to production:
+
+```bash
+cd packages/sdk
+npx vitest run test/local/tool-name-collisions.test.js
+```
+
+The Copilot SDK ships built-in tools through `cli.toolInit` (e.g. `bash`, `create`, `edit`, `task`, `list_agents` in 1.0.32+). It rejects any external tool whose name shadows a built-in unless that tool sets `overridesBuiltInTool: true`. Each new SDK release may add more built-ins.
+
+When the regression test fails:
+
+1. **Identify the new collision** — the assertion message names the colliding PilotSwarm tool(s).
+2. **Decide rename vs. override**:
+   - **Rename to `ps_<name>`** when PilotSwarm's tool has different semantics from the SDK's. This is the default. Update the live `orchestration.ts`, `managed-session.ts` tool descriptions, agent prompts under `packages/sdk/plugins/`, builder templates under `templates/builder-agents/`, the DevOps sample under `examples/devops-command-center/`, and the docs under `docs/`. **Do not modify frozen `orchestration_1_0_*.ts` files** — those are pinned to historical versions per the duroxide orchestration versioning skill.
+   - **Set `overridesBuiltInTool: true`** when PilotSwarm's tool deliberately replaces the SDK's (e.g. `wait`, `ask_user` — durable-orchestration versions of the SDK primitives). Add a comment explaining why the override is intentional.
+3. **Update `SDK_BUILT_IN_TOOL_NAMES`** in `test/local/tool-name-collisions.test.js` to include any newly-discovered SDK built-in names so future regressions stay caught.
+4. **Re-run the test until it passes**, then run the full suite via `./scripts/run-tests.sh` before deploy.
+
 ### Adding a new command
 1. Add the command case in the orchestration's cmd dispatch (`orchestration.ts`)
 2. Add corresponding handling in `client.ts` `_waitForTurnResult()` if needed

@@ -387,8 +387,11 @@ export class PilotSwarmWorker {
             this.registerTools(rmTools);
         }
 
-        // list_agents tool — exposes user-creatable agents by default.
-        const listAgentsTool = defineTool("list_agents", {
+        // ps_list_agents tool — exposes user-creatable agents by default.
+        // NOTE: prefixed with `ps_` to avoid collision with the Copilot SDK's
+        // built-in `list_agents` tool (introduced in @github/copilot 1.0.32),
+        // which lists live background-agent task instances rather than blueprints.
+        const listAgentsTool = defineTool("ps_list_agents", {
             description:
                 "List all available agent BLUEPRINTS (definitions loaded from .agent.md files). " +
                 "By default this returns only user-creatable named agents. " +
