@@ -909,6 +909,43 @@ body.is-resizing-pane-y * {
   -webkit-overflow-scrolling: touch;
   width: fit-content;
   max-width: 100%;
+  /* Ensure scrollbar is visible on mobile webkit when the table
+   * overflows horizontally — otherwise users can't tell the table
+   * is pannable. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--ps-scrollbar-thumb) transparent;
+}
+
+.ps-chat-table-wrap::-webkit-scrollbar,
+.ps-md-table-wrap::-webkit-scrollbar,
+.ps-md-code-pre::-webkit-scrollbar {
+  width: var(--ps-scrollbar-size);
+  height: var(--ps-scrollbar-size);
+}
+
+.ps-chat-table-wrap::-webkit-scrollbar-track,
+.ps-md-table-wrap::-webkit-scrollbar-track,
+.ps-md-code-pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ps-chat-table-wrap::-webkit-scrollbar-thumb,
+.ps-md-table-wrap::-webkit-scrollbar-thumb,
+.ps-md-code-pre::-webkit-scrollbar-thumb {
+  background: var(--ps-scrollbar-thumb);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  min-height: 28px;
+  min-width: 28px;
+}
+
+.ps-chat-table-wrap::-webkit-scrollbar-thumb:hover,
+.ps-md-table-wrap::-webkit-scrollbar-thumb:hover,
+.ps-md-code-pre::-webkit-scrollbar-thumb:hover {
+  background: var(--ps-scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 .ps-chat-table-wrap.is-fit-width,
@@ -1180,10 +1217,15 @@ body.is-resizing-pane-y * {
   overflow: auto;
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-x;
+  /* Allow vertical pan to bubble up to the chat scroller while still
+   * letting the code block pan horizontally for long lines. */
+  touch-action: pan-x pan-y;
   line-height: 1.55;
   font-size: 0.95rem;
   white-space: pre;
+  max-width: 100%;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ps-scrollbar-thumb) transparent;
 }
 
 .ps-md-code-pre code {
@@ -1203,6 +1245,9 @@ body.is-resizing-pane-y * {
   touch-action: pan-x pan-y;
   border: 1px solid color-mix(in srgb, var(--ps-border) 40%, transparent);
   border-radius: var(--ps-radius-sm);
+  max-width: 100%;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ps-scrollbar-thumb) transparent;
 }
 
 .ps-md-table {
@@ -1643,22 +1688,18 @@ body.is-resizing-pane-y * {
     max-width: none;
   }
 
-  .ps-chat-focus-shell .ps-chat-table-wrap {
-    width: 100%;
+  /* On mobile, constrain the wrapper to viewport so very wide tables
+   * scroll horizontally inside their own region instead of pushing
+   * the whole chat off-screen. The fit-width heuristic in JS handles
+   * wrapping for narrower tables. */
+  .ps-chat-focus-shell .ps-chat-table-wrap,
+  .ps-chat-focus-shell .ps-md-table-wrap {
     max-width: 100%;
   }
 
-  .ps-chat-focus-shell .ps-chat-table {
-    width: 100%;
-    table-layout: fixed;
-  }
-
-  .ps-chat-focus-shell .ps-chat-table th,
-  .ps-chat-focus-shell .ps-chat-table td {
-    min-width: 0;
-    white-space: normal;
-    word-break: break-word;
-    overflow-wrap: anywhere;
+  .ps-chat-focus-shell .ps-chat-card,
+  .ps-chat-focus-shell .ps-chat-code-block {
+    max-width: 100%;
   }
 
   .ps-footer-shell {

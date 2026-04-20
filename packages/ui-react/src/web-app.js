@@ -639,7 +639,11 @@ function MarkdownPreviewContent({ content, theme }) {
             }
             if (block.type === "table") {
                 const columnCount = Math.max(block.header.length || 0, ...block.rows.map((row) => row.length));
-                const fitToWidth = columnCount > 0 && columnCount <= 4;
+                // Wrap cells by default. Only fall back to horizontal scroll
+                // when there are so many columns that wrapping would crush
+                // every cell (>6 columns is the practical readability cliff
+                // on phones).
+                const fitToWidth = columnCount > 0 && columnCount <= 6;
                 const columnWidths = fitToWidth
                     ? computeFitWidthColumnPercentages([block.header, ...block.rows])
                     : null;
@@ -931,7 +935,7 @@ function StructuredChatBlocks({ lines, theme }) {
                     ...headerRows.map((row) => row.length),
                     ...bodyRows.map((row) => row.length),
                 );
-                const fitToWidth = columnCount <= 4;
+                const fitToWidth = columnCount <= 6;
                 const columnWidths = fitToWidth
                     ? computeFitWidthColumnPercentages([...headerRows, ...bodyRows])
                     : null;
