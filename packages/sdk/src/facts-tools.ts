@@ -4,6 +4,7 @@ import type { FactStore } from "./facts-store.js";
 
 // ─── Knowledge Pipeline Namespace Access Control ────────────────────────────
 const FACTS_MANAGER_AGENT_ID = "facts-manager";
+const TUNER_AGENT_ID = "agent-tuner";
 const RESERVED_WRITE_PREFIXES = ["skills/", "asks/", "config/facts-manager/"];
 const RESERVED_READ_PREFIXES = ["intake/"];
 const RESERVED_DELETE_PREFIXES = ["intake/", "skills/", "asks/", "config/facts-manager/"];
@@ -46,8 +47,15 @@ export function createFactTools(opts: {
     getDescendantSessionIds?: (sessionId: string) => Promise<string[]>;
     getLineageSessionIds?: (sessionId: string) => Promise<string[]>;
     agentIdentity?: string;
+    /**
+     * Optional fire-and-forget hook invoked from inside tool handlers when
+     * a `read_facts` call touches the `skills/` knowledge namespace. Used
+     * by SessionManager to record `learned_skill.read` CMS events for
+     * skill-usage stats. Errors are swallowed; tool behavior is unaffected.
+     */
+    recordEvent?: (sessionId: string, eventType: string, data: unknown) => Promise<void>;
 }): Tool<any>[] {
-    const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity } = opts;
+    const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent } = opts;
 
     const storeTool = defineTool("store_fact", {
         description:
@@ -160,10 +168,17 @@ export function createFactTools(opts: {
                 ? args.session_id.slice("session-".length)
                 : args.session_id;
 
+            // Tuner is read-only at the namespace level (write/delete gates
+            // already block it) but its job is to investigate ANY session,
+            // not just its own lineage. Bypass the visibility filter for it
+            // — optional filters (key_pattern, session_id, agent_id, tags)
+            // still apply so queries remain targeted.
+            const isTuner = agentIdentity === TUNER_AGENT_ID;
+
             let lineageSessionIds: string[] = [];
             let grantedSessionIds: string[] = [];
 
-            if (ctx?.sessionId) {
+            if (!isTuner && ctx?.sessionId) {
                 const rawLineageSessionIds = getLineageSessionIds
                     ? await getLineageSessionIds(ctx.sessionId)
                     : getDescendantSessionIds
@@ -201,6 +216,26 @@ export function createFactTools(opts: {
             }, {
                 readerSessionId: ctx?.sessionId ?? null,
                 grantedSessionIds,
+                unrestricted: isTuner,
+            }).then((result) => {
+                // Emit a learned_skill.read event when the call touched the
+                // `skills/` knowledge namespace. Single event per call — we
+                // log the request shape, not the per-fact fan-out. Best-effort.
+                if (recordEvent && ctx?.sessionId) {
+                    const pattern = args.key_pattern ?? "";
+                    const normalizedPattern = pattern.replace(/\*/g, "%");
+                    if (normalizedPattern.startsWith("skills/")) {
+                        recordEvent(ctx.sessionId, "learned_skill.read", {
+                            name: pattern,
+                            scope: effectiveScope ?? args.scope ?? "accessible",
+                            matchCount: result.count,
+                            limit: args.limit ?? 50,
+                            callerSessionId: ctx.sessionId,
+                            callerAgentId: agentIdentity ?? null,
+                        }).catch(() => { /* swallow — best-effort */ });
+                    }
+                }
+                return result;
             });
         },
     });

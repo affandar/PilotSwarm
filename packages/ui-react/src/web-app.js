@@ -265,6 +265,12 @@ function computeGridViewport(viewport) {
 
 function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
+    // Programmatic scrollTop assignments fire a 'scroll' event that would
+    // otherwise call onScroll → dispatch ui/scroll → clobber the user's
+    // offset (especially when content briefly shrinks during a refresh
+    // and clamps nextScrollTop downward). The flag tells onScroll to
+    // ignore the next scroll event after we set scrollTop ourselves.
+    const programmaticScrollRef = React.useRef(false);
 
     React.useLayoutEffect(() => {
         const node = ref.current;
@@ -275,14 +281,28 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             ? Math.max(0, maxScroll - offsetPixels)
             : Math.min(maxScroll, offsetPixels);
         if (Math.abs(node.scrollTop - nextScrollTop) > 2) {
+            programmaticScrollRef.current = true;
             node.scrollTop = nextScrollTop;
+            // Clear on the next frame — the scroll event from the assignment
+            // above is queued synchronously and handled in the same task.
+            window.requestAnimationFrame(() => {
+                programmaticScrollRef.current = false;
+            });
         }
     }, [normalizedLines, ref, scrollMode, scrollOffset]);
 
     const onScroll = React.useCallback(() => {
+        if (programmaticScrollRef.current) return;
         const node = ref.current;
         if (!node || !paneKey) return;
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        // When the pane has no scrollable content (transient loading state
+        // that briefly collapses the body to one line), the browser auto-
+        // clamps scrollTop to 0 and fires a scroll event we did NOT trigger.
+        // Writing that into state would clobber the user's saved offset.
+        // Skip the dispatch — next render with real content will restore
+        // the desired scroll position from preserved state.
+        if (maxScroll <= 0) return;
         const pixels = scrollMode === "bottom"
             ? Math.max(0, maxScroll - node.scrollTop)
             : Math.max(0, node.scrollTop);
@@ -324,19 +344,20 @@ function SystemNoticeLine({ line, theme }) {
             : null);
 }
 
-function Line({ line, theme }) {
+function Line({ line, theme, className = "" }) {
+    const lineClassName = className ? `ps-line ${className}` : "ps-line";
     if (!line) {
-        return React.createElement("div", { className: "ps-line" }, " ");
+        return React.createElement("div", { className: lineClassName }, " ");
     }
     if (line.kind === "systemNotice") {
         return React.createElement(SystemNoticeLine, { line, theme });
     }
     if (line.kind === "runs") {
-        return React.createElement("div", { className: "ps-line" },
+        return React.createElement("div", { className: lineClassName },
             React.createElement(Runs, { runs: line.runs, theme }));
     }
     return React.createElement("div", {
-        className: "ps-line",
+        className: lineClassName,
         style: {
             color: resolveColor(theme, line.color),
             backgroundColor: resolveColor(theme, line.backgroundColor),
@@ -353,19 +374,30 @@ function lineText(line) {
 }
 
 function usePanePixelScroll(ref, scrollOffset, paneKey, controller) {
+    // See useScrollSync for rationale on the programmatic-scroll guard.
+    const programmaticScrollRef = React.useRef(false);
+
     React.useLayoutEffect(() => {
         const node = ref.current;
         if (!node) return;
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
         const nextScrollTop = Math.min(maxScroll, Math.max(0, Number(scrollOffset) || 0) * SCROLL_ROW_HEIGHT);
         if (Math.abs(node.scrollTop - nextScrollTop) > 2) {
+            programmaticScrollRef.current = true;
             node.scrollTop = nextScrollTop;
+            window.requestAnimationFrame(() => {
+                programmaticScrollRef.current = false;
+            });
         }
     }, [ref, scrollOffset]);
 
     return React.useCallback(() => {
+        if (programmaticScrollRef.current) return;
         const node = ref.current;
         if (!node || !paneKey) return;
+        // See useScrollSync — ignore browser auto-clamp during a
+        // transient empty/loading body.
+        if (node.scrollHeight <= node.clientHeight) return;
         controller.dispatch({
             type: "ui/scroll",
             pane: paneKey,
@@ -1052,6 +1084,13 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_RENAME_SESSION).catch(() => {}),
             disabled: !canRenameActiveSession,
         }, "Rename"),
+        React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_TERMINATE_PICKER).catch(() => {}),
+            disabled: !canRenameActiveSession,
+            title: "Mark Completed, Cancel, or Delete the active session",
+        }, "Terminate"),
         actions);
 
     return React.createElement(Panel, {
@@ -1201,6 +1240,17 @@ function MobileWorkspace({ controller, sessionsCollapsed, setSessionsCollapsed }
 
 function InspectorTabs({ activeTab, controller }) {
     const visibleTabs = React.useMemo(() => getVisibleInspectorTabs(controller), [controller]);
+    // Tab labels in mobile fall on a single row only when each label is
+    // short. "Node Map" is the only multi-word label, so we shorten it
+    // to "Map" below the mobile breakpoint to keep all six tabs on one
+    // line.
+    const isMobile = typeof window !== "undefined"
+        && (window.innerWidth || 0) > 0
+        && (window.innerWidth || 0) < MOBILE_BREAKPOINT;
+    const labelFor = (tab) => {
+        if (isMobile && tab === "nodes") return "Map";
+        return INSPECTOR_TAB_LABELS[tab] || tab;
+    };
     return React.createElement("div", { className: "ps-tab-row" },
         visibleTabs.map((tab) => React.createElement("button", {
             key: tab,
@@ -1212,7 +1262,7 @@ function InspectorTabs({ activeTab, controller }) {
                 controller.setFocus("inspector");
                 controller.selectInspectorTab(tab).catch(() => {});
             },
-        }, INSPECTOR_TAB_LABELS[tab] || tab)));
+        }, labelFor(tab))));
 }
 
 function FilesPane({ controller, focused, mobile = false }) {
@@ -1332,7 +1382,7 @@ function FilesPane({ controller, focused, mobile = false }) {
             type: "button",
             className: "ps-mini-button",
             onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}),
-        }, viewState.fullscreen ? "Close" : "Fullscreen"));
+        }, viewState.fullscreen ? "Close" : (mobile ? "Focus" : "Fullscreen")));
 
     const listContent = items.length === 0
         ? normalizeLines(filesView.listBodyLines || []).map((line, index) => React.createElement(Line, {
@@ -1380,7 +1430,11 @@ function FilesPane({ controller, focused, mobile = false }) {
     const view = viewState;
 
     return React.createElement(Panel, {
-        title: view.fullscreen ? filesView.fullscreenTitle : filesView.panelTitle,
+        title: view.fullscreen
+            ? filesView.fullscreenTitle
+            : (mobile && filesView.panelTitleMobile)
+                ? filesView.panelTitleMobile
+                : filesView.panelTitle,
         color: "magenta",
         focused: view.focused,
         actions: panelActions,
@@ -2155,6 +2209,7 @@ function ModalLayer({ controller }) {
     const renderListModal = (presentation, confirmLabel = "Apply") => {
         const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
         const rowItemIndexes = Array.isArray(presentation.rowItemIndexes) ? presentation.rowItemIndexes : null;
+        const usesHangingIndent = modal.type === "modelPicker" || modal.type === "sessionAgentPicker";
         const renderedList = rowItemIndexes && rowItemIndexes.length === rows.length
             ? rows.map((row, rowIndex) => {
                 const itemIndex = rowItemIndexes[rowIndex];
@@ -2164,26 +2219,26 @@ function ModalLayer({ controller }) {
                 if (itemIndex == null || itemIndex < 0) {
                     return React.createElement("div", {
                         key: `row:${rowIndex}`,
-                        className: "ps-line",
+                        className: "ps-line ps-modal-list-heading-line",
                     }, React.createElement(Runs, { runs, theme }));
                 }
                 const item = modal.items?.[itemIndex];
                 return React.createElement("button", {
                     key: item?.id || `row:${rowIndex}`,
                     type: "button",
-                    className: `ps-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}`,
+                    className: `ps-list-button ps-modal-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}`,
                     onClick: () => controller.dispatch({ type: "ui/modalSelection", index: itemIndex }),
                 },
-                React.createElement("div", { className: "ps-line" },
+                React.createElement("div", { className: "ps-line ps-modal-list-line" },
                     React.createElement(Runs, { runs, theme })));
             })
             : (modal.items || []).map((item, index) => React.createElement("button", {
                 key: item.id || index,
                 type: "button",
-                className: `ps-list-button${index === modal.selectedIndex ? " is-selected" : ""}`,
+                className: `ps-list-button ps-modal-list-button${index === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}`,
                 onClick: () => controller.dispatch({ type: "ui/modalSelection", index }),
             },
-            React.createElement("div", { className: "ps-line" },
+            React.createElement("div", { className: "ps-line ps-modal-list-line" },
                 React.createElement(Runs, {
                     runs: Array.isArray(rows?.[index])
                         ? rows[index]
@@ -2203,7 +2258,7 @@ function ModalLayer({ controller }) {
                 ),
                 React.createElement("div", { className: "ps-modal-details" },
                     React.createElement("div", { className: "ps-modal-details-title" }, presentation.detailsTitle || "Details"),
-                    normalizeLines(presentation.detailsLines || []).map((line, index) => React.createElement(Line, { key: `detail:${index}`, line, theme })),
+                    normalizeLines(presentation.detailsLines || []).map((line, index) => React.createElement(Line, { key: `detail:${index}`, line, theme, className: "ps-modal-detail-line" })),
                 ),
             ),
             React.createElement("div", { className: "ps-modal-footer" },
@@ -2270,7 +2325,7 @@ function ModalLayer({ controller }) {
                     autoFocus: true,
                 }),
                 React.createElement("div", { className: "ps-modal-details" },
-                    normalizeLines(modalState.renameSession.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme })),
+                    normalizeLines(modalState.renameSession.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
                 ),
                 React.createElement("div", { className: "ps-modal-footer" },
                     React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
@@ -2279,6 +2334,47 @@ function ModalLayer({ controller }) {
                         className: "ps-modal-button is-primary",
                         onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
                     }, "Save")),
+            ));
+    }
+    if (modal.type === "terminatePicker") {
+        const sessionLabel = String(modal.sessionTitle || "").trim() || "this session";
+        const pick = (action) => () => {
+            controller.pickTerminateAction(action).catch(() => {});
+        };
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title" }, modal.title || "Terminate session"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                ),
+                React.createElement("div", { className: "ps-modal-body", style: { padding: "12px 16px 4px" } },
+                    React.createElement("p", { style: { color: "#94a3b8", margin: 0 } },
+                        `What should happen to "${sessionLabel}"? Choose an action; you'll be asked to confirm.`)),
+                React.createElement("div", {
+                    className: "ps-modal-body",
+                    style: { padding: "10px 16px 16px", display: "flex", flexDirection: "column", gap: 8 },
+                },
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button is-primary",
+                        style: { width: "100%", justifyContent: "flex-start" },
+                        onClick: pick("complete"),
+                    }, "Mark Completed"),
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button",
+                        style: { width: "100%", justifyContent: "flex-start" },
+                        onClick: pick("cancel"),
+                    }, "Cancel Session"),
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button is-danger",
+                        style: { width: "100%", justifyContent: "flex-start" },
+                        onClick: pick("delete"),
+                    }, "Delete Session"),
+                ),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Close")),
             ));
     }
     if (modal.type === "artifactUpload" && modalState.artifactUpload) {
@@ -2296,7 +2392,7 @@ function ModalLayer({ controller }) {
                     autoFocus: true,
                 }),
                 React.createElement("div", { className: "ps-modal-details" },
-                    normalizeLines(modalState.artifactUpload.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme })),
+                    normalizeLines(modalState.artifactUpload.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
                 ),
                 React.createElement("div", { className: "ps-modal-footer" },
                     React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
@@ -2827,7 +2923,15 @@ export function PilotSwarmWebApp({ controller }) {
     });
 
     return React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
-        !(mobile && chatFocusMode) ? React.createElement(Toolbar, {
+        // Hide the top toolbar on mobile inspector/activity panes (and in
+        // chat-focus mode). Those panes are pure read-only surfaces;
+        // session/model/theme actions stay reachable from the Main pane,
+        // and dropping the toolbar buys ~3 lines of vertical real estate
+        // on a phone, which matters for the fleet-skills card and the
+        // logs/sequence inspectors.
+        (mobile && (chatFocusMode || mobilePane === "inspector" || mobilePane === "activity"))
+            ? null
+            : React.createElement(Toolbar, {
             controller,
             mobile,
             onToggleLegend: () => setShowKeyLegend((current) => !current),
@@ -2835,15 +2939,22 @@ export function PilotSwarmWebApp({ controller }) {
             chatFocusMode,
             onToggleChatFocus: toggleChatFocusMode,
             chatFocusDisabled: filesFullscreenActive,
-        }) : null,
+        }),
         React.createElement("div", { className: "ps-workspace" },
             filesFullscreenActive
                 ? fullscreenWorkspace
                 : (chatFocusMode
                     ? chatFocusWorkspace
                     : (mobile ? mobileContent : desktopWorkspace))),
-        React.createElement("div", { className: "ps-footer-shell" },
-            React.createElement(PromptComposer, { controller, mobile, active: !showPromptOverlay })),
+        // Hide the prompt composer on mobile when on the inspector or
+        // activity pane. Those panes are read-only inspection surfaces;
+        // the prompt is only useful in the Main pane. Hiding it gives
+        // the inspector roughly 5 more lines of vertical real estate on
+        // a phone.
+        (mobile && !chatFocusMode && (mobilePane === "inspector" || mobilePane === "activity"))
+            ? null
+            : React.createElement("div", { className: "ps-footer-shell" },
+                React.createElement(PromptComposer, { controller, mobile, active: !showPromptOverlay })),
         mobile && !chatFocusMode ? React.createElement(MobileNav, { activePane: mobilePane, setActivePane: setMobilePane, controller }) : null,
         React.createElement(ModalLayer, { controller }),
         React.createElement(KeybindingLegend, {

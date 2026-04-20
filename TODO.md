@@ -1,12 +1,12 @@
 
 # TODO
 
-- move all data access for facts behind a provider layer
-- stored procs for data access in PG provider rather than direct SQL queries
-- review /test/local/child-update-batching.test.js
+- materailize learned skills on filesystem instead of system prompts:
+ - docs/proposals/skill-materialization-to-filesystem.md
+- ability to change model for a session on resume
+- flesh out MCP servers
 - tool to enumerate all workers, and to run an agent so all activities land on a specific worker, so resource manager can schedule an agent which specifically targets health checks for all nodes.
 - deyhdrate timer should be sensitive to the size of the data being dehydrated. larger sessions should be stickier
-- simple hello pilotswarm world docker container
 - evals for prompts
 - session-store-driven durability cleanup
     - proposal: [docs/proposals/session-store-driven-durability.md](docs/proposals/session-store-driven-durability.md)
@@ -16,8 +16,6 @@
     - proposal: [docs/proposals/entra-auth-gateway.md](docs/proposals/entra-auth-gateway.md)
 - startup/shutdown performance.
 - add interrupt/steer for LLMs
-- self contained docker image 
-- session titles are not sticking
 - review rules for producing knowledge, human interactions and questions that were answered.
     - proposal: [docs/proposals/shared-skills-pipeline.md](docs/proposals/shared-skills-pipeline.md)
 - multitenancy/workspacing
@@ -37,6 +35,12 @@
 - agent to agent messaging
 
 # DONE
+- session titles are not sticking
+- simple hello pilotswarm world docker container
+- stored procs for data access in PG provider rather than direct SQL queries
+- review /test/local/child-update-batching.test.js
+- give parent access to all sub agents events/chat history etc.
+- move all data access for facts behind a provider layer
 - update the packages/portal to host the new Ink based TUI, add entraid auth to the portal
     - proposal: [docs/proposals/portal-native-web-experience.md](docs/proposals/portal-native-web-experience.md)
     - proposal: [docs/proposals/portal-web-experience.md](docs/proposals/portal-web-experience.md)

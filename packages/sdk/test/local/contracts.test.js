@@ -22,7 +22,7 @@ import { withClient, defineTool, PilotSwarmWorker, composeSystemPrompt } from ".
 import { SessionManager } from "../../src/session-manager.ts";
 import { assert, assertEqual, assertIncludes, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
 import { validateSessionAfterTurn } from "../helpers/cms-helpers.js";
-import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG, TEST_CLAUDE_MODEL } from "../helpers/fixtures.js";
+import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG } from "../helpers/fixtures.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -53,6 +53,7 @@ const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "store_fact",
     "read_facts",
     "delete_fact",
+    "read_agent_events",
 ];
 const EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES = [
     ...EXPECTED_ALWAYS_ON_TOOL_NAMES,
@@ -60,16 +61,16 @@ const EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES = [
 ];
 const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     ...EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES,
+    "apply_patch",
     "bash",
-    "create",
-    "edit",
     "glob",
-    "grep",
     "list_agents",
     "list_bash",
     "read_agent",
     "read_bash",
     "report_intent",
+    "parallel",
+    "rg",
     "skill",
     "sql",
     "stop_bash",
@@ -93,6 +94,28 @@ function createNoopFactStore() {
         async deleteSessionFactsForSession() {
             return 0;
         },
+        async close() {},
+    };
+}
+
+function createNoopSessionCatalog() {
+    return {
+        async initialize() {},
+        async createSession() {},
+        async updateSession() {},
+        async softDeleteSession() {},
+        async listSessions() { return []; },
+        async getSession() { return null; },
+        async getDescendantSessionIds() { return []; },
+        async getLastSessionId() { return null; },
+        async recordEvents() {},
+        async getSessionEvents() { return []; },
+        async getSessionEventsBefore() { return []; },
+        async getSessionMetricSummary() { return null; },
+        async getSessionTreeStats() { return null; },
+        async getFleetStats() { return { totals: {}, perAgent: [] }; },
+        async upsertSessionMetricSummary() {},
+        async pruneDeletedSummaries() { return 0; },
         async close() {},
     };
 }
@@ -564,6 +587,7 @@ async function testAlwaysOnToolsRegisteredAcrossTurns(env) {
     const fakeClient = new FakeCopilotClient();
     manager.client = fakeClient;
     manager.setFactStore(createNoopFactStore());
+    manager.setSessionCatalog(createNoopSessionCatalog());
 
     const managed = await manager.getOrCreate("always-on-system-tools-session", {
         boundAgentName: "coordinator",
@@ -602,6 +626,7 @@ async function testGenericSessionsInheritFrameworkDefaultToolNames(env) {
     const fakeClient = new FakeCopilotClient();
     manager.client = fakeClient;
     manager.setFactStore(createNoopFactStore());
+    manager.setSessionCatalog(createNoopSessionCatalog());
     manager.setToolRegistry(new Map(
         EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES.map((toolName) => [
             toolName,
@@ -638,7 +663,6 @@ async function testLlmSeesExactAlwaysOnTools(env) {
     }, async (client) => {
         const session = await client.createSession({
             agentId: "coordinator",
-            model: TEST_CLAUDE_MODEL,
             systemMessage: {
                 mode: "append",
                 content:

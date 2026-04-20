@@ -34,14 +34,16 @@ export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
 export { PgFactStore, createFactStoreForUrl } from "./facts-store.js";
-export { PgSessionCatalogProvider } from "./cms.js";
-export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, SessionTreeStats } from "./cms.js";
+export { PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
+export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage } from "./cms.js";
 export type {
     FactStore,
     FactRecord,
     StoreFactInput,
     ReadFactsQuery,
     DeleteFactInput,
+    FactsStatsRow,
+    FactsNamespace,
 } from "./facts-store.js";
 export type { SessionStateStore, SessionMetadata, ArtifactStore } from "./session-store.js";
 export type {
@@ -91,6 +93,8 @@ export type { Skill } from "./skills.js";
 export { createSweeperTools } from "./sweeper-tools.js";
 // Fact tools
 export { createFactTools } from "./facts-tools.js";
+// Inspect tools (read_agent_events, etc.)
+export { createInspectTools } from "./inspect-tools.js";
 // Resource Manager Agent tools
 export { createResourceManagerTools } from "./resourcemgr-tools.js";
 // Model providers

@@ -21,6 +21,11 @@
                     "cost": "low"
                 },
                 {
+                    "name": "claude-opus-4.7",
+                    "description": "Claude Opus 4.7 (latest). Most capable Claude option for the hardest analysis and reasoning tasks in the starter appliance.",
+                    "cost": "high"
+                },
+                {
                     "name": "claude-opus-4.6",
                     "description": "Claude Opus 4.6. Most capable option for deeper analysis and harder tasks in the starter appliance.",
                     "cost": "high"

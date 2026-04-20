@@ -6,6 +6,11 @@
             "githubToken": "env:GITHUB_TOKEN",
             "models": [
                 {
+                    "name": "claude-opus-4.7",
+                    "description": "Claude Opus 4.7 (latest). Most capable model. Deep reasoning, complex multi-step tasks, nuanced analysis.",
+                    "cost": "high"
+                },
+                {
                     "name": "claude-opus-4.6",
                     "description": "Claude Opus 4.6. Most capable model. Deep reasoning, complex multi-step tasks, nuanced analysis. Use for hard problems where quality matters most.",
                     "cost": "high"
@@ -14,11 +19,6 @@
                     "name": "claude-sonnet-4.6",
                     "description": "Claude Sonnet 4.6. Strong all-rounder. Good balance of capability and speed. Use for general coding, analysis, and multi-step tasks.",
                     "cost": "medium"
-                },
-                {
-                    "name": "gpt-5.1",
-                    "description": "GPT-5.1. Latest generation. Advanced reasoning and coding capabilities.",
-                    "cost": "high"
                 }
             ]
         },

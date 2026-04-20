@@ -4,6 +4,8 @@ import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
+import { createInspectTools } from "./inspect-tools.js";
+import type { SessionCatalogProvider } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
@@ -107,6 +109,10 @@ export class SessionManager {
     private sessionStateDir: string;
     /** Shared facts store used to build always-on facts tools. */
     private factStore: FactStore | null = null;
+    /** Shared CMS catalog used to build always-on inspect tools. */
+    private sessionCatalog: SessionCatalogProvider | null = null;
+    /** Duroxide client used by tuner-only inspect tools. */
+    private _duroxideClient: any = null;
     /** Lineage lookup for ancestor/descendant facts access. */
     private _getLineageSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
 
@@ -201,6 +207,16 @@ export class SessionManager {
     /** Set the cluster facts store for always-on facts tools. */
     setFactStore(factStore: FactStore | null): void {
         this.factStore = factStore;
+    }
+
+    /** Set the CMS catalog for always-on inspect tools (e.g. read_agent_events). */
+    setSessionCatalog(catalog: SessionCatalogProvider | null): void {
+        this.sessionCatalog = catalog;
+    }
+
+    /** Set the duroxide client for tuner-only inspect tools. */
+    setDuroxideClient(client: any): void {
+        this._duroxideClient = client;
     }
 
     /** Set the lineage lookup for ancestor/descendant facts access. */
@@ -328,22 +344,45 @@ export class SessionManager {
         }
         const userTools = config.tools ?? [];
         const systemTools = ManagedSession.systemToolDefs();
-        const subAgentTools = ManagedSession.subAgentToolDefs();
+        // Tuner sessions are read-only by design — no spawn / message / cancel.
+        const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
+        const subAgentTools = isTunerSession ? [] : ManagedSession.subAgentToolDefs();
         const factTools = createFactTools({
             factStore: this.factStore,
             getLineageSessionIds: this._getLineageSessionIds ?? undefined,
             agentIdentity: effectiveSerializableConfig.agentIdentity,
+            recordEvent: this.sessionCatalog
+                ? async (sid, eventType, data) => {
+                    try {
+                        await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
+                    } catch {
+                        // Best-effort — never fail a tool call on telemetry errors.
+                    }
+                }
+                : undefined,
         });
-        const SYSTEM_TOOL_NAMES = new Set([...systemTools, ...subAgentTools, ...factTools].map((t: any) => t.name));
+        const inspectTools = this.sessionCatalog
+            ? createInspectTools({
+                catalog: this.sessionCatalog,
+                agentIdentity: effectiveSerializableConfig.agentIdentity,
+                duroxideClient: this._duroxideClient ?? undefined,
+                factStore: this.factStore ?? undefined,
+            })
+            : [];
+        const SYSTEM_TOOL_NAMES = new Set([
+            ...systemTools, ...subAgentTools, ...factTools, ...inspectTools,
+        ].map((t: any) => t.name));
         const persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...factTools,
+            ...inspectTools,
         ];
         const allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...systemTools,
             ...subAgentTools,
             ...factTools,
+            ...inspectTools,
         ];
         config.tools = persistentSessionTools;
 

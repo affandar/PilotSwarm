@@ -1,0 +1,99 @@
+name: "Copilot Setup Steps"
+
+# Bootstraps the Copilot cloud agent's ephemeral environment so it can run
+# the PilotSwarm test suite (./scripts/run-tests.sh).
+#
+# Secrets are pulled from the `copilot` GitHub environment. To lock this
+# down to a single identity:
+#   1. Repo → Settings → Environments → create `copilot`.
+#   2. Add `affandar` as a required reviewer (optional but strongest gate).
+#   3. Restrict deployment branches to `main`.
+#   4. Add the environment secrets listed below.
+#
+# Required environment secrets (in the `copilot` environment):
+#   - GH_PAT                    Personal access token for the Copilot SDK
+#                               (Actions reserves the name GITHUB_TOKEN, so
+#                               we use GH_PAT and write it into .env as
+#                               GITHUB_TOKEN.)
+#   - AZURE_OAI_KEY             Default model lives on azure-openai
+#   - MODEL_PROVIDERS_JSON      Full contents of the real .model_providers.json
+#
+# Optional secrets (only needed if the corresponding provider/model is exercised):
+#   - AZURE_MODEL_ROUTER_KEY
+#   - AZURE_FW_GLM5_KEY
+#   - AZURE_KIMI_K25_KEY
+#   - ANTHROPIC_API_KEY
+
+on:
+    workflow_dispatch:
+
+jobs:
+    copilot-setup-steps:
+        runs-on: ubuntu-latest
+        environment: copilot
+        timeout-minutes: 59
+        permissions:
+            contents: read
+
+        services:
+            postgres:
+                image: postgres:16
+                env:
+                    POSTGRES_USER: postgres
+                    POSTGRES_PASSWORD: postgres
+                    POSTGRES_DB: durable_copilot
+                ports:
+                    - "5432:5432"
+                options: >-
+                    --health-cmd="pg_isready -U postgres"
+                    --health-interval=10s
+                    --health-timeout=5s
+                    --health-retries=5
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Set up Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "24"
+                  cache: "npm"
+
+            - name: Materialize .env
+              run: |
+                  umask 077
+                  cat > .env <<EOF
+                  GITHUB_TOKEN=${{ secrets.GH_PAT }}
+                  DATABASE_URL=postgresql://postgres:postgres@localhost:5432/durable_copilot
+                  AZURE_MODEL_ROUTER_KEY=${{ secrets.AZURE_MODEL_ROUTER_KEY }}
+                  AZURE_FW_GLM5_KEY=${{ secrets.AZURE_FW_GLM5_KEY }}
+                  AZURE_KIMI_K25_KEY=${{ secrets.AZURE_KIMI_K25_KEY }}
+                  AZURE_OAI_KEY=${{ secrets.AZURE_OAI_KEY }}
+                  ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+                  EOF
+
+            - name: Materialize .model_providers.json
+              env:
+                  MODEL_PROVIDERS_JSON: ${{ secrets.MODEL_PROVIDERS_JSON }}
+              run: |
+                  umask 077
+                  if [ -z "$MODEL_PROVIDERS_JSON" ]; then
+                      echo "ERROR: MODEL_PROVIDERS_JSON secret is empty" >&2
+                      exit 1
+                  fi
+                  printf '%s' "$MODEL_PROVIDERS_JSON" > .model_providers.json
+                  node -e "JSON.parse(require('fs').readFileSync('.model_providers.json','utf8'))" \
+                      || { echo "ERROR: MODEL_PROVIDERS_JSON is not valid JSON" >&2; exit 1; }
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Build
+              run: npm run build --workspaces --if-present
+
+            # Smoke check — fail fast if the env isn't actually wired up so Copilot
+            # doesn't waste a session on a broken setup. Comment out if you want
+            # the agent to start faster.
+            - name: Smoke test
+              run: ./scripts/run-tests.sh smoke

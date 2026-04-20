@@ -7,6 +7,8 @@
  *   - session cleanup when a session is deleted
  */
 
+import { runFactsMigrations } from "./facts-migrator.js";
+
 export interface FactRecord {
     key: string;
     value: unknown;
@@ -42,6 +44,18 @@ export interface DeleteFactInput {
     sessionId?: string | null;
 }
 
+/** Knowledge-namespace bucket used by facts stats aggregations. */
+export type FactsNamespace = "skills" | "asks" | "intake" | "config" | "(other)";
+
+/** One row of facts-stats aggregation, returned by all three facts-stats procs. */
+export interface FactsStatsRow {
+    namespace: FactsNamespace;
+    factCount: number;
+    totalValueBytes: number;
+    oldestCreatedAt: Date | null;
+    newestUpdatedAt: Date | null;
+}
+
 export interface FactStore {
     initialize(): Promise<void>;
     storeFact(input: StoreFactInput): Promise<{
@@ -49,7 +63,7 @@ export interface FactStore {
         shared: boolean;
         stored: true;
     }>;
-    readFacts(query: ReadFactsQuery, access?: { readerSessionId?: string | null; grantedSessionIds?: string[] }): Promise<{
+    readFacts(query: ReadFactsQuery, access?: { readerSessionId?: string | null; grantedSessionIds?: string[]; unrestricted?: boolean }): Promise<{
         count: number;
         facts: FactRecord[];
     }>;
@@ -59,40 +73,29 @@ export interface FactStore {
         deleted: boolean;
     }>;
     deleteSessionFactsForSession(sessionId: string): Promise<number>;
+    /** Per-session non-shared facts, bucketed by namespace. */
+    getSessionFactsStats(sessionId: string): Promise<FactsStatsRow[]>;
+    /** Same shape, aggregated across an array of session ids (used for spawn trees). */
+    getFactsStatsForSessions(sessionIds: string[]): Promise<FactsStatsRow[]>;
+    /** Shared (cross-session) facts bucketed by namespace. */
+    getSharedFactsStats(): Promise<FactsStatsRow[]>;
     close(): Promise<void>;
 }
 
 const DEFAULT_SCHEMA = "pilotswarm_facts";
 
 function sqlForSchema(schema: string) {
-    const table = `${schema}.facts`;
     return {
         schema,
-        table,
-        createSchema: `CREATE SCHEMA IF NOT EXISTS ${schema}`,
-        createTable: `
-CREATE TABLE IF NOT EXISTS ${table} (
-    id          BIGSERIAL PRIMARY KEY,
-    scope_key   TEXT NOT NULL UNIQUE,
-    key         TEXT NOT NULL,
-    value       JSONB NOT NULL,
-    agent_id    TEXT,
-    session_id  TEXT,
-    shared      BOOLEAN NOT NULL DEFAULT FALSE,
-    transient   BOOLEAN NOT NULL DEFAULT FALSE,
-    tags        TEXT[] NOT NULL DEFAULT '{}',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (NOT (shared AND transient))
-)`,
-        createIndexes: [
-            `CREATE INDEX IF NOT EXISTS idx_${schema}_facts_key ON ${table}(key)`,
-            `CREATE INDEX IF NOT EXISTS idx_${schema}_facts_tags ON ${table} USING GIN (tags)`,
-            `CREATE INDEX IF NOT EXISTS idx_${schema}_facts_session ON ${table}(session_id)`,
-            `CREATE INDEX IF NOT EXISTS idx_${schema}_facts_agent ON ${table}(agent_id)`,
-            `CREATE INDEX IF NOT EXISTS idx_${schema}_facts_shared ON ${table}(shared)`,
-            `CREATE INDEX IF NOT EXISTS idx_${schema}_facts_transient ON ${table}(transient)`,
-        ],
+        fn: {
+            storeFact:                 `${schema}.facts_store_fact`,
+            readFacts:                 `${schema}.facts_read_facts`,
+            deleteFact:                `${schema}.facts_delete_fact`,
+            deleteSessionFacts:        `${schema}.facts_delete_session_facts`,
+            getSessionFactsStats:      `${schema}.facts_get_session_facts_stats`,
+            getFactsStatsForSessions:  `${schema}.facts_get_facts_stats_for_sessions`,
+            getSharedFactsStats:       `${schema}.facts_get_shared_facts_stats`,
+        },
     };
 }
 
@@ -152,59 +155,16 @@ export class PgFactStore implements FactStore {
 
     async initialize(): Promise<void> {
         if (this.initialized) return;
-
-        await this.pool.query(this.sql.createSchema);
-        await this.pool.query(this.sql.createTable);
-        for (const idx of this.sql.createIndexes) {
-            try {
-                await this.pool.query(idx);
-            } catch (err: any) {
-                // Ignore race: two workers creating the same index concurrently
-                if (err?.code !== "23505") throw err;
-            }
-        }
-
-        try {
-            await this.pool.query(`ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS scope_key TEXT`);
-            await this.pool.query(`ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS shared BOOLEAN NOT NULL DEFAULT FALSE`);
-            await this.pool.query(`ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS transient BOOLEAN NOT NULL DEFAULT FALSE`);
-            await this.pool.query(`ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'`);
-            await this.pool.query(`ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()`);
-            await this.pool.query(`ALTER TABLE ${this.sql.table} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`);
-        } catch {}
-
-        try {
-            await this.pool.query(
-                `UPDATE ${this.sql.table}
-                 SET scope_key = CASE
-                     WHEN shared THEN 'shared:' || key
-                     ELSE 'session:' || COALESCE(session_id, '') || ':' || key
-                 END
-                 WHERE scope_key IS NULL`,
-            );
-        } catch {}
-
+        await runFactsMigrations(this.pool, this.sql.schema);
         this.initialized = true;
     }
 
     async storeFact(input: StoreFactInput): Promise<{ key: string; shared: boolean; stored: true }> {
         const shared = input.shared === true;
-
         const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
 
         await this.pool.query(
-            `INSERT INTO ${this.sql.table}
-                (scope_key, key, value, agent_id, session_id, shared, transient, tags)
-             VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (scope_key) DO UPDATE SET
-                value = EXCLUDED.value,
-                agent_id = EXCLUDED.agent_id,
-                session_id = EXCLUDED.session_id,
-                shared = EXCLUDED.shared,
-                transient = EXCLUDED.transient,
-                tags = EXCLUDED.tags,
-                updated_at = now()`,
+            `SELECT ${this.sql.fn.storeFact}($1, $2, $3, $4, $5, $6, $7, $8)`,
             [
                 scopeKey,
                 input.key,
@@ -226,64 +186,30 @@ export class PgFactStore implements FactStore {
 
     async readFacts(
         query: ReadFactsQuery,
-        access?: { readerSessionId?: string | null; grantedSessionIds?: string[] },
+        access?: { readerSessionId?: string | null; grantedSessionIds?: string[]; unrestricted?: boolean },
     ): Promise<{ count: number; facts: FactRecord[] }> {
-        const conditions: string[] = [];
-        const params: unknown[] = [];
-        let idx = 1;
         const readerSessionId = access?.readerSessionId ?? null;
         const grantedSessionIds = access?.grantedSessionIds ?? [];
+        const unrestricted = access?.unrestricted === true;
         const scope = query.scope ?? "accessible";
-
-        if (scope === "shared") {
-            conditions.push("shared = TRUE");
-        } else if (scope === "session") {
-            if (!readerSessionId) {
-                return { count: 0, facts: [] };
-            }
-            conditions.push(`shared = FALSE AND session_id = $${idx++}`);
-            params.push(readerSessionId);
-        } else if (readerSessionId) {
-            // "accessible" or "descendants" — include reader's own facts + shared
-            const visibleParts = [`shared = TRUE`, `(shared = FALSE AND session_id = $${idx++})`];
-            params.push(readerSessionId);
-            // Include granted descendant session IDs in the visibility set
-            if (grantedSessionIds.length > 0) {
-                const placeholders = grantedSessionIds.map(() => `$${idx++}`).join(", ");
-                visibleParts.push(`(shared = FALSE AND session_id IN (${placeholders}))`);
-                params.push(...grantedSessionIds);
-            }
-            conditions.push(`(${visibleParts.join(" OR ")})`);
-        } else {
-            conditions.push("shared = TRUE");
-        }
-
-        const keyPattern = normalizeLikePattern(query.keyPattern);
-        if (keyPattern) {
-            conditions.push(`key LIKE $${idx++}`);
-            params.push(keyPattern);
-        }
-        if (query.tags && query.tags.length > 0) {
-            conditions.push(`tags @> $${idx++}`);
-            params.push(query.tags);
-        }
-        if (query.sessionId) {
-            conditions.push(`session_id = $${idx++}`);
-            params.push(query.sessionId);
-        }
-        if (query.agentId) {
-            conditions.push(`agent_id = $${idx++}`);
-            params.push(query.agentId);
-        }
-
+        const keyPattern = normalizeLikePattern(query.keyPattern) ?? null;
         const maxRows = query.limit ?? 50;
-        const sql = `SELECT key, value, agent_id, session_id, shared, tags, created_at, updated_at
-                     FROM ${this.sql.table}
-                     WHERE ${conditions.join(" AND ")}
-                     ORDER BY updated_at DESC
-                     LIMIT ${maxRows}`;
 
-        const { rows } = await this.pool.query(sql, params);
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.readFacts}($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [
+                scope,
+                readerSessionId,
+                grantedSessionIds.length > 0 ? grantedSessionIds : null,
+                keyPattern,
+                query.tags && query.tags.length > 0 ? query.tags : null,
+                query.sessionId ?? null,
+                query.agentId ?? null,
+                maxRows,
+                unrestricted,
+            ],
+        );
+
         return {
             count: rows.length,
             facts: rows.map((row: any) => ({
@@ -302,25 +228,47 @@ export class PgFactStore implements FactStore {
     async deleteFact(input: DeleteFactInput): Promise<{ key: string; shared: boolean; deleted: boolean }> {
         const shared = input.shared === true;
         const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
-        const { rowCount } = await this.pool.query(
-            `DELETE FROM ${this.sql.table} WHERE scope_key = $1`,
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.deleteFact}($1) AS deleted_count`,
             [scopeKey],
         );
         return {
             key: input.key,
             shared,
-            deleted: rowCount > 0,
+            deleted: Number(rows[0]?.deleted_count) > 0,
         };
     }
 
     async deleteSessionFactsForSession(sessionId: string): Promise<number> {
-        const { rowCount } = await this.pool.query(
-            `DELETE FROM ${this.sql.table}
-             WHERE session_id = $1
-               AND shared = FALSE`,
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.deleteSessionFacts}($1) AS deleted_count`,
             [sessionId],
         );
-        return rowCount ?? 0;
+        return Number(rows[0]?.deleted_count) || 0;
+    }
+
+    async getSessionFactsStats(sessionId: string): Promise<FactsStatsRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionFactsStats}($1)`,
+            [sessionId],
+        );
+        return rows.map(rowToFactsStatsRow);
+    }
+
+    async getFactsStatsForSessions(sessionIds: string[]): Promise<FactsStatsRow[]> {
+        if (!sessionIds || sessionIds.length === 0) return [];
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getFactsStatsForSessions}($1)`,
+            [sessionIds],
+        );
+        return rows.map(rowToFactsStatsRow);
+    }
+
+    async getSharedFactsStats(): Promise<FactsStatsRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSharedFactsStats}()`,
+        );
+        return rows.map(rowToFactsStatsRow);
     }
 
     async close(): Promise<void> {
@@ -328,4 +276,20 @@ export class PgFactStore implements FactStore {
             await this.pool.end();
         } catch {}
     }
+}
+
+/** Map a PG row to FactsStatsRow. Used by all three facts-stats procs. */
+function rowToFactsStatsRow(row: any): FactsStatsRow {
+    const ns = String(row.namespace ?? "(other)");
+    const namespace: FactsNamespace =
+        ns === "skills" || ns === "asks" || ns === "intake" || ns === "config"
+            ? ns
+            : "(other)";
+    return {
+        namespace,
+        factCount: Number(row.fact_count) || 0,
+        totalValueBytes: Number(row.total_value_bytes) || 0,
+        oldestCreatedAt: row.oldest_created_at ? new Date(row.oldest_created_at) : null,
+        newestUpdatedAt: row.newest_updated_at ? new Date(row.newest_updated_at) : null,
+    };
 }

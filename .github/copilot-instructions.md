@@ -60,7 +60,13 @@ src/
   session-proxy.ts   — Activity definitions (runTurn, hydrate, dehydrate)
   session-manager.ts — SessionManager (CopilotSession lifecycle, tool resolution)
   managed-session.ts — ManagedSession (wraps CopilotSession, runTurn logic)
-  cms.ts             — PostgreSQL session catalog (CMS)
+  cms.ts             — PostgreSQL session catalog (CMS) — calls stored procs
+  cms-migrations.ts  — Versioned CMS schema migrations + stored procedure definitions
+  cms-migrator.ts    — CMS migration runner (wraps pg-migrator)
+  facts-store.ts     — PostgreSQL facts store — calls stored procs
+  facts-migrations.ts — Versioned Facts schema migrations + stored procedure definitions
+  facts-migrator.ts  — Facts migration runner (wraps pg-migrator)
+  pg-migrator.ts     — Shared advisory-lock migration runner
   blob-store.ts      — Azure Blob session dehydration/hydration
   types.ts           — All TypeScript interfaces and types
 test/
@@ -204,6 +210,53 @@ When you change an agent prompt, tune timer interrupt wording, or test a new LLM
 
 Record: the model tested, which agent type, observed behavior, expected behavior, and whether the change worked. Keep the model compatibility matrix current. Use the `pilotswarm-agent-tuner` agent for structured tuning workflows.
 
+## Observability Surface for the Agent Tuner
+
+The `agent-tuner` agent is the canonical investigator for reliability, cost,
+performance, and correctness issues. Any new monitoring signal, metric,
+aggregate, or diagnostic that is useful for those investigations **must
+be reachable by the tuner through a tool**, not just through SQL or a dashboard.
+
+When you add or change an observability surface, follow this checklist:
+
+1. **Persist the signal durably.** Either as a column on
+   `session_metric_summaries`, a row in `session_events` (preferred for
+   per-event signals), or a counter in the relevant store schema (CMS or
+   facts).
+2. **Expose it through `PilotSwarmManagementClient`.** A typed read
+   method on the management client is the canonical API surface — no
+   tuner-only side channels, no raw SQL helpers in scripts.
+3. **Wrap it as a tuner inspect-tool.** Add a `read_*` tool in
+   [`packages/sdk/src/inspect-tools.ts`](../packages/sdk/src/inspect-tools.ts)
+   inside the `if (!isTuner) return [readAgentEventsTool];` guard so it
+   is registered only on tuner sessions. Mirror the existing patterns:
+   `read_session_*` for per-session, `read_session_tree_*` for spawn
+   trees, `read_fleet_*` for fleet-wide.
+4. **Surface it in the TUI/portal stats pane** if it is operator-grade.
+   Selectors live in [`packages/ui-core/src/selectors.js`](../packages/ui-core/src/selectors.js)
+   and render in both the native TUI and the portal automatically.
+5. **Test it.** A `*-stats.test.js` (or similar) under `test/local/` that
+   seeds data and verifies the management API + the inspect-tool
+   handler.
+
+Examples already in the codebase to follow:
+
+- `getSessionMetricSummary` / `read_session_metric_summary` (tokens,
+  snapshot, hydration counters)
+- `getSessionTreeStats` / `read_session_tree_stats` (spawn-tree roll-up)
+- `getFleetStats` / `read_fleet_stats` (fleet-wide aggregates)
+- `getSessionSkillUsage` / `read_session_skill_usage` (static + learned
+  skill consumption)
+- `getFleetSkillUsage` / `read_fleet_skill_usage` (skill usage across
+  the fleet)
+- Cache-hit ratio fields on every stats surface
+  ([`computeCacheHitRatio`](../packages/sdk/src/cms.ts))
+
+If a new signal is **not** wired through these layers, the tuner cannot
+reason about it during incident investigations, and operators have to
+fall back to ad-hoc SQL — which is the exact gap this rule exists to
+prevent.
+
 ## Duroxide Bugs
 
 When a bug is identified as originating in **duroxide** (the Rust-based durable orchestration runtime), do NOT attempt to work around it in the runtime or TUI layer. Instead:
@@ -298,6 +351,23 @@ Each test function should:
 **No custom system prompts to compensate for product behavior.** Tests should use `client.createSession()` without overriding `systemMessage` unless the test is specifically testing custom system messages. The default agent prompt and tool schemas should be sufficient for the LLM to use tools correctly. If the LLM isn't calling a tool, that's a product bug in the default prompt or tool schema — fix it there, not in the test.
 
 **Raise failures loudly.** When a test fails, investigate and report the root cause. Do not silence it. Flag the issue to the user.
+
+## Database Schema & Stored Procedures
+
+All PostgreSQL data access (reads and writes) in the CMS and Facts stores goes through **stored procedures**. No inline SQL in TypeScript — the provider methods call `SELECT schema.proc_name(...)`.
+
+### Migration System
+
+Both CMS (`copilot_sessions` schema) and Facts (`pilotswarm_facts` schema) use the same versioned migration runner (`pg-migrator.ts`) with PostgreSQL advisory locks for concurrent worker safety. Migrations are defined as TypeScript functions in `cms-migrations.ts` and `facts-migrations.ts`, applied automatically on `initialize()`.
+
+### Schema Change Rules
+
+1. **Never edit a previous migration.** Add a new one with `CREATE OR REPLACE FUNCTION`.
+2. **Every migration needs a companion diff file** (`packages/sdk/src/migrations/NNNN_diff.md`). Git diffs for SQL-in-TypeScript only show new code, not the delta from the previous version. The diff file makes stored procedure changes reviewable.
+3. **All new data-access queries must be stored procedures.** No new inline SQL in the provider classes.
+4. **Migration SQL must be idempotent** — `IF NOT EXISTS`, `CREATE OR REPLACE`, etc.
+
+Use the [`schema-migration` skill](./skills/schema-migration/SKILL.md) for the full step-by-step process.
 
 ## Common Patterns
 

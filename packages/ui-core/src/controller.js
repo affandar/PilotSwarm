@@ -1154,15 +1154,27 @@ export class PilotSwarmUiController {
 
         this.dispatch({ type: "sessionStats/loading", sessionId });
         try {
-            const [summary, treeStats] = await Promise.all([
+            const [summary, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats] = await Promise.all([
                 this.transport.getSessionMetricSummary(sessionId),
                 typeof this.transport.getSessionTreeStats === "function"
                     ? this.transport.getSessionTreeStats(sessionId)
                     : null,
+                typeof this.transport.getSessionSkillUsage === "function"
+                    ? this.transport.getSessionSkillUsage(sessionId).catch(() => null)
+                    : null,
+                typeof this.transport.getSessionTreeSkillUsage === "function"
+                    ? this.transport.getSessionTreeSkillUsage(sessionId).catch(() => null)
+                    : null,
+                typeof this.transport.getSessionFactsStats === "function"
+                    ? this.transport.getSessionFactsStats(sessionId).catch(() => null)
+                    : null,
+                typeof this.transport.getSessionTreeFactsStats === "function"
+                    ? this.transport.getSessionTreeFactsStats(sessionId).catch(() => null)
+                    : null,
             ]);
-            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, treeStats });
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats });
         } catch {
-            this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, treeStats: null });
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, treeStats: null, skillUsage: null, treeSkillUsage: null, factsStats: null, treeFactsStats: null });
         }
     }
 
@@ -1176,12 +1188,25 @@ export class PilotSwarmUiController {
 
         this.dispatch({ type: "fleetStats/loading" });
         try {
-            const data = await this.transport.getFleetStats({
-                since: new Date(Date.now() - FLEET_STATS_DEFAULT_WINDOW_DAYS * 86400_000),
-            });
-            this.dispatch({ type: "fleetStats/loaded", data });
+            const since = new Date(Date.now() - FLEET_STATS_DEFAULT_WINDOW_DAYS * 86400_000);
+            // Include soft-deleted sessions in the rolling window so the
+            // aggregates reflect work that *happened* in the last 30 days,
+            // not just sessions that still exist. Deleted-but-recent
+            // sessions are still part of the operator's reality (cost,
+            // tokens, skill usage) until the underlying rows are pruned.
+            const fleetOpts = { since, includeDeleted: true };
+            const [data, skillUsage, sharedFactsStats] = await Promise.all([
+                this.transport.getFleetStats(fleetOpts),
+                typeof this.transport.getFleetSkillUsage === "function"
+                    ? this.transport.getFleetSkillUsage(fleetOpts).catch(() => null)
+                    : null,
+                typeof this.transport.getSharedFactsStats === "function"
+                    ? this.transport.getSharedFactsStats().catch(() => null)
+                    : null,
+            ]);
+            this.dispatch({ type: "fleetStats/loaded", data, skillUsage, sharedFactsStats });
         } catch {
-            this.dispatch({ type: "fleetStats/loaded", data: null });
+            this.dispatch({ type: "fleetStats/loaded", data: null, skillUsage: null, sharedFactsStats: null });
         }
     }
 
@@ -1621,10 +1646,23 @@ export class PilotSwarmUiController {
     toggleFilePreviewFullscreen() {
         const state = this.getState();
         const sessionId = state.sessions.activeSessionId;
-        if (!sessionId) return;
+        if (!sessionId) {
+            this.dispatch({ type: "ui/status", text: "No session selected" });
+            return;
+        }
         const fileState = state.files.bySessionId[sessionId];
-        if (!fileState?.selectedFilename) return;
-        const nextFullscreen = !Boolean(state.files.fullscreen);
+        const isCurrentlyFullscreen = Boolean(state.files.fullscreen);
+        // Allow exiting fullscreen unconditionally. Block entering it
+        // when no file is selected — but tell the user *why* the button
+        // appeared to do nothing instead of failing silently.
+        if (!isCurrentlyFullscreen && !fileState?.selectedFilename) {
+            this.dispatch({
+                type: "ui/status",
+                text: "Select a file before entering fullscreen",
+            });
+            return;
+        }
+        const nextFullscreen = !isCurrentlyFullscreen;
         this.dispatch({
             type: "files/fullscreen",
             fullscreen: nextFullscreen,
@@ -1632,7 +1670,7 @@ export class PilotSwarmUiController {
         this.dispatch({
             type: "ui/status",
             text: nextFullscreen
-                ? `Fullscreen files browser: ${fileState.selectedFilename}`
+                ? `Fullscreen files browser: ${fileState?.selectedFilename || ""}`
                 : `Closed fullscreen files browser`,
         });
     }
@@ -2309,6 +2347,63 @@ export class PilotSwarmUiController {
                 ? `Rename title for ${agentTitlePrefix}; the agent-name prefix stays fixed`
                 : "Type a new session title and press Enter to save",
         });
+    }
+
+    /**
+     * Open the Terminate picker for the active session. The picker is a
+     * tiny three-button modal: Mark Completed / Cancel / Delete. Each
+     * choice closes the picker and dispatches the corresponding action
+     * command, which itself opens the existing per-action confirm modal.
+     * Provides a mobile-friendly entry point to terminal actions that
+     * are otherwise only reachable via keyboard shortcuts.
+     */
+    openTerminatePickerModal() {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        if (!sessionId) {
+            this.dispatch({ type: "ui/status", text: "No session selected" });
+            return;
+        }
+        const session = state.sessions.byId[sessionId];
+        if (!session) {
+            this.dispatch({ type: "ui/status", text: "No session selected" });
+            return;
+        }
+        if (session.isSystem) {
+            this.dispatch({ type: "ui/status", text: "System sessions cannot be terminated from the UI" });
+            return;
+        }
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "terminatePicker",
+                title: `Terminate (${shortSessionIdValue(sessionId)})`,
+                sessionId,
+                previousFocus: state.ui.focusRegion,
+                sessionTitle: String(session.title || "").trim(),
+                state: String(session.state || "").trim(),
+            },
+        });
+    }
+
+    /**
+     * Pick one of the three terminate actions. Closes the picker and
+     * dispatches the corresponding action command, which will then
+     * open the existing per-action confirm modal.
+     */
+    async pickTerminateAction(action) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "terminatePicker") return;
+        const previousFocus = modal.previousFocus;
+        this.dispatch({ type: "ui/modal", modal: null });
+        if (previousFocus) this.setFocus(previousFocus);
+        if (action === "complete") {
+            await this.completeActiveSession();
+        } else if (action === "cancel") {
+            await this.cancelActiveSession();
+        } else if (action === "delete") {
+            await this.deleteActiveSession();
+        }
     }
 
     updateRenameSessionModal(updater) {
@@ -3536,6 +3631,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.OPEN_RENAME_SESSION:
                 this.openRenameSessionModal();
+                return;
+            case UI_COMMANDS.OPEN_TERMINATE_PICKER:
+                this.openTerminatePickerModal();
                 return;
             case UI_COMMANDS.OPEN_ARTIFACT_UPLOAD:
                 this.openArtifactUploadModal();

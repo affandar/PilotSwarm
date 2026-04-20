@@ -202,6 +202,12 @@ function buildUsageSummaryUpsert(data: unknown): {
     tokensCacheReadIncrement?: number;
     tokensCacheWriteIncrement?: number;
 } | null {
+    // Convention: tokensInputIncrement is the *inclusive* prompt-token count
+    // (i.e. it INCLUDES tokensCacheReadIncrement). This matches the
+    // OpenAI/Anthropic billing shape and is what computeCacheHitRatio() in
+    // cms.ts assumes when it derives cache_read / input. If a future provider
+    // ever reports input_tokens excluding the cached prefix, normalize here
+    // BEFORE storing — do not invert the convention downstream.
     const usage = (data ?? {}) as Record<string, unknown>;
     const tokensInputIncrement = finiteMetricNumber(usage.inputTokens ?? usage.prompt_tokens);
     const tokensOutputIncrement = finiteMetricNumber(usage.outputTokens ?? usage.completion_tokens);

@@ -24,8 +24,15 @@ import type {
 } from "./types.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
-import type { SessionMetricSummary, SessionTreeStats, FleetStats } from "./cms.js";
-import type { FactStore } from "./facts-store.js";
+import type {
+    SessionMetricSummary,
+    SessionTreeStats,
+    FleetStats,
+    SkillUsageRow,
+    SessionTreeSkillUsage,
+    FleetSkillUsage,
+} from "./cms.js";
+import type { FactStore, FactsStatsRow } from "./facts-store.js";
 import { createFactStoreForUrl } from "./facts-store.js";
 import { SessionDumper } from "./session-dumper.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor } from "./model-providers.js";
@@ -770,6 +777,95 @@ export class PilotSwarmManagementClient {
     async getFleetStats(opts?: { includeDeleted?: boolean; since?: Date }): Promise<FleetStats> {
         this._ensureStarted();
         return this._catalog!.getFleetStats(opts);
+    }
+
+    /**
+     * Get per-session skill usage. Returns one row per (kind, name, plugin)
+     * for either static skills (`skill.invoked`) or learned-knowledge reads
+     * (`learned_skill.read`) the session has performed.
+     */
+    async getSessionSkillUsage(sessionId: string, opts?: { since?: Date }): Promise<SkillUsageRow[]> {
+        this._ensureStarted();
+        return this._catalog!.getSessionSkillUsage(sessionId, opts);
+    }
+
+    /**
+     * Get skill usage rolled up across the spawn tree rooted at the given
+     * session. Returns per-session breakdown, a flat rolled-up summary,
+     * and total invocation count.
+     */
+    async getSessionTreeSkillUsage(sessionId: string, opts?: { since?: Date }): Promise<SessionTreeSkillUsage> {
+        this._ensureStarted();
+        return this._catalog!.getSessionTreeSkillUsage(sessionId, opts);
+    }
+
+    /**
+     * Get fleet-wide skill usage broken down by `agentId` and skill kind.
+     * Pass `since` for time-windowed reads (recommended for the default UI).
+     */
+    async getFleetSkillUsage(opts?: { since?: Date; includeDeleted?: boolean }): Promise<FleetSkillUsage> {
+        this._ensureStarted();
+        return this._catalog!.getFleetSkillUsage(opts);
+    }
+
+    /**
+     * Per-session non-shared facts, bucketed by knowledge namespace
+     * (`skills` | `asks` | `intake` | `config` | `(other)`). Counts and
+     * total `pg_column_size(value)` bytes only — never the values themselves.
+     */
+    async getSessionFactsStats(sessionId: string): Promise<{ sessionId: string; rows: FactsStatsRow[]; totalCount: number; totalBytes: number }> {
+        this._ensureStarted();
+        if (!this._factStore) return { sessionId, rows: [], totalCount: 0, totalBytes: 0 };
+        const rows = await this._factStore.getSessionFactsStats(sessionId);
+        return {
+            sessionId,
+            rows,
+            totalCount: rows.reduce((acc, r) => acc + r.factCount, 0),
+            totalBytes: rows.reduce((acc, r) => acc + r.totalValueBytes, 0),
+        };
+    }
+
+    /**
+     * Facts stats rolled up across the spawn tree rooted at `sessionId`.
+     * Resolves descendant ids from the CMS first, then aggregates in the
+     * facts schema. Returns per-session breakdown plus a flat roll-up.
+     */
+    async getSessionTreeFactsStats(sessionId: string): Promise<{
+        rootSessionId: string;
+        sessionIds: string[];
+        rolledUp: FactsStatsRow[];
+        totalCount: number;
+        totalBytes: number;
+    }> {
+        this._ensureStarted();
+        if (!this._factStore) {
+            return { rootSessionId: sessionId, sessionIds: [sessionId], rolledUp: [], totalCount: 0, totalBytes: 0 };
+        }
+        const descendants = await this._catalog!.getDescendantSessionIds(sessionId);
+        const ids = Array.from(new Set([sessionId, ...descendants]));
+        const rolledUp = await this._factStore.getFactsStatsForSessions(ids);
+        return {
+            rootSessionId: sessionId,
+            sessionIds: ids,
+            rolledUp,
+            totalCount: rolledUp.reduce((acc, r) => acc + r.factCount, 0),
+            totalBytes: rolledUp.reduce((acc, r) => acc + r.totalValueBytes, 0),
+        };
+    }
+
+    /**
+     * Shared (cross-session) facts bucketed by namespace. Used for the
+     * fleet "Facts" card to spot Facts Manager activity at a glance.
+     */
+    async getSharedFactsStats(): Promise<{ rows: FactsStatsRow[]; totalCount: number; totalBytes: number }> {
+        this._ensureStarted();
+        if (!this._factStore) return { rows: [], totalCount: 0, totalBytes: 0 };
+        const rows = await this._factStore.getSharedFactsStats();
+        return {
+            rows,
+            totalCount: rows.reduce((acc, r) => acc + r.factCount, 0),
+            totalBytes: rows.reduce((acc, r) => acc + r.totalValueBytes, 0),
+        };
     }
 
     async pruneDeletedSummaries(olderThan: Date): Promise<number> {
