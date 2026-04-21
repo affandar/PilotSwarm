@@ -263,7 +263,7 @@ function computeGridViewport(viewport) {
     };
 }
 
-function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller) {
+function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom = false } = {}) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
     // Programmatic scrollTop assignments fire a 'scroll' event that would
     // otherwise call onScroll → dispatch ui/scroll → clobber the user's
@@ -303,6 +303,16 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         // Skip the dispatch — next render with real content will restore
         // the desired scroll position from preserved state.
         if (maxScroll <= 0) return;
+        if (stickyBottom && typeof controller.updatePaneScrollFromViewport === "function") {
+            const distanceToBottom = Math.max(0, maxScroll - node.scrollTop);
+            controller.updatePaneScrollFromViewport(
+                paneKey,
+                Math.max(0, node.scrollTop) / SCROLL_ROW_HEIGHT,
+                { atBottom: distanceToBottom <= SCROLL_ROW_HEIGHT / 2 },
+            );
+            return;
+        }
+
         const pixels = scrollMode === "bottom"
             ? Math.max(0, maxScroll - node.scrollTop)
             : Math.max(0, node.scrollTop);
@@ -311,7 +321,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             pane: paneKey,
             offset: pixels / SCROLL_ROW_HEIGHT,
         });
-    }, [controller, paneKey, ref, scrollMode]);
+    }, [controller, paneKey, ref, scrollMode, stickyBottom]);
 
     return { normalizedLines, onScroll };
 }
@@ -758,12 +768,42 @@ function splitBoxTableCells(text) {
         .map((cell) => cell.trim());
 }
 
+function shouldJoinBoxTableFragmentsWithoutSpace(left = "", right = "") {
+    const previous = String(left || "").trimEnd();
+    const next = String(right || "").trimStart();
+    if (!previous || !next) return false;
+
+    const previousChar = previous.slice(-1);
+    const nextChar = next[0];
+
+    if (/^[,.;:!?%)\]}>]/u.test(nextChar)) return true;
+    if (/^[._/\\-]/u.test(nextChar)) return true;
+    if (/[([{<._/\\-]$/u.test(previousChar)) return true;
+    if (/\.[A-Za-z0-9]{0,4}$/u.test(previous) && /^[A-Za-z0-9]/u.test(nextChar)) return true;
+
+    return false;
+}
+
+export function mergeBoxTableCellFragments(fragments = []) {
+    const parts = (Array.isArray(fragments) ? fragments : [fragments])
+        .map((fragment) => String(fragment || "").trim())
+        .filter(Boolean);
+    if (parts.length === 0) return "";
+
+    return parts.slice(1).reduce((merged, fragment) => (
+        shouldJoinBoxTableFragmentsWithoutSpace(merged, fragment)
+            ? `${merged}${fragment}`
+            : `${merged} ${fragment}`
+    ), parts[0]);
+}
+
 function mergeBoxTableRowGroup(rowGroup = []) {
     const columnCount = Math.max(0, ...rowGroup.map((row) => row.length));
-    return Array.from({ length: columnCount }, (_, columnIndex) => rowGroup
-        .map((row) => String(row[columnIndex] || "").trim())
-        .filter(Boolean)
-        .join(" "));
+    return Array.from({ length: columnCount }, (_, columnIndex) => mergeBoxTableCellFragments(
+        rowGroup
+            .map((row) => String(row[columnIndex] || "").trim())
+            .filter(Boolean),
+    ));
 }
 
 function parseStructuredChatBlocks(lines = []) {
@@ -983,13 +1023,13 @@ function Panel({ title, color = "gray", focused = false, actions = null, childre
     React.createElement("div", { className: "ps-panel-body" }, children));
 }
 
-function ScrollLinesPanel({ title, color, focused, actions, lines, stickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false }) {
+function ScrollLinesPanel({ title, color, focused, actions, lines, stickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false, stickyBottom = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
     const stickyRef = React.useRef(null);
     const syncingHorizontalRef = React.useRef(false);
-    const { normalizedLines, onScroll } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller);
+    const { normalizedLines, onScroll } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
     const normalizedSticky = React.useMemo(() => normalizeLines(stickyLines), [stickyLines]);
     const preserveHorizontalScroll = className.includes("is-preserve") && panelClassName.includes("has-preserved-sticky");
 
@@ -1478,6 +1518,7 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
             files: state.files,
             focused: state.ui.focusRegion === "inspector",
             scroll: state.ui.scroll.inspector,
+            followBottom: state.ui.followBottom?.inspector !== false,
             logsTailing: state.logs.tailing,
             filesFullscreen: Boolean(state.files.fullscreen),
             contentWidth: Math.max(20, paneWidth - 4),
@@ -1587,12 +1628,14 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         stickyLines: inspector.stickyLines || [],
         lines: inspector.lines,
         scrollOffset: viewState.scroll,
-        scrollMode: inspector.activeTab === "logs"
-            || inspector.activeTab === "sequence"
+        scrollMode: inspector.activeTab === "sequence"
             ? "bottom"
-            : "top",
+            : inspector.activeTab === "logs" && viewState.followBottom
+                ? "bottom"
+                : "top",
+        stickyBottom: inspector.activeTab === "logs",
         paneKey: "inspector",
-        className: inspector.activeTab === "history" ? "is-wrapped" : "is-preserve",
+        className: inspector.activeTab === "history" || inspector.activeTab === "logs" ? "is-wrapped" : "is-preserve",
         panelClassName: `${inspector.activeTab === "sequence" ? "has-preserved-sticky" : ""}${panelClassName ? ` ${panelClassName}` : ""}`.trim(),
     });
 }
@@ -1608,6 +1651,7 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
             focused: state.ui.focusRegion === "activity",
             scroll: state.ui.scroll.activity,
+            followBottom: state.ui.followBottom?.activity !== false,
             maxLines,
         };
     }, shallowEqualObject);
@@ -1637,9 +1681,10 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
         actions: extraActions,
         lines: activity.lines,
         scrollOffset: viewState.scroll,
-        scrollMode: "bottom",
+        scrollMode: viewState.followBottom ? "bottom" : "top",
+        stickyBottom: true,
         paneKey: "activity",
-        className: "is-preserve",
+        className: "is-wrapped",
         panelClassName,
     });
 }

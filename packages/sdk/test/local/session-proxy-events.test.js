@@ -158,6 +158,56 @@ describe("session-proxy CMS prompt classification", () => {
         expect(matching[0].eventType).toBe("system.message");
     });
 
+    it("redacts SDK-emitted full system prompt echoes into concise CMS summaries", async () => {
+        const { runTurn, recordedEvents, session } = makeHarness();
+        session.runTurn = vi.fn(async (_prompt, opts) => {
+            opts?.onEvent?.({
+                eventType: "system.message",
+                data: {
+                    role: "system",
+                    content:
+                        "You are the GitHub Copilot CLI, a terminal assistant built by GitHub. " +
+                        "# Tone and style\n# Search and delegation\n# Tool usage efficiency",
+                },
+            });
+            opts?.onEvent?.({
+                eventType: "assistant.message",
+                data: { content: "ok" },
+            });
+            return { type: "completed", content: "ok", events: [] };
+        });
+
+        await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            {
+                sessionId: "session-sdk-system-echo",
+                prompt: "hello",
+                config: {},
+                turnIndex: 0,
+            },
+        );
+
+        expect(recordedEvents.some((event) =>
+            event.eventType === "system.message"
+            && String(event.data?.content || "").startsWith("You are the GitHub Copilot CLI"),
+        )).toBe(false);
+        expect(recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "system.message",
+            data: expect.objectContaining({
+                content: expect.stringContaining("Copilot SDK rebuilt the full system prompt for model input"),
+            }),
+        }));
+        const summaryEvent = recordedEvents.find((event) =>
+            event.eventType === "system.message"
+            && String(event.data?.content || "").includes("Copilot SDK rebuilt the full system prompt for model input"),
+        );
+        expect(String(summaryEvent?.data?.content || "")).toContain("Snippet: You are the GitHub Copilot CLI");
+        expect(recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "assistant.message",
+            data: expect.objectContaining({ content: "ok" }),
+        }));
+    });
+
     it("recovers a lost live Copilot session by invalidating and resuming once", async () => {
         const { runTurn, recordedEvents, sessionManager } = makeHarness();
         const staleSession = {

@@ -46,6 +46,23 @@ function flattenChatLines(lines = []) {
         .join("\n");
 }
 
+function buildLogEntries(count, start = 0) {
+    return Array.from({ length: count }, (_, index) => ({
+        time: `00:${String((start + index) % 60).padStart(2, "0")}:00`,
+        level: "info",
+        message: `Log entry ${start + index} ${"x".repeat(96)}`,
+        prettyMessage: `Log entry ${start + index} ${"x".repeat(96)}`,
+        rawLine: `Log entry ${start + index} ${"x".repeat(96)}`,
+    }));
+}
+
+function buildActivityItems(count, start = 0) {
+    return Array.from({ length: count }, (_, index) => ({
+        text: `[00:${String((start + index) % 60).padStart(2, "0")}:00] activity ${start + index} ${"y".repeat(72)}`,
+        line: [{ text: `[00:${String((start + index) % 60).padStart(2, "0")}:00] activity ${start + index} ${"y".repeat(72)}`, color: "white" }],
+    }));
+}
+
 describe("history pane UI behavior", () => {
     it("loads execution history once per selected session until the user refreshes", async () => {
         let historyFetchCount = 0;
@@ -105,6 +122,102 @@ describe("history pane UI behavior", () => {
             Math.max(0, bottomOffset - 11),
             "ctrl-u/page-up should continue moving upward from the bottom edge",
         );
+    });
+
+    it("keeps inspector logs sticky when follow-bottom is disabled and reenables follow at the bottom", () => {
+        const { controller, store } = createController();
+        seedSession(store);
+        store.dispatch({ type: "ui/focus", focusRegion: "inspector" });
+        store.dispatch({ type: "ui/inspectorTab", inspectorTab: "logs" });
+        store.dispatch({ type: "logs/config", available: true, availabilityReason: "" });
+        store.dispatch({ type: "logs/tailing", tailing: true });
+        store.dispatch({ type: "logs/set", entries: buildLogEntries(80) });
+
+        const maxOffset = controller.getPaneMaxScrollOffset("inspector");
+        assert(maxOffset > 0, "log pane should have a positive scroll range");
+
+        controller.scrollCurrentPane(1);
+        let state = store.getState();
+        assertEqual(state.ui.followBottom.inspector, false, "scrolling up should disable inspector follow-bottom mode");
+        const frozenOffset = state.ui.scroll.inspector;
+        assert(frozenOffset > 0, "inspector should preserve a positive top offset after scrolling away from the bottom");
+
+        store.dispatch({ type: "logs/append", entries: buildLogEntries(5, 80) });
+        state = store.getState();
+        assertEqual(state.ui.scroll.inspector, frozenOffset, "new logs should not rewrite the preserved inspector offset while follow-bottom is disabled");
+
+        controller.scrollCurrentPaneToBottom();
+        state = store.getState();
+        assertEqual(state.ui.followBottom.inspector, true, "jumping to the bottom should reenable inspector follow-bottom mode");
+        assertEqual(state.ui.scroll.inspector, 0, "follow-bottom mode should store zero distance from the bottom");
+    });
+
+    it("keeps activity sticky when follow-bottom is disabled and reenables follow at the bottom", () => {
+        const { controller, store } = createController();
+        const sessionId = seedSession(store);
+        store.dispatch({
+            type: "history/set",
+            sessionId,
+            history: {
+                chat: [],
+                activity: buildActivityItems(80),
+                events: [],
+                loadedEventLimit: 200,
+            },
+        });
+        store.dispatch({ type: "ui/focus", focusRegion: "activity" });
+
+        const maxOffset = controller.getPaneMaxScrollOffset("activity");
+        assert(maxOffset > 0, "activity pane should have a positive scroll range");
+
+        controller.scrollCurrentPane(1);
+        let state = store.getState();
+        assertEqual(state.ui.followBottom.activity, false, "scrolling up should disable activity follow-bottom mode");
+        const frozenOffset = state.ui.scroll.activity;
+        assert(frozenOffset > 0, "activity should preserve a positive top offset after scrolling away from the bottom");
+
+        store.dispatch({
+            type: "history/set",
+            sessionId,
+            history: {
+                chat: [],
+                activity: buildActivityItems(85),
+                events: [],
+                loadedEventLimit: 200,
+            },
+        });
+        state = store.getState();
+        assertEqual(state.ui.scroll.activity, frozenOffset, "new activity lines should not rewrite the preserved offset while follow-bottom is disabled");
+
+        controller.scrollCurrentPaneToBottom();
+        state = store.getState();
+        assertEqual(state.ui.followBottom.activity, true, "jumping to the bottom should reenable activity follow-bottom mode");
+        assertEqual(state.ui.scroll.activity, 0, "activity follow-bottom mode should store zero distance from the bottom");
+    });
+
+    it("uses the viewport atBottom signal to disable sticky follow for wrapped activity panes", () => {
+        const { controller, store } = createController();
+        const sessionId = seedSession(store);
+        store.dispatch({
+            type: "history/set",
+            sessionId,
+            history: {
+                chat: [],
+                activity: buildActivityItems(80),
+                events: [],
+                loadedEventLimit: 200,
+            },
+        });
+        store.dispatch({ type: "ui/focus", focusRegion: "activity" });
+
+        const maxOffset = controller.getPaneMaxScrollOffset("activity");
+        assert(maxOffset > 0, "activity pane should have a positive scroll range");
+
+        controller.updatePaneScrollFromViewport("activity", maxOffset, { atBottom: false });
+
+        const state = store.getState();
+        assertEqual(state.ui.followBottom.activity, false, "a viewport-level not-at-bottom signal should disable follow mode even when the shared max offset estimate says the pane is at the bottom");
+        assertEqual(state.ui.scroll.activity, maxOffset, "once follow mode is disabled, the preserved activity offset should stay top-relative");
     });
 
     it("exports execution history into the session artifact store", async () => {

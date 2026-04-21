@@ -31,6 +31,10 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
                 activity: 0,
                 filePreview: 0,
             },
+            followBottom: {
+                inspector: true,
+                activity: true,
+            },
         },
         connection: {
             mode,

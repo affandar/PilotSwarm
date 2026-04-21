@@ -165,4 +165,139 @@ describe("orchestration warm resume durability", () => {
             { eventType: "session.command_completed", data: { cmd: "get_info", id: "legacy-cmd-1" } },
         ]);
     });
+
+    it("does not process a stale queued idle timer after input_required dehydration", async () => {
+        const values = new Map();
+        values.set("fifo.0", JSON.stringify([
+            {
+                kind: "timer",
+                timer: {
+                    deadlineMs: 0,
+                    originalDurationMs: 60_000,
+                    reason: "idle timeout",
+                    type: "idle",
+                },
+                firedAtMs: 0,
+            },
+        ]));
+
+        mockSession = {
+            needsHydration: vi.fn(() => ({ effect: "needsHydration" })),
+            hydrate: vi.fn(() => ({ effect: "hydrate" })),
+            checkpoint: vi.fn(() => ({ effect: "checkpoint" })),
+            dehydrate: vi.fn((reason, eventData) => ({ effect: "dehydrate", reason, eventData })),
+            destroy: vi.fn(() => ({ effect: "destroy" })),
+            runTurn: vi.fn((prompt, bootstrap, iteration, opts) => ({
+                effect: "runTurn",
+                prompt,
+                bootstrap,
+                iteration,
+                opts,
+            })),
+        };
+        mockManager = {
+            loadKnowledgeIndex: vi.fn(() => ({ effect: "loadKnowledgeIndex" })),
+            recordSessionEvent: vi.fn(() => ({ effect: "recordSessionEvent" })),
+            summarizeSession: vi.fn(() => ({ effect: "summarizeSession" })),
+            listChildSessions: vi.fn(() => ({ effect: "listChildSessions" })),
+            getOrchestrationStats: vi.fn(() => ({ effect: "getOrchestrationStats" })),
+        };
+
+        const ctx = {
+            traceInfo: () => {},
+            setCustomStatus: () => {},
+            getValue: (key) => (values.has(key) ? values.get(key) : null),
+            setValue: (key, value) => values.set(key, value),
+            clearValue: (key) => values.delete(key),
+            utcNow: () => ({ effect: "utcNow" }),
+            dequeueEvent: () => ({ effect: "dequeueEvent" }),
+            scheduleTimer: (ms) => ({ effect: "scheduleTimer", ms }),
+            race: (left, right) => ({ effect: "race", left, right }),
+            continueAsNewVersioned: (input, version) => ({ effect: "continueAsNew", input, version }),
+            newGuid: () => ({ effect: "newGuid" }),
+        };
+
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        expect(typeof handler).toBe("function");
+
+        const gen = handler(ctx, {
+            sessionId: "stale-idle-input-required",
+            config: {},
+            prompt: "Ask me which city to use.",
+            isSystem: true,
+            blobEnabled: true,
+            inputGracePeriod: 0,
+            idleTimeout: 60,
+        });
+
+        let input;
+        let blockedOnAnswerDequeue = false;
+        for (let step = 0; step < 200; step += 1) {
+            const next = gen.next(input);
+            if (next.done) break;
+
+            const effect = next.value;
+            if (effect?.effect === "dequeueEvent") {
+                blockedOnAnswerDequeue = true;
+                break;
+            }
+
+            switch (effect?.effect) {
+                case "utcNow":
+                    input = 1_717_000_000_000;
+                    break;
+                case "needsHydration":
+                    input = false;
+                    break;
+                case "race":
+                    input = { index: 1, value: undefined };
+                    break;
+                case "loadKnowledgeIndex":
+                case "recordSessionEvent":
+                case "summarizeSession":
+                case "hydrate":
+                case "checkpoint":
+                case "destroy":
+                    input = undefined;
+                    break;
+                case "listChildSessions":
+                    input = JSON.stringify([]);
+                    break;
+                case "getOrchestrationStats":
+                    input = {
+                        historyEventCount: 0,
+                        historySizeBytes: 0,
+                        queuePendingCount: 0,
+                        kvUserKeyCount: 0,
+                        kvTotalValueBytes: 0,
+                    };
+                    break;
+                case "runTurn":
+                    input = {
+                        type: "input_required",
+                        question: "Which city should I use?",
+                        allowFreeform: true,
+                        events: [],
+                    };
+                    break;
+                case "dehydrate":
+                    input = undefined;
+                    break;
+                case "newGuid":
+                    input = "new-affinity";
+                    break;
+                case "continueAsNew":
+                    throw new Error("Unexpected continueAsNew before waiting for the answer");
+                default:
+                    throw new Error(`Unexpected effect: ${JSON.stringify(effect)}`);
+            }
+        }
+
+        expect(blockedOnAnswerDequeue).toBe(true);
+        expect(mockSession.dehydrate).toHaveBeenCalledTimes(1);
+        expect(mockSession.dehydrate).toHaveBeenCalledWith("input_required", undefined);
+    });
 });

@@ -11,9 +11,18 @@
 
 When the user asks for changes, releases, or deploys in this repository, operate on `pilotswarm` only unless they explicitly ask to update a downstream consumer as well.
 
-- Do **not** propagate PilotSwarm changes into downstream repos such as `waldemort`, app repos, or vendored SDK mirrors by default.
+- Do **not** propagate PilotSwarm changes into downstream app repos or vendored SDK mirrors by default.
 - Do **not** deploy downstream projects as part of a PilotSwarm deploy unless the user explicitly asks for that separate rollout.
 - If a downstream project is out of sync, call it out clearly instead of silently patching it.
+
+## Bug Report Anonymization
+
+When writing or updating files under `docs/bugreports/`, keep downstream deployments anonymous by default.
+
+- Do **not** include downstream app names, customer/project names, proprietary agent names, cluster/context names, namespaces, hostnames, URLs, endpoints, email addresses, or other deployment-specific identifiers unless the user explicitly asks to preserve them.
+- Replace live identifiers with clear placeholders such as `<downstream-app>`, `<cluster-context>`, `<namespace>`, `<session-id>`, or generic labels like "downstream app" / "named-agent session".
+- Avoid pasting raw production session IDs, pod names, or copied prompt content that would reveal a downstream app's identity when a summarized or redacted example is sufficient.
+- Before committing bug-report docs, scan them for identity leaks and redact anything that is not required to explain the bug.
 
 ## Sensitive Local Files
 

@@ -188,7 +188,11 @@ function renderInspectorPanel(platform, inspector, meta, width, height, frame) {
         marginBottom: PANE_GAP_Y,
         lines,
         scrollOffset: meta.inspectorScroll,
-        scrollMode: inspector.activeTab === "logs" || inspector.activeTab === "sequence" ? "bottom" : "top",
+        scrollMode: inspector.activeTab === "sequence"
+            ? "bottom"
+            : inspector.activeTab === "logs" && meta.inspectorFollowBottom
+                ? "bottom"
+                : "top",
         paneId: "inspector",
         paneLabel: inspector.activeTab === "sequence" ? "Sequence" : "Inspector",
         frame,
@@ -697,6 +701,7 @@ const InspectorPane = React.memo(function InspectorPane({ controller, width, hei
     const inspectorMeta = useControllerSelector(controller, (state) => ({
         inspectorTab: state.ui.inspectorTab,
         inspectorScroll: state.ui.scroll.inspector,
+        inspectorFollowBottom: state.ui.followBottom?.inspector !== false,
         focused: state.ui.focusRegion === "inspector",
     }), shallowEqualObject);
     if (inspectorMeta.inspectorTab === "files") {
@@ -763,6 +768,7 @@ const ActivityPane = React.memo(function ActivityPane({ controller, width, heigh
             activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
             scroll: state.ui.scroll.activity,
+            followBottom: state.ui.followBottom?.activity !== false,
             focused: state.ui.focusRegion === "activity",
         };
     }, shallowEqualObject);
@@ -791,7 +797,7 @@ const ActivityPane = React.memo(function ActivityPane({ controller, width, heigh
         height,
         lines: activity.lines,
         scrollOffset: activityState.scroll,
-        scrollMode: "bottom",
+        scrollMode: activityState.followBottom ? "bottom" : "top",
         paneId: "activity",
         paneLabel: "Activity",
         frame,
