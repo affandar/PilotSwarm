@@ -10,6 +10,7 @@ nohup.out
 dumps/
 perf/reports/
 TODO.md
+docs/inbox/
 # Squad: ignore runtime state (logs, inbox, sessions)
 .squad/orchestration-log/
 .squad/log/

@@ -3091,6 +3091,53 @@ export class PilotSwarmUiController {
         return INSPECTOR_BOTTOM_ANCHORED_TABS.has(this.getState().ui.inspectorTab);
     }
 
+    paneUsesStickyBottomFollow(pane, state = this.getState()) {
+        if (pane === "activity") return true;
+        if (pane === "inspector") return state.ui.inspectorTab === "logs";
+        return false;
+    }
+
+    isPaneFollowingBottom(pane, state = this.getState()) {
+        if (!this.paneUsesStickyBottomFollow(pane, state)) return false;
+        return state.ui.followBottom?.[pane] !== false;
+    }
+
+    getPaneVisualScrollOffset(pane, state = this.getState()) {
+        const maxOffset = this.getPaneMaxScrollOffset(pane, state);
+        const storedOffset = Math.max(0, Math.min(Number(state.ui.scroll?.[pane]) || 0, maxOffset));
+        if (this.isPaneFollowingBottom(pane, state)) {
+            return Math.max(0, maxOffset - storedOffset);
+        }
+        return storedOffset;
+    }
+
+    applyPaneVisualScrollOffset(pane, offset, options = {}, state = this.getState()) {
+        const maxOffset = this.getPaneMaxScrollOffset(pane, state);
+        const nextOffset = Math.max(0, Math.min(Number(offset) || 0, maxOffset));
+        if (this.paneUsesStickyBottomFollow(pane, state)) {
+            const followBottom = options.followBottom !== undefined
+                ? Boolean(options.followBottom)
+                : options.atBottom !== undefined
+                    ? Boolean(options.atBottom)
+                    : nextOffset >= maxOffset;
+            this.dispatch({ type: "ui/followBottom", pane, followBottom });
+            this.dispatch({ type: "ui/scroll", pane, offset: followBottom ? 0 : nextOffset });
+            return nextOffset;
+        }
+
+        this.dispatch({ type: "ui/scroll", pane, offset: nextOffset });
+        return nextOffset;
+    }
+
+    updatePaneScrollFromViewport(pane, offset, options = {}) {
+        const state = this.getState();
+        if (this.paneUsesStickyBottomFollow(pane, state)) {
+            this.applyPaneVisualScrollOffset(pane, offset, options, state);
+            return;
+        }
+        this.scrollPaneTo(pane, offset);
+    }
+
     expandActiveSession() {
         const sessionId = this.getState().sessions.activeSessionId;
         if (!sessionId) return;
@@ -3106,6 +3153,12 @@ export class PilotSwarmUiController {
     scrollPane(pane, delta) {
         const state = this.getState();
         const maxOffset = this.getPaneMaxScrollOffset(pane, state);
+        if (this.paneUsesStickyBottomFollow(pane, state)) {
+            const current = this.getPaneVisualScrollOffset(pane, state);
+            const nextOffset = Math.max(0, Math.min(current - delta, maxOffset));
+            this.applyPaneVisualScrollOffset(pane, nextOffset, { followBottom: nextOffset >= maxOffset }, state);
+            return;
+        }
         const current = Math.max(0, Math.min(Number(state.ui.scroll?.[pane]) || 0, maxOffset));
         const nextOffset = Math.max(0, Math.min(current + delta, maxOffset));
         this.dispatch({ type: "ui/scroll", pane, offset: nextOffset });
@@ -3115,8 +3168,13 @@ export class PilotSwarmUiController {
     }
 
     scrollPaneTo(pane, offset) {
-        const maxOffset = this.getPaneMaxScrollOffset(pane, this.getState());
+        const state = this.getState();
+        const maxOffset = this.getPaneMaxScrollOffset(pane, state);
         const nextOffset = Math.max(0, Math.min(Number(offset) || 0, maxOffset));
+        if (this.paneUsesStickyBottomFollow(pane, state)) {
+            this.applyPaneVisualScrollOffset(pane, nextOffset, { followBottom: nextOffset >= maxOffset }, state);
+            return;
+        }
         this.dispatch({ type: "ui/scroll", pane, offset: nextOffset });
         if (pane === "chat" && nextOffset > 0) {
             this.maybeAutoExpandActiveHistory(nextOffset).catch(() => {});
@@ -3137,6 +3195,10 @@ export class PilotSwarmUiController {
     scrollCurrentPane(delta) {
         const pane = this.getScrollablePaneForFocus();
         if (!pane) return;
+        if (this.paneUsesStickyBottomFollow(pane)) {
+            this.scrollPane(pane, delta);
+            return;
+        }
         const inspectorUsesBottomScroll = pane === "inspector" && this.inspectorUsesBottomScroll();
         const usesTopScroll = pane === "inspector" || pane === "filePreview";
         this.scrollPane(pane, usesTopScroll && !inspectorUsesBottomScroll ? -delta : delta);
@@ -3145,6 +3207,10 @@ export class PilotSwarmUiController {
     scrollCurrentPaneToTop() {
         const pane = this.getScrollablePaneForFocus();
         if (!pane) return;
+        if (this.paneUsesStickyBottomFollow(pane)) {
+            this.applyPaneVisualScrollOffset(pane, 0, { followBottom: false });
+            return;
+        }
         const inspectorUsesBottomScroll = pane === "inspector" && this.inspectorUsesBottomScroll();
         if (pane === "chat" || pane === "activity" || inspectorUsesBottomScroll) {
             this.scrollPaneTo(pane, Number.MAX_SAFE_INTEGER);
@@ -3156,6 +3222,10 @@ export class PilotSwarmUiController {
     scrollCurrentPaneToBottom() {
         const pane = this.getScrollablePaneForFocus();
         if (!pane) return;
+        if (this.paneUsesStickyBottomFollow(pane)) {
+            this.applyPaneVisualScrollOffset(pane, Number.MAX_SAFE_INTEGER, { followBottom: true });
+            return;
+        }
         const inspectorUsesBottomScroll = pane === "inspector" && this.inspectorUsesBottomScroll();
         if (pane === "chat" || pane === "activity" || inspectorUsesBottomScroll) {
             this.scrollPaneTo(pane, 0);

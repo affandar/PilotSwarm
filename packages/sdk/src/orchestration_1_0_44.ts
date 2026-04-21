@@ -202,16 +202,16 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.45).
+ * Flat event loop durable session orchestration (v1.0.44).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.44";
 
-export function* durableSessionOrchestration_1_0_45(
+export function* durableSessionOrchestration_1_0_44(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -795,15 +795,7 @@ export function* durableSessionOrchestration_1_0_45(
         resetAffinity = true,
         eventData?: Record<string, unknown>,
     ): Generator<any, void, any> {
-        if (lastLiveSessionAction === "dehydrate") {
-            ctx.traceInfo(`[orch] skipping redundant dehydrate (reason=${reason}) because the last live-session action was already dehydrate`);
-            activeTimer = null;
-            return;
-        }
-
         ctx.traceInfo(`[orch] dehydrating session (reason=${reason}, resetAffinity=${resetAffinity})`);
-        activeTimer = null;
-        lastLiveSessionAction = "dehydrate";
         const dehydrateResult = yield session.dehydrate(reason, eventData);
         const lossyHandoff = dehydrateResult?.lossyHandoff;
         if (lossyHandoff && typeof lossyHandoff === "object") {
@@ -886,7 +878,6 @@ export function* durableSessionOrchestration_1_0_45(
     let pendingInputQuestion: { question: string; choices?: string[]; allowFreeform?: boolean } | null =
         input.pendingInputQuestion ?? null;
     let orchestrationResult: string | null = null;
-    let lastLiveSessionAction: "session-activity" | "dehydrate" = "session-activity";
 
     /** Saved when a user message interrupts an active wait timer.
      *  After the LLM's response turn completes, the orchestration
@@ -1721,7 +1712,6 @@ export function* durableSessionOrchestration_1_0_45(
                     yield session.hydrate();
                     needsHydration = false;
                     preserveAffinityOnHydrate = false;
-                    lastLiveSessionAction = "session-activity";
                     break;
                 } catch (hydrateErr: any) {
                     const hMsg = hydrateErr.message || String(hydrateErr);
@@ -1768,7 +1758,6 @@ export function* durableSessionOrchestration_1_0_45(
         publishStatus("running", { iteration: iteration + 1 });
         let turnResult: any;
         try {
-            lastLiveSessionAction = "session-activity";
             turnResult = yield session.runTurn(prompt, promptIsBootstrap, iteration, {
                 ...(parentSessionId ? { parentSessionId } : {}),
                 nestingLevel,

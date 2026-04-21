@@ -278,6 +278,26 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "ui/followBottom": {
+            if (action.pane !== "inspector" && action.pane !== "activity") {
+                return state;
+            }
+            const nextFollowBottom = Boolean(action.followBottom);
+            if (state.ui.followBottom?.[action.pane] === nextFollowBottom) {
+                return state;
+            }
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    followBottom: {
+                        ...(state.ui.followBottom || {}),
+                        [action.pane]: nextFollowBottom,
+                    },
+                },
+            };
+        }
+
         case "ui/inspectorTab":
             return {
                 ...state,
@@ -290,6 +310,10 @@ export function appReducer(state, action) {
                     scroll: {
                         ...state.ui.scroll,
                         inspector: 0,
+                    },
+                    followBottom: {
+                        ...(state.ui.followBottom || {}),
+                        inspector: true,
                     },
                 },
                 files: action.inspectorTab === "files"
@@ -452,6 +476,11 @@ export function appReducer(state, action) {
                         chat: 0,
                         inspector: 0,
                         activity: 0,
+                    },
+                    followBottom: {
+                        ...(state.ui.followBottom || {}),
+                        inspector: true,
+                        activity: true,
                     },
                 },
             };

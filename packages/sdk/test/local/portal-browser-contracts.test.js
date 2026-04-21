@@ -2,6 +2,7 @@ import { describe, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { mergeBoxTableCellFragments } from "../../../ui-react/src/web-app.js";
 import { assert, assertIncludes } from "../helpers/assertions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -12,6 +13,12 @@ function readRepoFile(relPath) {
 }
 
 describe("portal browser contracts", () => {
+    it("reconstructs wrapped box-table cells without inserting spaces into file extensions or identifier punctuation", () => {
+        assert(mergeBoxTableCellFragments(["OrcasExperienceFeatureConstants", ".cs,"]) === "OrcasExperienceFeatureConstants.cs,", "wrapped file extensions should rejoin without an inserted space");
+        assert(mergeBoxTableCellFragments(["PostgreSqlDbEngineReplication.c", "s,"]) === "PostgreSqlDbEngineReplication.cs,", "split file extensions should rejoin without an inserted space");
+        assert(mergeBoxTableCellFragments(["Feature", "gating"]) === "Feature gating", "normal word-wrapped text should still rejoin with a space");
+    });
+
     it("supports browser-native artifact uploads through the portal transport", () => {
         const browserTransport = readRepoFile("packages/portal/src/browser-transport.js");
         const runtime = readRepoFile("packages/portal/runtime.js");
@@ -57,11 +64,15 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "view.fullscreen\n        ? previewPane", "portal fullscreen files mode should hide the artifact list");
         assertIncludes(webApp, "MarkdownPreviewPanel", "portal should render markdown previews through a dedicated component");
         assertIncludes(webApp, "ps-markdown-preview", "portal markdown previews should use the rich markdown container");
+        assertIncludes(webApp, 'stickyBottom: inspector.activeTab === "logs"', "portal log pane should use sticky follow-bottom scroll semantics");
+        assertIncludes(webApp, 'className: inspector.activeTab === "history" || inspector.activeTab === "logs" ? "is-wrapped" : "is-preserve"', "portal inspector logs should wrap instead of preserving horizontal overflow");
+        assertIncludes(webApp, 'className: "is-wrapped"', "portal activity pane should render wrapped lines");
         assertIncludes(webApp, 'type: "code"', "portal chat renderer should recognize code fence blocks");
         assertIncludes(webApp, "ps-chat-code-block", "portal chat renderer should render code fences with a dedicated code block style");
         assertIncludes(webApp, "controller.adjustSessionPaneSplit", "web app should support resizing the session list vertically");
         assertIncludes(layout, "sessionPaneAdjust", "layout computation should persist vertical session-pane adjustments");
         assertIncludes(state, "themeId: themeId || DEFAULT_THEME_ID", "shared initial state should honor persisted theme ids");
+        assertIncludes(state, "followBottom:", "shared UI state should track follow-bottom scroll mode for live panes");
         assertIncludes(sharedTui, "buildSessionTitleRightRuns", "shared TUI shell should compose RSS and version chrome");
         assertIncludes(cliApp, "PILOTSWARM_CLI_VERSION_LABEL", "TUI host should pass its version label into the shared app");
         assertIncludes(css, ".portal-header-version", "portal stylesheet should style the header version badge");

@@ -98,6 +98,34 @@ function normalizeEventData(eventData?: Record<string, unknown>): Record<string,
     return eventData && typeof eventData === "object" ? eventData : null;
 }
 
+function summarizeSdkSystemPromptEchoEvent(
+    event: { eventType: string; data: unknown },
+): { eventType: string; data: unknown } | null {
+    if (event.eventType !== "system.message") return event;
+    const data = normalizeEventData(event.data as Record<string, unknown> | undefined);
+    const content = typeof data?.content === "string" ? data.content : "";
+    if (!content.startsWith("You are the GitHub Copilot CLI, a terminal assistant built by GitHub.")) {
+        return event;
+    }
+
+    const normalized = normalizePromptText(content).replace(/\s+/g, " ");
+    const maxSnippetLength = 120;
+    const snippet = normalized.length > maxSnippetLength
+        ? `${normalized.slice(0, maxSnippetLength).trimEnd()}...`
+        : normalized;
+
+    return {
+        ...event,
+        data: {
+            ...(data ?? {}),
+            content:
+                `[SYSTEM: Copilot SDK rebuilt the full system prompt for model input. ` +
+                `Full content omitted from CMS (${content.length} chars). ` +
+                `Snippet: ${snippet}]`,
+        },
+    };
+}
+
 function activityTrace(activityCtx: any, label: string): (message: string) => void {
     return (message: string) => {
         activityCtx.traceInfo(`[${label}] ${message}`);
@@ -916,6 +944,8 @@ export function registerActivities(
             const onEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
                     if (EPHEMERAL_TYPES.has(event.eventType)) return;
+                    const persistedEvent = summarizeSdkSystemPromptEchoEvent(event);
+                    if (!persistedEvent) return;
                     if (event.eventType === "session.wait_started") {
                         const data = (event.data ?? {}) as { reason?: string };
                         catalog.updateSession(input.sessionId, {
@@ -943,7 +973,7 @@ export function registerActivities(
                             });
                         }
                     }
-                    catalog.recordEvents(input.sessionId, [event], workerNodeId).catch((err: any) => {
+                    catalog.recordEvents(input.sessionId, [persistedEvent], workerNodeId).catch((err: any) => {
                         activityCtx.traceInfo(`[runTurn] CMS recordEvent failed: ${err}`);
                     });
                 }

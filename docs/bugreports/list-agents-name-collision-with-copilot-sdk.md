@@ -15,7 +15,7 @@ Execution failed: External tool "list_agents" conflicts with a built-in tool of 
 Set overridesBuiltInTool: true to explicitly override it.
 ```
 
-Observed in Waldemort production worker logs (every active session, every turn):
+Observed in a downstream production deployment's worker logs (every active session, every turn):
 
 ```
 2026-04-20T01:53:04 turn returned error (attempt 1/3): Execution failed: External tool "list_agents" conflicts with a built-in tool of the same name. Set overridesBuiltInTool: true to explicitly override it.
@@ -93,7 +93,7 @@ Concretely:
 - **`packages/sdk/plugins/system/...`** — search for any system-agent prompt or skill that mentions `list_agents` and update.
 - **`packages/sdk/dist/worker.js`** — auto-rebuilt.
 - **Examples / docs / READMEs** — search for `list_agents` and update where the intent is "PilotSwarm blueprints" (leave references that mean the Copilot built-in alone).
-- **CHANGELOG / migration note** — call out the rename so downstream apps (Waldemort, others) update any explicit `tools: - list_agents` declarations in their agent YAMLs.
+- **CHANGELOG / migration note** — call out the rename so downstream apps update any explicit `tools: - list_agents` declarations in their agent YAMLs.
 
 ### Backward-compatibility option (optional, recommended)
 
@@ -114,12 +114,12 @@ This is the only situation where `overridesBuiltInTool: true` is acceptable — 
 
 ## Impact on downstream apps
 
-Known callers in the Waldemort repo:
+Known callers in one downstream repo:
 
 - Agent YAMLs that declare `tools: - list_agents` in their tool list.
 - Agent prompts that mention `list_agents` in prose.
 
-These will need a one-line search/replace once the rename ships. Trivial change; we will follow within one sync cycle.
+These will need a one-line search/replace once the rename ships.
 
 ## Verification
 

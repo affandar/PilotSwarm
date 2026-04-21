@@ -24,7 +24,7 @@ After the fixes in this pass, the clean remote TUI no longer shows the old immed
 - ink `6.8.0`
 - remote mode: `PilotSwarmClient` + `PilotSwarmManagementClient` against remote PostgreSQL
 - no embedded workers in remote mode
-- `K8S_CONTEXT=toygres-aks` available, so log tailing can be enabled
+- `K8S_CONTEXT=<example-context>` available, so log tailing can be enabled
 
 ## Layered Probe Result
 
