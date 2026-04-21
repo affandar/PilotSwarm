@@ -2,7 +2,7 @@ import { describe, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { mergeBoxTableCellFragments } from "../../../ui-react/src/web-app.js";
+import { isScrollViewportAtBottom, mergeBoxTableCellFragments } from "../../../ui-react/src/web-app.js";
 import { assert, assertIncludes } from "../helpers/assertions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,6 +19,12 @@ describe("portal browser contracts", () => {
         assert(mergeBoxTableCellFragments(["Feature", "gating"]) === "Feature gating", "normal word-wrapped text should still rejoin with a space");
     });
 
+    it("treats sticky browser panes as bottom-pinned only at the bottom edge", () => {
+        assert(isScrollViewportAtBottom({ scrollHeight: 1000, clientHeight: 200, scrollTop: 800 }), "an exact bottom scroll position should be bottom-pinned");
+        assert(isScrollViewportAtBottom({ scrollHeight: 1000, clientHeight: 200, scrollTop: 799.75 }), "fractional browser scroll noise should still count as bottom-pinned");
+        assert(!isScrollViewportAtBottom({ scrollHeight: 1000, clientHeight: 200, scrollTop: 799 }), "scrolling up by a visible pixel should disable bottom-pinning");
+    });
+
     it("supports browser-native artifact uploads through the portal transport", () => {
         const browserTransport = readRepoFile("packages/portal/src/browser-transport.js");
         const runtime = readRepoFile("packages/portal/runtime.js");
@@ -27,6 +33,8 @@ describe("portal browser contracts", () => {
         assertIncludes(browserTransport, "async uploadArtifactFromFile(sessionId, file)", "browser transport should upload dropped/selected files");
         assertIncludes(browserTransport, 'return this.rpc("uploadArtifact"', "browser transport should send uploads through portal RPC");
         assertIncludes(runtime, 'case "uploadArtifact":', "portal runtime should expose artifact upload RPC");
+        assertIncludes(browserTransport, "async getUserStats(opts)", "browser transport should expose user stats RPC");
+        assertIncludes(runtime, 'case "getUserStats":', "portal runtime should expose user stats RPC");
         assertIncludes(nodeTransport, "async uploadArtifactContent(sessionId, filename, content, contentType", "node transport should accept browser-supplied artifact content");
     });
 
@@ -54,6 +62,8 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "supportsArtifactBrowser(controller)", "portal should keep the artifact browser available when transport-backed artifacts exist");
         assertIncludes(webApp, "Keyboard Shortcuts", "portal should render a dedicated keybinding legend");
         assertIncludes(webApp, '}, "Prompt")', "portal toolbar should expose a prompt overlay affordance");
+        assertIncludes(webApp, 'key: `stats-view:${mode}`', "portal stats pane should render explicit session/fleet/users buttons");
+        assertIncludes(webApp, "controller.setStatsViewMode(mode)", "portal stats buttons should use the shared controller stats-view path");
         assertIncludes(webApp, "PromptOverlay", "portal should support a dedicated prompt overlay for remote/mobile access");
         assertIncludes(webApp, "controller.acceptPromptReferenceAutocomplete()", "portal prompt should accept @ / @@ autocomplete on Tab");
         assertIncludes(webApp, '["Tab", "Accept @ / @@ autocomplete"]', "portal legend should document prompt reference autocomplete");
@@ -65,6 +75,7 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "MarkdownPreviewPanel", "portal should render markdown previews through a dedicated component");
         assertIncludes(webApp, "ps-markdown-preview", "portal markdown previews should use the rich markdown container");
         assertIncludes(webApp, 'stickyBottom: inspector.activeTab === "logs"', "portal log pane should use sticky follow-bottom scroll semantics");
+        assertIncludes(webApp, "const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX", "portal live panes should not ignore visible user scroll movement while auto-scrolling");
         assertIncludes(webApp, 'className: inspector.activeTab === "history" || inspector.activeTab === "logs" ? "is-wrapped" : "is-preserve"', "portal inspector logs should wrap instead of preserving horizontal overflow");
         assertIncludes(webApp, 'className: "is-wrapped"', "portal activity pane should render wrapped lines");
         assertIncludes(webApp, 'type: "code"', "portal chat renderer should recognize code fence blocks");

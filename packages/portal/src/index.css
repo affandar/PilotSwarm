@@ -731,6 +731,24 @@ body.is-resizing-pane-y * {
   line-height: 1.08;
 }
 
+.ps-panel-header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.ps-panel-title-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
 .ps-panel-actions {
   display: inline-flex;
   align-items: center;

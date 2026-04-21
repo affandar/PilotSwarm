@@ -128,6 +128,47 @@ function sessionStatusIcon(session, mode = "local") {
     }
 }
 
+function ownerKeyForOwner(owner) {
+    const provider = String(owner?.provider || "").trim();
+    const subject = String(owner?.subject || "").trim();
+    return provider && subject ? `${provider}\u0001${subject}` : null;
+}
+
+function ownerDisplayName(owner, fallback = "unknown user") {
+    return String(owner?.displayName || owner?.email || "").trim() || fallback;
+}
+
+function initialsFromText(value) {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    const parts = text
+        .replace(/@.*/u, "")
+        .split(/[^A-Za-z0-9]+/u)
+        .map((part) => part.trim())
+        .filter(Boolean);
+    if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toLowerCase();
+    const compact = (parts[0] || text).replace(/[^A-Za-z0-9]/gu, "");
+    return compact.slice(0, 2).toLowerCase();
+}
+
+function ownerInitials(owner) {
+    return initialsFromText(owner?.displayName) || initialsFromText(owner?.email) || "?";
+}
+
+function shouldDecorateSessionOwners(state) {
+    if (state.auth?.principal) return true;
+    if (state.sessions?.ownerFilter && state.sessions.ownerFilter.all !== true) return true;
+    if (Object.values(state.sessions?.byId || {}).some((session) => session?.owner)) return true;
+    return false;
+}
+
+function buildSessionListTitle(session, brandingTitle, decorateOwners = false) {
+    const title = buildSessionTitle(session, brandingTitle);
+    if (!decorateOwners || session?.isSystem) return title;
+    const prefix = session?.owner ? ownerInitials(session.owner) : "?";
+    return `(${prefix}) ${title}`;
+}
+
 function buildSessionTitle(session, brandingTitle) {
     const shortId = shortSessionId(session?.sessionId);
 
@@ -138,6 +179,16 @@ function buildSessionTitle(session, brandingTitle) {
     const title = String(session?.title || "");
     if (!title) return `(${shortId})`;
     return title.includes(shortId) ? title : `${title} (${shortId})`;
+}
+
+function matchesOwnerFilter(session, ownerFilter = {}, auth = {}) {
+    if (!ownerFilter || ownerFilter.all === true) return true;
+    if (session?.isSystem) return ownerFilter.includeSystem === true;
+    const ownerKey = ownerKeyForOwner(session?.owner);
+    if (!ownerKey) return ownerFilter.includeUnowned === true;
+    const currentUserKey = ownerKeyForOwner(auth?.principal);
+    if (ownerFilter.includeMe && currentUserKey && ownerKey === currentUserKey) return true;
+    return Array.isArray(ownerFilter.ownerKeys) && ownerFilter.ownerKeys.includes(ownerKey);
 }
 
 function flattenRunsText(runs) {
@@ -256,7 +307,11 @@ function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visib
     }
 
     const mainColor = session?.isSystem ? "yellow" : sessionStatusColor(session, mode);
-    const titleText = buildSessionTitle(session, state.branding?.title || "PilotSwarm");
+    const titleText = buildSessionListTitle(
+        session,
+        state.branding?.title || "PilotSwarm",
+        shouldDecorateSessionOwners(state),
+    );
     const createdAtText = session?.createdAt ? ` ${formatDisplayDateTime(session.createdAt)}` : "";
     runs.push({
         text: `${titleText}${createdAtText}`,
@@ -289,7 +344,9 @@ function matchesSearchQuery(value, query) {
 export function selectSessionRows(state) {
     const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
     const visibleDescendantCounts = getVisibleDescendantCounts(state.sessions.flat, state.sessions.byId);
-    const query = state.sessions?.filterQuery || "";
+    const query = normalizeSearchQuery(state.sessions?.filterQuery || "");
+    const ownerFilter = state.sessions?.ownerFilter || { all: true };
+    const auth = state.auth || {};
 
     return state.sessions.flat.map((entry) => {
         const session = state.sessions.byId[entry.sessionId];
@@ -306,7 +363,16 @@ export function selectSessionRows(state) {
             hasChildren: entry.hasChildren,
             collapsed: entry.collapsed,
         };
-    }).filter((row) => matchesSearchQuery(row.text, query) || matchesSearchQuery(row.sessionId, query));
+    }).filter((row) => {
+        const session = state.sessions.byId[row.sessionId];
+        if (!matchesOwnerFilter(session, ownerFilter, auth)) return false;
+        const ownerSearchText = session?.owner
+            ? `${ownerDisplayName(session.owner, "")} ${session.owner.email || ""}`
+            : "";
+        return matchesSearchQuery(row.text, query)
+            || matchesSearchQuery(row.sessionId, query)
+            || matchesSearchQuery(ownerSearchText, query);
+    });
 }
 
 export function selectVisibleSessionRows(state, maxRows = 8) {
@@ -425,23 +491,63 @@ function latestEventSeq(events = [], eventType) {
     return 0;
 }
 
-function buildThinkingMessage(session, history, chat = []) {
+function summarizeProgressActivityText(text) {
+    const normalized = String(text || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (!normalized) return "";
+
+    return normalized
+        .replace(/^\[[^\]]+\]\s*/, "")
+        .replace(/^\[[^\]]+\]\s*/, "")
+        .trim();
+}
+
+function pickLatestProgressActivity(history, floorSeq = 0) {
+    const activity = Array.isArray(history?.activity) ? history.activity : [];
+    const ignoredTypes = new Set([
+        "assistant.reasoning",
+        "assistant.turn_start",
+        "session.turn_started",
+        "session.turn_completed",
+    ]);
+
+    for (let index = activity.length - 1; index >= 0; index -= 1) {
+        const item = activity[index];
+        if (!item || ignoredTypes.has(item.eventType)) continue;
+        if (Number(item?.seq || 0) <= floorSeq) continue;
+        const text = summarizeProgressActivityText(item.text);
+        if (!text) continue;
+        return {
+            ...item,
+            summaryText: text,
+        };
+    }
+
+    return null;
+}
+
+function buildLiveProgressState(session, history, chat = []) {
     if (!session || session?.pendingQuestion?.question) return null;
 
     const status = String(session?.status || "").toLowerCase();
-    if (status === "idle" || status === "waiting" || status === "input_required" || status === "completed" || status === "failed" || status === "cancelled") {
+    if (status === "completed" || status === "failed" || status === "cancelled") {
         return null;
     }
 
     const visibleChat = (chat || []).filter((message) => message?.role === "user" || message?.role === "assistant");
     const lastVisibleMessage = visibleChat[visibleChat.length - 1] || null;
     const waitingOnAssistantFromChat = lastVisibleMessage?.role === "user";
+    const optimisticUserPending = waitingOnAssistantFromChat && lastVisibleMessage?.optimistic === true;
 
     const events = Array.isArray(history?.events) ? history.events : [];
     const lastUserSeq = latestEventSeq(events, "user.message");
     const lastAssistantSeq = latestEventSeq(events, "assistant.message");
     const waitingOnAssistantFromEvents = lastUserSeq > lastAssistantSeq;
-    if (!waitingOnAssistantFromChat && !waitingOnAssistantFromEvents && status !== "running") {
+    if (status === "waiting" || status === "input_required") {
+        return null;
+    }
+    if (!waitingOnAssistantFromChat && !waitingOnAssistantFromEvents && status !== "running" && !optimisticUserPending) {
         return null;
     }
 
@@ -457,16 +563,56 @@ function buildThinkingMessage(session, history, chat = []) {
         || latestReasoning?.data?.message
         || "",
     ).trim();
-    if (!reasoningText) return null;
+    if (reasoningText) {
+        return {
+            kind: "thinking",
+            label: "Thinking",
+            text: reasoningText,
+            createdAt: latestReasoning?.createdAt || session.updatedAt || Date.now(),
+            lastUserSeq,
+            lastAssistantSeq,
+            tokenSeq: latestReasoning?.seq || 0,
+        };
+    }
 
-    return {
-        id: `thinking:${session.sessionId}:${lastUserSeq}:${lastAssistantSeq}:${latestReasoning?.seq || 0}`,
-        role: "assistant",
-        text: reasoningText,
-        time: "",
-        createdAt: latestReasoning?.createdAt || session.updatedAt || Date.now(),
-        thinking: true,
-    };
+    const latestActivity = pickLatestProgressActivity(history, floorSeq);
+    if (latestActivity?.summaryText) {
+        return {
+            kind: status === "running" ? "working" : "sending",
+            label: status === "running" ? "Working" : "Sending",
+            text: latestActivity.summaryText,
+            createdAt: latestActivity.createdAt || session.updatedAt || Date.now(),
+            lastUserSeq,
+            lastAssistantSeq,
+            tokenSeq: latestActivity.seq || 0,
+        };
+    }
+
+    if (optimisticUserPending) {
+        return {
+            kind: "sending",
+            label: "Sending",
+            text: "Working on it...",
+            createdAt: lastVisibleMessage?.createdAt || session.updatedAt || Date.now(),
+            lastUserSeq,
+            lastAssistantSeq,
+            tokenSeq: 0,
+        };
+    }
+
+    if (status === "running") {
+        return {
+            kind: "working",
+            label: "Working",
+            text: "Working on it...",
+            createdAt: session.updatedAt || Date.now(),
+            lastUserSeq,
+            lastAssistantSeq,
+            tokenSeq: 0,
+        };
+    }
+
+    return null;
 }
 
 export function selectActiveChat(state) {
@@ -491,10 +637,6 @@ export function selectActiveChat(state) {
     }
     if (sessionErrorMessage) {
         messages.push(sessionErrorMessage);
-    }
-    const thinkingMessage = buildThinkingMessage(session, history, messages);
-    if (thinkingMessage) {
-        messages.push(thinkingMessage);
     }
     return messages;
 }
@@ -737,6 +879,15 @@ function buildCollapsedSystemNoticeLine(text, timestamp = "") {
     };
 }
 
+function buildChatProgressTitleRuns(progress) {
+    if (!progress?.label) return null;
+    return [{
+        text: progress.label,
+        color: progress.kind === "working" ? "yellow" : "cyan",
+        bold: true,
+    }];
+}
+
 function tintRunsIfUnset(lines, color) {
     if (!color) return lines;
     return (lines || []).map((lineRuns) => (lineRuns || []).map((run) => ({
@@ -767,8 +918,14 @@ function buildThinkingCardLines(message, maxWidth) {
     const safeWidth = Math.max(12, Math.min(72, Number(maxWidth) || 12));
     const contentWidth = Math.max(1, safeWidth - 4);
     const timestamp = formatTimestamp(message?.createdAt || message?.time);
+    const label = String(message?.thinkingLabel || "Thinking…").trim() || "Thinking…";
+    const accentColor = message?.progressKind === "working"
+        ? "yellow"
+        : message?.progressKind === "sending"
+            ? "cyan"
+            : "cyan";
     const titleRuns = fitRuns([
-        { text: " ⠋ Thinking… ", color: "cyan", bold: true },
+        { text: ` ⠋ ${label} `, color: accentColor, bold: true },
         ...(timestamp ? [{ text: ` ${timestamp} `, color: "gray" }] : []),
     ], Math.max(1, safeWidth - 3));
     const titleWidth = titleRuns.reduce((sum, run) => sum + String(run?.text || "").length, 0);
@@ -953,6 +1110,8 @@ export function selectChatPaneChrome(state) {
         return {
             color: "cyan",
             title: [{ text: "Chat", color: "cyan", bold: true }],
+            titleRight: null,
+            animateTitleRight: false,
         };
     }
 
@@ -973,6 +1132,9 @@ export function selectChatPaneChrome(state) {
     }
 
     title.push({ text: ` [${shortId}]`, color: "gray" });
+
+    const history = state.history?.bySessionId?.get(session.sessionId) || null;
+    const progress = buildLiveProgressState(session, history, history?.chat || []);
 
     const modelName = shortModelName(session.model);
     if (modelName) {
@@ -996,6 +1158,8 @@ export function selectChatPaneChrome(state) {
     return {
         color: session.isSystem ? "yellow" : "cyan",
         title,
+        titleRight: buildChatProgressTitleRuns(progress),
+        animateTitleRight: Boolean(progress),
     };
 }
 
@@ -1544,13 +1708,19 @@ export function selectStatusBar(state) {
             right: "tab/shift-tab filter · up/down change · enter close · esc close",
         };
     }
+    if (state.ui.modal?.type === "sessionOwnerFilter") {
+        return {
+            left: "Adjust session filters",
+            right: "up/down choose · space toggle · esc close",
+        };
+    }
     const hints = {
-        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · d done · D delete · r refresh · t title · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · f filter · d done · D delete · r refresh · t title · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.CHAT]: `j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
             ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane`
             : state.ui.inspectorTab === "stats"
-                ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f toggle session/fleet · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · m next tab · tab next pane`
+                ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f cycle session/fleet/users · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · m next tab · tab next pane`
             : state.ui.inspectorTab === "files"
                 ? state.files?.fullscreen
                     ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f filter · u/ctrl-a upload · a download · o open · d done · v/esc close fullscreen · left/right tab · {/} session pane · [/] side pane · T themes · tab next pane"
@@ -2671,6 +2841,99 @@ function buildFilterModalPresentation(modal, currentValues = {}, maxWidth = 96, 
     };
 }
 
+function isOwnerFilterItemSelected(item, ownerFilter = {}, auth = {}) {
+    if (!item) return false;
+    if (item.kind === "all") return ownerFilter?.all === true;
+    if (ownerFilter?.all === true) return false;
+    if (item.kind === "system") return ownerFilter?.includeSystem === true;
+    if (item.kind === "unowned") return ownerFilter?.includeUnowned === true;
+    if (item.kind === "me") return ownerFilter?.includeMe === true && Boolean(ownerKeyForOwner(auth?.principal));
+    if (item.kind === "owner") return Array.isArray(ownerFilter?.ownerKeys) && ownerFilter.ownerKeys.includes(item.ownerKey);
+    return false;
+}
+
+function summarizeOwnerFilter(items = [], ownerFilter = {}, auth = {}) {
+    if (ownerFilter?.all === true) return "All sessions";
+    const selected = items
+        .filter((item) => item?.kind !== "all" && isOwnerFilterItemSelected(item, ownerFilter, auth))
+        .map((item) => item.kind === "me" ? "Me" : item.label);
+    return selected.length > 0 ? selected.join(" + ") : "All sessions";
+}
+
+export function selectSessionOwnerFilterModal(state, maxWidth = 88) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "sessionOwnerFilter") return null;
+    const items = Array.isArray(modal.items) ? modal.items : [];
+    const ownerFilter = state.sessions?.ownerFilter || { all: true };
+    const auth = state.auth || {};
+    const selectedIndex = Math.max(0, Math.min(Number(modal.selectedIndex) || 0, Math.max(0, items.length - 1)));
+    const selectedItem = items[selectedIndex] || null;
+    const rows = items.map((item, index) => {
+        const checked = isOwnerFilterItemSelected(item, ownerFilter, auth);
+        const labelColor = item.kind === "system"
+            ? "yellow"
+            : item.kind === "unowned"
+                ? "gray"
+                : item.kind === "all"
+                    ? "cyan"
+                    : "white";
+        const rowRuns = [
+            { text: checked ? "[x] " : "[ ] ", color: checked ? "cyan" : "gray", bold: checked },
+            { text: item.label || item.id, color: labelColor, bold: checked },
+        ];
+        return index === selectedIndex
+            ? applyActiveHighlightRuns(rowRuns, { preserveColors: true })
+            : rowRuns;
+    });
+    const detailsLines = [
+        [{
+            text: "Active: ",
+            color: "gray",
+        }, {
+            text: summarizeOwnerFilter(items, ownerFilter, auth),
+            color: "white",
+            bold: true,
+        }],
+        [{ text: "", color: "gray" }],
+        [{
+            text: selectedItem?.description || "Toggle which session owners appear in the session list.",
+            color: "white",
+        }],
+        [{ text: "", color: "gray" }],
+        [{
+            text: "Space",
+            color: "cyan",
+            bold: true,
+        }, {
+            text: " toggle  ",
+            color: "gray",
+        }, {
+            text: "Esc",
+            color: "cyan",
+            bold: true,
+        }, {
+            text: " close",
+            color: "gray",
+        }],
+    ];
+
+    return {
+        title: modal.title || "Session Filter",
+        rows: rows.length > 0 ? rows : [{ text: "No filter entries available.", color: "gray" }],
+        selectedRowIndex: selectedIndex,
+        detailsTitle: selectedItem?.label || "Session Filter",
+        detailsLines,
+        idealWidth: Math.min(
+            Math.max(
+                48,
+                rows.reduce((max, row) => Math.max(max, Array.isArray(row) ? flattenRunsLength(row) : displayLength(row?.text || "")), 0) + 8,
+                displayLength(summarizeOwnerFilter(items, ownerFilter, auth)) + 16,
+            ),
+            maxWidth,
+        ),
+    };
+}
+
 export function selectLogFilterModal(state, maxWidth = 96) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "logFilter") return null;
@@ -2819,11 +3082,32 @@ function formatLocalTimestamp(ts) {
     });
 }
 
+function normalizeStatsViewMode(mode) {
+    return ["session", "fleet", "users"].includes(mode) ? mode : "session";
+}
+
+function buildStatsViewHeader(activeMode, width) {
+    const mode = normalizeStatsViewMode(activeMode);
+    const runs = [
+        { text: "View ", color: "cyan", bold: true },
+    ];
+    for (const option of ["session", "fleet", "users"]) {
+        runs.push({
+            text: option === mode ? `[${option}]` : option,
+            color: option === mode ? "magenta" : "gray",
+            bold: option === mode,
+        });
+        runs.push({ text: " ", color: "gray" });
+    }
+    runs.push({ text: " [f cycle]", color: "gray" });
+    return fitRuns(runs, width);
+}
+
 function buildSessionStatsLines(state, session, maxWidth) {
     if (!session) return [plainInspectorLine("No session selected.")];
 
     const entry = state.sessionStats?.bySessionId?.[session.sessionId] || null;
-    if (!entry || entry.loading) {
+    if (!entry || (entry.loading && !entry.summary)) {
         return [plainInspectorLine("Loading session stats...")];
     }
     const summary = entry.summary;
@@ -2834,18 +3118,36 @@ function buildSessionStatsLines(state, session, maxWidth) {
     const lines = [];
     const w = Math.max(24, maxWidth);
 
-    lines.push(fitRuns([
-        { text: "View ", color: "cyan", bold: true },
-        { text: "[session] ", color: "magenta", bold: true },
-        { text: "fleet", color: "gray" },
-        { text: "  [f toggle]", color: "gray" },
-    ], w));
+    lines.push(buildStatsViewHeader("session", w));
     lines.push(plainInspectorLine(""));
 
     // Session identity
     lines.push(fitRuns([
         { text: "Session  ", color: "cyan", bold: true },
         { text: shortSessionId(session.sessionId), color: "white" },
+    ], w));
+    const ownerType = session.isSystem
+        ? "system"
+        : session.owner
+            ? "user"
+            : "unowned";
+    const ownerName = session.isSystem
+        ? "system"
+        : session.owner
+            ? ownerDisplayName(session.owner)
+            : "(?) unowned";
+    const ownerEmail = session.owner?.email || "—";
+    lines.push(fitRuns([
+        { text: "Owner    ", color: "cyan", bold: true },
+        { text: ownerName, color: session.owner ? "white" : "gray" },
+    ], w));
+    lines.push(fitRuns([
+        { text: "Email    ", color: "cyan", bold: true },
+        { text: ownerEmail, color: session.owner?.email ? "white" : "gray" },
+    ], w));
+    lines.push(fitRuns([
+        { text: "Type     ", color: "cyan", bold: true },
+        { text: ownerType, color: ownerType === "user" ? "white" : "gray" },
     ], w));
     if (summary.agentId) {
         lines.push(fitRuns([
@@ -3113,7 +3415,7 @@ function buildFactsBody(rows) {
 
 function buildFleetStatsLines(state, maxWidth) {
     const fleet = state.fleetStats;
-    if (!fleet || fleet.loading) {
+    if (!fleet || (fleet.loading && !fleet.data)) {
         return [plainInspectorLine("Loading fleet stats...")];
     }
     const data = fleet.data;
@@ -3124,12 +3426,7 @@ function buildFleetStatsLines(state, maxWidth) {
     const lines = [];
     const w = Math.max(24, maxWidth);
 
-    lines.push(fitRuns([
-        { text: "View ", color: "cyan", bold: true },
-        { text: "session ", color: "gray" },
-        { text: "[fleet]", color: "magenta", bold: true },
-        { text: "  [f toggle]", color: "gray" },
-    ], w));
+    lines.push(buildStatsViewHeader("fleet", w));
     lines.push(plainInspectorLine(""));
 
     // Header
@@ -3310,7 +3607,7 @@ function buildTreeByModelBody(rows) {
 function formatModelTotalsTable(totals, cacheHitRatio) {
     const ratioLabel = cacheHitRatio == null ? "—" : `${(cacheHitRatio * 100).toFixed(1)}%`;
     const total = (Number(totals.totalTokensInput) || 0) + (Number(totals.totalTokensOutput) || 0);
-    const body = formatKeyValueTable([
+    const pairs = [
         ["Input",       formatCompactNumber(totals.totalTokensInput || 0)],
         ["Output",      formatCompactNumber(totals.totalTokensOutput || 0)],
         ["Total",       formatCompactNumber(total)],
@@ -3318,8 +3615,142 @@ function formatModelTotalsTable(totals, cacheHitRatio) {
         ["Cache Write", formatCompactNumber(totals.totalTokensCacheWrite || 0)],
         ["Hit Ratio",   ratioLabel],
         ["Snapshot",    formatCompactBytes(totals.totalSnapshotSizeBytes || 0)],
-    ]);
+    ];
+    if (Number.isFinite(Number(totals.totalOrchestrationHistorySizeBytes))) {
+        pairs.push(["Orch", formatCompactBytes(totals.totalOrchestrationHistorySizeBytes || 0)]);
+    }
+    const body = formatKeyValueTable(pairs);
     return body.split("\n").map((line) => `  ${line}`).join("\n");
+}
+
+function userStatsDisplayName(user) {
+    if (user?.ownerKind === "system") return "System";
+    if (user?.ownerKind === "unowned") return "Unowned";
+    return ownerDisplayName(user?.owner, "Unknown User");
+}
+
+function userStatsEmail(user) {
+    if (user?.ownerKind !== "user") return "";
+    const email = String(user?.owner?.email || "").trim();
+    const name = userStatsDisplayName(user);
+    return email && email !== name ? email : "";
+}
+
+function buildUserModelsBody(user, maxWidth) {
+    const rows = Array.isArray(user?.byModel) ? user.byModel : [];
+    if (rows.length === 0) return "";
+    const top = rows
+        .slice()
+        .sort((a, b) => (b.totalTokensInput || 0) - (a.totalTokensInput || 0))
+        .slice(0, 6);
+    const lines = [];
+    for (const row of top) {
+        const model = ellipsize(String(row.model || "(default)"), Math.max(12, maxWidth - 10));
+        lines.push(`${model} · ${row.sessionCount || 0} sess`);
+        lines.push(formatModelTotalsTable(row, row.cacheHitRatio));
+        lines.push("");
+    }
+    if (rows.length > top.length) {
+        lines.push(`… ${rows.length - top.length} more models`);
+    }
+    return lines.join("\n").trimEnd();
+}
+
+function buildUserStatsLines(state, maxWidth) {
+    const fleet = state.fleetStats;
+    if (!fleet || (fleet.loading && !fleet.userStats)) {
+        return [plainInspectorLine("Loading user stats...")];
+    }
+    const data = fleet.userStats;
+    if (!data) {
+        return [plainInspectorLine("User stats unavailable.")];
+    }
+
+    const lines = [];
+    const w = Math.max(24, maxWidth);
+    lines.push(buildStatsViewHeader("users", w));
+    lines.push(plainInspectorLine(""));
+
+    const sinceLabel = data.windowStart
+        ? `Since: ${formatRelativeTime(data.windowStart).replace(" ago", "")}`
+        : "All time";
+    const earliestLabel = data.earliestSessionCreatedAt
+        ? `Earliest: ${new Date(data.earliestSessionCreatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+        : "";
+    lines.push(fitRuns([
+        { text: sinceLabel, color: "cyan" },
+        { text: earliestLabel ? `  ${earliestLabel}` : "", color: "gray" },
+    ], w));
+    lines.push(fitRuns([
+        { text: `Users: ${Array.isArray(data.users) ? data.users.length : 0}`, color: "white" },
+        { text: `   Sessions: ${data.totals.sessionCount || 0}`, color: "white" },
+    ], w));
+    lines.push(plainInspectorLine(""));
+
+    const hitRatio = data.totals.cacheHitRatio;
+    const hitRatioLabel = hitRatio == null ? "—" : `${(hitRatio * 100).toFixed(1)}%`;
+    lines.push(...buildMessageCardLines({
+        title: "User Totals",
+        body: formatKeyValueTable([
+            ["Sessions",     String(data.totals.sessionCount || 0)],
+            ["Tokens In",    formatCompactNumber(data.totals.totalTokensInput || 0)],
+            ["Tokens Out",   formatCompactNumber(data.totals.totalTokensOutput || 0)],
+            ["Total Tokens", formatCompactNumber((data.totals.totalTokensInput || 0) + (data.totals.totalTokensOutput || 0))],
+            ["Cache Read",   formatCompactNumber(data.totals.totalTokensCacheRead || 0)],
+            ["Cache Write",  formatCompactNumber(data.totals.totalTokensCacheWrite || 0)],
+            ["Hit Ratio",    hitRatioLabel],
+            ["Snapshots",    formatCompactBytes(data.totals.totalSnapshotSizeBytes || 0)],
+            ["Orch Size",    formatCompactBytes(data.totals.totalOrchestrationHistorySizeBytes || 0)],
+        ]),
+        width: w,
+        titleColor: "green",
+        borderColor: "gray",
+        fitToContent: true,
+    }));
+
+    const users = Array.isArray(data.users) ? data.users : [];
+    const topUsers = users
+        .slice()
+        .sort((a, b) =>
+            (b.totalTokensInput || 0) - (a.totalTokensInput || 0)
+            || (b.totalSnapshotSizeBytes || 0) - (a.totalSnapshotSizeBytes || 0),
+        )
+        .slice(0, 8);
+    for (const user of topUsers) {
+        const email = userStatsEmail(user);
+        const ratio = user.cacheHitRatio;
+        const ratioLabel = ratio == null ? "—" : `${(ratio * 100).toFixed(1)}%`;
+        const title = email
+            ? `${userStatsDisplayName(user)} <${email}>`
+            : userStatsDisplayName(user);
+        const totalsBody = formatKeyValueTable([
+            ["Sessions",     String(user.sessionCount || 0)],
+            ["Tokens In",    formatCompactNumber(user.totalTokensInput || 0)],
+            ["Tokens Out",   formatCompactNumber(user.totalTokensOutput || 0)],
+            ["Total Tokens", formatCompactNumber((user.totalTokensInput || 0) + (user.totalTokensOutput || 0))],
+            ["Cache Read",   formatCompactNumber(user.totalTokensCacheRead || 0)],
+            ["Cache Write",  formatCompactNumber(user.totalTokensCacheWrite || 0)],
+            ["Hit Ratio",    ratioLabel],
+            ["Snapshots",    formatCompactBytes(user.totalSnapshotSizeBytes || 0)],
+            ["Orch Size",    formatCompactBytes(user.totalOrchestrationHistorySizeBytes || 0)],
+        ]);
+        const modelsBody = buildUserModelsBody(user, w);
+        lines.push(plainInspectorLine(""));
+        lines.push(...buildMessageCardLines({
+            title: `${title} (${user.sessionCount || 0})`,
+            body: modelsBody ? `${totalsBody}\n\n${modelsBody}` : totalsBody,
+            width: w,
+            titleColor: user.ownerKind === "user" ? "cyan" : "yellow",
+            borderColor: "gray",
+            fitToContent: true,
+        }));
+    }
+    if (users.length > topUsers.length) {
+        lines.push(plainInspectorLine(""));
+        lines.push(plainInspectorLine(`… ${users.length - topUsers.length} more users`));
+    }
+
+    return lines;
 }
 
 export function selectInspector(state, options = {}) {
@@ -3338,7 +3769,7 @@ export function selectInspector(state, options = {}) {
         ]
         : !session
             ? (activeTab === "stats"
-                ? `Stats: ${state.ui?.statsViewMode === "fleet" ? "Fleet" : "Session"}`
+                ? `Stats: ${normalizeStatsViewMode(state.ui?.statsViewMode).replace(/^./u, (char) => char.toUpperCase())}`
                 : "No session selected")
             : activeTab === "sequence"
             ? [
@@ -3356,7 +3787,7 @@ export function selectInspector(state, options = {}) {
                     : activeTab === "stats"
                         ? [
                             { text: `Stats: ${shortId}`, color: "magenta", bold: true },
-                            { text: ` [${state.ui?.statsViewMode === "fleet" ? "fleet" : "session"}]`, color: "gray" },
+                            { text: ` [${normalizeStatsViewMode(state.ui?.statsViewMode)}]`, color: "gray" },
                         ]
                         : [
                             { text: `Files: ${shortId}`, color: "magenta", bold: true },
@@ -3392,19 +3823,16 @@ export function selectInspector(state, options = {}) {
                 : ["No session selected."];
             break;
         case "stats":
-            lines = state.ui?.statsViewMode === "fleet"
+            lines = normalizeStatsViewMode(state.ui?.statsViewMode) === "users"
+                ? buildUserStatsLines(state, maxWidth)
+                : normalizeStatsViewMode(state.ui?.statsViewMode) === "fleet"
                 ? buildFleetStatsLines(state, maxWidth)
                 : session
                     ? buildSessionStatsLines(state, session, maxWidth)
                     : [
-                        fitRuns([
-                            { text: "View ", color: "cyan", bold: true },
-                            { text: "[session] ", color: "magenta", bold: true },
-                            { text: "fleet", color: "gray" },
-                            { text: "  [f toggle]", color: "gray" },
-                        ], Math.max(24, maxWidth)),
+                        buildStatsViewHeader("session", Math.max(24, maxWidth)),
                         plainInspectorLine(""),
-                        plainInspectorLine("No session selected. Press f to switch to fleet view."),
+                        plainInspectorLine("No session selected. Press f to cycle to fleet or users view."),
                     ];
             break;
         default:

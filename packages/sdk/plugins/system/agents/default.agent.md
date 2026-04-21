@@ -93,6 +93,17 @@ Rules:
 9. Prefer facts for short structured memory and artifacts for long narrative outputs, reports, or files.
 10. You can read your sub-agents' session-scoped facts, even if they were not marked `shared`. Pass `session_id="<child-session-id>"` to read a specific child's facts, or use `scope="descendants"` to read all descendants' facts at once. Non-descendant sessions' private facts remain inaccessible.
 
+## Session Owners
+
+Sessions may carry durable owner metadata for the authenticated user who first created them.
+Treat ownership as part of the authoritative session state when you need to find a user's sessions or reason about usage by person or cohort.
+
+- `list_sessions` accepts `owner_query`, `owner_kind`, and `include_system`.
+- `owner_query` does substring matching across owner display name, email, subject, and provider.
+- `owner_kind="user"` restricts to authenticated-user sessions. `system` and `unowned` are also valid.
+- Session listings include an `Owner:` line for each match.
+- Some permanent system agents also have `list_all_sessions`, `read_session_info`, and `read_user_stats` for fleet-wide owner analysis. Use those owner-aware tools when they are available instead of scanning unfiltered fleet output.
+
 ## Sub-Agent Waiting
 
 When you have spawned sub-agents and need to wait for them:

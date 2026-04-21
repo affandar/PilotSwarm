@@ -5,7 +5,9 @@
  * read the durable event stream of a descendant in its spawn tree using
  * the existing `session_events.seq` cursor.
  *
- * The remaining tools in this module are exposed only to the `agent-tuner`
+ * A small read-only subset is exposed to permanent system agents so they can
+ * inspect sessions and owner-scoped usage without mutating state.
+ * The deeper diagnostic tools remain restricted to the `agent-tuner`
  * system agent. They give the tuner unrestricted, read-only access to CMS
  * state, per-session and fleet metric summaries, duroxide orchestration
  * stats, and execution history for the purpose of diagnosing why a
@@ -21,6 +23,7 @@
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
+import { formatOwnerBucketLabel, formatSessionOwnerLabel, getSessionOwnerKind, matchesOwnerBucketFilters, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 
 const TUNER_AGENT_ID = "agent-tuner";
 const SYSTEM_AGENT_IDS = new Set([
@@ -125,6 +128,7 @@ export interface CreateInspectToolsOptions {
 export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[] {
     const { catalog, agentIdentity, duroxideClient, factStore } = opts;
     const isTuner = agentIdentity === TUNER_AGENT_ID;
+    const isSystemAgent = SYSTEM_AGENT_IDS.has(agentIdentity || "");
 
     const readAgentEventsTool = defineTool("read_agent_events", {
         description:
@@ -284,35 +288,33 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
     });
 
-    if (!isTuner) {
-        return [readAgentEventsTool];
-    }
-
-    // ─── Tuner-only read tools ─────────────────────────────────────────────
-    // Bypass the lineage gate; expose CMS state, metric summaries, and
-    // (when a duroxide client is provided) orchestration stats and history.
-
     const listAllSessionsTool = defineTool("list_all_sessions", {
         description:
             "List every session in the system (CMS only, no orchestration fan-out). " +
-            "Use to locate a target by description, find siblings, or scan the fleet. " +
-            "Returns a compact view: id, title, agentId, parentSessionId, model, state, isSystem, deletedAt.",
+            "Use to locate a target by description, owner, or agent. " +
+            "Returns a compact view: id, title, owner, agentId, parentSessionId, model, state, isSystem, deletedAt.",
         parameters: {
             type: "object" as const,
             properties: {
                 limit: { type: "number", description: "Cap returned rows (default 100, max 500)." },
-                include_system: { type: "boolean", description: "Include system-agent sessions. Default true for tuner." },
+                include_system: { type: "boolean", description: "Include system-agent sessions. Default true for system agents." },
                 agent_id_filter: { type: "string", description: "Optional substring match on agentId." },
+                owner_query: { type: "string", description: "Optional substring match across owner display name, email, subject, or provider." },
+                owner_kind: { type: "string", enum: ["user", "system", "unowned"], description: "Optional owner bucket filter." },
             },
         },
-        handler: async (args: { limit?: number; include_system?: boolean; agent_id_filter?: string }) => {
+        handler: async (args: { limit?: number; include_system?: boolean; agent_id_filter?: string; owner_query?: string; owner_kind?: string }) => {
             const includeSystem = args.include_system !== false;
             const cap = Math.min(Math.max(1, Number(args.limit) || 100), 500);
             try {
                 const rows = await catalog.listSessions();
                 const filterAgent = (args.agent_id_filter || "").toLowerCase();
                 const filtered = rows.filter((r) => {
-                    if (!includeSystem && r.isSystem) return false;
+                    if (!matchesSessionOwnerFilters(r, {
+                        includeSystem,
+                        ownerQuery: args.owner_query,
+                        ownerKind: args.owner_kind,
+                    })) return false;
                     if (filterAgent && !(r.agentId ?? "").toLowerCase().includes(filterAgent)) return false;
                     return true;
                 }).slice(0, cap);
@@ -322,6 +324,9 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                     sessions: filtered.map((r) => ({
                         sessionId: r.sessionId,
                         title: r.title ?? null,
+                        ownerKind: getSessionOwnerKind(r),
+                        ownerLabel: formatSessionOwnerLabel(r),
+                        owner: r.owner ?? null,
                         agentId: r.agentId ?? null,
                         parentSessionId: r.parentSessionId ?? null,
                         model: r.model ?? null,
@@ -343,7 +348,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
     const readSessionInfoTool = defineTool("read_session_info", {
         description:
             "Read the full CMS row for a session (any session — not just descendants). " +
-            "Title, agent, model, parent, status, iterations, last error, wait reason, timestamps.",
+            "Title, owner, agent, model, parent, status, iterations, last error, wait reason, timestamps.",
         parameters: {
             type: "object" as const,
             properties: { session_id: { type: "string" } },
@@ -358,6 +363,9 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                     sessionId: row.sessionId,
                     exists: true,
                     title: row.title ?? null,
+                    ownerKind: getSessionOwnerKind(row),
+                    ownerLabel: formatSessionOwnerLabel(row),
+                    owner: row.owner ?? null,
                     agentId: row.agentId ?? null,
                     parentSessionId: row.parentSessionId ?? null,
                     model: row.model ?? null,
@@ -380,6 +388,87 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             }
         },
     });
+
+    const readUserStatsTool = defineTool("read_user_stats", {
+        description:
+            "Read owner-bucketed session, token, snapshot, and orchestration-history totals. " +
+            "Use this for ownership-aware usage questions and to compare specific users or cohorts.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                include_deleted: { type: "boolean", description: "Default false." },
+                since_iso: { type: "string", description: "Optional ISO timestamp lower bound on session_created_at." },
+                owner_query: { type: "string", description: "Optional substring match across owner display name, email, subject, or provider." },
+                owner_kind: { type: "string", enum: ["user", "system", "unowned"], description: "Optional owner bucket filter." },
+            },
+        },
+        handler: async (args: { include_deleted?: boolean; since_iso?: string; owner_query?: string; owner_kind?: string }) => {
+            try {
+                const opts: { includeDeleted?: boolean; since?: Date } = {};
+                if (args.include_deleted) opts.includeDeleted = true;
+                if (args.since_iso) {
+                    const d = new Date(args.since_iso);
+                    if (Number.isNaN(d.getTime())) return { error: "read_user_stats: invalid since_iso" };
+                    opts.since = d;
+                }
+                const stats = await catalog.getUserStats(opts);
+                const users = stats.users
+                    .filter((bucket) => matchesOwnerBucketFilters(bucket, {
+                        ownerQuery: args.owner_query,
+                        ownerKind: args.owner_kind,
+                    }))
+                    .map((bucket) => ({
+                        ...bucket,
+                        ownerLabel: formatOwnerBucketLabel(bucket),
+                    }));
+                const totals = users.reduce((acc, bucket) => {
+                    acc.sessionCount += bucket.sessionCount || 0;
+                    acc.totalSnapshotSizeBytes += bucket.totalSnapshotSizeBytes || 0;
+                    acc.totalOrchestrationHistorySizeBytes += bucket.totalOrchestrationHistorySizeBytes || 0;
+                    acc.totalTokensInput += bucket.totalTokensInput || 0;
+                    acc.totalTokensOutput += bucket.totalTokensOutput || 0;
+                    acc.totalTokensCacheRead += bucket.totalTokensCacheRead || 0;
+                    acc.totalTokensCacheWrite += bucket.totalTokensCacheWrite || 0;
+                    return acc;
+                }, {
+                    sessionCount: 0,
+                    totalSnapshotSizeBytes: 0,
+                    totalOrchestrationHistorySizeBytes: 0,
+                    totalTokensInput: 0,
+                    totalTokensOutput: 0,
+                    totalTokensCacheRead: 0,
+                    totalTokensCacheWrite: 0,
+                });
+                return {
+                    windowStart: stats.windowStart,
+                    earliestSessionCreatedAt: stats.earliestSessionCreatedAt,
+                    users,
+                    totals: {
+                        ...totals,
+                        cacheHitRatio: totals.totalTokensInput > 0
+                            ? totals.totalTokensCacheRead / totals.totalTokensInput
+                            : null,
+                    },
+                };
+            } catch (err: any) {
+                return { error: `read_user_stats: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
+    if (!isSystemAgent) {
+        return [readAgentEventsTool];
+    }
+
+    const systemReadTools = [listAllSessionsTool, readSessionInfoTool, readUserStatsTool];
+
+    if (!isTuner) {
+        return [readAgentEventsTool, ...systemReadTools];
+    }
+
+    // ─── Tuner-only read tools ─────────────────────────────────────────────
+    // Bypass the lineage gate; expose CMS state, metric summaries, and
+    // (when a duroxide client is provided) orchestration stats and history.
 
     const readSessionMetricSummaryTool = defineTool("read_session_metric_summary", {
         description:
@@ -621,8 +710,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
 
     const tools: Tool<any>[] = [
         readAgentEventsTool,
-        listAllSessionsTool,
-        readSessionInfoTool,
+        ...systemReadTools,
         readSessionMetricSummaryTool,
         readSessionTreeStatsTool,
         readFleetStatsTool,

@@ -14,6 +14,7 @@ export const UI_COMMANDS = {
     OPEN_MODEL_PICKER: "openModelPicker",
     OPEN_THEME_PICKER: "openThemePicker",
     OPEN_RENAME_SESSION: "openRenameSession",
+    OPEN_SESSION_FILTER: "openSessionFilter",
     OPEN_TERMINATE_PICKER: "openTerminatePicker",
     OPEN_ARTIFACT_UPLOAD: "openArtifactUpload",
     CLOSE_MODAL: "closeModal",

@@ -1,5 +1,6 @@
 import { describe, it } from "vitest";
 import {
+    tokenizeInlineMarkdown,
     parseTerminalMarkupRuns,
     shortSessionId,
     stripTerminalMarkupTags,
@@ -22,5 +23,11 @@ describe("terminal UI null guards", () => {
         const parsed = parseTerminalMarkupRuns("{cyan-fg}hello{/cyan-fg}");
         assertEqual(parsed[0][0]?.text, "hello", "terminal markup should keep the text payload");
         assertEqual(parsed[0][0]?.color, "cyan", "terminal markup should preserve the foreground color");
+    });
+
+    it("does not strip underscores from bare URLs while tokenizing inline markdown", () => {
+        const tokens = tokenizeInlineMarkdown("See https://example.com/releases/train_payload_v2/report_file.md for details");
+        assertEqual(tokens.length, 1, "bare URLs should remain plain text tokens");
+        assertEqual(tokens[0]?.text, "See https://example.com/releases/train_payload_v2/report_file.md for details", "bare URLs should preserve underscores in visible text");
     });
 });

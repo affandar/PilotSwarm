@@ -159,6 +159,39 @@ function findClosingDelimiter(source, delimiter, startIndex) {
     return nextIndex >= 0 ? nextIndex : -1;
 }
 
+function isWordLikeMarkdownChar(value) {
+    return /[A-Za-z0-9_]/u.test(String(value || ""));
+}
+
+function canOpenInlineDelimiter(source, index, delimiter) {
+    const nextChar = source[index + delimiter.length] || "";
+    if (!nextChar || /\s/u.test(nextChar)) return false;
+    if (!delimiter.includes("_")) return true;
+    const previousChar = source[index - 1] || "";
+    return !(isWordLikeMarkdownChar(previousChar) && isWordLikeMarkdownChar(nextChar));
+}
+
+function canCloseInlineDelimiter(source, index, delimiter) {
+    const previousChar = source[index - 1] || "";
+    if (!previousChar || /\s/u.test(previousChar)) return false;
+    if (!delimiter.includes("_")) return true;
+    const nextChar = source[index + delimiter.length] || "";
+    return !(isWordLikeMarkdownChar(previousChar) && isWordLikeMarkdownChar(nextChar));
+}
+
+function findMatchingInlineDelimiter(source, delimiter, startIndex) {
+    let searchIndex = startIndex;
+    while (searchIndex < source.length) {
+        const candidate = source.indexOf(delimiter, searchIndex);
+        if (candidate < 0) return -1;
+        if (canCloseInlineDelimiter(source, candidate, delimiter)) {
+            return candidate;
+        }
+        searchIndex = candidate + delimiter.length;
+    }
+    return -1;
+}
+
 function countRepeatedDelimiter(source, delimiter, startIndex) {
     let count = 0;
     while (source.slice(startIndex + count, startIndex + count + delimiter.length) === delimiter) {
@@ -185,6 +218,18 @@ function pushTextRun(runs, text, style = {}) {
         underline: Boolean(style.underline),
         backgroundColor: style.backgroundColor || undefined,
     });
+}
+
+function pushInlineMarkdownToken(tokens, token) {
+    if (!token) return;
+    if (token.type === "text") {
+        const lastToken = tokens[tokens.length - 1];
+        if (lastToken?.type === "text") {
+            lastToken.text += token.text || "";
+            return;
+        }
+    }
+    tokens.push(token);
 }
 
 function flattenRunsText(runs) {
@@ -349,9 +394,9 @@ export function decorateArtifactLinksForChat(text) {
     });
 }
 
-function parseInlineMarkdownRuns(source) {
+export function tokenizeInlineMarkdown(source = "") {
     const text = String(source || "");
-    const runs = [];
+    const tokens = [];
     let index = 0;
 
     while (index < text.length) {
@@ -360,7 +405,7 @@ function parseInlineMarkdownRuns(source) {
             const delimiter = "`".repeat(tickCount);
             const closeIndex = findClosingDelimiter(text, delimiter, index + tickCount);
             if (closeIndex > index + tickCount - 1) {
-                pushTextRun(runs, text.slice(index + tickCount, closeIndex), { color: "cyan" });
+                pushInlineMarkdownToken(tokens, { type: "code", text: text.slice(index + tickCount, closeIndex) });
                 index = closeIndex + tickCount;
                 continue;
             }
@@ -368,9 +413,11 @@ function parseInlineMarkdownRuns(source) {
 
         if (text.startsWith("**", index) || text.startsWith("__", index)) {
             const delimiter = text.slice(index, index + 2);
-            const closeIndex = findClosingDelimiter(text, delimiter, index + 2);
+            const closeIndex = canOpenInlineDelimiter(text, index, delimiter)
+                ? findMatchingInlineDelimiter(text, delimiter, index + 2)
+                : -1;
             if (closeIndex > index + 2) {
-                pushTextRun(runs, text.slice(index + 2, closeIndex), { bold: true });
+                pushInlineMarkdownToken(tokens, { type: "strong", text: text.slice(index + 2, closeIndex) });
                 index = closeIndex + 2;
                 continue;
             }
@@ -379,7 +426,7 @@ function parseInlineMarkdownRuns(source) {
         if (text[index] === "[") {
             const match = /^\[([^\]]+)\]\(([^)]+)\)/.exec(text.slice(index));
             if (match) {
-                pushTextRun(runs, match[1], { color: "cyan", underline: true });
+                pushInlineMarkdownToken(tokens, { type: "link", text: match[1], href: match[2] });
                 index += match[0].length;
                 continue;
             }
@@ -387,11 +434,12 @@ function parseInlineMarkdownRuns(source) {
 
         if ((text[index] === "*" || text[index] === "_")
             && text[index + 1] !== " "
-            && text[index - 1] !== text[index]) {
+            && text[index - 1] !== text[index]
+            && canOpenInlineDelimiter(text, index, text[index])) {
             const delimiter = text[index];
-            const closeIndex = findClosingDelimiter(text, delimiter, index + 1);
+            const closeIndex = findMatchingInlineDelimiter(text, delimiter, index + 1);
             if (closeIndex > index + 1) {
-                pushTextRun(runs, text.slice(index + 1, closeIndex), { underline: true });
+                pushInlineMarkdownToken(tokens, { type: "em", text: text.slice(index + 1, closeIndex) });
                 index = closeIndex + 1;
                 continue;
             }
@@ -404,8 +452,35 @@ function parseInlineMarkdownRuns(source) {
                 nextIndex = candidate;
             }
         }
-        pushTextRun(runs, text.slice(index, nextIndex));
+        pushInlineMarkdownToken(tokens, { type: "text", text: text.slice(index, nextIndex) });
         index = nextIndex;
+    }
+
+    return tokens.length > 0 ? tokens : [{ type: "text", text: "" }];
+}
+
+function parseInlineMarkdownRuns(source) {
+    const tokens = tokenizeInlineMarkdown(source);
+    const runs = [];
+
+    for (const token of tokens) {
+        if (token.type === "code") {
+            pushTextRun(runs, token.text, { color: "cyan" });
+            continue;
+        }
+        if (token.type === "strong") {
+            pushTextRun(runs, token.text, { bold: true });
+            continue;
+        }
+        if (token.type === "em") {
+            pushTextRun(runs, token.text, { underline: true });
+            continue;
+        }
+        if (token.type === "link") {
+            pushTextRun(runs, token.text, { color: "cyan", underline: true });
+            continue;
+        }
+        pushTextRun(runs, token.text);
     }
 
     return runs.length > 0 ? runs : [{ text: "", color: null, bold: false, underline: false }];

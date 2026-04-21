@@ -64,6 +64,18 @@ export class BrowserPortalTransport {
         return this.bootstrap?.defaultModel || null;
     }
 
+    getAuthContext() {
+        return this.bootstrap?.auth || {
+            principal: null,
+            authorization: {
+                allowed: false,
+                role: null,
+                reason: "Auth context unavailable",
+                matchedGroups: [],
+            },
+        };
+    }
+
     async fetchJson(url, options = {}) {
         const token = await this.getAccessToken();
         const headers = new Headers(options.headers || {});
@@ -216,6 +228,13 @@ export class BrowserPortalTransport {
 
     async getFleetStats(opts) {
         return this.rpc("getFleetStats", {
+            includeDeleted: opts?.includeDeleted,
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+        });
+    }
+
+    async getUserStats(opts) {
+        return this.rpc("getUserStats", {
             includeDeleted: opts?.includeDeleted,
             since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
         });

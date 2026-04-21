@@ -117,6 +117,7 @@ export async function startTuiApp(config) {
         mode: config.mode,
         branding: config.branding,
         themeId: userConfig.themeId,
+        sessionOwnerFilter: userConfig.sessionOwnerFilter,
     }));
     const controller = new PilotSwarmUiController({ store, transport });
     let tuiApp;
@@ -203,11 +204,29 @@ export async function startTuiApp(config) {
 
     // Persist theme changes to config file
     let lastPersistedThemeId = store.getState().ui.themeId;
+    let lastPersistedSessionOwnerFilter = JSON.stringify(store.getState().sessions.ownerFilter || null);
     store.subscribe(() => {
-        const currentThemeId = store.getState().ui.themeId;
+        const state = store.getState();
+        const currentThemeId = state.ui.themeId;
+        const currentSessionOwnerFilter = state.sessions.ownerFilter || null;
+        const currentSessionOwnerFilterJson = JSON.stringify(currentSessionOwnerFilter);
+        const patch = {};
+        let changed = false;
+
         if (currentThemeId && currentThemeId !== lastPersistedThemeId) {
             lastPersistedThemeId = currentThemeId;
-            writeConfig({ themeId: currentThemeId });
+            patch.themeId = currentThemeId;
+            changed = true;
+        }
+
+        if (currentSessionOwnerFilterJson !== lastPersistedSessionOwnerFilter) {
+            lastPersistedSessionOwnerFilter = currentSessionOwnerFilterJson;
+            patch.sessionOwnerFilter = currentSessionOwnerFilter;
+            changed = true;
+        }
+
+        if (changed) {
+            writeConfig(patch);
         }
     });
 

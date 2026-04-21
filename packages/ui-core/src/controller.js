@@ -243,6 +243,138 @@ function shortSessionIdValue(sessionId) {
     return String(sessionId || "").slice(0, 8);
 }
 
+function ownerKeyForPrincipal(principal) {
+    const provider = String(principal?.provider || "").trim();
+    const subject = String(principal?.subject || "").trim();
+    return provider && subject ? `${provider}\u0001${subject}` : null;
+}
+
+function ownerDisplayName(owner, fallback = "unknown user") {
+    return String(owner?.displayName || owner?.email || "").trim() || fallback;
+}
+
+function buildSessionOwnerFilterItems(state) {
+    const principal = state.auth?.principal || null;
+    const principalKey = ownerKeyForPrincipal(principal);
+    const items = [
+        {
+            id: "all",
+            kind: "all",
+            label: "All",
+            description: "Show every session, including system and unowned sessions.",
+        },
+        {
+            id: "system",
+            kind: "system",
+            label: "System",
+            description: "Show sessions created by system agents.",
+        },
+        {
+            id: "unowned",
+            kind: "unowned",
+            label: "Unowned",
+            description: "Show non-system sessions that do not have an owner link.",
+        },
+    ];
+
+    if (principalKey) {
+        const label = ownerDisplayName(principal, "current user");
+        items.push({
+            id: "me",
+            kind: "me",
+            label: `Me (${label})`,
+            ownerKey: principalKey,
+            description: "Show sessions owned by the authenticated user currently signed in.",
+        });
+    }
+
+    const ownersByKey = new Map();
+    for (const session of Object.values(state.sessions?.byId || {})) {
+        const owner = session?.owner;
+        const key = ownerKeyForPrincipal(owner);
+        if (!key || key === principalKey || ownersByKey.has(key)) continue;
+        ownersByKey.set(key, owner);
+    }
+
+    for (const [ownerKey, owner] of [...ownersByKey.entries()].sort((a, b) => (
+        ownerDisplayName(a[1]).localeCompare(ownerDisplayName(b[1]))
+    ))) {
+        const label = ownerDisplayName(owner);
+        const email = String(owner?.email || "").trim();
+        items.push({
+            id: `owner:${ownerKey}`,
+            kind: "owner",
+            ownerKey,
+            label: email && email !== label ? `${label} <${email}>` : label,
+            description: "Show sessions owned by this user.",
+        });
+    }
+
+    return items;
+}
+
+function defaultOwnerFilterForPrincipal(principal) {
+    return ownerKeyForPrincipal(principal)
+        ? {
+            all: false,
+            includeSystem: true,
+            includeUnowned: false,
+            includeMe: true,
+            ownerKeys: [],
+        }
+        : {
+            all: true,
+            includeSystem: false,
+            includeUnowned: false,
+            includeMe: false,
+            ownerKeys: [],
+        };
+}
+
+function ownerFilterHasSelections(filter) {
+    return Boolean(
+        filter?.includeSystem
+        || filter?.includeUnowned
+        || filter?.includeMe
+        || (Array.isArray(filter?.ownerKeys) && filter.ownerKeys.length > 0),
+    );
+}
+
+function toggleOwnerFilterItem(currentFilter, item, principal) {
+    const current = currentFilter || defaultOwnerFilterForPrincipal(principal);
+    if (!item) return current;
+    if (item.kind === "all") {
+        return current.all ? defaultOwnerFilterForPrincipal(principal) : {
+            all: true,
+            includeSystem: false,
+            includeUnowned: false,
+            includeMe: false,
+            ownerKeys: [],
+        };
+    }
+
+    const next = {
+        ...current,
+        all: false,
+        ownerKeys: Array.isArray(current.ownerKeys) ? [...current.ownerKeys] : [],
+    };
+    if (item.kind === "system") next.includeSystem = !next.includeSystem;
+    if (item.kind === "unowned") next.includeUnowned = !next.includeUnowned;
+    if (item.kind === "me") next.includeMe = !next.includeMe;
+    if (item.kind === "owner" && item.ownerKey) {
+        const existingIndex = next.ownerKeys.indexOf(item.ownerKey);
+        if (existingIndex >= 0) {
+            next.ownerKeys.splice(existingIndex, 1);
+        } else {
+            next.ownerKeys.push(item.ownerKey);
+        }
+    }
+
+    return ownerFilterHasSelections(next)
+        ? next
+        : { all: true, includeSystem: false, includeUnowned: false, includeMe: false, ownerKeys: [] };
+}
+
 function getRenameSessionPrefix(session) {
     if (!session?.agentId || session?.isSystem) return null;
     const currentTitle = String(session?.title || "").trim();
@@ -729,6 +861,49 @@ export class PilotSwarmUiController {
         });
     }
 
+    openSessionOwnerFilter() {
+        const state = this.getState();
+        const items = buildSessionOwnerFilterItems(state);
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "sessionOwnerFilter",
+                title: "Session Filter",
+                previousFocus: state.ui.focusRegion,
+                selectedIndex: 0,
+                items,
+            },
+        });
+        this.dispatch({
+            type: "ui/status",
+            text: "Up/Down choose entry · Space toggle · Esc close",
+        });
+    }
+
+    toggleSessionOwnerFilter(index = null) {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "sessionOwnerFilter") return;
+        const selectedIndex = index == null
+            ? Math.max(0, Number(modal.selectedIndex) || 0)
+            : Math.max(0, Number(index) || 0);
+        const item = modal.items?.[selectedIndex];
+        if (!item) return;
+        const nextFilter = toggleOwnerFilterItem(state.sessions.ownerFilter, item, state.auth?.principal);
+        this.dispatch({
+            type: "sessions/ownerFilter",
+            filter: nextFilter,
+        });
+        this.dispatch({
+            type: "ui/modalSelection",
+            index: selectedIndex,
+        });
+        this.dispatch({
+            type: "ui/status",
+            text: `Session filter updated: ${item.label || item.id || "selection"}`,
+        });
+    }
+
     setFilesFilter(patch = {}) {
         this.dispatch({
             type: "files/filter",
@@ -795,6 +970,20 @@ export class PilotSwarmUiController {
 
     async start() {
         await this.transport.start();
+        const authContext = typeof this.transport.getAuthContext === "function"
+            ? this.transport.getAuthContext()
+            : null;
+        this.dispatch({
+            type: "auth/context",
+            principal: authContext?.principal ?? null,
+            authorization: authContext?.authorization ?? null,
+        });
+        if (!this.getState().sessions.ownerFilterExplicit) {
+            this.dispatch({
+                type: "sessions/ownerFilter",
+                filter: defaultOwnerFilterForPrincipal(authContext?.principal ?? null),
+            });
+        }
         const logConfig = typeof this.transport.getLogConfig === "function"
             ? this.transport.getLogConfig()
             : null;
@@ -1195,8 +1384,11 @@ export class PilotSwarmUiController {
             // sessions are still part of the operator's reality (cost,
             // tokens, skill usage) until the underlying rows are pruned.
             const fleetOpts = { since, includeDeleted: true };
-            const [data, skillUsage, sharedFactsStats] = await Promise.all([
+            const [data, userStats, skillUsage, sharedFactsStats] = await Promise.all([
                 this.transport.getFleetStats(fleetOpts),
+                typeof this.transport.getUserStats === "function"
+                    ? this.transport.getUserStats(fleetOpts).catch(() => null)
+                    : null,
                 typeof this.transport.getFleetSkillUsage === "function"
                     ? this.transport.getFleetSkillUsage(fleetOpts).catch(() => null)
                     : null,
@@ -1204,9 +1396,9 @@ export class PilotSwarmUiController {
                     ? this.transport.getSharedFactsStats().catch(() => null)
                     : null,
             ]);
-            this.dispatch({ type: "fleetStats/loaded", data, skillUsage, sharedFactsStats });
+            this.dispatch({ type: "fleetStats/loaded", data, userStats, skillUsage, sharedFactsStats });
         } catch {
-            this.dispatch({ type: "fleetStats/loaded", data: null, skillUsage: null, sharedFactsStats: null });
+            this.dispatch({ type: "fleetStats/loaded", data: null, userStats: null, skillUsage: null, sharedFactsStats: null });
         }
     }
 
@@ -2590,6 +2782,10 @@ export class PilotSwarmUiController {
             await this.confirmRenameSessionModal();
             return;
         }
+        if (modal.type === "sessionOwnerFilter") {
+            this.toggleSessionOwnerFilter();
+            return;
+        }
         if (modal.type === "filesFilter") {
             const previousFocus = modal.previousFocus;
             this.dispatch({ type: "ui/modal", modal: null });
@@ -3043,8 +3239,14 @@ export class PilotSwarmUiController {
     }
 
     toggleStatsView() {
-        const current = this.getState().ui.statsViewMode === "fleet" ? "fleet" : "session";
-        const statsViewMode = current === "session" ? "fleet" : "session";
+        const modes = ["session", "fleet", "users"];
+        const current = this.getState().ui.statsViewMode;
+        const currentIndex = modes.includes(current) ? modes.indexOf(current) : 0;
+        const statsViewMode = modes[(currentIndex + 1) % modes.length];
+        this.setStatsViewMode(statsViewMode);
+    }
+
+    setStatsViewMode(statsViewMode) {
         this.dispatch({
             type: "ui/statsViewMode",
             statsViewMode,
@@ -3065,12 +3267,12 @@ export class PilotSwarmUiController {
 
     async moveSession(delta) {
         const state = this.getState();
-        const flat = state.sessions.flat;
-        if (flat.length === 0) return;
-        const currentId = state.sessions.activeSessionId || flat[0].sessionId;
-        const currentIndex = Math.max(0, flat.findIndex((entry) => entry.sessionId === currentId));
-        const nextIndex = Math.max(0, Math.min(flat.length - 1, currentIndex + delta));
-        const nextId = flat[nextIndex].sessionId;
+        const rows = selectSessionRows(state);
+        if (rows.length === 0) return;
+        const currentId = state.sessions.activeSessionId || rows[0].sessionId;
+        const currentIndex = Math.max(0, rows.findIndex((row) => row.sessionId === currentId));
+        const nextIndex = Math.max(0, Math.min(rows.length - 1, currentIndex + delta));
+        const nextId = rows[nextIndex].sessionId;
         await this.loadSession(nextId);
     }
 
@@ -3701,6 +3903,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.OPEN_RENAME_SESSION:
                 this.openRenameSessionModal();
+                return;
+            case UI_COMMANDS.OPEN_SESSION_FILTER:
+                this.openSessionOwnerFilter();
                 return;
             case UI_COMMANDS.OPEN_TERMINATE_PICKER:
                 this.openTerminatePickerModal();

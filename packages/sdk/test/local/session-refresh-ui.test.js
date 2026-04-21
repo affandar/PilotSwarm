@@ -2,12 +2,19 @@ import { describe, it } from "vitest";
 import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
 import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
-import { selectActiveChat, selectChatPaneChrome, selectVisibleSessionRows } from "../../../ui-core/src/selectors.js";
+import {
+    selectActiveChat,
+    selectChatPaneChrome,
+    selectInspector,
+    selectSessionOwnerFilterModal,
+    selectSessionRows,
+    selectVisibleSessionRows,
+} from "../../../ui-core/src/selectors.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
 import { createStore } from "../../../ui-core/src/store.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
-function createController(transportOverrides = {}, { branding = null } = {}) {
+function createController(transportOverrides = {}, { branding = null, sessionOwnerFilter = null } = {}) {
     const transport = {
         start: async () => {},
         stop: async () => {},
@@ -16,11 +23,20 @@ function createController(transportOverrides = {}, { branding = null } = {}) {
         subscribeSession: () => () => {},
         ...transportOverrides,
     };
-    const store = createStore(appReducer, createInitialState({ mode: "local", branding }));
+    const store = createStore(appReducer, createInitialState({ mode: "local", branding, sessionOwnerFilter }));
     return {
         store,
         controller: new PilotSwarmUiController({ store, transport }),
     };
+}
+
+function linesText(lines) {
+    return (lines || []).map((line) => {
+        if (typeof line === "string") return line;
+        if (Array.isArray(line)) return line.map((run) => run?.text || "").join("");
+        if (Array.isArray(line?.runs)) return line.runs.map((run) => run?.text || "").join("");
+        return String(line?.text || "");
+    }).join("\n");
 }
 
 describe("session refresh UI recovery", () => {
@@ -157,6 +173,484 @@ describe("session refresh UI recovery", () => {
 
         const splash = selectActiveChat(store.getState());
         assertEqual(splash[0]?.id, "splash:Waldemort", "empty system-session splash should use the branded root title");
+    });
+
+    it("shows a sending status in the chat header without appending a synthetic chat bubble", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "send-session",
+                title: "Send Session",
+                status: "idle",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({
+            type: "history/set",
+            sessionId: "send-session",
+            history: {
+                chat: [{
+                    id: "optimistic:send",
+                    role: "user",
+                    text: "Please investigate this",
+                    time: "",
+                    createdAt: 3,
+                    optimistic: true,
+                }],
+                activity: [],
+                events: [],
+            },
+        });
+
+        const chat = selectActiveChat(store.getState());
+        assertEqual(chat.length, 1, "optimistic sends should keep the visible chat transcript unchanged");
+        assertEqual(chat[0]?.role, "user", "the visible chat transcript should only contain the optimistic user message");
+
+        const chrome = selectChatPaneChrome(store.getState());
+        const chromeTitle = chrome.title.map((run) => run.text).join("");
+        const chromeRight = (chrome.titleRight || []).map((run) => run.text).join("");
+        assertEqual(chromeTitle.includes("[sending]"), false, "chat chrome should no longer append the live status to the main title text");
+        assertIncludes(chromeRight, "Sending", "chat chrome should show a sending status on the right side while the optimistic turn is in flight");
+    });
+
+    it("shows a working status in the chat header while the session is running", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "working-session",
+                title: "Working Session",
+                status: "running",
+                createdAt: 1,
+                updatedAt: 20,
+            }],
+        });
+        store.dispatch({
+            type: "history/set",
+            sessionId: "working-session",
+            history: {
+                chat: [{
+                    id: "user:1",
+                    role: "user",
+                    text: "Give me the status",
+                    time: "",
+                    createdAt: 2,
+                }],
+                activity: [{
+                    id: "working-session:activity:1",
+                    eventType: "report_intent",
+                    seq: 5,
+                    createdAt: 10,
+                    text: "[10:43:43] [report_intent] Moody is collecting the evidence bundle for 18 items",
+                    line: [{ text: "[10:43:43] [report_intent] Moody is collecting the evidence bundle for 18 items", color: "white" }],
+                }],
+                events: [],
+            },
+        });
+
+        const chat = selectActiveChat(store.getState());
+        assertEqual(chat.length, 1, "running sessions should keep the visible chat transcript unchanged while work is in flight");
+        assertEqual(chat[0]?.role, "user", "running sessions should still show the last visible user message in chat");
+
+        const chrome = selectChatPaneChrome(store.getState());
+        const chromeTitle = chrome.title.map((run) => run.text).join("");
+        const chromeRight = (chrome.titleRight || []).map((run) => run.text).join("");
+        assertEqual(chromeTitle.includes("[working]"), false, "chat chrome should no longer append the live status to the main title text");
+        assertIncludes(chromeRight, "Working", "chat chrome should show a working status on the right side while recent activity is still in flight");
+    });
+
+    it("renders owner initials and unowned markers only in session-list titles", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "auth/context",
+            principal: {
+                provider: "test",
+                subject: "user-1",
+                email: "affan@example.com",
+                displayName: "Affan Dar",
+            },
+        });
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [
+                {
+                    sessionId: "owned-session",
+                    title: "Owned Work",
+                    status: "idle",
+                    createdAt: 1,
+                    updatedAt: 2,
+                    owner: {
+                        provider: "test",
+                        subject: "user-1",
+                        email: "affan@example.com",
+                        displayName: "Affan Dar",
+                    },
+                },
+                {
+                    sessionId: "legacy-session",
+                    title: "Legacy Work",
+                    status: "idle",
+                    createdAt: 3,
+                    updatedAt: 4,
+                },
+            ],
+        });
+
+        const rows = selectVisibleSessionRows(store.getState(), 8);
+        const renderedRows = rows.map((row) => row.runs.map((run) => run.text).join(""));
+        assert(renderedRows.some((row) => row.includes("(ad) Owned Work")), "owned row should include owner initials");
+        assert(renderedRows.some((row) => row.includes("(?) Legacy Work")), "unowned row should include the (?) marker");
+
+        store.dispatch({ type: "sessions/selected", sessionId: "owned-session" });
+        const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
+        assert(!chromeTitle.includes("(ad)"), "chat header should not include the owner prefix");
+    });
+
+    it("renders owner prefixes in the session list without auth context when owner metadata exists", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [
+                {
+                    sessionId: "owned-session",
+                    title: "Owned Work",
+                    status: "idle",
+                    createdAt: 1,
+                    updatedAt: 2,
+                    owner: {
+                        provider: "test",
+                        subject: "user-1",
+                        email: "affan@example.com",
+                        displayName: "Affan Dar",
+                    },
+                },
+                {
+                    sessionId: "legacy-session",
+                    title: "Legacy Work",
+                    status: "idle",
+                    createdAt: 3,
+                    updatedAt: 4,
+                },
+            ],
+        });
+
+        const renderedRows = selectVisibleSessionRows(store.getState(), 8)
+            .map((row) => row.runs.map((run) => run.text).join(""));
+        assert(renderedRows.some((row) => row.includes("(ad) Owned Work")), "owner metadata alone should enable owner initials in the session list");
+        assert(renderedRows.some((row) => row.includes("(?) Legacy Work")), "owner metadata should also mark unowned rows in the session list");
+    });
+
+    it("defaults session owner filtering to system plus me and exposes unowned as a separate entry", async () => {
+        const owner = {
+            provider: "test",
+            subject: "me",
+            email: "me@example.com",
+            displayName: "Me User",
+        };
+        const otherOwner = {
+            provider: "test",
+            subject: "other",
+            email: "other@example.com",
+            displayName: "Other User",
+        };
+        const { controller, store } = createController({
+            getAuthContext: () => ({
+                principal: owner,
+                authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] },
+            }),
+            listSessions: async () => [
+                {
+                    sessionId: "system-session",
+                    title: "System",
+                    isSystem: true,
+                    status: "idle",
+                    createdAt: 1,
+                    updatedAt: 2,
+                },
+                {
+                    sessionId: "mine-session",
+                    title: "Mine",
+                    status: "idle",
+                    createdAt: 3,
+                    updatedAt: 4,
+                    owner,
+                },
+                {
+                    sessionId: "other-session",
+                    title: "Other",
+                    status: "idle",
+                    createdAt: 5,
+                    updatedAt: 6,
+                    owner: otherOwner,
+                },
+                {
+                    sessionId: "unowned-session",
+                    title: "Unowned",
+                    status: "idle",
+                    createdAt: 7,
+                    updatedAt: 8,
+                },
+            ],
+        });
+
+        try {
+            await controller.start();
+
+            const defaultRows = selectSessionRows(store.getState()).map((row) => row.sessionId);
+            assert(defaultRows.includes("system-session"), "default filter should include system sessions");
+            assert(defaultRows.includes("mine-session"), "default filter should include current user's sessions");
+            assert(!defaultRows.includes("other-session"), "default filter should exclude other users");
+            assert(!defaultRows.includes("unowned-session"), "default filter should exclude unowned sessions");
+
+            controller.openSessionOwnerFilter();
+            const modal = selectSessionOwnerFilterModal(store.getState());
+            const modalText = modal.rows.map((row) => row.map((run) => run.text).join("")).join("\n");
+            assertIncludes(modalText, "Unowned", "filter modal should expose an explicit unowned entry");
+            assert(modal.rows[0]?.some((run) => run?.backgroundColor === "activeHighlightBackground"), "selected filter row should carry the shared active highlight background");
+
+            const detailsText = modal.detailsLines.map((row) => row.map((run) => run.text).join("")).join("\n");
+            assertIncludes(detailsText, "Space", "filter modal help should advertise Space for toggling");
+            assertEqual(detailsText.includes("Enter"), false, "filter modal help should no longer advertise Enter");
+
+            const unownedIndex = store.getState().ui.modal.items.findIndex((item) => item.kind === "unowned");
+            controller.toggleSessionOwnerFilter(unownedIndex);
+
+            const expandedRows = selectSessionRows(store.getState()).map((row) => row.sessionId);
+            assert(expandedRows.includes("unowned-session"), "toggling unowned should include unowned sessions");
+        } finally {
+            await controller.stop();
+        }
+    });
+
+    it("preserves a restored owner filter across startup when auth is enabled", async () => {
+        const owner = {
+            provider: "test",
+            subject: "me",
+            email: "me@example.com",
+            displayName: "Me User",
+        };
+        const { controller, store } = createController({
+            getAuthContext: () => ({
+                principal: owner,
+                authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] },
+            }),
+            listSessions: async () => [],
+        }, {
+            sessionOwnerFilter: {
+                all: true,
+                includeSystem: false,
+                includeUnowned: false,
+                includeMe: false,
+                ownerKeys: [],
+            },
+        });
+
+        try {
+            await controller.start();
+
+            const filter = store.getState().sessions.ownerFilter;
+            assertEqual(filter.all, true, "startup should preserve an explicit restored All filter");
+            assertEqual(filter.includeSystem, false, "startup should not overwrite restored filter selections");
+            assertEqual(filter.includeMe, false, "startup should not force the auth-based default when a filter was restored");
+        } finally {
+            await controller.stop();
+        }
+    });
+
+    it("cycles stats sub-tabs through session, fleet, and users with user resource totals", () => {
+        const { controller, store } = createController();
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "stats-session",
+                title: "Stats Session",
+                status: "idle",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "stats-session" });
+        store.dispatch({
+            type: "fleetStats/loaded",
+            data: { totals: { sessionCount: 1 }, byAgent: [], windowStart: null, earliestSessionCreatedAt: null },
+            userStats: {
+                windowStart: null,
+                earliestSessionCreatedAt: null,
+                totals: {
+                    sessionCount: 2,
+                    totalTokensInput: 3000,
+                    totalTokensOutput: 750,
+                    totalTokensCacheRead: 1500,
+                    totalTokensCacheWrite: 200,
+                    totalSnapshotSizeBytes: 4096,
+                    totalOrchestrationHistorySizeBytes: 8192,
+                    cacheHitRatio: 0.5,
+                },
+                users: [{
+                    ownerKind: "user",
+                    owner: {
+                        provider: "test",
+                        subject: "owner",
+                        email: "owner@example.com",
+                        displayName: "Owner User",
+                    },
+                    sessionIds: ["stats-session"],
+                    sessionCount: 1,
+                    totalTokensInput: 3000,
+                    totalTokensOutput: 750,
+                    totalTokensCacheRead: 1500,
+                    totalTokensCacheWrite: 200,
+                    totalSnapshotSizeBytes: 4096,
+                    totalOrchestrationHistorySizeBytes: 8192,
+                    cacheHitRatio: 0.5,
+                    byModel: [{
+                        model: "model-a",
+                        sessionIds: ["stats-session"],
+                        sessionCount: 1,
+                        totalTokensInput: 3000,
+                        totalTokensOutput: 750,
+                        totalTokensCacheRead: 1500,
+                        totalTokensCacheWrite: 200,
+                        totalSnapshotSizeBytes: 4096,
+                        totalOrchestrationHistorySizeBytes: 8192,
+                        cacheHitRatio: 0.5,
+                    }],
+                }],
+            },
+            skillUsage: null,
+            sharedFactsStats: null,
+        });
+
+        store.dispatch({ type: "ui/inspectorTab", inspectorTab: "stats" });
+        controller.toggleStatsView();
+        assertEqual(store.getState().ui.statsViewMode, "fleet", "first stats toggle should switch to fleet");
+        controller.toggleStatsView();
+        assertEqual(store.getState().ui.statsViewMode, "users", "second stats toggle should switch to users");
+
+        const inspector = selectInspector(store.getState(), { width: 72 });
+        const text = linesText(inspector.lines);
+        assertIncludes(text, "[users]", "users stats sub-tab should be selected");
+        assertIncludes(text, "OWNER USER <OWNER@EXAMPLE.COM>", "users stats should render owner identity");
+        assertIncludes(text, "model-a", "users stats should render model breakdown");
+        assertIncludes(text, "Orch Size", "users stats should include orchestration size");
+        assertIncludes(text, "Snapshots", "users stats should include snapshot size");
+    });
+
+    it("keeps existing users stats visible while a refresh is in flight", () => {
+        const { store } = createController();
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "stats-session",
+                title: "Stats Session",
+                status: "idle",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "stats-session" });
+        store.dispatch({
+            type: "fleetStats/loaded",
+            data: { totals: { sessionCount: 1 }, byAgent: [], windowStart: null, earliestSessionCreatedAt: null },
+            userStats: {
+                windowStart: null,
+                earliestSessionCreatedAt: null,
+                totals: {
+                    sessionCount: 1,
+                    totalTokensInput: 120,
+                    totalTokensOutput: 30,
+                    totalTokensCacheRead: 60,
+                    totalTokensCacheWrite: 10,
+                    totalSnapshotSizeBytes: 1024,
+                    totalOrchestrationHistorySizeBytes: 2048,
+                    cacheHitRatio: 0.5,
+                },
+                users: [{
+                    ownerKind: "user",
+                    owner: {
+                        provider: "test",
+                        subject: "owner",
+                        email: "owner@example.com",
+                        displayName: "Owner User",
+                    },
+                    sessionIds: ["stats-session"],
+                    sessionCount: 1,
+                    totalTokensInput: 120,
+                    totalTokensOutput: 30,
+                    totalTokensCacheRead: 60,
+                    totalTokensCacheWrite: 10,
+                    totalSnapshotSizeBytes: 1024,
+                    totalOrchestrationHistorySizeBytes: 2048,
+                    cacheHitRatio: 0.5,
+                    byModel: [],
+                }],
+            },
+            skillUsage: null,
+            sharedFactsStats: null,
+        });
+        store.dispatch({ type: "ui/inspectorTab", inspectorTab: "stats" });
+        store.dispatch({ type: "ui/statsViewMode", statsViewMode: "users" });
+        store.dispatch({ type: "fleetStats/loading" });
+
+        const inspector = selectInspector(store.getState(), { width: 72 });
+        const text = linesText(inspector.lines);
+        assertIncludes(text, "OWNER USER <OWNER@EXAMPLE.COM>", "users stats should stay visible while a refresh is in flight");
+        assertIncludes(text, "Orch Size", "users stats cards should remain rendered while loading");
+        assertEqual(text.includes("Loading user stats..."), false, "refreshing users stats should not blank the pane");
+    });
+
+    it("keeps existing session stats visible while a refresh is in flight", () => {
+        const { store } = createController();
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "stats-session",
+                title: "Stats Session",
+                status: "idle",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "stats-session" });
+        store.dispatch({
+            type: "sessionStats/loaded",
+            sessionId: "stats-session",
+            summary: {
+                agentId: "watcher",
+                model: "gpt-5.4",
+                tokensInput: 120,
+                tokensOutput: 30,
+                tokensCacheRead: 60,
+                tokensCacheWrite: 10,
+                cacheHitRatio: 0.5,
+                snapshotSizeBytes: 1024,
+                dehydrationCount: 1,
+                hydrationCount: 2,
+                lossyHandoffCount: 0,
+                lastDehydratedAt: null,
+                lastHydratedAt: null,
+            },
+            treeStats: null,
+            skillUsage: null,
+            treeSkillUsage: null,
+            factsStats: null,
+            treeFactsStats: null,
+        });
+        store.dispatch({ type: "ui/inspectorTab", inspectorTab: "stats" });
+        store.dispatch({ type: "ui/statsViewMode", statsViewMode: "session" });
+        store.dispatch({ type: "sessionStats/loading", sessionId: "stats-session" });
+
+        const inspector = selectInspector(store.getState(), { width: 72 });
+        const text = linesText(inspector.lines);
+        assertIncludes(text, "watcher", "session stats should stay visible while a refresh is in flight");
+        assertIncludes(text, "TOKENS", "session stats cards should remain rendered while loading");
+        assertEqual(text.includes("Loading session stats..."), false, "refreshing session stats should not blank the pane");
     });
 
     it("incrementally refreshes active chat from CMS when live subscription misses events", async () => {

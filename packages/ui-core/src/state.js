@@ -1,11 +1,30 @@
 import { FOCUS_REGIONS, INSPECTOR_TABS } from "./commands.js";
 import { DEFAULT_THEME_ID } from "./themes/index.js";
 
-export function createInitialState({ mode = "local", branding = null, themeId = null } = {}) {
+export function normalizeSessionOwnerFilter(filter) {
+    const ownerKeys = Array.isArray(filter?.ownerKeys)
+        ? [...new Set(filter.ownerKeys.map((key) => String(key || "").trim()).filter(Boolean))]
+        : [];
+    const hasExplicitFilter = filter && typeof filter === "object";
+    return {
+        all: hasExplicitFilter ? filter?.all === true : true,
+        includeSystem: filter?.includeSystem === true,
+        includeUnowned: filter?.includeUnowned === true,
+        includeMe: filter?.includeMe === true,
+        ownerKeys,
+    };
+}
+
+export function createInitialState({ mode = "local", branding = null, themeId = null, sessionOwnerFilter = null } = {}) {
+    const hasStoredSessionOwnerFilter = sessionOwnerFilter != null;
     return {
         branding: branding || {
             title: "PilotSwarm",
             splash: "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}",
+        },
+        auth: {
+            principal: null,
+            authorization: null,
         },
         ui: {
             focusRegion: FOCUS_REGIONS.SESSIONS,
@@ -50,6 +69,8 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",
+            ownerFilterExplicit: hasStoredSessionOwnerFilter,
+            ownerFilter: normalizeSessionOwnerFilter(sessionOwnerFilter),
         },
         history: {
             bySessionId: new Map(),
@@ -87,6 +108,7 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         fleetStats: {
             loading: false,
             data: null,
+            userStats: null,
             fetchedAt: 0,
         },
     };

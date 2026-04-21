@@ -8,6 +8,7 @@ import { PilotSwarmClient } from "./client.js";
 import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./management-client.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
+import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import os from "node:os";
 import fs from "node:fs";
 
@@ -363,8 +364,8 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("getOrchestrationStats", { sessionId });
         },
         /** List all sessions via the PilotSwarmClient SDK. */
-        listSessions() {
-            return ctx.scheduleActivity("listSessions", {});
+        listSessions(filters?: { includeSystem?: boolean; ownerQuery?: string; ownerKind?: string }) {
+            return ctx.scheduleActivity("listSessions", filters ?? {});
         },
         /** List direct child sessions of a session. */
         listChildSessions(parentSessionId: string) {
@@ -855,13 +856,21 @@ export function registerActivities(
                 const running = children.filter(child => child.status === "running").map(child => child.orchId);
                 return running.length > 0 ? running : children.map(child => child.orchId);
             },
-            listSessions: async () => {
+            listSessions: async (args?: { include_system?: boolean; owner_query?: string; owner_kind?: string }) => {
                 try {
                     const sdkClient = await getInlineClient();
-                    const sessions = await sdkClient.listSessions();
+                    const sessions = (await sdkClient.listSessions()).filter((session: any) => matchesSessionOwnerFilters(session, {
+                        includeSystem: args?.include_system,
+                        ownerQuery: args?.owner_query,
+                        ownerKind: args?.owner_kind,
+                    }));
+                    if (sessions.length === 0) {
+                        return "[SYSTEM: Active sessions (0). No sessions matched the requested filters.]";
+                    }
                     const lines = sessions.map((s: any) =>
                         `  - ${s.sessionId}${s.sessionId === input.sessionId ? " (this session)" : ""}\n` +
                         `    Title: ${s.title ?? "(untitled)"}\n` +
+                        `    Owner: ${formatSessionOwnerLabel(s)}\n` +
                         `    Status: ${s.status}, Iterations: ${s.iterations ?? 0}\n` +
                         `    Parent: ${s.parentSessionId ?? "none"}`
                     );
@@ -1835,7 +1844,7 @@ export function registerActivities(
     // Lists all sessions via the PilotSwarmClient SDK.
     runtime.registerActivity("listSessions", async (
         activityCtx: any,
-        _input: {},
+        input: { includeSystem?: boolean; ownerQuery?: string; ownerKind?: string },
     ): Promise<string> => {
         activityCtx.traceInfo(`[listSessions]`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
@@ -1848,10 +1857,12 @@ export function registerActivities(
         });
         try {
             await sdkClient.start();
-            const sessions = await sdkClient.listSessions();
+            const sessions = (await sdkClient.listSessions()).filter((session) => matchesSessionOwnerFilters(session, input));
             return JSON.stringify(sessions.map(s => ({
                 sessionId: s.sessionId,
                 title: s.title,
+                owner: s.owner ?? null,
+                ownerKind: getSessionOwnerKind(s),
                 status: s.status,
                 iterations: s.iterations,
                 parentSessionId: s.parentSessionId,

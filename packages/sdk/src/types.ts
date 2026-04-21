@@ -15,7 +15,7 @@ export type TurnAction =
     | { type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
-    | { type: "list_sessions"; events?: CapturedEvent[] }
+    | { type: "list_sessions"; includeSystem?: boolean; ownerQuery?: string; ownerKind?: string; events?: CapturedEvent[] }
     | { type: "complete_agent"; agentId: string; events?: CapturedEvent[] }
     | { type: "cancel_agent"; agentId: string; reason?: string; events?: CapturedEvent[] }
     | { type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] };
@@ -34,7 +34,7 @@ export type TurnResult =
     | ({ type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "check_agents"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "list_sessions"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "list_sessions"; includeSystem?: boolean; ownerQuery?: string; ownerKind?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "complete_agent"; agentId: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cancel_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -73,7 +73,11 @@ export interface TurnOptions {
         messageAgent(args: { agent_id: string; message: string }): Promise<string>;
         checkAgents(): Promise<string>;
         resolveWaitForAgents(agentIds?: string[]): Promise<string[]>;
-        listSessions(): Promise<string>;
+        listSessions(args?: {
+            include_system?: boolean;
+            owner_query?: string;
+            owner_kind?: string;
+        }): Promise<string>;
         completeAgent(args: { agent_id: string }): Promise<string>;
         cancelAgent(args: { agent_id: string; reason?: string }): Promise<string>;
         deleteAgent(args: { agent_id: string; reason?: string }): Promise<string>;
@@ -167,6 +171,13 @@ export interface SessionContextUsage {
     compaction?: SessionCompactionSnapshot;
 }
 
+export interface SessionOwnerInfo {
+    provider: string;
+    subject: string;
+    email?: string | null;
+    displayName?: string | null;
+}
+
 // ─── Session Info ────────────────────────────────────────────────
 
 export interface PilotSwarmSessionInfo {
@@ -195,6 +206,8 @@ export interface PilotSwarmSessionInfo {
     agentId?: string;
     /** Splash banner (terminal markup) from the agent definition. */
     splash?: string;
+    /** Authenticated user associated with this session when available. */
+    owner?: SessionOwnerInfo;
     /** Latest known context-window usage snapshot for this session. */
     contextUsage?: SessionContextUsage;
 }

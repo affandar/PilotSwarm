@@ -345,6 +345,15 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 controller.handleCommand(UI_COMMANDS.MODAL_PANE_NEXT).catch(() => {});
                 return;
             }
+            if (modal.type === "sessionOwnerFilter") {
+                if (input === " ") {
+                    controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
+                    return;
+                }
+                if (key.return) {
+                    return;
+                }
+            }
             if (key.return) {
                 controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
                 return;
@@ -407,6 +416,11 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
 
         if (focus === "chat" && (input === "e" || isCtrlE)) {
             controller.handleCommand(UI_COMMANDS.EXPAND_HISTORY).catch(() => {});
+            return;
+        }
+
+        if (focus === "sessions" && input === "f") {
+            controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {});
             return;
         }
 

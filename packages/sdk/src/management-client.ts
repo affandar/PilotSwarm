@@ -21,6 +21,7 @@ import type {
     SessionCommandResponse,
     SessionStatusSignal,
     SessionContextUsage,
+    SessionOwnerInfo,
 } from "./types.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
@@ -28,6 +29,7 @@ import type {
     SessionMetricSummary,
     SessionTreeStats,
     FleetStats,
+    UserStats,
     SkillUsageRow,
     SessionTreeSkillUsage,
     FleetSkillUsage,
@@ -133,6 +135,7 @@ export interface PilotSwarmSessionView {
     title?: string;
     agentId?: string;
     splash?: string;
+    owner?: SessionOwnerInfo;
     /** Live status from orchestration customStatus (idle, running, waiting, etc.) */
     status: PilotSwarmSessionStatus;
     /** Duroxide orchestration runtime status (Running, Completed, Failed, Terminated). */
@@ -372,6 +375,7 @@ export class PilotSwarmManagementClient {
                 title: row.title ?? undefined,
                 agentId: row.agentId ?? undefined,
                 splash: row.splash ?? undefined,
+                owner: row.owner ?? undefined,
                 status: liveStatus,
                 orchestrationStatus: undefined, // not available in CMS-only path
                 orchestrationVersion: undefined, // not available in CMS-only path
@@ -512,6 +516,7 @@ export class PilotSwarmManagementClient {
             title: row.title ?? undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
+            owner: row.owner ?? undefined,
             status: liveStatus,
             orchestrationStatus: orchStatus,
             orchestrationVersion,
@@ -777,6 +782,38 @@ export class PilotSwarmManagementClient {
     async getFleetStats(opts?: { includeDeleted?: boolean; since?: Date }): Promise<FleetStats> {
         this._ensureStarted();
         return this._catalog!.getFleetStats(opts);
+    }
+
+    async getUserStats(opts?: { includeDeleted?: boolean; since?: Date }): Promise<UserStats> {
+        this._ensureStarted();
+        const stats = await this._catalog!.getUserStats(opts);
+        const sessionIds = [...new Set(stats.users.flatMap((user) =>
+            user.byModel.flatMap((bucket) => bucket.sessionIds || []),
+        ))];
+        if (sessionIds.length === 0) return stats;
+
+        const historySizeBySessionId = new Map<string, number>();
+        await Promise.allSettled(sessionIds.map(async (sessionId) => {
+            const orchestrationStats = await this.getOrchestrationStats(sessionId);
+            const size = Number(orchestrationStats?.historySizeBytes);
+            if (Number.isFinite(size) && size > 0) {
+                historySizeBySessionId.set(sessionId, size);
+            }
+        }));
+
+        let totalOrchestrationHistorySizeBytes = 0;
+        for (const user of stats.users) {
+            let userOrchestrationSize = 0;
+            for (const bucket of user.byModel) {
+                bucket.totalOrchestrationHistorySizeBytes = (bucket.sessionIds || [])
+                    .reduce((sum, sessionId) => sum + (historySizeBySessionId.get(sessionId) || 0), 0);
+                userOrchestrationSize += bucket.totalOrchestrationHistorySizeBytes;
+            }
+            user.totalOrchestrationHistorySizeBytes = userOrchestrationSize;
+            totalOrchestrationHistorySizeBytes += userOrchestrationSize;
+        }
+        stats.totals.totalOrchestrationHistorySizeBytes = totalOrchestrationHistorySizeBytes;
+        return stats;
     }
 
     /**

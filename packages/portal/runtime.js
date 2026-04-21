@@ -4,6 +4,19 @@ function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
 }
 
+function normalizeSessionOwner(authContext) {
+    const principal = authContext?.principal;
+    const provider = String(principal?.provider || "").trim();
+    const subject = String(principal?.subject || "").trim();
+    if (!provider || !subject) return null;
+    return {
+        provider,
+        subject,
+        email: String(principal?.email || "").trim() || null,
+        displayName: String(principal?.displayName || "").trim() || null,
+    };
+}
+
 export class PortalRuntime {
     constructor({ store, mode }) {
         this.transport = new NodeSdkTransport({ store, mode });
@@ -62,9 +75,10 @@ export class PortalRuntime {
         };
     }
 
-    async call(method, params = {}) {
+    async call(method, params = {}, authContext = null) {
         await this.start();
         const safeParams = normalizeParams(params);
+        const owner = normalizeSessionOwner(authContext);
         switch (method) {
             case "listSessions":
                 return this.transport.listSessions();
@@ -78,6 +92,11 @@ export class PortalRuntime {
                 return this.transport.getSessionTreeStats(safeParams.sessionId);
             case "getFleetStats":
                 return this.transport.getFleetStats({
+                    includeDeleted: safeParams.includeDeleted,
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                });
+            case "getUserStats":
+                return this.transport.getUserStats({
                     includeDeleted: safeParams.includeDeleted,
                     since: safeParams.since ? new Date(safeParams.since) : undefined,
                 });
@@ -105,13 +124,14 @@ export class PortalRuntime {
             case "getExecutionHistory":
                 return this.transport.getExecutionHistory(safeParams.sessionId, safeParams.executionId);
             case "createSession":
-                return this.transport.createSession({ model: safeParams.model });
+                return this.transport.createSession({ model: safeParams.model, owner });
             case "createSessionForAgent":
                 return this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
                     title: safeParams.title,
                     splash: safeParams.splash,
                     initialPrompt: safeParams.initialPrompt,
+                    owner,
                 });
             case "listCreatableAgents":
                 return this.transport.listCreatableAgents();

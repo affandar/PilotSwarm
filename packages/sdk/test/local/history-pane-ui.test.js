@@ -5,7 +5,7 @@ import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
 import { createStore } from "../../../ui-core/src/store.js";
-import { selectChatLines, selectFileBrowserItems } from "../../../ui-core/src/selectors.js";
+import { selectChatLines, selectChatPaneChrome, selectFileBrowserItems } from "../../../ui-core/src/selectors.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 function createController(transportOverrides = {}) {
@@ -468,7 +468,7 @@ describe("history pane UI behavior", () => {
         );
     });
 
-    it("shows an inline Thinking card with reasoning while a response is still pending", () => {
+    it("shows a chat-header Thinking status while a response is still pending", () => {
         const sessionId = "session-12345678";
         const state = createInitialState({ mode: "local" });
         state.sessions.byId[sessionId] = {
@@ -498,32 +498,42 @@ describe("history pane UI behavior", () => {
 
         const lines = selectChatLines(state, 120);
         const text = flattenChatLines(lines);
-        const reasoningRun = lines
-            .flatMap((line) => Array.isArray(line) ? line : [line])
-            .find((run) => String(run?.text || "").includes("Checking the latest hydration and CPU signals first."));
-        const narrowLines = selectChatLines(state, 20);
-        const thinkingStart = narrowLines.findIndex((line) => (Array.isArray(line)
-            ? line.some((run) => String(run?.text || "").includes("Thinking…"))
-            : String(line?.text || "").includes("Thinking…")));
-        const thinkingBlock = thinkingStart >= 0
-            ? narrowLines.slice(thinkingStart, narrowLines.findIndex((line, index) => index > thinkingStart && !Array.isArray(line) && !String(line?.text || "").trim()) >= 0
-                ? narrowLines.findIndex((line, index) => index > thinkingStart && !Array.isArray(line) && !String(line?.text || "").trim())
-                : narrowLines.length)
-            : [];
-        const widestNarrowThinkingLine = thinkingBlock.reduce((max, line) => Math.max(
-            max,
-            Array.isArray(line)
-                ? line.reduce((sum, run) => sum + String(run?.text || "").length, 0)
-                : String(line?.text || "").length,
-        ), 0);
+        const chrome = selectChatPaneChrome(state);
+        const titleRight = (chrome.titleRight || []).map((run) => run.text).join("");
 
-        assertIncludes(text, "⠋ Thinking…", "pending turns should show the inline Thinking card");
-        assertIncludes(text, "Checking the latest hydration and CPU signals first.", "latest reasoning should appear inside the Thinking card");
-        assertEqual(reasoningRun?.color, "gray", "thinking body text should render dimmed");
-        assert(widestNarrowThinkingLine <= 20, "thinking card should honor narrow chat widths");
+        assertEqual(text.includes("Thinking"), false, "pending turns should no longer inject an inline Thinking card into chat");
+        assertIncludes(text, "You: diagnose the worker stall", "the visible chat transcript should remain the user/assistant conversation only");
+        assertIncludes(titleRight, "Thinking", "the chat header should show a Thinking status while the assistant response is pending");
     });
 
-    it("replaces the Thinking card once the final assistant response arrives", () => {
+    it("preserves underscores inside bare URLs in chat rendering", () => {
+        const sessionId = "session-12345678";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "idle",
+            title: "Underscore Links",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "assistant.message",
+                data: {
+                    content: "Use https://example.com/releases/train_payload_v2/report_file.md for the full report.",
+                },
+                createdAt: new Date("2026-04-21T11:05:00.000Z"),
+            },
+        ]));
+
+        const text = flattenChatLines(selectChatLines(state, 120));
+        assertIncludes(text, "https://example.com/releases/train_payload_v2/report_file.md", "chat rendering should preserve underscores inside bare URLs");
+    });
+
+    it("clears the chat-header Thinking status once the final assistant response arrives", () => {
         const sessionId = "session-12345678";
         const state = createInitialState({ mode: "local" });
         state.sessions.byId[sessionId] = {
@@ -560,8 +570,10 @@ describe("history pane UI behavior", () => {
 
         const lines = selectChatLines(state, 120);
         const text = flattenChatLines(lines);
+        const chrome = selectChatPaneChrome(state);
 
-        assertEqual(text.includes("⠋ Thinking…"), false, "the Thinking card should disappear once the assistant responds");
+        assertEqual(text.includes("Thinking"), false, "the chat transcript should not contain an inline Thinking card once the assistant responds");
+        assertEqual((chrome.titleRight || []).length, 0, "the chat header should clear the Thinking status once the assistant responds");
         assertIncludes(text, "Agent: The stall is coming from blob-storage I/O during hydration.", "the final assistant message should replace the pending Thinking state");
     });
 

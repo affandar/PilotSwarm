@@ -154,11 +154,12 @@ Current overlap to preserve unless intentionally changed:
 
 - `n` opens a new-session flow; in apps with named creatable agents it should open the agent picker rather than blindly creating a generic session
 - `Shift+N` opens the model picker, and model selection should flow into the same new-session/agent-picker path
+- `f` in the sessions pane opens the session owner filter
 - `t` in the sessions pane opens the rename-title dialog
 - `t` in the logs inspector toggles log tailing
 - `Ctrl+A` in the prompt opens the attach-file dialog
 - `o` in the files inspector opens the selected file in the OS default app
-- `f` in the logs inspector opens the log-filter dialog, `f` in the files inspector opens the files-filter dialog, and `f` in the stats inspector toggles between session and fleet views
+- `f` in the logs inspector opens the log-filter dialog, `f` in the files inspector opens the files-filter dialog, and `f` in the stats inspector cycles between session, fleet, and users views
 
 ## TUI Maintenance
 

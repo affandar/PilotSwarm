@@ -35,7 +35,7 @@ export { SessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
 export { PgFactStore, createFactStoreForUrl } from "./facts-store.js";
 export { PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
-export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage } from "./cms.js";
+export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage } from "./cms.js";
 export type {
     FactStore,
     FactRecord,
@@ -52,6 +52,7 @@ export type {
     ManagedSessionConfig,
     PilotSwarmSessionStatus,
     PilotSwarmSessionInfo,
+    SessionOwnerInfo,
     SessionContextUsage,
     SessionCompactionSnapshot,
     TurnAction,

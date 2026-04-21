@@ -16,6 +16,7 @@ import type {
     CommandMessage,
     CommandResponse,
     SessionResponsePayload,
+    SessionOwnerInfo,
 } from "./types.js";
 import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
@@ -104,6 +105,8 @@ export class PilotSwarmClient {
         nestingLevel?: number;
         /** Agent ID to bind this session to (for policy validation and title prefixing). */
         agentId?: string;
+        /** Authenticated owner to associate with the new session. */
+        owner?: SessionOwnerInfo | null;
     }): Promise<PilotSwarmSession> {
         // ── Policy enforcement (client-side) ─────────────────
         const policy = this._sessionPolicy;
@@ -152,6 +155,7 @@ export class PilotSwarmClient {
         await this._catalog.createSession(sessionId, {
             model: config?.model,
             parentSessionId: config?.parentSessionId,
+            owner: config?.owner ?? null,
         });
 
         // Track parentSessionId for sub-agent orchestration input
@@ -186,6 +190,7 @@ export class PilotSwarmClient {
         title?: string;
         splash?: string;
         initialPrompt?: string;
+        owner?: SessionOwnerInfo | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -202,6 +207,7 @@ export class PilotSwarmClient {
             agentId: agentName,
             boundAgentName: agentName,
             promptLayering: { kind: "app-agent" },
+            owner: opts?.owner ?? null,
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)
@@ -321,6 +327,7 @@ export class PilotSwarmClient {
             sessionId: row.sessionId,
             status: (row.state as PilotSwarmSessionStatus) ?? "pending",
             title: row.title ?? undefined,
+            owner: row.owner ?? undefined,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
             iterations: row.currentIteration,
@@ -726,6 +733,7 @@ export class PilotSwarmClient {
             model: cmsRow?.model ?? undefined,
             title: cmsRow?.title ?? undefined,
             agentId: cmsRow?.agentId ?? undefined,
+            owner: cmsRow?.owner ?? undefined,
             createdAt: cmsRow?.createdAt ?? new Date(),
             updatedAt: cmsRow?.updatedAt ?? new Date(),
             iterations: customStatus.iteration ?? cmsRow?.currentIteration ?? 0,

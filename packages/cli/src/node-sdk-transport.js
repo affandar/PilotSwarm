@@ -495,6 +495,18 @@ export class NodeSdkTransport {
         };
     }
 
+    getAuthContext() {
+        return {
+            principal: null,
+            authorization: {
+                allowed: true,
+                role: null,
+                reason: "Local transport",
+                matchedGroups: [],
+            },
+        };
+    }
+
     async listSessions() {
         return this.mgmt.listSessions();
     }
@@ -517,6 +529,10 @@ export class NodeSdkTransport {
 
     async getFleetStats(opts) {
         return this.mgmt.getFleetStats(opts);
+    }
+
+    async getUserStats(opts) {
+        return this.mgmt.getUserStats(opts);
     }
 
     async getSessionSkillUsage(sessionId, opts) {
@@ -551,20 +567,24 @@ export class NodeSdkTransport {
         return this.mgmt.getExecutionHistory(sessionId, executionId);
     }
 
-    async createSession({ model } = {}) {
+    async createSession({ model, owner } = {}) {
         const effectiveModel = model || this.mgmt.getDefaultModel();
-        const session = await this.client.createSession(effectiveModel ? { model: effectiveModel } : undefined);
+        const session = await this.client.createSession({
+            ...(effectiveModel ? { model: effectiveModel } : {}),
+            ...(owner ? { owner } : {}),
+        });
         this.sessionHandles.set(session.sessionId, session);
         return { sessionId: session.sessionId, model: effectiveModel };
     }
 
-    async createSessionForAgent(agentName, { model, title, splash, initialPrompt } = {}) {
+    async createSessionForAgent(agentName, { model, title, splash, initialPrompt, owner } = {}) {
         const effectiveModel = model || this.mgmt.getDefaultModel();
         const session = await this.client.createSessionForAgent(agentName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(title ? { title } : {}),
             ...(splash ? { splash } : {}),
             ...(initialPrompt ? { initialPrompt } : {}),
+            ...(owner ? { owner } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         return {

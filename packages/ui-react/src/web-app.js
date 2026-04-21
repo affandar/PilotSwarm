@@ -1,4 +1,5 @@
 import React from "react";
+import { appendAnimatedDotsToRuns, useAnimatedDots } from "./chat-status.js";
 import {
     UI_COMMANDS,
     INSPECTOR_TABS,
@@ -10,6 +11,7 @@ import {
     getTheme,
     parseTerminalMarkupRuns,
     PilotSwarmUiController,
+    tokenizeInlineMarkdown,
     selectActivityPane,
     selectArtifactPickerModal,
     selectArtifactUploadModal,
@@ -25,6 +27,7 @@ import {
     selectModelPickerModal,
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
+    selectSessionOwnerFilterModal,
     selectSessionRows,
     selectStatusBar,
     selectThemePickerModal,
@@ -36,8 +39,12 @@ const MOBILE_BREAKPOINT = 920;
 const GRID_CELL_WIDTH = 7;
 const GRID_CELL_HEIGHT = 19;
 const SCROLL_ROW_HEIGHT = 16;
+const SCROLL_BOTTOM_EPSILON_PX = 0.5;
+const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX;
 const THEME_STORAGE_KEY = "pilotswarm.theme";
 const THEME_COOKIE_NAME = "pilotswarm_theme";
+const SESSION_OWNER_FILTER_STORAGE_KEY = "pilotswarm.sessionOwnerFilter";
+const SESSION_OWNER_FILTER_COOKIE_NAME = "pilotswarm_session_owner_filter";
 const CHAT_FOCUS_MODE_STORAGE_KEY = "pilotswarm.chatFocus";
 const INSPECTOR_TAB_LABELS = {
     sequence: "Sequence",
@@ -89,6 +96,53 @@ function writeStoredChatFocusMode(enabled) {
     } catch {
         // Ignore localStorage failures in private or constrained environments.
     }
+}
+
+function isDefaultSessionOwnerFilter(filter) {
+    return filter?.all === true
+        && filter?.includeSystem !== true
+        && filter?.includeUnowned !== true
+        && filter?.includeMe !== true
+        && (!Array.isArray(filter?.ownerKeys) || filter.ownerKeys.length === 0);
+}
+
+function readStoredSessionOwnerFilter() {
+    let rawValue = null;
+    try {
+        const cookieMatch = document.cookie.match(new RegExp(`(?:^|; )${SESSION_OWNER_FILTER_COOKIE_NAME}=([^;]+)`));
+        if (cookieMatch?.[1]) {
+            rawValue = decodeURIComponent(cookieMatch[1]);
+        }
+    } catch {}
+    if (!rawValue) {
+        try {
+            rawValue = window.localStorage.getItem(SESSION_OWNER_FILTER_STORAGE_KEY);
+        } catch {
+            return null;
+        }
+    }
+    if (!rawValue) return null;
+    try {
+        const parsed = JSON.parse(rawValue);
+        return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+function writeStoredSessionOwnerFilter(filter) {
+    const shouldClear = isDefaultSessionOwnerFilter(filter);
+    const serialized = shouldClear ? "" : JSON.stringify(filter || null);
+    try {
+        document.cookie = `${SESSION_OWNER_FILTER_COOKIE_NAME}=${encodeURIComponent(serialized)}; Path=/; Max-Age=${shouldClear ? 0 : 31536000}; SameSite=Lax`;
+    } catch {}
+    try {
+        if (shouldClear) {
+            window.localStorage.removeItem(SESSION_OWNER_FILTER_STORAGE_KEY);
+        } else {
+            window.localStorage.setItem(SESSION_OWNER_FILTER_STORAGE_KEY, serialized);
+        }
+    } catch {}
 }
 
 function getVisibleInspectorTabs(controller) {
@@ -263,38 +317,72 @@ function computeGridViewport(viewport) {
     };
 }
 
+export function getScrollDistanceToBottom(node) {
+    if (!node) return 0;
+    const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+    return Math.max(0, maxScroll - node.scrollTop);
+}
+
+export function isScrollViewportAtBottom(node) {
+    return getScrollDistanceToBottom(node) <= SCROLL_BOTTOM_EPSILON_PX;
+}
+
 function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom = false } = {}) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
     // Programmatic scrollTop assignments fire a 'scroll' event that would
     // otherwise call onScroll → dispatch ui/scroll → clobber the user's
     // offset (especially when content briefly shrinks during a refresh
     // and clamps nextScrollTop downward). The flag tells onScroll to
-    // ignore the next scroll event after we set scrollTop ourselves.
-    const programmaticScrollRef = React.useRef(false);
+    // ignore the matching scroll event after we set scrollTop ourselves.
+    const programmaticScrollRef = React.useRef(null);
+    const previousViewportStateRef = React.useRef({
+        scrollMode,
+        scrollOffset,
+    });
 
     React.useLayoutEffect(() => {
         const node = ref.current;
         if (!node) return;
+        const previousViewportState = previousViewportStateRef.current;
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        const preservePausedStickyScroll = stickyBottom
+            && scrollMode === "top"
+            && previousViewportState?.scrollMode === "top"
+            && previousViewportState?.scrollOffset === scrollOffset;
         const offsetPixels = Math.max(0, Number(scrollOffset) || 0) * SCROLL_ROW_HEIGHT;
-        const nextScrollTop = scrollMode === "bottom"
-            ? Math.max(0, maxScroll - offsetPixels)
-            : Math.min(maxScroll, offsetPixels);
-        if (Math.abs(node.scrollTop - nextScrollTop) > 2) {
-            programmaticScrollRef.current = true;
+        const nextScrollTop = preservePausedStickyScroll
+            ? Math.max(0, Math.min(node.scrollTop, maxScroll))
+            : scrollMode === "bottom"
+                ? Math.max(0, maxScroll - offsetPixels)
+                : Math.min(maxScroll, offsetPixels);
+        if (Math.abs(node.scrollTop - nextScrollTop) > PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
+            const pendingProgrammaticScroll = { target: nextScrollTop };
+            programmaticScrollRef.current = pendingProgrammaticScroll;
             node.scrollTop = nextScrollTop;
             // Clear on the next frame — the scroll event from the assignment
             // above is queued synchronously and handled in the same task.
             window.requestAnimationFrame(() => {
-                programmaticScrollRef.current = false;
+                if (programmaticScrollRef.current === pendingProgrammaticScroll) {
+                    programmaticScrollRef.current = null;
+                }
             });
         }
-    }, [normalizedLines, ref, scrollMode, scrollOffset]);
+        previousViewportStateRef.current = {
+            scrollMode,
+            scrollOffset,
+        };
+    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom]);
 
     const onScroll = React.useCallback(() => {
-        if (programmaticScrollRef.current) return;
         const node = ref.current;
         if (!node || !paneKey) return;
+        const pendingProgrammatic = programmaticScrollRef.current;
+        if (pendingProgrammatic) {
+            if (Math.abs(node.scrollTop - pendingProgrammatic.target) <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
+                return;
+            }
+            programmaticScrollRef.current = null;
+        }
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
         // When the pane has no scrollable content (transient loading state
         // that briefly collapses the body to one line), the browser auto-
@@ -304,11 +392,10 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         // the desired scroll position from preserved state.
         if (maxScroll <= 0) return;
         if (stickyBottom && typeof controller.updatePaneScrollFromViewport === "function") {
-            const distanceToBottom = Math.max(0, maxScroll - node.scrollTop);
             controller.updatePaneScrollFromViewport(
                 paneKey,
                 Math.max(0, node.scrollTop) / SCROLL_ROW_HEIGHT,
-                { atBottom: distanceToBottom <= SCROLL_ROW_HEIGHT / 2 },
+                { atBottom: isScrollViewportAtBottom(node) },
             );
             return;
         }
@@ -414,37 +501,6 @@ function usePanePixelScroll(ref, scrollOffset, paneKey, controller) {
             offset: Math.max(0, node.scrollTop) / SCROLL_ROW_HEIGHT,
         });
     }, [controller, paneKey, ref]);
-}
-
-function tokenizeInlineMarkdown(source = "") {
-    const tokens = [];
-    const text = String(source || "");
-    const pattern = /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(__(.+?)__)|(\*([^*]+)\*)|(_([^_]+)_)/g;
-    let lastIndex = 0;
-    let match;
-    while ((match = pattern.exec(text)) !== null) {
-        if (match.index > lastIndex) {
-            tokens.push({ type: "text", text: text.slice(lastIndex, match.index) });
-        }
-        if (match[1]) {
-            tokens.push({ type: "code", text: match[1].slice(1, -1) });
-        } else if (match[2]) {
-            tokens.push({ type: "link", text: match[3], href: match[4] });
-        } else if (match[5]) {
-            tokens.push({ type: "strong", text: match[6] });
-        } else if (match[7]) {
-            tokens.push({ type: "strong", text: match[8] });
-        } else if (match[9]) {
-            tokens.push({ type: "em", text: match[10] });
-        } else if (match[11]) {
-            tokens.push({ type: "em", text: match[12] });
-        }
-        lastIndex = pattern.lastIndex;
-    }
-    if (lastIndex < text.length) {
-        tokens.push({ type: "text", text: text.slice(lastIndex) });
-    }
-    return tokens;
 }
 
 function renderInlineMarkdown(source, theme, keyPrefix = "md") {
@@ -1007,7 +1063,7 @@ function StructuredChatBlocks({ lines, theme }) {
         }));
 }
 
-function Panel({ title, color = "gray", focused = false, actions = null, children, theme, className = "" }) {
+function Panel({ title, titleRight = null, color = "gray", focused = false, actions = null, children, theme, className = "" }) {
     const accent = resolveColor(theme, color);
     return React.createElement("section", {
         className: `ps-panel${focused ? " is-focused" : ""}${className ? ` ${className}` : ""}`,
@@ -1018,12 +1074,22 @@ function Panel({ title, color = "gray", focused = false, actions = null, childre
             Array.isArray(title)
                 ? React.createElement(Runs, { runs: title, theme })
                 : flattenTitleText(title)),
-        actions ? React.createElement("div", { className: "ps-panel-actions" }, actions) : null,
+        titleRight || actions
+            ? React.createElement("div", { className: "ps-panel-header-right" },
+                titleRight
+                    ? React.createElement("div", { className: "ps-panel-title-right" },
+                        Array.isArray(titleRight)
+                            ? React.createElement(Runs, { runs: titleRight, theme })
+                            : flattenTitleText(titleRight))
+                    : null,
+                actions ? React.createElement("div", { className: "ps-panel-actions" }, actions) : null,
+            )
+            : null,
     ),
     React.createElement("div", { className: "ps-panel-body" }, children));
 }
 
-function ScrollLinesPanel({ title, color, focused, actions, lines, stickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false, stickyBottom = false }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false, stickyBottom = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -1054,7 +1120,7 @@ function ScrollLinesPanel({ title, color, focused, actions, lines, stickyLines =
         syncScrollLeft(event.currentTarget, ref.current);
     }, [preserveHorizontalScroll, syncScrollLeft]);
 
-    return React.createElement(Panel, { title, color, focused, actions, theme, className: panelClassName },
+    return React.createElement(Panel, { title, titleRight, color, focused, actions, theme, className: panelClassName },
         topContent,
         normalizedSticky.length > 0
             ? React.createElement("div", {
@@ -1081,6 +1147,8 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
         sessionsById: state.sessions.byId,
         sessionsFlat: state.sessions.flat,
         filterQuery: state.sessions.filterQuery || "",
+        ownerFilter: state.sessions.ownerFilter,
+        auth: state.auth,
         connectionMode: state.connection?.mode || "local",
         modalOpen: Boolean(state.ui.modal),
         focused: state.ui.focusRegion === "sessions",
@@ -1091,11 +1159,13 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
             byId: viewState.sessionsById,
             flat: viewState.sessionsFlat,
             filterQuery: viewState.filterQuery,
+            ownerFilter: viewState.ownerFilter,
         },
+        auth: viewState.auth,
         connection: {
             mode: viewState.connectionMode,
         },
-    }), [viewState.activeSessionId, viewState.connectionMode, viewState.filterQuery, viewState.sessionsById, viewState.sessionsFlat]);
+    }), [viewState.activeSessionId, viewState.auth, viewState.connectionMode, viewState.filterQuery, viewState.ownerFilter, viewState.sessionsById, viewState.sessionsFlat]);
     const activeSession = viewState.activeSessionId
         ? viewState.sessionsById[viewState.activeSessionId] || null
         : null;
@@ -1233,6 +1303,11 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         viewState.sessionsFlat,
     ]);
     const chrome = React.useMemo(() => selectChatPaneChrome(selectorState), [selectorState]);
+    const animatedDots = useAnimatedDots(Boolean(chrome.animateTitleRight));
+    const titleRight = React.useMemo(
+        () => appendAnimatedDotsToRuns(chrome.titleRight, chrome.animateTitleRight ? animatedDots : ""),
+        [animatedDots, chrome.animateTitleRight, chrome.titleRight],
+    );
     const lines = React.useMemo(
         () => selectChatLines(selectorState, viewState.contentWidth),
         [selectorState, viewState.contentWidth],
@@ -1241,6 +1316,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
     return React.createElement(ScrollLinesPanel, {
         controller,
         title: mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
+        titleRight: mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
         color: chrome.color,
         focused: viewState.focused,
         lines,
@@ -1606,12 +1682,14 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
             onClick: () => controller.handleCommand(UI_COMMANDS.EXPORT_EXECUTION_HISTORY).catch(() => {}),
         }, "Artifact"));
     } else if (viewState.inspectorTab === "stats") {
-        actions.push(React.createElement("button", {
-            key: "toggle-stats-view",
-            type: "button",
-            className: "ps-mini-button",
-            onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_STATS_VIEW).catch(() => {}),
-        }, viewState.statsViewMode === "fleet" ? "Session" : "Fleet"));
+        for (const mode of ["session", "fleet", "users"]) {
+            actions.push(React.createElement("button", {
+                key: `stats-view:${mode}`,
+                type: "button",
+                className: `ps-mini-button${viewState.statsViewMode === mode ? " is-active" : ""}`,
+                onClick: () => controller.setStatsViewMode(mode),
+            }, mode.replace(/^./u, (char) => char.toUpperCase())));
+        }
     }
 
     const panelActions = extraActions
@@ -1963,10 +2041,6 @@ function PromptOverlay({ controller, open, onClose }) {
 
 function Toolbar({ controller, mobile, onToggleLegend, onOpenPrompt, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
     const status = useControllerSelector(controller, (state) => selectStatusBar(state), shallowEqualObject);
-    const canRename = useControllerSelector(
-        controller,
-        (state) => Boolean(state.sessions.activeSessionId && !state.sessions.byId[state.sessions.activeSessionId]?.isSystem),
-    );
 
     return React.createElement("div", { className: `ps-toolbar${mobile ? " is-mobile" : ""}` },
         React.createElement("div", { className: "ps-toolbar-actions" },
@@ -1988,14 +2062,8 @@ function Toolbar({ controller, mobile, onToggleLegend, onOpenPrompt, chatFocusMo
             React.createElement("button", {
             type: "button",
             className: "ps-toolbar-button",
-            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_RENAME_SESSION).catch(() => {}),
-            disabled: !canRename,
-        }, mobile ? "Title" : "Rename"),
-            React.createElement("button", {
-            type: "button",
-            className: "ps-toolbar-button",
-            onClick: () => controller.handleCommand(UI_COMMANDS.REFRESH).catch(() => {}),
-        }, "Refresh"),
+            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}),
+        }, "Filter"),
             React.createElement("button", {
             type: "button",
             className: "ps-toolbar-button",
@@ -2195,6 +2263,7 @@ function ModalLayer({ controller }) {
         filesFilter: selectFilesFilterModal(state),
         historyFormat: selectHistoryFormatModal(state),
         renameSession: selectRenameSessionModal(state),
+        sessionOwnerFilter: selectSessionOwnerFilterModal(state),
         artifactUpload: selectArtifactUploadModal(state),
         confirm: selectConfirmModal(state),
         logsFilter: state.logs.filter,
@@ -2226,6 +2295,7 @@ function ModalLayer({ controller }) {
             "modelPicker",
             "sessionAgentPicker",
             "artifactPicker",
+            "sessionOwnerFilter",
             "logFilter",
             "filesFilter",
             "historyFormat",
@@ -2246,6 +2316,7 @@ function ModalLayer({ controller }) {
         modalState.modelPicker?.selectedRowIndex,
         modalState.sessionAgentPicker?.selectedRowIndex,
         modalState.artifactPicker?.selectedRowIndex,
+        modalState.sessionOwnerFilter?.selectedRowIndex,
         modalState.logFilter?.selectedRowIndex,
         modalState.filesFilter?.selectedRowIndex,
         modalState.historyFormat?.selectedRowIndex,
@@ -2351,6 +2422,40 @@ function ModalLayer({ controller }) {
     }
     if (modal.type === "artifactPicker" && modalState.artifactPicker) {
         return renderListModal(modalState.artifactPicker, "Download");
+    }
+    if (modal.type === "sessionOwnerFilter" && modalState.sessionOwnerFilter) {
+        const presentation = modalState.sessionOwnerFilter;
+        const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement("div", { className: "ps-modal", onClick: (event) => event.stopPropagation() },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title" }, presentation.title),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                ),
+                React.createElement("div", { className: "ps-modal-grid" },
+                    React.createElement("div", { ref: listModalRef, className: "ps-modal-list" },
+                        (modal.items || []).map((item, index) => React.createElement("button", {
+                            key: item.id || index,
+                            type: "button",
+                            className: `ps-list-button ps-modal-list-button${index === modal.selectedIndex ? " is-selected" : ""}`,
+                            onClick: () => controller.toggleSessionOwnerFilter(index),
+                        },
+                        React.createElement("div", { className: "ps-line ps-modal-list-line" },
+                            React.createElement(Runs, {
+                                runs: Array.isArray(rows?.[index])
+                                    ? rows[index]
+                                    : normalizeLines([rows?.[index]])[0]?.runs || [{ text: rows?.[index]?.text || "", color: rows?.[index]?.color }],
+                                theme,
+                            })))),
+                    ),
+                    React.createElement("div", { className: "ps-modal-details" },
+                        React.createElement("div", { className: "ps-modal-details-title" }, presentation.detailsTitle || "Details"),
+                        normalizeLines(presentation.detailsLines || []).map((line, index) => React.createElement(Line, { key: `detail:${index}`, line, theme, className: "ps-modal-detail-line" })),
+                    ),
+                ),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button is-primary", onClick: close }, "Done")),
+            ));
     }
     if (modal.type === "renameSession" && modalState.renameSession) {
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
@@ -2823,7 +2928,8 @@ function useKeyboardShortcuts(
 
 export function createWebPilotSwarmController({ transport, mode = "remote", branding = null } = {}) {
     const themeId = readStoredThemeId();
-    const store = createStore(appReducer, createInitialState({ mode, branding, themeId }));
+    const sessionOwnerFilter = readStoredSessionOwnerFilter();
+    const store = createStore(appReducer, createInitialState({ mode, branding, themeId, sessionOwnerFilter }));
     return new PilotSwarmUiController({ store, transport });
 }
 
@@ -2837,6 +2943,7 @@ export function PilotSwarmWebApp({ controller }) {
     const [chatFocusPane, setChatFocusPane] = React.useState(null);
     const state = useControllerSelector(controller, (rootState) => ({
         themeId: rootState.ui.themeId,
+        ownerFilter: rootState.sessions.ownerFilter,
         promptRows: getStatePromptRows(rootState),
         paneAdjust: rootState.ui.layout?.paneAdjust ?? 0,
         sessionPaneAdjust: rootState.ui.layout?.sessionPaneAdjust ?? 0,
@@ -2874,6 +2981,10 @@ export function PilotSwarmWebApp({ controller }) {
         applyDocumentTheme(state.themeId);
         writeStoredThemeId(state.themeId);
     }, [state.themeId]);
+
+    React.useEffect(() => {
+        writeStoredSessionOwnerFilter(state.ownerFilter);
+    }, [state.ownerFilter]);
 
     React.useEffect(() => {
         writeStoredChatFocusMode(chatFocusMode);

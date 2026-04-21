@@ -2530,12 +2530,26 @@ export function* durableSessionOrchestration_1_0_45(
             case "list_sessions": {
                 ctx.traceInfo(`[orch] list_sessions`);
 
-                const rawSessions: string = yield manager.listSessions();
+                const rawSessions: string = yield manager.listSessions({
+                    includeSystem: result.includeSystem,
+                    ownerQuery: result.ownerQuery,
+                    ownerKind: result.ownerKind,
+                });
                 const sessions = JSON.parse(rawSessions);
+
+                if (!Array.isArray(sessions) || sessions.length === 0) {
+                    queueFollowup("[SYSTEM: Active sessions (0). No sessions matched the requested filters.]");
+                    return;
+                }
 
                 const lines: string[] = sessions.map((s: any) =>
                     `  - ${s.sessionId}${s.sessionId === input.sessionId ? " (this session)" : ""}\n` +
                     `    Title: ${s.title ?? "(untitled)"}\n` +
+                    `    Owner: ${s.ownerKind === "system"
+                        ? "system"
+                        : s.ownerKind === "unowned"
+                            ? "unowned"
+                            : (s.owner?.displayName || s.owner?.email || [s.owner?.provider, s.owner?.subject].filter(Boolean).join(":") || "user")}\n` +
                     `    Status: ${s.status}, Iterations: ${s.iterations ?? 0}\n` +
                     `    Parent: ${s.parentSessionId ?? "none"}`
                 );

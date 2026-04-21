@@ -5,6 +5,7 @@
  * agentIdentity === "agent-tuner":
  *   - list_all_sessions
  *   - read_session_info
+ *   - read_user_stats
  *   - read_session_metric_summary
  *   - read_session_tree_stats
  *   - read_fleet_stats
@@ -97,6 +98,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
                 "read_session_info",
                 "read_session_metric_summary",
                 "read_session_tree_stats",
+                "read_user_stats",
             ];
             for (const name of expected) {
                 assert(tunerNames.includes(name), `tuner toolset missing ${name} (got ${tunerNames.join(",")})`);
@@ -199,6 +201,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
             for (const name of [
                 "list_all_sessions",
                 "read_session_info",
+                "read_user_stats",
                 "read_session_metric_summary",
                 "read_session_tree_stats",
                 "read_fleet_stats",

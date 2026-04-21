@@ -32,6 +32,7 @@ These keys work whenever focus is not in the prompt editor.
 | `k` / `↑` | Move selection up |
 | `Ctrl+D` / `PageDown` | Page down |
 | `Ctrl+U` / `PageUp` | Page up |
+| `f` | Open the session owner filter |
 | `+` / `=` | Expand the selected parent session |
 | `-` | Collapse the selected session |
 | `t` | Rename the selected session |
@@ -61,7 +62,7 @@ These keys work whenever focus is not in the prompt editor.
 
 | Key | Action |
 |-----|--------|
-| `f` | Toggle between `session` and `fleet` stats views |
+| `f` | Cycle between `session`, `fleet`, and `users` stats views |
 
 ## Files Inspector
 
@@ -111,6 +112,7 @@ Notes:
 |---------|------|
 | model picker | `j/k`, arrows, `Enter`, `Esc` |
 | session agent picker | `j/k`, arrows, `Enter`, `Esc` |
+| session owner filter | `j/k`, arrows, `Space`, `Esc` |
 | linked-artifact picker | `j/k`, arrows, `Enter`, `Esc`, `a` |
 | log/files filters | `Tab` / `Shift+Tab`, `j/k`, arrows, `Enter`, `Esc` |
 | rename dialog | type text, `←/→`, `Home`, `End`, `Backspace`, `Enter`, `Esc` |

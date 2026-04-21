@@ -1,12 +1,11 @@
 
 # TODO
 
-- add ps_* prefix to ps tools (avoid any future conflicts with copilot sdk default tools)
+- formalize plugin disk layout, verisoning and update story
 - binary artifact support
     - proposal: [docs/proposals/binary-artifacts.md](docs/proposals/binary-artifacts.md)
 - support for uploading images (need to support copy/paste as well)
     - proposal: [docs/proposals/image-attachments-in-chat.md](docs/proposals/image-attachments-in-chat.md)
-- add auth user who started in cms, add filtering, stamp the session list and info.
 - materailize learned skills on filesystem instead of system prompts:
  - docs/proposals/skill-materialization-to-filesystem.md
 - ability to change model for a session on resume
@@ -43,6 +42,8 @@
 - agent to agent messaging
 
 # DONE
+- add auth user who started in cms, add filtering, stamp the session list and info.
+- add ps_ prefix to list_agent tool to avoid conflict
 - session titles are not sticking
 - simple hello pilotswarm world docker container
 - stored procs for data access in PG provider rather than direct SQL queries
@@ -95,5 +96,6 @@
 
 # REJECTED
 
+- add ps_* prefix to ps tools (avoid any future conflicts with copilot sdk default tools)
 - pull spawn agent into orchestration code and not an activity
 - squad samples

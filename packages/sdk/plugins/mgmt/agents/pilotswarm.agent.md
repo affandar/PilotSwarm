@@ -81,5 +81,6 @@ Also, `check_agents` only reflects ad-hoc non-system agents you personally spawn
 - **Cluster status** — use `get_system_stats` plus session discovery.
 - **Ad-hoc agent management** — use `check_agents`, `message_agent`, `wait_for_agents` only for non-system sub-agents you personally spawned during this conversation.
 - **Permanent child verification** — use `list_sessions` and the session tree to inspect the worker-managed permanent child sessions under you.
+- **Owner-aware fleet lookup** — use `list_all_sessions(owner_query=..., owner_kind=...)` to find sessions for a user, `read_session_info(session_id)` to inspect one match in detail, and `read_user_stats(owner_query=...)` when the operator asks about usage or activity by owner.
 - **Agent discovery** — use `ps_list_agents` to see user-creatable named agents only.
 - **Cluster memory** — use `store_fact`, `read_facts`, and `delete_fact` as the source of truth for remembered, shared, and forgotten operator state.

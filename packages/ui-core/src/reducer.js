@@ -2,6 +2,8 @@ import { buildSessionTree } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
+import { selectSessionRows } from "./selectors.js";
+import { normalizeSessionOwnerFilter } from "./state.js";
 
 function cloneHistoryMap(historyMap) {
     return new Map(historyMap);
@@ -92,6 +94,66 @@ function pickDefaultActiveSessionId(sessions = []) {
     return firstNonSystem?.sessionId || null;
 }
 
+function hasSessionVisibilityFilter(sessions = {}) {
+    const query = String(sessions?.filterQuery || "").trim();
+    const ownerFilter = normalizeSessionOwnerFilter(sessions?.ownerFilter);
+    return Boolean(query) || ownerFilter.all !== true;
+}
+
+function resolveVisibleActiveSessionId(state, fallbackSessions = []) {
+    const visibleRows = selectSessionRows(state);
+    const currentSessionId = state.sessions?.activeSessionId || null;
+    if (currentSessionId && visibleRows.some((row) => row.sessionId === currentSessionId)) {
+        return currentSessionId;
+    }
+    if (hasSessionVisibilityFilter(state.sessions)) {
+        return visibleRows[0]?.sessionId || null;
+    }
+
+    const visibleSessions = visibleRows.length > 0
+        ? visibleRows
+            .map((row) => state.sessions?.byId?.[row.sessionId] || null)
+            .filter(Boolean)
+        : fallbackSessions;
+
+    return pickDefaultActiveSessionId(visibleSessions);
+}
+
+function updateUiForSessionSelection(state, nextActiveSessionId) {
+    if (nextActiveSessionId === state.sessions.activeSessionId) {
+        return state.ui;
+    }
+    return {
+        ...state.ui,
+        scroll: {
+            ...state.ui.scroll,
+            chat: 0,
+            inspector: 0,
+            activity: 0,
+        },
+        followBottom: {
+            ...(state.ui.followBottom || {}),
+            inspector: true,
+            activity: true,
+        },
+    };
+}
+
+function applyVisibleSessionSelection(state, nextSessions) {
+    const nextState = {
+        ...state,
+        sessions: nextSessions,
+    };
+    const nextActiveSessionId = resolveVisibleActiveSessionId(nextState, Object.values(nextSessions.byId || {}));
+    return {
+        sessions: {
+            ...nextSessions,
+            activeSessionId: nextActiveSessionId,
+        },
+        ui: updateUiForSessionSelection(state, nextActiveSessionId),
+    };
+}
+
 function assignStableSessionOrder(previousOrderById = {}, nextOrderOrdinal = 0, sessions = []) {
     const orderById = cloneOrderById(previousOrderById);
     let orderOrdinal = Number.isFinite(nextOrderOrdinal) ? nextOrderOrdinal : 0;
@@ -155,6 +217,15 @@ export function appReducer(state, action) {
                 ui: {
                     ...state.ui,
                     statusText: action.statusText || action.error || "Connection error",
+                },
+            };
+
+        case "auth/context":
+            return {
+                ...state,
+                auth: {
+                    principal: action.principal ?? null,
+                    authorization: action.authorization ?? null,
                 },
             };
 
@@ -240,13 +311,33 @@ export function appReducer(state, action) {
             };
 
         case "sessions/filterQuery":
-            return {
-                ...state,
-                sessions: {
+            {
+                const nextSessions = {
                     ...state.sessions,
                     filterQuery: typeof action.query === "string" ? action.query : "",
-                },
-            };
+                };
+                const selection = applyVisibleSessionSelection(state, nextSessions);
+                return {
+                    ...state,
+                    sessions: selection.sessions,
+                    ui: selection.ui,
+                };
+            }
+
+        case "sessions/ownerFilter":
+            {
+                const nextSessions = {
+                    ...state.sessions,
+                    ownerFilterExplicit: true,
+                    ownerFilter: normalizeSessionOwnerFilter(action.filter),
+                };
+                const selection = applyVisibleSessionSelection(state, nextSessions);
+                return {
+                    ...state,
+                    sessions: selection.sessions,
+                    ui: selection.ui,
+                };
+            }
 
         case "ui/modalSelection": {
             const modal = state.ui.modal;
@@ -329,7 +420,9 @@ export function appReducer(state, action) {
                 ...state,
                 ui: {
                     ...state.ui,
-                    statsViewMode: action.statsViewMode === "fleet" ? "fleet" : "session",
+                    statsViewMode: ["session", "fleet", "users"].includes(action.statsViewMode)
+                        ? action.statsViewMode
+                        : "session",
                     scroll: {
                         ...state.ui.scroll,
                         inspector: 0,
@@ -416,20 +509,20 @@ export function appReducer(state, action) {
                 }
             }
             const flat = buildSessionTree(mergedSessions, collapsedIds, orderById);
-            const activeSessionId = state.sessions.activeSessionId && flat.some((entry) => entry.sessionId === state.sessions.activeSessionId)
-                ? state.sessions.activeSessionId
-                : pickDefaultActiveSessionId(mergedSessions);
+            const nextSessions = {
+                ...state.sessions,
+                byId,
+                collapsedIds,
+                flat,
+                activeSessionId: state.sessions.activeSessionId,
+                orderById,
+                nextOrderOrdinal,
+            };
+            const selection = applyVisibleSessionSelection(state, nextSessions);
             return {
                 ...state,
-                sessions: {
-                    ...state.sessions,
-                    byId,
-                    collapsedIds,
-                    flat,
-                    activeSessionId,
-                    orderById,
-                    nextOrderOrdinal,
-                },
+                sessions: selection.sessions,
+                ui: selection.ui,
             };
         }
 
@@ -450,15 +543,19 @@ export function appReducer(state, action) {
                 state.sessions.nextOrderOrdinal,
                 Object.values(byId),
             );
+            const nextSessions = {
+                ...state.sessions,
+                byId,
+                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById),
+                activeSessionId: state.sessions.activeSessionId,
+                orderById,
+                nextOrderOrdinal,
+            };
+            const selection = applyVisibleSessionSelection(state, nextSessions);
             return {
                 ...state,
-                sessions: {
-                    ...state.sessions,
-                    byId,
-                    flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById),
-                    orderById,
-                    nextOrderOrdinal,
-                },
+                sessions: selection.sessions,
+                ui: selection.ui,
             };
         }
 
@@ -760,6 +857,7 @@ export function appReducer(state, action) {
                 fleetStats: {
                     loading: false,
                     data: action.data || null,
+                    userStats: action.userStats || null,
                     skillUsage: action.skillUsage || null,
                     sharedFactsStats: action.sharedFactsStats || null,
                     fetchedAt: Date.now(),

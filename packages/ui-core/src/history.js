@@ -614,6 +614,10 @@ function formatActivity(event) {
         id: `${event.sessionId}:${event.seq}`,
         eventType: event.eventType,
         time,
+        seq: Number.isFinite(Number(event?.seq)) ? Number(event.seq) : 0,
+        createdAt: event?.createdAt instanceof Date
+            ? event.createdAt.getTime()
+            : (event?.createdAt ? new Date(event.createdAt).getTime() : 0),
         text: flattenRunsText(runs),
         line: runs,
     };

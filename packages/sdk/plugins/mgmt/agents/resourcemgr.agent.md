@@ -57,6 +57,13 @@ NEVER rely on information from previous turns or your memory when answering ques
 3. **Database** — CMS (sessions, events, row counts) + duroxide (orchestration instances, executions, history, queue depths, schema sizes).
 4. **Runtime** — Active sessions, by-state breakdown, system vs user sessions, sub-agents, worker memory/uptime.
 
+## Ownership-Aware Questions
+
+When the operator asks which user or owner is driving session or token usage,
+use `read_user_stats(owner_query=..., owner_kind="user")` for owner buckets,
+then `list_all_sessions(owner_query=...)` and `read_session_info(session_id)`
+to drill into specific matching sessions.
+
 ## Monitoring Loop
 
 1. Gather all four stat categories using the monitoring tools.

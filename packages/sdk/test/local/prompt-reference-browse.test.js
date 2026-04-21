@@ -49,6 +49,155 @@ function seedSessions(store, sessions, activeSessionId) {
 }
 
 describe("prompt reference browsing", () => {
+    it("hydrates a persisted session owner filter into initial state", () => {
+        const state = createInitialState({
+            mode: "local",
+            sessionOwnerFilter: {
+                all: false,
+                ownerKeys: ["github\u0001alice"],
+            },
+        });
+
+        assertEqual(state.sessions.ownerFilter.all, false, "persisted owner filters should restore their all flag");
+        assertEqual(state.sessions.ownerFilter.ownerKeys[0], "github\u0001alice", "persisted owner filters should restore owner keys");
+    });
+
+    it("resets the active session to the first visible row when a query hides the current selection", () => {
+        const { store } = createController();
+        seedSessions(store, [
+            {
+                sessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+                title: "Alpha session",
+                status: "waiting",
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+            },
+            {
+                sessionId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2",
+                title: "Beta session",
+                status: "waiting",
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+            },
+        ], "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2");
+
+        store.dispatch({ type: "sessions/filterQuery", query: "alpha" });
+
+        assertEqual(
+            store.getState().sessions.activeSessionId,
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+            "filtering should move selection to the first visible session when the previous one disappears",
+        );
+    });
+
+    it("resets the active session to the first visible row when the owner filter hides the current selection", () => {
+        const { store } = createController();
+        seedSessions(store, [
+            {
+                sessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+                title: "Alice session",
+                status: "waiting",
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                owner: {
+                    provider: "github",
+                    subject: "alice",
+                    displayName: "Alice",
+                },
+            },
+            {
+                sessionId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2",
+                title: "Bob session",
+                status: "waiting",
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                owner: {
+                    provider: "github",
+                    subject: "bob",
+                    displayName: "Bob",
+                },
+            },
+        ], "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2");
+
+        store.dispatch({
+            type: "sessions/ownerFilter",
+            filter: {
+                all: false,
+                includeSystem: false,
+                includeUnowned: false,
+                includeMe: false,
+                ownerKeys: ["github\u0001alice"],
+            },
+        });
+
+        assertEqual(
+            store.getState().sessions.activeSessionId,
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+            "owner filtering should move selection to the first visible session when the previous one disappears",
+        );
+    });
+
+    it("navigates only through visible session rows while a session filter is active", async () => {
+        const { controller, store } = createController();
+        seedSessions(store, [
+            {
+                sessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+                title: "Alice session",
+                status: "waiting",
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                owner: {
+                    provider: "github",
+                    subject: "alice",
+                    displayName: "Alice",
+                },
+            },
+            {
+                sessionId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2",
+                title: "Bob session",
+                status: "waiting",
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                owner: {
+                    provider: "github",
+                    subject: "bob",
+                    displayName: "Bob",
+                },
+            },
+            {
+                sessionId: "cccccccc-cccc-cccc-cccc-ccccccccccc3",
+                title: "Carol session",
+                status: "waiting",
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                owner: {
+                    provider: "github",
+                    subject: "carol",
+                    displayName: "Carol",
+                },
+            },
+        ], "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1");
+
+        store.dispatch({
+            type: "sessions/ownerFilter",
+            filter: {
+                all: false,
+                includeSystem: false,
+                includeUnowned: false,
+                includeMe: false,
+                ownerKeys: ["github\u0001alice", "github\u0001carol"],
+            },
+        });
+
+        await controller.moveSession(1);
+
+        assertEqual(
+            store.getState().sessions.activeSessionId,
+            "cccccccc-cccc-cccc-cccc-ccccccccccc3",
+            "session navigation should skip hidden rows while filtered",
+        );
+    });
+
     it("syncs @ queries into the active session artifact browser", async () => {
         const sessionId = "12345678-1234-1234-1234-1234567890ab";
         const { controller, store } = createController({

@@ -61,6 +61,7 @@ you resume the maintenance loop.
 - For arbitrary stale sessions found by scans, ALWAYS use `cleanup_session`.
 - NEVER use `delete_agent` for general cleanup — that tool only works for sub-agents spawned by the current session.
 - Never delete sessions that are actively running with recent activity.
+- If the user asks about stale or abandoned sessions for a specific owner, use `list_all_sessions(owner_query=..., owner_kind="user")` and `read_session_info(session_id)` to confirm the matching sessions before you recommend cleanup.
 - Be concise — counts and 8-char IDs only for periodic logs.
 - When nothing is found to clean, silently continue the loop (don't spam).
 - Use `cron` for the recurring maintenance loop. Use `wait` only for short one-shot delays inside a single cycle.

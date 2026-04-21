@@ -1,4 +1,5 @@
 import React from "react";
+import { appendAnimatedDotsToRuns, useAnimatedDots } from "./chat-status.js";
 import {
     applyActiveHighlightRuns,
     computeLegacyLayout,
@@ -18,6 +19,7 @@ import {
     selectModelPickerModal,
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
+    selectSessionOwnerFilterModal,
     selectStatusBar,
     selectThemePickerModal,
     selectConfirmModal,
@@ -96,7 +98,10 @@ function shallowEqualChatChrome(left, right) {
     if (Object.is(left, right)) return true;
     if (!left || !right) return false;
     return Object.is(left.color, right.color)
-        && shallowEqualArray(left.title, right.title, shallowEqualObject);
+    && Object.is(left.animateTitleRight, right.animateTitleRight)
+    && shallowEqualArray(left.title, right.title, shallowEqualObject)
+        && (Object.is(left.titleRight, right.titleRight)
+            || shallowEqualArray(left.titleRight, right.titleRight, shallowEqualObject));
 }
 
 function readProcessRssBytes() {
@@ -299,6 +304,11 @@ const SessionList = React.memo(function SessionList({ controller, maxRows, width
 const ChatPane = React.memo(function ChatPane({ controller, width, height, frame }) {
     const platform = useUiPlatform();
     const chrome = useControllerSelector(controller, selectChatPaneChrome, shallowEqualChatChrome);
+    const animatedDots = useAnimatedDots(Boolean(chrome?.animateTitleRight));
+    const animatedTitleRight = React.useMemo(
+        () => appendAnimatedDotsToRuns(chrome?.titleRight, animatedDots),
+        [animatedDots, chrome?.titleRight],
+    );
     const chatView = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         return {
@@ -354,6 +364,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
 
     return React.createElement(platform.Panel, {
         title: chrome.title,
+        titleRight: animatedTitleRight,
         color: chrome.color,
         focused: chatView.focused,
         width,
@@ -994,6 +1005,64 @@ function SessionAgentPickerModalContainer({ controller }) {
     return React.createElement(SessionAgentPickerModal, { state });
 }
 
+function SessionOwnerFilterModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectSessionOwnerFilterModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(54, Math.min(modal.idealWidth || 76, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 14, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(7, Math.min(9, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No session filters available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Session Filter",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function SessionOwnerFilterModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        auth: rootState.auth,
+        sessions: {
+            ownerFilter: rootState.sessions.ownerFilter,
+        },
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(SessionOwnerFilterModal, { state });
+}
+
 function RenameSessionModal({ state }) {
     const platform = useUiPlatform();
     const modal = selectRenameSessionModal(state);
@@ -1523,6 +1592,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ThemePickerModalContainer, { controller }),
         React.createElement(SessionAgentPickerModalContainer, { controller }),
+        React.createElement(SessionOwnerFilterModalContainer, { controller }),
         React.createElement(LogFilterModalContainer, { controller }),
         React.createElement(FilesFilterModalContainer, { controller }),
         React.createElement(HistoryFormatModalContainer, { controller }),

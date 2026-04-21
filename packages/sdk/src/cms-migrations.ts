@@ -50,6 +50,16 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "session_tree_stats_by_model",
             sql: migration_0007_session_tree_stats_by_model(schema),
         },
+        {
+            version: "0008",
+            name: "session_owner_users",
+            sql: migration_0008_session_owner_users(schema),
+        },
+        {
+            version: "0009",
+            name: "user_stats_by_model",
+            sql: migration_0009_user_stats_by_model(schema),
+        },
     ];
 }
 
@@ -848,6 +858,344 @@ BEGIN
     WHERE m.session_id IN (SELECT tree.session_id FROM tree)
     GROUP BY m.model
     ORDER BY total_tokens_input DESC, model;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0008: Session Owner Users ─────────────────────────
+
+function migration_0008_session_owner_users(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0008_session_owner_users: lazily catalog authenticated users and link
+-- non-system sessions to their first-seen owner. CMS access remains behind
+-- stored procedures; callers do not read or mutate these tables directly.
+
+CREATE TABLE IF NOT EXISTS ${s}.users (
+    user_id      BIGSERIAL PRIMARY KEY,
+    provider     TEXT NOT NULL,
+    subject      TEXT NOT NULL,
+    email        TEXT,
+    display_name TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_${schema}_users_provider_subject
+    ON ${s}.users(provider, subject);
+
+CREATE TABLE IF NOT EXISTS ${s}.session_owners (
+    session_id  TEXT PRIMARY KEY REFERENCES ${s}.sessions(session_id) ON DELETE CASCADE,
+    user_id     BIGINT NOT NULL REFERENCES ${s}.users(user_id),
+    assigned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_session_owners_user
+    ON ${s}.session_owners(user_id);
+
+-- ── cms_register_user ────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_register_user(
+    p_provider     TEXT,
+    p_subject      TEXT,
+    p_email        TEXT,
+    p_display_name TEXT
+) RETURNS BIGINT AS $$
+DECLARE
+    v_provider TEXT := NULLIF(BTRIM(p_provider), '');
+    v_subject  TEXT := NULLIF(BTRIM(p_subject), '');
+    v_user_id  BIGINT;
+BEGIN
+    IF v_provider IS NULL OR v_subject IS NULL THEN
+        RAISE EXCEPTION 'User provider and subject are required';
+    END IF;
+
+    -- First-seen-write-wins: do not refresh profile fields on later sightings.
+    INSERT INTO ${s}.users (provider, subject, email, display_name)
+    VALUES (
+        v_provider,
+        v_subject,
+        NULLIF(BTRIM(p_email), ''),
+        NULLIF(BTRIM(p_display_name), '')
+    )
+    ON CONFLICT (provider, subject) DO NOTHING;
+
+    SELECT user_id INTO v_user_id
+    FROM ${s}.users
+    WHERE provider = v_provider AND subject = v_subject;
+
+    RETURN v_user_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_set_session_owner ────────────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_set_session_owner(
+    p_session_id    TEXT,
+    p_provider      TEXT,
+    p_subject       TEXT,
+    p_email         TEXT,
+    p_display_name  TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_user_id   BIGINT;
+    v_is_system BOOLEAN;
+BEGIN
+    SELECT is_system INTO v_is_system
+    FROM ${s}.sessions
+    WHERE session_id = p_session_id AND deleted_at IS NULL;
+
+    IF NOT FOUND OR v_is_system THEN
+        RETURN;
+    END IF;
+
+    v_user_id := ${s}.cms_register_user(p_provider, p_subject, p_email, p_display_name);
+
+    -- First assignment wins for a session.
+    INSERT INTO ${s}.session_owners (session_id, user_id)
+    VALUES (p_session_id, v_user_id)
+    ON CONFLICT (session_id) DO NOTHING;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_inherit_session_owner ────────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_inherit_session_owner(
+    p_session_id        TEXT,
+    p_parent_session_id TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_is_system BOOLEAN;
+BEGIN
+    SELECT is_system INTO v_is_system
+    FROM ${s}.sessions
+    WHERE session_id = p_session_id AND deleted_at IS NULL;
+
+    IF NOT FOUND OR v_is_system THEN
+        RETURN;
+    END IF;
+
+    INSERT INTO ${s}.session_owners (session_id, user_id)
+    SELECT p_session_id, so.user_id
+    FROM ${s}.session_owners so
+    WHERE so.session_id = p_parent_session_id
+    ON CONFLICT (session_id) DO NOTHING;
+END;
+$$ LANGUAGE plpgsql;
+
+-- PostgreSQL refuses CREATE OR REPLACE FUNCTION when the return row shape
+-- changes, so the read functions are drop-then-create.
+
+-- ── cms_list_sessions (drop + recreate with owner join) ──────────
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions();
+CREATE FUNCTION ${s}.cms_list_sessions()
+RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.deleted_at IS NULL
+    ORDER BY sess.updated_at DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_session (drop + recreate with owner join) ────────────
+DROP FUNCTION IF EXISTS ${s}.cms_get_session(TEXT);
+CREATE FUNCTION ${s}.cms_get_session(
+    p_session_id TEXT
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.session_id = p_session_id AND sess.deleted_at IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0009: User Stats By Model ─────────────────────────
+
+function migration_0009_user_stats_by_model(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0009_user_stats_by_model: user/session-owner aggregate for the stats pane.
+-- Runtime orchestration history bytes are enriched by management code because
+-- they live in the orchestration provider, not in CMS tables.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_user_stats_by_model(
+    p_include_deleted BOOLEAN,
+    p_since           TIMESTAMPTZ
+) RETURNS TABLE (
+    owner_kind                  TEXT,
+    owner_provider              TEXT,
+    owner_subject               TEXT,
+    owner_email                 TEXT,
+    owner_display_name          TEXT,
+    model                       TEXT,
+    session_ids                 TEXT[],
+    session_count               INT,
+    total_snapshot_size_bytes    BIGINT,
+    total_dehydration_count     INT,
+    total_hydration_count       INT,
+    total_lossy_handoff_count   INT,
+    total_tokens_input          BIGINT,
+    total_tokens_output         BIGINT,
+    total_tokens_cache_read     BIGINT,
+    total_tokens_cache_write    BIGINT,
+    earliest_session_created_at TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH base AS (
+        SELECT
+            CASE
+                WHEN sess.is_system THEN 'system'
+                WHEN u.user_id IS NULL THEN 'unowned'
+                ELSE 'user'
+            END::text      AS owner_kind,
+            u.provider     AS owner_provider,
+            u.subject      AS owner_subject,
+            u.email        AS owner_email,
+            u.display_name AS owner_display_name,
+            m.model,
+            m.session_id,
+            m.created_at,
+            m.snapshot_size_bytes,
+            m.dehydration_count,
+            m.hydration_count,
+            m.lossy_handoff_count,
+            m.tokens_input,
+            m.tokens_output,
+            m.tokens_cache_read,
+            m.tokens_cache_write
+        FROM ${s}.session_metric_summaries m
+        INNER JOIN ${s}.sessions sess ON sess.session_id = m.session_id
+        LEFT JOIN ${s}.session_owners so ON so.session_id = m.session_id
+        LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+        WHERE (p_include_deleted OR m.deleted_at IS NULL)
+          AND (p_since IS NULL OR m.created_at >= p_since)
+    )
+    SELECT
+        b.owner_kind                                           AS owner_kind,
+        b.owner_provider                                       AS owner_provider,
+        b.owner_subject                                        AS owner_subject,
+        b.owner_email                                          AS owner_email,
+        b.owner_display_name                                   AS owner_display_name,
+        b.model                                                AS model,
+        ARRAY_AGG(b.session_id ORDER BY b.created_at DESC)     AS session_ids,
+        COUNT(*)::int                                          AS session_count,
+        COALESCE(SUM(b.snapshot_size_bytes), 0)::bigint        AS total_snapshot_size_bytes,
+        COALESCE(SUM(b.dehydration_count), 0)::int             AS total_dehydration_count,
+        COALESCE(SUM(b.hydration_count), 0)::int               AS total_hydration_count,
+        COALESCE(SUM(b.lossy_handoff_count), 0)::int           AS total_lossy_handoff_count,
+        COALESCE(SUM(b.tokens_input), 0)::bigint               AS total_tokens_input,
+        COALESCE(SUM(b.tokens_output), 0)::bigint              AS total_tokens_output,
+        COALESCE(SUM(b.tokens_cache_read), 0)::bigint          AS total_tokens_cache_read,
+        COALESCE(SUM(b.tokens_cache_write), 0)::bigint         AS total_tokens_cache_write,
+        MIN(b.created_at)                                      AS earliest_session_created_at
+    FROM base b
+    GROUP BY
+        b.owner_kind,
+        b.owner_provider,
+        b.owner_subject,
+        b.owner_email,
+        b.owner_display_name,
+        b.model
+    ORDER BY
+        COALESCE(SUM(b.tokens_input), 0)::bigint DESC,
+        b.owner_kind,
+        b.owner_display_name,
+        b.owner_email,
+        b.model;
 END;
 $$ LANGUAGE plpgsql;
 `;

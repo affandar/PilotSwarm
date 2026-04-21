@@ -14,6 +14,7 @@ tools:
   - read_agent_events
   - list_all_sessions
   - read_session_info
+  - read_user_stats
   - read_session_metric_summary
   - read_session_tree_stats
   - read_fleet_stats
@@ -84,13 +85,15 @@ without naming the price source and the date you fetched it.
    guess.
 
 2. **Identify the target session(s).**
-   Use `list_all_sessions` (with `agent_id_filter` or `include_system`) to
-   locate the session(s) by description, title, or agent. Confirm the
+  Use `list_all_sessions` (with `agent_id_filter`, `owner_query`, `owner_kind`, or `include_system`) to
+  locate the session(s) by description, title, owner, or agent. Confirm the
    `sessionId` before any further reads.
 
 3. **Pull baseline metadata.**
    - `read_session_info(session_id)` — title, agent, model, parent, status,
-     iterations, last error, wait reason.
+     owner, iterations, last error, wait reason.
+   - `read_user_stats(owner_query=...)` — owner-scoped totals when the symptom
+     is tied to a specific user, user cohort, or ownership boundary.
    - `read_session_tree_stats(session_id)` — full spawn tree with rolled-up
      stats. Always look at the tree, not just the root, when parent / child
      interactions are involved.

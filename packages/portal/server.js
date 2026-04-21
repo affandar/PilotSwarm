@@ -141,7 +141,7 @@ export async function startServer(opts = {}) {
             return;
         }
         try {
-            const result = await runtime.call(method, req.body?.params || {});
+            const result = await runtime.call(method, req.body?.params || {}, req.auth);
             res.json({ ok: true, result });
         } catch (error) {
             const status = /Unsupported portal RPC method/i.test(String(error?.message || ""))

@@ -297,11 +297,25 @@ export class ManagedSession {
         const listSessionsTool = defineTool("list_sessions", {
             description:
                 "List all active sessions in the system. " +
-                "Returns each session's ID, title, status, parent, and iteration count. " +
-                "Use this to discover other running sessions, find sibling agents, or survey the system.",
+                "Returns each session's ID, title, owner, status, parent, and iteration count. " +
+                "Use this to discover other running sessions, find sibling agents, or query sessions for a specific owner.",
             parameters: {
                 type: "object",
-                properties: {},
+                properties: {
+                    include_system: {
+                        type: "boolean",
+                        description: "Include system sessions. Default true.",
+                    },
+                    owner_query: {
+                        type: "string",
+                        description: "Optional substring match across owner display name, email, subject, or provider.",
+                    },
+                    owner_kind: {
+                        type: "string",
+                        enum: ["user", "system", "unowned"],
+                        description: "Optional owner bucket filter.",
+                    },
+                },
             },
             handler: async () => "stub",
         });
@@ -745,17 +759,40 @@ export class ManagedSession {
         const listSessionsTool = defineTool("list_sessions", {
             description:
                 "List all active sessions in the system. " +
-                "Returns each session's ID, title, status, parent, and iteration count. " +
-                "Use this to discover other running sessions, find sibling agents, or survey the system.",
+                "Returns each session's ID, title, owner, status, parent, and iteration count. " +
+                "Use this to discover other running sessions, find sibling agents, or query sessions for a specific owner.",
             parameters: {
                 type: "object",
-                properties: {},
+                properties: {
+                    include_system: {
+                        type: "boolean",
+                        description: "Include system sessions. Default true.",
+                    },
+                    owner_query: {
+                        type: "string",
+                        description: "Optional substring match across owner display name, email, subject, or provider.",
+                    },
+                    owner_kind: {
+                        type: "string",
+                        enum: ["user", "system", "unowned"],
+                        description: "Optional owner bucket filter.",
+                    },
+                },
             },
-            handler: async () => {
+            handler: async (args: {
+                include_system?: boolean;
+                owner_query?: string;
+                owner_kind?: string;
+            }) => {
                 if (controlBridge) {
-                    return await controlBridge.listSessions();
+                    return await controlBridge.listSessions(args);
                 }
-                turnState.pendingActions.push({ type: "list_sessions" });
+                turnState.pendingActions.push({
+                    type: "list_sessions",
+                    includeSystem: args.include_system,
+                    ownerQuery: args.owner_query,
+                    ownerKind: args.owner_kind,
+                });
                 return acknowledgeTurnBoundary("list_sessions");
             },
         });
