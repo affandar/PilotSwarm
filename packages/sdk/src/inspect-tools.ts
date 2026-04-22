@@ -291,7 +291,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
     const listAllSessionsTool = defineTool("list_all_sessions", {
         description:
             "List every session in the system (CMS only, no orchestration fan-out). " +
-            "Use to locate a target by description, owner, or agent. " +
+            "Use to locate a target by description, owner, or agent. Leave owner filters unset for normal system-session discovery; only set them when the user explicitly asks to scope by owner, user, system, or unowned sessions. " +
             "Returns a compact view: id, title, owner, agentId, parentSessionId, model, state, isSystem, deletedAt.",
         parameters: {
             type: "object" as const,
@@ -299,8 +299,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                 limit: { type: "number", description: "Cap returned rows (default 100, max 500)." },
                 include_system: { type: "boolean", description: "Include system-agent sessions. Default true for system agents." },
                 agent_id_filter: { type: "string", description: "Optional substring match on agentId." },
-                owner_query: { type: "string", description: "Optional substring match across owner display name, email, subject, or provider." },
-                owner_kind: { type: "string", enum: ["user", "system", "unowned"], description: "Optional owner bucket filter." },
+                owner_query: { type: "string", description: "Optional substring match across owner display name, email, subject, or provider. Not for session titles or agent names." },
+                owner_kind: { type: "string", enum: ["user", "system", "unowned"], description: "Optional owner bucket filter. Use only when explicitly requested." },
             },
         },
         handler: async (args: { limit?: number; include_system?: boolean; agent_id_filter?: string; owner_query?: string; owner_kind?: string }) => {

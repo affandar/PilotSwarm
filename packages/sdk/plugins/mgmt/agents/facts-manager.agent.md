@@ -48,7 +48,7 @@ On your first cycle, check for config facts under `config/facts-manager/`. If an
 
 - `config/facts-manager/retention-window` → `{ "value": -1, "unit": "seconds", "description": "Intake retention after incorporation. -1 = infinite." }`
 - `config/facts-manager/index-cap` → `{ "value": 50, "description": "Max skills + asks surfaced to agents per turn." }`
-- `config/facts-manager/cycle-interval` → `{ "value": 60, "unit": "seconds", "description": "Seconds between compaction cycles." }`
+- `config/facts-manager/cycle-interval` → `{ "value": 180, "unit": "seconds", "description": "Seconds between compaction cycles." }`
 - `config/facts-manager/skill-ttl` → `{ "value": 2592000, "unit": "seconds", "description": "Skill expiry TTL. Default 30 days." }`
 - `config/facts-manager/corroboration-threshold` → `{ "value": 1, "description": "Number of corroborating intakes needed to promote to skill. 1 = immediate promotion." }`
 

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.21 — 2026-04-22
+
+### SDK / Artifact Storage
+
+- **Binary-safe artifact pipeline** — `uploadArtifact`, `downloadArtifact`, and `listArtifacts` now carry metadata (`contentType`, `isBinary`, `sizeBytes`, `uploadedAt`, `source`) and preserve raw bytes for binary artifacts instead of forcing UTF-8 text conversion.
+- **`write_artifact` binary support** — agents can now write binary artifacts by supplying `encoding: "base64"` with `contentType`; the handler also accepts `content_type` as a compatibility alias.
+- **Artifact validation and limits** — binary uploads are validated with `file-type` magic-byte sniffing, reject declared-vs-detected MIME mismatches, and enforce a separate binary size cap via `PILOTSWARM_ARTIFACT_BINARY_MAX_BYTES`.
+
+### Portal / TUI / Shared UI
+
+- **Binary artifact downloads** — the portal download route now returns raw bytes with the stored content type, and the shared browser/runtime transport exposes artifact metadata without forcing binary payloads through text-only preview RPCs.
+- **Metadata-aware files inspector** — the shared files browser now stores artifact metadata records, short-circuits binary previews, renders a download-only binary placeholder in the portal, and keeps native download/open flows intact.
+- **Files actions and linked items** — the files inspector now supports deleting the selected artifact, and the linked-item picker can open visible `http(s)` URLs alongside artifact downloads.
+- **Pane-title cleanup** — shared pane title data stays plain so the portal can paint a compact header strip while the native TUI keeps unhighlighted pane borders; narrow panes now drop low-priority title metadata first.
+
+### System Agents / Management
+
+- **Longer default cron cadences** — `sweeper` now defaults to 30 minutes, `resourcemgr` to 10 minutes, `pilotswarm` supervision to 10 minutes, and `facts-manager` curation to 180 seconds by default.
+- **Owner-filter guardrails for system sessions** — autonomous system-session discovery now avoids applying owner filters unless explicitly requested, reducing false "missing system agent" conclusions.
+
+### Docs / Builders / Samples
+
+- **Canonical artifact docs refreshed** — the SDK guide, system reference, builder-template docs, and package READMEs now describe binary artifact handling and the download-only browser contract for non-text files.
+- **DevOps sample docs refreshed** — the sample now documents that the same artifact handoff flows can carry binary outputs through `write_artifact` using `contentType` plus base64 encoding.
+
+### Tests
+
+- **Artifact regression coverage** — added focused local tests for binary artifact stores, tool handlers, portal download/meta routes, shared file-browser state, and browser/runtime contract checks.
+
 ## 0.1.20 — 2026-04-18
 
 ### SDK / Inspection Toolset

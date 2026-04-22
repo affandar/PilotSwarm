@@ -497,6 +497,16 @@ export function tokenizeInlineMarkdown(source = "") {
     return tokens.length > 0 ? tokens : [{ type: "text", text: "" }];
 }
 
+export function extractHttpLinks(source = "") {
+    return tokenizeInlineMarkdown(source)
+        .filter((token) => token?.type === "link" && /^https?:\/\//i.test(String(token?.href || "")))
+        .map((token) => ({
+            href: String(token.href || "").trim(),
+            text: String(token.text || token.href || "").trim(),
+        }))
+        .filter((token) => token.href);
+}
+
 function parseInlineMarkdownRuns(source) {
     const tokens = tokenizeInlineMarkdown(source);
     const runs = [];

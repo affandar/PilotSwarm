@@ -287,7 +287,7 @@ const SessionList = React.memo(function SessionList({ controller, maxRows, width
     ), [rows]);
 
     return React.createElement(platform.Panel, {
-        title: "Sessions",
+        title: [{ text: "Sessions", color: "yellow", bold: true }],
         titleRight: titleRightRuns,
         color: "yellow",
         focused: sessionView.focused,
@@ -303,12 +303,6 @@ const SessionList = React.memo(function SessionList({ controller, maxRows, width
 
 const ChatPane = React.memo(function ChatPane({ controller, width, height, frame }) {
     const platform = useUiPlatform();
-    const chrome = useControllerSelector(controller, selectChatPaneChrome, shallowEqualChatChrome);
-    const animatedDots = useAnimatedDots(Boolean(chrome?.animateTitleRight));
-    const animatedTitleRight = React.useMemo(
-        () => appendAnimatedDotsToRuns(chrome?.titleRight, animatedDots),
-        [animatedDots, chrome?.titleRight],
-    );
     const chatView = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         return {
@@ -350,6 +344,15 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         chatView.connectionError,
         chatView.connectionMode,
     ]);
+    const chrome = React.useMemo(
+        () => selectChatPaneChrome(selectorState, { width: contentWidth }),
+        [contentWidth, selectorState],
+    );
+    const animatedDots = useAnimatedDots(Boolean(chrome?.animateTitleRight));
+    const animatedTitleRight = React.useMemo(
+        () => appendAnimatedDotsToRuns(chrome?.titleRight, animatedDots),
+        [animatedDots, chrome?.titleRight],
+    );
     const startupError = !chatView.activeSessionId && chatView.connectionError;
     const elements = React.useMemo(() => (startupError
         ? [

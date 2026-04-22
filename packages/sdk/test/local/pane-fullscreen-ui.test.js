@@ -23,6 +23,26 @@ function createController() {
 }
 
 describe("pane fullscreen UI behavior", () => {
+    it("keeps file download and delete shortcuts early in the files help bar", () => {
+        const state = createInitialState({ mode: "local" });
+        state.ui.focusRegion = FOCUS_REGIONS.INSPECTOR;
+        state.ui.inspectorTab = "files";
+
+        const status = selectStatusBar(state);
+        assertIncludes(status.right, "a download", "files status hints should mention the artifact download shortcut");
+        assertIncludes(status.right, "x delete", "files status hints should mention the artifact delete shortcut");
+        assertEqual(
+            status.right.indexOf("a download") < status.right.indexOf("u/ctrl-a upload"),
+            true,
+            "download should appear before upload so it survives status-bar truncation",
+        );
+        assertEqual(
+            status.right.indexOf("x delete") < status.right.indexOf("u/ctrl-a upload"),
+            true,
+            "delete should appear before upload so it survives status-bar truncation",
+        );
+    });
+
     it("collapses focus order to the active pane and prompt while fullscreen is enabled", async () => {
         const { controller, store } = createController();
 

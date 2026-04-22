@@ -4,7 +4,7 @@ Web portal for PilotSwarm — browser-based durable agent orchestration UI.
 
 Full feature parity with the TUI: session management, real-time chat, agent
 splash screens (ASCII art), sequence diagrams, node maps, worker logs,
-artifact downloads, and keyboard shortcuts.
+binary-safe artifact downloads, metadata-aware browser previews, and keyboard shortcuts.
 
 ## Quick Start
 
@@ -77,6 +77,12 @@ Fallback order:
 Named-agent creation in the portal comes from the same plugin metadata surface.
 If the portal process cannot see your plugin directory, the web UI falls back
 to generic sessions even when the worker supports named agents.
+
+Artifact behavior:
+
+- text artifacts still preview inline in the browser workspace
+- binary artifacts render as a download-only card in the browser workspace
+- downloads preserve the stored content type and raw bytes
 
 ## Auth Add-Ons
 

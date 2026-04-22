@@ -40,6 +40,8 @@ If the target app needs a custom model catalog, check in `.model_providers.examp
 
 PilotSwarm includes built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) on workers, and they are available to every agent session by default, including system agents. Use them for durable structured memory and shared cross-agent state instead of inventing an app-specific facts table unless the app truly needs one.
 
+Artifact workflows should assume the shared `write_artifact` / `export_artifact` path now handles both text and binary outputs. Builder guidance should preserve `contentType` plus base64 encoding for binary files and explain that the browser portal downloads binary artifacts rather than previewing them inline.
+
 The CLI builder template also assumes runnable scaffolds should:
 
 - generate checked-in launcher and cleanup scripts

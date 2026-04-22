@@ -5,7 +5,7 @@ import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
 import { createStore } from "../../../ui-core/src/store.js";
-import { selectChatLines, selectChatPaneChrome, selectFileBrowserItems } from "../../../ui-core/src/selectors.js";
+import { selectActivityPane, selectChatLines, selectChatPaneChrome, selectFileBrowserItems, selectInspector } from "../../../ui-core/src/selectors.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 function createController(transportOverrides = {}) {
@@ -366,7 +366,7 @@ describe("history pane UI behavior", () => {
                     content: [
                         "The session was dehydrated and has been rehydrated on a new worker. The LLM conversation history is preserved.",
                         "",
-                        "There is an active recurring schedule every 60 seconds for \"facts-manager curation cycle\".",
+                        "There is an active recurring schedule every 180 seconds for \"facts-manager curation cycle\".",
                         "It remains active automatically after this turn completes, so do NOT call wait() just to keep the recurring loop alive.",
                     ].join("\n"),
                 },
@@ -379,7 +379,7 @@ describe("history pane UI behavior", () => {
         const history = state.history.bySessionId.get(sessionId);
 
         assertEqual(text.includes("Session rehydrated on a new worker."), false, "rehydration summary should not appear in chat");
-        assertEqual(text.includes("active recurring schedule every 60 seconds"), false, "internal recurring schedule reminders should stay out of chat");
+        assertEqual(text.includes("active recurring schedule every 180 seconds"), false, "internal recurring schedule reminders should stay out of chat");
         assertEqual(
             history.activity.some((item) => item.text.includes("facts-manager curation cycle")),
             true,
@@ -714,5 +714,89 @@ describe("history pane UI behavior", () => {
         controller.openFilesFilter();
         const scopeOptions = store.getState().ui.modal?.items?.[0]?.options || [];
         assertEqual(scopeOptions.some((option) => option.id === "allSessions"), true, "files filter should still offer all-sessions scope");
+    });
+
+    it("keeps the shared chat, sequence, and activity pane title text intact", () => {
+        const sessionId = "session-title-paint";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "running",
+            title: "Painted Header Test",
+            model: "openai:gpt-5.4-mini",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            contextUsage: {
+                promptTokens: 1200,
+                maxInputTokens: 4000,
+                usagePercent: 30,
+            },
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.sessions.flat = [{ sessionId, depth: 0 }];
+        state.ui.inspectorTab = "sequence";
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "assistant.message",
+                data: { content: "hello" },
+                createdAt: new Date("2026-04-21T21:00:00.000Z"),
+            },
+        ]));
+
+        const chatChrome = selectChatPaneChrome(state);
+        const activityPane = selectActivityPane(state);
+        const inspector = selectInspector(state, { width: 96 });
+
+        assertEqual(chatChrome.title[0]?.backgroundColor, undefined, "chat pane title runs should stay plain so host chrome can style them without mutating selector data");
+        assertEqual(activityPane.title[0]?.backgroundColor, undefined, "activity pane title runs should stay plain so host chrome can style them without mutating selector data");
+        assertEqual(inspector.title[0]?.backgroundColor, undefined, "sequence pane title runs should stay plain so host chrome can style them without mutating selector data");
+        assertIncludes(chatChrome.title[0]?.text || "", "Painted Header Test", "chat pane should keep its original title text inside the pane chrome");
+        assertIncludes(inspector.title[0]?.text || "", "Sequence:", "sequence pane should keep its existing label inside the pane chrome");
+    });
+
+    it("drops session ids and recent-window labels from narrow pane titles before squeezing content", () => {
+        const sessionId = "ad23bbff-compact-title";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "running",
+            title: "Resource Manager Agent",
+            model: "openai:gpt-5.4-mini",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            contextUsage: {
+                promptTokens: 42400,
+                maxInputTokens: 128000,
+                usagePercent: 33,
+            },
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.sessions.flat = [{ sessionId, depth: 0 }];
+        state.ui.inspectorTab = "sequence";
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "assistant.message",
+                data: { content: "hello" },
+                createdAt: new Date("2026-04-22T06:56:00.000Z"),
+            },
+        ]));
+
+        const wideChatTitle = selectChatPaneChrome(state, { width: 96 }).title.map((run) => run.text).join("");
+        const narrowChatTitle = selectChatPaneChrome(state, { width: 64 }).title.map((run) => run.text).join("");
+        const wideInspectorTitle = selectInspector(state, { width: 96 }).title.map((run) => run.text).join("");
+        const narrowInspectorTitle = selectInspector(state, { width: 64 }).title.map((run) => run.text).join("");
+
+        assertIncludes(wideChatTitle, "[ad23bbff]", "wide chat panes should keep the session id in the title");
+        assertIncludes(wideChatTitle, "[last 5m window]", "wide chat panes should keep the recent-window label in the title");
+        assert(!narrowChatTitle.includes("[ad23bbff]"), "narrow chat panes should drop the session id from the title");
+        assert(!narrowChatTitle.includes("[last 5m window]"), "narrow chat panes should drop the recent-window label from the title");
+
+        assertIncludes(wideInspectorTitle, "Sequence: ad23bbff", "wide inspector panes should keep the session id in the title");
+        assertIncludes(wideInspectorTitle, "[last 5m]", "wide inspector panes should keep the recent-window label in the title");
+        assertEqual(narrowInspectorTitle, "Sequence", "narrow inspector panes should collapse to the base pane title");
     });
 });

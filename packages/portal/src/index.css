@@ -715,8 +715,15 @@ body.is-resizing-pane-y * {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 34px;
-  padding: 4px 10px 0;
+  min-height: 30px;
+  padding: 4px 10px 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 28%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 16%, var(--ps-surface)) 0%,
+      color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 10%, var(--ps-surface)) 100%
+    );
   margin-bottom: 0;
 }
 
@@ -728,7 +735,7 @@ body.is-resizing-pane-y * {
   background: transparent;
   font-size: 0.94rem;
   font-weight: 700;
-  line-height: 1.08;
+  line-height: 1.02;
 }
 
 .ps-panel-header-right {
@@ -768,6 +775,7 @@ body.is-resizing-pane-y * {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding-top: 2px;
 }
 
 .ps-scroll-panel {
@@ -1053,7 +1061,7 @@ body.is-resizing-pane-y * {
 }
 
 .ps-session-pane .ps-panel-body {
-  padding: 0 8px 8px;
+  padding: 2px 8px 8px;
 }
 
 .ps-session-pane .ps-session-list {
@@ -1152,6 +1160,50 @@ body.is-resizing-pane-y * {
   gap: 14px;
   padding-right: 4px;
   line-height: 1.55;
+}
+
+.ps-binary-preview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 10px 10px 12px;
+  padding: 18px 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 52%, transparent);
+  border-radius: calc(var(--ps-radius-md) + 2px);
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--ps-highlight-background) 18%, transparent), transparent 42%),
+    linear-gradient(180deg, color-mix(in srgb, var(--ps-surface) 96%, transparent), color-mix(in srgb, var(--ps-background) 96%, transparent));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+}
+
+.ps-binary-preview-kicker {
+  font-size: 0.76rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ps-muted);
+}
+
+.ps-binary-preview-title {
+  margin: 0;
+  font-size: 1.08rem;
+  line-height: 1.25;
+  font-weight: 800;
+  color: var(--ps-foreground);
+  word-break: break-word;
+}
+
+.ps-binary-preview-meta,
+.ps-binary-preview-time {
+  color: color-mix(in srgb, var(--ps-foreground) 76%, var(--ps-muted));
+  font-size: 0.9rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.ps-binary-preview-copy {
+  margin: 4px 0 0;
+  color: var(--ps-foreground);
+  line-height: 1.6;
 }
 
 .ps-md-heading {

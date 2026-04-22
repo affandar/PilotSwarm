@@ -3,7 +3,7 @@ import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
 import { selectSessionRows } from "./selectors.js";
-import { normalizeSessionOwnerFilter } from "./state.js";
+import { normalizeArtifactEntries, normalizeSessionOwnerFilter } from "./state.js";
 
 function cloneHistoryMap(historyMap) {
     return new Map(historyMap);
@@ -915,12 +915,13 @@ export function appReducer(state, action) {
                 previews: {},
                 downloads: {},
             };
-            const entries = Array.isArray(action.entries) ? [...action.entries] : [];
-            const selectedFilename = current.selectedFilename && entries.includes(current.selectedFilename)
+            const entries = normalizeArtifactEntries(action.entries);
+            const hasFilename = (filename) => entries.some((entry) => entry.filename === filename);
+            const selectedFilename = current.selectedFilename && hasFilename(current.selectedFilename)
                 ? current.selectedFilename
-                : (action.selectedFilename && entries.includes(action.selectedFilename)
+                : (action.selectedFilename && hasFilename(action.selectedFilename)
                     ? action.selectedFilename
-                    : (entries[0] || null));
+                    : (entries[0]?.filename || null));
             bySessionId[action.sessionId] = {
                 ...current,
                 entries,
@@ -1053,6 +1054,10 @@ export function appReducer(state, action) {
                     content: action.content || "",
                     contentType: action.contentType || "text/plain",
                     renderMode: action.renderMode || "text",
+                    isBinary: action.isBinary === true,
+                    sizeBytes: Number.isFinite(action.sizeBytes) ? action.sizeBytes : null,
+                    uploadedAt: action.uploadedAt || "",
+                    source: action.source || "agent",
                 },
             };
             bySessionId[action.sessionId] = {
@@ -1121,6 +1126,51 @@ export function appReducer(state, action) {
                 files: {
                     ...state.files,
                     bySessionId,
+                },
+            };
+        }
+
+        case "files/deleted": {
+            const bySessionId = cloneFilesBySessionId(state.files.bySessionId);
+            const current = bySessionId[action.sessionId] || {
+                entries: [],
+                previews: {},
+                downloads: {},
+                selectedFilename: null,
+            };
+            const entries = normalizeArtifactEntries(current.entries).filter((entry) => entry.filename !== action.filename);
+            const nextSelectedFilename = current.selectedFilename === action.filename
+                ? (entries[0]?.filename || null)
+                : current.selectedFilename;
+            const { [action.filename]: _deletedPreview, ...previews } = current.previews || {};
+            const { [action.filename]: _deletedDownload, ...downloads } = current.downloads || {};
+            const deletedArtifactId = action.sessionId && action.filename
+                ? `${action.sessionId}/${action.filename}`
+                : null;
+
+            bySessionId[action.sessionId] = {
+                ...current,
+                entries,
+                previews,
+                downloads,
+                selectedFilename: nextSelectedFilename,
+            };
+
+            return {
+                ...state,
+                files: {
+                    ...state.files,
+                    bySessionId,
+                    selectedArtifactId: state.files.selectedArtifactId === deletedArtifactId
+                        ? (nextSelectedFilename ? `${action.sessionId}/${nextSelectedFilename}` : null)
+                        : state.files.selectedArtifactId,
+                },
+                ui: {
+                    ...state.ui,
+                    scroll: {
+                        ...state.ui.scroll,
+                        filePreview: 0,
+                    },
                 },
             };
         }

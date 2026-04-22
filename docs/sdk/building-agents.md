@@ -119,6 +119,17 @@ await worker.start();
 
 If the tool is not registered on the worker, listing it in an agent file is not enough.
 
+## Binary Artifacts
+
+Use the same `write_artifact` surface for both text and binary outputs.
+
+- For text files, the existing string content flow is unchanged.
+- For binary files, have the agent supply `contentType` and `encoding: "base64"` when it writes the artifact.
+- Keep `export_artifact` for user-facing handoff links after the file is written.
+- In the browser portal, non-text artifacts are download-only; they do not render inline as markdown previews.
+
+This keeps builder-facing artifact workflows consistent across SDK, TUI, and portal hosts.
+
 ## Step 4: Optional skills
 
 Skills are shared domain knowledge bundles.

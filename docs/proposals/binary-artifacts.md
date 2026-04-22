@@ -1,21 +1,21 @@
 # Proposal: Binary Artifacts (Store, Download, Open in Default Viewer)
 
-**Status:** Approved (implementation-ready, v1)
+**Status:** Approved (implementation-ready, revised v1)
 **Date:** 2026-04-19
 **Author:** Waldemort team (filed cross-repo per copilot-instructions.md repo-boundary rule)
 
 ## Problem
 
-Artifacts in PilotSwarm are text-only end-to-end:
+Artifacts in PilotSwarm are still text-oriented across the owning code paths:
 
 - `write_artifact` accepts `content: string` and writes UTF-8 bytes ([`packages/sdk/src/artifact-tools.ts`](../../packages/sdk/src/artifact-tools.ts) — `writeTool`).
-- `uploadArtifact(sessionId, filename, content, contentType?)` writes the JS string directly into Azure Blob ([`packages/sdk/src/blob-store.ts`](../../packages/sdk/src/blob-store.ts) — `uploadArtifact`).
-- `downloadArtifact` returns `Buffer.concat(...).toString("utf-8")` ([`packages/sdk/src/blob-store.ts`](../../packages/sdk/src/blob-store.ts) — `downloadArtifact`).
+- `uploadArtifact(sessionId, filename, content, contentType?)` writes the JS string directly into Azure Blob or the filesystem store ([`packages/sdk/src/blob-store.ts`](../../packages/sdk/src/blob-store.ts) and [`packages/sdk/src/session-store.ts`](../../packages/sdk/src/session-store.ts) — `uploadArtifact`).
+- `downloadArtifact` returns `Buffer.concat(...).toString("utf-8")` in blob mode and `fs.readFileSync(..., "utf-8")` in filesystem mode ([`packages/sdk/src/blob-store.ts`](../../packages/sdk/src/blob-store.ts) and [`packages/sdk/src/session-store.ts`](../../packages/sdk/src/session-store.ts) — `downloadArtifact`).
 - The portal download endpoint pipes that string back to the browser as `text/plain; charset=utf-8` ([`packages/portal/server.js`](../../packages/portal/server.js) — `/api/sessions/:sessionId/artifacts/:filename/download`).
-- The CLI transport guesses content types from a small text-only list (`md / json / html / csv / yaml`, default `text/plain`) ([`packages/cli/src/node-sdk-transport.js`](../../packages/cli/src/node-sdk-transport.js) — `guessArtifactContentType`).
-- `MarkdownViewer` is the only file viewer the portal ships and assumes Markdown for every artifact.
+- The local transport saves downloaded artifacts as UTF-8 text and still guesses content types from a small text-only list (`md / json / html / csv / yaml`, default `text/plain`) ([`packages/cli/src/node-sdk-transport.js`](../../packages/cli/src/node-sdk-transport.js) — `guessArtifactContentType`, `saveArtifactDownload`).
+- The shared file-browser/preview logic lives in `packages/ui-core/`, not in a portal-only viewer component. That shared path currently lists artifacts as plain filenames and relies on filename-only heuristics for binary preview avoidance, rather than metadata-driven binary handling.
 
-The 1 MB cap, the UTF-8 round-trip, and the inline preview all assume text. Pushing an `.xlsx`, `.pdf`, `.zip`, or `.png` through the existing pipe corrupts it on download and would attempt to render the bytes as Markdown in the portal preview.
+The 1 MB cap and the UTF-8 round-trip both assume text. The current UI already refuses preview for some binary-looking extensions by filename, but it still lacks binary-safe downloads and content-type-driven classification. Pushing an `.xlsx`, `.pdf`, `.zip`, or `.png` through the existing pipe corrupts it on download and leaves preview behavior dependent on incomplete heuristics instead of authoritative metadata.
 
 The first concrete demand is from a downstream agent that produces a release-train workbook (`Mxx_Payload_with_hyperlinks_and_R2D.xlsx`) that an operator wants to download with one click from the portal and open in Excel. There is no clean path for that today.
 
@@ -34,6 +34,7 @@ The first concrete demand is from a downstream agent that produces a release-tra
 - Streaming uploads / downloads larger than the bumped cap (see *Size limits* below).
 - Versioning or revision history of artifacts.
 - Sandboxed execution of downloaded binaries.
+- Browser-host binary uploads from the local file picker in v1. This proposal focuses on agent / SDK writes plus intact download and open flows. Local host-upload parity can follow as adjacent work if needed.
 - Image attachments into the chat pane for the model to consume. Tracked in a follow-up proposal; this one is the prerequisite.
 
 ## Resolved Decisions
@@ -42,33 +43,34 @@ These were open in the previous draft and are now committed:
 
 | # | Decision | Notes |
 |---|----------|-------|
-| 1 | Wire encoding | **base64** at every cross-process boundary (tool params, JSON-RPC, WebSocket frames). `Buffer` only inside the SDK process. |
+| 1 | Wire encoding | **base64 only on JSON-shaped boundaries that actually carry bytes** (for example `write_artifact` tool params). Raw HTTP download stays raw bytes. `Buffer` only inside the SDK process. |
 | 2 | Binary cap | **10 MB** decoded. Env override: `PILOTSWARM_ARTIFACT_BINARY_MAX_BYTES`. |
 | 3 | Magic-byte sniff | **In v1.** Use `file-type` (npm). On declared-vs-detected mismatch, **reject** the upload (no warn-and-allow). |
 | 4 | `read_artifact(encoding: "base64")` exposed as a tool? | **No.** SDK API only. Agents that need raw bytes use `export_artifact` and let the user / host handle the binary. Keeps base64 blobs out of the model context. |
 | 5 | `binary_content: Buffer` field on the tool schema | **Removed.** Tools always use `encoding: "base64"` + `content: string`. `Buffer` is reserved for the in-process SDK API. |
 | 6 | Text vs binary classifier | Explicit allowlist (see below). |
+| 7 | Public naming / compatibility | **Keep existing camelCase names on public JS/TS surfaces** (`contentType`, `sizeBytes`, `isBinary`, `uploadedAt`). The `write_artifact` handler may accept `content_type` as a permissive alias, but docs and typed APIs stay camelCase. |
 
 ## Design
 
 ### Data model
 
-Add `content_type` and `is_binary` to artifact metadata. Storage in blob is already binary-clean — only the SDK / portal / CLI text decoders need work.
+Add `contentType` and `isBinary` to artifact metadata. Storage in blob is already binary-clean; the SDK, transports, and shared UI need to stop decoding everything as text.
 
 Metadata shape returned by `listArtifacts`:
 
 ```ts
 type ArtifactMetadata = {
   filename: string;
-  size_bytes: number;        // decoded byte length
-  content_type: string;      // canonical MIME, normalized server-side
-  is_binary: boolean;        // derived from content_type
-  uploaded_at: string;       // ISO-8601
+  sizeBytes: number;         // decoded byte length
+  contentType: string;       // canonical MIME, normalized server-side
+  isBinary: boolean;         // derived from contentType
+  uploadedAt: string;        // ISO-8601
   source: "agent" | "user" | "system";
 };
 ```
 
-`is_binary` is **derived server-side** from `content_type` using an explicit allowlist. Anything matching the allowlist below is text; everything else is binary:
+`isBinary` is **derived server-side** from `contentType` using an explicit allowlist. Anything matching the allowlist below is text; everything else is binary:
 
 ```
 text/*
@@ -82,7 +84,7 @@ image/svg+xml
 
 Everything else (including `application/octet-stream`, `application/vnd.openxmlformats-*`, `application/pdf`, `application/zip`, `image/png`, `image/jpeg`, …) is binary.
 
-`listArtifacts` shape change is **additive**. Existing callers that consumed `string[]` will keep working: the wire response becomes `{ files: ArtifactMetadata[], filenames: string[] }`. The `filenames` field is the legacy shape, kept until v2.
+`ArtifactStore.listArtifacts()` changes to `ArtifactMetadata[]`. Tool responses keep a legacy `filenames: string[]` field until v2. Shared UI callers that currently assume `string[]` are updated in the same change series to normalize metadata records while preserving filename-based selection state.
 
 ### SDK — `uploadArtifact` / `downloadArtifact`
 
@@ -114,13 +116,13 @@ export interface ArtifactStore {
 
 Behaviour rules:
 
-- **`content: string`** with `encoding: "utf-8"` (default) → write as UTF-8 bytes, `content_type` defaults to `text/markdown`.
-- **`content: string`** with `encoding: "base64"` → decode base64, write raw bytes, `content_type` must be supplied.
-- **`content: Buffer`** → write as-is, `content_type` must be supplied (no default).
+- **`content: string`** with `encoding: "utf-8"` (default) → write as UTF-8 bytes, `contentType` defaults to `text/markdown`.
+- **`content: string`** with `encoding: "base64"` → decode base64, write raw bytes, `contentType` must be supplied.
+- **`content: Buffer`** → write as-is, `contentType` must be supplied (no default).
 - All paths run **magic-byte sniff** on the resolved bytes; reject with `ARTIFACT_CONTENT_TYPE_MISMATCH` if the declared type's family disagrees with the sniff (e.g. declared `application/pdf` but bytes start with `PK\x03\x04`).
 - **Size cap** is enforced on the decoded byte length, against `MAX_TEXT_BYTES = 1 MB` for text-classified content and `MAX_BINARY_BYTES = 10 MB` (env override) for binary-classified content.
 
-Both `SessionBlobStore` (Azure) and `FilesystemArtifactStore` (local mode) implement the same contract. The blob path layout (`artifacts/<sessionId>/<filename>`) is unchanged. Metadata for blob is read from the blob's `Content-Type` header + `Content-Length` + `Last-Modified`. For the filesystem store, the file mtime is the `uploaded_at`, the size from `stat`, and the content type comes from a sidecar `<filename>.meta.json` (created on upload, written atomically). If the sidecar is missing, content type is re-detected from the bytes via magic-byte sniff with `guessArtifactContentType` as the fallback.
+Both `SessionBlobStore` (Azure) and `FilesystemArtifactStore` (local mode) implement the same contract. The blob path layout (`artifacts/<sessionId>/<filename>`) is unchanged. Metadata for blob is read from the blob's `Content-Type` header + `Content-Length` + `Last-Modified`. For the filesystem store, the file mtime is the `uploadedAt`, the size from `stat`, and the content type comes from a sidecar `<filename>.meta.json` (created on upload, written atomically). If the sidecar is missing, content type is re-detected from the bytes via magic-byte sniff with `guessArtifactContentType` as the fallback.
 
 ### SDK — `write_artifact` tool
 
@@ -129,17 +131,18 @@ Tool schema (handler in [`packages/sdk/src/artifact-tools.ts`](../../packages/sd
 ```jsonc
 {
   "filename":     "M61_payload.xlsx",
-  "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "contentType":  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "encoding":     "base64",                    // "utf-8" (default) | "base64"
   "content":      "<base64 string>"
 }
 ```
 
 - `encoding` defaults to `"utf-8"`. When omitted, all existing callers behave identically.
-- `content_type` is **required** when `encoding === "base64"`. We reject with a clear error rather than guess.
+- `contentType` is **required** when `encoding === "base64"`. We reject with a clear error rather than guess.
+- To avoid breaking current callers, `contentType` remains the canonical v1 field. The handler may also accept `content_type` as an alias and normalize it immediately.
 - The 1 MB cap stays for the text path; the 10 MB cap applies only when the resolved artifact is binary.
 
-`read_artifact` is **unchanged** for v1. It only reads UTF-8 text; on a binary artifact it returns `{ error: "ARTIFACT_IS_BINARY", content_type, size_bytes }` so the agent can react cleanly. We do **not** add a base64 read mode to the tool surface (resolved decision #4).
+`read_artifact` is **unchanged** for v1. It only reads UTF-8 text; on a binary artifact it returns `{ error: "ARTIFACT_IS_BINARY", contentType, sizeBytes }` so the agent can react cleanly. We do **not** add a base64 read mode to the tool surface (resolved decision #4).
 
 `list_artifacts` returns full metadata records, not just filenames. Backward compat: the response `success` field is preserved and `files` becomes the array of records; we add `filenames` (legacy) until v2.
 
@@ -159,45 +162,43 @@ app.get("/api/sessions/:sessionId/artifacts/:filename/download", requireAuth, as
 });
 ```
 
-New endpoint for cheap metadata lookups (powers the "is this binary?" check before download):
+Optional endpoint for cheap metadata lookups (used as a fallback when list metadata is not already in state):
 
 ```
 GET /api/sessions/:sessionId/artifacts/:filename/meta
-→ { size_bytes, content_type, is_binary, uploaded_at }
+→ { sizeBytes, contentType, isBinary, uploadedAt }
 ```
 
-[`packages/portal/runtime.js`](../../packages/portal/runtime.js) gains a matching `getArtifactMetadata(sessionId, filename)` switch case routed to the transport. The browser-side WebSocket RPC for `downloadArtifact` returns `{ content_type, is_binary, size_bytes, body_base64 }` — base64 over the wire (resolved decision #1). The browser converts to a `Blob` via `Uint8Array.from(atob(body_base64), c => c.charCodeAt(0))` for binary, or `atob` + UTF-8 decode for text.
+[`packages/portal/runtime.js`](../../packages/portal/runtime.js) gains a matching `getArtifactMetadata(sessionId, filename)` switch case routed to the transport. `listArtifacts` over RPC returns metadata records. The existing browser-side `downloadArtifact` RPC remains a **text preview** surface backed by `downloadArtifactText`; binary requests fail with `ARTIFACT_IS_BINARY`. The browser's actual save/download flow continues to use the HTTP `/download` route and does **not** add a second base64 byte tunnel in v1.
 
-### Portal — UI
+### Shared UI / Portal UI
 
-`MarkdownViewer` becomes `ArtifactViewer`:
+The controlling file-browser and preview logic lives in `packages/ui-core/`, consumed by both the native TUI and the portal web host. V1 updates that shared path instead of bolting on a second portal-only viewer beside it.
 
-1. Calls `/meta` first (or reads `is_binary` from the already-loaded artifact list).
-2. If `is_binary`, renders the placeholder card:
+1. `listArtifacts` entries become metadata records in shared state; selection still keys on `filename`.
+2. `ensureFilePreview()` consults `isBinary` from the loaded metadata (or `getArtifactMetadata` fallback) **before** any download attempt.
+3. If `isBinary`, shared preview state becomes a note / placeholder payload instead of text content:
 
    ```
    ┌─────────────────────────────────────────┐
-   │ [icon by content_type]  M61_payload.xlsx │
-   │ application/vnd.openxmlformats-...       │
+  │ [generic file icon]  M61_payload.xlsx    │
+  │ application/vnd.openxmlformats-...       │
    │ 86 KB                                    │
    │                                          │
-   │ [ Download ]                             │
+  │ Download to open in the default app      │
    └─────────────────────────────────────────┘
    ```
 
-   No decode attempt. No `<iframe>`. No syntax highlighting. The single `Download` button triggers the existing `/download` URL — the OS handles the registered application from there. (The browser cannot legally launch local apps directly, so a separate "Open externally" button is misleading; we ship a single Download button.)
-
-3. If text, the existing Markdown / preview code path runs unchanged.
+4. Browser host renders a single `Download` affordance backed by the existing `/download` URL. The browser cannot legally launch local apps directly, so it must not advertise `Open externally`.
+5. Native TUI keeps its existing open-in-default-app flow after local download.
+6. Text artifacts continue through the existing markdown / text preview code path.
 
 ### CLI / TUI
 
-The native TUI's artifact picker already has `[D]ownload`. Two changes:
+The native TUI already has download and open flows in the shared controller. V1 changes are narrower than the earlier draft implied:
 
-1. **Add `[O]pen externally`** alongside `[D]ownload`. After downloading to the configured export directory, shell out via `spawnDetached` (already in `node-sdk-transport.js`):
-   - macOS: `open <path>`
-   - Linux: `xdg-open <path>`
-   - Windows: `start "" <path>`
-2. **Extend `guessArtifactContentType`** with the binary types:
+1. **Keep existing open-in-default-app behavior working** by making `saveArtifactDownload()` write raw bytes for binary artifacts instead of UTF-8 strings.
+2. **Extend `guessArtifactContentType`** with the binary types for the local helpers that still infer MIME from extensions:
 
    ```js
    ".xlsx":  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -216,7 +217,8 @@ The native TUI's artifact picker already has `[D]ownload`. Two changes:
    ".bin":   "application/octet-stream",
    ```
 
-   The unknown-extension fallback stays `text/plain` but the consumer must respect `is_binary` (which comes from the SDK now, not the CLI guess).
+  The unknown-extension fallback stays `text/plain`, but preview and download behavior must respect `isBinary` from SDK metadata instead of relying on the guessed extension.
+3. **Align host-specific affordances.** The browser host stays download-only; the native TUI keeps download + open. Any keybinding hints or picker copy that mentions open/download must reflect that split.
 
 ### Storage layout
 
@@ -225,8 +227,10 @@ Unchanged: `artifacts/<sessionId>/<filename>` in the blob container, or `<artifa
 ### Size limits
 
 - **Text artifacts**: 1 MB decoded (unchanged).
-- **Binary artifacts**: 10 MB decoded. Configurable via `PILOTSWARM_ARTIFACT_BINARY_MAX_BYTES`. Wire payload is up to ~13.5 MB base64 — fits comfortably under the WebSocket default 100 MB frame and Express's default 100 KB JSON body limit (we bump portal `bodyParser.json({ limit: "25mb" })` to accommodate the upload path; download is `res.send(Buffer)` so no body cap applies).
+- **Binary artifacts**: 10 MB decoded. Configurable via `PILOTSWARM_ARTIFACT_BINARY_MAX_BYTES`.
 - Cap is enforced **server-side on the decoded bytes**, not on the base64 string length. Errors are explicit (`ARTIFACT_TOO_LARGE` with `max_bytes` and `actual_bytes`) — never silent truncation.
+
+For v1, the browser's binary download path stays HTTP `res.send(Buffer)`, so no portal JSON-body limit bump is required. If a later phase adds browser-side binary upload over RPC, that phase must revisit request limits explicitly.
 
 ### Atomicity
 
@@ -238,62 +242,60 @@ No partial-write semantics exposed to callers; either the artifact appears with 
 
 ## Backward Compatibility
 
-- `write_artifact({content: "<string>"})` callers behave identically — no `encoding` defaults to `"utf-8"`, content type defaults to `text/markdown`, `is_binary: false`, 1 MB cap.
-- Legacy `downloadArtifact` consumers that expect `string` continue to work: the SDK exports `downloadArtifactText` for the text-only path. The new buffer-returning `downloadArtifact` is the recommended surface.
+- `write_artifact({content: "<string>"})` callers behave identically — no `encoding` defaults to `"utf-8"`, content type defaults to `text/markdown`, `isBinary: false`, 1 MB cap.
+- `write_artifact` keeps `contentType` as the canonical public field. The handler may accept `content_type` as an alias, but the docs and typed surfaces do not rename existing parameters.
+- Legacy `downloadArtifact` consumers that expect `string` continue to work via `downloadArtifactText`. The new buffer-returning `downloadArtifact` is the recommended low-level surface.
+- Portal/browser preview RPC stays text-only and fails clearly on binary (`ARTIFACT_IS_BINARY`). Binary bytes are downloaded through the existing HTTP `/download` route.
 - The portal download URL format is unchanged. For an existing markdown artifact the on-the-wire response bytes are identical (same content, but `Content-Type` now `text/markdown` instead of `text/plain`).
 - `list_artifacts` tool response keeps the legacy `filenames: string[]` field alongside the new `files: ArtifactMetadata[]`.
+- Shared UI continues to key selection and download bookkeeping by filename even though list entries become metadata objects.
 
 ## Security Considerations
 
 1. **Filename sanitation.** Existing `replace(/[/\\]/g, "_")` in `artifactBlobPath` and `safePath` is unchanged.
-2. **Magic-byte sniff.** Mandatory in v1 (resolved decision #3). Runs on the decoded buffer before commit. Mismatch between declared `content_type` family and detected family throws `ARTIFACT_CONTENT_TYPE_MISMATCH` and the upload is rejected. Family granularity (e.g. detected `application/zip` matches declared `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` because xlsx is a zip) is handled by a small allowlist of synonyms.
-3. **No automatic execution.** `Open externally` only runs after an explicit user keypress / click. The portal never auto-launches.
+2. **Magic-byte sniff.** Mandatory in v1 (resolved decision #3). Runs on the decoded buffer before commit. Mismatch between declared `contentType` family and detected family throws `ARTIFACT_CONTENT_TYPE_MISMATCH` and the upload is rejected. Family granularity (e.g. detected `application/zip` matches declared `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` because xlsx is a zip) is handled by a small allowlist of synonyms.
+3. **No automatic execution.** Native `Open externally` only runs after an explicit user keypress. The browser host exposes download only and never attempts to auto-launch a local app.
 4. **Content-Disposition: attachment** for every download — never `inline` — so browsers never auto-render even when the type would normally render in-browser.
-5. **MIME-confusion in the viewer.** `ArtifactViewer` consults `is_binary` *before* any decode attempt. Binary artifacts never reach the Markdown renderer.
+5. **MIME-confusion in the viewer.** The shared preview path consults `isBinary` *before* any decode attempt. Binary artifacts never reach the Markdown renderer.
 6. **Cap enforcement.** Server-side on decoded bytes; both `write_artifact` and the `uploadArtifact` SDK call reject oversize with explicit errors.
-7. **Allowlist of openers.** The `Open externally` shell-out uses a fixed `open` / `xdg-open` / `start` based on `process.platform`. The artifact filename is sanitized before being passed; we never invoke a shell with `shell: true`.
-8. **No SVG render.** SVG is in the text allowlist (so listing knows it's text and lets `read_artifact` return it) but the portal's `ArtifactViewer` does **not** render SVG inline — it falls back to the binary placeholder card. SVG is a script-execution surface and we don't need to render it in v1.
+7. **Allowlist of openers.** The native `Open externally` shell-out uses a fixed `open` / `xdg-open` / `start` based on `process.platform`. The artifact filename is sanitized before being passed; we never invoke a shell with `shell: true`.
+8. **No SVG render.** SVG is in the text allowlist (so listing knows it's text and lets `read_artifact` return it) but the shared UI should still refuse to render it inline in v1 and fall back to the binary-style placeholder note. SVG is a script-execution surface and we do not need to render it.
 
 ## Migration Plan
 
 Phase 1 — **SDK + storage** (one PR):
 
-- `ArtifactStore` interface change: Buffer overload, metadata return shape, `downloadArtifactText` helper.
+- `ArtifactStore` interface change: Buffer-clean upload/download, metadata return shape, `downloadArtifactText` helper.
 - `SessionBlobStore.uploadArtifact` / `downloadArtifact` / `listArtifacts` updated.
 - `FilesystemArtifactStore` ditto + sidecar metadata file.
-- `write_artifact` tool gains `encoding` parameter; `read_artifact` returns `ARTIFACT_IS_BINARY` for binary; `list_artifacts` returns metadata.
+- `write_artifact` tool gains `encoding`; `read_artifact` returns `ARTIFACT_IS_BINARY` for binary; `list_artifacts` returns metadata and keeps legacy `filenames`.
+- Public tool naming stays camelCase; handler accepts `content_type` only as an alias.
 - `file-type` dependency added; magic-byte sniff in upload path.
 - `MAX_BINARY_BYTES` constant + env override.
-- Unit tests (see Testing Plan below).
 
-Phase 2 — **Portal server + RPC** (small follow-up PR):
+Phase 2 — **Transports + portal server** (small follow-up PR):
 
-- Switch `/download` endpoint to `Buffer.send` + `Content-Type` from artifact metadata.
-- New `/meta` endpoint.
-- `runtime.js` gains `getArtifactMetadata`; `downloadArtifact` returns `{content_type, is_binary, size_bytes, body_base64}` over RPC; HTTP `/download` continues to stream raw bytes.
-- Bump `bodyParser.json` limit to 25 MB to accommodate base64 uploads.
-- Integration test through `runtime.call("downloadArtifact", ...)` for both text and binary fixtures.
+- Switch `/download` endpoint to `res.send(Buffer)` + `Content-Type` from artifact metadata.
+- Add `getArtifactMetadata(sessionId, filename)` and optional `/meta` endpoint.
+- Update `NodeSdkTransport`, `PortalRuntime`, and the browser transport so `listArtifacts` returns metadata records.
+- Keep browser preview download text-only by routing preview calls through `downloadArtifactText`; do **not** add a base64 binary-download RPC in v1.
+- Make local save/download helpers write raw bytes for binary artifacts.
 
-Phase 3 — **Portal UI** (separate PR):
+Phase 3 — **Shared UI + host affordances** (separate PR):
 
-- `MarkdownViewer` → `ArtifactViewer` with binary-aware rendering; placeholder card for binary; existing markdown path for text.
-- Browser-side `Blob` reconstruction from base64 RPC payload + `URL.createObjectURL` for the Download anchor.
-- Visual test (manual) with `.xlsx`, `.pdf`, `.png`.
+- Update `packages/ui-core/` controller / reducer / selectors / state to store `ArtifactMetadata` entries while preserving filename-based selection and download bookkeeping.
+- Change preview gating from extension-only heuristics to `isBinary` metadata, with a metadata fallback probe when needed.
+- Browser host renders download-only binary placeholder UX.
+- Native TUI preserves download + open semantics.
+- Remove or replace any stale portal-only placeholder viewer wiring so the repo has a single controlling artifact-view path.
 
-Phase 4 — **CLI / TUI** (separate PR):
+Phase 4 — **Docs + samples**:
 
-- `[O]pen externally` action in the artifact picker.
-- `guessArtifactContentType` table extension.
-- `spawnDetached` reuse for the OS-native opener.
-- TUI test for the picker action (assertion on the spawn call, mocked).
-
-Phase 5 — **Docs + samples**:
-
-- New "Binary artifacts" section in [`docs/sdk/`](../../docs/sdk/) covering the write/read shape, the cap, and the encoding contract.
+- New "Binary artifacts" section in [`docs/sdk/`](../../docs/sdk/) covering the write/read shape, compatibility naming, size limits, and encoding contract.
 - Update [`templates/builder-agents/`](../../templates/builder-agents/) read-me and any agent skill that mentions artifacts.
 - Add a working sample to [`examples/devops-command-center/`](../../examples/devops-command-center/) that writes a binary artifact (small `.zip` of a generated payload) and serves it through the portal download.
 
-Each phase is independently shippable. End-to-end binary download works after Phase 2; the no-preview UX lands with Phase 3.
+Each phase is independently shippable. Binary-safe SDK storage and raw-byte host download work after Phase 2; the metadata-driven no-preview UX lands with Phase 3.
 
 ## Public API Surface Diff
 
@@ -303,15 +305,20 @@ Each phase is independently shippable. End-to-end binary download works after Ph
 | `ArtifactStore.downloadArtifact` | `(id, name) => string` | `(id, name) => { contentType, isBinary, sizeBytes, body: Buffer }` |
 | `ArtifactStore.downloadArtifactText` | — | `(id, name) => string` (throws on binary) |
 | `ArtifactStore.listArtifacts` | `(id) => string[]` | `(id) => ArtifactMetadata[]` |
-| `write_artifact` tool params | `{filename, content, contentType?}` | `{filename, content, content_type?, encoding?}` |
-| `read_artifact` tool result | `{success, content, sizeBytes}` | same on text; `{error: "ARTIFACT_IS_BINARY", content_type, size_bytes}` on binary |
+| `write_artifact` tool params | `{filename, content, contentType?}` | `{filename, content, contentType?, encoding?}` (`content_type` accepted as alias only) |
+| `read_artifact` tool result | `{success, content, sizeBytes}` | same on text; `{error: "ARTIFACT_IS_BINARY", contentType, sizeBytes}` on binary |
 | `list_artifacts` tool result | `{success, files: string[], count}` | `{success, files: ArtifactMetadata[], filenames: string[], count}` |
+| Portal RPC `listArtifacts` | `string[]` | `ArtifactMetadata[]` |
+| Portal RPC `downloadArtifact` | text content string | text content string for text; `ARTIFACT_IS_BINARY` on binary |
+| Portal `getArtifactMetadata` | — | `{ filename, sizeBytes, contentType, isBinary, uploadedAt, source }` |
 | Portal `/download` response body | UTF-8 string in `text/plain` | raw bytes in `Content-Type` from metadata |
-| Portal `/meta` endpoint | — | `{size_bytes, content_type, is_binary, uploaded_at}` |
+| Portal `/meta` endpoint | — | `{ sizeBytes, contentType, isBinary, uploadedAt }` |
 
 ## Testing Plan
 
-Tests live in the repo's existing structure: SDK tests in `packages/sdk/test/local/`, portal tests in `packages/portal/test/` (or as part of an SDK suite that exercises the runtime), CLI tests in `packages/cli/test/`. New suites are added to [`scripts/run-tests.sh`](../../scripts/run-tests.sh) and the `test:local` script in [`packages/sdk/package.json`](../../packages/sdk/package.json) per the test-integrity rules in `.github/copilot-instructions.md` (no retries, no hacks, no custom system prompts to compensate for product behavior, raise failures loudly).
+This repo's runnable local integration tests live under `packages/sdk/test/local/`, and [`scripts/run-tests.sh`](../../scripts/run-tests.sh) executes that tree via vitest. There is no separate checked-in `packages/portal/test/` harness today, so the proposal should place new automated portal/browser and transport tests under `packages/sdk/test/local/` unless we intentionally add a new harness and wire it into the script.
+
+All new suites follow the existing test-integrity rules from `.github/copilot-instructions.md`: no retries, no hacks, no custom system prompts to compensate for product behavior, and failures raised loudly.
 
 ### Phase 1 — SDK + storage
 
@@ -320,66 +327,78 @@ New file `packages/sdk/test/local/artifacts-binary.test.js`. Backed by both stor
 | ID | What it asserts |
 |---|---|
 | BA-1 | `uploadArtifact(content: Buffer, contentType: "application/pdf")` round-trips: the bytes downloaded match the bytes uploaded exactly (`Buffer.compare === 0`). |
-| BA-2 | `uploadArtifact(content: "<base64>", {encoding: "base64"}, "image/png")` decodes correctly: the resulting blob bytes equal the raw bytes the base64 was generated from. |
+| BA-2 | `uploadArtifact(content: "<base64>", contentType: "image/png", {encoding: "base64"})` decodes correctly: the resulting blob bytes equal the raw bytes the base64 was generated from. |
 | BA-3 | `downloadArtifact` for a text artifact returns `{isBinary: false, contentType: "text/markdown", body: <Buffer>}` and `body.toString("utf-8")` equals the original string. |
 | BA-4 | `downloadArtifactText` on a binary artifact throws with `code === "ARTIFACT_IS_BINARY"` (or message matches that token). |
-| BA-5 | `listArtifacts` returns `ArtifactMetadata[]` including a mix of text and binary entries with correct `is_binary` derived from `content_type`. |
+| BA-5 | `listArtifacts` returns `ArtifactMetadata[]` including a mix of text and binary entries with correct `isBinary` derived from `contentType`. |
 | BA-6 | Magic-byte mismatch is rejected: declare `application/pdf` but pass PNG bytes → throws `ARTIFACT_CONTENT_TYPE_MISMATCH`. The blob is **not** created (verified by `artifactExists === false` afterwards). |
 | BA-7 | Magic-byte synonym allowance: declare `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` and pass real `.xlsx` bytes (zip family) → succeeds. |
 | BA-8 | Text size cap: 1 MB + 1 byte text artifact rejected with `ARTIFACT_TOO_LARGE`, `max_bytes === 1_048_576`. |
 | BA-9 | Binary size cap: 10 MB + 1 byte binary artifact rejected with `ARTIFACT_TOO_LARGE`, `max_bytes === 10_485_760`. |
 | BA-10 | Binary cap respects `PILOTSWARM_ARTIFACT_BINARY_MAX_BYTES` env override (set to 2 MB in the test, upload 3 MB → reject; upload 1 MB → succeed). |
-| BA-11 | Backward compat: existing call shape `uploadArtifact(id, name, "hello")` still works, classified as text, content type `text/markdown`, `is_binary: false`. |
+| BA-11 | Backward compat: existing call shape `uploadArtifact(id, name, "hello")` still works, classified as text, content type `text/markdown`, `isBinary: false`. |
 | BA-12 | Filesystem sidecar atomicity: kill the process *between* writing `.tmp` and `rename` (simulated by overriding `fs.rename` to throw), then re-list — the artifact is **not** visible (no half-state). |
 | BA-13 | Filesystem sidecar reload: write an artifact, delete the in-memory store object, instantiate a new `FilesystemArtifactStore` against the same dir, list and download — metadata is recovered from the sidecar and bytes round-trip. |
-| BA-14 | Sidecar fallback: delete the sidecar but keep the bytes; list still returns the artifact with `content_type` re-detected via magic-byte sniff. |
+| BA-14 | Sidecar fallback: delete the sidecar but keep the bytes; list still returns the artifact with `contentType` re-detected via magic-byte sniff. |
 
 Tool-layer tests in `packages/sdk/test/local/artifacts-binary-tools.test.js`:
 
 | ID | What it asserts |
 |---|---|
-| BAT-1 | `write_artifact` tool with `encoding: "base64"` and `content_type: "application/pdf"` writes a downloadable PDF; `list_artifacts` reports `is_binary: true`. |
-| BAT-2 | `write_artifact` with `encoding: "base64"` but no `content_type` returns `{ error: "...content_type required..." }`. |
-| BAT-3 | `read_artifact` on a binary file returns `{ error: "ARTIFACT_IS_BINARY", content_type, size_bytes }` (no garbled UTF-8 string in the result). |
-| BAT-4 | `read_artifact` on a text file is unchanged (success + content). |
-| BAT-5 | `list_artifacts` tool result has both `files: ArtifactMetadata[]` and `filenames: string[]` populated correctly. |
-| BAT-6 | `export_artifact` works for binary artifacts (returns `artifact://...` URI; underlying bytes still downloadable). |
+| BAT-1 | `write_artifact` with `encoding: "base64"` and `contentType: "application/pdf"` writes a downloadable PDF; `list_artifacts` reports `isBinary: true`. |
+| BAT-2 | `write_artifact` accepts `content_type` as an alias but normalizes it to the canonical `contentType` metadata on output. |
+| BAT-3 | `write_artifact` with `encoding: "base64"` but no `contentType` returns `{ error: "...contentType required..." }`. |
+| BAT-4 | `read_artifact` on a binary file returns `{ error: "ARTIFACT_IS_BINARY", contentType, sizeBytes }` (no garbled UTF-8 string in the result). |
+| BAT-5 | `read_artifact` on a text file is unchanged (success + content). |
+| BAT-6 | `list_artifacts` tool result has both `files: ArtifactMetadata[]` and `filenames: string[]` populated correctly. |
+| BAT-7 | `export_artifact` works for binary artifacts (returns `artifact://...` URI; underlying bytes still downloadable). |
 
-### Phase 2 — Portal server + RPC
+### Phase 2 — Transports + portal server
 
 New file `packages/sdk/test/local/portal-artifacts-binary.test.js` (uses the existing `PortalRuntime` test scaffolding):
 
 | ID | What it asserts |
 |---|---|
-| PA-1 | `runtime.call("downloadArtifact", {sessionId, filename})` for a binary artifact returns `{ content_type, is_binary: true, size_bytes, body_base64 }`. Decoded base64 matches original bytes. |
-| PA-2 | `runtime.call("getArtifactMetadata", ...)` returns the same shape as `/api/.../meta` response for a binary file. |
+| PA-1 | `runtime.call("listArtifacts", {sessionId})` returns `ArtifactMetadata[]` with correct `contentType`, `isBinary`, `sizeBytes`, and `uploadedAt` for text and binary fixtures. |
+| PA-2 | `runtime.call("getArtifactMetadata", ...)` returns the same metadata shape as `/api/.../meta` for a binary file. |
 | PA-3 | HTTP `GET /api/sessions/:id/artifacts/:f/download` for a `.pdf` returns `Content-Type: application/pdf`, `Content-Disposition: attachment`, and the response body bytes equal the source bytes (use `supertest` with `.responseType("arraybuffer")`). |
 | PA-4 | HTTP `/download` for a `.md` returns `Content-Type: text/markdown` and the bytes equal the original markdown. |
-| PA-5 | HTTP `/meta` returns `200 { size_bytes, content_type, is_binary, uploaded_at }` for an existing artifact and `404` for a missing one. |
-| PA-6 | Body parser limit accepts a 13 MB JSON RPC payload (10 MB binary + base64 overhead) and rejects 30 MB cleanly with HTTP 413. |
+| PA-5 | `runtime.call("downloadArtifact", {sessionId, filename})` stays text-only for preview: markdown succeeds, binary returns `ARTIFACT_IS_BINARY`. |
+| PA-6 | HTTP `/meta` returns `200 { sizeBytes, contentType, isBinary, uploadedAt }` for an existing artifact and `404` for a missing one. |
 
-### Phase 3 — Portal UI
+### Phase 3 — Shared UI + host presentation
 
-Manual visual verification (no React test runner in the portal yet):
+New file `packages/sdk/test/local/artifact-browser-ui.test.js` (shared ui-core controller / reducer / selector coverage):
+
+| ID | What it asserts |
+|---|---|
+| UI-1 | `files/sessionLoaded` accepts `ArtifactMetadata[]` entries and still preserves `selectedFilename` semantics. |
+| UI-2 | `ensureFilePreview()` does **not** call `transport.downloadArtifact()` for a binary artifact when `isBinary: true` is already present in list metadata. |
+| UI-3 | Binary preview state becomes a note / placeholder payload, not a markdown/text payload. |
+| UI-4 | Text artifacts still flow through the markdown / text preview pipeline unchanged. |
+| UI-5 | Browser-host presentation exposes download-only affordances for binary artifacts; it does not advertise `Open externally`. |
+| UI-6 | Native-host presentation keeps the existing open affordance for downloaded artifacts. |
+
+Add focused source / browser contract assertions to `packages/sdk/test/local/portal-browser-contracts.test.js`:
+
+| ID | What it asserts |
+|---|---|
+| PBC-1 | Browser transport still downloads artifacts through HTTP `/download` rather than a binary base64 RPC tunnel. |
+| PBC-2 | Browser artifact preview wiring is metadata-aware (`listArtifacts` / `getArtifactMetadata`) and short-circuits binary preview. |
+| PBC-3 | Browser artifact affordances remain download-only for binary artifacts. |
+
+Manual visual verification:
 
 | ID | What |
 |---|---|
-| PU-1 | Upload a `.xlsx` via `write_artifact` from a sample agent; open the session in the portal; confirm the file viewer shows the binary placeholder card with filename, content type, and size. No Markdown render attempted. |
+| PU-1 | Upload a `.xlsx` via `write_artifact` from a sample agent; open the session in the portal; confirm the file viewer shows the binary placeholder card / note with filename, content type, and size. No Markdown render attempted. |
 | PU-2 | Click `Download` on the binary card; the browser saves the file with the correct extension and the file opens cleanly in Excel. |
 | PU-3 | Existing `.md` artifact still renders with the Markdown preview (regression). |
 | PU-4 | `.pdf` artifact card shows correct icon (or generic file icon) and downloads cleanly; opens in Preview / Acrobat. |
 
-A short Playwright spec is added under `packages/portal/test/e2e/artifact-binary.spec.ts`:
+### Phase 4 — Native host download / open hardening
 
-| ID | What it asserts |
-|---|---|
-| PE-1 | Page loads a session with a binary artifact in the list; clicking the file row renders an element with `[data-testid="artifact-binary-placeholder"]`. |
-| PE-2 | The download anchor's `download` attribute equals the filename and the `href` resolves to the `/download` URL. |
-| PE-3 | A text artifact in the same session does **not** render the binary placeholder; the markdown preview container is present. |
-
-### Phase 4 — CLI / TUI
-
-Tests in `packages/cli/test/local/artifact-picker-binary.test.js` (vitest, mocking `child_process.spawn`):
+New file `packages/sdk/test/local/artifact-picker-binary.test.js` (vitest, importing the CLI transport and mocking `child_process.spawn`):
 
 | ID | What it asserts |
 |---|---|
@@ -409,7 +428,7 @@ These are checked in (small enough). Larger-cap tests synthesize buffers in-proc
 
 ### Pre-deploy gate
 
-All new suites are added to [`scripts/run-tests.sh`](../../scripts/run-tests.sh)'s `SUITES` array and the `test:local` npm script. The deploy script's pre-deploy gate runs them automatically, so a regression in the binary path blocks AKS rollout.
+New `packages/sdk/test/local/*.test.js` suites are picked up automatically by [`scripts/run-tests.sh`](../../scripts/run-tests.sh) because it executes vitest over the local test tree. If we add a brand-new non-SDK test harness later, wire it into the script explicitly. The deploy script's pre-deploy gate then runs the binary-artifact coverage automatically, so a regression in this path blocks rollout.
 
 ## Open Questions
 

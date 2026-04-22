@@ -61,6 +61,17 @@ export function createArtifactTools(opts: {
                     description:
                         "MIME type. Default: 'text/markdown'. Use 'application/json' for JSON, etc.",
                 },
+                content_type: {
+                    type: "string",
+                    description:
+                        "Alias for contentType. Supported for compatibility; contentType is preferred.",
+                },
+                encoding: {
+                    type: "string",
+                    enum: ["utf-8", "base64"],
+                    description:
+                        "Encoding for the content field. Default: 'utf-8'. Use 'base64' for binary artifacts.",
+                },
             },
             required: ["filename", "content"],
         },
@@ -68,6 +79,8 @@ export function createArtifactTools(opts: {
             filename: string;
             content: string;
             contentType?: string;
+            content_type?: string;
+            encoding?: "utf-8" | "base64";
         }, context: any) => {
             const sessionId = context?.durableSessionId;
             if (!sessionId) {
@@ -75,18 +88,17 @@ export function createArtifactTools(opts: {
             }
 
             try {
-                const blobPath = await blobStore.uploadArtifact(
+                const metadata = await blobStore.uploadArtifact(
                     sessionId,
                     params.filename,
                     params.content,
-                    params.contentType ?? "text/markdown",
+                    params.contentType ?? params.content_type,
+                    { encoding: params.encoding },
                 );
                 return JSON.stringify({
                     success: true,
                     sessionId,
-                    filename: params.filename,
-                    blobPath,
-                    sizeBytes: params.content.length,
+                    ...metadata,
                 });
             } catch (err: any) {
                 return JSON.stringify({ error: err.message });
@@ -119,7 +131,7 @@ export function createArtifactTools(opts: {
         },
         handler: async (params: { sessionId: string; filename: string }) => {
             try {
-                const content = await blobStore.downloadArtifact(params.sessionId, params.filename);
+                const content = await blobStore.downloadArtifactText(params.sessionId, params.filename);
                 return JSON.stringify({
                     success: true,
                     sessionId: params.sessionId,
@@ -128,6 +140,13 @@ export function createArtifactTools(opts: {
                     sizeBytes: content.length,
                 });
             } catch (err: any) {
+                if (err?.code === "ARTIFACT_IS_BINARY") {
+                    return JSON.stringify({
+                        error: "ARTIFACT_IS_BINARY",
+                        contentType: err.contentType,
+                        sizeBytes: err.sizeBytes,
+                    });
+                }
                 return JSON.stringify({ error: err.message });
             }
         },
@@ -163,6 +182,7 @@ export function createArtifactTools(opts: {
                     success: true,
                     sessionId: targetId,
                     files,
+                    filenames: files.map((file) => file.filename),
                     count: files.length,
                 });
             } catch (err: any) {

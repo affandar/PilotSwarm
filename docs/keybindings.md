@@ -17,7 +17,7 @@ These keys work whenever focus is not in the prompt editor.
 | `n` | Create a new session |
 | `Shift+N` | Open the model picker before creating a session |
 | `r` | Refresh sessions and visible data |
-| `a` | Open the linked-artifact download picker |
+| `a` | Open the linked-item picker for current chat artifacts and visible URLs |
 | `m` | Cycle inspector tab (`sequence` → `logs` → `nodes` → `history` → `files` → `stats`) |
 | `[` / `]` | Resize the main split |
 | `c` | Cancel the selected session |
@@ -72,6 +72,7 @@ These keys work whenever focus is not in the prompt editor.
 |-----|--------|
 | `j` / `k` | Move file selection |
 | `f` | Open the files-filter dialog (`Selected session` vs `All sessions`) |
+| `x` | Delete the selected artifact (with confirmation) |
 | `v` | Toggle fullscreen files mode |
 | `o` | Open the selected file in the OS default app |
 
@@ -82,6 +83,7 @@ These keys work whenever focus is not in the prompt editor.
 | `j` / `k` | Scroll preview |
 | `Ctrl+D` / `Ctrl+U` | Page preview down / up |
 | `g` / `G` | Jump to preview top / bottom |
+| `x` | Delete the selected artifact (with confirmation) |
 | `v` | Toggle fullscreen files mode |
 | `Esc` | Exit fullscreen files mode |
 | `o` | Open the selected file in the OS default app |
@@ -113,7 +115,7 @@ Notes:
 | model picker | `j/k`, arrows, `Enter`, `Esc` |
 | session agent picker | `j/k`, arrows, `Enter`, `Esc` |
 | session owner filter | `j/k`, arrows, `Space`, `Esc` |
-| linked-artifact picker | `j/k`, arrows, `Enter`, `Esc`, `a` |
+| linked-item picker | `j/k`, arrows, `Enter`, `Esc`, `a` |
 | log/files filters | `Tab` / `Shift+Tab`, `j/k`, arrows, `Enter`, `Esc` |
 | rename dialog | type text, `←/→`, `Home`, `End`, `Backspace`, `Enter`, `Esc` |
 | attach-file dialog | type path, `←/→`, `Home`, `End`, `Backspace`, `Enter`, `Esc` |

@@ -400,10 +400,13 @@ Azure Blob Storage container: `copilot-sessions`
 | Dehydrate | `dehydrate(sessionId, reason)` | `{sessionId}.tar.gz` + `.meta.json` | Tar local dir → blob, delete local |
 | Hydrate | `hydrate(sessionId)` | `{sessionId}.tar.gz` | Download → extract to local |
 | Checkpoint | `checkpoint(sessionId)` | `{sessionId}.tar.gz` + `.meta.json` | Tar → blob (no delete) |
-| Write artifact | `uploadArtifact(sessionId, file, content)` | `artifacts/{sessionId}/{file}` | Agent file to shared storage |
-| Read artifact | `downloadArtifact(sessionId, file)` | `artifacts/{sessionId}/{file}` | Read shared file |
-| List artifacts | `listArtifacts(sessionId)` | `artifacts/{sessionId}/` | List files |
+| Write artifact | `uploadArtifact(sessionId, file, content, contentType?, opts?)` | `artifacts/{sessionId}/{file}` | Store text or binary artifact with metadata |
+| Read artifact | `downloadArtifact(sessionId, file)` | `artifacts/{sessionId}/{file}` | Read shared file bytes plus metadata |
+| Read text artifact | `downloadArtifactText(sessionId, file)` | `artifacts/{sessionId}/{file}` | Read UTF-8 text only; rejects binary artifacts |
+| List artifacts | `listArtifacts(sessionId)` | `artifacts/{sessionId}/` | List artifact metadata records |
 | SAS URL | `generateArtifactSasUrl(sessionId, file)` | — | Time-limited download link |
+
+Artifacts are metadata-aware. Binary uploads use the same storage path as text, but callers should provide `contentType` and base64-encoded content on JSON-shaped tool boundaries when they need to preserve raw bytes.
 
 ### Metadata JSON
 
@@ -491,9 +494,9 @@ You are a maintenance agent. Your job is to...
 | Agent | Purpose | Tools | Behavior |
 |-------|---------|-------|----------|
 | `pilotswarm` | Master orchestrator | Cluster stats, facts, and sub-agent controls | Spawns `sweeper`, `resourcemgr`, and `facts-manager` on startup |
-| `sweeper` | Session cleanup | scan/cleanup/prune tools | Permanent system agent. Uses `cron(seconds=60, ...)` |
-| `resourcemgr` | Infrastructure monitor | compute/storage/database/runtime tools | Permanent system agent. Uses `cron(seconds=300, ...)` |
-| `facts-manager` | Shared operational knowledge curator | facts + artifact tools | Permanent system agent. Uses `cron()` based on config facts |
+| `sweeper` | Session cleanup | scan/cleanup/prune tools | Permanent system agent. Uses `cron(seconds=1800, ...)` |
+| `resourcemgr` | Infrastructure monitor | compute/storage/database/runtime tools | Permanent system agent. Uses `cron(seconds=600, ...)` |
+| `facts-manager` | Shared operational knowledge curator | facts + artifact tools | Permanent system agent. Uses `cron()` based on `config/facts-manager/cycle-interval` defaulting to 180 seconds |
 
 ### Skill Format (`SKILL.md`)
 

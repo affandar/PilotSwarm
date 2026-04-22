@@ -156,10 +156,27 @@ export async function startServer(opts = {}) {
         try {
             const sessionId = req.params.sessionId;
             const filename = req.params.filename;
-            const content = await runtime.downloadArtifact(sessionId, filename);
-            res.setHeader("content-type", "text/plain; charset=utf-8");
+            const artifact = await runtime.downloadArtifactBinary(sessionId, filename);
+            const contentType = String(artifact?.contentType || "application/octet-stream");
+            res.setHeader("content-type", contentType);
             res.setHeader("content-disposition", `attachment; filename="${path.basename(filename)}"`);
-            res.send(content);
+            res.send(artifact.body);
+        } catch (error) {
+            const payload = createJsonRpcError(error, 404);
+            res.status(payload.status).json(payload.body);
+        }
+    });
+
+    app.get("/api/sessions/:sessionId/artifacts/:filename/meta", requireAuth, async (req, res) => {
+        try {
+            const sessionId = req.params.sessionId;
+            const filename = req.params.filename;
+            const metadata = await runtime.getArtifactMetadata(sessionId, filename);
+            if (!metadata) {
+                res.status(404).json({ ok: false, error: "Artifact not found" });
+                return;
+            }
+            res.json({ ok: true, ...metadata });
         } catch (error) {
             const payload = createJsonRpcError(error, 404);
             res.status(payload.status).json(payload.body);

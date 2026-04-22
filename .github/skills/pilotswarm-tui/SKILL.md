@@ -40,6 +40,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 
 - Preserve the existing PilotSwarm terminal workflow and information density.
 - Pane titles live in borders, not as duplicate content inside panes.
+- Keep title run data plain. The portal may use a slim painted card header, while the TUI should render pane titles without a highlighted header background. When panes narrow, drop low-priority title metadata like session ids or recent-window labels before squeezing content.
 - Shared selectors are the source of truth for visible state.
 - Non-user / non-assistant transcript items render as cards.
 - Mouse copy must stay pane-local.
@@ -49,6 +50,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Live-updating logs and activity panes should auto-follow only while the user is at the bottom; scrolling upward pauses follow mode until the user returns to the bottom.
 - In the sessions pane, `f` opens the session owner filter; keep terminal help text and docs aligned with that binding.
 - In the stats inspector, `f` cycles between the session, fleet, and users views; keep terminal and portal behavior aligned.
+- In the files inspector, `x` deletes the selected artifact after confirmation; keep terminal and portal behavior aligned.
 - In the native TUI, the files inspector should render inside the standard outer inspector shell rather than introducing a second files-specific top-level shell.
 - In the portal inspector, reserve a consistent header row height so tabs with header actions and tabs without them start their tab strip at the same vertical position; keep inspector tab/action buttons compact rather than oversized.
 

@@ -1,6 +1,8 @@
 import { FOCUS_REGIONS, INSPECTOR_TABS } from "./commands.js";
 import { DEFAULT_THEME_ID } from "./themes/index.js";
 
+const ARTIFACT_SOURCES = new Set(["agent", "user", "system"]);
+
 export function normalizeSessionOwnerFilter(filter) {
     const ownerKeys = Array.isArray(filter?.ownerKeys)
         ? [...new Set(filter.ownerKeys.map((key) => String(key || "").trim()).filter(Boolean))]
@@ -13,6 +15,53 @@ export function normalizeSessionOwnerFilter(filter) {
         includeMe: filter?.includeMe === true,
         ownerKeys,
     };
+}
+
+export function normalizeArtifactEntry(entry) {
+    if (typeof entry === "string") {
+        const filename = entry.trim();
+        if (!filename) return null;
+        return {
+            filename,
+            sizeBytes: null,
+            contentType: "",
+            isBinary: false,
+            uploadedAt: "",
+            source: "agent",
+        };
+    }
+    if (!entry || typeof entry !== "object") return null;
+    const filename = String(entry.filename || "").trim();
+    if (!filename) return null;
+    const sizeBytes = Number(entry.sizeBytes);
+    const contentType = typeof entry.contentType === "string" ? entry.contentType : "";
+    return {
+        filename,
+        sizeBytes: Number.isFinite(sizeBytes) && sizeBytes >= 0 ? sizeBytes : null,
+        contentType,
+        isBinary: entry.isBinary === true,
+        uploadedAt: typeof entry.uploadedAt === "string" ? entry.uploadedAt : "",
+        source: ARTIFACT_SOURCES.has(entry.source) ? entry.source : "agent",
+    };
+}
+
+export function normalizeArtifactEntries(entries) {
+    const list = Array.isArray(entries) ? entries : [];
+    const normalized = [];
+    const seen = new Set();
+    for (const entry of list) {
+        const candidate = normalizeArtifactEntry(entry);
+        if (!candidate || seen.has(candidate.filename)) continue;
+        seen.add(candidate.filename);
+        normalized.push(candidate);
+    }
+    return normalized;
+}
+
+export function findArtifactEntry(entries, filename) {
+    const target = String(filename || "").trim();
+    if (!target) return null;
+    return normalizeArtifactEntries(entries).find((entry) => entry.filename === target) || null;
 }
 
 export function createInitialState({ mode = "local", branding = null, themeId = null, sessionOwnerFilter = null } = {}) {

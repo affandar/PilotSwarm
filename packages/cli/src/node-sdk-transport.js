@@ -293,7 +293,22 @@ function guessArtifactContentType(filename) {
     if (ext === ".json" || ext === ".jsonl") return "application/json";
     if (ext === ".html" || ext === ".htm") return "text/html";
     if (ext === ".csv") return "text/csv";
-    if (ext === ".yaml" || ext === ".yml") return "application/yaml";
+    if (ext === ".yaml" || ext === ".yml") return "text/yaml";
+    if (ext === ".xml") return "application/xml";
+    if (ext === ".js" || ext === ".mjs" || ext === ".cjs") return "application/javascript";
+    if (ext === ".pdf") return "application/pdf";
+    if (ext === ".zip") return "application/zip";
+    if (ext === ".tar") return "application/x-tar";
+    if (ext === ".tgz" || ext === ".gz") return "application/gzip";
+    if (ext === ".png") return "image/png";
+    if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+    if (ext === ".gif") return "image/gif";
+    if (ext === ".webp") return "image/webp";
+    if (ext === ".svg") return "image/svg+xml";
+    if (ext === ".xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    if (ext === ".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if (ext === ".pptx") return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    if (ext === ".bin") return "application/octet-stream";
     return "text/plain";
 }
 
@@ -671,10 +686,32 @@ export class NodeSdkTransport {
     async listArtifacts(sessionId) {
         if (!this.artifactStore || !sessionId) return [];
         const artifacts = await this.artifactStore.listArtifacts(sessionId);
-        return Array.isArray(artifacts) ? [...artifacts].sort((left, right) => left.localeCompare(right)) : [];
+        return Array.isArray(artifacts)
+            ? [...artifacts].sort((left, right) => String(left?.filename || "").localeCompare(String(right?.filename || "")))
+            : [];
+    }
+
+    async getArtifactMetadata(sessionId, filename) {
+        if (!this.artifactStore || !sessionId || !filename) return null;
+        const artifacts = await this.artifactStore.listArtifacts(sessionId);
+        return (artifacts || []).find((artifact) => artifact?.filename === filename) || null;
+    }
+
+    async deleteArtifact(sessionId, filename) {
+        if (!this.artifactStore) {
+            throw new Error("Artifact store is not available for this transport.");
+        }
+        return this.artifactStore.deleteArtifact(sessionId, filename);
     }
 
     async downloadArtifact(sessionId, filename) {
+        if (!this.artifactStore) {
+            throw new Error("Artifact store is not available for this transport.");
+        }
+        return this.artifactStore.downloadArtifactText(sessionId, filename);
+    }
+
+    async downloadArtifactBinary(sessionId, filename) {
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -699,7 +736,7 @@ export class NodeSdkTransport {
         }
 
         const filename = path.basename(resolvedPath);
-        const content = await fs.promises.readFile(resolvedPath, "utf8");
+        const content = await fs.promises.readFile(resolvedPath);
         const contentType = guessArtifactContentType(filename);
         await this.artifactStore.uploadArtifact(sessionId, filename, content, contentType);
 
@@ -707,23 +744,33 @@ export class NodeSdkTransport {
             sessionId,
             filename,
             resolvedPath,
-            sizeBytes: Buffer.byteLength(content, "utf8"),
+            sizeBytes: content.length,
             contentType,
         };
     }
 
-    async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename)) {
+    async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename), contentEncoding = null) {
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
         const safeSessionId = String(sessionId || "").trim();
         const safeFilename = path.basename(String(filename || "").trim());
-        const safeContent = typeof content === "string" ? content : String(content || "");
+        let safeContent;
         if (!safeSessionId) {
             throw new Error("Session id is required for artifact upload.");
         }
         if (!safeFilename) {
             throw new Error("Filename is required for artifact upload.");
+        }
+
+        if (contentEncoding === "base64") {
+            safeContent = Buffer.from(String(content || ""), "base64");
+        } else if (Buffer.isBuffer(content)) {
+            safeContent = content;
+        } else if (content instanceof Uint8Array) {
+            safeContent = Buffer.from(content);
+        } else {
+            safeContent = typeof content === "string" ? content : String(content || "");
         }
 
         await this.artifactStore.uploadArtifact(
@@ -737,7 +784,9 @@ export class NodeSdkTransport {
             sessionId: safeSessionId,
             filename: safeFilename,
             resolvedPath: safeFilename,
-            sizeBytes: Buffer.byteLength(safeContent, "utf8"),
+            sizeBytes: Buffer.isBuffer(safeContent)
+                ? safeContent.length
+                : Buffer.byteLength(safeContent, "utf8"),
             contentType: contentType || guessArtifactContentType(safeFilename),
         };
     }
@@ -755,7 +804,7 @@ export class NodeSdkTransport {
         const sessionDir = path.join(EXPORTS_DIR, String(sessionId || "").slice(0, 8));
         const localPath = path.join(sessionDir, sanitizeArtifactFilename(filename));
         await fs.promises.mkdir(sessionDir, { recursive: true });
-        await fs.promises.writeFile(localPath, content, "utf8");
+        await fs.promises.writeFile(localPath, content.body);
         return {
             localPath,
         };
@@ -817,6 +866,34 @@ export class NodeSdkTransport {
         }
 
         return { localPath: resolvedPath };
+    }
+
+    async openUrlInDefaultBrowser(targetUrl) {
+        const href = String(targetUrl || "").trim();
+        if (!href) {
+            throw new Error("URL cannot be empty.");
+        }
+
+        let parsedUrl;
+        try {
+            parsedUrl = new URL(href);
+        } catch {
+            throw new Error(`Invalid URL: ${targetUrl}`);
+        }
+
+        if (!/^https?:$/i.test(parsedUrl.protocol)) {
+            throw new Error(`Unsupported URL protocol: ${parsedUrl.protocol}`);
+        }
+
+        if (process.platform === "darwin") {
+            await spawnDetached("open", [parsedUrl.toString()]);
+        } else if (process.platform === "win32") {
+            await spawnDetached("cmd", ["/c", "start", "", parsedUrl.toString()]);
+        } else {
+            await spawnDetached("xdg-open", [parsedUrl.toString()]);
+        }
+
+        return { url: parsedUrl.toString() };
     }
 
     getModelsByProvider() {
