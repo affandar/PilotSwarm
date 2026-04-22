@@ -301,6 +301,18 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "ui/activityPaneAdjust":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    layout: {
+                        ...(state.ui.layout || {}),
+                        activityPaneAdjust: Number(action.activityPaneAdjust) || 0,
+                    },
+                },
+            };
+
         case "ui/focus":
             return {
                 ...state,

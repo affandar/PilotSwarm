@@ -32,6 +32,7 @@ import {
     selectStatusBar,
     selectThemePickerModal,
     selectConfirmModal,
+    normalizeStoredLayoutAdjustments,
 } from "pilotswarm-ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 
@@ -46,6 +47,7 @@ const THEME_COOKIE_NAME = "pilotswarm_theme";
 const SESSION_OWNER_FILTER_STORAGE_KEY = "pilotswarm.sessionOwnerFilter";
 const SESSION_OWNER_FILTER_COOKIE_NAME = "pilotswarm_session_owner_filter";
 const CHAT_FOCUS_MODE_STORAGE_KEY = "pilotswarm.chatFocus";
+const LAYOUT_STORAGE_KEY = "pilotswarm.layoutAdjustments";
 const INSPECTOR_TAB_LABELS = {
     sequence: "Sequence",
     logs: "Logs",
@@ -149,6 +151,38 @@ function writeStoredSessionOwnerFilter(filter) {
     } catch {}
 }
 
+function isDefaultStoredLayoutAdjustments(layoutAdjustments) {
+    const normalized = normalizeStoredLayoutAdjustments(layoutAdjustments);
+    return normalized.paneAdjust === 0
+        && normalized.sessionPaneAdjust === 0
+        && normalized.activityPaneAdjust === 0;
+}
+
+function readStoredLayoutAdjustments() {
+    if (typeof window === "undefined") return null;
+    try {
+        const rawValue = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+        if (!rawValue) return null;
+        return normalizeStoredLayoutAdjustments(JSON.parse(rawValue));
+    } catch {
+        return null;
+    }
+}
+
+function writeStoredLayoutAdjustments(layoutAdjustments) {
+    if (typeof window === "undefined") return;
+    try {
+        if (isDefaultStoredLayoutAdjustments(layoutAdjustments)) {
+            window.localStorage.removeItem(LAYOUT_STORAGE_KEY);
+            return;
+        }
+        window.localStorage.setItem(
+            LAYOUT_STORAGE_KEY,
+            JSON.stringify(normalizeStoredLayoutAdjustments(layoutAdjustments)),
+        );
+    } catch {}
+}
+
 function getVisibleInspectorTabs(controller) {
     return supportsArtifactBrowser(controller)
         ? INSPECTOR_TABS
@@ -180,6 +214,13 @@ function computeStateLayout(state) {
         width: state.ui.layout?.viewportWidth ?? 120,
         height: state.ui.layout?.viewportHeight ?? 40,
     }, state.ui.layout?.paneAdjust ?? 0, getStatePromptRows(state), state.ui.layout?.sessionPaneAdjust ?? 0);
+}
+
+function getPortalInspectorContentWidth(paneWidth, inspectorTab) {
+    // Sequence uses preserved-width lines inside padded, scroll-synced containers.
+    // Reserve a few extra columns so content that fits visually does not trip a cosmetic x-scrollbar.
+    const overflowGuardColumns = inspectorTab === "sequence" ? 3 : 0;
+    return Math.max(20, paneWidth - 4 - overflowGuardColumns);
 }
 
 function normalizeLines(lines) {
@@ -1660,11 +1701,12 @@ function FilesPane({ controller, focused, mobile = false }) {
 function InspectorPane({ controller, mobile = false, panelClassName = "", extraActions = null }) {
     const viewState = useControllerSelector(controller, (state) => {
         const layout = computeStateLayout(state);
+        const inspectorTab = state.ui.inspectorTab;
         const paneWidth = mobile
             ? (state.ui.layout?.viewportWidth ?? 120)
             : layout.rightWidth;
         return {
-            inspectorTab: state.ui.inspectorTab,
+            inspectorTab,
             statsViewMode: state.ui.statsViewMode,
             activeSessionId: state.sessions.activeSessionId,
             sessionsById: state.sessions.byId,
@@ -1683,7 +1725,7 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
             followBottom: state.ui.followBottom?.inspector !== false,
             logsTailing: state.logs.tailing,
             filesFullscreen: Boolean(state.files.fullscreen),
-            contentWidth: Math.max(20, paneWidth - 4),
+            contentWidth: getPortalInspectorContentWidth(paneWidth, inspectorTab),
         };
     }, shallowEqualObject);
     const selectorState = React.useMemo(() => ({
@@ -2310,6 +2352,78 @@ function RowResizeHandle({ controller, sessionPaneAdjust = 0 }) {
             if (event.key === "ArrowDown") {
                 event.preventDefault();
                 controller.adjustSessionPaneSplit(1);
+            }
+        },
+    },
+    React.createElement("span", { className: "ps-row-resizer-handle", "aria-hidden": "true" },
+        React.createElement("span", { className: "ps-row-resizer-dot" }),
+        React.createElement("span", { className: "ps-row-resizer-dot" }),
+        React.createElement("span", { className: "ps-row-resizer-dot" })));
+}
+
+function ActivityRowResizeHandle({ controller, activityPaneAdjust = 0 }) {
+    const dragStateRef = React.useRef(null);
+    const [dragging, setDragging] = React.useState(false);
+
+    React.useEffect(() => {
+        if (!dragging) return undefined;
+
+        const stopDragging = () => {
+            dragStateRef.current = null;
+            setDragging(false);
+            document.body.classList.remove("is-resizing-pane-y");
+        };
+
+        const onPointerMove = (event) => {
+            const dragState = dragStateRef.current;
+            if (!dragState) return;
+            const deltaCells = Math.round((event.clientY - dragState.startY) / GRID_CELL_HEIGHT);
+            const deltaIncrement = deltaCells - dragState.appliedCells;
+            if (!deltaIncrement) return;
+            controller.adjustActivityPaneSplit(-deltaIncrement);
+            dragState.appliedCells = deltaCells;
+        };
+
+        window.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", stopDragging);
+        window.addEventListener("pointercancel", stopDragging);
+
+        return () => {
+            window.removeEventListener("pointermove", onPointerMove);
+            window.removeEventListener("pointerup", stopDragging);
+            window.removeEventListener("pointercancel", stopDragging);
+            document.body.classList.remove("is-resizing-pane-y");
+        };
+    }, [controller, dragging]);
+
+    return React.createElement("button", {
+        type: "button",
+        className: `ps-row-resizer${dragging ? " is-dragging" : ""}`,
+        title: "Drag to resize the activity pane. Double-click to reset.",
+        "aria-label": "Resize activity pane",
+        onPointerDown: (event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            dragStateRef.current = {
+                startY: event.clientY,
+                appliedCells: 0,
+            };
+            setDragging(true);
+            document.body.classList.add("is-resizing-pane-y");
+        },
+        onDoubleClick: () => {
+            if (!activityPaneAdjust) return;
+            controller.adjustActivityPaneSplit(-activityPaneAdjust);
+        },
+        onKeyDown: (event) => {
+            if (event.key === "ArrowUp") {
+                event.preventDefault();
+                controller.adjustActivityPaneSplit(1);
+                return;
+            }
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                controller.adjustActivityPaneSplit(-1);
             }
         },
     },
@@ -3021,7 +3135,8 @@ function useKeyboardShortcuts(
 export function createWebPilotSwarmController({ transport, mode = "remote", branding = null } = {}) {
     const themeId = readStoredThemeId();
     const sessionOwnerFilter = readStoredSessionOwnerFilter();
-    const store = createStore(appReducer, createInitialState({ mode, branding, themeId, sessionOwnerFilter }));
+    const layoutAdjustments = readStoredLayoutAdjustments();
+    const store = createStore(appReducer, createInitialState({ mode, branding, themeId, sessionOwnerFilter, layoutAdjustments }));
     return new PilotSwarmUiController({ store, transport });
 }
 
@@ -3039,6 +3154,7 @@ export function PilotSwarmWebApp({ controller }) {
         promptRows: getStatePromptRows(rootState),
         paneAdjust: rootState.ui.layout?.paneAdjust ?? 0,
         sessionPaneAdjust: rootState.ui.layout?.sessionPaneAdjust ?? 0,
+        activityPaneAdjust: rootState.ui.layout?.activityPaneAdjust ?? 0,
         focusRegion: rootState.ui.focusRegion,
         inspectorTab: rootState.ui.inspectorTab,
         filesFullscreen: Boolean(rootState.files.fullscreen),
@@ -3083,6 +3199,14 @@ export function PilotSwarmWebApp({ controller }) {
     }, [chatFocusMode]);
 
     React.useEffect(() => {
+        writeStoredLayoutAdjustments({
+            paneAdjust: state.paneAdjust,
+            sessionPaneAdjust: state.sessionPaneAdjust,
+            activityPaneAdjust: state.activityPaneAdjust,
+        });
+    }, [state.activityPaneAdjust, state.paneAdjust, state.sessionPaneAdjust]);
+
+    React.useEffect(() => {
         if (mobile && state.focusRegion !== "prompt") {
             setMobilePane(state.focusRegion === "activity"
                 ? "activity"
@@ -3100,8 +3224,8 @@ export function PilotSwarmWebApp({ controller }) {
     }, [controller, state.inspectorTab]);
 
     const layout = React.useMemo(
-        () => computeLegacyLayout(gridViewport, state.paneAdjust, state.promptRows, state.sessionPaneAdjust),
-        [gridViewport, state.paneAdjust, state.promptRows, state.sessionPaneAdjust],
+        () => computeLegacyLayout(gridViewport, state.paneAdjust, state.promptRows, state.sessionPaneAdjust, state.activityPaneAdjust),
+        [gridViewport, state.activityPaneAdjust, state.paneAdjust, state.promptRows, state.sessionPaneAdjust],
     );
     const filesFullscreenActive = state.filesFullscreen && state.inspectorTab === "files";
 
@@ -3147,10 +3271,27 @@ export function PilotSwarmWebApp({ controller }) {
     React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust }),
     React.createElement("div", {
         className: "ps-workspace-column",
-        style: { gridTemplateRows: `${layout.inspectorPaneHeight}fr ${layout.activityPaneHeight}fr` },
+        style: { gridTemplateRows: `${layout.inspectorPaneHeight}fr 16px ${layout.activityPaneHeight}fr` },
     },
-    React.createElement(InspectorPane, { controller, mobile: false }),
-    React.createElement(ActivityPane, { controller })));
+    React.createElement("div", {
+        className: "ps-workspace-pane-slot",
+        style: { gridRow: "1" },
+    },
+        !layout.inspectorHidden ? React.createElement(InspectorPane, { controller, mobile: false }) : null),
+    React.createElement("div", {
+        style: {
+            gridRow: "2",
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+        },
+    },
+        React.createElement(ActivityRowResizeHandle, { controller, activityPaneAdjust: state.activityPaneAdjust })),
+    React.createElement("div", {
+        className: "ps-workspace-pane-slot",
+        style: { gridRow: "3" },
+    },
+        !layout.activityHidden ? React.createElement(ActivityPane, { controller }) : null)));
     const chatFocusWorkspace = React.createElement(ChatFocusWorkspace, {
         controller,
         openPane: chatFocusPane,

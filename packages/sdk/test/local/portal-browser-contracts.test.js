@@ -67,6 +67,7 @@ describe("portal browser contracts", () => {
         const sharedTui = readRepoFile("packages/ui-react/src/components.js");
         const cliPlatform = readRepoFile("packages/cli/src/platform.js");
         const cliApp = readRepoFile("packages/cli/src/app.js");
+        const cliIndex = readRepoFile("packages/cli/src/index.js");
         const layout = readRepoFile("packages/ui-core/src/layout.js");
         const state = readRepoFile("packages/ui-core/src/state.js");
         const selectors = readRepoFile("packages/ui-core/src/selectors.js");
@@ -83,6 +84,9 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "controller.uploadArtifactFiles(nextFiles)", "portal uploads should flow through the shared artifact-upload controller path");
         assert(!webApp.includes("controller.uploadPromptAttachmentFiles(nextFiles)"), "prompt composer should no longer own browser artifact uploads");
         assertIncludes(webApp, "document.cookie =", "portal theme persistence should be cookie-backed");
+        assertIncludes(webApp, 'const LAYOUT_STORAGE_KEY = "pilotswarm.layoutAdjustments"', "portal should define a dedicated storage key for persisted pane sizes");
+        assertIncludes(webApp, "readStoredLayoutAdjustments()", "portal controller bootstrap should restore persisted pane sizes");
+        assertIncludes(webApp, "writeStoredLayoutAdjustments({", "portal should persist pane-size adjustments when they change");
         assertIncludes(webApp, "supportsArtifactBrowser(controller)", "portal should keep the artifact browser available when transport-backed artifacts exist");
         assertIncludes(webApp, '}, "Delete")', "portal files pane should surface artifact deletion directly from the viewer");
         assertIncludes(webApp, "Keyboard Shortcuts", "portal should render a dedicated keybinding legend");
@@ -112,13 +116,18 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, 'type: "code"', "portal chat renderer should recognize code fence blocks");
         assertIncludes(webApp, "ps-chat-code-block", "portal chat renderer should render code fences with a dedicated code block style");
         assertIncludes(webApp, "controller.adjustSessionPaneSplit", "web app should support resizing the session list vertically");
+        assertIncludes(webApp, "controller.adjustActivityPaneSplit", "web app should support resizing the inspector/activity split vertically");
         assertIncludes(layout, "sessionPaneAdjust", "layout computation should persist vertical session-pane adjustments");
+        assertIncludes(state, "normalizeStoredLayoutAdjustments", "shared state should normalize persisted pane-size adjustments");
         assertIncludes(state, "themeId: themeId || DEFAULT_THEME_ID", "shared initial state should honor persisted theme ids");
+        assertIncludes(state, "...initialLayoutAdjustments", "shared initial state should hydrate persisted pane-size adjustments into ui.layout");
         assertIncludes(state, "followBottom:", "shared UI state should track follow-bottom scroll mode for live panes");
         assertIncludes(sharedTui, "buildSessionTitleRightRuns", "shared TUI shell should compose RSS and version chrome");
         assertIncludes(sharedTui, 'title: [{ text: "Sessions", color: "yellow", bold: true }]', "terminal host should keep the Sessions title data plain while the TUI pane chrome stays unhighlighted");
         assert(!cliPlatform.includes('activeHighlightBackground'), "terminal pane chrome should not tint the title row background");
         assertIncludes(cliApp, "PILOTSWARM_CLI_VERSION_LABEL", "TUI host should pass its version label into the shared app");
+        assertIncludes(cliIndex, "layoutAdjustments: userConfig.layoutAdjustments", "native TUI should restore persisted pane sizes from its config file");
+        assertIncludes(cliIndex, "patch.layoutAdjustments = currentLayoutAdjustments", "native TUI should persist pane-size adjustments back to its config file");
         assertIncludes(css, "linear-gradient(", "portal panels should paint the full header strip with a card-like gradient");
         assertIncludes(css, "border-bottom: 1px solid color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 28%, transparent);", "portal panels should separate the painted header strip from the pane body");
         assertIncludes(css, "min-height: 30px;", "portal panels should keep the card header compact");

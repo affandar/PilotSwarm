@@ -53,6 +53,8 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - In the files inspector, `x` deletes the selected artifact after confirmation; keep terminal and portal behavior aligned.
 - In the native TUI, the files inspector should render inside the standard outer inspector shell rather than introducing a second files-specific top-level shell.
 - In the portal inspector, reserve a consistent header row height so tabs with header actions and tabs without them start their tab strip at the same vertical position; keep inspector tab/action buttons compact rather than oversized.
+- In the portal desktop workspace, both split boundaries are resizable: the main column divider and the inspector/activity divider. Keep the right-column activity pane slightly taller by default than the historical 28% split, preserve double-click reset plus arrow-key resizing on the drag handle, collapse either inspector or activity completely once the divider is pushed far enough toward one edge, and keep the divider visible so a collapsed pane can be dragged back open.
+- Persist pane split adjustments across restarts in the same user-preference surfaces that already store theme and owner-filter state: browser storage for the portal, config file for the native TUI.
 
 ## Keybinding Rule
 

@@ -215,6 +215,7 @@ function fitText(value, maxWidth) {
 function buildWorkspacePaneFrames(layout) {
     const leftX = 0;
     const rightX = layout.leftHidden ? 0 : layout.leftWidth + (layout.rightHidden ? 0 : PANE_GAP_X);
+    const activityY = layout.inspectorHidden ? 0 : layout.inspectorPaneHeight + PANE_GAP_Y;
 
     return {
         sessions: layout.leftHidden ? null : {
@@ -229,15 +230,15 @@ function buildWorkspacePaneFrames(layout) {
             width: layout.leftWidth,
             height: layout.chatPaneHeight,
         },
-        inspector: layout.rightHidden ? null : {
+        inspector: layout.rightHidden || layout.inspectorHidden ? null : {
             x: rightX,
             y: 0,
             width: layout.rightWidth,
             height: layout.inspectorPaneHeight,
         },
-        activity: layout.rightHidden ? null : {
+        activity: layout.rightHidden || layout.activityHidden ? null : {
             x: rightX,
-            y: layout.inspectorPaneHeight + PANE_GAP_Y,
+            y: activityY,
             width: layout.rightWidth,
             height: layout.activityPaneHeight,
         },
@@ -1488,7 +1489,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
     const viewportWidth = layoutState.viewportWidth;
     const viewportHeight = layoutState.viewportHeight;
     const layout = React.useMemo(
-        () => computeLegacyLayout({ width: viewportWidth, height: viewportHeight }, layoutState.paneAdjust, layoutState.promptRows, 0, layoutState.fullscreenPane),
+        () => computeLegacyLayout({ width: viewportWidth, height: viewportHeight }, layoutState.paneAdjust, layoutState.promptRows, 0, 0, layoutState.fullscreenPane),
         [layoutState.fullscreenPane, layoutState.paneAdjust, layoutState.promptRows, viewportHeight, viewportWidth],
     );
     const frames = buildWorkspacePaneFrames(layout);
@@ -1571,13 +1572,13 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
                         }),
                     ),
                     !layout.rightHidden && React.createElement(platform.Column, { key: "right", width: layout.rightWidth, flexGrow: 0 },
-                        React.createElement(InspectorPane, {
+                        !layout.inspectorHidden && React.createElement(InspectorPane, {
                             controller,
                             width: layout.rightWidth,
                             height: layout.inspectorPaneHeight,
                             frame: frames.inspector,
                         }),
-                        React.createElement(ActivityPane, {
+                        !layout.activityHidden && React.createElement(ActivityPane, {
                             controller,
                             width: layout.rightWidth,
                             height: layout.activityPaneHeight,

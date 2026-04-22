@@ -35,6 +35,20 @@ describe("theme picker UI behavior", () => {
         assertEqual(state.ui.themeId, "noctis-viola", "initial state should honor a persisted theme id");
     });
 
+    it("honors persisted pane split adjustments during initial state creation", () => {
+        const state = createInitialState({
+            mode: "local",
+            layoutAdjustments: {
+                paneAdjust: 7,
+                sessionPaneAdjust: -3,
+                activityPaneAdjust: 5,
+            },
+        });
+        assertEqual(state.ui.layout.paneAdjust, 7, "initial state should honor a persisted left/right pane split");
+        assertEqual(state.ui.layout.sessionPaneAdjust, -3, "initial state should honor a persisted session/chat pane split");
+        assertEqual(state.ui.layout.activityPaneAdjust, 5, "initial state should honor a persisted inspector/activity pane split");
+    });
+
     it("opens the shared theme picker with the current theme preselected", async () => {
         const { controller, store } = createController();
 

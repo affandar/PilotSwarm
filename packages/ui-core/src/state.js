@@ -64,8 +64,23 @@ export function findArtifactEntry(entries, filename) {
     return normalizeArtifactEntries(entries).find((entry) => entry.filename === target) || null;
 }
 
-export function createInitialState({ mode = "local", branding = null, themeId = null, sessionOwnerFilter = null } = {}) {
+export function normalizeStoredLayoutAdjustments(layoutAdjustments) {
+    const candidate = layoutAdjustments && typeof layoutAdjustments === "object"
+        ? layoutAdjustments
+        : {};
+    const paneAdjust = Number(candidate.paneAdjust);
+    const sessionPaneAdjust = Number(candidate.sessionPaneAdjust);
+    const activityPaneAdjust = Number(candidate.activityPaneAdjust);
+    return {
+        paneAdjust: Number.isFinite(paneAdjust) ? Math.trunc(paneAdjust) : 0,
+        sessionPaneAdjust: Number.isFinite(sessionPaneAdjust) ? Math.trunc(sessionPaneAdjust) : 0,
+        activityPaneAdjust: Number.isFinite(activityPaneAdjust) ? Math.trunc(activityPaneAdjust) : 0,
+    };
+}
+
+export function createInitialState({ mode = "local", branding = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null } = {}) {
     const hasStoredSessionOwnerFilter = sessionOwnerFilter != null;
+    const initialLayoutAdjustments = normalizeStoredLayoutAdjustments(layoutAdjustments);
     return {
         branding: branding || {
             title: "PilotSwarm",
@@ -88,8 +103,7 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             modal: null,
             fullscreenPane: null,
             layout: {
-                paneAdjust: 0,
-                sessionPaneAdjust: 0,
+                ...initialLayoutAdjustments,
                 viewportWidth: 120,
                 viewportHeight: 40,
             },

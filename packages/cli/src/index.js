@@ -118,6 +118,7 @@ export async function startTuiApp(config) {
         branding: config.branding,
         themeId: userConfig.themeId,
         sessionOwnerFilter: userConfig.sessionOwnerFilter,
+        layoutAdjustments: userConfig.layoutAdjustments,
     }));
     const controller = new PilotSwarmUiController({ store, transport });
     let tuiApp;
@@ -205,11 +206,22 @@ export async function startTuiApp(config) {
     // Persist theme changes to config file
     let lastPersistedThemeId = store.getState().ui.themeId;
     let lastPersistedSessionOwnerFilter = JSON.stringify(store.getState().sessions.ownerFilter || null);
+    let lastPersistedLayoutAdjustments = JSON.stringify({
+        paneAdjust: store.getState().ui.layout?.paneAdjust || 0,
+        sessionPaneAdjust: store.getState().ui.layout?.sessionPaneAdjust || 0,
+        activityPaneAdjust: store.getState().ui.layout?.activityPaneAdjust || 0,
+    });
     store.subscribe(() => {
         const state = store.getState();
         const currentThemeId = state.ui.themeId;
         const currentSessionOwnerFilter = state.sessions.ownerFilter || null;
         const currentSessionOwnerFilterJson = JSON.stringify(currentSessionOwnerFilter);
+        const currentLayoutAdjustments = {
+            paneAdjust: state.ui.layout?.paneAdjust || 0,
+            sessionPaneAdjust: state.ui.layout?.sessionPaneAdjust || 0,
+            activityPaneAdjust: state.ui.layout?.activityPaneAdjust || 0,
+        };
+        const currentLayoutAdjustmentsJson = JSON.stringify(currentLayoutAdjustments);
         const patch = {};
         let changed = false;
 
@@ -222,6 +234,12 @@ export async function startTuiApp(config) {
         if (currentSessionOwnerFilterJson !== lastPersistedSessionOwnerFilter) {
             lastPersistedSessionOwnerFilter = currentSessionOwnerFilterJson;
             patch.sessionOwnerFilter = currentSessionOwnerFilter;
+            changed = true;
+        }
+
+        if (currentLayoutAdjustmentsJson !== lastPersistedLayoutAdjustments) {
+            lastPersistedLayoutAdjustments = currentLayoutAdjustmentsJson;
+            patch.layoutAdjustments = currentLayoutAdjustments;
             changed = true;
         }
 

@@ -439,6 +439,17 @@ button {
   overflow: hidden;
 }
 
+.ps-workspace-pane-slot {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ps-workspace-pane-slot > .ps-panel {
+  flex: 1;
+  min-height: 0;
+}
+
 .ps-chat-focus-shell {
   min-height: 0;
   height: 100%;

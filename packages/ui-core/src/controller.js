@@ -1211,6 +1211,7 @@ export class PilotSwarmUiController {
             state.ui.layout.paneAdjust,
             state.ui.promptRows ?? getPromptInputRows(state.ui.prompt),
             state.ui.layout.sessionPaneAdjust,
+            state.ui.layout.activityPaneAdjust,
             state.ui.fullscreenPane,
         );
         const maxRows = this.getSessionListMaxRows(layout);
@@ -1293,6 +1294,7 @@ export class PilotSwarmUiController {
                 state.ui.layout.paneAdjust,
                 state.ui.promptRows ?? getPromptInputRows(state.ui.prompt),
                 state.ui.layout.sessionPaneAdjust,
+                state.ui.layout.activityPaneAdjust,
                 state.ui.fullscreenPane,
             );
             const maxRows = this.getSessionListMaxRows(layout);
@@ -3275,6 +3277,7 @@ export class PilotSwarmUiController {
         overrides.paneAdjust ?? layoutState.paneAdjust ?? 0,
         overrides.promptRows ?? uiState.promptRows ?? getPromptInputRows(prompt),
         overrides.sessionPaneAdjust ?? layoutState.sessionPaneAdjust ?? 0,
+        overrides.activityPaneAdjust ?? layoutState.activityPaneAdjust ?? 0,
         overrides.fullscreenPane ?? uiState.fullscreenPane ?? null);
     }
 
@@ -3359,6 +3362,23 @@ export class PilotSwarmUiController {
             type: "ui/sessionPaneAdjust",
             sessionPaneAdjust: nextAdjust,
         });
+    }
+
+    adjustActivityPaneSplit(delta) {
+        const layoutState = this.getState().ui.layout || {};
+        const currentLayout = this.getCurrentLayout();
+        const bodyHeight = currentLayout.bodyHeight ?? (layoutState.viewportHeight ?? 40);
+        const nextAdjust = Math.max(-bodyHeight, Math.min(bodyHeight, (layoutState.activityPaneAdjust || 0) + delta));
+        this.dispatch({
+            type: "ui/activityPaneAdjust",
+            activityPaneAdjust: nextAdjust,
+        });
+        const nextLayout = this.getCurrentLayout({ activityPaneAdjust: nextAdjust });
+        const currentFocus = this.getState().ui.focusRegion;
+        const safeFocus = normalizeFocusRegion(currentFocus, nextLayout);
+        if (safeFocus !== currentFocus) {
+            this.setFocus(safeFocus);
+        }
     }
 
     nextInspectorTab() {
@@ -3611,7 +3631,7 @@ export class PilotSwarmUiController {
 
     getActivityRenderMetrics(state = this.getState()) {
         const layout = this.getCurrentLayout();
-        if (layout.rightHidden) {
+        if (layout.rightHidden || layout.activityHidden) {
             return {
                 contentWidth: 20,
                 contentHeight: 1,
@@ -3645,7 +3665,7 @@ export class PilotSwarmUiController {
 
     getInspectorRenderMetrics(state = this.getState()) {
         const layout = this.getCurrentLayout();
-        if (layout.rightHidden) {
+        if (layout.rightHidden || layout.inspectorHidden) {
             return {
                 contentWidth: 20,
                 contentHeight: 1,
@@ -3713,7 +3733,7 @@ export class PilotSwarmUiController {
 
     getFilePreviewRenderMetrics(state = this.getState()) {
         const layout = this.getCurrentLayout();
-        if (layout.rightHidden && !state.files?.fullscreen) {
+        if ((layout.rightHidden || layout.inspectorHidden) && !state.files?.fullscreen) {
             return {
                 contentWidth: 20,
                 contentHeight: 1,
