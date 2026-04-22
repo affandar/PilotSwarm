@@ -45,7 +45,16 @@ export type {
     FactsStatsRow,
     FactsNamespace,
 } from "./facts-store.js";
-export type { SessionStateStore, SessionMetadata, ArtifactStore } from "./session-store.js";
+export type {
+    SessionStateStore,
+    SessionMetadata,
+    ArtifactStore,
+    ArtifactMetadata,
+    ArtifactDownloadResult,
+    ArtifactUploadOptions,
+    ArtifactEncoding,
+    ArtifactSource,
+} from "./session-store.js";
 export type {
     PilotSwarmClientOptions,
     PilotSwarmWorkerOptions,

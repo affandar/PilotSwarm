@@ -18,6 +18,7 @@ import {
 import { parseTerminalMarkupRuns } from "./formatting.js";
 import {
     selectActiveArtifactLinks,
+    selectActiveHttpLinks,
     selectActivityPane,
     selectChatLines,
     selectFileBrowserItems,
@@ -29,6 +30,7 @@ import {
     selectSelectedFileBrowserItem,
     selectVisibleSessionRows,
 } from "./selectors.js";
+import { findArtifactEntry } from "./state.js";
 import { getTheme, listThemes } from "./themes/index.js";
 
 const ORCHESTRATION_STATS_REFRESH_MS = 20_000;
@@ -693,15 +695,46 @@ function truncateFilePreview(content, limit = FILE_PREVIEW_CHAR_LIMIT) {
     return `${text.slice(0, limit)}\n\n[Preview truncated at ${limit.toLocaleString()} characters. Open the artifact directly if you need the full file.]`;
 }
 
-function normalizePreviewPayload(filename, rawContent, contentType = "") {
+function formatPreviewBytes(value) {
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes < 0) return "?";
+    if (bytes < 1024) return `${Math.round(bytes)} B`;
+    if (bytes < 1024 * 1024) {
+        const kb = bytes / 1024;
+        return `${kb >= 10 ? Math.round(kb) : kb.toFixed(1)} KB`;
+    }
+    const mb = bytes / (1024 * 1024);
+    return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
+}
+
+function buildBinaryPreviewNote(filename, contentType = "", sizeBytes = null) {
+    const lines = [
+        `Preview is not available here for ${filename}.`,
+        "",
+    ];
+    if (contentType) {
+        lines.push(`Type: ${contentType}`);
+    }
+    if (sizeBytes != null) {
+        lines.push(`Size: ${formatPreviewBytes(sizeBytes)}`);
+    }
+    lines.push("Download the artifact to open it in the default app.");
+    return lines.join("\n");
+}
+
+function normalizePreviewPayload(filename, rawContent, contentType = "", metadata = null) {
     const normalizedType = String(contentType || "").toLowerCase();
     const ext = fileExtension(filename);
 
-    if (isBinaryPreview(filename, contentType)) {
+    if (metadata?.isBinary === true || isBinaryPreview(filename, contentType)) {
         return {
-            content: `Preview is not available in the terminal UI for ${filename}.\n\nThis artifact looks binary or non-text, so use the downloadable artifact instead.`,
-            contentType: contentType || "application/octet-stream",
+            content: buildBinaryPreviewNote(filename, metadata?.contentType || contentType, metadata?.sizeBytes ?? null),
+            contentType: metadata?.contentType || contentType || "application/octet-stream",
             renderMode: "note",
+            isBinary: true,
+            sizeBytes: metadata?.sizeBytes ?? null,
+            uploadedAt: metadata?.uploadedAt || "",
+            source: metadata?.source || "agent",
         };
     }
 
@@ -711,6 +744,10 @@ function normalizePreviewPayload(filename, rawContent, contentType = "") {
             content: truncatedText,
             contentType: contentType || "text/markdown",
             renderMode: "markdown",
+            isBinary: false,
+            sizeBytes: metadata?.sizeBytes ?? null,
+            uploadedAt: metadata?.uploadedAt || "",
+            source: metadata?.source || "agent",
         };
     }
 
@@ -1488,19 +1525,29 @@ export class PilotSwarmUiController {
 
         const current = this.getState().files.bySessionId[sessionId];
         const preview = current?.previews?.[filename];
+        let entry = findArtifactEntry(current?.entries, filename);
         if (!force && preview?.loading) return preview;
         if (!force && preview && (preview.content !== undefined || preview.error)) {
             return preview;
         }
 
+        if (!entry && typeof this.transport.getArtifactMetadata === "function") {
+            try {
+                entry = await this.transport.getArtifactMetadata(sessionId, filename);
+            } catch {
+                entry = null;
+            }
+        }
+
         this.dispatch({ type: "files/previewLoading", sessionId, filename });
         try {
-            const previewPayload = isBinaryPreview(filename)
-                ? normalizePreviewPayload(filename, "", "")
+            const previewPayload = entry?.isBinary === true
+                ? normalizePreviewPayload(filename, "", entry.contentType || "", entry)
                 : normalizePreviewPayload(
                     filename,
                     await this.transport.downloadArtifact(sessionId, filename),
-                    "",
+                    entry?.contentType || "",
+                    entry,
                 );
             this.dispatch({
                 type: "files/previewLoaded",
@@ -1520,7 +1567,7 @@ export class PilotSwarmUiController {
         }
     }
 
-    buildArtifactPickerItems(artifactLinks = []) {
+    buildArtifactPickerItems(artifactLinks = [], httpLinks = []) {
         const items = (artifactLinks || []).map((link) => ({
             id: `${link.sessionId}/${link.filename}`,
             kind: "artifact",
@@ -1528,7 +1575,18 @@ export class PilotSwarmUiController {
             filename: link.filename,
         }));
 
-        if (items.length > 1) {
+        for (const link of httpLinks || []) {
+            const href = String(link?.href || "").trim();
+            if (!href) continue;
+            items.push({
+                id: `url:${href}`,
+                kind: "url",
+                href,
+                text: String(link?.text || href).trim() || href,
+            });
+        }
+
+        if ((artifactLinks || []).length > 1) {
             items.push({
                 id: "__downloadAll__",
                 kind: "downloadAll",
@@ -1538,16 +1596,17 @@ export class PilotSwarmUiController {
         return items;
     }
 
-    buildArtifactPickerModal({ artifactLinks, previousFocus, selectedId } = {}) {
-        const items = this.buildArtifactPickerItems(artifactLinks);
+    buildArtifactPickerModal({ artifactLinks, httpLinks, previousFocus, selectedId } = {}) {
+        const items = this.buildArtifactPickerItems(artifactLinks, httpLinks);
         if (items.length === 0) return null;
         const selectedIndex = items.findIndex((item) => item.id === selectedId);
 
         return {
             type: "artifactPicker",
-            title: "Artifact Downloads",
+            title: "Linked Items",
             previousFocus,
             artifactLinks,
+            httpLinks,
             items,
             selectedIndex: selectedIndex >= 0 ? selectedIndex : 0,
             exportDirectory: typeof this.transport.getArtifactExportDirectory === "function"
@@ -1568,13 +1627,14 @@ export class PilotSwarmUiController {
 
         const nextModal = this.buildArtifactPickerModal({
             artifactLinks: modal.artifactLinks || [],
+            httpLinks: modal.httpLinks || [],
             previousFocus: modal.previousFocus,
             selectedId: selectedId || this.getArtifactPickerSelectionId(),
         });
 
         if (!nextModal) {
             this.dispatch({ type: "ui/modal", modal: null });
-            this.dispatch({ type: "ui/status", text: "No artifact links in the current chat view" });
+            this.dispatch({ type: "ui/status", text: "No linked artifacts or URLs in the current chat view" });
             return;
         }
 
@@ -1693,6 +1753,69 @@ export class PilotSwarmUiController {
         return download;
     }
 
+    async deleteSelectedArtifact({ confirmed = false } = {}) {
+        const state = this.getState();
+        const selectedItem = selectSelectedFileBrowserItem(state);
+        if (!selectedItem?.sessionId || !selectedItem?.filename) {
+            this.dispatch({ type: "ui/status", text: "No artifact selected" });
+            return false;
+        }
+
+        const scope = selectFilesScope(state);
+        const artifactLabel = scope === "allSessions"
+            ? `${shortSessionIdValue(selectedItem.sessionId)} ${selectedItem.filename}`
+            : selectedItem.filename;
+
+        if (!confirmed) {
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "confirm",
+                    title: "Delete Artifact",
+                    message: `Delete artifact "${artifactLabel}"? This action cannot be undone.`,
+                    confirmLabel: "Delete",
+                    action: "deleteArtifact",
+                    sessionId: selectedItem.sessionId,
+                    filename: selectedItem.filename,
+                    previousFocus: state.ui.focusRegion,
+                },
+            });
+            return false;
+        }
+
+        if (typeof this.transport.deleteArtifact !== "function") {
+            this.dispatch({ type: "ui/status", text: "Artifact deletion is not supported by this transport" });
+            return false;
+        }
+
+        try {
+            await this.transport.deleteArtifact(selectedItem.sessionId, selectedItem.filename);
+            this.dispatch({
+                type: "files/deleted",
+                sessionId: selectedItem.sessionId,
+                filename: selectedItem.filename,
+            });
+            await this.ensureFilesForSession(selectedItem.sessionId, { force: true }).catch(() => null);
+            const nextSelectedItem = selectSelectedFileBrowserItem(this.getState());
+            if (nextSelectedItem?.sessionId && nextSelectedItem?.filename) {
+                await this.ensureFilePreview(nextSelectedItem.sessionId, nextSelectedItem.filename).catch(() => null);
+            }
+            this.dispatch({
+                type: "ui/status",
+                text: scope === "allSessions"
+                    ? `Deleted ${shortSessionIdValue(selectedItem.sessionId)} ${selectedItem.filename}`
+                    : `Deleted ${selectedItem.filename}`,
+            });
+            return true;
+        } catch (error) {
+            this.dispatch({
+                type: "ui/status",
+                text: `Delete failed: ${error?.message || String(error)}`,
+            });
+            return false;
+        }
+    }
+
     async openArtifactPicker() {
         const state = this.getState();
         const activeSessionId = state.sessions.activeSessionId;
@@ -1702,8 +1825,9 @@ export class PilotSwarmUiController {
         }
 
         const artifactLinks = selectActiveArtifactLinks(state);
-        if (artifactLinks.length === 0) {
-            this.dispatch({ type: "ui/status", text: "No artifact links in the current chat view" });
+        const httpLinks = selectActiveHttpLinks(state);
+        if (artifactLinks.length === 0 && httpLinks.length === 0) {
+            this.dispatch({ type: "ui/status", text: "No linked artifacts or URLs in the current chat view" });
             return;
         }
 
@@ -1713,17 +1837,18 @@ export class PilotSwarmUiController {
             : null;
         const nextModal = this.buildArtifactPickerModal({
             artifactLinks,
+            httpLinks,
             previousFocus: state.ui.focusRegion,
             selectedId: preferredSelectedId,
         });
 
         if (!nextModal) {
-            this.dispatch({ type: "ui/status", text: "No artifact links in the current chat view" });
+            this.dispatch({ type: "ui/status", text: "No linked artifacts or URLs in the current chat view" });
             return;
         }
 
         this.dispatch({ type: "ui/modal", modal: nextModal });
-        this.dispatch({ type: "ui/status", text: "Select a linked artifact and press Enter to download" });
+        this.dispatch({ type: "ui/status", text: "Select a linked item and press Enter to open or download it" });
     }
 
     async downloadArtifactModalSelection() {
@@ -1732,6 +1857,25 @@ export class PilotSwarmUiController {
 
         const selectedItem = modal.items?.[modal.selectedIndex || 0];
         if (!selectedItem) return;
+
+        if (selectedItem.kind === "url") {
+            if (typeof this.transport.openUrlInDefaultBrowser !== "function") {
+                this.dispatch({ type: "ui/status", text: "Opening URLs is not supported by this transport" });
+                return;
+            }
+
+            this.dispatch({
+                type: "ui/status",
+                text: `Opening ${selectedItem.href}...`,
+            });
+            await this.transport.openUrlInDefaultBrowser(selectedItem.href);
+            this.replaceArtifactPickerModal(selectedItem.id);
+            this.dispatch({
+                type: "ui/status",
+                text: `Opened ${selectedItem.href}`,
+            });
+            return;
+        }
 
         if (selectedItem.kind === "downloadAll") {
             const pending = (modal.items || []).filter((item) => {
@@ -2771,6 +2915,8 @@ export class PilotSwarmUiController {
                 await this.completeActiveSession("Completed by user", { confirmed: true });
             } else if (modal.action === "deleteSession") {
                 await this.deleteActiveSession({ confirmed: true });
+            } else if (modal.action === "deleteArtifact") {
+                await this.deleteSelectedArtifact({ confirmed: true });
             }
             return;
         }
@@ -4008,6 +4154,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.DOWNLOAD_SELECTED_FILE:
                 await this.downloadSelectedArtifact();
+                return;
+            case UI_COMMANDS.DELETE_SELECTED_FILE:
+                await this.deleteSelectedArtifact();
                 return;
             case UI_COMMANDS.OPEN_SELECTED_FILE:
                 await this.openSelectedFileInDefaultApp();

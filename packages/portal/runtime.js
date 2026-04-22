@@ -153,6 +153,10 @@ export class PortalRuntime {
                 return this.transport.listModels();
             case "listArtifacts":
                 return this.transport.listArtifacts(safeParams.sessionId);
+            case "getArtifactMetadata":
+                return this.transport.getArtifactMetadata(safeParams.sessionId, safeParams.filename);
+            case "deleteArtifact":
+                return this.transport.deleteArtifact(safeParams.sessionId, safeParams.filename);
             case "downloadArtifact":
                 return this.transport.downloadArtifact(safeParams.sessionId, safeParams.filename);
             case "uploadArtifact":
@@ -161,6 +165,7 @@ export class PortalRuntime {
                     safeParams.filename,
                     safeParams.content,
                     safeParams.contentType,
+                    safeParams.contentEncoding,
                 );
             case "exportExecutionHistory":
                 return this.transport.exportExecutionHistory(safeParams.sessionId);
@@ -184,6 +189,29 @@ export class PortalRuntime {
     async downloadArtifact(sessionId, filename) {
         await this.start();
         return this.transport.downloadArtifact(sessionId, filename);
+    }
+
+    async getArtifactMetadata(sessionId, filename) {
+        await this.start();
+        if (typeof this.transport.getArtifactMetadata !== "function") return null;
+        return this.transport.getArtifactMetadata(sessionId, filename);
+    }
+
+    async downloadArtifactBinary(sessionId, filename) {
+        await this.start();
+        if (typeof this.transport.downloadArtifactBinary === "function") {
+            return this.transport.downloadArtifactBinary(sessionId, filename);
+        }
+        const content = await this.transport.downloadArtifact(sessionId, filename);
+        return {
+            filename,
+            contentType: "text/plain",
+            isBinary: false,
+            sizeBytes: Buffer.byteLength(content, "utf8"),
+            uploadedAt: new Date().toISOString(),
+            source: "agent",
+            body: Buffer.from(content, "utf8"),
+        };
     }
 
     subscribeSession(sessionId, handler) {

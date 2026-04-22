@@ -9,6 +9,7 @@ import {
     buildMessageCardLines,
     decorateArtifactLinksForChat,
     extractArtifactLinks,
+    extractHttpLinks,
     formatDisplayDateTime,
     formatHumanDurationSeconds,
     formatTimestamp,
@@ -24,6 +25,7 @@ import {
     getContextListBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { normalizeArtifactEntries } from "./state.js";
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
@@ -53,6 +55,21 @@ export function buildActiveHighlightLine(text, { color = ACTIVE_HIGHLIGHT_FOREGR
         backgroundColor: ACTIVE_HIGHLIGHT_BACKGROUND,
         bold,
     };
+}
+
+function buildPaneTitleRuns(text, color) {
+    return [{
+        text: String(text || ""),
+        color,
+        bold: true,
+    }];
+}
+
+const COMPACT_PANE_TITLE_METADATA_WIDTH = 72;
+
+function shouldCompactPaneTitleMetadata(width) {
+    const safeWidth = Number(width) || 0;
+    return safeWidth > 0 && safeWidth <= COMPACT_PANE_TITLE_METADATA_WIDTH;
 }
 
 function getSessionVisualStatus(session) {
@@ -1101,15 +1118,36 @@ export function selectActiveArtifactLinks(state) {
     return links;
 }
 
-export function selectChatPaneChrome(state) {
+export function selectActiveHttpLinks(state) {
+    const messages = selectActiveChat(state);
+    const links = [];
+    const seen = new Set();
+
+    for (const message of messages || []) {
+        for (const link of extractHttpLinks(message?.text || "")) {
+            const href = String(link.href || "").trim();
+            if (!href || seen.has(href)) continue;
+            seen.add(href);
+            links.push({
+                href,
+                text: String(link.text || href).trim() || href,
+            });
+        }
+    }
+
+    return links;
+}
+
+export function selectChatPaneChrome(state, options = {}) {
     const session = selectActiveSession(state);
     const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
     const visibleDescendantCounts = getVisibleDescendantCounts(state.sessions.flat, state.sessions.byId);
+    const compactSecondaryMeta = shouldCompactPaneTitleMetadata(options?.width);
 
     if (!session) {
         return {
             color: "cyan",
-            title: [{ text: "Chat", color: "cyan", bold: true }],
+            title: buildPaneTitleRuns("Chat", "cyan"),
             titleRight: null,
             animateTitleRight: false,
         };
@@ -1117,13 +1155,12 @@ export function selectChatPaneChrome(state) {
 
     const shortId = shortSessionId(session.sessionId);
     const mainColor = session.isSystem ? "yellow" : "cyan";
-    const title = [{
-        text: session.isSystem
+    const title = buildPaneTitleRuns(
+        session.isSystem
             ? `≈ ${canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")}`
             : (session.title || "Chat"),
-        color: mainColor,
-        bold: true,
-    }];
+        mainColor,
+    );
 
     const activeEntry = state.sessions.flat.find((entry) => entry.sessionId === session.sessionId);
     const collapseBadge = getCollapseBadge(session.sessionId, activeEntry, totalDescendantCounts, visibleDescendantCounts);
@@ -1131,7 +1168,9 @@ export function selectChatPaneChrome(state) {
         title.push({ text: ` ${collapseBadge.text}`, color: collapseBadge.color });
     }
 
-    title.push({ text: ` [${shortId}]`, color: "gray" });
+    if (!compactSecondaryMeta) {
+        title.push({ text: ` [${shortId}]`, color: "gray" });
+    }
 
     const history = state.history?.bySessionId?.get(session.sessionId) || null;
     const progress = buildLiveProgressState(session, history, history?.chat || []);
@@ -1151,7 +1190,7 @@ export function selectChatPaneChrome(state) {
         title.push({ text: ` ${compactionBadge.text}`, color: "gray" });
     }
 
-    if (state.ui.inspectorTab === "sequence" || state.ui.inspectorTab === "nodes") {
+    if (!compactSecondaryMeta && (state.ui.inspectorTab === "sequence" || state.ui.inspectorTab === "nodes")) {
         title.push({ text: " [last 5m window]", color: "gray" });
     }
 
@@ -1173,7 +1212,7 @@ export function selectActiveActivity(state) {
 export function selectActivityPane(state, maxLines = 12) {
     const activity = selectActiveActivity(state);
     const session = selectActiveSession(state);
-    const title = [{ text: "Activity", color: "gray", bold: true }];
+    const title = buildPaneTitleRuns("Activity", "gray");
 
     if (session?.statusVersion != null) {
         title.push({
@@ -1412,14 +1451,14 @@ export function selectFileBrowserItems(state) {
 
     const items = [];
     for (const sessionId of orderedSessionIds) {
-        const entries = Array.isArray(state.files?.bySessionId?.[sessionId]?.entries)
-            ? state.files.bySessionId[sessionId].entries
-            : [];
-        for (const filename of entries) {
+        const entries = normalizeArtifactEntries(state.files?.bySessionId?.[sessionId]?.entries);
+        for (const entry of entries) {
+            const filename = entry.filename;
             items.push({
                 id: `${sessionId}/${filename}`,
                 sessionId,
                 filename,
+                entry,
                 label: showSessionPrefixes
                     ? `[${shortSessionId(sessionId)}] ${filename}`
                     : filename,
@@ -1479,6 +1518,7 @@ export function selectFilesView(state, options = {}) {
     const previewState = selectedItem?.sessionId && selectedFilename
         ? state.files?.bySessionId?.[selectedItem.sessionId]?.previews?.[selectedFilename] || null
         : null;
+    const previewArtifact = previewState || selectedItem?.entry || null;
     const shortId = session ? shortSessionId(session.sessionId) : "";
     const scopedSessionIds = selectFileSessionIdsForScope(state, scope);
     const subtreeScope = scope !== "allSessions" && scopedSessionIds.some((id) => id && id !== sessionId);
@@ -1593,8 +1633,10 @@ export function selectFilesView(state, options = {}) {
                 : []),
             ...(previewState?.renderMode === "markdown"
                 ? [{ text: " [md]", color: "gray" }]
-                : previewState?.renderMode === "note"
-                    ? [{ text: " [note]", color: "gray" }]
+                : previewState?.isBinary === true
+                    ? [{ text: " [file]", color: "gray" }]
+                    : previewState?.renderMode === "note"
+                        ? [{ text: " [note]", color: "gray" }]
                     : []),
         ];
         previewLines = previewState?.renderMode === "markdown"
@@ -1636,6 +1678,10 @@ export function selectFilesView(state, options = {}) {
         previewContent: previewState?.content || "",
         previewContentType: previewState?.contentType || "",
         previewRenderMode: previewState?.renderMode || null,
+        previewIsBinary: previewArtifact?.isBinary === true,
+        previewSizeBytes: previewArtifact?.sizeBytes ?? null,
+        previewUploadedAt: previewArtifact?.uploadedAt || "",
+        previewSource: previewArtifact?.source || null,
         previewError: previewState?.error || null,
         previewLoading: Boolean(previewState?.loading),
         previewScrollOffset: state.ui.scroll.filePreview || 0,
@@ -1649,7 +1695,7 @@ export function selectFilesView(state, options = {}) {
                 ]
                 : []),
             ...(showHints
-                ? [{ text: "  [f filter] [u upload] [a download] [o open] [v/esc close fullscreen]", color: "gray" }]
+                ? [{ text: "  [f filter] [u upload] [a download] [x delete] [o open] [v/esc close fullscreen]", color: "gray" }]
                 : []),
         ],
     };
@@ -1674,8 +1720,8 @@ export function selectStatusBar(state) {
     }
     if (state.ui.modal?.type === "artifactPicker") {
         return {
-            left: "Select a linked artifact to download",
-            right: "up/down move · enter download · a/esc close",
+            left: "Select a linked artifact or URL",
+            right: "up/down move · enter open/download · a/esc close",
         };
     }
     if (state.ui.modal?.type === "modelPicker") {
@@ -1715,20 +1761,20 @@ export function selectStatusBar(state) {
         };
     }
     const hints = {
-        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · f filter · d done · D delete · r refresh · t title · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt`,
-        [FOCUS_REGIONS.CHAT]: `j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · f filter · d done · D delete · r refresh · t title · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.CHAT]: `j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
-            ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] side pane · T themes · a linked artifacts · drag copy · tab next pane`
+            ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] side pane · T themes · a linked items · drag copy · tab next pane`
             : state.ui.inspectorTab === "stats"
                 ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f cycle session/fleet/users · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · m next tab · tab next pane`
             : state.ui.inspectorTab === "files"
                 ? state.files?.fullscreen
-                    ? "j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f filter · u/ctrl-a upload · a download · o open · d done · v/esc close fullscreen · left/right tab · {/} session pane · [/] side pane · T themes · tab next pane"
-                    : "j/k files · ctrl-u/ctrl-d page preview · g/G preview top/bottom · f filter · u/ctrl-a upload · a download · o open · d done · v fullscreen · left/right tab · {/} session pane · [/] side pane · T themes · tab next pane"
+                    ? "a download · x delete · u/ctrl-a upload · o open · f filter · j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · v/esc close fullscreen · left/right tab · {/} session pane · [/] side pane · T themes · tab next pane"
+                    : "j/k files · a download · x delete · u/ctrl-a upload · o open · f filter · ctrl-u/ctrl-d page preview · g/G preview top/bottom · d done · v fullscreen · left/right tab · {/} session pane · [/] side pane · T themes · tab next pane"
                 : state.ui.inspectorTab === "history"
                     ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f format · r refresh · a save artifact · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · m next tab · tab next pane`
-                    : `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · h/l focus · a linked artifacts · drag copy · m next tab · tab next pane`,
-        [FOCUS_REGIONS.ACTIVITY]: `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked artifacts · drag copy · h left · tab next pane`,
+                    : `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · h/l focus · a linked items · drag copy · m next tab · tab next pane`,
+        [FOCUS_REGIONS.ACTIVITY]: `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · h left · tab next pane`,
         [FOCUS_REGIONS.PROMPT]: hasPendingQuestion
             ? `type answer · enter reply · alt-enter newline · T themes · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
             : `type message · enter send · alt-enter newline · T themes · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
@@ -2966,6 +3012,7 @@ export function selectArtifactPickerModal(state, maxWidth = 88) {
     const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
     const contentWidth = Math.max(28, maxWidth - 4);
     const artifactItems = items.filter((item) => item.kind === "artifact");
+    const linkItems = items.filter((item) => item.kind === "url");
     const downloadedCount = artifactItems.reduce((count, item) => {
         const download = state.files?.bySessionId?.[item.sessionId]?.downloads?.[item.filename];
         return count + (download?.localPath ? 1 : 0);
@@ -2979,6 +3026,14 @@ export function selectArtifactPickerModal(state, maxWidth = 88) {
                 { text: "dl ", color: "cyan", bold: true },
                 { text: "Download All", color: "white", bold: true },
                 { text: ` [${pendingCount} pending]`, color: "gray" },
+            ], contentWidth);
+        } else if (item.kind === "url") {
+            runs = fitRuns([
+                { text: "go ", color: "cyan", bold: true },
+                { text: item.text && item.text !== item.href ? item.text : item.href, color: "white", bold: true },
+                ...(item.text && item.text !== item.href
+                    ? [{ text: ` ${item.href}`, color: "gray" }]
+                    : []),
             ], contentWidth);
         } else {
             const download = state.files?.bySessionId?.[item.sessionId]?.downloads?.[item.filename];
@@ -2998,15 +3053,24 @@ export function selectArtifactPickerModal(state, maxWidth = 88) {
     });
 
     const selectedItem = items[selectedIndex] || null;
-    let detailsLines = [[{ text: "No artifact selected.", color: "gray" }]];
+    let detailsLines = [[{ text: "No linked item selected.", color: "gray" }]];
     if (selectedItem?.kind === "downloadAll") {
         detailsLines = [
             [{ text: `${artifactItems.length} artifacts available`, color: "white", bold: true }],
+            ...(linkItems.length > 0 ? [[{ text: `${linkItems.length} links available`, color: "gray" }]] : []),
             [{ text: `${downloadedCount} already downloaded`, color: "gray" }],
             [{ text: `${pendingCount} pending download`, color: "gray" }],
             ...(modal.exportDirectory ? [[{ text: `Save location: ${modal.exportDirectory}`, color: "white" }]] : []),
             [{ text: "", color: "gray" }],
             [{ text: "Press Enter to download all pending artifacts.", color: "white" }],
+            [{ text: "Press a or Esc to close the picker.", color: "gray" }],
+        ];
+    } else if (selectedItem?.kind === "url") {
+        detailsLines = [
+            [{ text: selectedItem.text || selectedItem.href, color: "white", bold: true }],
+            [{ text: selectedItem.href, color: "gray" }],
+            [{ text: "", color: "gray" }],
+            [{ text: "Press Enter to open this link in the browser.", color: "white" }],
             [{ text: "Press a or Esc to close the picker.", color: "gray" }],
         ];
     } else if (selectedItem?.kind === "artifact") {
@@ -3032,11 +3096,12 @@ export function selectArtifactPickerModal(state, maxWidth = 88) {
     }
 
     return {
-        title: modal.title || "Artifact Downloads",
-        rows: rows.length > 0 ? rows : [{ text: "No artifacts available.", color: "gray" }],
+        title: modal.title || "Linked Items",
+        rows: rows.length > 0 ? rows : [{ text: "No linked items available.", color: "gray" }],
         selectedRowIndex: selectedIndex,
-        detailsTitle: "Artifact Details",
+        detailsTitle: "Linked Item Details",
         detailsLines,
+        confirmLabel: linkItems.length > 0 ? (artifactItems.length > 0 ? "Open / Download" : "Open") : "Download",
         idealWidth: Math.min(
             Math.max(
                 54,
@@ -3758,14 +3823,15 @@ export function selectInspector(state, options = {}) {
     const activeTab = state.ui.inspectorTab;
     const maxWidth = Math.max(18, Number(options?.width) || 36);
     const allowWideColumns = Boolean(options?.allowWideColumns);
+    const compactSecondaryMeta = shouldCompactPaneTitleMetadata(maxWidth);
     const shortId = session ? shortSessionId(session.sessionId) : "";
     const recentWindow = activeTab === "sequence" || activeTab === "nodes"
         ? getRecentActivityWindow(state)
         : null;
     const title = activeTab === "nodes"
         ? [
-            { text: "Node Map", color: "magenta", bold: true },
-            { text: ` [${recentWindow.label}]`, color: "gray" },
+            ...buildPaneTitleRuns("Node Map", "magenta"),
+            ...(compactSecondaryMeta ? [] : [{ text: ` [${recentWindow.label}]`, color: "gray" }]),
         ]
         : !session
             ? (activeTab === "stats"
@@ -3773,24 +3839,24 @@ export function selectInspector(state, options = {}) {
                 : "No session selected")
             : activeTab === "sequence"
             ? [
-                { text: `Sequence: ${shortId}`, color: "magenta", bold: true },
-                { text: ` [${recentWindow.label}]`, color: "gray" },
+                ...buildPaneTitleRuns(compactSecondaryMeta ? "Sequence" : `Sequence: ${shortId}`, "magenta"),
+                ...(compactSecondaryMeta ? [] : [{ text: ` [${recentWindow.label}]`, color: "gray" }]),
             ]
             : activeTab === "logs"
                 ? [
-                    { text: `Logs: ${shortId}`, color: "magenta", bold: true },
+                    ...buildPaneTitleRuns(compactSecondaryMeta ? "Logs" : `Logs: ${shortId}`, "magenta"),
                 ]
                 : activeTab === "history"
                     ? [
-                        { text: `History: ${shortId}`, color: "magenta", bold: true },
+                        ...buildPaneTitleRuns(compactSecondaryMeta ? "History" : `History: ${shortId}`, "magenta"),
                     ]
                     : activeTab === "stats"
                         ? [
-                            { text: `Stats: ${shortId}`, color: "magenta", bold: true },
+                            ...buildPaneTitleRuns(compactSecondaryMeta ? "Stats" : `Stats: ${shortId}`, "magenta"),
                             { text: ` [${normalizeStatsViewMode(state.ui?.statsViewMode)}]`, color: "gray" },
                         ]
                         : [
-                            { text: `Files: ${shortId}`, color: "magenta", bold: true },
+                            ...buildPaneTitleRuns(compactSecondaryMeta ? "Files" : `Files: ${shortId}`, "magenta"),
                         ];
 
     let lines;

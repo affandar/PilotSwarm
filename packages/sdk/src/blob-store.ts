@@ -10,12 +10,18 @@ import os from "node:os";
 import path from "node:path";
 import {
     DEFAULT_SESSION_STATE_DIR,
+    type ArtifactDownloadResult,
+    type ArtifactMetadata,
     type SessionMetadata,
     type SessionStateStore,
     type ArtifactStore,
+    type ArtifactUploadOptions,
     archiveSessionDir,
     buildMetadata,
     extractSessionArchive,
+    isBinaryArtifactContentType,
+    normalizeArtifactContentType,
+    resolveArtifactUpload,
     waitForSessionSnapshot,
 } from "./session-store.js";
 
@@ -336,26 +342,34 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
     async uploadArtifact(
         sessionId: string,
         filename: string,
-        content: string,
-        contentType = "text/markdown",
-    ): Promise<string> {
-        const MAX_SIZE = 1_048_576; // 1MB
-        if (content.length > MAX_SIZE) {
-            throw new Error(`Artifact too large: ${content.length} bytes (max ${MAX_SIZE})`);
-        }
+        content: string | Buffer,
+        contentType?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<ArtifactMetadata> {
+        const safeFilename = path.basename(String(filename || "").trim());
+        const { body, metadata } = await resolveArtifactUpload(content, contentType, opts);
         const blobPath = this.artifactBlobPath(sessionId, filename);
         const blob = this.containerClient.getBlockBlobClient(blobPath);
-        await blob.upload(content, content.length, {
-            blobHTTPHeaders: { blobContentType: contentType },
+        const uploadedAt = new Date().toISOString();
+        await blob.upload(body, body.length, {
+            blobHTTPHeaders: { blobContentType: metadata.contentType },
+            metadata: {
+                source: metadata.source,
+                uploadedAt,
+            },
         });
-        return blobPath;
+        return {
+            filename: safeFilename,
+            uploadedAt,
+            ...metadata,
+        };
     }
 
     /**
      * Download an artifact file from blob storage.
      * Returns the file content as a string.
      */
-    async downloadArtifact(sessionId: string, filename: string): Promise<string> {
+    async downloadArtifact(sessionId: string, filename: string): Promise<ArtifactDownloadResult> {
         const blobPath = this.artifactBlobPath(sessionId, filename);
         const blob = this.containerClient.getBlockBlobClient(blobPath);
         const response = await blob.download(0);
@@ -363,21 +377,59 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
         for await (const chunk of response.readableStreamBody!) {
             chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         }
-        return Buffer.concat(chunks).toString("utf-8");
+        const body = Buffer.concat(chunks);
+        const contentType = normalizeArtifactContentType(response.contentType || undefined);
+        return {
+            filename: path.basename(filename),
+            sizeBytes: Number(response.contentLength) || body.length,
+            contentType,
+            isBinary: isBinaryArtifactContentType(contentType),
+            uploadedAt: response.lastModified?.toISOString() || new Date().toISOString(),
+            source: (response.metadata?.source as ArtifactMetadata["source"]) || "agent",
+            body,
+        };
+    }
+
+    async downloadArtifactText(sessionId: string, filename: string): Promise<string> {
+        const result = await this.downloadArtifact(sessionId, filename);
+        if (result.isBinary) {
+            const error = new Error(`Artifact '${filename}' is binary and cannot be read as text.`) as Error & Record<string, unknown>;
+            error.code = "ARTIFACT_IS_BINARY";
+            error.contentType = result.contentType;
+            error.sizeBytes = result.sizeBytes;
+            throw error;
+        }
+        return result.body.toString("utf8");
     }
 
     /**
      * List artifact files for a session.
      * Returns filenames (not full blob paths).
      */
-    async listArtifacts(sessionId: string): Promise<string[]> {
+    async listArtifacts(sessionId: string): Promise<ArtifactMetadata[]> {
         const prefix = `artifacts/${sessionId}/`;
-        const files: string[] = [];
+        const files: ArtifactMetadata[] = [];
         for await (const blob of this.containerClient.listBlobsFlat({ prefix })) {
-            // Strip the prefix to get just the filename
-            files.push(blob.name.slice(prefix.length));
+            const filename = blob.name.slice(prefix.length);
+            const blobClient = this.containerClient.getBlockBlobClient(blob.name);
+            const properties = await blobClient.getProperties();
+            const contentType = normalizeArtifactContentType(properties.contentType || undefined);
+            files.push({
+                filename,
+                sizeBytes: Number(properties.contentLength) || 0,
+                contentType,
+                isBinary: isBinaryArtifactContentType(contentType),
+                uploadedAt: properties.lastModified?.toISOString() || new Date().toISOString(),
+                source: (properties.metadata?.source as ArtifactMetadata["source"]) || "agent",
+            });
         }
         return files;
+    }
+
+    async deleteArtifact(sessionId: string, filename: string): Promise<boolean> {
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const result = await this.containerClient.getBlockBlobClient(blobPath).deleteIfExists();
+        return result.succeeded === true;
     }
 
     /**

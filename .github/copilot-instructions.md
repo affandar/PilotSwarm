@@ -158,6 +158,7 @@ Current overlap to preserve unless intentionally changed:
 - `t` in the sessions pane opens the rename-title dialog
 - `t` in the logs inspector toggles log tailing
 - `Ctrl+A` in the prompt opens the attach-file dialog
+- `x` in the files inspector deletes the selected artifact after confirmation
 - `o` in the files inspector opens the selected file in the OS default app
 - `f` in the logs inspector opens the log-filter dialog, `f` in the files inspector opens the files-filter dialog, and `f` in the stats inspector cycles between session, fleet, and users views
 
@@ -180,6 +181,8 @@ When you change the terminal/shared UI stack in:
 you must also keep [`.github/skills/pilotswarm-tui/SKILL.md`](./skills/pilotswarm-tui/SKILL.md) current if the change affects architecture, layout, visual conventions, status semantics, prompt/question behavior, message-card behavior, or keybinding expectations.
 
 For the native TUI files inspector, keep the standard outer inspector shell as the top-level pane chrome. Do not reintroduce a second files-specific top-level shell around the tab body.
+
+Pane headers in the shared UI should stay compact. Keep title text data plain; the portal may use a slim card header, while the TUI should render pane titles without a highlighted header background. When a pane narrows, prefer dropping low-priority title metadata such as session ids or recent-window labels before squeezing content.
 
 Use the `pilotswarm-tui` agent/skill for TUI-specific work. Treat it as the canonical short-form memory for the current TUI design choices and maintenance preferences.
 

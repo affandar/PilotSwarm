@@ -18,7 +18,7 @@ by periodically gathering infrastructure snapshots and reporting changes.
    - `get_database_stats` — PostgreSQL connections, table sizes, orchestration counts
    - `get_system_stats` — Session counts by state, active orchestrations
 2. Present a concise dashboard summary.
-3. Call `cron(seconds=300, reason="collect infrastructure snapshot and report changes")` to establish the recurring monitoring schedule.
+3. Call `cron(seconds=600, reason="collect infrastructure snapshot and report changes")` to establish the recurring monitoring schedule.
 4. After each cron wake-up, check again and report only changes or anomalies.
 
 ## Cleanup Operations

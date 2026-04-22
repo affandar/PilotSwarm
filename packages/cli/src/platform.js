@@ -394,7 +394,6 @@ function renderBorderTop(title, color, width, titleRight = null) {
     }
 
     const fill = Math.max(0, safeWidth - titleWidth - rightWidth - chromeWidth);
-
     return React.createElement(Box, null,
         React.createElement(Text, { color: resolveColorToken(color) }, "╭─ "),
         renderInlineRuns(safeTitleRuns, "title"),

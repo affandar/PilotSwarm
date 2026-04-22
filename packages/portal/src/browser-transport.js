@@ -2,6 +2,16 @@ function encodePathSegment(value) {
     return encodeURIComponent(String(value || ""));
 }
 
+function encodeBytesToBase64(bytes) {
+    const chunkSize = 0x8000;
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+        const chunk = bytes.subarray(index, index + chunkSize);
+        binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+}
+
 async function readErrorMessage(response) {
     try {
         const payload = await response.json();
@@ -331,6 +341,14 @@ export class BrowserPortalTransport {
         return this.rpc("listArtifacts", { sessionId });
     }
 
+    async getArtifactMetadata(sessionId, filename) {
+        return this.rpc("getArtifactMetadata", { sessionId, filename });
+    }
+
+    async deleteArtifact(sessionId, filename) {
+        return this.rpc("deleteArtifact", { sessionId, filename });
+    }
+
     async downloadArtifact(sessionId, filename) {
         return this.rpc("downloadArtifact", { sessionId, filename });
     }
@@ -339,12 +357,13 @@ export class BrowserPortalTransport {
         if (!file || typeof file.name !== "string") {
             throw new Error("A browser File is required for upload");
         }
-        const content = await file.text();
+        const content = encodeBytesToBase64(new Uint8Array(await file.arrayBuffer()));
         return this.rpc("uploadArtifact", {
             sessionId,
             filename: file.name,
             content,
             contentType: file.type || undefined,
+            contentEncoding: "base64",
         });
     }
 
@@ -387,6 +406,19 @@ export class BrowserPortalTransport {
             localPath: `browser-download://${sessionId}/${filename}`,
             filename,
         };
+    }
+
+    async openUrlInDefaultBrowser(targetUrl) {
+        const href = String(targetUrl || "").trim();
+        if (!href) {
+            throw new Error("URL cannot be empty.");
+        }
+        const parsedUrl = new URL(href, window.location.href);
+        if (!/^https?:$/i.test(parsedUrl.protocol)) {
+            throw new Error(`Unsupported URL protocol: ${parsedUrl.protocol}`);
+        }
+        window.open(parsedUrl.toString(), "_blank", "noopener,noreferrer");
+        return { url: parsedUrl.toString() };
     }
 
     async exportExecutionHistory(sessionId) {

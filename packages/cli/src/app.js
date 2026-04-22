@@ -448,6 +448,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE).catch(() => {});
             return;
         }
+        if (focus === "inspector" && inspectorTab === "files" && input === "x") {
+            controller.handleCommand(UI_COMMANDS.DELETE_SELECTED_FILE).catch(() => {});
+            return;
+        }
         if (focus === "inspector" && inspectorTab === "history" && input === "f") {
             controller.handleCommand(UI_COMMANDS.OPEN_HISTORY_FORMAT).catch(() => {});
             return;

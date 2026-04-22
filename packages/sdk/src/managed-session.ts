@@ -298,7 +298,8 @@ export class ManagedSession {
             description:
                 "List all active sessions in the system. " +
                 "Returns each session's ID, title, owner, status, parent, and iteration count. " +
-                "Use this to discover other running sessions, find sibling agents, or query sessions for a specific owner.",
+                "Use this to discover other running sessions or find sibling agents. " +
+                "Leave owner filters unset for normal discovery and system-session checks; only set them when the user explicitly asks to scope by owner, user, system, or unowned sessions.",
             parameters: {
                 type: "object",
                 properties: {
@@ -308,12 +309,12 @@ export class ManagedSession {
                     },
                     owner_query: {
                         type: "string",
-                        description: "Optional substring match across owner display name, email, subject, or provider.",
+                        description: "Optional substring match across owner display name, email, subject, or provider. Not for session titles or agent names.",
                     },
                     owner_kind: {
                         type: "string",
                         enum: ["user", "system", "unowned"],
-                        description: "Optional owner bucket filter.",
+                        description: "Optional owner bucket filter. Use only when explicitly requested.",
                     },
                 },
             },
@@ -760,7 +761,8 @@ export class ManagedSession {
             description:
                 "List all active sessions in the system. " +
                 "Returns each session's ID, title, owner, status, parent, and iteration count. " +
-                "Use this to discover other running sessions, find sibling agents, or query sessions for a specific owner.",
+                "Use this to discover other running sessions or find sibling agents. " +
+                "Leave owner filters unset for normal discovery and system-session checks; only set them when the user explicitly asks to scope by owner, user, system, or unowned sessions.",
             parameters: {
                 type: "object",
                 properties: {
@@ -770,12 +772,12 @@ export class ManagedSession {
                     },
                     owner_query: {
                         type: "string",
-                        description: "Optional substring match across owner display name, email, subject, or provider.",
+                        description: "Optional substring match across owner display name, email, subject, or provider. Not for session titles or agent names.",
                     },
                     owner_kind: {
                         type: "string",
                         enum: ["user", "system", "unowned"],
-                        description: "Optional owner bucket filter.",
+                        description: "Optional owner bucket filter. Use only when explicitly requested.",
                     },
                 },
             },

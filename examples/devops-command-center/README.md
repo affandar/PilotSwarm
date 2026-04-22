@@ -143,6 +143,8 @@ These demonstrate:
 - feeding that `artifact://...` link into a second session so the Investigator can read the stored artifact and continue the workflow
 - carrying a stable `session://...` breadcrumb alongside the artifact reference for operator-visible handoff metadata
 
+The same artifact flow now also supports binary outputs in the core runtime. When you need a downloadable `.zip`, `.pdf`, `.xlsx`, or image artifact, use `write_artifact` with `contentType` plus `encoding: "base64"`, then `export_artifact`. The portal will download those files intact and show a download-only placeholder instead of trying to preview the raw bytes inline.
+
 In raw SDK code there is no `@` / `@@` autocomplete layer, but the same underlying references still work: you can pass literal `artifact://sessionId/filename` and `session://sessionId` strings in `sendAndWait(...)` prompts when you already have them.
 
 ## Resetting Local State

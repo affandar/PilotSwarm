@@ -12,6 +12,8 @@ import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilter
 import os from "node:os";
 import fs from "node:fs";
 
+const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager", "agent-tuner"]);
+
 const SESSION_RECOVERY_NOTICE =
     "[SYSTEM: The runtime recovered this session after the live Copilot session was lost on a worker. " +
     "Some very recent in-memory state may have been lost. Re-read the visible conversation and continue carefully from the latest durable state.]";
@@ -575,6 +577,21 @@ export function registerActivities(
             }
         };
 
+        const isAutonomousSystemTurn = () => {
+            if (!SYSTEM_AGENT_IDS.has(runConfig.agentIdentity || "")) return false;
+            if (input.bootstrap === true) return true;
+            return /^\s*\[SYSTEM:/i.test(String(input.prompt ?? ""));
+        };
+
+        const sanitizeAutonomousSystemSessionFilters = (args?: { include_system?: boolean; owner_query?: string; owner_kind?: string }) => {
+            if (!args || !isAutonomousSystemTurn()) return args;
+            if (!args.owner_query && !args.owner_kind) return args;
+            const sanitized = { ...args };
+            delete sanitized.owner_query;
+            delete sanitized.owner_kind;
+            return sanitized;
+        };
+
         const normalizeAgentLookup = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
         const resolveAgentConfigInline = (agentName: string) => {
             const agents: Array<any> = [
@@ -859,10 +876,11 @@ export function registerActivities(
             listSessions: async (args?: { include_system?: boolean; owner_query?: string; owner_kind?: string }) => {
                 try {
                     const sdkClient = await getInlineClient();
+                    const effectiveArgs = sanitizeAutonomousSystemSessionFilters(args);
                     const sessions = (await sdkClient.listSessions()).filter((session: any) => matchesSessionOwnerFilters(session, {
-                        includeSystem: args?.include_system,
-                        ownerQuery: args?.owner_query,
-                        ownerKind: args?.owner_kind,
+                        includeSystem: effectiveArgs?.include_system,
+                        ownerQuery: effectiveArgs?.owner_query,
+                        ownerKind: effectiveArgs?.owner_kind,
                     }));
                     if (sessions.length === 0) {
                         return "[SYSTEM: Active sessions (0). No sessions matched the requested filters.]";

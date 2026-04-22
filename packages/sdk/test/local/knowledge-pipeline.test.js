@@ -77,7 +77,7 @@ async function testTaskAgentCannotWriteConfig(env) {
     try {
         const [storeFact] = createFactTools({ factStore });
         const result = await storeFact.handler(
-            { key: "config/facts-manager/cycle-interval", value: { value: 60 }, shared: true },
+            { key: "config/facts-manager/cycle-interval", value: { value: 180 }, shared: true },
             { sessionId: "session-a", agentId: "task-agent" },
         );
         assert(result.error, "Task agent should NOT be able to write to config/facts-manager/");

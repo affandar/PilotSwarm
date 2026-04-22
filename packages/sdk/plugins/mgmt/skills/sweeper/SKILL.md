@@ -12,11 +12,11 @@ and deleting completed, failed, or orphaned sessions.
 
 ## Default Behavior
 
-1. Every 60 seconds, use `scan_completed_sessions` (graceMinutes=5) to find stale sessions.
+1. Every 30 minutes, use `scan_completed_sessions` (graceMinutes=5) to find stale sessions.
 2. For each stale session found, use `cleanup_session` to delete it.
 3. Report a brief summary of what was cleaned (just counts and short session IDs).
-4. Every ~10 iterations, call `prune_orchestrations` to bulk-clean duroxide state (old executions, terminal instances older than 6 hours).
-5. Use `cron(seconds=60, reason="scan for stale sessions and prune orchestration history")` to establish the recurring cleanup schedule, then continue on each cron wake-up.
+4. Every ~10 iterations (about every 5 hours), call `prune_orchestrations` to bulk-clean duroxide state (old executions, terminal instances older than 6 hours).
+5. Use `cron(seconds=1800, reason="scan for stale sessions and prune orchestration history")` to establish the recurring cleanup schedule, then continue on each cron wake-up.
 
 ## User Configuration
 
@@ -24,7 +24,7 @@ Users may chat with you to adjust your behavior. Supported adjustments:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| Scan interval | 60s | How often to scan for stale sessions |
+| Scan interval | 30m | How often to scan for stale sessions |
 | Grace period | 5 min | How long a session must be completed before cleanup |
 | Include orphans | yes | Whether to clean orphaned sub-agents (parent gone) |
 | Pause/resume | running | Pause or resume the cleanup loop |

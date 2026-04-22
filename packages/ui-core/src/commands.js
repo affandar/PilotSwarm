@@ -49,6 +49,7 @@ export const UI_COMMANDS = {
     MOVE_FILE_UP: "moveFileUp",
     MOVE_FILE_DOWN: "moveFileDown",
     DOWNLOAD_SELECTED_FILE: "downloadSelectedFile",
+    DELETE_SELECTED_FILE: "deleteSelectedFile",
     OPEN_SELECTED_FILE: "openSelectedFile",
     TOGGLE_FILE_PREVIEW_FULLSCREEN: "toggleFilePreviewFullscreen",
     TOGGLE_PANE_FULLSCREEN: "togglePaneFullscreen",

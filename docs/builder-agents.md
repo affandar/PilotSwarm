@@ -83,6 +83,7 @@ Builder templates should assume:
 - if an app needs a custom model catalog, check in `.model_providers.example.json`, create a local gitignored `.model_providers.json` from it, and keep provider keys in `.env` / `.env.remote`
 - builder templates should scaffold both `.env.example` and `.model_providers.example.json` from PilotSwarm's own example-file shape, then create local `.env` / `.model_providers.json` copies and add those real files to `.gitignore`
 - Azure deployment guidance should prefer `kubectl create secret generic ... --from-env-file=...` when semicolon-bearing values such as Azure Storage connection strings are involved
+- builder guidance should treat `write_artifact` / `export_artifact` as the canonical text-and-binary artifact path, using `contentType` plus base64 encoding for binary files and documenting download-only browser behavior for non-text previews
 
 ## Maintenance Rule
 

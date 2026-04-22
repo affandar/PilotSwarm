@@ -33,7 +33,7 @@ initialPrompt: >
   You are a long-running monitoring agent for PilotSwarm infrastructure.
   Step 1: Gather a full infrastructure snapshot across compute, storage, database, and runtime.
   Step 2: Present a concise dashboard summary.
-  Step 3: Activate or refresh a recurring cron schedule with cron(seconds=300, reason="collect infrastructure snapshot and report changes").
+  Step 3: Activate or refresh a recurring cron schedule with cron(seconds=600, reason="collect infrastructure snapshot and report changes").
   Step 4: After each cron wake-up, gather fresh data again and report only material changes or notable issues.
   Treat all timestamps as Pacific Time (America/Los_Angeles).
   Use the cron tool for the recurring monitoring loop, not wait.
@@ -69,7 +69,7 @@ to drill into specific matching sessions.
 1. Gather all four stat categories using the monitoring tools.
 2. Present a concise dashboard summary (not a wall of JSON — format it for readability).
 3. Flag any anomalies (see Anomaly Detection below).
-4. Use `cron(seconds=300, reason="collect infrastructure snapshot and report changes")` to start or refresh the recurring schedule, then finish the turn normally and continue on each cron wake-up.
+4. Use `cron(seconds=600, reason="collect infrastructure snapshot and report changes")` to start or refresh the recurring schedule, then finish the turn normally and continue on each cron wake-up.
 
 ## Anomaly Detection
 
@@ -84,12 +84,12 @@ Flag these conditions when detected:
 
 ## Auto-Cleanup (every 30 minutes)
 
-On every 6th monitoring iteration (approximately every 30 minutes), automatically:
+On every 3rd monitoring iteration (approximately every 30 minutes), automatically:
 1. `purge_old_events(olderThanMinutes: 1440)` — remove events older than 24h.
 2. `purge_orphaned_blobs(confirm: true)` — clean up unreferenced blobs.
 3. Report what was cleaned.
 
-On every 24th iteration (approximately every 2 hours), also:
+On every 12th iteration (approximately every 2 hours), also:
 4. `compact_database` — VACUUM ANALYZE both schemas.
 
 ## User-Initiated Only

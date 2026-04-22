@@ -54,6 +54,7 @@ my-app/
 14. When agents need durable structured memory or shared coordination state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) as the primary memory layer. They are available to every agent session by default, including system agents, so do not build a separate fact table unless the app truly requires it.
 15. When agents need recurring autonomous work (monitoring, polling, periodic cleanup), use the durable `cron` tool: `cron(seconds=N, reason="...")` to start, `cron(action="cancel")` to stop. Cron schedules survive process restarts and worker failovers. Prefer cron over `wait` loops for periodic tasks.
 16. Agents can read their context usage (current tokens, token limit) from the session status. The TUI displays this in the status bar. Use this for agents that need to manage context window budgets or trigger compaction.
+17. If the app relies on downloadable files, document the shipped files inspector behavior: binary artifacts download intact, browser previews are download-only for non-text files, and the shared files browser supports download/delete/open flows.
 
 ## Guided Intake Questions
 
@@ -169,3 +170,4 @@ Example:
 - Assume apps consume `pilotswarm-cli` and `pilotswarm-sdk`; built-in PilotSwarm plugins are embedded in those packages, not copied into the app repo.
 - Assume PostgreSQL-backed apps can opt into the built-in facts tools with agent `tools` lists instead of re-implementing fact storage from scratch.
 - Prefer generated app instructions that install `pilotswarm-cli` and `pilotswarm-sdk` from npm before suggesting local clone or link workflows.
+- If the scaffold teaches artifact workflows, do not describe them as markdown-only; explain the shared binary-download contract too.

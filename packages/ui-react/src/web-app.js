@@ -76,6 +76,10 @@ function supportsArtifactBrowser(controller) {
     return typeof controller?.transport?.listArtifacts === "function";
 }
 
+function supportsArtifactDelete(controller) {
+    return typeof controller?.transport?.deleteArtifact === "function";
+}
+
 function supportsLocalFileOpen(controller) {
     return typeof controller?.transport?.openPathInDefaultApp === "function";
 }
@@ -768,6 +772,47 @@ function MarkdownPreviewPanel({ controller, title, color, focused, scrollOffset 
         }, React.createElement(MarkdownPreviewContent, { content, theme })));
 }
 
+function formatArtifactPreviewBytes(value) {
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes < 0) return "Unknown size";
+    if (bytes < 1024) return `${Math.round(bytes)} B`;
+    if (bytes < 1024 * 1024) {
+        const kb = bytes / 1024;
+        return `${kb >= 10 ? Math.round(kb) : kb.toFixed(1)} KB`;
+    }
+    const mb = bytes / (1024 * 1024);
+    return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
+}
+
+function BinaryArtifactPreviewPanel({ title, color, focused, theme, filename, contentType, sizeBytes, source, uploadedAt }) {
+    const meta = [];
+    if (contentType) meta.push(contentType);
+    if (sizeBytes != null) meta.push(formatArtifactPreviewBytes(sizeBytes));
+    if (source) meta.push(source);
+    const uploadedLabel = uploadedAt
+        ? new Date(uploadedAt).toLocaleString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+        })
+        : "";
+
+    return React.createElement(Panel, { title, color, focused, theme },
+        React.createElement("div", { className: "ps-binary-preview-card" },
+            React.createElement("div", { className: "ps-binary-preview-kicker" }, "Binary artifact"),
+            React.createElement("h3", { className: "ps-binary-preview-title" }, filename || "Artifact"),
+            meta.length > 0
+                ? React.createElement("div", { className: "ps-binary-preview-meta" }, meta.join("  •  "))
+                : null,
+            uploadedLabel
+                ? React.createElement("div", { className: "ps-binary-preview-time" }, `Uploaded ${uploadedLabel}`)
+                : null,
+            React.createElement("p", { className: "ps-binary-preview-copy" },
+                "Preview is intentionally disabled for non-text artifacts in the browser workspace. Use Download to save the file and open it in the default app.")));
+}
+
 function isBoxTopLine(text) {
     const value = String(text || "").trim();
     return value.startsWith("┌") && value.endsWith("┐");
@@ -1319,7 +1364,10 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         viewState.sessionsById,
         viewState.sessionsFlat,
     ]);
-    const chrome = React.useMemo(() => selectChatPaneChrome(selectorState), [selectorState]);
+    const chrome = React.useMemo(
+        () => selectChatPaneChrome(selectorState, { width: viewState.contentWidth }),
+        [selectorState, viewState.contentWidth],
+    );
     const animatedDots = useAnimatedDots(Boolean(chrome.animateTitleRight));
     const titleRight = React.useMemo(
         () => appendAnimatedDotsToRuns(chrome.titleRight, chrome.animateTitleRight ? animatedDots : ""),
@@ -1425,6 +1473,7 @@ function FilesPane({ controller, focused, mobile = false }) {
             contentWidth: Math.max(20, paneWidth - 4),
             canBrowserUpload: supportsBrowserFileUploads(controller),
             canPathUpload: supportsPathArtifactUploads(controller),
+            canDeleteArtifacts: supportsArtifactDelete(controller),
             canOpenLocally: supportsLocalFileOpen(controller),
         };
     }, shallowEqualObject);
@@ -1497,13 +1546,19 @@ function FilesPane({ controller, focused, mobile = false }) {
             className: "ps-mini-button",
             onClick: openUploadPicker,
             disabled: !viewState.canBrowserUpload && !viewState.canPathUpload,
-        }, "Upload"),
+        }, "Up"),
         React.createElement("button", {
             type: "button",
             className: "ps-mini-button",
             onClick: () => controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE).catch(() => {}),
             disabled: !hasSelection,
-        }, "Download"),
+        }, "Down"),
+        viewState.canDeleteArtifacts ? React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
+            onClick: () => controller.handleCommand(UI_COMMANDS.DELETE_SELECTED_FILE).catch(() => {}),
+            disabled: !hasSelection,
+        }, "Delete") : null,
         viewState.canOpenLocally ? React.createElement("button", {
             type: "button",
             className: "ps-mini-button",
@@ -1519,7 +1574,7 @@ function FilesPane({ controller, focused, mobile = false }) {
             type: "button",
             className: "ps-mini-button",
             onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}),
-        }, viewState.fullscreen ? "Close" : (mobile ? "Focus" : "Fullscreen")));
+        }, viewState.fullscreen ? "Close" : "FS"));
 
     const listContent = items.length === 0
         ? normalizeLines(filesView.listBodyLines || []).map((line, index) => React.createElement(Line, {
@@ -1553,6 +1608,20 @@ function FilesPane({ controller, focused, mobile = false }) {
             theme,
             content: filesView.previewContent || "",
         })
+        : filesView.previewIsBinary
+            && !filesView.previewLoading
+            && !filesView.previewError
+            ? React.createElement(BinaryArtifactPreviewPanel, {
+                title: filesView.previewTitle,
+                color: "cyan",
+                focused: false,
+                theme,
+                filename: filesView.selectedFilename,
+                contentType: filesView.previewContentType,
+                sizeBytes: filesView.previewSizeBytes,
+                source: filesView.previewSource,
+                uploadedAt: filesView.previewUploadedAt,
+            })
         : React.createElement(ScrollLinesPanel, {
             controller,
             title: filesView.previewTitle,
@@ -1994,6 +2063,7 @@ function buildPortalKeybindingSections({ canUpload, canOpenLocally }) {
             items: [
                 [canUpload ? "u / Ctrl+A" : "u", "Upload artifact to the active session"],
                 ["a", "Download selected artifact"],
+                ["x", "Delete selected artifact"],
                 ...(canOpenLocally ? [["o", "Open downloaded file locally"]] : []),
                 ["f", "Filter the artifact browser"],
                 ["v", "Toggle fullscreen preview"],
@@ -2438,7 +2508,7 @@ function ModalLayer({ controller }) {
         return renderListModal(modalState.sessionAgentPicker, "Create Session");
     }
     if (modal.type === "artifactPicker" && modalState.artifactPicker) {
-        return renderListModal(modalState.artifactPicker, "Download");
+        return renderListModal(modalState.artifactPicker, modalState.artifactPicker.confirmLabel || "Open / Download");
     }
     if (modal.type === "sessionOwnerFilter" && modalState.sessionOwnerFilter) {
         const presentation = modalState.sessionOwnerFilter;
@@ -2756,6 +2826,11 @@ function useKeyboardShortcuts(
             if (focusRegion === "inspector" && currentInspectorTab === "files" && event.key === "a" && isPlainShortcut) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE).catch(() => {});
+                return;
+            }
+            if (focusRegion === "inspector" && currentInspectorTab === "files" && event.key === "x" && isPlainShortcut) {
+                event.preventDefault();
+                controller.handleCommand(UI_COMMANDS.DELETE_SELECTED_FILE).catch(() => {});
                 return;
             }
             if (focusRegion === "inspector" && currentInspectorTab === "files" && event.key === "o" && isPlainShortcut) {

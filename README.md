@@ -6,7 +6,7 @@ A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/c
 
 For the fastest first run, start with the [Docker Quickstart Guide](docs/getting-started-docker-appliance.md).
 
-**v0.1.20** — Agent inspection toolset (`read_agent_events`, fleet/session metric and skill-usage tools), `agent-tuner` system agent, stats-pane key/value tables and scroll-stability fix. See [CHANGELOG.md](CHANGELOG.md) for details.
+**v0.1.21** — Binary-safe artifact uploads/downloads, metadata-aware portal/TUI file handling, linked-item URL opening, and longer default system-agent cron cadences. See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Builder Agents
 
