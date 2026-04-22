@@ -2,7 +2,7 @@
 
 ## Summary
 
-Plugins live as blobs in Postgres. A mgmt-API pair packs (`pointed-at-folder → validated → tarball → INSERT`) and unpacks (`SELECT → extract to cache`). `(name, version)` is the unique identity; sessions record what they were created against so resume is deterministic across worker restarts. No editor UX, no external registries, no filesystem sources for user plugins.
+Plugins live as blobs in Postgres. A mgmt-API pair packs (`pointed-at-folder → validated → tarball → INSERT`) and unpacks (`SELECT → extract to cache`). `(name, version)` is the unique identity; sessions record what they were created against so resume is deterministic across worker restarts. The plugin format is scoped to **agents, skills, and MCP server configuration** — nothing else. No editor UX, no external registries, no filesystem sources for user plugins.
 
 ## Motivation
 
@@ -14,6 +14,7 @@ Plugins live as blobs in Postgres. A mgmt-API pair packs (`pointed-at-folder →
 
 - **Not** a package manager, dependency resolver, sandbox, hot-reloader, marketplace, or federation protocol.
 - **Not** an in-app plugin editor. The UX only exposes "upload this folder" / "remove this version" / "list what's installed".
+- **Not** the carrier for UX chrome. Branding (logos, favicons, splash screens, product strings), themes, slash commands, help content, model provider lists, session policies, and keybindings are **out of scope** — they're either per-deployment config files or features covered by other mechanisms. The plugin format stays focused on agents/skills/MCP.
 
 ## Plugin Layout on Disk
 
@@ -23,9 +24,9 @@ What a developer points the mgmt API at. Also what a worker materializes into it
 <plugin-root>/
   plugin.json           # REQUIRED — manifest (see below)
   agents/               # optional — *.agent.md files
-  skills/               # optional — one subdir per skill with SKILL.md
-  mcp.json              # optional — existing MCP server config
-  assets/               # optional — arbitrary files referenced by skills/agents
+  skills/<name>/        # optional — SKILL.md + optional tools.json + assets
+  mcp.json              # optional — MCP server config
+  assets/               # optional — arbitrary files referenced by agents/skills
 ```
 
 ### `plugin.json`
@@ -38,8 +39,9 @@ What a developer points the mgmt API at. Also what a worker materializes into it
   "description": "...",
   "sdkCompat": ">=1.0.0 <2.0.0",
   "components": {
-    "agents": ["pipeline-runner"],
-    "skills": ["deploy", "rollback"]
+    "agents":     ["pipeline-runner"],
+    "skills":     ["deploy", "rollback"],
+    "mcpServers": ["deploy-service"]
   }
 }
 ```
@@ -48,8 +50,8 @@ Rules:
 - `manifestVersion: 1` required; loader rejects other values.
 - `name` is a DNS-label (lowercase, hyphens).
 - `version` is a concrete semver — no ranges.
-- `sdkCompat` is a semver range against the SDK version; it is the **sole mechanism** for plugin↔orchestration version coupling (no second knob on the SDK side).
-- `components` is declarative — the packer verifies every declared agent/skill exists, and refuses packs where files on disk aren't declared. Drift is loud.
+- `sdkCompat` is a semver range against the SDK version; **sole mechanism** for plugin↔orchestration version coupling.
+- `components` declares everything the plugin contributes (agents, skills, mcpServers — each an array of identifiers). The packer verifies every declaration matches disk and refuses packs with undeclared files. Drift is loud.
 
 ## Version Identity
 
@@ -159,27 +161,102 @@ Content drift (a `--replace` silently swapping bytes behind a running session) i
 
 ## Mgmt API Surface
 
-Lives on `PilotSwarmManagementClient` ([management-client.ts](../../packages/sdk/src/management-client.ts)). Short list:
+Lives on `PilotSwarmManagementClient` ([management-client.ts](../../packages/sdk/src/management-client.ts)). Both the pack-and-upload path and the fetch-and-unpack path are first-class mgmt-API methods — every UX surface calls these and these only, never the DB directly.
 
 ```ts
-uploadPlugin(folderPath, opts?): Promise<PluginRef>        // pack + INSERT
-fetchPlugin(name, version): Promise<string>                 // SELECT + unpack, returns cache path
-listPlugins(): Promise<PluginSummary[]>                     // SELECT name, version, size, published_at
-removePlugin(name, version): Promise<void>                  // refuses if any session refs it
+// Pack + upload (one call): read folder, validate plugin.json, tar.gz, INSERT into plugin_registry.
+uploadPlugin(folderPath, opts?: { replace?: boolean }): Promise<PluginRef>
+
+// Fetch + unpack (one call): SELECT payload, extract into local cache, return the cache path.
+fetchPlugin(name, version): Promise<string>
+
+// Registry inspection and lifecycle.
+listPlugins(): Promise<PluginSummary[]>                       // name, version, size, published_at, published_by
+getPlugin(name, version): Promise<PluginDetail>               // adds manifest + session-usage summary
+removePlugin(name, version): Promise<void>                    // refuses if any session refs it
 listSessionsUsingPlugin(name, version?): Promise<SessionRef[]>
 ```
 
-That's it. No per-agent / per-skill CRUD, no pin/unpin, no upgrade helper. "Upgrade" is `uploadPlugin(newVersion)`; new sessions pick up the latest version matching the worker's configured set; existing sessions keep their bound version. Audit trail is the existing session-events channel tagged `kind: "plugin-admin"`.
+Design rules:
+
+- **`uploadPlugin` is atomic**: validate → pack → INSERT happen server-side inside a single transaction. There is no "pack tarball on the client, upload bytes separately" flow, because that would let clients bypass validation.
+- **`fetchPlugin` is idempotent**: cache hit returns immediately; cache miss extracts and returns. Concurrent callers for the same `(name, version)` coalesce around a file lock on the tmp directory.
+- **No per-agent / per-skill CRUD, no pin/unpin, no upgrade helper.** "Upgrade" is just `uploadPlugin(newerVersion)`. New sessions resolve unpinned roster entries to the latest; existing sessions keep their bound version.
+- **Audit trail** rides the existing session-events channel with `kind: "plugin-admin"`, recording caller identity (`published_by` for uploads, equivalent for deletes).
 
 ## UX Surfaces
 
-All three clients are thin shells over the mgmt API:
+All three surfaces are thin shells over the mgmt API above — same validation, same audit events, same refusal rules, regardless of who's driving.
 
-- **CLI**: `pilotswarm plugin upload ./my-plugin`, `pilotswarm plugin list`, `pilotswarm plugin remove name@version`.
-- **TUI**: a prompt / command that takes a folder path and calls `uploadPlugin`. A list view for `listPlugins`. A remove action. No in-app file editing.
-- **Portal**: same — a settings pane with an "Upload plugin folder" action, a table listing installed plugins, a remove button. No in-app editing, no plugin authoring UX.
+### `psctl` — the admin CLI (new)
 
-The editor for plugin source files is whatever the developer's editor is (VS Code, vim, …). The mgmt API's job is "take the folder, put it in the DB"; it is not the author's workspace.
+A new `psctl` binary for operators, distinct from the existing `pilotswarm` TUI. Lives in a new `packages/psctl/`. Connects to the same DB/mgmt API workers use.
+
+```
+psctl plugin upload ./my-plugin            # calls uploadPlugin()
+psctl plugin upload ./my-plugin --replace  # same, with replace semantics
+psctl plugin list                          # calls listPlugins()
+psctl plugin show acme-pipelines@1.4.0     # calls getPlugin()
+psctl plugin fetch acme-pipelines@1.4.0    # calls fetchPlugin(), prints cache path
+psctl plugin remove acme-pipelines@1.4.0   # calls removePlugin()
+psctl plugin sessions acme-pipelines       # calls listSessionsUsingPlugin()
+```
+
+`psctl` stays small and scriptable — no interactive UX, every command exits non-zero on failure, machine-parseable output via `--json`. This is the tool that ends up in CI pipelines and admin scripts.
+
+### TUI (existing `pilotswarm` binary)
+
+Admin mode (`Ctrl-Shift-A`, as proposed earlier) replaces the session-list + chat panes with a plugin/agent admin view. The primary actions are:
+
+- **Upload from folder**: prompts for a path, calls `uploadPlugin`. Errors (validation failure, conflict without `--replace`) render inline.
+- **List / inspect**: the plugin tree on the left, `getPlugin` detail on the right.
+- **Remove**: confirmation dialog shows the `listSessionsUsingPlugin` result; refused if non-empty.
+
+No in-app editing of plugin source. The developer's editor is their editor; the TUI's job is "take the folder, put it in the DB."
+
+### Portal
+
+Portal gets a `/admin` route backed by the same methods through the existing `browser-transport` shim ([browser-transport.js](../../packages/portal/src/browser-transport.js)). UX parity with the TUI — upload-from-folder action (an OS file picker selecting a directory), table listing installed plugins, remove button with the same session-impact confirm. No plugin authoring surface.
+
+## Loader Contract: Unpacked Folder → Runtime
+
+The runtime contract between what `fetchPlugin` puts on disk and what the worker loads into memory. This is the interface SDK-bundled plugins and user plugins both conform to — once a plugin is unpacked, nothing downstream cares whether it came from the npm package or from `plugin_registry`.
+
+### What the loader reads
+
+| Path (relative to plugin root) | Consumed by | What it becomes at runtime |
+|---|---|---|
+| `plugin.json` | [worker.ts:_loadPluginDir](../../packages/sdk/src/worker.ts#L596) | Namespace tag for agents; `components` whitelist; `sdkCompat` gate. |
+| `agents/*.agent.md` | [agent-loader.ts:loadAgentFiles](../../packages/sdk/src/agent-loader.ts#L207) | Each file → an `AgentConfig`. Frontmatter: `name` (defaults to filename), `description`, `system`, `tools`, `id`, `title`, `parent`, `splash`, `initialPrompt`. Body is the system prompt. |
+| `skills/<skill-name>/SKILL.md` | [skills.ts:loadSkills](../../packages/sdk/src/skills.ts#L75) | Each subdirectory with `SKILL.md` becomes a skill; frontmatter is metadata, body is the prompt. |
+| `skills/<skill-name>/tools.json` | same | Optional. `{ "tools": [...] }` restricts the skill to a named tool subset. |
+| `skills/<skill-name>/**` (other files) | surfaced by path | Addressable via filesystem paths from agent/skill prompts; not interpreted. |
+| `mcp.json` | `loadMcpConfig` | Merged into `_loadedMcpServers`. |
+| `assets/**` | not loaded eagerly | Referenced via relative paths from agent/skill prompts. |
+
+### What the loader ignores
+
+- `plugin.json`'s `components` is a **whitelist**, not a hint. Files present on disk but not declared are refused at load time. Makes drift loud.
+- `.pilotswarm-meta.json` (cache-staleness sidecar) is loader-invisible.
+- Top-level files or directories not in the table above are ignored. No deep-scanning for `.agent.md` outside `agents/`, no `SKILL.md` outside `skills/<name>/`.
+- Symlinks inside the plugin tree were rejected at pack time.
+
+### Load order and merging
+
+Three-tier merge survives unchanged ([worker.ts:_loadPlugins](../../packages/sdk/src/worker.ts#L526)): system → mgmt → app (user plugins from `plugin_registry`, in roster order). Within the app tier:
+
+- **Agents** — merged by name; later plugin in roster order wins on collision.
+- **Skills** — additive; each plugin contributes its `skills/*` subdirectories.
+- **MCP servers** — merged by server name; later wins.
+
+### Failure modes at load
+
+- **Malformed `plugin.json`** → plugin refused; session-bound resume → `unsatisfiable_plugins`.
+- **`sdkCompat` unsatisfied** → plugin refused with version mismatch message.
+- **`components` doesn't match disk** → plugin refused (double-checked at load).
+- **Individual agent/skill parse error** → offending file skipped with warning, rest of plugin loads.
+
+That's the full contract.
 
 ## The One Exception: SDK-Bundled Plugins
 
@@ -187,17 +264,19 @@ The SDK's own `system/` and `mgmt/` plugins ([`packages/sdk/plugins/`](../../pac
 
 ## Migration Plan
 
-Four shippable steps:
+Six shippable steps:
 
-**Step 1 — Manifest schema v1.** Require `manifestVersion`, concrete `version`, `sdkCompat`, `components`. Loader refuses undeclared agents/skills. Bundled SDK plugins migrated first.
+**Step 1 — Manifest schema v1.** Require `manifestVersion`, concrete `version`, `sdkCompat`, `components`. Loader refuses undeclared agents/skills/mcpServers. Bundled SDK plugins migrated first.
 
-**Step 2 — Packer.** `pilotswarm pack` validates the manifest and emits a tarball. Used by `uploadPlugin` internally; the CLI surface is mostly for debugging ("what would be packed?").
+**Step 2 — Packer internals.** Implement the validate-and-tar.gz pipeline used by `uploadPlugin`. Exposed as an internal module; no user-facing CLI for packing standalone (distribution is never file-based).
 
-**Step 3 — Registry table + pack/unpack.** Add `plugin_registry`. Add `uploadPlugin` / `fetchPlugin` / `listPlugins` / `removePlugin` / `listSessionsUsingPlugin`. Introduce `~/.pilotswarm/cache`.
+**Step 3 — Registry table + mgmt API.** Add `plugin_registry`. Add `uploadPlugin` / `fetchPlugin` / `listPlugins` / `getPlugin` / `removePlugin` / `listSessionsUsingPlugin` to `PilotSwarmManagementClient`. Introduce `~/.pilotswarm/cache`.
 
 **Step 4 — Worker roster + startup fetch.** Replace the old `pluginDirs[]` option with `pluginRoster`. Worker startup resolves the roster, fetches, loads. The only on-disk source for user plugins from this point on is the content-addressed cache.
 
-**Step 5 — Session binding + resume.** `ManagedSession.plugins[]`. `unsatisfiable_plugins` state. Resume path fetches session-bound versions (whitelisted against the roster by name). Plumb through to the CLI / TUI / portal with the minimal upload+list+remove UX.
+**Step 5 — Session binding + resume.** `ManagedSession.plugins[]`. `unsatisfiable_plugins` state. Resume path fetches session-bound versions (whitelisted against the roster by name).
+
+**Step 6 — Admin surfaces.** Ship `psctl` (new `packages/psctl/`), the TUI Admin mode, and the portal `/admin` route — in that order. Each is a thin shell over Step 3's mgmt API; nothing bypasses it.
 
 ## Open Questions
 

@@ -415,15 +415,30 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
 
 function Runs({ runs, theme }) {
     return React.createElement(React.Fragment, null,
-        (runs || []).map((run, index) => React.createElement("span", {
-            key: `${index}:${run.text || ""}`,
-            style: {
+        (runs || []).map((run, index) => {
+            const style = {
                 color: resolveColor(theme, run.color),
                 backgroundColor: resolveColor(theme, run.backgroundColor),
                 fontWeight: run.bold ? 700 : 400,
                 textDecoration: run.underline ? "underline" : "none",
-            },
-        }, run.text || "")),
+            };
+            const href = String(run?.href || "").trim();
+            const isExternalHref = /^https?:\/\//i.test(href);
+
+            return isExternalHref
+                ? React.createElement("a", {
+                    key: `${index}:${run.text || ""}`,
+                    className: "ps-md-link",
+                    href,
+                    target: "_blank",
+                    rel: "noreferrer",
+                    style,
+                }, run.text || "")
+                : React.createElement("span", {
+                    key: `${index}:${run.text || ""}`,
+                    style,
+                }, run.text || "");
+        }),
     );
 }
 
@@ -1052,11 +1067,13 @@ function StructuredChatBlocks({ lines, theme }) {
                         headerRows.length > 0
                             ? React.createElement("thead", null,
                                 headerRows.map((row, rowIndex) => React.createElement("tr", { key: `thead:${rowIndex}` },
-                                    Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("th", { key: `th:${rowIndex}:${cellIndex}` }, row[cellIndex] || "")))))
+                                    Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("th", { key: `th:${rowIndex}:${cellIndex}` },
+                                        renderInlineMarkdown(row[cellIndex] || "", theme, `chat-table:${index}:head:${rowIndex}:${cellIndex}`))))))
                             : null,
                         React.createElement("tbody", null,
                             bodyRows.map((row, rowIndex) => React.createElement("tr", { key: `tbody:${rowIndex}` },
-                                Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("td", { key: `td:${rowIndex}:${cellIndex}` }, row[cellIndex] || "")))))));
+                                Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("td", { key: `td:${rowIndex}:${cellIndex}` },
+                                    renderInlineMarkdown(row[cellIndex] || "", theme, `chat-table:${index}:${rowIndex}:${cellIndex}`))))))));
             }
 
             return React.createElement(Line, { key: `line:${index}`, line: block.line, theme });

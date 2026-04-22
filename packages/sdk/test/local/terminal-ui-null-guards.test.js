@@ -27,7 +27,10 @@ describe("terminal UI null guards", () => {
 
     it("does not strip underscores from bare URLs while tokenizing inline markdown", () => {
         const tokens = tokenizeInlineMarkdown("See https://example.com/releases/train_payload_v2/report_file.md for details");
-        assertEqual(tokens.length, 1, "bare URLs should remain plain text tokens");
-        assertEqual(tokens[0]?.text, "See https://example.com/releases/train_payload_v2/report_file.md for details", "bare URLs should preserve underscores in visible text");
+        assertEqual(tokens.length, 3, "bare URLs should split into text, link, and trailing text tokens");
+        assertEqual(tokens[0]?.text, "See ", "leading text should stay intact before the bare URL token");
+        assertEqual(tokens[1]?.type, "link", "bare URLs should tokenize as links");
+        assertEqual(tokens[1]?.href, "https://example.com/releases/train_payload_v2/report_file.md", "bare URL href should preserve underscores");
+        assertEqual(tokens[2]?.text, " for details", "trailing text should stay intact after the bare URL token");
     });
 });

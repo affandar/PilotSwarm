@@ -192,6 +192,16 @@ function findMatchingInlineDelimiter(source, delimiter, startIndex) {
     return -1;
 }
 
+function trimTrailingUrlPunctuation(rawUrl) {
+    let url = String(rawUrl || "");
+    let trailing = "";
+    while (url && /[.,!?;:]/u.test(url[url.length - 1] || "")) {
+        trailing = `${url[url.length - 1]}${trailing}`;
+        url = url.slice(0, -1);
+    }
+    return { url, trailing };
+}
+
 function countRepeatedDelimiter(source, delimiter, startIndex) {
     let count = 0;
     while (source.slice(startIndex + count, startIndex + count + delimiter.length) === delimiter) {
@@ -207,7 +217,8 @@ function pushTextRun(runs, text, style = {}) {
         && lastRun.color === (style.color || null)
         && Boolean(lastRun.bold) === Boolean(style.bold)
         && Boolean(lastRun.underline) === Boolean(style.underline)
-        && lastRun.backgroundColor === style.backgroundColor) {
+        && lastRun.backgroundColor === style.backgroundColor
+        && lastRun.href === style.href) {
         lastRun.text += text;
         return;
     }
@@ -217,6 +228,7 @@ function pushTextRun(runs, text, style = {}) {
         bold: Boolean(style.bold),
         underline: Boolean(style.underline),
         backgroundColor: style.backgroundColor || undefined,
+        href: style.href || undefined,
     });
 }
 
@@ -432,6 +444,32 @@ export function tokenizeInlineMarkdown(source = "") {
             }
         }
 
+        if (text.startsWith("<http://", index) || text.startsWith("<https://", index)) {
+            const closeIndex = text.indexOf(">", index + 1);
+            if (closeIndex > index + 1) {
+                const href = text.slice(index + 1, closeIndex);
+                pushInlineMarkdownToken(tokens, { type: "link", text: href, href });
+                index = closeIndex + 1;
+                continue;
+            }
+        }
+
+        if (text.startsWith("http://", index) || text.startsWith("https://", index)) {
+            let end = index;
+            while (end < text.length && !/\s/u.test(text[end] || "")) {
+                end += 1;
+            }
+            const { url, trailing } = trimTrailingUrlPunctuation(text.slice(index, end));
+            if (url) {
+                pushInlineMarkdownToken(tokens, { type: "link", text: url, href: url });
+                if (trailing) {
+                    pushInlineMarkdownToken(tokens, { type: "text", text: trailing });
+                }
+                index = end;
+                continue;
+            }
+        }
+
         if ((text[index] === "*" || text[index] === "_")
             && text[index + 1] !== " "
             && text[index - 1] !== text[index]
@@ -446,7 +484,7 @@ export function tokenizeInlineMarkdown(source = "") {
         }
 
         let nextIndex = text.length;
-        for (const marker of ["**", "__", "`", "[", "*", "_"]) {
+        for (const marker of ["<https://", "<http://", "https://", "http://", "**", "__", "`", "[", "*", "_"]) {
             const candidate = text.indexOf(marker, index + 1);
             if (candidate !== -1 && candidate < nextIndex) {
                 nextIndex = candidate;
@@ -477,7 +515,7 @@ function parseInlineMarkdownRuns(source) {
             continue;
         }
         if (token.type === "link") {
-            pushTextRun(runs, token.text, { color: "cyan", underline: true });
+            pushTextRun(runs, token.text, { color: "cyan", underline: true, href: token.href });
             continue;
         }
         pushTextRun(runs, token.text);

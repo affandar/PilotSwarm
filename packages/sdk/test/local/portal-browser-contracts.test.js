@@ -74,6 +74,8 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "view.fullscreen\n        ? previewPane", "portal fullscreen files mode should hide the artifact list");
         assertIncludes(webApp, "MarkdownPreviewPanel", "portal should render markdown previews through a dedicated component");
         assertIncludes(webApp, "ps-markdown-preview", "portal markdown previews should use the rich markdown container");
+        assertIncludes(webApp, "const isExternalHref = /^https?:\\/\\//i.test(href)", "portal chat runs should treat external hrefs as clickable anchors");
+        assertIncludes(webApp, 'renderInlineMarkdown(row[cellIndex] || "", theme, `chat-table:${index}:${rowIndex}:${cellIndex}`)', "portal structured chat tables should render inline markdown inside body cells");
         assertIncludes(webApp, 'stickyBottom: inspector.activeTab === "logs"', "portal log pane should use sticky follow-bottom scroll semantics");
         assertIncludes(webApp, "const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX", "portal live panes should not ignore visible user scroll movement while auto-scrolling");
         assertIncludes(webApp, 'className: inspector.activeTab === "history" || inspector.activeTab === "logs" ? "is-wrapped" : "is-preserve"', "portal inspector logs should wrap instead of preserving horizontal overflow");
