@@ -1,0 +1,9 @@
+# The repo-level `.gitignore` excludes all `.env` files to prevent
+# credentials from leaking. The overlay `.env` files here are
+# committed templates (placeholder content only; FR-009). EV2
+# renders real values into them at rollout. Un-ignore just these
+# four paths.
+!worker/overlays/dev/.env
+!worker/overlays/prod/.env
+!portal/overlays/dev/.env
+!portal/overlays/prod/.env

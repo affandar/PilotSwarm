@@ -65,7 +65,7 @@ touched) that:
 1. Produces a Kustomize base + dev/prod overlays per deployable that
    renders identical manifest behavior to the current `deploy/k8s/`
    set — except the portal ingress uses
-   `ingressClassName: azure/application-gateway` with empty placeholder
+   `ingressClassName: azure-application-gateway` with empty placeholder
    host/TLS fields filled by `replacements`, and secrets are mounted
    via `SecretProviderClass` instead of an imperatively-created Secret.
 2. Provides three Bicep trees — GlobalInfra (subscription scope, AFD
@@ -189,7 +189,7 @@ phase-gating tests but documented behaviors the design relies on.
 
 ## Phase Status
 
-- [ ] **Phase 1: Kustomize trees (worker + portal) with base + dev/prod overlays** — Author the GitOps-ready manifest trees so any cluster reconciling the blob bundles produces a pod-for-pod equivalent of today's imperative apply, with the portal switched to AGIC + SecretProviderClass.
+- [x] **Phase 1: Kustomize trees (worker + portal) with base + dev/prod overlays** — Author the GitOps-ready manifest trees so any cluster reconciling the blob bundles produces a pod-for-pod equivalent of today's imperative apply, with the portal switched to AGIC + SecretProviderClass.
 - [ ] **Phase 2: GlobalInfra Bicep (fleet-wide AFD + WAF)** — Provision the Azure Front Door Premium profile, endpoint, WAF policy (Prevention mode), and security-policy association at subscription scope.
 - [ ] **Phase 3: BaseInfra Bicep (per-region Azure resources)** — Provision AKS (with `microsoft.flux` and `azureKeyvaultSecretsProvider` addons), ACR, PG, Storage (with session blob container), AKV, UAMIs, VNet with dedicated PL subnet, private-link-ready Application Gateway, and per-deployable FluxConfigs pointing to the manifest storage account.
 - [ ] **Phase 4: Portal AFD + Private Link wiring** — Vendor the two verbatim reference Bicep modules and invoke them from the Portal service Bicep to register a per-region AFD origin + route and auto-approve the pending PLS connection on the AppGW side.
@@ -214,9 +214,15 @@ phase-gating tests but documented behaviors the design relies on.
     `copilot-runtime` namespace + `app.kubernetes.io/name=pilotswarm`
     label).
   - `deployment.yaml` — copy of `deploy/k8s/worker-deployment.yaml`
-    with the image reference replaced by a stable placeholder
-    `__ACR_LOGIN_SERVER__/__IMAGE_NAME__:__IMAGE_TAG__` (FR-014: no
-    env-specific value in base). `imagePullPolicy: IfNotPresent` —
+    with the image reference replaced by a stable single-token
+    placeholder `__IMAGE__` (FR-014: no env-specific value in base).
+    The full `<acr>/<name>:<tag>` reference is composed by EV2 at
+    rollout (Phase 5 `GenerateEnvForEv2.sh` builds `IMAGE=` from
+    `ACR_LOGIN_SERVER` + `IMAGE_NAME` + `IMAGE_TAG` scope bindings)
+    because Kustomize `replacements` cannot concatenate multiple
+    source fields into one target string. The individual tokens
+    remain in the overlay ConfigMap for downstream Phase 3/5 use.
+    `imagePullPolicy: IfNotPresent` —
     paired with an immutable build-id tag produced by CI (FR-006,
     SC-002); this resolves the mutable-tag / `Always`-pull drift risk
     observed in CodeResearch §1, §3.
@@ -242,27 +248,34 @@ phase-gating tests but documented behaviors the design relies on.
     in `deploy-aks.sh`. The Secret is materialized only at pod mount
     time by the CSI driver (no imperative `kubectl create secret`
     ever runs — FR-005 satisfied by construction).
-  - `kustomization.yaml` — lists the three resources above; declares
-    `configMapGenerator` producing `worker-env` with empty values
-    (placeholders filled by overlay `.env`); declares `replacements`
-    rules from the ConfigMap into `deployment.yaml`.
+  - `kustomization.yaml` — lists the resources above; declares
+    `configMapGenerator` producing `worker-env` with **typed
+    placeholder defaults** (e.g. `placeholder.azurecr.io/<name>:placeholder`,
+    `copilot-runtime` for `NAMESPACE`, zero UUIDs for identity fields)
+    so `kubectl kustomize` succeeds even without an overlay override
+    (required by `validate.sh`). Declares `replacements` rules from
+    the ConfigMap into `deployment.yaml`, the ServiceAccount
+    annotation, and the SecretProviderClass parameters.
 
 - **`deploy/gitops/worker/overlays/{dev,prod}/`** (new directory per
   env):
-  - `.env` — key/value file with `IMAGE_TAG=`, `ACR_LOGIN_SERVER=`,
-    `IMAGE_NAME=`, `NAMESPACE=`, `ACR_NAME=`, `KV_NAME=`,
-    `WORKLOAD_IDENTITY_CLIENT_ID=`, any per-env knobs (FR-014 full
-    fan-out). Values are blank in-repo, filled at rollout time by
-    `GenerateEnvForEv2.ps1` (Phase 5) reading EV2 scope-binding
-    tokens.
+  - `.env` — key/value file with `IMAGE=`, `IMAGE_TAG=`,
+    `ACR_LOGIN_SERVER=`, `IMAGE_NAME=`, `NAMESPACE=`, `ACR_NAME=`,
+    `KV_NAME=`, `WORKLOAD_IDENTITY_CLIENT_ID=`, `AZURE_TENANT_ID=`,
+    and any per-env knobs (FR-014 full fan-out). In the committed
+    repo the file holds **comment-only** content — no key=value pairs
+    — so the base's typed placeholder defaults render under
+    `validate.sh` and no environment-specific literal lands in git.
+    EV2 writes the real key=value pairs at rollout (Phase 5
+    `GenerateEnvForEv2.sh` from EV2 scope-binding tokens).
   - `kustomization.yaml` — references `../../base`, declares
-    `configMapGenerator` (merged over the base's) from `.env`, and
-    `replacements` fanning `IMAGE_TAG`, `ACR_LOGIN_SERVER`,
-    `IMAGE_NAME` into
-    `spec.template.spec.containers[0].image`, `NAMESPACE` into
-    every resource's `metadata.namespace`, and
+    `configMapGenerator` (merge behavior over the base's) from
+    `.env`. Fan-out replacements live in the **base** (shared across
+    overlays): `IMAGE` into `spec.template.spec.containers[0].image`,
+    `NAMESPACE` into every resource's `metadata.namespace`, and
     `WORKLOAD_IDENTITY_CLIENT_ID` into the ServiceAccount's
-    `azure.workload.identity/client-id` annotation.
+    `azure.workload.identity/client-id` annotation and the
+    SecretProviderClass `spec.parameters.clientID`.
   - `.gitignore` — ensures no accidental committed secrets.
 
 - **`deploy/gitops/portal/base/`** (new directory):
@@ -284,7 +297,7 @@ phase-gating tests but documented behaviors the design relies on.
     mode behind the ingress (resolves CodeResearch Open Question 4).
   - `service.yaml` — copy of `:95-113` (ClusterIP 3001→3001).
   - `ingress.yaml` — **new shape**: `ingressClassName:
-    azure/application-gateway` (AGIC) with empty `spec.rules[0].host`,
+    azure-application-gateway` (AGIC v1 hyphenated class name) withempty `spec.rules[0].host`,
     `spec.tls[0].hosts[0]`, empty AGIC hostname annotations
     (placeholder-style per PlaygroundService), `spec.tls[0].secretName:
     pilotswarm-portal-tls` (hardcoded, stable identifier;
@@ -356,7 +369,7 @@ phase-gating tests but documented behaviors the design relies on.
 #### Manual Verification
 
 - [ ] Diff rendered `deploy/gitops/worker/overlays/prod` against `deploy/k8s/worker-deployment.yaml` — only the image tag, Secret source (SPC vs imperative), and absence of any removed imperative fields differ.
-- [ ] Confirm portal ingress renders `ingressClassName: azure/application-gateway` in both overlays.
+- [ ] Confirm portal ingress renders `ingressClassName: azure-application-gateway` in both overlays.
 - [ ] Confirm `PORTAL_HOSTNAME` placeholder fans into exactly the 4 ingress fields (`spec.rules[0].host`, `spec.tls[0].hosts[0]`, `appgw.ingress.kubernetes.io/backend-hostname`, `appgw.ingress.kubernetes.io/health-probe-hostname`) (PlaygroundService parity).
 - [ ] **SC-006 behavioral check**: Before merging, snapshot the rendered Secret + manifests produced by `scripts/deploy-aks.sh` against the dev cluster (dry-run or recorded apply). After merging, re-run and confirm byte-equivalent Secret names, manifest content, and namespace — no change in imperative-path behavior.
 - [ ] **WebSocket / `/portal-ws` probe** (deferred to Phase 4/7 dry-run): once a dev cluster + AFD pair is live, establish a WebSocket connection through AFD → AppGW (AGIC) → portal pod on `/portal-ws` and verify the connection stays open for at least 60 seconds carrying duplex frames (covers the 3600s `request-timeout`, exercises AppGW v2's built-in WS support). If this test fails, revisit the AGIC annotation set.

@@ -1,0 +1,138 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base Kustomize tree for the PilotSwarm portal deployable.
+# Environment-specific values are filled by the overlay's
+# configMapGenerator + replacements chain (FR-014).
+
+resources:
+  - service-account.yaml
+  - role.yaml
+  - role-binding.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+  - secret-provider-class.yaml
+
+# Base defaults. Non-environment-specific values (NAMESPACE, IMAGE_NAME)
+# are real; environment-specific values are typed placeholders so the
+# build renders cleanly even without an overlay override (used by
+# validate.sh). EV2 writes real key=value pairs into the overlay .env
+# at rollout (Phase 5 GenerateEnvForEv2.sh); those override via merge.
+configMapGenerator:
+  - name: portal-env
+    literals:
+      # IMAGE is the full container reference: <acr>/<name>:<tag>. EV2
+      # composes at rollout; kustomize `replacements` cannot compose
+      # multiple sources into one string.
+      - IMAGE=placeholder.azurecr.io/pilotswarm-portal:placeholder
+      - IMAGE_TAG=placeholder
+      - PORTAL_HOSTNAME=portal.placeholder.example.com
+      - ACR_LOGIN_SERVER=placeholder.azurecr.io
+      - IMAGE_NAME=pilotswarm-portal
+      - NAMESPACE=copilot-runtime
+      - ACR_NAME=placeholder
+      - KV_NAME=placeholder
+      - WORKLOAD_IDENTITY_CLIENT_ID=00000000-0000-0000-0000-000000000000
+      - AZURE_TENANT_ID=00000000-0000-0000-0000-000000000000
+    options:
+      disableNameSuffixHash: true
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.IMAGE
+    targets:
+      - select:
+          kind: Deployment
+          name: pilotswarm-portal
+        fieldPaths:
+          - spec.template.spec.containers.[name=portal].image
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.NAMESPACE
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: pilotswarm-portal
+        fieldPaths:
+          - metadata.namespace
+      - select:
+          kind: Role
+          name: pilotswarm-portal-log-reader
+        fieldPaths:
+          - metadata.namespace
+      - select:
+          kind: RoleBinding
+          name: pilotswarm-portal-log-reader
+        fieldPaths:
+          - metadata.namespace
+          - subjects.0.namespace
+      - select:
+          kind: Deployment
+          name: pilotswarm-portal
+        fieldPaths:
+          - metadata.namespace
+      - select:
+          kind: Service
+          name: pilotswarm-portal
+        fieldPaths:
+          - metadata.namespace
+      - select:
+          kind: Ingress
+          name: pilotswarm-portal-ingress
+        fieldPaths:
+          - metadata.namespace
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - metadata.namespace
+  # Fan PORTAL_HOSTNAME into the 4 ingress fields (rule host, tls host,
+  # backend-hostname annotation, health-probe-hostname annotation).
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.PORTAL_HOSTNAME
+    targets:
+      - select:
+          kind: Ingress
+          name: pilotswarm-portal-ingress
+        fieldPaths:
+          - spec.rules.0.host
+          - spec.tls.0.hosts.0
+          - metadata.annotations.[appgw.ingress.kubernetes.io/backend-hostname]
+          - metadata.annotations.[appgw.ingress.kubernetes.io/health-probe-hostname]
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.WORKLOAD_IDENTITY_CLIENT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.clientID
+      - select:
+          kind: ServiceAccount
+          name: pilotswarm-portal
+        fieldPaths:
+          - metadata.annotations.[azure.workload.identity/client-id]
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.KV_NAME
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.keyvaultName
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.AZURE_TENANT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.tenantId

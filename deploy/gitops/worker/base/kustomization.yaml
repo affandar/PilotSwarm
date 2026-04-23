@@ -1,0 +1,113 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base Kustomize tree for the copilot-runtime worker deployable.
+# Every environment-specific value is filled by the overlay's
+# configMapGenerator + replacements chain (FR-014). The base must
+# contain NO environment-specific literal values.
+
+resources:
+  - namespace.yaml
+  - service-account.yaml
+  - deployment.yaml
+  - secret-provider-class.yaml
+
+# Overlay-provided ConfigMap holding FR-014 tokens. The overlay's
+# configMapGenerator (with `behavior: merge`) supplies real values
+# from `.env`.
+# Base defaults. Non-environment-specific values (NAMESPACE, IMAGE_NAME)
+# are real; environment-specific values are typed placeholders so the
+# build renders cleanly even without an overlay override (used by
+# validate.sh). EV2 writes real key=value pairs into the overlay .env
+# at rollout (Phase 5 GenerateEnvForEv2.sh); those override via merge.
+configMapGenerator:
+  - name: worker-env
+    literals:
+      # IMAGE is the full container reference: <acr>/<name>:<tag>. EV2
+      # composes it at rollout from ACR_LOGIN_SERVER/IMAGE_NAME/IMAGE_TAG
+      # scope bindings and writes the resolved value into the overlay
+      # `.env`. Kustomize's `replacements` cannot compose multiple
+      # sources into one string, so we let EV2 do the composition.
+      - IMAGE=placeholder.azurecr.io/copilot-runtime-worker:placeholder
+      - IMAGE_TAG=placeholder
+      - ACR_LOGIN_SERVER=placeholder.azurecr.io
+      - IMAGE_NAME=copilot-runtime-worker
+      - NAMESPACE=copilot-runtime
+      - ACR_NAME=placeholder
+      - KV_NAME=placeholder
+      - WORKLOAD_IDENTITY_CLIENT_ID=00000000-0000-0000-0000-000000000000
+      - AZURE_TENANT_ID=00000000-0000-0000-0000-000000000000
+    options:
+      disableNameSuffixHash: true
+
+# Fan-out rules per Spec FR-014 and Plan Phase 1.
+replacements:
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.IMAGE
+    targets:
+      - select:
+          kind: Deployment
+          name: copilot-runtime-worker
+        fieldPaths:
+          - spec.template.spec.containers.[name=worker].image
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.NAMESPACE
+    targets:
+      - select:
+          kind: Namespace
+        fieldPaths:
+          - metadata.name
+      - select:
+          kind: ServiceAccount
+          name: copilot-runtime-worker
+        fieldPaths:
+          - metadata.namespace
+      - select:
+          kind: Deployment
+          name: copilot-runtime-worker
+        fieldPaths:
+          - metadata.namespace
+      - select:
+          kind: SecretProviderClass
+          name: copilot-worker-secrets
+        fieldPaths:
+          - metadata.namespace
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.WORKLOAD_IDENTITY_CLIENT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+          name: copilot-worker-secrets
+        fieldPaths:
+          - spec.parameters.clientID
+      - select:
+          kind: ServiceAccount
+          name: copilot-runtime-worker
+        fieldPaths:
+          - metadata.annotations.[azure.workload.identity/client-id]
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.KV_NAME
+    targets:
+      - select:
+          kind: SecretProviderClass
+          name: copilot-worker-secrets
+        fieldPaths:
+          - spec.parameters.keyvaultName
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.AZURE_TENANT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+          name: copilot-worker-secrets
+        fieldPaths:
+          - spec.parameters.tenantId

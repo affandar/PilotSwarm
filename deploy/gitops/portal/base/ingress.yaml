@@ -1,0 +1,39 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pilotswarm-portal-ingress
+  namespace: copilot-runtime
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: portal
+  # AGIC (Application Gateway Ingress Controller) annotations. AFD
+  # Premium fronts the Application Gateway via Private Link; App
+  # Gateway terminates WebSockets and forwards to the portal Service
+  # (CodeResearch §3, §5). `request-timeout: 3600` covers long-lived
+  # `/portal-ws` connections. `backend-hostname` + `health-probe-hostname`
+  # are filled by the overlay so backend SNI matches the TLS cert.
+  annotations:
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+    appgw.ingress.kubernetes.io/backend-protocol: "http"
+    appgw.ingress.kubernetes.io/request-timeout: "3600"
+    appgw.ingress.kubernetes.io/health-probe-path: "/api/health"
+    appgw.ingress.kubernetes.io/health-probe-port: "3001"
+    appgw.ingress.kubernetes.io/backend-hostname: __PORTAL_HOSTNAME__
+    appgw.ingress.kubernetes.io/health-probe-hostname: __PORTAL_HOSTNAME__
+spec:
+  ingressClassName: azure-application-gateway
+  tls:
+    - hosts:
+        - __PORTAL_HOSTNAME__
+      secretName: pilotswarm-portal-tls
+  rules:
+    - host: __PORTAL_HOSTNAME__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pilotswarm-portal
+                port:
+                  number: 3001

@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Merge overlay values over base's empty literals. The `.env` file is
+# rendered by EV2 at rollout (GenerateEnvForEv2.sh) from
+# ServiceGroupRoot bindings; committed values are blank so no
+# environment-specific literal lands in git (FR-009).
+configMapGenerator:
+  - name: worker-env
+    behavior: merge
+    envs:
+      - .env
+    options:
+      disableNameSuffixHash: true
