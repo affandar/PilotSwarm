@@ -1,0 +1,62 @@
+# Shared OneBranch pool/job stanza for PilotSwarm pipelines.
+#
+# OneBranch Official/NonOfficial templates require that the `pool` block on
+# every job uses a template-provided pool type (e.g. `linux`, `docker`,
+# `windows`, `release`) rather than a literal pool name. This template wraps
+# that convention so the individual pipeline files do not repeat it.
+#
+# Usage:
+#   jobs:
+#   - template: shared/onebranch-pool.yml
+#     parameters:
+#       jobName: BuildAndTest
+#       jobDisplayName: 'Build & Test (lint + run-tests.sh)'
+#       poolType: linux        # linux | docker | windows | release
+#       os: linux              # only meaningful for `docker` pool
+#       steps:
+#         - script: npm ci
+#         - script: npm run lint
+
+parameters:
+- name: jobName
+  type: string
+- name: jobDisplayName
+  type: string
+  default: ''
+- name: poolType
+  type: string
+  default: linux
+  values:
+    - linux
+    - docker
+    - windows
+    - release
+- name: os
+  type: string
+  default: linux
+- name: dependsOn
+  type: object
+  default: []
+- name: variables
+  type: object
+  default: {}
+- name: steps
+  type: stepList
+  default: []
+
+jobs:
+- job: ${{ parameters.jobName }}
+  ${{ if ne(parameters.jobDisplayName, '') }}:
+    displayName: ${{ parameters.jobDisplayName }}
+  ${{ if ne(length(parameters.dependsOn), 0) }}:
+    dependsOn: ${{ parameters.dependsOn }}
+  pool:
+    type: ${{ parameters.poolType }}
+    ${{ if eq(parameters.poolType, 'docker') }}:
+      os: ${{ parameters.os }}
+  variables:
+    ob_git_checkout: true
+    # ob_outputDirectory is consumed by OneBranch to publish artifacts.
+    ob_outputDirectory: '$(Build.SourcesDirectory)/out'
+    ${{ insert }}: ${{ parameters.variables }}
+  steps: ${{ parameters.steps }}

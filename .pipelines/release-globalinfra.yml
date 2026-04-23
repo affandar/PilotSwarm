@@ -1,0 +1,103 @@
+#################################################################################
+#               PilotSwarm Release: GlobalInfra ServiceGroup (Prod)             #
+#                                                                               #
+# ServiceGroup: Microsoft.PilotSwarm.GlobalInfra                                #
+# RolloutSpec:  deploy/ev2/GlobalInfra/Ev2InfraDeployment/rolloutSpec.json      #
+#                                                                               #
+# GlobalInfra is Bicep-only (AFD + WAF, fleet-wide, subscription-scoped).       #
+# It does not consume the worker/portal container images — this release line   #
+# only invokes `Ev2RARollout@2` against the GlobalInfra infra tree.             #
+#################################################################################
+
+trigger: none
+
+parameters:
+- name: debug
+  displayName: 'Enable debug output'
+  type: boolean
+  default: false
+- name: overrideManagedValidation
+  displayName: 'Override managed validation duration'
+  type: boolean
+  default: false
+- name: managedValidationOverrideDurationInHours
+  displayName: 'Bake time in hours if override is true'
+  type: number
+  default: 24
+- name: rolloutType
+  displayName: 'SDP rollout type'
+  type: string
+  default: normal
+  values:
+    - normal
+    - globaloutage
+    - emergency
+- name: incidentId
+  displayName: 'IcM incident id for globaloutage rollouts'
+  type: number
+  default: 0
+- name: select
+  displayName: 'EV2 region selection'
+  type: string
+  # FIXME: set at onboarding — adjust region list once Phase 5 parameter files
+  # are wired. GlobalInfra is subscription-scoped so regions() is still required
+  # by the managed SDP stage map.
+  default: 'regions(westus3)'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+  pipelines:
+    - pipeline: PilotSwarm-CI-Build
+      # FIXME: set at onboarding — must match the CI pipeline name registered in ADO.
+      source: 'PilotSwarm CI Build'
+      branch: main
+      trigger: none
+
+extends:
+  template: v2/OneBranch.Official.CrossPlat.yml@templates
+  parameters:
+    featureFlags:
+      WindowsHostVersion:
+        Network: R1
+    # Managed SDP — Ev2 controls stage progression via Azure-managed stage map.
+    ev2ManagedSdpRolloutConfig:
+      rolloutType: ${{ parameters.rolloutType }}
+      overrideManagedValidationDuration: ${{ parameters.overrideManagedValidation }}
+      managedValidationOverrideDurationInHours: ${{ parameters.managedValidationOverrideDurationInHours }}
+      icmIncidentId: ${{ parameters.incidentId }}
+
+    stages:
+    - stage: PROD_PilotSwarm_GlobalInfra
+      displayName: 'PROD: PilotSwarm GlobalInfra (AFD + WAF)'
+      variables:
+        ob_release_environment: Production
+      jobs:
+      - job: PROD_PilotSwarm_GlobalInfra
+        displayName: 'Deploy: PilotSwarm GlobalInfra ServiceGroup'
+        pool:
+          type: release
+        steps:
+          - download: PilotSwarm-CI-Build
+            artifact: drop_PublishEv2Artifacts_PublishEv2
+
+          - task: vsrm-ev2.ev2-rollout.ev2-rollout-task.Ev2RARollout@2
+            displayName: 'Ev2 Managed SDP Rollout — GlobalInfra'
+            inputs:
+              # FIXME: set at onboarding — ServiceGroup root name registered in ServiceTree.
+              ServiceGroupOverride: 'Microsoft.PilotSwarm.GlobalInfra'
+              EndpointProviderType: ApprovalService
+              ApprovalServiceEnvironment: Production
+              TaskAction: RegisterAndRollout
+              SkipRegistrationIfExists: true
+              ServiceRootPath: '$(Pipeline.Workspace)/PilotSwarm-CI-Build/drop_PublishEv2Artifacts_PublishEv2/ev2/GlobalInfra/Ev2InfraDeployment'
+              RolloutSpecPath: '$(Pipeline.Workspace)/PilotSwarm-CI-Build/drop_PublishEv2Artifacts_PublishEv2/ev2/GlobalInfra/Ev2InfraDeployment/rolloutSpec.json'
+              # Managed stage map — Azure-controlled SDP progression.
+              sdpStageMap: managed
+              # FIXME: set at onboarding — managed SDP stage map name if the
+              # workload requires a non-default map (typically keep default).
+              StageMapName: 'Microsoft.Azure.SDP.Standard'
+              Select: ${{ parameters.select }}

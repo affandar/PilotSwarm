@@ -1,0 +1,88 @@
+#################################################################################
+#                       PilotSwarm PR Gate (OneBranch NonOfficial)              #
+#                                                                               #
+# PR validation pipeline. Mirrors Stage 1 of ci.yml (lint + full local test     #
+# suite) but does NOT build container images — PR feedback stays fast and       #
+# pipeline minutes are not spent on image builds that will be discarded.        #
+#################################################################################
+
+trigger: none
+
+pr:
+  branches:
+    include:
+      - main
+
+parameters:
+- name: debug
+  displayName: 'Enable debug output'
+  type: boolean
+  default: false
+
+variables:
+  CDP_DEFINITION_BUILD_COUNT: $[counter('', 0)]
+  system.debug: ${{ parameters.debug }}
+  ROOT: $(Build.SourcesDirectory)
+  REPOROOT: $(Build.SourcesDirectory)
+  OUTPUTROOT: $(REPOROOT)/out
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+
+extends:
+  template: v2/OneBranch.NonOfficial.CrossPlat.yml@templates
+  parameters:
+    featureFlags:
+      WindowsHostVersion:
+        Network: R1
+    git:
+      fetchDepth: 25
+
+    globalSdl:
+      tsa:
+        enabled: false
+      policheck:
+        enabled: true
+        break: true
+        severity: Warning
+      credscan:
+        enabled: true
+      cg:
+        failOnAlert: false
+
+    stages:
+    - stage: BuildAndTest
+      displayName: 'PR: lint + run-tests.sh'
+      jobs:
+      - template: shared/onebranch-pool.yml
+        parameters:
+          jobName: BuildAndTest
+          jobDisplayName: 'npm ci / lint / run-tests.sh'
+          poolType: linux
+          steps:
+            - task: NodeTool@0
+              displayName: 'Install Node.js'
+              inputs:
+                versionSpec: '20.x'
+
+            - script: |
+                set -euo pipefail
+                npm ci
+              displayName: 'npm ci'
+              workingDirectory: $(Build.SourcesDirectory)
+
+            - script: |
+                set -euo pipefail
+                npm run lint
+              displayName: 'npm run lint'
+              workingDirectory: $(Build.SourcesDirectory)
+
+            - script: |
+                set -euo pipefail
+                ./scripts/run-tests.sh
+              displayName: 'run-tests.sh (full local test suite)'
+              workingDirectory: $(Build.SourcesDirectory)
