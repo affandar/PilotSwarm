@@ -348,7 +348,11 @@ Acceptance Scenarios:
 - FR-010: A documented local-validation command set MUST render the
   Kustomize output for each overlay and compile all Bicep modules,
   such that structural errors surface before pushing (mitigates the
-  absence of in-pipeline lint identified in SpecResearch Q22).
+  absence of in-pipeline lint identified in SpecResearch Q22). The
+  same command set MAY additionally invoke Kubernetes schema
+  validation (e.g., `kubeconform`) over the rendered manifests as an
+  optional quality gate; such validation is a non-blocking
+  developer aid, not a spec-mandated verification.
   (Stories: P3-LocalValidation)
 - FR-011: The new path MUST provision the Azure Storage *container*
   used by PilotSwarm for session blob storage (today not created by
@@ -364,10 +368,11 @@ Acceptance Scenarios:
   pipeline definition (OneBranch-compliant, matching the reference
   repo's CI + prod pipeline shape — SpecResearch Q23–Q25) that
   builds the worker and portal images and drives
-  `Ev2RARollout@2` with the managed SDP stage map. Each Application
-  ServiceGroup MUST have its own prod pipeline line, matching the
-  reference repo's per-service pipeline pattern. (Stories:
-  P1-Release)
+  `Ev2RARollout@2` with the managed SDP stage map. The new path
+  MUST include separate prod pipeline lines for GlobalInfra,
+  BaseInfra, and each Application ServiceGroup (Worker, Portal),
+  matching the reference repo's per-ServiceGroup pipeline pattern.
+  (Stories: P1-Release)
 - FR-014: Every environment overlay MUST express its target
   namespace, image registry, image name, workload-identity client
   IDs, portal ingress hostname, and any AFD-route-derived values
@@ -403,9 +408,13 @@ Acceptance Scenarios:
   listener for portal traffic); in-cluster ingress MUST use the
   AGIC ingress class (`azure/application-gateway`), not NGINX,
   with hostname and TLS derived from an AKV-issued certificate
-  whose subject is `${resourceName}.${sslCertificateDomainSuffix}`
-  (SpecResearch Q14, Q14b). (Stories: P1-Release, P1-Regions,
-  P2-SecretsViaKV)
+  whose subject is
+  `${resourceName}-${region}.${sslCertificateDomainSuffix}`
+  (SpecResearch Q14, Q14b). The `-${region}` suffix partitions the
+  per-region origins under a shared `sslCertificateDomainSuffix` and
+  intentionally extends the reference-repo `PlaygroundService`
+  pattern to support multi-region deployments. (Stories:
+  P1-Release, P1-Regions, P2-SecretsViaKV)
 
 ### Key Entities
 
@@ -570,11 +579,13 @@ Acceptance Scenarios:
   `Microsoft.PilotSwarm.<App>.{env}.Configuration.json`, mirroring
   fleet-manager's convention. The TLS certificate is issued by the
   AKV cert-issuer and has subject
-  `${resourceName}.${sslCertificateDomainSuffix}`. That same string
-  is the AFD origin's `hostName`/`originHostHeader`, the AppGW
-  listener hostname, and the K8s Ingress `host`. Rationale: custom
-  domain and env-segregated cert chain matches reference repo;
-  public-resolvable names per environment.
+  `${resourceName}-${region}.${sslCertificateDomainSuffix}`. That
+  same string is the AFD origin's `hostName`/`originHostHeader`,
+  the AppGW listener hostname, and the K8s Ingress `host`.
+  Rationale: custom domain and env-segregated cert chain matches
+  reference repo; the `-${region}` suffix partitions per-region
+  origin names under one shared `sslCertificateDomainSuffix` so
+  multi-region deployments do not collide.
 - **Managed SDP stage map (`Microsoft.Azure.SDP.Standard`)**
   (SpecResearch Q4, Q6): The new path uses the same managed stage
   map as the reference repo. Concrete bake times and canary
@@ -587,11 +598,6 @@ Acceptance Scenarios:
   fleet-manager is multi-service .NET with SQL-schema services;
   they do not apply to a single-service Node repo. Rationale:
   intake guidance on simplifications.
-- **No Azure Front Door / GlobalInfra** (SpecResearch Q14):
-  Superseded by the AFD adoption decision — see the "Azure Front
-  Door Premium + WAF as portal edge" assumption above. The
-  GlobalInfra ServiceGroup, private-link-ready AppGW, and portal
-  AFD wiring are now in scope.
 - **Migrations run at worker startup, unchanged** (SpecResearch
   Q40): The existing advisory-lock-based migration runner in
   `cms-migrator` / `facts-migrator` continues to handle schema
@@ -634,7 +640,7 @@ Acceptance Scenarios:
   `deploy/k8s/portal-ingress.yaml` is not carried forward to the
   new prod overlay. Following the `PlaygroundService` ingress
   pattern verbatim, the portal Bicep computes
-  `certificateSubject = '${resourceName}.${sslCertificateDomainSuffix}'`,
+  `certificateSubject = '${resourceName}-${region}.${sslCertificateDomainSuffix}'`,
   provisions an AKV-issued TLS certificate with a stable name (e.g.
   `pilotswarm-portal-tls-cert`), and exports the hostname as a
   Bicep output. The hostname is EV2-bound via a
@@ -652,6 +658,24 @@ Acceptance Scenarios:
   of tenant-specific requirements (e.g., service connection
   names, agent pools) is an operational prerequisite surfaced in
   documentation but not gated by this work.
+- **Coexistence with `scripts/deploy-aks.sh`**: Both deployment
+  paths target the same `copilot-runtime` namespace. Operators MUST
+  pick one path per cluster: a cluster managed by the new EV2 +
+  FLUX path is not simultaneously driven by `scripts/deploy-aks.sh`
+  (and vice versa). This is a documented operational rule, not a
+  technical guard. The initial production cluster is managed by
+  the new path; `toygres-aks / westus3` remains driven by
+  `scripts/deploy-aks.sh`.
+
+## Decisions Log
+
+- **Azure Front Door / GlobalInfra adopted (supersedes earlier
+  "No AFD" direction)**: An earlier draft of this spec assumed no
+  Azure Front Door and no GlobalInfra ServiceGroup. That direction
+  is superseded by the "Azure Front Door Premium + WAF as portal
+  edge" assumption above. The GlobalInfra ServiceGroup, the
+  private-link-ready AppGW, and the portal AFD wiring are now in
+  scope. Recorded here for audit trail.
 
 ## Scope
 
@@ -692,9 +716,9 @@ Acceptance Scenarios:
   shell-extension scripts, adapted for PilotSwarm's shape.
 - New CI + prod pipeline lines (OneBranch Official pattern) that
   build the worker and portal images and drive `Ev2RARollout@2`
-  with the managed SDP stage map — at least one prod pipeline line
-  per Application ServiceGroup plus a separate line for
-  GlobalInfra, matching the reference pattern.
+  with the managed SDP stage map — separate prod pipeline lines for
+  GlobalInfra, BaseInfra, and each Application ServiceGroup
+  (Worker, Portal), matching the reference pattern.
 - New dev-test helper for each Application ServiceGroup, analogous
   to fleet-manager's `ev2-deploy-dev.ps1`.
 - New documentation under `docs/` describing the full flow and
