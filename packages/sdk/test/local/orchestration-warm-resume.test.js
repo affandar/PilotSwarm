@@ -300,4 +300,5 @@ describe("orchestration warm resume durability", () => {
         expect(mockSession.dehydrate).toHaveBeenCalledTimes(1);
         expect(mockSession.dehydrate).toHaveBeenCalledWith("input_required", undefined);
     });
+
 });

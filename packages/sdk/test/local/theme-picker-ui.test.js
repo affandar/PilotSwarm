@@ -3,6 +3,7 @@ import { UI_COMMANDS } from "../../../ui-core/src/commands.js";
 import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
 import { selectStatusBar, selectThemePickerModal } from "../../../ui-core/src/selectors.js";
+import { computeLegacyLayout } from "../../../ui-core/src/layout.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
 import { createStore } from "../../../ui-core/src/store.js";
 import { DEFAULT_THEME_ID, listThemes } from "../../../ui-core/src/themes/index.js";
@@ -47,6 +48,12 @@ describe("theme picker UI behavior", () => {
         assertEqual(state.ui.layout.paneAdjust, 7, "initial state should honor a persisted left/right pane split");
         assertEqual(state.ui.layout.sessionPaneAdjust, -3, "initial state should honor a persisted session/chat pane split");
         assertEqual(state.ui.layout.activityPaneAdjust, 5, "initial state should honor a persisted inspector/activity pane split");
+    });
+
+    it("caps the session/chat divider at half the full window height", () => {
+        const layout = computeLegacyLayout({ width: 120, height: 40 }, 0, 1, 999);
+        assertEqual(layout.sessionPaneHeight, 20, "session pane should not grow beyond half of the full window height");
+        assertEqual(layout.chatPaneHeight, 14, "chat pane should retain the remaining workspace height below the 50% cap");
     });
 
     it("opens the shared theme picker with the current theme preselected", async () => {

@@ -1,6 +1,6 @@
 {
   "name": "pilotswarm-web",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "private": false,
   "description": "Browser-native web portal for PilotSwarm with shared controller/state/theme reuse.",
   "type": "module",
@@ -37,7 +37,7 @@
     "@azure/msal-browser": "^4.26.1",
     "express": "^5.1.0",
     "jose": "^6.2.2",
-    "pilotswarm-cli": "^0.1.21",
+    "pilotswarm-cli": "^0.1.22",
     "pilotswarm-ui-core": "0.1.0",
     "pilotswarm-ui-react": "0.1.0",
     "react": "^19.2.4",

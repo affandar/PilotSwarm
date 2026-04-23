@@ -462,7 +462,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId}`);
 
         const hostname = os.hostname();
-        const MAX_SUB_AGENTS = 20;
+        const MAX_SUB_AGENTS = 50;
         const MAX_NESTING_LEVEL = 2;
         let fallbackAgentIdentity: string | undefined;
         // Self-heal older persisted system sessions created before agentIdentity

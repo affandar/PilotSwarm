@@ -11,6 +11,7 @@ export const MAX_PROMPT_INPUT_ROWS = 3;
 export const MIN_SESSION_PANE_HEIGHT = 6;
 export const MIN_CHAT_PANE_HEIGHT = 10;
 export const DEFAULT_SESSION_PANE_RATIO = 0.25;
+export const MAX_SESSION_PANE_WINDOW_RATIO = 0.5;
 export const MIN_ACTIVITY_PANE_HEIGHT = 6;
 export const MIN_INSPECTOR_PANE_HEIGHT = 10;
 export const DEFAULT_ACTIVITY_PANE_RATIO = 0.336;
@@ -42,6 +43,16 @@ export function normalizeViewport(viewport = {}) {
 export function getPromptInputRows(prompt = "") {
     const explicitLines = String(prompt || "").split("\n").length;
     return clamp(explicitLines, 1, MAX_PROMPT_INPUT_ROWS);
+}
+
+export function getBaseSessionPaneHeight(bodyHeight) {
+    return Math.max(MIN_SESSION_PANE_HEIGHT, Math.floor(bodyHeight * DEFAULT_SESSION_PANE_RATIO));
+}
+
+export function getMaxSessionPaneHeight(totalHeight, bodyHeight) {
+    const maxByWindow = Math.floor(Math.max(0, Number(totalHeight) || 0) * MAX_SESSION_PANE_WINDOW_RATIO);
+    const maxByChatMinimum = Math.max(MIN_SESSION_PANE_HEIGHT, bodyHeight - MIN_CHAT_PANE_HEIGHT);
+    return Math.max(MIN_SESSION_PANE_HEIGHT, Math.min(maxByChatMinimum, maxByWindow));
 }
 
 export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1, sessionPaneAdjust = 0, activityPaneAdjust = 0, fullscreenPane = null) {
@@ -82,11 +93,12 @@ export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1, se
         rightWidth = Math.max(MIN_RIGHT_WIDTH, totalWidth - leftWidth - PANE_GAP_X);
     }
 
-    const baseSessionPaneHeight = Math.max(MIN_SESSION_PANE_HEIGHT, Math.floor(bodyHeight * DEFAULT_SESSION_PANE_RATIO));
+    const baseSessionPaneHeight = getBaseSessionPaneHeight(bodyHeight);
+    const maxSessionPaneHeight = getMaxSessionPaneHeight(totalHeight, bodyHeight);
     const sessionPaneHeight = clamp(
         baseSessionPaneHeight + (Number(sessionPaneAdjust) || 0),
         MIN_SESSION_PANE_HEIGHT,
-        Math.max(MIN_SESSION_PANE_HEIGHT, bodyHeight - MIN_CHAT_PANE_HEIGHT),
+        maxSessionPaneHeight,
     );
     const baseActivityPaneHeight = Math.max(MIN_ACTIVITY_PANE_HEIGHT, Math.floor(bodyHeight * DEFAULT_ACTIVITY_PANE_RATIO));
     const desiredActivityPaneHeight = baseActivityPaneHeight + (Number(activityPaneAdjust) || 0);

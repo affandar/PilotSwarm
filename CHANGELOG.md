@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.22 — 2026-04-23
+
+### SDK / Runtime
+
+- **Env-configurable runtime sizing** — worker/runtime sizing is now controlled by environment variables: `DUROXIDE_PG_POOL_MAX`, `PILOTSWARM_CMS_PG_POOL_MAX`, `PILOTSWARM_FACTS_PG_POOL_MAX`, `PILOTSWARM_ORCHESTRATION_CONCURRENCY`, and `PILOTSWARM_WORKER_CONCURRENCY`.
+- **Conservative local defaults restored** — when those env vars are unset, PilotSwarm falls back to the pre-sizing defaults (`duroxide-pg` `10`, CMS `3`, facts `3`, orchestration concurrency `2`, worker concurrency `2`) to avoid exhausting smaller PostgreSQL deployments during local and CI parallel runs.
+- **Orchestration v1.0.46** — froze `1.0.45` and moved the live sub-agent cap increase into a new latest orchestration version.
+- **Live sub-agent cap raised to 50** — current enforcement in the orchestration and `runTurn` bridge now allows up to 50 running sub-agents per parent session.
+
+### Portal / TUI / Shared UI
+
+- **Session/chat divider cap** — the shared layout now caps the session pane at 50% of the full window height, and the resize controller clamps to that limit in both portal and TUI surfaces.
+- **Portal table fit-width fix** — small fit-width markdown/chat tables no longer get forced to span the entire pane width.
+- **Resize affordance copy cleanup** — the browser row-resize handle now describes resizing the sessions/chat panes instead of only the session list.
+
+### Deploy / Ops
+
+- **AKS secret wiring for worker sizing** — deploy scripts and docs now pass the runtime/pool env vars through `copilot-runtime-secrets` so production scaling can be tuned at deploy time instead of hard-coded in the SDK.
+- **Worker startup diagnostics** — the headless worker example logs resolved runtime and pool env settings at startup for easier incident triage.
+
+### Docs
+
+- **Configuration docs refreshed** — canonical docs now describe the env-only runtime/database sizing model, the restored conservative defaults, and the AKS secret wiring needed to scale those values safely in deployment.
+
+### Tests
+
+- **Shared UI regression coverage** — tests now cover the 50%-cap session/chat layout behavior and the portal fit-width table contract.
+- **Parallel local validation** — the heavy `multi-worker` + `reliability` suite pair was rerun in parallel against the restored defaults and passed, confirming the default rollback eliminated the earlier PostgreSQL client exhaustion.
+
 ## 0.1.21 — 2026-04-22
 
 ### SDK / Artifact Storage

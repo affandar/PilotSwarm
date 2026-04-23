@@ -987,7 +987,7 @@ body.is-resizing-pane-y * {
 
 .ps-chat-table-wrap.is-fit-width,
 .ps-md-table-wrap.is-fit-width {
-  width: 100%;
+  width: fit-content;
   max-width: 100%;
 }
 
@@ -999,8 +999,9 @@ body.is-resizing-pane-y * {
 
 .ps-chat-table.is-fit-width,
 .ps-md-table.is-fit-width {
-  width: 100%;
-  table-layout: fixed;
+  width: fit-content;
+  max-width: 100%;
+  table-layout: auto;
 }
 
 .ps-chat-table th,

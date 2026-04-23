@@ -9,10 +9,13 @@ import {
 import { applySessionUsageEvent, cloneContextUsageSnapshot } from "./context-usage.js";
 import {
     computeLegacyLayout,
+    getBaseSessionPaneHeight,
     getFocusLeftTarget,
     getFocusOrderForLayout,
+    getMaxSessionPaneHeight,
     getFocusRightTarget,
     getPromptInputRows,
+    MIN_SESSION_PANE_HEIGHT,
     normalizeFocusRegion,
 } from "./layout.js";
 import { parseTerminalMarkupRuns } from "./formatting.js";
@@ -3357,7 +3360,11 @@ export class PilotSwarmUiController {
         const layoutState = this.getState().ui.layout || {};
         const currentLayout = this.getCurrentLayout();
         const bodyHeight = currentLayout.bodyHeight ?? (layoutState.viewportHeight ?? 40);
-        const nextAdjust = Math.max(-bodyHeight, Math.min(bodyHeight, (layoutState.sessionPaneAdjust || 0) + delta));
+        const baseSessionPaneHeight = getBaseSessionPaneHeight(bodyHeight);
+        const maxSessionPaneHeight = getMaxSessionPaneHeight(currentLayout.totalHeight ?? (layoutState.viewportHeight ?? 40), bodyHeight);
+        const minAdjust = MIN_SESSION_PANE_HEIGHT - baseSessionPaneHeight;
+        const maxAdjust = maxSessionPaneHeight - baseSessionPaneHeight;
+        const nextAdjust = Math.max(minAdjust, Math.min(maxAdjust, (layoutState.sessionPaneAdjust || 0) + delta));
         this.dispatch({
             type: "ui/sessionPaneAdjust",
             sessionPaneAdjust: nextAdjust,

@@ -39,6 +39,13 @@ GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 # Optional — session dehydration to blob storage
 AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
 AZURE_STORAGE_CONTAINER=copilot-sessions
+
+# Optional — env-only PostgreSQL/runtime scaling knobs
+# DUROXIDE_PG_POOL_MAX=10
+# PILOTSWARM_CMS_PG_POOL_MAX=3
+# PILOTSWARM_FACTS_PG_POOL_MAX=3
+# PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
+# PILOTSWARM_WORKER_CONCURRENCY=2
 ```
 
 > **Model providers** are configured in the local `.model_providers.json`, which is usually copied from the checked-in `.model_providers.example.json` template. API keys use `env:VAR_NAME` syntax to reference `.env` variables. Providers whose API key is not set are automatically excluded from the model list.
@@ -96,6 +103,32 @@ Current authorization is Phase 1 only:
 - no session ownership filtering yet
 
 ## PostgreSQL Setup
+
+### PostgreSQL Pool Sizing And Runtime Concurrency
+
+PilotSwarm uses environment variables only for PostgreSQL pool sizing and
+Duroxide runtime concurrency.
+
+- `DUROXIDE_PG_POOL_MAX`
+  Sets the `duroxide-pg` provider pool size. Default: `10`.
+- `PILOTSWARM_CMS_PG_POOL_MAX`
+  Sets the session catalog (`pg.Pool`) max size. Default: `3`.
+- `PILOTSWARM_FACTS_PG_POOL_MAX`
+  Sets the facts store (`pg.Pool`) max size. Default: `3`.
+- `PILOTSWARM_ORCHESTRATION_CONCURRENCY`
+  Sets Duroxide orchestration concurrency. Default: `2`.
+- `PILOTSWARM_WORKER_CONCURRENCY`
+  Sets Duroxide activity/worker concurrency. Default: `2`.
+
+Example:
+
+```bash
+DUROXIDE_PG_POOL_MAX=10
+PILOTSWARM_CMS_PG_POOL_MAX=3
+PILOTSWARM_FACTS_PG_POOL_MAX=3
+PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
+PILOTSWARM_WORKER_CONCURRENCY=2
+```
 
 ### Local Development
 
@@ -235,6 +268,9 @@ new PilotSwarmWorker({
     cmsSchema: "copilot_sessions",       // session catalog schema (default: "copilot_sessions")
 });
 ```
+
+  PostgreSQL pool sizing and runtime concurrency are intentionally **not** part of
+  `PilotSwarmWorkerOptions`. Configure them with the env vars above.
 
 ## Client Options
 
