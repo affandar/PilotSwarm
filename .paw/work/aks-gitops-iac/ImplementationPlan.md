@@ -190,7 +190,7 @@ phase-gating tests but documented behaviors the design relies on.
 ## Phase Status
 
 - [x] **Phase 1: Kustomize trees (worker + portal) with base + dev/prod overlays** — Author the GitOps-ready manifest trees so any cluster reconciling the blob bundles produces a pod-for-pod equivalent of today's imperative apply, with the portal switched to AGIC + SecretProviderClass.
-- [ ] **Phase 2: GlobalInfra Bicep (fleet-wide AFD + WAF)** — Provision the Azure Front Door Premium profile, endpoint, WAF policy (Prevention mode), and security-policy association at subscription scope.
+- [x] **Phase 2: GlobalInfra Bicep (fleet-wide AFD + WAF)** — Provision the Azure Front Door Premium profile, endpoint, WAF policy (Prevention mode), and security-policy association at subscription scope.
 - [ ] **Phase 3: BaseInfra Bicep (per-region Azure resources)** — Provision AKS (with `microsoft.flux` and `azureKeyvaultSecretsProvider` addons), ACR, PG, Storage (with session blob container), AKV, UAMIs, VNet with dedicated PL subnet, private-link-ready Application Gateway, and per-deployable FluxConfigs pointing to the manifest storage account.
 - [ ] **Phase 4: Portal AFD + Private Link wiring** — Vendor the two verbatim reference Bicep modules and invoke them from the Portal service Bicep to register a per-region AFD origin + route and auto-approve the pending PLS connection on the AppGW side.
 - [ ] **Phase 5: Four EV2 ServiceGroups + shell extensions + dev-test helpers** — Define `ServiceModel.json`, `RolloutSpec.json`, `ScopeBindings.json`, `Parameters/{env}.json`, `Ev2AppDeployment/` for all four ServiceGroups (BaseInfra + the two App SGs consume shell extensions; GlobalInfra is Bicep-only), with Azure-managed SDP stage maps and `ev2-deploy-dev.ps1` per App SG.
