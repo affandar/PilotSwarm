@@ -134,6 +134,36 @@ Done via the same chain (no Flux image-automation controller):
 - `.env` gets `CONTAINER_IMAGE=${__ACR_NAME__}.azurecr.io/${__APP_IMAGE_NAME__}:${__BUILD_VERSION__}`.
 - Kustomize `replacements` rule (e.g. `PostgreSQLFleetManager/manifests/overlays/prod/kustomization.yaml:83-92`) writes that into `Deployment.spec.template.spec.containers[name=container].image`.
 
+### Q12b. Ingress hostname substitution (PlaygroundService — canonical analog for portal)
+
+`PostgreSQLFleetManager` has no ingress, but `PlaygroundService` does and uses the same env-var replacement chain to parameterize hostname. This is the direct analog for PilotSwarm's portal ingress.
+
+**Layer 1 — Bicep** (`src/Deploy/PlaygroundService/bicep/main.bicep:46-47, 383`):
+```bicep
+var sslCertificateName = 'playground-service-tls-cert'          // stable, hardcoded
+var certificateSubject = '${resourceName}.${sslCertificateDomainSuffix}'
+output BackendHostName string = certificateSubject
+```
+The AKV-issued TLS cert is provisioned with that fixed name; the hostname is computed from `resourceName` + domain suffix and exported.
+
+**Layer 2 — EV2 scope binding** (`src/Deploy/PlaygroundService/Ev2AppDeployment/scopeBinding.json:145-148`):
+```json
+{ "find": "__BACKEND_HOSTNAME__",
+  "replaceWith": "$serviceResourceDefinition(PlaygroundServiceInfraDefinition).action(deploy).outputs(BackendHostName.value)" }
+```
+
+**Layer 3 — overlay `.env`** (`src/Deploy/PlaygroundService/manifests/overlays/prod/.env:13`): `BACKEND_HOSTNAME=` (empty; `GenerateEnvForEv2.ps1` fills it).
+
+**Layer 4 — base ingress** (`src/Deploy/PlaygroundService/manifests/base/ingress.yaml:22-26`): host, TLS hosts, and hostname annotations are left as empty strings with comments `# Will be replaced by kustomize with certificate hostname`. TLS secret name (`playground-service-tls-cert`) is **hardcoded**, not replaced — it's a stable K8s identifier whose cert material comes via SecretProviderClass.
+
+**Layer 5 — overlay replacements** (`src/Deploy/PlaygroundService/manifests/overlays/prod/kustomization.yaml:95-119`): one `replacements` entry sources `ConfigMap.data.BACKEND_HOSTNAME` and fans it out to four Ingress fields:
+- `spec.rules.0.host`
+- `spec.tls.0.hosts.0`
+- `metadata.annotations.[appgw.ingress.kubernetes.io/backend-hostname]`
+- `metadata.annotations.[appgw.ingress.kubernetes.io/health-probe-hostname]`
+
+**Key takeaway**: only the **hostname** flows as an EV2-bound overlay value. The **TLS secret name** stays a stable K8s identifier in the base manifest, and the underlying cert is fetched from AKV via SecretProviderClass like every other secret.
+
 ## Supporting Azure Infrastructure
 
 ### Q13. `BaseInfra/` — what it provisions

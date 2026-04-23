@@ -364,10 +364,13 @@ Acceptance Scenarios:
   P1-Release)
 - FR-014: Every environment overlay MUST express its target
   namespace, image registry, image name, workload-identity client
-  IDs, portal ingress hostname, and ingress TLS secret name through
-  the overlay-env-file + replacements chain; no environment-specific
-  value may be hard-coded in a base manifest. (Stories: P1-Release,
-  P1-Regions)
+  IDs, and portal ingress hostname through the overlay-env-file +
+  replacements chain; no environment-specific value may be
+  hard-coded in a base manifest. The ingress TLS secret name is a
+  stable Kubernetes identifier declared in the base manifest; the
+  underlying TLS certificate material is delivered via
+  SecretProviderClass from Azure Key Vault like any other secret
+  (SpecResearch Q12b, Q17). (Stories: P1-Release, P1-Regions)
 - FR-015: The new path MUST publish documentation in `docs/`
   describing the new flow end-to-end, cross-linking to
   `docs/deploying-to-aks.md`, and clearly labelling which path to
@@ -542,13 +545,23 @@ Acceptance Scenarios:
   and are consumed by both the old and new deployment paths.
   Rationale: changing file paths would perturb the existing
   `deploy-aks.sh` flow, which is explicitly out of scope.
-- **Portal ingress hostname and TLS secret name are EV2-bound**:
-  The current hardcoded host
+- **Portal ingress hostname is EV2-bound; TLS secret name is stable**
+  (SpecResearch Q12b): The current hardcoded host
   `pilotswarm-portal.westus3.cloudapp.azure.com` in
   `deploy/k8s/portal-ingress.yaml` is not carried forward to the
-  new prod overlay. The new portal overlay exposes the ingress
-  hostname and TLS secret name as values in the overlay env file,
-  supplied at rollout time via EV2 scope bindings.
+  new prod overlay. Following the `PlaygroundService` ingress
+  pattern verbatim, the portal Bicep computes
+  `certificateSubject = '${resourceName}.${sslCertificateDomainSuffix}'`,
+  provisions an AKV-issued TLS certificate with a stable name (e.g.
+  `pilotswarm-portal-tls-cert`), and exports the hostname as a
+  Bicep output. The hostname is EV2-bound via a
+  `__PORTAL_HOSTNAME__` token in `scopeBinding.json`, flows into
+  `overlays/prod/.env`, and is fanned out by a single Kustomize
+  `replacements` entry into `spec.rules[0].host`,
+  `spec.tls[0].hosts[0]`, and the two App-Gateway hostname
+  annotations. The TLS secret name stays a stable Kubernetes
+  identifier in the base ingress manifest; the underlying cert
+  material is fetched from AKV via SecretProviderClass.
 - **OneBranch pipeline template applies** (SpecResearch Q23,
   Q25): The new pipelines are assumed to fit the OneBranch
   Official template used by the reference repo. Full validation
