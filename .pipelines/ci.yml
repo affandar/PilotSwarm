@@ -1,0 +1,213 @@
+#################################################################################
+#                        PilotSwarm OneBranch Official CI                       #
+#                                                                               #
+# Pipeline: "PilotSwarm CI Build" (register this name in ADO — downstream       #
+#           release pipelines consume it via `pipelines.source`).               #
+#                                                                               #
+# Stages:                                                                       #
+#   1. BuildAndTest  — `npm ci`, `npm run lint`, `./scripts/run-tests.sh`.      #
+#   2. Containers    — `docker buildx build --platform linux/amd64` for         #
+#                      worker + portal using deploy/Dockerfile.worker and       #
+#                      deploy/Dockerfile.portal, pushed to the holding ACR      #
+#                      tagged with an immutable :$(Build.BuildId) (SC-002 —     #
+#                      NO :latest or rolling tags).                             #
+#                                                                               #
+# Downstream release pipelines (.pipelines/release-*.yml) consume the image     #
+# tag via the pipeline resource + the published IMAGE_TAG variable.             #
+#################################################################################
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr: none  # PR validation lives in .pipelines/pr.yml
+
+parameters:
+- name: debug
+  displayName: 'Enable debug output'
+  type: boolean
+  default: false
+
+variables:
+  CDP_DEFINITION_BUILD_COUNT: $[counter('', 0)]
+  system.debug: ${{ parameters.debug }}
+  ROOT: $(Build.SourcesDirectory)
+  REPOROOT: $(Build.SourcesDirectory)
+  OUTPUTROOT: $(REPOROOT)/out
+  # FIXME: set at onboarding — login server of the holding ACR
+  # (CI-only build registry; production ACR pulls are configured by EV2).
+  HOLDING_ACR_LOGIN_SERVER: ''
+  # FIXME: set at onboarding — ADO service connection to the holding ACR.
+  HOLDING_ACR_SERVICE_CONNECTION: ''
+  # Immutable image tag. SC-002 forbids :latest / rolling tags.
+  IMAGE_TAG: $(Build.BuildId)
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+
+extends:
+  template: v2/OneBranch.Official.CrossPlat.yml@templates
+  parameters:
+    featureFlags:
+      WindowsHostVersion:
+        Network: R1
+    git:
+      fetchDepth: 25
+
+    globalSdl:
+      perStage:
+        sdl_sources:
+          checkout_all_repos: true
+      tsa:
+        enabled: false
+      policheck:
+        enabled: true
+        break: true
+        severity: Warning
+      armory:
+        enabled: false
+      binskim:
+        enabled: false
+      sdtReport:
+        enabled: false
+      publishLogs:
+        enabled: false
+      credscan:
+        enabled: true
+      cg:
+        failOnAlert: false
+      sbom:
+        enabled: true
+
+    stages:
+    - stage: BuildAndTest
+      displayName: 'Build & Test (lint + run-tests.sh)'
+      jobs:
+      - template: shared/onebranch-pool.yml
+        parameters:
+          jobName: BuildAndTest
+          jobDisplayName: 'npm ci / lint / run-tests.sh'
+          poolType: linux
+          steps:
+            - task: NodeTool@0
+              displayName: 'Install Node.js'
+              inputs:
+                versionSpec: '20.x'
+
+            - script: |
+                set -euo pipefail
+                npm ci
+              displayName: 'npm ci'
+              workingDirectory: $(Build.SourcesDirectory)
+
+            - script: |
+                set -euo pipefail
+                npm run lint
+              displayName: 'npm run lint'
+              workingDirectory: $(Build.SourcesDirectory)
+
+            - script: |
+                set -euo pipefail
+                ./scripts/run-tests.sh
+              displayName: 'run-tests.sh (full local test suite)'
+              workingDirectory: $(Build.SourcesDirectory)
+
+    - stage: Containers
+      displayName: 'Build & push worker + portal images'
+      dependsOn: BuildAndTest
+      jobs:
+      - template: shared/onebranch-pool.yml
+        parameters:
+          jobName: BuildPushWorker
+          jobDisplayName: 'Build & push copilot-runtime-worker image'
+          poolType: docker
+          os: linux
+          steps:
+            - task: AzureCLI@2
+              displayName: 'ACR login (holding registry)'
+              inputs:
+                # FIXME: set at onboarding — ADO service connection with AcrPush on the holding ACR.
+                azureSubscription: $(HOLDING_ACR_SERVICE_CONNECTION)
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  az acr login --name "$(echo "$(HOLDING_ACR_LOGIN_SERVER)" | cut -d. -f1)"
+
+            - script: |
+                set -euo pipefail
+                docker buildx build \
+                  --platform linux/amd64 \
+                  -f deploy/Dockerfile.worker \
+                  -t "$(HOLDING_ACR_LOGIN_SERVER)/copilot-runtime-worker:$(IMAGE_TAG)" \
+                  --push \
+                  .
+              displayName: 'docker buildx build & push worker'
+              workingDirectory: $(Build.SourcesDirectory)
+
+            - script: |
+                echo "##vso[task.setvariable variable=IMAGE_TAG;isOutput=true]$(IMAGE_TAG)"
+                echo "##vso[task.setvariable variable=HOLDING_ACR_LOGIN_SERVER;isOutput=true]$(HOLDING_ACR_LOGIN_SERVER)"
+              name: publishWorkerVars
+              displayName: 'Publish IMAGE_TAG / HOLDING_ACR_LOGIN_SERVER'
+
+      - template: shared/onebranch-pool.yml
+        parameters:
+          jobName: BuildPushPortal
+          jobDisplayName: 'Build & push pilotswarm-portal image'
+          poolType: docker
+          os: linux
+          steps:
+            - task: AzureCLI@2
+              displayName: 'ACR login (holding registry)'
+              inputs:
+                azureSubscription: $(HOLDING_ACR_SERVICE_CONNECTION)
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  az acr login --name "$(echo "$(HOLDING_ACR_LOGIN_SERVER)" | cut -d. -f1)"
+
+            - script: |
+                set -euo pipefail
+                docker buildx build \
+                  --platform linux/amd64 \
+                  -f deploy/Dockerfile.portal \
+                  -t "$(HOLDING_ACR_LOGIN_SERVER)/pilotswarm-portal:$(IMAGE_TAG)" \
+                  --push \
+                  .
+              displayName: 'docker buildx build & push portal'
+              workingDirectory: $(Build.SourcesDirectory)
+
+            - script: |
+                echo "##vso[task.setvariable variable=IMAGE_TAG;isOutput=true]$(IMAGE_TAG)"
+                echo "##vso[task.setvariable variable=HOLDING_ACR_LOGIN_SERVER;isOutput=true]$(HOLDING_ACR_LOGIN_SERVER)"
+              name: publishPortalVars
+              displayName: 'Publish IMAGE_TAG / HOLDING_ACR_LOGIN_SERVER'
+
+    - stage: PublishEv2Artifacts
+      displayName: 'Publish deploy/ev2 trees as build artifacts'
+      dependsOn: Containers
+      jobs:
+      - template: shared/onebranch-pool.yml
+        parameters:
+          jobName: PublishEv2
+          jobDisplayName: 'Stage deploy/ev2/<SG>/ trees for release consumption'
+          poolType: linux
+          variables:
+            ob_outputDirectory: '$(Build.SourcesDirectory)/out/ev2'
+          steps:
+            - script: |
+                set -euo pipefail
+                mkdir -p "$(Build.SourcesDirectory)/out/ev2"
+                cp -R deploy/ev2/. "$(Build.SourcesDirectory)/out/ev2/"
+                # Stamp IMAGE_TAG + HOLDING_ACR into each SG tree for EV2 consumption.
+                echo "$(IMAGE_TAG)" > "$(Build.SourcesDirectory)/out/ev2/IMAGE_TAG"
+                echo "$(HOLDING_ACR_LOGIN_SERVER)" > "$(Build.SourcesDirectory)/out/ev2/HOLDING_ACR_LOGIN_SERVER"
+              displayName: 'Stage deploy/ev2 tree'
+              workingDirectory: $(Build.SourcesDirectory)

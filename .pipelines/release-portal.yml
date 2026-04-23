@@ -1,0 +1,153 @@
+#################################################################################
+#                 PilotSwarm Release: Portal ServiceGroup (Prod)                #
+#                                                                               #
+# ServiceGroup: Microsoft.PilotSwarm.Portal                                     #
+# Rollouts (in order, second gated on first in the same pipeline):              #
+#   1. deploy/ev2/Portal/Ev2InfraDeployment/rolloutSpec.json                    #
+#      — Portal-specific infra: AFD origin + route, PLS auto-approval.         #
+#   2. deploy/ev2/Portal/Ev2AppDeployment/rolloutSpec.json                      #
+#      — Portal app deployment (consumes pilotswarm-portal image).             #
+#                                                                               #
+# Design choice:                                                                #
+#   We use ONE release pipeline with two stages rather than two separate        #
+#   pipelines. Rationale: the App rollout has a hard dependency on the Infra    #
+#   rollout (AFD origin + PLS must exist before the portal app is healthy),    #
+#   and co-locating them keeps the stage dependency + managed-SDP bake timing   #
+#   visible in a single ADO UI view. Two pipelines would require manual        #
+#   chaining or an additional artifact trigger with no compensating benefit.   #
+#################################################################################
+
+trigger: none
+
+parameters:
+- name: debug
+  displayName: 'Enable debug output'
+  type: boolean
+  default: false
+- name: overrideManagedValidation
+  displayName: 'Override managed validation duration'
+  type: boolean
+  default: false
+- name: managedValidationOverrideDurationInHours
+  displayName: 'Bake time in hours if override is true'
+  type: number
+  default: 24
+- name: rolloutType
+  displayName: 'SDP rollout type'
+  type: string
+  default: normal
+  values:
+    - normal
+    - globaloutage
+    - emergency
+- name: incidentId
+  displayName: 'IcM incident id for globaloutage rollouts'
+  type: number
+  default: 0
+- name: select
+  displayName: 'EV2 region selection'
+  type: string
+  # FIXME: set at onboarding — align with Phase 5 region parameter files.
+  default: 'regions(westus3)'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+  pipelines:
+    - pipeline: PilotSwarm-CI-Build
+      # FIXME: set at onboarding — must match the CI pipeline name registered in ADO.
+      source: 'PilotSwarm CI Build'
+      branch: main
+      trigger: none
+
+extends:
+  template: v2/OneBranch.Official.CrossPlat.yml@templates
+  parameters:
+    featureFlags:
+      WindowsHostVersion:
+        Network: R1
+    ev2ManagedSdpRolloutConfig:
+      rolloutType: ${{ parameters.rolloutType }}
+      overrideManagedValidationDuration: ${{ parameters.overrideManagedValidation }}
+      managedValidationOverrideDurationInHours: ${{ parameters.managedValidationOverrideDurationInHours }}
+      icmIncidentId: ${{ parameters.incidentId }}
+
+    stages:
+    # ---------------------------------------------------------------------------
+    # Stage 1: Portal infra (AFD origin/route + PLS auto-approval)
+    # ---------------------------------------------------------------------------
+    - stage: PROD_PilotSwarm_Portal_Infra
+      displayName: 'PROD: PilotSwarm Portal Infra (AFD origin + PLS)'
+      variables:
+        ob_release_environment: Production
+      jobs:
+      - job: PROD_PilotSwarm_Portal_Infra
+        displayName: 'Deploy: Portal Infra ServiceGroup'
+        pool:
+          type: release
+        steps:
+          - download: PilotSwarm-CI-Build
+            artifact: drop_PublishEv2Artifacts_PublishEv2
+
+          - task: vsrm-ev2.ev2-rollout.ev2-rollout-task.Ev2RARollout@2
+            displayName: 'Ev2 Managed SDP Rollout — Portal Infra'
+            inputs:
+              # FIXME: set at onboarding — ServiceGroup root name registered in ServiceTree.
+              ServiceGroupOverride: 'Microsoft.PilotSwarm.Portal'
+              EndpointProviderType: ApprovalService
+              ApprovalServiceEnvironment: Production
+              TaskAction: RegisterAndRollout
+              SkipRegistrationIfExists: true
+              ServiceRootPath: '$(Pipeline.Workspace)/PilotSwarm-CI-Build/drop_PublishEv2Artifacts_PublishEv2/ev2/Portal/Ev2InfraDeployment'
+              RolloutSpecPath: '$(Pipeline.Workspace)/PilotSwarm-CI-Build/drop_PublishEv2Artifacts_PublishEv2/ev2/Portal/Ev2InfraDeployment/rolloutSpec.json'
+              sdpStageMap: managed
+              StageMapName: 'Microsoft.Azure.SDP.Standard'
+              Select: ${{ parameters.select }}
+
+    # ---------------------------------------------------------------------------
+    # Stage 2: Portal app (gated on Infra stage)
+    # ---------------------------------------------------------------------------
+    - stage: PROD_PilotSwarm_Portal_App
+      displayName: 'PROD: PilotSwarm Portal App'
+      dependsOn: PROD_PilotSwarm_Portal_Infra
+      variables:
+        ob_release_environment: Production
+      jobs:
+      - job: PROD_PilotSwarm_Portal_App
+        displayName: 'Deploy: Portal App ServiceGroup'
+        pool:
+          type: release
+        steps:
+          - download: PilotSwarm-CI-Build
+            artifact: drop_PublishEv2Artifacts_PublishEv2
+
+          - task: Bash@3
+            displayName: 'Resolve IMAGE_TAG / HOLDING_ACR_LOGIN_SERVER from CI artifact'
+            inputs:
+              targetType: inline
+              script: |
+                set -euo pipefail
+                ART='$(Pipeline.Workspace)/PilotSwarm-CI-Build/drop_PublishEv2Artifacts_PublishEv2/ev2'
+                IMAGE_TAG="$(cat "$ART/IMAGE_TAG")"
+                ACR="$(cat "$ART/HOLDING_ACR_LOGIN_SERVER")"
+                echo "##vso[task.setvariable variable=IMAGE_TAG]$IMAGE_TAG"
+                echo "##vso[task.setvariable variable=HOLDING_ACR_LOGIN_SERVER]$ACR"
+                echo "Resolved IMAGE_TAG=$IMAGE_TAG ACR=$ACR"
+
+          - task: vsrm-ev2.ev2-rollout.ev2-rollout-task.Ev2RARollout@2
+            displayName: 'Ev2 Managed SDP Rollout — Portal App'
+            inputs:
+              ServiceGroupOverride: 'Microsoft.PilotSwarm.Portal'
+              EndpointProviderType: ApprovalService
+              ApprovalServiceEnvironment: Production
+              TaskAction: RegisterAndRollout
+              SkipRegistrationIfExists: true
+              ServiceRootPath: '$(Pipeline.Workspace)/PilotSwarm-CI-Build/drop_PublishEv2Artifacts_PublishEv2/ev2/Portal/Ev2AppDeployment'
+              RolloutSpecPath: '$(Pipeline.Workspace)/PilotSwarm-CI-Build/drop_PublishEv2Artifacts_PublishEv2/ev2/Portal/Ev2AppDeployment/rolloutSpec.json'
+              sdpStageMap: managed
+              StageMapName: 'Microsoft.Azure.SDP.Standard'
+              Select: ${{ parameters.select }}
+              RolloutParameters: 'IMAGE_TAG=$(IMAGE_TAG);HOLDING_ACR_LOGIN_SERVER=$(HOLDING_ACR_LOGIN_SERVER)'
