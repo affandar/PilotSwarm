@@ -39,6 +39,16 @@ multi-service .NET product (microservice generator, DACPAC extension,
 MSBuild `.proj` packaging, per-service PostgreSQL stamps). These
 simplifications are captured as explicit assumptions below.
 
+Following the fleet-manager pattern literally, each PilotSwarm deployable
+(worker and portal) owns its own EV2 Application ServiceGroup with an
+independent Kustomize overlay tree and its own FluxConfig blob container.
+This preserves independent rollout cadence and blast-radius isolation
+between the two deployables. The infrastructure layer is a separate
+BaseInfra ServiceGroup whose Bicep modules are parameterized on
+subscription, resource group, and resource-name prefix values supplied
+by EV2 scope bindings at rollout time — matching how fleet-manager
+passes per-region identity into its BaseInfra Bicep.
+
 ## Objectives
 
 - Enable production-quality rollouts of PilotSwarm to AKS with managed Safe
@@ -270,49 +280,57 @@ Acceptance Scenarios:
 
 - FR-001: The new path MUST provision PilotSwarm's Azure infrastructure
   (AKS cluster with the `microsoft.flux` extension, ACR, Azure Database
-  for PostgreSQL, Azure Storage account with per-service manifest
+  for PostgreSQL, Azure Storage account with per-deployable manifest
   containers, Azure Key Vault, user-assigned managed identities, VNet,
   all required RBAC) via declarative Bicep, invoked by an EV2
-  infrastructure rollout. (Stories: P1-Regions, P1-Release)
-- FR-002: The new path MUST author all PilotSwarm Kubernetes manifests
-  as a Kustomize base plus one overlay per environment (at minimum
-  `dev` and `prod`), with environment-specific values carried in an
-  `.env` file per overlay and applied via `configMapGenerator` +
-  `replacements`. (Stories: P1-Release, P3-LocalValidation)
-- FR-003: The new path MUST use EV2 shell extensions executed in
-  Azure Container Instances to (a) upload the worker and portal
-  container tarballs to the per-region ACR, and (b) mutate the
-  overlay `.env` with EV2-bound values and upload the resulting
-  Kustomize bundle to the service-specific Azure Storage manifest
-  container. No shell extension MAY call `kubectl apply`. (Stories:
+  infrastructure rollout. Every environment-specific identity (target
+  subscription, resource group name, resource-name prefix, region) MUST
+  be supplied by EV2 scope-binding parameters at rollout time, not
+  hard-coded in Bicep, mirroring the reference repo's BaseInfra
+  parameterization (SpecResearch Q13, Q15). (Stories: P1-Regions,
   P1-Release)
+- FR-002: The new path MUST author the Kubernetes manifests for each
+  deployable (worker, portal) as a Kustomize base plus one overlay per
+  environment (at minimum `dev` and `prod`), with environment-specific
+  values carried in a per-overlay environment file applied via a
+  declarative substitution chain matching the reference repo
+  (configMapGenerator + replacements) (SpecResearch Q10–Q11).
+  (Stories: P1-Release, P3-LocalValidation)
+- FR-003: The new path MUST use EV2 shell extensions to (a) upload the
+  deployable's container tarball to the per-region ACR, and (b) mutate
+  the overlay environment file with EV2-bound values and upload the
+  resulting Kustomize bundle to the deployable-specific Azure Storage
+  manifest container. No shell extension MAY call `kubectl apply`
+  (SpecResearch Q5, Q9). (Stories: P1-Release)
 - FR-004: The running AKS cluster MUST pull Kustomize bundles from
-  its assigned Azure Storage manifest container via the
+  each deployable's Azure Storage manifest container via the
   `microsoft.flux` AKS extension configured with an `AzureBlob`
   source and kubelet-managed-identity authentication; no Git
   credentials, PATs, webhooks, or Flux image-automation controllers
-  are used. (Stories: P1-Reconciliation)
+  are used (SpecResearch Q8, Q16). (Stories: P1-Reconciliation)
 - FR-005: Runtime secrets MUST reach pods exclusively via the Azure
   Key Vault Provider for Secrets Store CSI Driver, backed by a
   per-stage Azure Key Vault. The pipeline, EV2 shell extensions, and
   rollout tooling MUST NOT invoke `kubectl create secret` or
   otherwise write Kubernetes `Secret` resources containing runtime
-  credential values. (Stories: P2-SecretsViaKV)
+  credential values (SpecResearch Q17–Q19). (Stories:
+  P2-SecretsViaKV)
 - FR-006: Container image tag substitution MUST flow through the
-  EV2 scope-binding → `.env` mutation → Kustomize `replacements`
+  EV2 scope-binding → overlay-env-file → Kustomize replacements
   chain; no out-of-band image-tag mutation (e.g., separate Flux
-  image-automation controller, pipeline-time manifest patching).
-  (Stories: P1-Release)
+  image-automation controller, pipeline-time manifest patching)
+  (SpecResearch Q12). (Stories: P1-Release)
 - FR-007: EV2 rollouts MUST use Azure's managed Safe Deployment
   Practices stage map (`Microsoft.Azure.SDP.Standard`), with the
-  `rolloutType`, `overrideManagedValidation`, and `icmIncidentId`
-  knobs available as pipeline-level parameters. (Stories:
-  P1-Release)
-- FR-008: A ServiceGroup MUST be registerable with EV2's dev-test
-  flow (equivalent to fleet manager's `ev2-deploy-dev.ps1`
-  pattern), so engineers can trigger a rollout against a dev
-  subscription from a SAW or authorized developer workstation
-  without touching the production pipeline. (Stories: P1-DevTest)
+  managed-SDP rollout knobs (rollout type, managed-validation
+  override, ICM incident id) available as pipeline-level parameters
+  (SpecResearch Q4, Q6). (Stories: P1-Release)
+- FR-008: Each Application ServiceGroup MUST be registerable with
+  EV2's dev-test flow (equivalent to fleet manager's
+  `ev2-deploy-dev.ps1` pattern), so engineers can trigger a rollout
+  against a dev subscription from a SAW or authorized developer
+  workstation without touching the production pipeline
+  (SpecResearch Q20–Q21). (Stories: P1-DevTest)
 - FR-009: The new path MUST add new files only (under paths such as
   `deploy/bicep/`, `deploy/ev2/`, `deploy/kustomize/`,
   `deploy/scripts/`, `.pipelines/`, and `docs/`). It MUST NOT modify
@@ -323,56 +341,76 @@ Acceptance Scenarios:
   (Stories: P2-ExistingPathPreserved)
 - FR-010: A documented local-validation command set MUST render the
   Kustomize output for each overlay and compile all Bicep modules,
-  such that structural errors surface before pushing. (Stories:
-  P3-LocalValidation)
+  such that structural errors surface before pushing (mitigates the
+  absence of in-pipeline lint identified in SpecResearch Q22).
+  (Stories: P3-LocalValidation)
 - FR-011: The new path MUST provision the Azure Storage *container*
   used by PilotSwarm for session blob storage (today not created by
-  any code path) as part of the BaseInfra Bicep, so session
-  dehydration works without manual portal bootstrap. (Stories:
-  P1-Regions)
+  any code path — SpecResearch Q41) as part of the BaseInfra Bicep,
+  so session dehydration works without manual portal bootstrap.
+  (Stories: P1-Regions)
 - FR-012: PilotSwarm's database migration behavior MUST NOT be
   altered by this work: migrations continue to run at worker
   startup via `cms-migrator`/`facts-migrator` with their existing
-  advisory-lock semantics. No separate migration Job is introduced.
-  (Stories: P1-Release, P2-ExistingPathPreserved)
+  advisory-lock semantics (SpecResearch Q40). No separate migration
+  Job is introduced. (Stories: P1-Release, P2-ExistingPathPreserved)
 - FR-013: The new path MUST produce a documented, self-contained
   pipeline definition (OneBranch-compliant, matching the reference
-  repo's CI + prod pipeline shape) that consumes the worker and
-  portal images and the EV2 ServiceGroup package. (Stories:
+  repo's CI + prod pipeline shape — SpecResearch Q23–Q25) that
+  builds the worker and portal images and drives
+  `Ev2RARollout@2` with the managed SDP stage map. Each Application
+  ServiceGroup MUST have its own prod pipeline line, matching the
+  reference repo's per-service pipeline pattern. (Stories:
   P1-Release)
 - FR-014: Every environment overlay MUST express its target
-  namespace, image registry, image name, and workload-identity
-  client IDs through the `.env` + replacements chain; no
-  environment-specific value may be hard-coded in a base manifest.
-  (Stories: P1-Release, P1-Regions)
-- FR-015: The new path MUST publish documentation at
-  `docs/deploying-with-ev2.md` (or equivalent) that describes the
-  new flow end-to-end, cross-links to `docs/deploying-to-aks.md`,
-  and clearly labels which path to use when. (Stories:
-  P2-ExistingPathPreserved)
+  namespace, image registry, image name, workload-identity client
+  IDs, portal ingress hostname, and ingress TLS secret name through
+  the overlay-env-file + replacements chain; no environment-specific
+  value may be hard-coded in a base manifest. (Stories: P1-Release,
+  P1-Regions)
+- FR-015: The new path MUST publish documentation in `docs/`
+  describing the new flow end-to-end, cross-linking to
+  `docs/deploying-to-aks.md`, and clearly labelling which path to
+  use when. (Stories: P2-ExistingPathPreserved)
+- FR-016: The new path MUST define two independent EV2 Application
+  ServiceGroups — one for the worker deployable and one for the
+  portal deployable — each with its own Kustomize overlay tree,
+  FluxConfig blob container, and pipeline line, matching the
+  reference repo's per-service ServiceGroup pattern (SpecResearch
+  Q1, Q3). The two ServiceGroups MAY share a single BaseInfra
+  ServiceGroup for region-level infrastructure. (Stories:
+  P1-Release, P1-Regions)
 
 ### Key Entities
 
 - **BaseInfra ServiceGroup**: The EV2 ServiceGroup that provisions
-  per-region Azure infrastructure shared by all PilotSwarm
+  per-region Azure infrastructure shared by both PilotSwarm
   deployables (AKS, ACR, PG, Storage, AKV, UAMIs, VNet, FLUX
-  extension, FluxConfig for the PilotSwarm manifest container).
-- **Application ServiceGroup**: The EV2 ServiceGroup that uploads
-  the worker + portal container images and the Kustomize bundle to
-  a region. Single ServiceGroup for both deployables; not split per
-  deployable.
-- **Manifest Bundle**: A zipped tree containing Kustomize base +
-  overlays, uploaded by EV2 to the `pilotswarm-manifests` blob
-  container. Replaces the current flat `deploy/k8s/` at the
-  production tier.
+  extension, FluxConfigs for each deployable's manifest container).
+  Parameterized by EV2 scope bindings on subscription, resource
+  group name, resource-name prefix, and region (SpecResearch Q13,
+  Q15).
+- **Worker Application ServiceGroup**: The EV2 ServiceGroup that
+  uploads the worker container image to the per-region ACR and the
+  worker's Kustomize bundle to the worker's manifest container.
+  Independent from the portal ServiceGroup (SpecResearch Q1, Q3).
+- **Portal Application ServiceGroup**: The EV2 ServiceGroup that
+  uploads the portal container image and the portal's Kustomize
+  bundle to its own manifest container. Independent from the worker
+  ServiceGroup, with its own pipeline line and rollout cadence.
+- **Manifest Bundle**: A zipped tree containing a deployable's
+  Kustomize base + overlays, uploaded by EV2 to that deployable's
+  blob container (`pilotswarm-worker-manifests` /
+  `pilotswarm-portal-manifests`). Does not replace the existing
+  flat `deploy/k8s/` at the deploy-aks.sh tier.
 - **Overlay**: A Kustomize overlay under
-  `deploy/kustomize/overlays/<env>/` containing an `.env` (mutated
-  by EV2 at rollout time), a `kustomization.yaml` with
-  `configMapGenerator` + `replacements`, and any
-  environment-specific patches.
+  `deploy/kustomize/<deployable>/overlays/<env>/` containing an
+  environment file (mutated by EV2 at rollout time), a
+  `kustomization.yaml` with configMapGenerator + replacements, and
+  any environment-specific patches.
 - **SecretProviderClass**: Per-overlay declaration of which AKV
   secrets the CSI driver materializes into the pod, and the
-  managed identity used to fetch them.
+  managed identity used to fetch them (SpecResearch Q17–Q18).
 
 ### Cross-Cutting / Non-Functional
 
@@ -395,93 +433,106 @@ Acceptance Scenarios:
   new pipeline and completes successfully, with the managed SDP
   stage map advancing through all configured regions, without any
   operator running `kubectl` during the rollout. (FR-001, FR-003,
-  FR-007, FR-013)
-- SC-002: After a successful rollout, every running worker pod in
-  every target region is running the exact container image tag
-  specified by the EV2 build version, as verified by inspecting
-  `kubectl get deployment -o yaml` image fields across regions.
-  (FR-006, FR-014)
+  FR-007, FR-013, FR-016) (Stories: P1-Release)
+- SC-002: After a successful rollout, every running worker and
+  portal pod in every target region is running the exact container
+  image tag specified by the EV2 build version, as verified by
+  inspecting Deployment image fields across regions. (FR-006,
+  FR-014) (Stories: P1-Release)
 - SC-003: FLUX reconciliation latency from blob upload to cluster
   desired-state match is within a published bound (defaulting to
   the 120-second reference-repo cadence, configurable per
-  environment). (FR-004)
+  environment). (FR-004) (Stories: P1-Reconciliation)
 - SC-004: A documented dev-test EV2 rollout can be triggered by an
   engineer from a SAW or authorized workstation, completing a full
   dev ServiceGroup rollout without touching the prod pipeline.
-  (FR-008)
+  (FR-008) (Stories: P1-DevTest)
 - SC-005: A full pipeline + production rollout can be completed
   with zero `kubectl create secret` invocations anywhere in the
-  audited execution trace. (FR-005)
+  audited execution trace. (FR-005) (Stories: P2-SecretsViaKV)
 - SC-006: Running `./scripts/deploy-aks.sh` against a dev cluster
-  after this work produces functionally identical resource state
-  to running it before this work (same namespace, same manifests,
-  same secret shape). (FR-009, US P2-ExistingPathPreserved)
+  after this work produces the same namespace name, the same
+  Kubernetes Secret name, and the same rendered manifest content
+  (modulo replica count and rollout timing) as running it before
+  this work. (FR-009) (Stories: P2-ExistingPathPreserved)
 - SC-007: A documented local command renders valid Kustomize
-  output for every overlay and compiles every Bicep module without
-  error. (FR-010)
+  output for every overlay of every deployable and compiles every
+  Bicep module without error. (FR-010) (Stories: P3-LocalValidation)
 - SC-008: The blob container used for PilotSwarm session
   dehydration is created automatically by the BaseInfra rollout in
   a fresh region (no manual Azure portal operation required).
-  (FR-011)
+  (FR-011) (Stories: P1-Regions)
 - SC-009: A newly added region in the ServiceGroup configuration
   can be brought from zero to a functioning PilotSwarm environment
-  by running the BaseInfra rollout followed by the application
-  rollout, with no manual kubectl or az CLI steps. (FR-001,
-  FR-013)
+  by running the BaseInfra rollout followed by the two Application
+  rollouts (worker, portal), with no manual kubectl or az CLI
+  steps. (FR-001, FR-013, FR-016) (Stories: P1-Regions)
+- SC-010: The worker and portal ServiceGroups can be rolled out
+  independently — a worker rollout completing does not block or
+  depend on a portal rollout, and vice versa. (FR-016)
+  (Stories: P1-Release)
 
 ## Assumptions
 
-- **FLUX source = Azure Blob, not Git**: The new path adopts the
-  reference repo's `sourceKind: AzureBlob` FluxConfig pattern
-  verbatim. Although the user intake said "FLUX + GitOps", the
-  reference repo does not use a Git source — it uploads rendered
-  Kustomize bundles to an Azure Storage container and FLUX polls
-  that container every 120s. This matches the intake's
-  accompanying "storage buckets" requirement and avoids
-  PAT/webhook/Git-ACL management. Rationale: literal fidelity to
-  the reference pattern + simpler operational surface.
-- **Single ServiceGroup for worker + portal**: Both deployables
-  ship together in one EV2 rollout, not split into per-deployable
-  ServiceGroups. Rationale: PilotSwarm is a single Node.js repo
-  with tightly coupled worker/portal versions; per-deployable
-  service groups would add ceremony without operational benefit.
-- **Managed SDP stage map (`Microsoft.Azure.SDP.Standard`)**:
-  The new path uses the same managed stage map as the reference
-  repo. Concrete bake times and canary percentages are owned by
-  the stage map, not the repo. Rationale: avoids maintaining
-  custom SDP schedules; matches Microsoft-internal best practice.
+- **FLUX source = Azure Blob, not Git** (SpecResearch Q8): The new
+  path adopts the reference repo's `sourceKind: AzureBlob`
+  FluxConfig pattern verbatim. Although the user intake said
+  "FLUX + GitOps", the reference repo does not use a Git source —
+  it uploads rendered Kustomize bundles to an Azure Storage
+  container and FLUX polls that container every 120s. This matches
+  the intake's accompanying "storage buckets" requirement and
+  avoids PAT/webhook/Git-ACL management. Rationale: literal
+  fidelity to the reference pattern + simpler operational surface.
+- **Two Application ServiceGroups, one per deployable**: One
+  ServiceGroup for the worker, one for the portal, per the literal
+  fleet-manager pattern (SpecResearch Q1, Q3) and per user intake
+  Q6. They share a single BaseInfra ServiceGroup. Rationale:
+  independent rollout cadence and blast-radius isolation between
+  worker and portal.
+- **Managed SDP stage map (`Microsoft.Azure.SDP.Standard`)**
+  (SpecResearch Q4, Q6): The new path uses the same managed stage
+  map as the reference repo. Concrete bake times and canary
+  percentages are owned by the stage map, not the repo. Rationale:
+  avoids maintaining custom SDP schedules; matches Microsoft-
+  internal best practice.
 - **No microservice generator, no MSBuild `.proj`, no DACPAC
-  extension**: These reference-repo patterns exist because
+  extension** (SpecResearch Q28 + "Patterns to Copy vs Simplify"
+  synthesis): These reference-repo patterns exist because
   fleet-manager is multi-service .NET with SQL-schema services;
   they do not apply to a single-service Node repo. Rationale:
   intake guidance on simplifications.
-- **No Azure Front Door / GlobalInfra**: PilotSwarm's portal is a
-  single-region ingress today. A GlobalInfra service group with
-  Front Door + WAF is deferred until multi-region portal becomes
-  a goal. Rationale: intake guidance on simplifications + avoids
-  premature cost.
-- **Migrations run at worker startup, unchanged**: The existing
-  advisory-lock-based migration runner in `cms-migrator` /
-  `facts-migrator` continues to handle schema changes. No
-  separate migration `Job` is introduced. Rationale: the existing
-  mechanism is already safe across concurrent workers and
-  introducing a Job would add coordination complexity with no
-  clear win.
+- **No Azure Front Door / GlobalInfra** (SpecResearch Q14):
+  PilotSwarm's portal is a single-region ingress today. A
+  GlobalInfra service group with Front Door + WAF is deferred
+  until multi-region portal becomes a goal. Rationale: intake
+  guidance on simplifications + avoids premature cost.
+- **Migrations run at worker startup, unchanged** (SpecResearch
+  Q40): The existing advisory-lock-based migration runner in
+  `cms-migrator` / `facts-migrator` continues to handle schema
+  changes. No separate migration `Job` is introduced. Rationale:
+  the existing mechanism is already safe across concurrent
+  workers and introducing a Job would add coordination complexity
+  with no clear win.
 - **No changes to `.model_providers.json` contract**: Model
   provider configuration continues to load from the existing
-  path. The EV2 `.env` mechanism may carry provider API keys, but
-  the JSON catalog itself is not relocated. Rationale: out of
-  scope for this work; risk of accidental breakage to a
+  path. The EV2 overlay-env-file mechanism may carry provider API
+  keys, but the JSON catalog itself is not relocated. Rationale:
+  out of scope for this work; risk of accidental breakage to a
   gitignored local file is explicitly called out in
-  copilot-instructions.md.
-- **Known target cluster, single initial region**: PilotSwarm's
-  current AKS target is `toygres-aks` in `westus3` (referenced in
-  `scripts/reset-local.sh` and `deploy/k8s/portal-ingress.yaml`).
-  The new path ships with `westus3` as the only production region
-  in the initial configuration; additional regions are added via
-  the `Configuration/ServiceGroup/*.Configuration.json`
-  Geographies mechanism (per the reference repo pattern).
-  Rationale: start narrow; the pattern scales.
+  `copilot-instructions.md`.
+- **Fresh production AKS cluster provisioned by BaseInfra, not
+  reuse of `toygres-aks`**: The new EV2 path stands up a new
+  production AKS cluster via the BaseInfra Bicep.
+  `toygres-aks / westus3` remains the engineer-driven dev cluster
+  used by `scripts/deploy-aks.sh` and is unaffected
+  (SpecResearch Q45). The BaseInfra Bicep is parameterized on
+  subscription, resource group name, resource-name prefix, and
+  region so the same modules can be invoked for any environment.
+- **Region configuration drives rollout targets**: The initial
+  production region is `westus3`, matching the reference repo's
+  per-environment `Configuration/ServiceGroup/*.Configuration.json`
+  Geographies mechanism (SpecResearch Q4). Additional regions are
+  added by editing configuration data, not Bicep.
 - **Single dev environment name**: The initial overlay set is
   `dev` + `prod`. An `int` or `canary` layer can be added later
   by copying the overlay template. Rationale: minimum viable set
@@ -491,40 +542,51 @@ Acceptance Scenarios:
   and are consumed by both the old and new deployment paths.
   Rationale: changing file paths would perturb the existing
   `deploy-aks.sh` flow, which is explicitly out of scope.
-- **OneBranch pipeline template applies**: The new pipeline is
-  assumed to fit the OneBranch Official template used by the
-  reference repo. Full validation of tenant-specific requirements
-  (e.g., service connection names, agent pools) is an operational
-  prerequisite surfaced in documentation but not gated by this
-  work.
+- **Portal ingress hostname and TLS secret name are EV2-bound**:
+  The current hardcoded host
+  `pilotswarm-portal.westus3.cloudapp.azure.com` in
+  `deploy/k8s/portal-ingress.yaml` is not carried forward to the
+  new prod overlay. The new portal overlay exposes the ingress
+  hostname and TLS secret name as values in the overlay env file,
+  supplied at rollout time via EV2 scope bindings.
+- **OneBranch pipeline template applies** (SpecResearch Q23,
+  Q25): The new pipelines are assumed to fit the OneBranch
+  Official template used by the reference repo. Full validation
+  of tenant-specific requirements (e.g., service connection
+  names, agent pools) is an operational prerequisite surfaced in
+  documentation but not gated by this work.
 
 ## Scope
 
 ### In Scope
 
 - New Bicep tree for BaseInfra (AKS, ACR, PG, Storage, AKV, UAMIs,
-  VNet, FLUX extension, FluxConfig for the PilotSwarm manifest
-  container), idempotent and region-parameterized.
-- New Kustomize tree for worker + portal: a base derived
-  (copied, not replacing) from the current `deploy/k8s/*.yaml`, plus
-  `overlays/dev/` and `overlays/prod/` each with an `.env`,
-  `kustomization.yaml` (with `configMapGenerator` + `replacements`),
+  VNet, FLUX extension, FluxConfigs for each deployable's manifest
+  container), idempotent and parameterized on subscription,
+  resource group name, resource-name prefix, and region via EV2
+  scope bindings.
+- New Kustomize trees, one per deployable
+  (`deploy/kustomize/worker/` and `deploy/kustomize/portal/`),
+  each with a base derived (copied, not replacing) from the
+  current `deploy/k8s/*.yaml` worker/portal manifests, plus
+  `overlays/dev/` and `overlays/prod/` each with an env file,
+  `kustomization.yaml` (with configMapGenerator + replacements),
   and a `SecretProviderClass`.
-- New EV2 ServiceGroup for BaseInfra and a single Application
-  ServiceGroup covering worker + portal, wired to the managed SDP
-  stage map and configured for a single initial region
-  (`westus3`).
+- New EV2 ServiceGroups: one BaseInfra ServiceGroup, one Worker
+  Application ServiceGroup, one Portal Application ServiceGroup.
+  Wired to the managed SDP stage map and configured for a single
+  initial production region (`westus3`).
 - Vendored copies of the reference repo's `UploadContainer.sh`,
   `DeployApplicationManifest.sh`, and `GenerateEnvForEv2.ps1`
-  shell-extension scripts, adapted for the PilotSwarm single-service
-  shape.
-- New CI + prod pipeline YAMLs (OneBranch Official pattern) that
-  build the worker/portal images, package the EV2 ServiceGroup, and
-  drive `Ev2RARollout@2` with the managed SDP stage map.
-- New dev-test helper script that registers and triggers an EV2
-  dev rollout (analog to fleet-manager's `ev2-deploy-dev.ps1`).
-- New documentation at `docs/deploying-with-ev2.md` describing the
-  full flow and cross-linking to `docs/deploying-to-aks.md`.
+  shell-extension scripts, adapted for PilotSwarm's shape.
+- New CI + prod pipeline lines (OneBranch Official pattern) that
+  build the worker and portal images and drive `Ev2RARollout@2`
+  with the managed SDP stage map — at least one prod pipeline line
+  per Application ServiceGroup, matching the reference pattern.
+- New dev-test helper for each Application ServiceGroup, analogous
+  to fleet-manager's `ev2-deploy-dev.ps1`.
+- New documentation under `docs/` describing the full flow and
+  cross-linking to `docs/deploying-to-aks.md`.
 - Automatic creation of the PilotSwarm session blob container in
   BaseInfra Bicep (filling the current bootstrap gap in
   `blob-store.ts`).
@@ -536,8 +598,9 @@ Acceptance Scenarios:
   `scripts/deploy-portal.sh`, `deploy/k8s/*.yaml`, any
   `deploy/Dockerfile.*`, or `docs/deploying-to-aks.md`.
 - A GlobalInfra / Azure Front Door layer.
-- Per-deployable ServiceGroups (one ServiceGroup covers both
-  worker and portal).
+- A single combined ServiceGroup covering both worker and portal
+  (per user decision R1, the two deployables own separate
+  ServiceGroups).
 - A Kubernetes Job for database migrations (migrations continue to
   run at worker startup).
 - A Flux image-automation controller (image tags flow through the
@@ -610,11 +673,10 @@ Acceptance Scenarios:
   operationally proven.
 - **Risk**: The reference repo uses .NET and MSBuild for EV2
   ServiceGroup packaging; a Node-only equivalent must exist or
-  be invented. **Mitigation**: Use a pipeline
-  `ArchiveFiles@2`/`zip` task plus a plain bash/PowerShell packer
-  instead of `.proj`. Structural validation moves from "does the
-  .proj build" to "does `kustomize build` succeed" and explicit
-  EV2 token presence checks.
+  be invented. **Mitigation**: The plan will define a Node-
+  compatible packaging approach (no `.proj` dependency); the
+  structural validation shifts from "does the `.proj` build" to
+  "does `kustomize build` succeed and do all EV2 tokens resolve".
 - **Risk**: The session blob container bootstrap change
   (FR-011 / SC-008) subtly changes an undocumented current
   behavior (where the container had to exist prior to first
