@@ -202,16 +202,16 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.46).
+ * Flat event loop durable session orchestration (v1.0.45).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
  * @internal
  */
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.45";
 
-export function* durableSessionOrchestration_1_0_46(
+export function* durableSessionOrchestration_1_0_45(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -244,7 +244,7 @@ export function* durableSessionOrchestration_1_0_46(
     let cronSchedule = input.cronSchedule ? { ...input.cronSchedule } : undefined;
     let contextUsage = cloneContextUsage(input.contextUsage);
     const MAX_RETRIES = 3;
-    const MAX_SUB_AGENTS = 50;
+    const MAX_SUB_AGENTS = 20;
     const MAX_NESTING_LEVEL = 2;
     const CHILD_UPDATE_BATCH_MS = 30_000;
     const SHUTDOWN_TIMEOUT_MS = 60_000;

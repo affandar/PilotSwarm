@@ -132,6 +132,7 @@ describe("portal browser contracts", () => {
         assertIncludes(css, "border-bottom: 1px solid color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 28%, transparent);", "portal panels should separate the painted header strip from the pane body");
         assertIncludes(css, "min-height: 30px;", "portal panels should keep the card header compact");
         assertIncludes(css, "padding: 4px 10px 4px;", "portal panels should reduce header padding so the card header is slimmer");
+        assert(!css.includes(".ps-chat-table-wrap.is-fit-width,\n.ps-md-table-wrap.is-fit-width {\n  width: 100%;"), "small portal tables should not be forced to span the full pane width");
         assertIncludes(css, ".portal-header-version", "portal stylesheet should style the header version badge");
         assertIncludes(css, ".ps-workspace-full", "portal stylesheet should size the fullscreen files workspace");
         assertIncludes(css, ".ps-markdown-preview", "portal stylesheet should style markdown previews");

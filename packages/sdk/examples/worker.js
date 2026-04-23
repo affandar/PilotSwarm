@@ -16,6 +16,11 @@
  *   AZURE_STORAGE_CONNECTION_STRING — Blob storage for session dehydration
  *   AZURE_STORAGE_CONTAINER         — Blob container name (default: "copilot-sessions")
  *   SESSION_STATE_DIR               — Shared session scratch directory
+ *   DUROXIDE_PG_POOL_MAX            — Max duroxide-pg provider connections (default: 10)
+ *   PILOTSWARM_CMS_PG_POOL_MAX      — Max CMS pg pool connections (default: 3)
+ *   PILOTSWARM_FACTS_PG_POOL_MAX    — Max facts pg pool connections (default: 3)
+ *   PILOTSWARM_ORCHESTRATION_CONCURRENCY — Duroxide orchestration slots (default: 2)
+ *   PILOTSWARM_WORKER_CONCURRENCY   — Duroxide worker/activity slots (default: 2)
  *   PS_MODEL_PROVIDERS_PATH         — Explicit model provider config path
  *   POD_NAME                        — K8s pod name (default: hostname)
  *   PLUGIN_DIRS                     — Comma-separated plugin directories (default: /app/plugin)
@@ -44,6 +49,11 @@ console.log(`[worker] Pod: ${podName}`);
 console.log(`[worker] Store: ${process.env.DATABASE_URL?.replace(/\/\/.*@/, "//***@")}`);
 if (pluginDirs.length > 0) console.log(`[worker] Plugin dirs: ${pluginDirs.join(", ")}`);
 if (process.env.SESSION_STATE_DIR) console.log(`[worker] Session state dir: ${process.env.SESSION_STATE_DIR}`);
+if (process.env.DUROXIDE_PG_POOL_MAX) console.log(`[worker] Duroxide PG pool max: ${process.env.DUROXIDE_PG_POOL_MAX}`);
+if (process.env.PILOTSWARM_CMS_PG_POOL_MAX) console.log(`[worker] CMS PG pool max: ${process.env.PILOTSWARM_CMS_PG_POOL_MAX}`);
+if (process.env.PILOTSWARM_FACTS_PG_POOL_MAX) console.log(`[worker] Facts PG pool max: ${process.env.PILOTSWARM_FACTS_PG_POOL_MAX}`);
+if (process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY) console.log(`[worker] Orchestration concurrency: ${process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY}`);
+if (process.env.PILOTSWARM_WORKER_CONCURRENCY) console.log(`[worker] Worker concurrency: ${process.env.PILOTSWARM_WORKER_CONCURRENCY}`);
 if (process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH) {
     console.log(`[worker] Model providers: ${process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH}`);
 }
@@ -59,6 +69,7 @@ const worker = new PilotSwarmWorker({
     store: process.env.DATABASE_URL,
     githubToken: process.env.GITHUB_TOKEN,
     logLevel,
+    traceWriter: (message) => console.log(message),
     blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
     blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
     sessionStateDir: process.env.SESSION_STATE_DIR || undefined,

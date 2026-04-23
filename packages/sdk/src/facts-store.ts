@@ -132,6 +132,8 @@ export class PgFactStore implements FactStore {
         this.sql = sqlForSchema(schema);
     }
 
+    static readonly DEFAULT_POOL_MAX = 3;
+
     static async create(connectionString: string, schema?: string): Promise<PgFactStore> {
         const { default: pg } = await import("pg");
 
@@ -140,9 +142,14 @@ export class PgFactStore implements FactStore {
             .includes(parsed.searchParams.get("sslmode") ?? "");
         parsed.searchParams.delete("sslmode");
 
+        const configuredPoolMax = Number.parseInt(process.env.PILOTSWARM_FACTS_PG_POOL_MAX ?? "", 10);
+        const poolMax = Number.isFinite(configuredPoolMax) && configuredPoolMax > 0
+            ? configuredPoolMax
+            : PgFactStore.DEFAULT_POOL_MAX;
+
         const pool = new pg.Pool({
             connectionString: parsed.toString(),
-            max: 3,
+            max: poolMax,
             ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
         });
 

@@ -88,9 +88,22 @@ kubectl create secret generic copilot-runtime-secrets \
     -n copilot-runtime \
     --from-literal=DATABASE_URL="postgresql://user:pass@myserver.postgres.database.azure.com:5432/postgres?options=-csearch_path%3Dcopilot_runtime&sslmode=require" \
     --from-literal=GITHUB_TOKEN="ghp_xxxxxxxxxxxx" \
+    --from-literal=DUROXIDE_PG_POOL_MAX="10" \
+    --from-literal=PILOTSWARM_CMS_PG_POOL_MAX="3" \
+    --from-literal=PILOTSWARM_FACTS_PG_POOL_MAX="3" \
+    --from-literal=PILOTSWARM_ORCHESTRATION_CONCURRENCY="2" \
+    --from-literal=PILOTSWARM_WORKER_CONCURRENCY="2" \
     --from-literal=AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=..." \
     --from-literal=AZURE_STORAGE_CONTAINER="copilot-sessions"
 ```
+
+Worker sizing is env-driven:
+
+- `DUROXIDE_PG_POOL_MAX` — `duroxide-pg` provider pool size. Default: `10`.
+- `PILOTSWARM_CMS_PG_POOL_MAX` — CMS `pg.Pool` max size. Default: `3`.
+- `PILOTSWARM_FACTS_PG_POOL_MAX` — facts `pg.Pool` max size. Default: `3`.
+- `PILOTSWARM_ORCHESTRATION_CONCURRENCY` — Duroxide orchestration concurrency. Default: `2`.
+- `PILOTSWARM_WORKER_CONCURRENCY` — Duroxide activity/worker concurrency. Default: `2`.
 
 Provider availability in selectors is env-driven at worker startup. If you add or remove a provider key, refresh the secret and restart the workers; changing the checked-in template alone is not enough, and changing the real `.model_providers.json` only takes effect after the updated file is present in the runtime environment.
 
@@ -144,6 +157,11 @@ kubectl create secret generic copilot-runtime-secrets \
     -n copilot-runtime \
     --from-literal=DATABASE_URL="..." \
     --from-literal=GITHUB_TOKEN="$(gh auth token)" \
+    --from-literal=DUROXIDE_PG_POOL_MAX="10" \
+    --from-literal=PILOTSWARM_CMS_PG_POOL_MAX="3" \
+    --from-literal=PILOTSWARM_FACTS_PG_POOL_MAX="3" \
+    --from-literal=PILOTSWARM_ORCHESTRATION_CONCURRENCY="2" \
+    --from-literal=PILOTSWARM_WORKER_CONCURRENCY="2" \
     --from-literal=AZURE_STORAGE_CONNECTION_STRING="..." \
     --from-literal=AZURE_STORAGE_CONTAINER="copilot-sessions" \
     --dry-run=client -o yaml | kubectl apply -f -

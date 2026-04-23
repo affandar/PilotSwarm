@@ -2327,8 +2327,8 @@ function RowResizeHandle({ controller, sessionPaneAdjust = 0 }) {
     return React.createElement("button", {
         type: "button",
         className: `ps-row-resizer${dragging ? " is-dragging" : ""}`,
-        title: "Drag to resize the session list. Double-click to reset.",
-        "aria-label": "Resize session list",
+        title: "Drag to resize the sessions and chat panes. Double-click to reset.",
+        "aria-label": "Resize sessions and chat panes",
         onPointerDown: (event) => {
             if (event.button !== 0) return;
             event.preventDefault();

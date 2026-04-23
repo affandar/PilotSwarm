@@ -13,7 +13,7 @@ import { loadAgentFiles, systemAgentUUID, systemChildAgentUUID } from "./agent-l
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
-import { createFactStoreForUrl, type FactStore } from "./facts-store.js";
+import { createFactStoreForUrl, PgFactStore, type FactStore } from "./facts-store.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
@@ -35,6 +35,15 @@ const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide"
 
 const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
+const DEFAULT_ORCHESTRATION_CONCURRENCY = 2;
+const DEFAULT_WORKER_CONCURRENCY = 2;
+const DEFAULT_DUROXIDE_PG_POOL_MAX = 10;
+
+function parsePositiveInt(raw: unknown): number | undefined {
+    const normalized = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
+    if (!Number.isFinite(normalized) || normalized <= 0) return undefined;
+    return Math.floor(normalized);
+}
 
 export function buildSystemAgentBootstrapPayload(
     agent: AgentConfig,
@@ -268,10 +277,24 @@ export class PilotSwarmWorker {
     async start(): Promise<void> {
         if (this._started) return;
 
+        const trace = this.config.traceWriter ?? (() => {});
+        const store = this.config.store;
+        const orchestrationConcurrency = parsePositiveInt(process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY)
+            ?? DEFAULT_ORCHESTRATION_CONCURRENCY;
+        const workerConcurrency = parsePositiveInt(process.env.PILOTSWARM_WORKER_CONCURRENCY)
+            ?? DEFAULT_WORKER_CONCURRENCY;
+        const cmsPoolMax = parsePositiveInt(process.env.PILOTSWARM_CMS_PG_POOL_MAX)
+            ?? PgSessionCatalogProvider.DEFAULT_POOL_MAX;
+        const factsPoolMax = parsePositiveInt(process.env.PILOTSWARM_FACTS_PG_POOL_MAX)
+            ?? PgFactStore.DEFAULT_POOL_MAX;
+
+        if ((store.startsWith("postgres://") || store.startsWith("postgresql://")) && !parsePositiveInt(process.env.DUROXIDE_PG_POOL_MAX)) {
+            process.env.DUROXIDE_PG_POOL_MAX = String(DEFAULT_DUROXIDE_PG_POOL_MAX);
+        }
+
         this._provider = await this._createProvider();
 
         // Initialize CMS catalog and facts store
-        const store = this.config.store;
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
             try {
                 this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
@@ -283,6 +306,10 @@ export class PilotSwarmWorker {
         }
         this.factStore = await createFactStoreForUrl(store, this.config.factsSchema);
         await this.factStore.initialize();
+        trace(
+            `[worker] postgres pools: duroxidePgPoolMax=${process.env.DUROXIDE_PG_POOL_MAX ?? "(unset)"}, ` +
+            `cmsPoolMax=${cmsPoolMax}, factsPoolMax=${factsPoolMax}`,
+        );
         this.sessionManager.setFactStore(this.factStore);
         if (this._catalog) {
             this.sessionManager.setSessionCatalog(this._catalog);
@@ -317,14 +344,27 @@ export class PilotSwarmWorker {
         const inspectClient = new Client(this._provider);
         this.sessionManager.setDuroxideClient(inspectClient);
 
-        this.runtime = new Runtime(this._provider, {
+        const runtimeOptions = {
+            orchestrationConcurrency,
+            workerConcurrency,
             dispatcherPollIntervalMs: 10,
             workerLockTimeoutMs: 10_000,
             logLevel: this.config.logLevel ?? "error",
             maxSessionsPerRuntime: this.config.maxSessionsPerRuntime ?? 50,
             sessionIdleTimeoutMs: this.config.sessionIdleTimeoutMs ?? 3_600_000,
             workerNodeId: this.config.workerNodeId,
-        });
+        };
+
+        this.runtime = new Runtime(this._provider, runtimeOptions);
+        trace(
+            `[worker] runtime options: orchestrationConcurrency=${runtimeOptions.orchestrationConcurrency}, ` +
+            `workerConcurrency=${runtimeOptions.workerConcurrency}, ` +
+            `dispatcherPollIntervalMs=${runtimeOptions.dispatcherPollIntervalMs}, ` +
+            `workerLockTimeoutMs=${runtimeOptions.workerLockTimeoutMs}, ` +
+            `maxSessionsPerRuntime=${runtimeOptions.maxSessionsPerRuntime}, ` +
+            `sessionIdleTimeoutMs=${runtimeOptions.sessionIdleTimeoutMs}, ` +
+            `workerNodeId=${runtimeOptions.workerNodeId ?? "(unset)"}`,
+        );
 
         registerActivities(
             this.runtime,
