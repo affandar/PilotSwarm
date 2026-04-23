@@ -1,0 +1,36 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "region": {
+            "value": "__REGION_NAME__"
+        },
+        "regionShortName": {
+            "value": "__REGION_SHORT_NAME__"
+        },
+        "imageName": {
+            "value": "__IMAGE_NAME__"
+        },
+        "imageTag": {
+            "value": "__IMAGE_TAG__"
+        },
+        "acrLoginServer": {
+            "value": "__ACR_LOGIN_SERVER__"
+        },
+        "keyVaultName": {
+            "value": "__KV_NAME__"
+        },
+        "blobContainerEndpoint": {
+            "value": "__BLOB_CONTAINER_ENDPOINT__"
+        },
+        "aksClusterName": {
+            "value": "__AKS_CLUSTER_NAME__"
+        },
+        "namespace": {
+            "value": "__NAMESPACE__"
+        },
+        "workloadIdentityClientId": {
+            "value": "__WORKLOAD_IDENTITY_CLIENT_ID__"
+        }
+    }
+}

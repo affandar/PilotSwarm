@@ -1,0 +1,31 @@
+{
+    "$schema": "https://ev2schema.azure.net/schemas/2020-01-01/scopeBindings.json",
+    "contentVersion": "1.0.0.0",
+    "scopeBindings": [
+        {
+            "scopeTagName": "globalScope",
+            "bindings": [
+                {
+                    "find": "__REGION_NAME__",
+                    "replaceWith": "$config(regionName)"
+                },
+                {
+                    "find": "__RESOURCE_GROUP_NAME__",
+                    "replaceWith": "$azureResourceGroup()"
+                },
+                {
+                    "find": "__RESOURCE_PREFIX__",
+                    "replaceWith": "$config(globalResourcePrefix)"
+                },
+                {
+                    "find": "__ROLLOUT_TENANTID__",
+                    "replaceWith": "$config(TenantId)"
+                },
+                {
+                    "find": "__WAF_MODE__",
+                    "replaceWith": "$config(wafMode)"
+                }
+            ]
+        }
+    ]
+}

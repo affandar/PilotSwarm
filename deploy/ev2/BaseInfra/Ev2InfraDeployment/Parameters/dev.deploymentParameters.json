@@ -1,0 +1,24 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "region": {
+            "value": "__REGION_NAME__"
+        },
+        "resourceNamePrefix": {
+            "value": "__RESOURCE_NAME_PREFIX__"
+        },
+        "frontDoorProfileName": {
+            "value": "__FRONT_DOOR_PROFILE_NAME__"
+        },
+        "frontDoorProfileResourceGroup": {
+            "value": "__FRONT_DOOR_PROFILE_RESOURCE_GROUP__"
+        },
+        "sslCertificateDomainSuffix": {
+            "value": "__SSL_CERTIFICATE_DOMAIN_SUFFIX__"
+        },
+        "wafMode": {
+            "value": "__WAF_MODE__"
+        }
+    }
+}

@@ -1,0 +1,114 @@
+{
+    "$schema": "https://ev2schema.azure.net/schemas/2020-04-01/RegionAgnosticServiceModel.json",
+    "contentVersion": "1.0.0",
+    "serviceMetadata": {
+        "serviceIdentifier": "__SERVICE_IDENTIFIER__",
+        "serviceGroup": "Microsoft.PilotSwarm.Portal.$config(environment)",
+        "environment": "$config(environment)",
+        "TenantId": "$config(TenantId)",
+        "displayName": "Microsoft.PilotSwarm.Portal",
+        "buildout": {
+            "dependencies": [
+                {
+                    "name": "BaseInfra",
+                    "serviceIdentifier": "__SERVICE_IDENTIFIER__",
+                    "serviceGroup": "Microsoft.PilotSwarm.BaseInfra.$config(environment)",
+                    "displayName": "PilotSwarm Base Infrastructure for Portal App"
+                },
+                {
+                    "name": "PortalInfra",
+                    "serviceIdentifier": "__SERVICE_IDENTIFIER__",
+                    "serviceGroup": "Microsoft.PilotSwarm.Portal.$config(environment)",
+                    "displayName": "PilotSwarm Portal Service Infrastructure (AFD + PLS wiring)"
+                }
+            ]
+        }
+    },
+    "serviceResourceGroupDefinitions": [
+        {
+            "name": "PortalAppResourceGroupDefinition",
+            "azureResourceGroupName": "$config(resourcePrefix)-$config(regionShortName)-$stamp()",
+            "subscriptionKey": "$config(stamp_$stamp().SubscriptionKey)",
+            "stamps": {
+                "count": "$config(StampCount)"
+            },
+            "serviceResourceDefinitions": [
+                {
+                    "name": "PortalUploadContainerDefinition",
+                    "composedOf": {
+                        "extension": {
+                            "rolloutParametersPath": "Parameters\\UploadContainer.Linux.Rollout.json",
+                            "shell": [
+                                {
+                                    "type": "UploadContainer",
+                                    "properties": {
+                                        "imageName": "adm-azurelinux-30-l",
+                                        "imageVersion": "v2"
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "scopeTags": [
+                        {
+                            "name": "globalScope"
+                        },
+                        {
+                            "name": "aksAppDeployScope"
+                        }
+                    ]
+                },
+                {
+                    "name": "PortalGenerateEnvDefinition",
+                    "composedOf": {
+                        "extension": {
+                            "rolloutParametersPath": "Parameters\\GenerateEnvForEv2.Linux.Rollout.json",
+                            "shell": [
+                                {
+                                    "type": "GenerateEnvForEv2",
+                                    "properties": {
+                                        "imageName": "adm-azurelinux-30-l",
+                                        "imageVersion": "v2"
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "scopeTags": [
+                        {
+                            "name": "globalScope"
+                        },
+                        {
+                            "name": "aksAppDeployScope"
+                        }
+                    ]
+                },
+                {
+                    "name": "PortalDeployApplicationManifestDefinition",
+                    "composedOf": {
+                        "extension": {
+                            "rolloutParametersPath": "Parameters\\DeployApplicationManifest.Linux.Rollout.json",
+                            "shell": [
+                                {
+                                    "type": "DeployApplicationManifest",
+                                    "properties": {
+                                        "imageName": "adm-azurelinux-30-l",
+                                        "imageVersion": "v2"
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "scopeTags": [
+                        {
+                            "name": "globalScope"
+                        },
+                        {
+                            "name": "aksAppDeployScope"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

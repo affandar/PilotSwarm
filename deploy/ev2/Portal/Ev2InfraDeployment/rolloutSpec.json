@@ -1,0 +1,36 @@
+{
+    "$schema": "https://ev2schema.azure.net/schemas/2020-04-01/RegionAgnosticRolloutSpecification.json",
+    "contentVersion": "1.0.0",
+    "rolloutMetadata": {
+        "serviceModelPath": "serviceModel.json",
+        "scopeBindingsPath": "scopeBinding.json",
+        "name": "Microsoft.PilotSwarm.Portal.Infra",
+        "rolloutType": "major",
+        "buildSource": {
+            "parameters": {
+                "versionFile": "version.txt"
+            }
+        },
+        "notification": {
+            "email": {
+                "to": "pilotswarm-oncall@microsoft.com"
+            }
+        },
+        "configuration": {
+            "serviceScope": {
+                "specPath": "Configuration\\configurationSettings.json"
+            },
+            "serviceGroupScope": {
+                "specPath": "Configuration\\ServiceGroup\\$serviceGroup().Configuration.json"
+            }
+        }
+    },
+    "orchestratedSteps": [
+        {
+            "name": "PortalServiceInfra",
+            "targetType": "ServiceResourceDefinition",
+            "targetName": "PortalServiceInfraDefinition",
+            "actions": ["deploy"]
+        }
+    ]
+}

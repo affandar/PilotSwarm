@@ -1,0 +1,50 @@
+{
+    "$schema": "https://ev2schema.azure.net/schemas/2020-04-01/RegionAgnosticRolloutSpecification.json",
+    "contentVersion": "1.0.0",
+    "rolloutMetadata": {
+        "serviceModelPath": "serviceModel.json",
+        "scopeBindingsPath": "scopeBinding.json",
+        "name": "Microsoft.PilotSwarm.Worker",
+        "rolloutType": "major",
+        "buildSource": {
+            "parameters": {
+                "versionFile": "version.txt"
+            }
+        },
+        "notification": {
+            "email": {
+                "to": "pilotswarm-oncall@microsoft.com"
+            }
+        },
+        "configuration": {
+            "serviceScope": {
+                "specPath": "Configuration\\configurationSettings.json"
+            },
+            "serviceGroupScope": {
+                "specPath": "Configuration\\ServiceGroup\\$serviceGroup().Configuration.json"
+            }
+        }
+    },
+    "orchestratedSteps": [
+        {
+            "name": "UploadContainer",
+            "targetType": "ServiceResourceDefinition",
+            "targetName": "WorkerUploadContainerDefinition",
+            "actions": ["Shell/UploadContainer"]
+        },
+        {
+            "name": "GenerateEnvForEv2",
+            "targetType": "ServiceResourceDefinition",
+            "targetName": "WorkerGenerateEnvDefinition",
+            "actions": ["Shell/GenerateEnvForEv2"],
+            "dependsOn": ["UploadContainer"]
+        },
+        {
+            "name": "DeployApplicationManifest",
+            "targetType": "ServiceResourceDefinition",
+            "targetName": "WorkerDeployApplicationManifestDefinition",
+            "actions": ["Shell/DeployApplicationManifest"],
+            "dependsOn": ["GenerateEnvForEv2"]
+        }
+    ]
+}

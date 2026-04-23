@@ -1,0 +1,54 @@
+{
+    "$schema": "https://ev2schema.azure.net/schemas/2020-04-01/RegionAgnosticServiceModel.json",
+    "contentVersion": "1.0.0",
+    "serviceMetadata": {
+        "serviceIdentifier": "__SERVICE_IDENTIFIER__",
+        "serviceGroup": "Microsoft.PilotSwarm.Portal.$config(environment)",
+        "environment": "$config(environment)",
+        "TenantId": "$config(TenantId)",
+        "displayName": "Microsoft.PilotSwarm.Portal",
+        "buildout": {
+            "dependencies": [
+                {
+                    "name": "BaseInfra",
+                    "serviceIdentifier": "__SERVICE_IDENTIFIER__",
+                    "serviceGroup": "Microsoft.PilotSwarm.BaseInfra.$config(environment)",
+                    "displayName": "PilotSwarm Base Infrastructure for Portal"
+                },
+                {
+                    "name": "GlobalInfra",
+                    "serviceIdentifier": "__SERVICE_IDENTIFIER__",
+                    "serviceGroup": "Microsoft.PilotSwarm.GlobalInfra.$config(environment)",
+                    "displayName": "PilotSwarm Global Infrastructure for Portal"
+                }
+            ]
+        }
+    },
+    "serviceResourceGroupDefinitions": [
+        {
+            "name": "PortalServiceResourceGroupDefinition",
+            "azureResourceGroupName": "$config(resourcePrefix)-$config(regionShortName)-$stamp()",
+            "subscriptionKey": "$config(stamp_$stamp().SubscriptionKey)",
+            "stamps": {
+                "count": "$config(StampCount)"
+            },
+            "serviceResourceDefinitions": [
+                {
+                    "name": "PortalServiceInfraDefinition",
+                    "composedOf": {
+                        "arm": {
+                            "templatePath": "Templates\\Portal.deploymentTemplate.json",
+                            "parametersPath": "Parameters\\Portal.deploymentParameters.json",
+                            "deploymentLevel": "ResourceGroup"
+                        }
+                    },
+                    "scopeTags": [
+                        {
+                            "name": "globalScope"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

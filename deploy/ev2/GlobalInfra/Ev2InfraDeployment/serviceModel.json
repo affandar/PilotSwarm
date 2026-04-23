@@ -1,0 +1,40 @@
+{
+    "$schema": "https://ev2schema.azure.net/schemas/2020-04-01/RegionAgnosticServiceModel.json",
+    "contentVersion": "1.0.0",
+    "serviceMetadata": {
+        "serviceIdentifier": "__SERVICE_IDENTIFIER__",
+        "serviceGroup": "Microsoft.PilotSwarm.GlobalInfra.$config(environment)",
+        "environment": "$config(environment)",
+        "TenantId": "$config(TenantId)",
+        "displayName": "Microsoft.PilotSwarm.GlobalInfra"
+    },
+    "serviceResourceGroupDefinitions": [
+        {
+            "name": "GlobalInfraResourceGroupDefinition",
+            "azureResourceGroupName": "$config(globalResourcePrefix)",
+            "subscriptionKey": "$config(SubscriptionKey)",
+            "executionConstraint": {
+                "quantifier": "Always",
+                "level": "Cloud",
+                "regions": "$config(globalInfraRegion)"
+            },
+            "serviceResourceDefinitions": [
+                {
+                    "name": "GlobalInfraResourceDefinition",
+                    "composedOf": {
+                        "arm": {
+                            "templatePath": "Templates\\GlobalInfra.deploymentTemplate.json",
+                            "parametersPath": "Parameters\\GlobalInfra.deploymentParameters.json",
+                            "deploymentLevel": "Subscription"
+                        }
+                    },
+                    "scopeTags": [
+                        {
+                            "name": "globalScope"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,48 @@
+{
+    "$schema": "https://ev2schema.azure.net/schemas/2020-04-01/RegionAgnosticServiceModel.json",
+    "contentVersion": "1.0.0",
+    "serviceMetadata": {
+        "serviceIdentifier": "__SERVICE_IDENTIFIER__",
+        "serviceGroup": "Microsoft.PilotSwarm.BaseInfra.$config(environment)",
+        "environment": "$config(environment)",
+        "TenantId": "$config(TenantId)",
+        "displayName": "Microsoft.PilotSwarm.BaseInfra",
+        "buildout": {
+            "dependencies": [
+                {
+                    "name": "GlobalInfra",
+                    "serviceIdentifier": "__SERVICE_IDENTIFIER__",
+                    "serviceGroup": "Microsoft.PilotSwarm.GlobalInfra.$config(environment)",
+                    "displayName": "PilotSwarm Global Infrastructure (AFD + WAF)"
+                }
+            ]
+        }
+    },
+    "serviceResourceGroupDefinitions": [
+        {
+            "name": "BaseInfraResourceGroupDefinition",
+            "azureResourceGroupName": "$config(resourcePrefix)-$config(regionShortName)-$stamp()",
+            "subscriptionKey": "$config(stamp_$stamp().SubscriptionKey)",
+            "stamps": {
+                "count": "$config(StampCount)"
+            },
+            "serviceResourceDefinitions": [
+                {
+                    "name": "BaseInfraDefinition",
+                    "composedOf": {
+                        "arm": {
+                            "templatePath": "Templates\\BaseInfra.deploymentTemplate.json",
+                            "parametersPath": "Parameters\\BaseInfra.deploymentParameters.json",
+                            "deploymentLevel": "Subscription"
+                        }
+                    },
+                    "scopeTags": [
+                        {
+                            "name": "globalScope"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

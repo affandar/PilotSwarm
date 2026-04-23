@@ -1,0 +1,47 @@
+{
+    "$schema": "https://ev2schema.azure.net/schemas/2020-01-01/rolloutParameters.json",
+    "contentVersion": "1.0.0.0",
+    "shellExtensions": [
+        {
+            "name": "DeployApplicationManifest",
+            "type": "DeployApplicationManifest",
+            "properties": {
+                "maxExecutionTime": "PT50M"
+            },
+            "package": {
+                "reference": {
+                    "path": "DeployApplicationManifest.zip"
+                }
+            },
+            "launch": {
+                "command": [
+                    "/bin/bash",
+                    "/package/unarchive/DeployApplicationManifest.sh",
+                    "--overlay-path",
+                    "__DEPLOYMENT_OVERLAY_PATH__",
+                    "--target-storage",
+                    "__DEPLOYMENT_STORAGE_ACCOUNT_NAME__",
+                    "--container-name",
+                    "__MANIFEST_CONTAINER_NAME__"
+                ],
+                "environmentVariables": [
+                    {
+                        "name": "DEPLOYMENT_OVERLAY_PATH",
+                        "value": "__DEPLOYMENT_OVERLAY_PATH__"
+                    },
+                    {
+                        "name": "DEPLOYMENT_STORAGE_ACCOUNT_NAME",
+                        "value": "__DEPLOYMENT_STORAGE_ACCOUNT_NAME__"
+                    },
+                    {
+                        "name": "MANIFEST_CONTAINER_NAME",
+                        "value": "__MANIFEST_CONTAINER_NAME__"
+                    }
+                ],
+                "identity": {
+                    "type": "systemAssigned"
+                }
+            }
+        }
+    ]
+}

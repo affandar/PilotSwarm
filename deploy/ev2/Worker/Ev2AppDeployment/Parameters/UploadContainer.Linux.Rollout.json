@@ -1,0 +1,53 @@
+{
+    "$schema": "https://ev2schema.azure.net/schemas/2020-01-01/rolloutParameters.json",
+    "contentVersion": "1.0.0.0",
+    "shellExtensions": [
+        {
+            "name": "UploadContainer",
+            "type": "UploadContainer",
+            "properties": {
+                "maxExecutionTime": "PT50M"
+            },
+            "package": {
+                "reference": {
+                    "path": "UploadContainer.zip"
+                }
+            },
+            "launch": {
+                "command": [
+                    "/bin/bash",
+                    "/package/unarchive/UploadContainer.sh",
+                    "--source-acr",
+                    "__SOURCE_ACR_LOGIN_SERVER__",
+                    "--target-acr",
+                    "__ACR_LOGIN_SERVER__",
+                    "--image-name",
+                    "__IMAGE_NAME__",
+                    "--image-tag",
+                    "__IMAGE_TAG__"
+                ],
+                "environmentVariables": [
+                    {
+                        "name": "ACR_LOGIN_SERVER",
+                        "value": "__ACR_LOGIN_SERVER__"
+                    },
+                    {
+                        "name": "SOURCE_ACR_LOGIN_SERVER",
+                        "value": "__SOURCE_ACR_LOGIN_SERVER__"
+                    },
+                    {
+                        "name": "IMAGE_NAME",
+                        "value": "__IMAGE_NAME__"
+                    },
+                    {
+                        "name": "IMAGE_TAG",
+                        "value": "__IMAGE_TAG__"
+                    }
+                ],
+                "identity": {
+                    "type": "systemAssigned"
+                }
+            }
+        }
+    ]
+}

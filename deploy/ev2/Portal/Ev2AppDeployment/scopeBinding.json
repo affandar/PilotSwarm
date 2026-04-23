@@ -1,0 +1,96 @@
+{
+    "$schema": "https://ev2schema.azure.net/schemas/2020-01-01/scopeBindings.json",
+    "contentVersion": "1.0.0.0",
+    "scopeBindings": [
+        {
+            "scopeTagName": "globalScope",
+            "bindings": [
+                {
+                    "find": "__REGION_NAME__",
+                    "replaceWith": "$config(regionName)"
+                },
+                {
+                    "find": "__REGION_SHORT_NAME__",
+                    "replaceWith": "$config(regionShortName)"
+                },
+                {
+                    "find": "__RESOURCE_GROUP_NAME__",
+                    "replaceWith": "$azureResourceGroup()"
+                },
+                {
+                    "find": "__RESOURCE_PREFIX__",
+                    "replaceWith": "$config(resourcePrefix)"
+                },
+                {
+                    "find": "__STAMP__",
+                    "replaceWith": "$stamp()"
+                },
+                {
+                    "find": "__ROLLOUT_TENANTID__",
+                    "replaceWith": "$config(TenantId)"
+                },
+                {
+                    "find": "__IMAGE_NAME__",
+                    "replaceWith": "$config(portalImageName)"
+                },
+                {
+                    "find": "__IMAGE_TAG__",
+                    "replaceWith": "$config(portalImageTag)"
+                },
+                {
+                    "find": "__NAMESPACE__",
+                    "replaceWith": "$config(portalNamespace)"
+                },
+                {
+                    "find": "__MANIFEST_CONTAINER_NAME__",
+                    "replaceWith": "portal-manifests"
+                },
+                {
+                    "find": "__DEPLOYMENT_OVERLAY_PATH__",
+                    "replaceWith": "$config(portalOverlayPath)"
+                },
+                {
+                    "find": "__SOURCE_ACR_LOGIN_SERVER__",
+                    "replaceWith": "$config(sourceAcrLoginServer)"
+                }
+            ]
+        },
+        {
+            "scopeTagName": "aksAppDeployScope",
+            "bindings": [
+                {
+                    "find": "__ACR_LOGIN_SERVER__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(acrLoginServer.value)"
+                },
+                {
+                    "find": "__KV_NAME__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(keyVaultName.value)"
+                },
+                {
+                    "find": "__BLOB_CONTAINER_ENDPOINT__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(blobContainerEndpoint.value)"
+                },
+                {
+                    "find": "__AKS_CLUSTER_NAME__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(aksClusterName.value)"
+                },
+                {
+                    "find": "__WORKLOAD_IDENTITY_CLIENT_ID__",
+                    "replaceWith": "$config(portalWorkloadIdentityClientId)"
+                },
+                {
+                    "find": "__AZURE_TENANT_ID__",
+                    "replaceWith": "$config(TenantId)"
+                },
+                {
+                    "find": "__DEPLOYMENT_STORAGE_ACCOUNT_NAME__",
+                    "replaceWith": "$config(resourcePrefix)$config(regionShortName)$stamp()sa"
+                },
+                {
+                    "find": "__PORTAL_HOSTNAME__",
+                    "replaceWith": "$serviceResourceDefinition(PortalServiceInfraDefinition).action(deploy).outputs(BackendHostName.value)"
+                }
+            ]
+        }
+    ]
+}
