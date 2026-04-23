@@ -188,7 +188,56 @@ Subscription-scope Bicep (`src/Deploy/BaseInfra/bicep/main.bicep`), invoked via 
 
 ### Q14. `GlobalInfra/` vs BaseInfra
 
-GlobalInfra is region-agnostic: Azure Front Door + WAF policy. See `src/Deploy/GlobalInfra/bicep/main.bicep`. It deploys once per environment. BaseInfra deploys per region and depends on GlobalInfra via the ServiceGroup dependency declared in BaseInfra's `serviceModel.json`.
+GlobalInfra is region-agnostic: Azure Front Door Premium + WAF policy. See `src/Deploy/GlobalInfra/bicep/main.bicep:30-68` (profile name `${resourcePrefix}-afd`, WAF name `${resourcePrefix}afdwafpolicy`, `Premium_AzureFrontDoor` SKU, `originResponseTimeoutSeconds: 60`). It deploys once per environment. BaseInfra deploys per region. Outputs of GlobalInfra (`frontDoorProfileName`, `frontDoorEndpointHostname`, etc., `main.bicep:74-90`) are consumed by **service** Bicep at rollout time, not BaseInfra.
+
+`frontdoor-profile.bicep` provisions the AFD profile + `afdEndpoints` (`${profile}-endpoint`) + `securityPolicies` associating the WAF to `/*`. `frontdoor-waf-policy.bicep` is a separate module (WAF mode Prevention).
+
+**GlobalInfra creates no origins at deploy time.** Origin/route wiring is done from each service's Bicep (see Q14b) so services can register themselves into the shared AFD without a GlobalInfra redeploy.
+
+### Q14b. AFD + App Gateway + Private Link wiring (PlaygroundService pattern)
+
+BaseInfra builds the Application Gateway **private-link-ready** so Front Door can reach it privately. Service Bicep then wires AFD origins/routes at the GlobalInfra RG scope. This is the canonical pattern for any externally-reachable service.
+
+**Layer 1 — BaseInfra AppGW private-link config** (`src/Deploy/BaseInfra/bicep/application-gateway.bicep:270-309, 333`):
+```bicep
+privateLinkConfigurations: [ {
+  name: 'privateLinkConfig'
+  properties: { ipConfigurations: [{ name: 'privateLinkIpConfig', properties: {
+    privateIPAllocationMethod: 'Dynamic'
+    subnet: { id: privateLinkSubnetId }    // dedicated PL subnet, separate from AppGW subnet
+    primary: true
+  }}]}
+}]
+// frontendIPConfiguration references privateLinkConfiguration.id
+output privateLinkConfigurationId string = '${applicationGateway.id}/privateLinkConfigurations/privateLinkConfig'
+```
+Azure auto-creates a PrivateLinkService in front of the AppGW once this config is set.
+
+**Layer 2 — Service Bicep (PlaygroundService)** (`src/Deploy/PlaygroundService/bicep/main.bicep:327-366`):
+1. References the existing AppGW (`resource applicationGateway ... existing`).
+2. Calls `Common/bicep/frontdoor-origin-route.bicep` with scope `az.resourceGroup(frontDoorProfileResourceGroup)` — i.e. the GlobalInfra RG.
+3. Calls `Common/bicep/approve-private-endpoint.bicep` to auto-approve the pending PLS connection on the AppGW side.
+
+**Layer 3 — `frontdoor-origin-route.bicep`** (`src/Deploy/Common/bicep/frontdoor-origin-route.bicep:59-137`):
+- Creates `originGroup` with health probe (`probePath`, `HEAD`, `Https`, `probeIntervalInSeconds: 100`, `sampleSize: 4, successfulSamplesRequired: 3`).
+- Creates `origin` with `sharedPrivateLinkResource` pointing at the AppGW's auto-PLS using the **documented magic format**: `/subscriptions/{sub}/resourceGroups/{appGwRg}/providers/Microsoft.Network/privateLinkServices/_e41f87a2_{applicationGatewayName}_{privateLinkConfigName}` (ref: [learn.microsoft.com PL AFD↔AppGW](https://learn.microsoft.com/en-us/azure/frontdoor/how-to-enable-private-link-application-gateway)).
+- Creates AFD `route` with `patternsToMatch`, `forwardingProtocol: 'HttpsOnly'`, `httpsRedirect: 'Enabled'`, `linkToDefaultDomain: 'Enabled'`.
+
+**Layer 4 — EV2 scope bindings to wire GlobalInfra into service rollout** (`src/Deploy/PlaygroundService/Ev2AppDeployment/scopeBinding.json:97-104`):
+```json
+{ "find": "__FRONT_DOOR_PROFILE_NAME__",           "replaceWith": "$config(frontDoorProfileName)" },
+{ "find": "__FRONT_DOOR_PROFILE_RESOURCE_GROUP__", "replaceWith": "$config(frontDoorProfileResourceGroup)" }
+```
+Note: AFD name/RG are **config-bound, not cross-ServiceGroup output-bound** — the service ServiceGroup does not declare a direct dependency on GlobalInfra. GlobalInfra is deployed out-of-band first; its name is captured in each environment's `Microsoft.*.{env}.Configuration.json`.
+
+**Layer 5 — per-environment SSL domain suffix** (`PlaygroundService/Ev2AppDeployment/scopeBinding.json:78`): `__SSL_CERTIFICATE_DOMAIN_SUFFIX__` → `$config(sslCertificateDomainSuffix)`. Values are per-env:
+- dev: `dev.postgresql.playgroundservice.azure.com`
+- test/stage/prod: `{env}.postgresql.playgroundservice.azure.com`
+The AKV-issued TLS certificate subject is `${resourceName}.${sslCertificateDomainSuffix}` and that same string is the AFD origin's `hostName`/`originHostHeader` and the AppGW listener hostname.
+
+**Traffic flow**: client → `<env>-afd-endpoint.<regional>.azurefd.net` (or custom domain) → WAF → AFD route match → AFD origin (Private Link) → AppGW private listener (hostname-matched to cert subject) → AGIC ingress rule → K8s Service → pod.
+
+**Ingress controller**: `kubernetes.io/ingress.class: azure/application-gateway` (AGIC), **not** NGINX. NGINX appears only in dev overlays that bypass AFD.
 
 ### Q15. Where AKS / ACR / AKV / PG / Storage come from
 

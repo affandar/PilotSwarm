@@ -278,17 +278,23 @@ Acceptance Scenarios:
 
 ### Functional Requirements
 
-- FR-001: The new path MUST provision PilotSwarm's Azure infrastructure
-  (AKS cluster with the `microsoft.flux` extension, ACR, Azure Database
-  for PostgreSQL, Azure Storage account with per-deployable manifest
-  containers, Azure Key Vault, user-assigned managed identities, VNet,
-  all required RBAC) via declarative Bicep, invoked by an EV2
-  infrastructure rollout. Every environment-specific identity (target
-  subscription, resource group name, resource-name prefix, region) MUST
-  be supplied by EV2 scope-binding parameters at rollout time, not
-  hard-coded in Bicep, mirroring the reference repo's BaseInfra
-  parameterization (SpecResearch Q13, Q15). (Stories: P1-Regions,
-  P1-Release)
+- FR-001: The new path MUST provision all fleet-wide and per-region Azure
+  infrastructure required by a PilotSwarm environment — at minimum:
+  fleet-wide, an Azure Front Door Premium profile and WAF policy
+  (GlobalInfra); per-region, an AKS cluster (with the `microsoft.flux`
+  extension and the `azureKeyvaultSecretsProvider` addon), an ACR, an
+  Azure Database for PostgreSQL, an Azure Storage account (with
+  per-deployable manifest containers and the PilotSwarm session blob
+  container), an Azure Key Vault, user-assigned managed identities, a
+  VNet with a dedicated private-link subnet, a **private-link-ready
+  Application Gateway** (with a `privateLinkConfigurations` block and a
+  private frontend IP listener), and all required RBAC — via declarative
+  Bicep, invoked by EV2 infrastructure rollouts. Every environment-
+  specific identity (target subscription, resource group name,
+  resource-name prefix, region) MUST be supplied by EV2 scope-binding
+  parameters at rollout time, not hard-coded in Bicep, mirroring the
+  reference repo's GlobalInfra and BaseInfra parameterization
+  (SpecResearch Q13, Q14, Q14b, Q15). (Stories: P1-Regions, P1-Release)
 - FR-002: The new path MUST author the Kubernetes manifests for each
   deployable (worker, portal) as a Kustomize base plus one overlay per
   environment (at minimum `dev` and `prod`), with environment-specific
@@ -364,43 +370,78 @@ Acceptance Scenarios:
   P1-Release)
 - FR-014: Every environment overlay MUST express its target
   namespace, image registry, image name, workload-identity client
-  IDs, and portal ingress hostname through the overlay-env-file +
-  replacements chain; no environment-specific value may be
-  hard-coded in a base manifest. The ingress TLS secret name is a
-  stable Kubernetes identifier declared in the base manifest; the
-  underlying TLS certificate material is delivered via
-  SecretProviderClass from Azure Key Vault like any other secret
-  (SpecResearch Q12b, Q17). (Stories: P1-Release, P1-Regions)
+  IDs, portal ingress hostname, and any AFD-route-derived values
+  through the overlay-env-file + replacements chain; no
+  environment-specific value may be hard-coded in a base manifest.
+  The ingress TLS secret name is a stable Kubernetes identifier
+  declared in the base manifest; the underlying TLS certificate
+  material is delivered via SecretProviderClass from Azure Key
+  Vault like any other secret (SpecResearch Q12b, Q14b, Q17).
+  (Stories: P1-Release, P1-Regions)
 - FR-015: The new path MUST publish documentation in `docs/`
   describing the new flow end-to-end, cross-linking to
   `docs/deploying-to-aks.md`, and clearly labelling which path to
   use when. (Stories: P2-ExistingPathPreserved)
-- FR-016: The new path MUST define two independent EV2 Application
-  ServiceGroups — one for the worker deployable and one for the
-  portal deployable — each with its own Kustomize overlay tree,
-  FluxConfig blob container, and pipeline line, matching the
-  reference repo's per-service ServiceGroup pattern (SpecResearch
-  Q1, Q3). The two ServiceGroups MAY share a single BaseInfra
-  ServiceGroup for region-level infrastructure. (Stories:
-  P1-Release, P1-Regions)
+- FR-016: The new path MUST define **four independent EV2
+  ServiceGroups**: one fleet-wide GlobalInfra ServiceGroup (Azure
+  Front Door Premium + WAF, deployed once per environment), one
+  per-region BaseInfra ServiceGroup (AKS + ACR + AKV + Storage +
+  VNet + private-link-ready AppGW + FLUX extension), and two
+  Application ServiceGroups — one for the worker deployable and one
+  for the portal deployable — each with its own Kustomize overlay
+  tree, FluxConfig blob container, and pipeline line. The two
+  Application ServiceGroups share the BaseInfra and GlobalInfra
+  ServiceGroups and roll out independently (SpecResearch Q1, Q3,
+  Q14). (Stories: P1-Release, P1-Regions)
+- FR-017: The portal deployable MUST be served through Azure
+  Front Door Premium: a WAF-associated AFD profile fronts every
+  environment, and at each rollout the portal service Bicep
+  registers an AFD origin group, origin (bound to the per-region
+  AppGW via the Private Link Service auto-created by the AppGW's
+  `privateLinkConfigurations` block), and route. Front Door →
+  AppGW traffic MUST flow over Private Link (no public AppGW
+  listener for portal traffic); in-cluster ingress MUST use the
+  AGIC ingress class (`azure/application-gateway`), not NGINX,
+  with hostname and TLS derived from an AKV-issued certificate
+  whose subject is `${resourceName}.${sslCertificateDomainSuffix}`
+  (SpecResearch Q14, Q14b). (Stories: P1-Release, P1-Regions,
+  P2-SecretsViaKV)
 
 ### Key Entities
 
+- **GlobalInfra ServiceGroup**: The EV2 ServiceGroup that
+  provisions fleet-wide, region-agnostic Azure resources — Azure
+  Front Door Premium profile, its endpoint, and the WAF policy
+  associated via `securityPolicies`. Deployed once per environment
+  ahead of any BaseInfra rollout. Its name and resource group are
+  consumed by Application ServiceGroups via `$config(...)` bindings
+  (SpecResearch Q14, Q14b).
 - **BaseInfra ServiceGroup**: The EV2 ServiceGroup that provisions
   per-region Azure infrastructure shared by both PilotSwarm
-  deployables (AKS, ACR, PG, Storage, AKV, UAMIs, VNet, FLUX
-  extension, FluxConfigs for each deployable's manifest container).
-  Parameterized by EV2 scope bindings on subscription, resource
-  group name, resource-name prefix, and region (SpecResearch Q13,
-  Q15).
+  deployables (AKS, ACR, PG, Storage, AKV, UAMIs, VNet, a
+  **private-link-ready Application Gateway** with a dedicated
+  private-link subnet, FLUX extension, FluxConfigs for each
+  deployable's manifest container). Parameterized by EV2 scope
+  bindings on subscription, resource group name, resource-name
+  prefix, and region (SpecResearch Q13, Q14b, Q15).
 - **Worker Application ServiceGroup**: The EV2 ServiceGroup that
   uploads the worker container image to the per-region ACR and the
   worker's Kustomize bundle to the worker's manifest container.
-  Independent from the portal ServiceGroup (SpecResearch Q1, Q3).
+  Independent from the portal ServiceGroup. The worker has no
+  ingress surface; it is not wired to Front Door (SpecResearch Q1,
+  Q3).
 - **Portal Application ServiceGroup**: The EV2 ServiceGroup that
   uploads the portal container image and the portal's Kustomize
-  bundle to its own manifest container. Independent from the worker
-  ServiceGroup, with its own pipeline line and rollout cadence.
+  bundle to its own manifest container, **and** registers an AFD
+  origin group + origin (Private-Link-bound to the per-region
+  AppGW) + route against the fleet-wide GlobalInfra AFD profile at
+  rollout time. Independent from the worker ServiceGroup, with its
+  own pipeline line and rollout cadence (SpecResearch Q14b).
+- **Azure Front Door Premium + WAF (shared edge)**: The fleet-wide
+  edge provisioned by GlobalInfra. Each portal rollout adds a
+  per-region origin. Traffic terminates TLS at the AppGW using an
+  AKV-issued certificate whose subject matches the origin's
+  `hostName` (SpecResearch Q14b).
 - **Manifest Bundle**: A zipped tree containing a deployable's
   Kustomize base + overlays, uploaded by EV2 to that deployable's
   blob container (`pilotswarm-worker-manifests` /
@@ -435,8 +476,10 @@ Acceptance Scenarios:
 - SC-001: A full production EV2 rollout can be triggered from the
   new pipeline and completes successfully, with the managed SDP
   stage map advancing through all configured regions, without any
-  operator running `kubectl` during the rollout. (FR-001, FR-003,
-  FR-007, FR-013, FR-016) (Stories: P1-Release)
+  operator running `kubectl` during the rollout. The fleet-wide
+  GlobalInfra rollout precedes the per-region rollouts and is
+  idempotent across subsequent Application rollouts. (FR-001,
+  FR-003, FR-007, FR-013, FR-016, FR-017) (Stories: P1-Release)
 - SC-002: After a successful rollout, every running worker and
   portal pod in every target region is running the exact container
   image tag specified by the EV2 build version, as verified by
@@ -469,11 +512,20 @@ Acceptance Scenarios:
   can be brought from zero to a functioning PilotSwarm environment
   by running the BaseInfra rollout followed by the two Application
   rollouts (worker, portal), with no manual kubectl or az CLI
-  steps. (FR-001, FR-013, FR-016) (Stories: P1-Regions)
+  steps. After the portal rollout, the new region's AppGW is
+  registered as an AFD origin and is reachable through the
+  fleet-wide AFD endpoint over Private Link. (FR-001, FR-013,
+  FR-016, FR-017) (Stories: P1-Regions)
 - SC-010: The worker and portal ServiceGroups can be rolled out
   independently — a worker rollout completing does not block or
   depend on a portal rollout, and vice versa. (FR-016)
   (Stories: P1-Release)
+- SC-011: Portal traffic entering through the fleet-wide Azure
+  Front Door endpoint reaches a pod in every configured region
+  without the per-region Application Gateway exposing a public
+  listener for portal traffic, as verifiable by inspecting AppGW
+  listener configuration and AFD origin Private Link state.
+  (FR-017) (Stories: P1-Release, P1-Regions)
 
 ## Assumptions
 
@@ -486,12 +538,43 @@ Acceptance Scenarios:
   the intake's accompanying "storage buckets" requirement and
   avoids PAT/webhook/Git-ACL management. Rationale: literal
   fidelity to the reference pattern + simpler operational surface.
-- **Two Application ServiceGroups, one per deployable**: One
-  ServiceGroup for the worker, one for the portal, per the literal
-  fleet-manager pattern (SpecResearch Q1, Q3) and per user intake
-  Q6. They share a single BaseInfra ServiceGroup. Rationale:
-  independent rollout cadence and blast-radius isolation between
-  worker and portal.
+- **Four ServiceGroups, not two**: One fleet-wide GlobalInfra
+  ServiceGroup, one per-region BaseInfra ServiceGroup, and two
+  Application ServiceGroups (worker, portal), per the literal
+  fleet-manager pattern (SpecResearch Q1, Q3, Q14) and per user
+  intake Q6 + decision to adopt AFD. Rationale: independent
+  rollout cadence and blast-radius isolation between deployables,
+  single shared edge via one AFD profile across the fleet.
+- **Azure Front Door Premium + WAF as portal edge**
+  (SpecResearch Q14, Q14b): PilotSwarm's portal is moved off its
+  current direct-ingress LB pattern and placed behind a fleet-wide
+  AFD Premium profile with WAF (Prevention mode) provisioned by
+  GlobalInfra. The portal's in-cluster ingress switches from NGINX
+  to AGIC (`kubernetes.io/ingress.class: azure/application-gateway`)
+  to match the reference pattern. AFD → AppGW traffic flows over
+  Private Link only (no public AppGW listener for portal traffic);
+  the per-region AppGW is provisioned with the
+  `privateLinkConfigurations` block and a dedicated private-link
+  subnet. At portal rollout time the service Bicep calls
+  `Common/bicep/frontdoor-origin-route.bicep` (verbatim copy from
+  reference repo) at the GlobalInfra RG scope to register the
+  per-region origin and route, and `approve-private-endpoint.bicep`
+  to auto-approve the pending PLS connection. The worker has no
+  ingress surface and is not wired to AFD. Rationale: adopts the
+  fleet-manager reference pattern for edge/WAF/private connectivity,
+  which is operationally safer and more scalable than direct public
+  LB per region.
+- **Per-environment custom SSL domain via `$config()` binding**
+  (SpecResearch Q14b): `sslCertificateDomainSuffix` is a per-env
+  EV2 `$config()` value set in each
+  `Microsoft.PilotSwarm.<App>.{env}.Configuration.json`, mirroring
+  fleet-manager's convention. The TLS certificate is issued by the
+  AKV cert-issuer and has subject
+  `${resourceName}.${sslCertificateDomainSuffix}`. That same string
+  is the AFD origin's `hostName`/`originHostHeader`, the AppGW
+  listener hostname, and the K8s Ingress `host`. Rationale: custom
+  domain and env-segregated cert chain matches reference repo;
+  public-resolvable names per environment.
 - **Managed SDP stage map (`Microsoft.Azure.SDP.Standard`)**
   (SpecResearch Q4, Q6): The new path uses the same managed stage
   map as the reference repo. Concrete bake times and canary
@@ -505,10 +588,10 @@ Acceptance Scenarios:
   they do not apply to a single-service Node repo. Rationale:
   intake guidance on simplifications.
 - **No Azure Front Door / GlobalInfra** (SpecResearch Q14):
-  PilotSwarm's portal is a single-region ingress today. A
-  GlobalInfra service group with Front Door + WAF is deferred
-  until multi-region portal becomes a goal. Rationale: intake
-  guidance on simplifications + avoids premature cost.
+  Superseded by the AFD adoption decision — see the "Azure Front
+  Door Premium + WAF as portal edge" assumption above. The
+  GlobalInfra ServiceGroup, private-link-ready AppGW, and portal
+  AFD wiring are now in scope.
 - **Migrations run at worker startup, unchanged** (SpecResearch
   Q40): The existing advisory-lock-based migration runner in
   `cms-migrator` / `facts-migrator` continues to handle schema
@@ -546,7 +629,7 @@ Acceptance Scenarios:
   Rationale: changing file paths would perturb the existing
   `deploy-aks.sh` flow, which is explicitly out of scope.
 - **Portal ingress hostname is EV2-bound; TLS secret name is stable**
-  (SpecResearch Q12b): The current hardcoded host
+  (SpecResearch Q12b, Q14b): The current hardcoded host
   `pilotswarm-portal.westus3.cloudapp.azure.com` in
   `deploy/k8s/portal-ingress.yaml` is not carried forward to the
   new prod overlay. Following the `PlaygroundService` ingress
@@ -558,10 +641,11 @@ Acceptance Scenarios:
   `__PORTAL_HOSTNAME__` token in `scopeBinding.json`, flows into
   `overlays/prod/.env`, and is fanned out by a single Kustomize
   `replacements` entry into `spec.rules[0].host`,
-  `spec.tls[0].hosts[0]`, and the two App-Gateway hostname
-  annotations. The TLS secret name stays a stable Kubernetes
-  identifier in the base ingress manifest; the underlying cert
-  material is fetched from AKV via SecretProviderClass.
+  `spec.tls[0].hosts[0]`, and the two AGIC (App-Gateway) hostname
+  annotations (`backend-hostname`, `health-probe-hostname`). The
+  TLS secret name stays a stable Kubernetes identifier in the base
+  ingress manifest; the underlying cert material is fetched from
+  AKV via SecretProviderClass.
 - **OneBranch pipeline template applies** (SpecResearch Q23,
   Q25): The new pipelines are assumed to fit the OneBranch
   Official template used by the reference repo. Full validation
@@ -573,29 +657,44 @@ Acceptance Scenarios:
 
 ### In Scope
 
+- New Bicep tree for GlobalInfra (Azure Front Door Premium
+  profile, AFD endpoint, WAF policy, security-policy association),
+  fleet-wide and region-agnostic, idempotent and parameterized on
+  resource prefix and region via EV2 scope bindings.
 - New Bicep tree for BaseInfra (AKS, ACR, PG, Storage, AKV, UAMIs,
-  VNet, FLUX extension, FluxConfigs for each deployable's manifest
-  container), idempotent and parameterized on subscription,
-  resource group name, resource-name prefix, and region via EV2
-  scope bindings.
+  VNet with a dedicated private-link subnet, a **private-link-ready
+  Application Gateway** with `privateLinkConfigurations`, FLUX
+  extension, FluxConfigs for each deployable's manifest container),
+  idempotent and parameterized on subscription, resource group
+  name, resource-name prefix, and region via EV2 scope bindings.
 - New Kustomize trees, one per deployable
   (`deploy/kustomize/worker/` and `deploy/kustomize/portal/`),
   each with a base derived (copied, not replacing) from the
   current `deploy/k8s/*.yaml` worker/portal manifests, plus
   `overlays/dev/` and `overlays/prod/` each with an env file,
   `kustomization.yaml` (with configMapGenerator + replacements),
-  and a `SecretProviderClass`.
-- New EV2 ServiceGroups: one BaseInfra ServiceGroup, one Worker
-  Application ServiceGroup, one Portal Application ServiceGroup.
-  Wired to the managed SDP stage map and configured for a single
-  initial production region (`westus3`).
+  and a `SecretProviderClass`. The portal base ingress uses the
+  AGIC ingress class (`azure/application-gateway`) with empty
+  placeholder host/TLS fields filled by Kustomize replacements.
+- New EV2 ServiceGroups: one GlobalInfra ServiceGroup, one
+  BaseInfra ServiceGroup, one Worker Application ServiceGroup,
+  and one Portal Application ServiceGroup. Wired to the managed
+  SDP stage map and configured for a single initial production
+  region (`westus3`).
+- Portal service Bicep wiring to Front Door: copies of the
+  reference repo's `Common/bicep/frontdoor-origin-route.bicep`
+  and `Common/bicep/approve-private-endpoint.bicep`, invoked from
+  the portal Bicep at the GlobalInfra RG scope to register a
+  per-region AFD origin and route and auto-approve the pending
+  PLS connection on the AppGW side.
 - Vendored copies of the reference repo's `UploadContainer.sh`,
   `DeployApplicationManifest.sh`, and `GenerateEnvForEv2.ps1`
   shell-extension scripts, adapted for PilotSwarm's shape.
 - New CI + prod pipeline lines (OneBranch Official pattern) that
   build the worker and portal images and drive `Ev2RARollout@2`
   with the managed SDP stage map — at least one prod pipeline line
-  per Application ServiceGroup, matching the reference pattern.
+  per Application ServiceGroup plus a separate line for
+  GlobalInfra, matching the reference pattern.
 - New dev-test helper for each Application ServiceGroup, analogous
   to fleet-manager's `ev2-deploy-dev.ps1`.
 - New documentation under `docs/` describing the full flow and
@@ -610,7 +709,6 @@ Acceptance Scenarios:
   `scripts/deploy-aks.sh`, `scripts/reset-local.sh`,
   `scripts/deploy-portal.sh`, `deploy/k8s/*.yaml`, any
   `deploy/Dockerfile.*`, or `docs/deploying-to-aks.md`.
-- A GlobalInfra / Azure Front Door layer.
 - A single combined ServiceGroup covering both worker and portal
   (per user decision R1, the two deployables own separate
   ServiceGroups).
