@@ -195,7 +195,7 @@ phase-gating tests but documented behaviors the design relies on.
 - [x] **Phase 4: Portal AFD + Private Link wiring** — Vendor the two verbatim reference Bicep modules and invoke them from the Portal service Bicep to register a per-region AFD origin + route and auto-approve the pending PLS connection on the AppGW side.
 - [x] **Phase 5: Four EV2 ServiceGroups + shell extensions + dev-test helpers** — Define `ServiceModel.json`, `RolloutSpec.json`, `ScopeBindings.json`, `Parameters/{env}.json`, `Ev2AppDeployment/` for all four ServiceGroups (BaseInfra + the two App SGs consume shell extensions; GlobalInfra is Bicep-only), with Azure-managed SDP stage maps and `ev2-deploy-dev.ps1` per App SG.
 - [x] **Phase 6: Pipelines (OneBranch Official)** — One CI line (build + push worker + portal images to ACR) and four prod lines (one per ServiceGroup) driving `Ev2RARollout@2`.
-- [ ] **Phase 7: Documentation** — Produce `docs/deploying-to-aks-ev2.md`, cross-link from `docs/deploying-to-aks.md`, write `Docs.md` (as-built reference), and update README/CHANGELOG if warranted.
+- [x] **Phase 7: Documentation** — Produce `docs/deploying-to-aks-ev2.md`, cross-link from `docs/deploying-to-aks.md`, write `Docs.md` (as-built reference), and update README/CHANGELOG if warranted.
 
 ## Phase Candidates
 
