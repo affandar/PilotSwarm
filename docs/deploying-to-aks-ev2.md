@@ -104,8 +104,8 @@ No environment-specific literal ever lands in git.
 
 | Tool | Purpose | Install |
 |---|---|---|
-| `az` | Azure CLI for Bicep builds + `rollout start` | <https://learn.microsoft.com/cli/azure/install-azure-cli> |
-| `az rollout` extension | EV2 dev-test rollouts | `az extension add --name rollout` |
+| `az` | Azure CLI for Bicep builds + what-if | <https://learn.microsoft.com/cli/azure/install-azure-cli> |
+| EV2 Quickstart PS module | Dev-test rollouts (`Register-AzureServiceArtifacts`, `New-AzureServiceRollout`) | Clone <https://msazure.visualstudio.com/Azure-Express/_git/Quickstart>; dot-source `Ev2_PowerShell\AzureServiceDeployClient.ps1` in **native Windows PowerShell 5.1 (x64)**. |
 | `kubectl` | Kustomize renders + local cluster inspection | <https://kubernetes.io/docs/tasks/tools/> |
 | `kustomize` | Standalone kustomize (optional; `kubectl kustomize` suffices) | <https://kubectl.docs.kubernetes.io/installation/kustomize/> |
 | `docker buildx` | Local image builds (CI does this normally; `buildx` for `--platform linux/amd64` on Apple Silicon) | <https://docs.docker.com/build/> |
@@ -120,10 +120,10 @@ deploy/
 │   ├── README.md                          High-level map of the EV2 tree.
 │   ├── GlobalInfra/                       Fleet-wide Azure resources.
 │   │   ├── bicep/                           Subscription-scope Bicep + bicepparams.
-│   │   └── Ev2InfraDeployment/              ServiceModel + RolloutSpec + ScopeBinding + Parameters.
+│   │   └── Ev2InfraDeployment/              serviceModel + rolloutSpec + scopeBinding + Configuration/ + Parameters + version.txt.
 │   ├── BaseInfra/                         Per-region Azure resources.
 │   │   ├── bicep/                           Resource-group-scope Bicep modules.
-│   │   └── Ev2InfraDeployment/
+│   │   └── Ev2InfraDeployment/              serviceModel + rolloutSpec + scopeBinding + Configuration/ + Parameters + version.txt.
 │   ├── Worker/                            Worker service (single SG, app-only — no service Bicep).
 │   │   ├── Ev2AppDeployment/                3-step rollout (Upload → GenerateEnv → DeployManifest).
 │   │   └── ev2-deploy-dev.ps1               Dev-loop helper (stages working tree).
@@ -200,41 +200,89 @@ markdownlint docs/deploying-to-aks-ev2.md
 ## Dev-test rollout
 
 The per-deployable PowerShell helpers stage the current **working tree**
-(committed or not) into a temp `--service-group-root` and invoke
-`az rollout start` against a dev EV2 Service Connection. Uncommitted
-changes are picked up — this is the primary inner-loop affordance.
+(committed or not) into a temp ServiceGroup root and invoke the internal
+EV2 cmdlets (`Register-AzureServiceArtifacts` + `New-AzureServiceRollout`)
+against the EV2 **Test** endpoint. Uncommitted changes are picked up —
+this is the primary inner-loop affordance. This follows the same pattern
+as the `postgresql-fleet-manager` reference repo; see
+[`docs/Ev2DevTestDeployment.md`](https://msazure.visualstudio.com) in
+that repo for a deep walkthrough of EV2 dev/test tooling.
 
 ```powershell
-# Worker dev rollout
-pwsh deploy/ev2/Worker/ev2-deploy-dev.ps1
+# Worker dev rollout (from the repo root, in Windows PowerShell 5.1 x64)
+.\deploy\ev2\Worker\ev2-deploy-dev.ps1 `
+    -ServiceId <service-tree-guid> `
+    -ServiceGroupName Microsoft.PilotSwarm.Worker.Dev
 
 # Portal dev rollout
-pwsh deploy/ev2/Portal/ev2-deploy-dev.ps1
+.\deploy\ev2\Portal\ev2-deploy-dev.ps1 `
+    -ServiceId <service-tree-guid> `
+    -ServiceGroupName Microsoft.PilotSwarm.Portal.Dev
 ```
 
 **Prerequisites**:
 
-- `az` logged in with permission to trigger rollouts on the dev service
-  identifier.
-- `az extension add --name rollout` has been run.
-- `kubectl` on `PATH` (the helper renders a local Kustomize preview
-  into the staging directory for inspection).
+- Clone the EV2 Quickstart repo and dot-source the client module in a
+  **native Windows PowerShell 5.1 x64** session (PowerShell Core / ARM
+  are not supported):
+
+  ```powershell
+  cd <Quickstart>\Ev2_PowerShell
+  . .\AzureServiceDeployClient.ps1
+  # Complete interactive AAD sign-in.
+  ```
+
+  This exposes `Register-AzureServiceArtifacts`, `Test-AzureServiceRollout`,
+  `New-AzureServiceRollout`, and related cmdlets.
+- Your corp account must be a member of the EV2 operator AAD group
+  registered on the PilotSwarm ServiceTree entry.
+- `kubectl` on `PATH` (optional; the helper renders a local Kustomize
+  preview into the staging directory for inspection).
+
+**What the helper does**:
+
+1. Resolves the repo root and stages `deploy/ev2/<Service>/Ev2AppDeployment/`
+   (or the corresponding `Ev2InfraDeployment/` for infra SGs) plus the
+   target overlay into a temp directory under `[IO.Path]::GetTempPath()`.
+2. Reads `ArtifactsVersion` from the staged `version.txt`.
+3. Calls `Register-AzureServiceArtifacts -ServiceGroupRoot <staging>
+   -RolloutSpec rolloutSpec.json -RolloutInfra Test`.
+4. Calls `New-AzureServiceRollout -ServiceIdentifier <ServiceId>
+   -ServiceGroup <env-qualified-name> -StageMapName
+   Microsoft.Azure.SDP.Standard -ArtifactsVersion <ver> -Select
+   "regions(westus3).steps(*)" -RolloutInfra Test -WaitToComplete`.
+   Pass `-TestOnly` to run `Test-AzureServiceRollout` instead.
 
 **Side effects**:
 
-- Writes to a new temp directory under `$env:TEMP` /
-  `[IO.Path]::GetTempPath()` — no repo mutation, no commits, no pushes.
-- Triggers a rollout in the dev EV2 subscription via the configured
-  Service Connection.
+- Writes to a new temp directory under `[IO.Path]::GetTempPath()` — no
+  repo mutation, no commits, no pushes.
+- Triggers a rollout on the EV2 **Test** infra against the configured
+  ServiceTree identifier.
 
 **Tracking progress**:
 
-- The helper prints the `az rollout start` command and rollout ID.
-- In the Azure portal: **Express v2 (EV2) → Rollouts** (scoped to the
-  dev service identifier). Each shell-extension step has its own log
-  stream.
+- `-WaitToComplete` streams status to the console.
+- In the Azure portal: **Express v2 (EV2) → Rollouts** scoped to the
+  ServiceTree entry. Each shell-extension step has its own log stream.
 - `kubectl -n copilot-runtime get pods -w` after reconcile to watch
   Flux apply the uploaded manifest bundle.
+
+### How `$config(...)` tokens resolve
+
+Each `scopeBinding.json` references tokens like `$config(TenantId)` or
+`$config(acrLoginServer)`. EV2 resolves them from the SG's
+`Configuration/` tree at rollout time:
+
+| Scope | File | Purpose |
+|---|---|---|
+| Service (env-invariant) | `Configuration/configurationSettings.json` | Keys shared across all environments. |
+| ServiceGroup (per-env) | `Configuration/ServiceGroup/$serviceGroup().Configuration.json` | Env-qualified keys + `Geographies` region fan-out. Selected at rollout time by the `$serviceGroup()` macro, which expands to e.g. `Microsoft.PilotSwarm.Portal.Dev`. |
+| Region | `Geographies[].Regions[].Settings` inside the per-env file | Region-specific overrides (e.g., `regionShortName: "wus3"`). |
+
+Region settings override SG settings, which override service settings.
+`version.txt` is consumed directly by the helper / pipeline, not by
+scope binding.
 
 ## Production rollout
 
