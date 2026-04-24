@@ -14,6 +14,7 @@ For the full operator guide see
 ```
 deploy/ev2/
 ├── GlobalInfra/                     Fleet-wide Azure resources (AFD + WAF).
+│   ├── service.json                 Self-contained manifest (indexed from services.json).
 │   ├── bicep/                       Subscription-scope Bicep (Phase 2).
 │   └── Ev2InfraDeployment/          EV2 ServiceGroup — Bicep-only.
 │       ├── serviceModel.json
@@ -27,6 +28,7 @@ deploy/ev2/
 │       └── Parameters/GlobalInfra.deploymentParameters.json              ARM params consumed by serviceModel.
 │
 ├── BaseInfra/                       Per-region Azure resources (AKS, ACR, KV, AppGW, …).
+│   ├── service.json                 Self-contained manifest.
 │   ├── bicep/                       RG-scope Bicep (Phase 3).
 │   └── Ev2InfraDeployment/          EV2 ServiceGroup — consumes GlobalInfra outputs.
 │       ├── serviceModel.json
@@ -39,6 +41,7 @@ deploy/ev2/
 │       └── Parameters/BaseInfra.deploymentParameters.json
 │
 ├── Portal/                          Portal service — AFD origin + PLS wiring + manifests.
+│   ├── service.json                 Self-contained manifest.
 │   ├── bicep/                       Per-region Portal Bicep (Phase 4).
 │   └── Ev2AppDeployment/            Single ServiceGroup combining Portal service infra
 │       │                            (ARM: AFD origin/route + PLS approval) and the
@@ -52,6 +55,7 @@ deploy/ev2/
 │       └── Parameters/Portal.deploymentParameters.json + *.Linux.Rollout.json
 │
 ├── Worker/                          Worker service — no Azure resources, app-only.
+│   ├── service.json                 Self-contained manifest.
 │   └── Ev2AppDeployment/            Same 3-step rollout as Portal; manifests → worker-manifests container.
 │       ├── version.txt
 │       ├── Configuration/
@@ -59,8 +63,8 @@ deploy/ev2/
 │       │   └── ServiceGroup/Microsoft.PilotSwarm.Worker.{Dev,Prod}.Configuration.json
 │       └── Parameters/*.Linux.Rollout.json
 │
-├── services.json                    Manifest consumed by ev2-deploy-dev.ps1
-│                                    (per-service SG name, Bicep paths, Docker repo).
+├── services.json                    Root index: fleet-wide defaults + pointers
+│                                    to each service's self-contained manifest.
 ├── ev2-deploy-dev.ps1               Unified dev-loop helper (see below).
 └── .staging/                        Gitignored; per-invocation staging roots.
 │
@@ -113,8 +117,12 @@ ServiceGroups because it is consumed by both services.
   cmdlets (`Register-AzureServiceArtifacts` + `New-AzureServiceRollout`
   from `AzureServiceDeployClient.ps1`) — **not** `az rollout start`.
   Improvements over the postgresql-fleet-manager reference:
-  - Service manifest (`services.json`) replaces the hardcoded
-    `ValidateSet` + switch statement.
+  - Service manifests replace the hardcoded `ValidateSet` + switch
+    statement. Each service is self-contained: per-service config lives
+    in `deploy/ev2/<Service>/service.json` alongside its SG tree, and
+    the root `services.json` is a thin index (fleet-wide defaults +
+    pointers). Adding a service = drop `<Name>/service.json` + add one
+    line to the root index; no script change.
   - Staging root lives at `deploy/ev2/.staging/<service>-<stamp>/`
     inside the repo (gitignored) instead of `%TEMP%`, so failed runs
     are easy to inspect.

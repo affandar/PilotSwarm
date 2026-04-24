@@ -1,12 +1,16 @@
 # ev2-deploy-dev.ps1 — unified EV2 Test-endpoint dev-loop helper for PilotSwarm.
 #
-# Reads deploy/ev2/services.json for per-service configuration (mirroring
-# the postgresql-fleet-manager pattern but config-driven instead of
-# hardcoded). Stages the selected ServiceGroup's tree (plus any build
-# outputs) under `deploy/ev2/.staging/` (gitignored, inside the repo),
-# then invokes the internal EV2 cmdlets from AzureServiceDeployClient.ps1
+# Reads deploy/ev2/services.json (the root index with fleet-wide defaults +
+# pointers to per-service manifests) and each targeted service's
+# deploy/ev2/<Service>/service.json (self-contained per-service config).
+# Stages the selected ServiceGroup's tree (plus any build outputs) under
+# `deploy/ev2/.staging/` (gitignored, inside the repo), then invokes the
+# internal EV2 cmdlets from AzureServiceDeployClient.ps1
 # (Register-AzureServiceArtifacts + New-AzureServiceRollout). This is
 # NOT an `az rollout start` / Azure CLI flow.
+#
+# Adding a new service: drop deploy/ev2/<Name>/service.json and add one
+# entry under `services` in services.json. No changes to this script.
 #
 # Prerequisites (see docs/deploying-to-aks-ev2.md):
 #   1. Clone the EV2 Quickstart repo:
@@ -28,9 +32,10 @@
 
 [CmdletBinding()]
 param (
-    # Target service. Drives which SG tree is staged + rolled out.
+    # Target service name. Must match a key in deploy/ev2/services.json.
+    # Validated at runtime (not via ValidateSet) so new services can be
+    # added by creating <Name>/service.json + one index entry.
     [Parameter(Mandatory = $true)]
-    [ValidateSet('GlobalInfra', 'BaseInfra', 'Worker', 'Portal')]
     [string]$Service,
 
     [ValidateSet('Dev', 'Prod')]
@@ -90,21 +95,28 @@ function Assert-Ev2Cmdlets {
     }
 }
 
-function Get-ServicesManifest {
+function Get-ServicesIndex {
     param([string]$RepoRoot)
     $path = Join-Path $RepoRoot 'deploy/ev2/services.json'
-    if (-not (Test-Path $path)) { throw "services manifest not found: $path" }
+    if (-not (Test-Path $path)) { throw "root service index not found: $path" }
     return Get-Content $path -Raw | ConvertFrom-Json
 }
 
 function Resolve-ServiceConfig {
-    param($Manifest, [string]$Name, [string]$Env)
-    if (-not $Manifest.services.PSObject.Properties.Name.Contains($Name)) {
-        throw "Service '$Name' not found in services.json"
+    param($Index, [string]$Name, [string]$Env, [string]$RepoRoot)
+    if (-not $Index.services.PSObject.Properties.Name.Contains($Name)) {
+        $known = ($Index.services.PSObject.Properties.Name -join ', ')
+        throw "Service '$Name' not in services.json (known: $known)"
     }
-    $svc = $Manifest.services.$Name
+    $manifestRel = $Index.services.$Name.manifest
+    $manifestAbs = Join-Path $RepoRoot "deploy/ev2/$manifestRel"
+    if (-not (Test-Path $manifestAbs)) {
+        throw "Per-service manifest not found: $manifestAbs (indexed from services.json as '$manifestRel')"
+    }
+    $svc = Get-Content $manifestAbs -Raw | ConvertFrom-Json
     $resolved = [ordered]@{
         Name             = $Name
+        ManifestPath     = $manifestAbs
         ServiceGroupName = $svc.serviceGroupName -replace '\{env\}', $Env
         SgRoot           = $svc.sgRoot
         RolloutSpec      = $svc.rolloutSpec
@@ -117,7 +129,7 @@ function Resolve-ServiceConfig {
             $svc.kustomizeOverlay -replace '\{envLower\}', $Env.ToLowerInvariant()
         } else { $null }
         IsInfra          = [bool]$svc.isInfra
-        DefaultRegion    = if ($svc.PSObject.Properties.Name -contains 'defaultRegion' -and $svc.defaultRegion) { $svc.defaultRegion } else { $Manifest.defaultRegion }
+        DefaultRegion    = if ($svc.PSObject.Properties.Name -contains 'defaultRegion' -and $svc.defaultRegion) { $svc.defaultRegion } else { $Index.defaultRegion }
     }
     return [pscustomobject]$resolved
 }
@@ -280,7 +292,7 @@ function Start-Ev2RegisterAndDeploy {
 }
 
 function Invoke-ServiceDeploy {
-    param([string]$RepoRoot, $Manifest, $Config, [string]$Env, [string]$Region)
+    param([string]$RepoRoot, $Index, $Config, [string]$Env, [string]$Region)
 
     if (-not $SkipBuild) {
         Invoke-BicepBuild -RepoRoot $RepoRoot -Config $Config
@@ -298,7 +310,7 @@ function Invoke-ServiceDeploy {
         -RolloutSpec $Config.RolloutSpec `
         -ServiceId $ServiceId `
         -ServiceGroupName $Config.ServiceGroupName `
-        -StageMapName $Manifest.stageMapName `
+        -StageMapName $Index.stageMapName `
         -ArtifactsVersion $artifactsVersion `
         -Region $Region `
         -Steps $Steps `
@@ -317,14 +329,15 @@ if (-not $ServiceId) {
 }
 
 $repoRoot = Resolve-RepoRoot
-$manifest = Get-ServicesManifest -RepoRoot $repoRoot
+$index = Get-ServicesIndex -RepoRoot $repoRoot
 
-$primary = Resolve-ServiceConfig -Manifest $manifest -Name $Service -Env $Environment
+$primary = Resolve-ServiceConfig -Index $index -Name $Service -Env $Environment -RepoRoot $repoRoot
 if (-not $Region) { $Region = $primary.DefaultRegion }
 
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host "PilotSwarm EV2 dev deploy  (endpoint=Test)"                         -ForegroundColor Cyan
 Write-Host "  Service:      $($primary.Name)"                                   -ForegroundColor Yellow
+Write-Host "  Manifest:     $($primary.ManifestPath)"                           -ForegroundColor DarkGray
 Write-Host "  Environment:  $Environment"                                       -ForegroundColor Yellow
 Write-Host "  ServiceGroup: $($primary.ServiceGroupName)"                       -ForegroundColor Yellow
 Write-Host "  Region:       $Region"                                            -ForegroundColor Yellow
@@ -334,15 +347,21 @@ Write-Host "================================================================" -F
 
 try {
     if ($DeployInfra -and -not $primary.IsInfra) {
-        foreach ($infraName in 'GlobalInfra', 'BaseInfra') {
-            $infraCfg = Resolve-ServiceConfig -Manifest $manifest -Name $infraName -Env $Environment
+        $infraNames = if ($index.PSObject.Properties.Name -contains 'infraOrder' -and $index.infraOrder) {
+            $index.infraOrder
+        } else {
+            @('GlobalInfra', 'BaseInfra')
+        }
+        foreach ($infraName in $infraNames) {
+            if ($infraName -eq $primary.Name) { continue }
+            $infraCfg = Resolve-ServiceConfig -Index $index -Name $infraName -Env $Environment -RepoRoot $repoRoot
             $infraRegion = $infraCfg.DefaultRegion
             Write-Host "---- Deploying prerequisite: $infraName ----" -ForegroundColor Cyan
-            Invoke-ServiceDeploy -RepoRoot $repoRoot -Manifest $manifest -Config $infraCfg -Env $Environment -Region $infraRegion
+            Invoke-ServiceDeploy -RepoRoot $repoRoot -Index $index -Config $infraCfg -Env $Environment -Region $infraRegion
         }
     }
 
-    Invoke-ServiceDeploy -RepoRoot $repoRoot -Manifest $manifest -Config $primary -Env $Environment -Region $Region
+    Invoke-ServiceDeploy -RepoRoot $repoRoot -Index $index -Config $primary -Env $Environment -Region $Region
     Write-Host "Done." -ForegroundColor Green
 }
 catch {

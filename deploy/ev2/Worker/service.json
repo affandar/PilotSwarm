@@ -1,0 +1,13 @@
+{
+  "$schema": "../service.schema.json",
+  "_comment": "Per-service EV2 manifest for PilotSwarm Worker. Consumed by deploy/ev2/ev2-deploy-dev.ps1 via deploy/ev2/services.json. Paths are relative to the repo's deploy/ev2/ directory; kustomizeOverlay is relative to the repo root.",
+  "serviceGroupName": "Microsoft.PilotSwarm.Worker.{env}",
+  "sgRoot": "Worker/Ev2AppDeployment",
+  "rolloutSpec": "rolloutSpec.json",
+  "bicepMain": null,
+  "armTemplateOut": null,
+  "dockerImageRepo": "pilotswarm-worker",
+  "dockerfile": "deploy/Dockerfile.worker",
+  "kustomizeOverlay": "deploy/gitops/worker/overlays/{envLower}",
+  "isInfra": false
+}

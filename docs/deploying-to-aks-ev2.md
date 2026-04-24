@@ -119,17 +119,22 @@ deploy/
 ├── ev2/
 │   ├── README.md                          High-level map of the EV2 tree.
 │   ├── GlobalInfra/                       Fleet-wide Azure resources.
+│   │   ├── service.json                     Self-contained EV2 manifest.
 │   │   ├── bicep/                           Subscription-scope Bicep + bicepparams.
 │   │   └── Ev2InfraDeployment/              serviceModel + rolloutSpec + scopeBinding + Configuration/ + Parameters + version.txt.
 │   ├── BaseInfra/                         Per-region Azure resources.
+│   │   ├── service.json                     Self-contained EV2 manifest.
 │   │   ├── bicep/                           Resource-group-scope Bicep modules.
 │   │   └── Ev2InfraDeployment/              serviceModel + rolloutSpec + scopeBinding + Configuration/ + Parameters + version.txt.
 │   ├── Worker/                            Worker service (single SG, app-only — no service Bicep).
+│   │   ├── service.json                     Self-contained EV2 manifest.
 │   │   └── Ev2AppDeployment/                3-step rollout (Upload → GenerateEnv → DeployManifest).
 │   ├── Portal/                            Portal service (single SG combining service infra + app).
+│   │   ├── service.json                     Self-contained EV2 manifest.
 │   │   ├── bicep/                           AFD origin/route + PLS approval (ARM template).
 │   │   └── Ev2AppDeployment/                4-step rollout (PortalServiceInfra → Upload → GenerateEnv → DeployManifest).
-│   ├── services.json                      Service manifest consumed by ev2-deploy-dev.ps1.
+│   ├── services.json                      Root index: fleet-wide defaults + pointers to each
+│   │                                      service's service.json (self-contained per-service config).
 │   ├── ev2-deploy-dev.ps1                 Unified dev-loop helper (one script, all four SGs).
 │   ├── .staging/                          Gitignored; per-invocation staging roots.
 │   └── Common/
@@ -201,9 +206,11 @@ markdownlint docs/deploying-to-aks-ev2.md
 ## Dev-test rollout
 
 The unified PowerShell helper `deploy/ev2/ev2-deploy-dev.ps1` handles
-all four ServiceGroups. It reads `deploy/ev2/services.json` (the
-per-service manifest — SG name template, sg root, Bicep paths, Docker
-repo, default region), compiles Bicep, stages the selected SG tree
+all four ServiceGroups. It reads `deploy/ev2/services.json` (the root
+index with fleet-wide defaults + pointers to each service's
+self-contained `deploy/ev2/<Service>/service.json` — SG name template,
+sg root, Bicep paths, Docker repo, default region), compiles Bicep,
+stages the selected SG tree
 under `deploy/ev2/.staging/<service>-<stamp>/` (inside the repo but
 gitignored — easy to inspect on failure), then invokes the internal
 EV2 cmdlets (`Register-AzureServiceArtifacts` + `New-AzureServiceRollout`)
@@ -211,9 +218,25 @@ against the EV2 **Test** endpoint.
 
 This pattern is adapted from `postgresql-fleet-manager`'s
 `src/Deploy/scripts/ev2-deploy-dev.ps1` with three improvements:
-service selection via a JSON manifest (not a hardcoded `ValidateSet`),
-staging inside the gitignored repo path instead of `%TEMP%`, and a
-single script rather than per-service copies.
+**self-contained per-service manifests** (`deploy/ev2/<Service>/service.json`)
+indexed by a thin root `services.json` — adding a service = drop the
+folder + add one line to the index, instead of editing a hardcoded
+`ValidateSet` + switch; staging inside the gitignored repo path
+instead of `%TEMP%` (so failed runs are easy to inspect); and a single
+script rather than per-service copies.
+
+### Adding a new service
+
+1. Create `deploy/ev2/<Name>/` with your SG tree (e.g. `Ev2AppDeployment/`).
+2. Create `deploy/ev2/<Name>/service.json` with `serviceGroupName`,
+   `sgRoot`, `rolloutSpec`, and optionally `bicepMain`/`bicepParams`,
+   `dockerImageRepo`/`dockerfile`/`kustomizeOverlay`, `isInfra`,
+   `defaultRegion` (see any existing service as a template).
+3. Add one line to the `services` map in `deploy/ev2/services.json`
+   pointing at the new `<Name>/service.json`.
+
+No changes to `ev2-deploy-dev.ps1` are needed. The script validates the
+service name at runtime against the index.
 
 ```powershell
 # Worker dev rollout (all steps, westus3)

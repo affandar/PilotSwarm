@@ -1,0 +1,15 @@
+{
+  "$schema": "../service.schema.json",
+  "_comment": "Per-service EV2 manifest for PilotSwarm BaseInfra. Consumed by deploy/ev2/ev2-deploy-dev.ps1 via deploy/ev2/services.json. Paths are relative to the repo's deploy/ev2/ directory.",
+  "serviceGroupName": "Microsoft.PilotSwarm.BaseInfra.{env}",
+  "sgRoot": "BaseInfra/Ev2InfraDeployment",
+  "rolloutSpec": "rolloutSpec.json",
+  "bicepMain": "BaseInfra/bicep/main.bicep",
+  "bicepParams": {
+    "Dev": "BaseInfra/bicep/parameters/dev.bicepparam",
+    "Prod": "BaseInfra/bicep/parameters/prod.bicepparam"
+  },
+  "armTemplateOut": "BaseInfra/Ev2InfraDeployment/Templates/BaseInfra.deploymentTemplate.json",
+  "dockerImageRepo": null,
+  "isInfra": true
+}

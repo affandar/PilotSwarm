@@ -1,0 +1,16 @@
+{
+  "$schema": "../service.schema.json",
+  "_comment": "Per-service EV2 manifest for PilotSwarm GlobalInfra. Consumed by deploy/ev2/ev2-deploy-dev.ps1 via deploy/ev2/services.json. Paths are relative to the repo's deploy/ev2/ directory so the manifest stays portable if the folder is renamed.",
+  "serviceGroupName": "Microsoft.PilotSwarm.GlobalInfra.{env}",
+  "sgRoot": "GlobalInfra/Ev2InfraDeployment",
+  "rolloutSpec": "rolloutSpec.json",
+  "bicepMain": "GlobalInfra/bicep/main.bicep",
+  "bicepParams": {
+    "Dev": "GlobalInfra/bicep/parameters/dev.bicepparam",
+    "Prod": "GlobalInfra/bicep/parameters/prod.bicepparam"
+  },
+  "armTemplateOut": "GlobalInfra/Ev2InfraDeployment/Templates/GlobalInfra.deploymentTemplate.json",
+  "dockerImageRepo": null,
+  "defaultRegion": "global",
+  "isInfra": true
+}
