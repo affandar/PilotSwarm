@@ -75,7 +75,24 @@ export type {
     OrchestrationInput,
     SubAgentEntry,
     SessionPolicy,
+    PromptSource,
+    PromptGuardrailAction,
+    PromptGuardrailVerdict,
+    PromptGuardrailDecision,
+    PromptGuardrailConfig,
 } from "./types.js";
+
+export {
+    buildGuardedTurnPrompt,
+    buildPromptGuardrailRefusal,
+    containsUnsafeAuthorityClaim,
+    evaluatePromptGuardrails,
+    isHighRiskTurnResult,
+    normalizePromptGuardrailConfig,
+    shouldRunPromptGuardrailDetector,
+    wrapToolOutputForModel,
+    wrapUntrustedContentBlock,
+} from "./prompt-guardrails.js";
 
 // Skills loader
 export { loadSkills } from "./skills.js";

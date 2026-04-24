@@ -365,6 +365,34 @@ export interface SessionCatalogProvider {
 // ─── PostgreSQL Implementation ───────────────────────────────────
 
 const DEFAULT_SCHEMA = "copilot_sessions";
+export const SESSION_EVENTS_NOTIFY_CHANNEL = "session_events";
+
+export function buildPgConnectionConfig(connectionString: string): {
+    connectionString: string;
+    ssl?: { rejectUnauthorized: boolean; checkServerIdentity?: () => undefined };
+} {
+    // pg v8 treats sslmode=require as verify-full, which rejects some managed/self-signed certs.
+    // For require/prefer: strip sslmode and use rejectUnauthorized: false.
+    // For verify-ca: validate cert chain but skip hostname check.
+    // For verify-full: validate cert chain + hostname (Node TLS default).
+    const parsed = new URL(connectionString);
+    const sslmode = parsed.searchParams.get("sslmode") ?? "";
+    const relaxedSsl = ["require", "prefer"].includes(sslmode);
+    const verifyCa = sslmode === "verify-ca";
+    const verifyFull = sslmode === "verify-full";
+    parsed.searchParams.delete("sslmode");
+    parsed.searchParams.delete("channel_binding");
+
+    const sslConfig = relaxedSsl
+        ? { ssl: { rejectUnauthorized: false } }
+        : verifyCa
+            ? { ssl: { rejectUnauthorized: true, checkServerIdentity: () => undefined as undefined } }
+            : verifyFull
+                ? { ssl: { rejectUnauthorized: true } }
+                : {};
+
+    return { connectionString: parsed.toString(), ...sslConfig };
+}
 
 /**
  * Build qualified function/table names for a given schema.
@@ -424,22 +452,14 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
     static async create(connectionString: string, schema?: string): Promise<PgSessionCatalogProvider> {
         const { default: pg } = await import("pg");
 
-        // pg v8 treats sslmode=require as verify-full, which rejects Azure/self-signed
-        // certs. Strip sslmode from URL and control SSL entirely via config object.
-        const parsed = new URL(connectionString);
-        const needsSsl = ["require", "prefer", "verify-ca", "verify-full"]
-            .includes(parsed.searchParams.get("sslmode") ?? "");
-        parsed.searchParams.delete("sslmode");
-
         const configuredPoolMax = Number.parseInt(process.env.PILOTSWARM_CMS_PG_POOL_MAX ?? "", 10);
         const poolMax = Number.isFinite(configuredPoolMax) && configuredPoolMax > 0
             ? configuredPoolMax
             : PgSessionCatalogProvider.DEFAULT_POOL_MAX;
 
         const pool = new pg.Pool({
-            connectionString: parsed.toString(),
             max: poolMax,
-            ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+            ...buildPgConnectionConfig(connectionString),
         });
 
         // Handle idle client errors (e.g. EADDRNOTAVAIL when the network
@@ -569,11 +589,27 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
 
     async recordEvents(sessionId: string, events: { eventType: string; data: unknown }[], workerNodeId?: string): Promise<void> {
         if (events.length === 0) return;
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
 
-        await this.pool.query(
-            `SELECT ${this.sql.fn.recordEvents}($1, $2, $3)`,
-            [sessionId, JSON.stringify(events), workerNodeId ?? null],
-        );
+            await client.query(
+                `SELECT ${this.sql.fn.recordEvents}($1, $2, $3)`,
+                [sessionId, JSON.stringify(events), workerNodeId ?? null],
+            );
+            await client.query(
+                "SELECT pg_notify($1, $2)",
+                [SESSION_EVENTS_NOTIFY_CHANNEL, JSON.stringify({ sessionId })],
+            );
+            await client.query("COMMIT");
+        } catch (err) {
+            try {
+                await client.query("ROLLBACK");
+            } catch {}
+            throw err;
+        } finally {
+            client.release();
+        }
     }
 
     async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<SessionEvent[]> {
