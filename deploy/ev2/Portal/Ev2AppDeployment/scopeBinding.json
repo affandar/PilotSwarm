@@ -82,12 +82,16 @@
                     "replaceWith": "$config(portalNamespace)"
                 },
                 {
-                    "find": "__MANIFEST_CONTAINER_NAME__",
+                    "find": "__DEPLOYMENT_STORAGE_CONTAINER_NAME__",
                     "replaceWith": "portal-manifests"
                 },
                 {
                     "find": "__DEPLOYMENT_OVERLAY_PATH__",
                     "replaceWith": "$config(portalOverlayPath)"
+                },
+                {
+                    "find": "__APPLICATION_MANIFEST_PARAMETERS_FILE__",
+                    "replaceWith": "Parameters/DeployApplicationManifest.parameters.json"
                 }
             ]
         },
@@ -97,6 +101,10 @@
                 {
                     "find": "__ACR_LOGIN_SERVER__",
                     "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(acrLoginServer.value)"
+                },
+                {
+                    "find": "__ACR_NAME__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(acrName.value)"
                 },
                 {
                     "find": "__KV_NAME__",

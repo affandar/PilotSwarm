@@ -33,18 +33,11 @@
             "actions": ["Shell/UploadContainer"]
         },
         {
-            "name": "GenerateEnvForEv2",
-            "targetType": "ServiceResourceDefinition",
-            "targetName": "WorkerGenerateEnvDefinition",
-            "actions": ["Shell/GenerateEnvForEv2"],
-            "dependsOn": ["UploadContainer"]
-        },
-        {
             "name": "DeployApplicationManifest",
             "targetType": "ServiceResourceDefinition",
             "targetName": "WorkerDeployApplicationManifestDefinition",
             "actions": ["Shell/DeployApplicationManifest"],
-            "dependsOn": ["GenerateEnvForEv2"]
+            "dependsOn": ["UploadContainer"]
         }
     ]
 }

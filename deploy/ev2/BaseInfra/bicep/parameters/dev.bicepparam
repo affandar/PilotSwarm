@@ -11,6 +11,7 @@ param acrSku = 'Basic'
 param wafMode = 'Detection'
 param appGatewayPrivateIpAddress = '10.20.16.10'
 param availabilityZones = []
+param environment = 'dev'
 
 // Supplied by pipeline / EV2 secret parameter; placeholder kept for
 // `az bicep build-params` validation only. Do not commit a real value.

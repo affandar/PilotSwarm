@@ -15,6 +15,7 @@ param availabilityZones = [
   '2'
   '3'
 ]
+param environment = 'prod'
 
 // Supplied by pipeline / EV2 secret parameter; placeholder kept for
 // `az bicep build-params` validation only. Do not commit a real value.

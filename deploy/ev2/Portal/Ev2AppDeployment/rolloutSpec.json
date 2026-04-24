@@ -40,18 +40,11 @@
             "dependsOn": ["PortalServiceInfra"]
         },
         {
-            "name": "GenerateEnvForEv2",
-            "targetType": "ServiceResourceDefinition",
-            "targetName": "PortalGenerateEnvDefinition",
-            "actions": ["Shell/GenerateEnvForEv2"],
-            "dependsOn": ["UploadContainer"]
-        },
-        {
             "name": "DeployApplicationManifest",
             "targetType": "ServiceResourceDefinition",
             "targetName": "PortalDeployApplicationManifestDefinition",
             "actions": ["Shell/DeployApplicationManifest"],
-            "dependsOn": ["GenerateEnvForEv2"]
+            "dependsOn": ["UploadContainer"]
         }
     ]
 }

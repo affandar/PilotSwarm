@@ -21,7 +21,7 @@
                 "environmentVariables": [
                     {
                         "name": "DEPLOYMENT_ACR_NAME",
-                        "value": "__ACR_LOGIN_SERVER__"
+                        "value": "__ACR_NAME__"
                     },
                     {
                         "name": "TARBALL_IMAGE_FILE_SAS",

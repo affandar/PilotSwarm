@@ -75,11 +75,12 @@ chain:
 ```
 EV2 scope binding
    → rolloutParameters env var         (__TOKEN__ substitution)
-      → GenerateEnvForEv2.ps1          (writes overlay .env)
-         → kustomize configMapGenerator (behavior: merge)
-            → replacements              (fan out into manifests)
-               → rendered YAML          (uploaded to manifest blob)
-                  → Flux reconcile      (applied to cluster)
+      → DeployApplicationManifest.sh   (downloads manifests.zip + parameters JSON)
+         → GenerateEnvForEv2.ps1       (substitutes overlay .env placeholders from JSON)
+            → kustomize configMapGenerator (behavior: merge)
+               → replacements          (fan out into manifests)
+                  → rendered YAML      (uploaded to manifest blob)
+                     → Flux reconcile  (applied to cluster)
 ```
 
 No environment-specific literal ever lands in git.
@@ -128,27 +129,35 @@ deploy/
 │   │   └── Ev2InfraDeployment/              serviceModel + rolloutSpec + scopeBinding + Configuration/ + Parameters + version.txt.
 │   ├── Worker/                            Worker service (single SG, app-only — no service Bicep).
 │   │   ├── service.json                     Self-contained EV2 manifest.
-│   │   └── Ev2AppDeployment/                3-step rollout (Upload → GenerateEnv → DeployManifest).
+│   │   └── Ev2AppDeployment/                2-step rollout (UploadContainer → DeployApplicationManifest).
 │   ├── Portal/                            Portal service (single SG combining service infra + app).
 │   │   ├── service.json                     Self-contained EV2 manifest.
 │   │   ├── bicep/                           AFD origin/route + PLS approval (ARM template).
-│   │   └── Ev2AppDeployment/                4-step rollout (PortalServiceInfra → Upload → GenerateEnv → DeployManifest).
+│   │   └── Ev2AppDeployment/                3-step rollout (PortalServiceInfra → UploadContainer → DeployApplicationManifest).
 │   ├── services.json                      Root index: fleet-wide defaults + pointers to each
 │   │                                      service's service.json (self-contained per-service config).
 │   ├── ev2-deploy-dev.ps1                 Unified dev-loop helper (one script, all four SGs).
 │   ├── .staging/                          Gitignored; per-invocation staging roots.
-│   └── Common/
+│   └── Common/                            Shared assets copied into each service's staged SG root
+│       │                                  at packaging time by `New-DeployPackages` (as zips).
 │       ├── bicep/                           Verbatim fleet-manager modules
 │       │                                    (approve-private-endpoint, frontdoor-origin-route).
-│       └── scripts/                         Shell extensions.
-│           ├── UploadContainer.sh             Download image tarball from EV2-minted SAS URL, push to per-region ACR via oras.
-│           ├── DeployApplicationManifest.sh   Render Kustomize + upload bundle to blob.
-│           └── GenerateEnvForEv2.ps1          Write overlay .env from scope-binding env vars.
+│       ├── Parameters/
+│       │   └── DeployApplicationManifest.parameters.json   Shared overlay-substitution table; tokens
+│       │                                                   rewritten by per-service scope-binding.
+│       └── scripts/                         Shell extensions (verbatim from postgresql-fleet-manager).
+│           ├── UploadContainer.sh             Download image tarball from EV2-minted SAS URL, `oras cp` to per-region ACR.
+│           ├── DeployApplicationManifest.sh   Download manifests.zip + parameters JSON, rewrite overlay
+│           │                                  .env placeholders via GenerateEnvForEv2.ps1, upload the
+│           │                                  unzipped tree to the deployable's blob container, sleep
+│           │                                  120s for ACI log flush.
+│           └── GenerateEnvForEv2.ps1          Library only (`Update-EnvFileFromParametersJson`);
+│                                              dot-sourced by DeployApplicationManifest.sh.
 └── gitops/
     ├── validate.sh                        Renders every overlay; non-zero on failure.
     ├── worker/
     │   ├── base/                            namespace, SA, Deployment, SPC, kustomization.
-    │   └── overlays/{dev,prod}/             .env (EV2-rendered) + kustomization merge.
+    │   └── overlays/{dev,prod}/             .env (placeholder keys; EV2 substitutes values) + kustomization merge.
     └── portal/
         ├── base/                            SA, Role, RoleBinding, Deployment, Service,
         │                                    Ingress, SPC, kustomization.
@@ -360,8 +369,8 @@ GlobalInfra   →   BaseInfra   →   Worker                  (app)
   `privateLinkConfigurationName` from BaseInfra outputs.
 - **Worker** and **Portal** may run in parallel once BaseInfra succeeds.
 - Inside **Portal**, the rolloutSpec's `dependsOn` chain serializes
-  `PortalServiceInfra` → `UploadContainer` → `GenerateEnvForEv2` →
-  `DeployApplicationManifest`. The app steps read `BackendHostName` from
+  `PortalServiceInfra` → `UploadContainer` → `DeployApplicationManifest`.
+  The app steps read `BackendHostName` from
   the `PortalServiceInfra` step's Bicep outputs.
 
 ### Triggering a prod rollout
@@ -407,7 +416,7 @@ connection stays `Pending`:
   and that identity has **Network Contributor** (or equivalent) on the
   Application Gateway resource.
 - Re-run the Portal rollout; the step is idempotent, and any later
-  steps (`UploadContainer`, `GenerateEnvForEv2`, `DeployApplicationManifest`)
+  steps (`UploadContainer`, `DeployApplicationManifest`)
   will re-run only after the infra step succeeds.
 
 ### Kustomize `replacements` mismatches
@@ -418,7 +427,8 @@ error. Symptoms: the pod pulls `placeholder.azurecr.io/...` or the
 ingress rule host is `portal.placeholder.example.com`.
 
 - Cross-reference the [replacement table](#replacement-tables) below
-  against the overlay `.env` (rendered by `GenerateEnvForEv2.ps1`).
+  against the overlay `.env` (substituted in-place by `GenerateEnvForEv2.ps1`
+  inside `DeployApplicationManifest.sh`).
 - Re-run `bash deploy/gitops/validate.sh` — it renders each overlay and
   flags common mismatches.
 - `kubectl kustomize deploy/gitops/<deployable>/overlays/<env> | grep placeholder`
@@ -462,8 +472,10 @@ inside the service artifact) and pushes it to the per-region ACR via
 
 Both tables read top-to-bottom as `source ConfigMap key → target field(s)`.
 Source is always the overlay's merged ConfigMap
-(`worker-env` / `portal-env`). The overlay `.env` is rendered by EV2's
-`GenerateEnvForEv2.ps1`.
+(`worker-env` / `portal-env`). The overlay `.env` placeholder values are
+substituted at rollout time by `GenerateEnvForEv2.ps1` (dot-sourced
+inside `DeployApplicationManifest.sh`) using the scope-tag-bound
+`Common/Parameters/DeployApplicationManifest.parameters.json`.
 
 ### Worker
 
@@ -480,7 +492,7 @@ Source is always the overlay's merged ConfigMap
 | `AZURE_TENANT_ID` | `SecretProviderClass/copilot-worker-secrets` | `spec.parameters.tenantId` |
 
 > `IMAGE` is composed by EV2 as `<ACR_LOGIN_SERVER>/<IMAGE_NAME>:<IMAGE_TAG>`
-> inside `GenerateEnvForEv2.ps1`. Kustomize `replacements` cannot
+> inside `Common/Parameters/DeployApplicationManifest.parameters.json`. Kustomize `replacements` cannot
 > concatenate multiple sources into one target string, so the
 > composition happens upstream.
 

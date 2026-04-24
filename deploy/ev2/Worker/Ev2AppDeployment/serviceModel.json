@@ -53,31 +53,6 @@
                     ]
                 },
                 {
-                    "name": "WorkerGenerateEnvDefinition",
-                    "composedOf": {
-                        "extension": {
-                            "rolloutParametersPath": "Parameters\\GenerateEnvForEv2.Linux.Rollout.json",
-                            "shell": [
-                                {
-                                    "type": "GenerateEnvForEv2",
-                                    "properties": {
-                                        "imageName": "adm-azurelinux-30-l",
-                                        "imageVersion": "v2"
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "scopeTags": [
-                        {
-                            "name": "globalScope"
-                        },
-                        {
-                            "name": "aksAppDeployScope"
-                        }
-                    ]
-                },
-                {
                     "name": "WorkerDeployApplicationManifestDefinition",
                     "composedOf": {
                         "extension": {

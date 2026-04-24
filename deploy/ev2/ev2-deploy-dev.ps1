@@ -234,23 +234,104 @@ function New-Staging {
     Write-Host "[$($Config.Name)] staging -> $staging"
     New-Item -ItemType Directory -Path $staging -Force | Out-Null
     Copy-Item -Recurse -Path (Join-Path $sgSource '*') -Destination $staging
-    # Copy overlay next to the SG tree so DeployApplicationManifest.sh can see it.
-    if ($Config.KustomizeOverlay) {
-        $overlaySrc = Join-Path $RepoRoot $Config.KustomizeOverlay
-        if (Test-Path $overlaySrc) {
-            Copy-Item -Recurse -Path $overlaySrc -Destination (Join-Path $staging 'overlay')
-            if (Get-Command kubectl -ErrorAction SilentlyContinue) {
-                $rendered = Join-Path $staging 'rendered/manifests.yaml'
-                New-Item -ItemType Directory -Path (Split-Path $rendered) -Force | Out-Null
-                & kubectl kustomize $overlaySrc | Out-File -FilePath $rendered -Encoding UTF8
-                Write-Host "[$($Config.Name)] kustomize preview -> $rendered" -ForegroundColor DarkGray
-            }
-        }
-        else {
-            Write-Warning "[$($Config.Name)] overlay not found at $overlaySrc"
-        }
-    }
+
+    # Mirror the Common/ assets the per-service SG depends on into the
+    # staged tree so the resulting EV2 artifact is self-contained. The
+    # rollout-parameter `package.reference.path` values point at zip
+    # files at the SG root (UploadContainer.zip, DeployApplicationManifest.zip,
+    # manifests.zip); the Parameters/DeployApplicationManifest.parameters.json
+    # is a loose artifact uploaded alongside them and re-written by
+    # scope-binding token substitution at artifact-upload time.
+    New-DeployPackages -RepoRoot $RepoRoot -Config $Config -StagedSgRoot $staging
+
     return $staging
+}
+
+function New-ZipFromFiles {
+    param([string]$ZipPath, [string[]]$Files)
+    if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+    Compress-Archive -Path $Files -DestinationPath $ZipPath -Force
+}
+
+function New-ZipFromFolder {
+    param([string]$ZipPath, [string]$FolderPath)
+    if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+    # Compress-Archive with a trailing '*' puts children at the archive
+    # root instead of nesting under the folder name. This matches the
+    # FM MSBuild-assembled zips (manifests.zip root = base/, overlays/).
+    Compress-Archive -Path (Join-Path $FolderPath '*') -DestinationPath $ZipPath -Force
+}
+
+function New-DeployPackages {
+    # Assemble the three EV2 shell-extension artifacts referenced by the
+    # SG's rollout-parameter files:
+    #
+    #   <SgRoot>/UploadContainer.zip             — UploadContainer.sh
+    #   <SgRoot>/DeployApplicationManifest.zip   — DeployApplicationManifest.sh
+    #                                              + GenerateEnvForEv2.ps1
+    #   <SgRoot>/manifests.zip                   — service gitops tree
+    #                                              (base/ + overlays/<env>/)
+    #
+    # The loose parameters JSON
+    # (<SgRoot>/Parameters/DeployApplicationManifest.parameters.json) is
+    # copied in via Common/ and then replaced by EV2 when the per-service
+    # scope-binding is applied at artifact upload (enableScopeTagBindings).
+    param([string]$RepoRoot, $Config, [string]$StagedSgRoot)
+
+    $commonScripts = Join-Path $RepoRoot 'deploy/ev2/Common/scripts'
+    $commonParams  = Join-Path $RepoRoot 'deploy/ev2/Common/Parameters'
+
+    foreach ($needed in 'UploadContainer.sh', 'DeployApplicationManifest.sh', 'GenerateEnvForEv2.ps1') {
+        $p = Join-Path $commonScripts $needed
+        if (-not (Test-Path $p)) { throw "Common script missing: $p" }
+    }
+
+    # 1) UploadContainer.zip
+    $uploadZip = Join-Path $StagedSgRoot 'UploadContainer.zip'
+    New-ZipFromFiles -ZipPath $uploadZip -Files @((Join-Path $commonScripts 'UploadContainer.sh'))
+    Write-Host "[$($Config.Name)] packaged $uploadZip" -ForegroundColor DarkGray
+
+    # 2) DeployApplicationManifest.zip
+    $deployZip = Join-Path $StagedSgRoot 'DeployApplicationManifest.zip'
+    New-ZipFromFiles -ZipPath $deployZip -Files @(
+        (Join-Path $commonScripts 'DeployApplicationManifest.sh'),
+        (Join-Path $commonScripts 'GenerateEnvForEv2.ps1')
+    )
+    Write-Host "[$($Config.Name)] packaged $deployZip" -ForegroundColor DarkGray
+
+    # 3) manifests.zip — assembled-to-temp then zipped (no pre-render).
+    # Contains the service's gitops tree (base/ + overlays/<env>/) at the
+    # zip root so DeployApplicationManifest.sh can cd into the unzipped
+    # 'manifests/' directory and resolve `$DEPLOYMENT_OVERLAY_PATH/.env`
+    # (e.g. 'overlays/dev/.env'). Flux reads the same layout from the
+    # blob container (kustomizationPath = 'overlays/<env>').
+    if ($Config.KustomizeOverlay) {
+        # Derive the per-service gitops root: strip the trailing
+        # 'overlays/<env>' from kustomizeOverlay to get e.g.
+        # deploy/gitops/worker.
+        $overlayAbs = Join-Path $RepoRoot $Config.KustomizeOverlay
+        $svcGitopsRoot = Split-Path (Split-Path $overlayAbs -Parent) -Parent
+        if (-not (Test-Path $svcGitopsRoot)) { throw "Service gitops root not found: $svcGitopsRoot" }
+        $manifestAssembly = Join-Path $StagedSgRoot '.manifest-assembly'
+        if (Test-Path $manifestAssembly) { Remove-Item $manifestAssembly -Recurse -Force }
+        New-Item -ItemType Directory -Path $manifestAssembly -Force | Out-Null
+        Copy-Item -Recurse -Path (Join-Path $svcGitopsRoot '*') -Destination $manifestAssembly
+        $manifestsZip = Join-Path $StagedSgRoot 'manifests.zip'
+        New-ZipFromFolder -ZipPath $manifestsZip -FolderPath $manifestAssembly
+        Remove-Item $manifestAssembly -Recurse -Force
+        Write-Host "[$($Config.Name)] packaged $manifestsZip (source: $svcGitopsRoot)" -ForegroundColor DarkGray
+    }
+
+    # 4) Loose parameters JSON staged under Parameters/ next to the
+    # rollout-parameter files. EV2 substitutes the __TOKENS__ here
+    # because the corresponding environmentVariable reference has
+    # enableScopeTagBindings=true.
+    $paramsSrc = Join-Path $commonParams 'DeployApplicationManifest.parameters.json'
+    if (Test-Path $paramsSrc) {
+        $paramsDst = Join-Path $StagedSgRoot 'Parameters/DeployApplicationManifest.parameters.json'
+        Copy-Item -Force -Path $paramsSrc -Destination $paramsDst
+        Write-Host "[$($Config.Name)] staged $paramsDst" -ForegroundColor DarkGray
+    }
 }
 
 function Get-RolloutErrors {

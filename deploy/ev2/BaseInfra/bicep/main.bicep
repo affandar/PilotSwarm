@@ -57,6 +57,13 @@ param availabilityZones array = []
 @description('Unique suffix appended to nested module names so repeated deployments do not collide.')
 param dTime string = utcNow()
 
+@description('Deployment environment (e.g. "dev", "prod"). Drives the Flux kustomization overlay path.')
+@allowed([
+  'dev'
+  'prod'
+])
+param environment string = 'dev'
+
 // ==============================================================================
 // Derived names
 // ==============================================================================
@@ -211,6 +218,7 @@ module WorkerFluxConfig './flux-config.bicep' = {
     configName: 'worker'
     blobContainerEndpoint: Storage.outputs.blobContainerEndpoint
     containerName: Storage.outputs.workerManifestsContainerName
+    kustomizationPath: 'overlays/${environment}'
   }
 }
 
@@ -221,6 +229,7 @@ module PortalFluxConfig './flux-config.bicep' = {
     configName: 'portal'
     blobContainerEndpoint: Storage.outputs.blobContainerEndpoint
     containerName: Storage.outputs.portalManifestsContainerName
+    kustomizationPath: 'overlays/${environment}'
   }
 }
 
@@ -232,6 +241,7 @@ output applicationGatewayName string = AppGateway.outputs.applicationGatewayName
 output privateLinkConfigurationName string = AppGateway.outputs.privateLinkConfigurationName
 output privateLinkConfigurationId string = AppGateway.outputs.privateLinkConfigurationId
 output acrLoginServer string = Acr.outputs.loginServer
+output acrName string = acrName
 output keyVaultName string = KeyVault.outputs.keyVaultName
 output blobContainerEndpoint string = Storage.outputs.blobContainerEndpoint
 output aksClusterName string = Aks.outputs.aksClusterName

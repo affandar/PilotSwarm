@@ -16,26 +16,39 @@
             "launch": {
                 "command": [
                     "/bin/bash",
-                    "/package/unarchive/DeployApplicationManifest.sh",
-                    "--overlay-path",
-                    "__DEPLOYMENT_OVERLAY_PATH__",
-                    "--target-storage",
-                    "__DEPLOYMENT_STORAGE_ACCOUNT_NAME__",
-                    "--container-name",
-                    "__MANIFEST_CONTAINER_NAME__"
+                    "/package/unarchive/DeployApplicationManifest.sh"
                 ],
                 "environmentVariables": [
-                    {
-                        "name": "DEPLOYMENT_OVERLAY_PATH",
-                        "value": "__DEPLOYMENT_OVERLAY_PATH__"
-                    },
                     {
                         "name": "DEPLOYMENT_STORAGE_ACCOUNT_NAME",
                         "value": "__DEPLOYMENT_STORAGE_ACCOUNT_NAME__"
                     },
                     {
-                        "name": "MANIFEST_CONTAINER_NAME",
-                        "value": "__MANIFEST_CONTAINER_NAME__"
+                        "name": "DEPLOYMENT_STORAGE_CONTAINER_NAME",
+                        "value": "__DEPLOYMENT_STORAGE_CONTAINER_NAME__"
+                    },
+                    {
+                        "name": "DEPLOYMENT_OVERLAY_PATH",
+                        "value": "__DEPLOYMENT_OVERLAY_PATH__"
+                    },
+                    {
+                        "name": "APPLICATION_MANIFESTS_SAS",
+                        "reference": {
+                            "path": "manifests.zip"
+                        },
+                        "asSecureValue": "true"
+                    },
+                    {
+                        "name": "DESTINATION_FILE_NAME",
+                        "value": "manifests.zip"
+                    },
+                    {
+                        "name": "APPLICATION_MANIFEST_PARAMETERS_SAS",
+                        "reference": {
+                            "path": "__APPLICATION_MANIFEST_PARAMETERS_FILE__",
+                            "enableScopeTagBindings": "true"
+                        },
+                        "asSecureValue": "true"
                     }
                 ],
                 "identity": {
