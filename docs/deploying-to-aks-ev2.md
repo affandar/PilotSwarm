@@ -125,12 +125,13 @@ deploy/
 │   │   ├── bicep/                           Resource-group-scope Bicep modules.
 │   │   └── Ev2InfraDeployment/              serviceModel + rolloutSpec + scopeBinding + Configuration/ + Parameters + version.txt.
 │   ├── Worker/                            Worker service (single SG, app-only — no service Bicep).
-│   │   ├── Ev2AppDeployment/                3-step rollout (Upload → GenerateEnv → DeployManifest).
-│   │   └── ev2-deploy-dev.ps1               Dev-loop helper (stages working tree).
+│   │   └── Ev2AppDeployment/                3-step rollout (Upload → GenerateEnv → DeployManifest).
 │   ├── Portal/                            Portal service (single SG combining service infra + app).
 │   │   ├── bicep/                           AFD origin/route + PLS approval (ARM template).
-│   │   ├── Ev2AppDeployment/                4-step rollout (PortalServiceInfra → Upload → GenerateEnv → DeployManifest).
-│   │   └── ev2-deploy-dev.ps1
+│   │   └── Ev2AppDeployment/                4-step rollout (PortalServiceInfra → Upload → GenerateEnv → DeployManifest).
+│   ├── services.json                      Service manifest consumed by ev2-deploy-dev.ps1.
+│   ├── ev2-deploy-dev.ps1                 Unified dev-loop helper (one script, all four SGs).
+│   ├── .staging/                          Gitignored; per-invocation staging roots.
 │   └── Common/
 │       ├── bicep/                           Verbatim fleet-manager modules
 │       │                                    (approve-private-endpoint, frontdoor-origin-route).
@@ -199,26 +200,54 @@ markdownlint docs/deploying-to-aks-ev2.md
 
 ## Dev-test rollout
 
-The per-deployable PowerShell helpers stage the current **working tree**
-(committed or not) into a temp ServiceGroup root and invoke the internal
+The unified PowerShell helper `deploy/ev2/ev2-deploy-dev.ps1` handles
+all four ServiceGroups. It reads `deploy/ev2/services.json` (the
+per-service manifest — SG name template, sg root, Bicep paths, Docker
+repo, default region), compiles Bicep, stages the selected SG tree
+under `deploy/ev2/.staging/<service>-<stamp>/` (inside the repo but
+gitignored — easy to inspect on failure), then invokes the internal
 EV2 cmdlets (`Register-AzureServiceArtifacts` + `New-AzureServiceRollout`)
-against the EV2 **Test** endpoint. Uncommitted changes are picked up —
-this is the primary inner-loop affordance. This follows the same pattern
-as the `postgresql-fleet-manager` reference repo; see
-[`docs/Ev2DevTestDeployment.md`](https://msazure.visualstudio.com) in
-that repo for a deep walkthrough of EV2 dev/test tooling.
+against the EV2 **Test** endpoint.
+
+This pattern is adapted from `postgresql-fleet-manager`'s
+`src/Deploy/scripts/ev2-deploy-dev.ps1` with three improvements:
+service selection via a JSON manifest (not a hardcoded `ValidateSet`),
+staging inside the gitignored repo path instead of `%TEMP%`, and a
+single script rather than per-service copies.
 
 ```powershell
-# Worker dev rollout (from the repo root, in Windows PowerShell 5.1 x64)
-.\deploy\ev2\Worker\ev2-deploy-dev.ps1 `
-    -ServiceId <service-tree-guid> `
-    -ServiceGroupName Microsoft.PilotSwarm.Worker.Dev
+# Worker dev rollout (all steps, westus3)
+.\deploy\ev2\ev2-deploy-dev.ps1 -Service Worker -ServiceId <guid>
 
-# Portal dev rollout
-.\deploy\ev2\Portal\ev2-deploy-dev.ps1 `
-    -ServiceId <service-tree-guid> `
-    -ServiceGroupName Microsoft.PilotSwarm.Portal.Dev
+# Portal dev rollout with image build+push to a holding ACR
+.\deploy\ev2\ev2-deploy-dev.ps1 -Service Portal -ServiceId <guid> `
+    -BuildImage -HoldingAcr <acr>.azurecr.io -ImageTag dev-$(Get-Date -Format yyyyMMddHHmm)
+
+# Bring up a region from scratch: GlobalInfra -> BaseInfra -> Worker
+.\deploy\ev2\ev2-deploy-dev.ps1 -Service Worker -ServiceId <guid> -DeployInfra
+
+# Validate only (runs Test-AzureServiceRollout instead of New-*)
+.\deploy\ev2\ev2-deploy-dev.ps1 -Service BaseInfra -ServiceId <guid> -TestOnly
+
+# Re-roll the same artifacts (skip register + skip Bicep/image rebuild)
+.\deploy\ev2\ev2-deploy-dev.ps1 -Service Portal -ServiceId <guid> -SkipBuild -SkipRegister
 ```
+
+**Key parameters**:
+
+| Parameter | Purpose |
+|---|---|
+| `-Service` (required) | `GlobalInfra` \| `BaseInfra` \| `Worker` \| `Portal` |
+| `-Environment` | `Dev` (default) \| `Prod` — expands `{env}` in the ServiceGroup name |
+| `-ServiceId` | ServiceTree GUID. Alternatively set `$env:PS_EV2_SERVICE_ID`. |
+| `-Region` | Region filter (default: per-service, usually `westus3`; `global` for GlobalInfra) |
+| `-Steps` | Step filter for `-Select` (default `*`) |
+| `-DeployInfra` | Deploy `GlobalInfra` then `BaseInfra` before the app service |
+| `-SkipBuild` | Skip `az bicep build` + `docker buildx build` |
+| `-SkipRegister` | Skip `Register-AzureServiceArtifacts` |
+| `-BuildImage` | For Worker/Portal only: `docker buildx build --platform linux/amd64 --push`. Requires `-HoldingAcr` + `-ImageTag`. |
+| `-TestOnly` | Run `Test-AzureServiceRollout` instead of `New-AzureServiceRollout` |
+| `-Force` | Pass `-Force` to `Register-AzureServiceArtifacts` |
 
 **Prerequisites**:
 
@@ -236,33 +265,26 @@ that repo for a deep walkthrough of EV2 dev/test tooling.
   `New-AzureServiceRollout`, and related cmdlets.
 - Your corp account must be a member of the EV2 operator AAD group
   registered on the PilotSwarm ServiceTree entry.
+- `az` on `PATH` (for `az bicep build` / `az bicep build-params`).
+- For `-BuildImage`: `docker buildx` + `az acr login -n <HoldingAcr>`.
 - `kubectl` on `PATH` (optional; the helper renders a local Kustomize
   preview into the staging directory for inspection).
 
-**What the helper does**:
-
-1. Resolves the repo root and stages `deploy/ev2/<Service>/Ev2AppDeployment/`
-   (or the corresponding `Ev2InfraDeployment/` for infra SGs) plus the
-   target overlay into a temp directory under `[IO.Path]::GetTempPath()`.
-2. Reads `ArtifactsVersion` from the staged `version.txt`.
-3. Calls `Register-AzureServiceArtifacts -ServiceGroupRoot <staging>
-   -RolloutSpec rolloutSpec.json -RolloutInfra Test`.
-4. Calls `New-AzureServiceRollout -ServiceIdentifier <ServiceId>
-   -ServiceGroup <env-qualified-name> -StageMapName
-   Microsoft.Azure.SDP.Standard -ArtifactsVersion <ver> -Select
-   "regions(westus3).steps(*)" -RolloutInfra Test -WaitToComplete`.
-   Pass `-TestOnly` to run `Test-AzureServiceRollout` instead.
-
 **Side effects**:
 
-- Writes to a new temp directory under `[IO.Path]::GetTempPath()` — no
-  repo mutation, no commits, no pushes.
+- Writes under `deploy/ev2/.staging/` (gitignored; safe to delete).
+- Writes Bicep-compiled ARM JSON into each SG's `Templates/` folder
+  (also gitignored; the OneBranch pipeline produces the same outputs).
+- If `-BuildImage` is set, pushes to the specified holding ACR.
 - Triggers a rollout on the EV2 **Test** infra against the configured
   ServiceTree identifier.
 
 **Tracking progress**:
 
-- `-WaitToComplete` streams status to the console.
+- `-WaitToComplete` streams status to the console. On rollout failure
+  the helper calls `Get-RolloutErrors` to pretty-print the failing
+  action, step name, error code/reason, and per-resource operation
+  errors (mirroring fleet-manager's diagnostic helper).
 - In the Azure portal: **Express v2 (EV2) → Rollouts** scoped to the
   ServiceTree entry. Each shell-extension step has its own log stream.
 - `kubectl -n copilot-runtime get pods -w` after reconcile to watch
