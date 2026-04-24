@@ -2,19 +2,20 @@
 #                 PilotSwarm Release: Portal ServiceGroup (Prod)                #
 #                                                                               #
 # ServiceGroup: Microsoft.PilotSwarm.Portal                                     #
-# Rollouts (in order, second gated on first in the same pipeline):              #
-#   1. deploy/ev2/Portal/Ev2InfraDeployment/rolloutSpec.json                    #
-#      — Portal-specific infra: AFD origin + route, PLS auto-approval.         #
-#   2. deploy/ev2/Portal/Ev2AppDeployment/rolloutSpec.json                      #
-#      — Portal app deployment (consumes pilotswarm-portal image).             #
+# Rollout:                                                                      #
+#   deploy/ev2/Portal/Ev2AppDeployment/rolloutSpec.json                         #
+#     — Single rollout with ordered steps:                                      #
+#         1. PortalServiceInfra (ARM/Bicep: AFD origin + route, PLS approval)   #
+#         2. UploadContainer    (push pilotswarm-portal image → regional ACR)   #
+#         3. GenerateEnvForEv2  (materialize overlay .env from scope tokens)    #
+#         4. DeployApplicationManifest (kubectl kustomize → upload to blob;     #
+#             Flux on AKS reconciles portal manifests from there)               #
 #                                                                               #
 # Design choice:                                                                #
-#   We use ONE release pipeline with two stages rather than two separate        #
-#   pipelines. Rationale: the App rollout has a hard dependency on the Infra    #
-#   rollout (AFD origin + PLS must exist before the portal app is healthy),    #
-#   and co-locating them keeps the stage dependency + managed-SDP bake timing   #
-#   visible in a single ADO UI view. Two pipelines would require manual        #
-#   chaining or an additional artifact trigger with no compensating benefit.   #
+#   Portal service infra and app are combined in a SINGLE ServiceGroup and a    #
+#   SINGLE rolloutSpec, matching the postgresql-fleet-manager PlaygroundService #
+#   pattern ("EV2 at service granularity"). Step ordering via `dependsOn` gives #
+#   us the same infra-before-app guarantee without multi-SG pipeline chaining.  #
 #################################################################################
 
 trigger: none
@@ -77,47 +78,15 @@ extends:
 
     stages:
     # ---------------------------------------------------------------------------
-    # Stage 1: Portal infra (AFD origin/route + PLS auto-approval)
+    # Portal ServiceGroup — combined Infra + App (ordered via rolloutSpec.dependsOn)
     # ---------------------------------------------------------------------------
-    - stage: PROD_PilotSwarm_Portal_Infra
-      displayName: 'PROD: PilotSwarm Portal Infra (AFD origin + PLS)'
+    - stage: PROD_PilotSwarm_Portal
+      displayName: 'PROD: PilotSwarm Portal (Infra + App)'
       variables:
         ob_release_environment: Production
       jobs:
-      - job: PROD_PilotSwarm_Portal_Infra
-        displayName: 'Deploy: Portal Infra ServiceGroup'
-        pool:
-          type: release
-        steps:
-          - download: PilotSwarm-CI-Build
-            artifact: drop_PublishEv2Artifacts_PublishEv2
-
-          - task: vsrm-ev2.ev2-rollout.ev2-rollout-task.Ev2RARollout@2
-            displayName: 'Ev2 Managed SDP Rollout — Portal Infra'
-            inputs:
-              # FIXME: set at onboarding — ServiceGroup root name registered in ServiceTree.
-              ServiceGroupOverride: 'Microsoft.PilotSwarm.Portal'
-              EndpointProviderType: ApprovalService
-              ApprovalServiceEnvironment: Production
-              TaskAction: RegisterAndRollout
-              SkipRegistrationIfExists: true
-              ServiceRootPath: '$(Pipeline.Workspace)/PilotSwarm-CI-Build/drop_PublishEv2Artifacts_PublishEv2/ev2/Portal/Ev2InfraDeployment'
-              RolloutSpecPath: '$(Pipeline.Workspace)/PilotSwarm-CI-Build/drop_PublishEv2Artifacts_PublishEv2/ev2/Portal/Ev2InfraDeployment/rolloutSpec.json'
-              sdpStageMap: managed
-              StageMapName: 'Microsoft.Azure.SDP.Standard'
-              Select: ${{ parameters.select }}
-
-    # ---------------------------------------------------------------------------
-    # Stage 2: Portal app (gated on Infra stage)
-    # ---------------------------------------------------------------------------
-    - stage: PROD_PilotSwarm_Portal_App
-      displayName: 'PROD: PilotSwarm Portal App'
-      dependsOn: PROD_PilotSwarm_Portal_Infra
-      variables:
-        ob_release_environment: Production
-      jobs:
-      - job: PROD_PilotSwarm_Portal_App
-        displayName: 'Deploy: Portal App ServiceGroup'
+      - job: PROD_PilotSwarm_Portal
+        displayName: 'Deploy: Portal ServiceGroup'
         pool:
           type: release
         steps:
@@ -138,8 +107,9 @@ extends:
                 echo "Resolved IMAGE_TAG=$IMAGE_TAG ACR=$ACR"
 
           - task: vsrm-ev2.ev2-rollout.ev2-rollout-task.Ev2RARollout@2
-            displayName: 'Ev2 Managed SDP Rollout — Portal App'
+            displayName: 'Ev2 Managed SDP Rollout — Portal'
             inputs:
+              # FIXME: set at onboarding — ServiceGroup root name registered in ServiceTree.
               ServiceGroupOverride: 'Microsoft.PilotSwarm.Portal'
               EndpointProviderType: ApprovalService
               ApprovalServiceEnvironment: Production

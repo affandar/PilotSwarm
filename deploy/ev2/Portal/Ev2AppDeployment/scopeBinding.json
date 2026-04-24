@@ -22,12 +22,44 @@
                     "replaceWith": "$config(resourcePrefix)"
                 },
                 {
+                    "find": "__RESOURCE_NAME__",
+                    "replaceWith": "$config(resourcePrefix)$config(regionShortName)$stamp()"
+                },
+                {
                     "find": "__STAMP__",
                     "replaceWith": "$stamp()"
                 },
                 {
                     "find": "__ROLLOUT_TENANTID__",
                     "replaceWith": "$config(TenantId)"
+                },
+                {
+                    "find": "__SSL_CERTIFICATE_DOMAIN_SUFFIX__",
+                    "replaceWith": "$config(sslCertificateDomainSuffix)"
+                },
+                {
+                    "find": "__APPROVAL_MANAGED_IDENTITY_ID__",
+                    "replaceWith": "$config(approvalManagedIdentityId)"
+                },
+                {
+                    "find": "__APPLICATION_GATEWAY_NAME__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(applicationGatewayName.value)"
+                },
+                {
+                    "find": "__PRIVATE_LINK_CONFIGURATION_NAME__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(privateLinkConfigurationName.value)"
+                },
+                {
+                    "find": "__FRONT_DOOR_PROFILE_NAME__",
+                    "replaceWith": "$serviceResourceDefinition(GlobalInfraResourceDefinition).action(deploy).outputs(frontDoorProfileName.value)"
+                },
+                {
+                    "find": "__FRONT_DOOR_PROFILE_RESOURCE_GROUP__",
+                    "replaceWith": "$serviceResourceDefinition(GlobalInfraResourceDefinition).action(deploy).outputs(frontDoorProfileResourceGroup.value)"
+                },
+                {
+                    "find": "__FRONT_DOOR_ENDPOINT_NAME__",
+                    "replaceWith": "$serviceResourceDefinition(GlobalInfraResourceDefinition).action(deploy).outputs(frontDoorEndpointName.value)"
                 },
                 {
                     "find": "__IMAGE_NAME__",

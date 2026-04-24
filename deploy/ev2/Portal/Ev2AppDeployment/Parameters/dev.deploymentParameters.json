@@ -2,11 +2,35 @@
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
     "contentVersion": "1.0.0.0",
     "parameters": {
+        "resourceName": {
+            "value": "__RESOURCE_NAME__"
+        },
         "region": {
             "value": "__REGION_NAME__"
         },
         "regionShortName": {
             "value": "__REGION_SHORT_NAME__"
+        },
+        "sslCertificateDomainSuffix": {
+            "value": "__SSL_CERTIFICATE_DOMAIN_SUFFIX__"
+        },
+        "applicationGatewayName": {
+            "value": "__APPLICATION_GATEWAY_NAME__"
+        },
+        "privateLinkConfigurationName": {
+            "value": "__PRIVATE_LINK_CONFIGURATION_NAME__"
+        },
+        "approvalManagedIdentityId": {
+            "value": "__APPROVAL_MANAGED_IDENTITY_ID__"
+        },
+        "frontDoorProfileName": {
+            "value": "__FRONT_DOOR_PROFILE_NAME__"
+        },
+        "frontDoorProfileResourceGroup": {
+            "value": "__FRONT_DOOR_PROFILE_RESOURCE_GROUP__"
+        },
+        "frontDoorEndpointName": {
+            "value": "__FRONT_DOOR_ENDPOINT_NAME__"
         },
         "imageName": {
             "value": "__IMAGE_NAME__"
@@ -37,3 +61,4 @@
         }
     }
 }
+

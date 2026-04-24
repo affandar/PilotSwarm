@@ -40,7 +40,6 @@ Write-Host "Staging service-group-root at: $Staging"
 New-Item -ItemType Directory -Path $Staging -Force | Out-Null
 
 Copy-Item -Recurse -Path (Join-Path $ServiceGroupSource 'Ev2AppDeployment') -Destination $Staging
-Copy-Item -Recurse -Path (Join-Path $ServiceGroupSource 'Ev2InfraDeployment') -Destination $Staging
 Copy-Item -Recurse -Path $OverlaySource -Destination (Join-Path $Staging 'overlay')
 
 if (Get-Command kubectl -ErrorAction SilentlyContinue) {

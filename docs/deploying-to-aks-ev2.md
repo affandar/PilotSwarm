@@ -21,7 +21,7 @@ The GitOps path is composed of **four independent EV2 ServiceGroups**:
 | **GlobalInfra** | Subscription | Azure Front Door Premium profile + WAF policy + security policy (fleet-wide, one per environment). |
 | **BaseInfra** | Resource Group (per region) | AKS + ACR + Azure DB for PostgreSQL + Storage + Key Vault + VNet + private-link-ready Application Gateway + `microsoft.flux` / CSI addons + per-deployable FluxConfigs. |
 | **Worker** | Per region (app-only) | Pushes the worker image to the per-region ACR, renders the worker Kustomize overlay, uploads the manifest bundle to the `worker-manifests` blob container. Owns no Azure resources. |
-| **Portal** | Per region (infra + app) | Infra stage: registers a per-region AFD origin + route and auto-approves the pending Private Link Service connection on the AppGW. App stage: same 3-step app rollout as Worker, targeting `portal-manifests`. |
+| **Portal** | Per region (service infra + app, single SG) | Ordered single rollout (via `rolloutSpec.dependsOn`): (1) `PortalServiceInfra` — registers a per-region AFD origin + route and auto-approves the pending Private Link Service connection on the AppGW; (2–4) same 3-step app rollout as Worker, targeting `portal-manifests`. Matches the postgresql-fleet-manager PlaygroundService "EV2 at service granularity" pattern — infra and app live in the same SG and are serialized with `dependsOn`, not a multi-SG gate. |
 
 ### Traffic path
 
@@ -35,7 +35,7 @@ Client (browser / CLI)
 │   - Custom domain + managed TLS cert                          │
 └───────────────────────────────────────────────────────────────┘
    │   Private Link (AFD → origin; PLS auto-approved by
-   │   Portal Infra stage via approve-private-endpoint.bicep)
+   │   Portal Service Infra step via approve-private-endpoint.bicep)
    ▼
 ┌───────────────────────────────────────────────────────────────┐
 │ Application Gateway  (per region, BaseInfra ServiceGroup)     │
@@ -124,13 +124,12 @@ deploy/
 │   ├── BaseInfra/                         Per-region Azure resources.
 │   │   ├── bicep/                           Resource-group-scope Bicep modules.
 │   │   └── Ev2InfraDeployment/
-│   ├── Worker/                            App-only ServiceGroup (no Bicep).
+│   ├── Worker/                            Worker service (single SG, app-only — no service Bicep).
 │   │   ├── Ev2AppDeployment/                3-step rollout (Upload → GenerateEnv → DeployManifest).
 │   │   └── ev2-deploy-dev.ps1               Dev-loop helper (stages working tree).
-│   ├── Portal/                            Per-region Infra + App ServiceGroup.
-│   │   ├── bicep/                           AFD origin/route + PLS approval.
-│   │   ├── Ev2InfraDeployment/
-│   │   ├── Ev2AppDeployment/
+│   ├── Portal/                            Portal service (single SG combining service infra + app).
+│   │   ├── bicep/                           AFD origin/route + PLS approval (ARM template).
+│   │   ├── Ev2AppDeployment/                4-step rollout (PortalServiceInfra → Upload → GenerateEnv → DeployManifest).
 │   │   └── ev2-deploy-dev.ps1
 │   └── Common/
 │       ├── bicep/                           Verbatim fleet-manager modules
@@ -247,27 +246,28 @@ Production rollouts are driven by the OneBranch Official pipelines in
 | `ci.yml` | Runs on PR merge to `main`. Builds worker + portal images with `docker buildx build --platform linux/amd64`, pushes to the **holding ACR** with an immutable `:$(Build.BuildId)` tag, publishes EV2 rollout artifacts. |
 | `release-globalinfra.yml` | Prod release for GlobalInfra. Invokes `Ev2RARollout@2` with the Azure-managed SDP stage map. |
 | `release-baseinfra.yml` | Prod release for BaseInfra (per region). |
-| `release-worker.yml` | Prod release for the Worker App ServiceGroup. |
-| `release-portal.yml` | Prod release for the Portal ServiceGroup (single pipeline, **two gated stages**: Infra then App). |
+| `release-worker.yml` | Prod release for the Worker ServiceGroup. |
+| `release-portal.yml` | Prod release for the Portal ServiceGroup (single pipeline, **one stage**; step ordering inside the rollout spec serializes Portal service infra before the app steps). |
 
 ### Full-deploy rollout order
 
 ```
-GlobalInfra   →   BaseInfra   →   Worker                 (app)
-                              →   Portal Infra → App     (gated)
+GlobalInfra   →   BaseInfra   →   Worker                  (app)
+                              →   Portal  (infra + app, ordered in rolloutSpec)
 ```
 
 - **GlobalInfra** must complete first — it publishes the AFD profile
-  name / resource group that BaseInfra and Portal Infra consume via
+  name / resource group that BaseInfra and Portal consume via
   `$serviceResourceDefinition(GlobalInfraResourceDefinition).action(deploy).outputs(…)`.
-- **BaseInfra** must complete before Worker or Portal — App SGs read
+- **BaseInfra** must complete before Worker or Portal — the service SGs read
   `acrLoginServer`, `keyVaultName`, `blobContainerEndpoint`,
   `aksClusterName`, `applicationGatewayName`, and
   `privateLinkConfigurationName` from BaseInfra outputs.
 - **Worker** and **Portal** may run in parallel once BaseInfra succeeds.
-- Inside **Portal**, the Infra stage must complete before the App stage
-  (the App stage reads `BackendHostName` from the Infra stage's Bicep
-  outputs).
+- Inside **Portal**, the rolloutSpec's `dependsOn` chain serializes
+  `PortalServiceInfra` → `UploadContainer` → `GenerateEnvForEv2` →
+  `DeployApplicationManifest`. The app steps read `BackendHostName` from
+  the `PortalServiceInfra` step's Bicep outputs.
 
 ### Triggering a prod rollout
 
@@ -302,7 +302,7 @@ Common causes:
 
 ### AFD Private Link approval hang
 
-The Portal Infra stage runs
+The Portal `PortalServiceInfra` step runs
 `deploy/ev2/Common/bicep/approve-private-endpoint.bicep`, a
 `deploymentScript` that calls `az network private-endpoint-connection
 approve` against the AppGW's `PrivateLinkConfiguration`. If the
@@ -311,7 +311,9 @@ connection stays `Pending`:
 - Confirm the `approvalManagedIdentityId` bicepparam value is populated
   and that identity has **Network Contributor** (or equivalent) on the
   Application Gateway resource.
-- Re-run the Portal Infra stage; the script is idempotent.
+- Re-run the Portal rollout; the step is idempotent, and any later
+  steps (`UploadContainer`, `GenerateEnvForEv2`, `DeployApplicationManifest`)
+  will re-run only after the infra step succeeds.
 
 ### Kustomize `replacements` mismatches
 

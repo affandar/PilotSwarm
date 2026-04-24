@@ -13,26 +13,41 @@
                     "name": "BaseInfra",
                     "serviceIdentifier": "__SERVICE_IDENTIFIER__",
                     "serviceGroup": "Microsoft.PilotSwarm.BaseInfra.$config(environment)",
-                    "displayName": "PilotSwarm Base Infrastructure for Portal App"
+                    "displayName": "PilotSwarm Base Infrastructure for Portal"
                 },
                 {
-                    "name": "PortalInfra",
+                    "name": "GlobalInfra",
                     "serviceIdentifier": "__SERVICE_IDENTIFIER__",
-                    "serviceGroup": "Microsoft.PilotSwarm.Portal.$config(environment)",
-                    "displayName": "PilotSwarm Portal Service Infrastructure (AFD + PLS wiring)"
+                    "serviceGroup": "Microsoft.PilotSwarm.GlobalInfra.$config(environment)",
+                    "displayName": "PilotSwarm Global Infrastructure for Portal"
                 }
             ]
         }
     },
     "serviceResourceGroupDefinitions": [
         {
-            "name": "PortalAppResourceGroupDefinition",
+            "name": "PortalServiceResourceGroupDefinition",
             "azureResourceGroupName": "$config(resourcePrefix)-$config(regionShortName)-$stamp()",
             "subscriptionKey": "$config(stamp_$stamp().SubscriptionKey)",
             "stamps": {
                 "count": "$config(StampCount)"
             },
             "serviceResourceDefinitions": [
+                {
+                    "name": "PortalServiceInfraDefinition",
+                    "composedOf": {
+                        "arm": {
+                            "templatePath": "Templates\\Portal.deploymentTemplate.json",
+                            "parametersPath": "Parameters\\Portal.deploymentParameters.json",
+                            "deploymentLevel": "ResourceGroup"
+                        }
+                    },
+                    "scopeTags": [
+                        {
+                            "name": "globalScope"
+                        }
+                    ]
+                },
                 {
                     "name": "PortalUploadContainerDefinition",
                     "composedOf": {

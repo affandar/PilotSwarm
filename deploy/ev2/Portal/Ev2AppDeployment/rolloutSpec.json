@@ -4,7 +4,7 @@
     "rolloutMetadata": {
         "serviceModelPath": "serviceModel.json",
         "scopeBindingsPath": "scopeBinding.json",
-        "name": "Microsoft.PilotSwarm.Portal.App",
+        "name": "Microsoft.PilotSwarm.Portal",
         "rolloutType": "major",
         "buildSource": {
             "parameters": {
@@ -27,10 +27,17 @@
     },
     "orchestratedSteps": [
         {
+            "name": "PortalServiceInfra",
+            "targetType": "ServiceResourceDefinition",
+            "targetName": "PortalServiceInfraDefinition",
+            "actions": ["deploy"]
+        },
+        {
             "name": "UploadContainer",
             "targetType": "ServiceResourceDefinition",
             "targetName": "PortalUploadContainerDefinition",
-            "actions": ["Shell/UploadContainer"]
+            "actions": ["Shell/UploadContainer"],
+            "dependsOn": ["PortalServiceInfra"]
         },
         {
             "name": "GenerateEnvForEv2",
