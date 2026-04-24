@@ -1,0 +1,61 @@
+{
+  "$schema": "./services.schema.json",
+  "_comment": "Service manifest for deploy/ev2/ev2-deploy-dev.ps1. One entry per EV2 ServiceGroup. `{env}` is replaced at runtime with Dev or Prod.",
+  "stageMapName": "Microsoft.Azure.SDP.Standard",
+  "defaultRegion": "westus3",
+  "services": {
+    "GlobalInfra": {
+      "serviceGroupName": "Microsoft.PilotSwarm.GlobalInfra.{env}",
+      "sgRoot": "GlobalInfra/Ev2InfraDeployment",
+      "rolloutSpec": "rolloutSpec.json",
+      "bicepMain": "GlobalInfra/bicep/main.bicep",
+      "bicepParams": {
+        "Dev": "GlobalInfra/bicep/parameters/dev.bicepparam",
+        "Prod": "GlobalInfra/bicep/parameters/prod.bicepparam"
+      },
+      "armTemplateOut": "GlobalInfra/Ev2InfraDeployment/Templates/GlobalInfra.deploymentTemplate.json",
+      "dockerImageRepo": null,
+      "defaultRegion": "global",
+      "isInfra": true
+    },
+    "BaseInfra": {
+      "serviceGroupName": "Microsoft.PilotSwarm.BaseInfra.{env}",
+      "sgRoot": "BaseInfra/Ev2InfraDeployment",
+      "rolloutSpec": "rolloutSpec.json",
+      "bicepMain": "BaseInfra/bicep/main.bicep",
+      "bicepParams": {
+        "Dev": "BaseInfra/bicep/parameters/dev.bicepparam",
+        "Prod": "BaseInfra/bicep/parameters/prod.bicepparam"
+      },
+      "armTemplateOut": "BaseInfra/Ev2InfraDeployment/Templates/BaseInfra.deploymentTemplate.json",
+      "dockerImageRepo": null,
+      "isInfra": true
+    },
+    "Worker": {
+      "serviceGroupName": "Microsoft.PilotSwarm.Worker.{env}",
+      "sgRoot": "Worker/Ev2AppDeployment",
+      "rolloutSpec": "rolloutSpec.json",
+      "bicepMain": null,
+      "armTemplateOut": null,
+      "dockerImageRepo": "pilotswarm-worker",
+      "dockerfile": "deploy/Dockerfile.worker",
+      "kustomizeOverlay": "deploy/gitops/worker/overlays/{envLower}",
+      "isInfra": false
+    },
+    "Portal": {
+      "serviceGroupName": "Microsoft.PilotSwarm.Portal.{env}",
+      "sgRoot": "Portal/Ev2AppDeployment",
+      "rolloutSpec": "rolloutSpec.json",
+      "bicepMain": "Portal/bicep/main.bicep",
+      "bicepParams": {
+        "Dev": "Portal/bicep/parameters/dev.bicepparam",
+        "Prod": "Portal/bicep/parameters/prod.bicepparam"
+      },
+      "armTemplateOut": "Portal/Ev2AppDeployment/Templates/Portal.deploymentTemplate.json",
+      "dockerImageRepo": "pilotswarm-portal",
+      "dockerfile": "deploy/Dockerfile.portal",
+      "kustomizeOverlay": "deploy/gitops/portal/overlays/{envLower}",
+      "isInfra": false
+    }
+  }
+}

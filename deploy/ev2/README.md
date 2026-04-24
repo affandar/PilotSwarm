@@ -40,26 +40,29 @@ deploy/ev2/
 │
 ├── Portal/                          Portal service — AFD origin + PLS wiring + manifests.
 │   ├── bicep/                       Per-region Portal Bicep (Phase 4).
-│   ├── Ev2AppDeployment/            Single ServiceGroup combining Portal service infra
-│   │   │                            (ARM: AFD origin/route + PLS approval) and the
-│   │   │                            3-step app rollout. Ordered via rolloutSpec
-│   │   │                            `dependsOn`: PortalServiceInfra → UploadContainer
-│   │   │                            → GenerateEnvForEv2 → DeployApplicationManifest.
-│   │   ├── version.txt
-│   │   ├── Configuration/
-│   │   │   ├── configurationSettings.json
-│   │   │   └── ServiceGroup/Microsoft.PilotSwarm.Portal.{Dev,Prod}.Configuration.json
-│   │   └── Parameters/Portal.deploymentParameters.json + *.Linux.Rollout.json
-│   └── ev2-deploy-dev.ps1           Dev-loop helper (stages working tree + EV2 PS cmdlets).
+│   └── Ev2AppDeployment/            Single ServiceGroup combining Portal service infra
+│       │                            (ARM: AFD origin/route + PLS approval) and the
+│       │                            3-step app rollout. Ordered via rolloutSpec
+│       │                            `dependsOn`: PortalServiceInfra → UploadContainer
+│       │                            → GenerateEnvForEv2 → DeployApplicationManifest.
+│       ├── version.txt
+│       ├── Configuration/
+│       │   ├── configurationSettings.json
+│       │   └── ServiceGroup/Microsoft.PilotSwarm.Portal.{Dev,Prod}.Configuration.json
+│       └── Parameters/Portal.deploymentParameters.json + *.Linux.Rollout.json
 │
 ├── Worker/                          Worker service — no Azure resources, app-only.
-│   ├── Ev2AppDeployment/            Same 3-step rollout as Portal; manifests → worker-manifests container.
-│   │   ├── version.txt
-│   │   ├── Configuration/
-│   │   │   ├── configurationSettings.json
-│   │   │   └── ServiceGroup/Microsoft.PilotSwarm.Worker.{Dev,Prod}.Configuration.json
-│   │   └── Parameters/*.Linux.Rollout.json
-│   └── ev2-deploy-dev.ps1           Dev-loop helper.
+│   └── Ev2AppDeployment/            Same 3-step rollout as Portal; manifests → worker-manifests container.
+│       ├── version.txt
+│       ├── Configuration/
+│       │   ├── configurationSettings.json
+│       │   └── ServiceGroup/Microsoft.PilotSwarm.Worker.{Dev,Prod}.Configuration.json
+│       └── Parameters/*.Linux.Rollout.json
+│
+├── services.json                    Manifest consumed by ev2-deploy-dev.ps1
+│                                    (per-service SG name, Bicep paths, Docker repo).
+├── ev2-deploy-dev.ps1               Unified dev-loop helper (see below).
+└── .staging/                        Gitignored; per-invocation staging roots.
 │
 └── Common/
     ├── bicep/                       Verbatim reference modules (Phase 4).
@@ -104,13 +107,24 @@ ServiceGroups because it is consumed by both services.
 * `Templates/` directories are not checked in — Bicep is compiled to ARM
   JSON by the OneBranch pipeline (Phase 6) before the rollout artifact
   is uploaded.
-* Dev-loop helper scripts (`ev2-deploy-dev.ps1`) stage the working tree
-  into a temp ServiceGroup root so uncommitted changes can be deployed
-  without a push. They use the internal EV2 PowerShell cmdlets
-  (`Register-AzureServiceArtifacts` + `New-AzureServiceRollout`) from
-  `AzureServiceDeployClient.ps1` — **not** `az rollout start`. See
+* **Unified dev-loop helper** `deploy/ev2/ev2-deploy-dev.ps1` handles all
+  four SGs via `-Service {GlobalInfra|BaseInfra|Worker|Portal}` driven
+  by `deploy/ev2/services.json`. It uses the internal EV2 PowerShell
+  cmdlets (`Register-AzureServiceArtifacts` + `New-AzureServiceRollout`
+  from `AzureServiceDeployClient.ps1`) — **not** `az rollout start`.
+  Improvements over the postgresql-fleet-manager reference:
+  - Service manifest (`services.json`) replaces the hardcoded
+    `ValidateSet` + switch statement.
+  - Staging root lives at `deploy/ev2/.staging/<service>-<stamp>/`
+    inside the repo (gitignored) instead of `%TEMP%`, so failed runs
+    are easy to inspect.
+  - Optional `-DeployInfra` fans out to GlobalInfra → BaseInfra → the
+    selected service (fleet-manager parity).
+  - Optional `-BuildImage` runs `docker buildx build --platform
+    linux/amd64 --push` for Worker/Portal.
+  See
   [`docs/deploying-to-aks-ev2.md`](../../docs/deploying-to-aks-ev2.md#dev-test-rollout)
-  for setup.
+  for setup and usage.
 * `$config(...)` tokens in each `scopeBinding.json` resolve against the
   SG's `Configuration/` tree: `configurationSettings.json` (service
   scope) merged with `ServiceGroup/<env-qualified-name>.Configuration.json`
@@ -119,3 +133,6 @@ ServiceGroups because it is consumed by both services.
 * `version.txt` at each SG root holds the `ArtifactsVersion` passed to
   `New-AzureServiceRollout`; the OneBranch pipeline bumps it at release
   time.
+* `Templates/*.deploymentTemplate.json` files are Bicep→ARM build
+  outputs — gitignored and regenerated by the helper (`az bicep build`)
+  or the pipeline before EV2 registration.
