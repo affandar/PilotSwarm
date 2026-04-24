@@ -1,0 +1,7 @@
+{
+    "Settings": {
+        "globalResourcePrefix": "pilotswarmglobal",
+        "serviceName": "pilotswarm",
+        "sslCertificateIssuer": "OneCertV2-PublicCA"
+    }
+}

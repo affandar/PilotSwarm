@@ -1,45 +1,79 @@
 # ev2-deploy-dev.ps1 — dev-loop helper for the Portal EV2 ServiceGroup.
 #
-# Stages the Portal Ev2AppDeployment tree into a temp service-group-root
-# directory (so uncommitted working-tree changes are deployed) and invokes
-# `az rollout start` against the dev Service Connection.
+# Registers the Portal service-artifacts tree with the EV2 Test endpoint and
+# starts a test rollout using the internal EV2 PowerShell cmdlets
+# (Register-AzureServiceArtifacts / New-AzureServiceRollout). This is NOT
+# an `az rollout start` / Azure CLI flow — EV2 Dev/Test uses internal
+# cmdlets from the EV2 Quickstart repo.
 #
-# Prerequisites:
-#   - Azure CLI (`az`) installed and logged in.
-#   - The `az-rollout` extension installed:
-#         az extension add --name rollout
-#   - An EV2 dev Service Connection / Service Principal configured with
-#     permission to trigger rollouts in the dev EV2 service identifier.
-#   - `kubectl` on PATH (so the rendered Kustomize output can be staged).
+# Prerequisites (see docs/deploying-to-aks-ev2.md):
+#   1. Clone the EV2 Quickstart repo:
+#        https://msazure.visualstudio.com/Azure-Express/_git/Quickstart
+#   2. In an elevated PowerShell 5.1 (Windows x64) session, run:
+#        cd <Quickstart>\Ev2_PowerShell
+#        .\AzureServiceDeployClient.ps1
+#      This loads Register-AzureServiceArtifacts / New-AzureServiceRollout
+#      and prompts for interactive AAD sign-in.
+#   3. Your corp account must be a member of the EV2 operator group
+#      registered on the ServiceId for PilotSwarm (see -ServiceId param).
+#   4. `kubectl` on PATH (optional; used for local Kustomize preview only).
 #
-# Side effects:
-#   - Writes only to the dev subscription via the configured Service
-#     Connection; does not modify the repo working tree or push commits.
+# Side effects: Writes only to the EV2 Test infra via the caller's
+# interactive credential. Does not modify the repo working tree.
 
 [CmdletBinding()]
 param (
-    [string]$ServiceName = 'Microsoft.PilotSwarm.Portal.Dev',
-    [string]$ParametersFile = 'Ev2AppDeployment/Parameters/dev.deploymentParameters.json',
-    [string]$RolloutSpec = 'Ev2AppDeployment/rolloutSpec.json',
-    [string]$OverlayPath = 'deploy/gitops/portal/overlays/dev'
+    # ServiceTree GUID for PilotSwarm. Fill in after Service Tree onboarding.
+    [string]$ServiceId = '00000000-0000-0000-0000-000000000000',
+
+    # Env-qualified ServiceGroup name; must match the
+    # Configuration/ServiceGroup/<this>.Configuration.json file that ships
+    # inside the service-artifacts root.
+    [string]$ServiceGroupName = 'Microsoft.PilotSwarm.Portal.Dev',
+
+    # Azure-managed SDP stage map. Override for single-stage dev rollouts.
+    [string]$StageMapName = 'Microsoft.Azure.SDP.Standard',
+
+    # Region filter for -Select. westus3 is the only prod region today.
+    [string]$Region = 'westus3',
+
+    # Step filter for -Select. '*' runs all orchestratedSteps.
+    [string]$Steps = '*',
+
+    # Local path (under this SG root) to the overlay consumed by
+    # DeployApplicationManifest.sh on the EV2 side.
+    [string]$OverlayPath = 'deploy/gitops/portal/overlays/dev',
+
+    # If set, runs Test-AzureServiceRollout (validation only) instead of
+    # New-AzureServiceRollout (real deployment).
+    [switch]$TestOnly,
+
+    # Skip Register-AzureServiceArtifacts (useful when re-running with the
+    # same ArtifactsVersion in version.txt).
+    [switch]$SkipRegister
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$RepoRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
-$ServiceGroupSource = Join-Path $PSScriptRoot '.'
-$OverlaySource = Join-Path $RepoRoot $OverlayPath
-
-if (-not (Test-Path $OverlaySource)) {
-    throw "Overlay path not found: $OverlaySource"
+# Verify EV2 cmdlets loaded.
+foreach ($cmd in 'Register-AzureServiceArtifacts', 'New-AzureServiceRollout', 'Test-AzureServiceRollout') {
+    if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
+        throw "EV2 cmdlet '$cmd' not found. Load it first: cd <Quickstart>\Ev2_PowerShell; .\AzureServiceDeployClient.ps1"
+    }
 }
 
-$Staging = Join-Path ([IO.Path]::GetTempPath()) ("ps-portal-ev2-" + [Guid]::NewGuid().ToString('N'))
-Write-Host "Staging service-group-root at: $Staging"
-New-Item -ItemType Directory -Path $Staging -Force | Out-Null
+$RepoRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+$ServiceGroupSource = Join-Path $PSScriptRoot 'Ev2AppDeployment'
+$OverlaySource = Join-Path $RepoRoot $OverlayPath
 
-Copy-Item -Recurse -Path (Join-Path $ServiceGroupSource 'Ev2AppDeployment') -Destination $Staging
+if (-not (Test-Path $OverlaySource)) { throw "Overlay path not found: $OverlaySource" }
+if (-not (Test-Path $ServiceGroupSource)) { throw "Service-artifacts root not found: $ServiceGroupSource" }
+
+$Staging = Join-Path ([IO.Path]::GetTempPath()) ("ps-portal-ev2-" + [Guid]::NewGuid().ToString('N'))
+Write-Host "Staging service-artifacts root at: $Staging"
+New-Item -ItemType Directory -Path $Staging -Force | Out-Null
+Copy-Item -Recurse -Path "$ServiceGroupSource\*" -Destination $Staging
 Copy-Item -Recurse -Path $OverlaySource -Destination (Join-Path $Staging 'overlay')
 
 if (Get-Command kubectl -ErrorAction SilentlyContinue) {
@@ -49,12 +83,35 @@ if (Get-Command kubectl -ErrorAction SilentlyContinue) {
     & kubectl kustomize $OverlaySource | Out-File -FilePath (Join-Path $renderedDir 'manifests.yaml') -Encoding UTF8
 }
 else {
-    Write-Warning "kubectl not found — skipping local Kustomize render (EV2 side will still render via DeployApplicationManifest.sh)."
+    Write-Warning "kubectl not found - skipping local Kustomize preview."
 }
 
-Write-Host "Invoking: az rollout start --service-name $ServiceName --service-group-root $Staging --rollout-spec $RolloutSpec --parameters $ParametersFile"
-& az rollout start `
-    --service-name $ServiceName `
-    --service-group-root $Staging `
-    --rollout-spec $RolloutSpec `
-    --parameters $ParametersFile
+$VersionFile = Join-Path $Staging 'version.txt'
+if (-not (Test-Path $VersionFile)) { throw "version.txt missing under $Staging" }
+$ArtifactsVersion = (Get-Content $VersionFile -Raw).Trim()
+Write-Host "ArtifactsVersion: $ArtifactsVersion"
+
+if (-not $SkipRegister) {
+    Write-Host "Register-AzureServiceArtifacts -ServiceGroupRoot $Staging -RolloutSpec rolloutSpec.json -RolloutInfra Test"
+    Register-AzureServiceArtifacts -ServiceGroupRoot $Staging -RolloutSpec 'rolloutSpec.json' -RolloutInfra Test -Force -ErrorAction Stop
+}
+
+$commonArgs = @{
+    ServiceIdentifier = $ServiceId
+    ServiceGroup      = $ServiceGroupName
+    StageMapName      = $StageMapName
+    ArtifactsVersion  = $ArtifactsVersion
+    Select            = "regions($Region).steps($Steps)"
+    RolloutInfra      = 'Test'
+    WaitToComplete    = $true
+    ErrorAction       = 'Stop'
+}
+
+if ($TestOnly) {
+    Write-Host "Test-AzureServiceRollout ..."
+    Test-AzureServiceRollout @commonArgs
+}
+else {
+    Write-Host "New-AzureServiceRollout ..."
+    New-AzureServiceRollout @commonArgs
+}

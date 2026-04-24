@@ -1,0 +1,9 @@
+{
+    "Settings": {
+        "resourcePrefix": "pilotswarm",
+        "serviceName": "pilotswarm-worker",
+        "workerImageName": "pilotswarm-worker",
+        "workerNamespace": "pilotswarm",
+        "workerOverlayPath": "overlays/prod"
+    }
+}

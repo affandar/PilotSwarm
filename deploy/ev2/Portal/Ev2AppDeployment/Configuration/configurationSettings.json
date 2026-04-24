@@ -1,0 +1,9 @@
+{
+    "Settings": {
+        "resourcePrefix": "pilotswarm",
+        "serviceName": "pilotswarm-portal",
+        "portalImageName": "pilotswarm-portal",
+        "portalNamespace": "pilotswarm",
+        "portalOverlayPath": "overlays/prod"
+    }
+}

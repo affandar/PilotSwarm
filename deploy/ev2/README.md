@@ -19,7 +19,12 @@ deploy/ev2/
 │       ├── serviceModel.json
 │       ├── rolloutSpec.json
 │       ├── scopeBinding.json
-│       └── Parameters/{dev,prod}.deploymentParameters.json
+│       ├── version.txt              Artifacts version passed to New-AzureServiceRollout.
+│       ├── Configuration/
+│       │   ├── configurationSettings.json                                Service-scope $config source.
+│       │   └── ServiceGroup/Microsoft.PilotSwarm.GlobalInfra.{Dev,Prod}.Configuration.json
+│       │                                                                 Per-env $config source (resolved via $serviceGroup()).
+│       └── Parameters/GlobalInfra.deploymentParameters.json              ARM params consumed by serviceModel.
 │
 ├── BaseInfra/                       Per-region Azure resources (AKS, ACR, KV, AppGW, …).
 │   ├── bicep/                       RG-scope Bicep (Phase 3).
@@ -27,19 +32,33 @@ deploy/ev2/
 │       ├── serviceModel.json
 │       ├── rolloutSpec.json
 │       ├── scopeBinding.json
-│       └── Parameters/{dev,prod}.deploymentParameters.json
+│       ├── version.txt
+│       ├── Configuration/
+│       │   ├── configurationSettings.json
+│       │   └── ServiceGroup/Microsoft.PilotSwarm.BaseInfra.{Dev,Prod}.Configuration.json
+│       └── Parameters/BaseInfra.deploymentParameters.json
 │
 ├── Portal/                          Portal service — AFD origin + PLS wiring + manifests.
 │   ├── bicep/                       Per-region Portal Bicep (Phase 4).
 │   ├── Ev2AppDeployment/            Single ServiceGroup combining Portal service infra
-│   │                                (ARM: AFD origin/route + PLS approval) and the
-│   │                                3-step app rollout. Ordered via rolloutSpec
-│   │                                `dependsOn`: PortalServiceInfra → UploadContainer
-│   │                                → GenerateEnvForEv2 → DeployApplicationManifest.
-│   └── ev2-deploy-dev.ps1           Dev-loop helper (stages working tree + `az rollout start`).
+│   │   │                            (ARM: AFD origin/route + PLS approval) and the
+│   │   │                            3-step app rollout. Ordered via rolloutSpec
+│   │   │                            `dependsOn`: PortalServiceInfra → UploadContainer
+│   │   │                            → GenerateEnvForEv2 → DeployApplicationManifest.
+│   │   ├── version.txt
+│   │   ├── Configuration/
+│   │   │   ├── configurationSettings.json
+│   │   │   └── ServiceGroup/Microsoft.PilotSwarm.Portal.{Dev,Prod}.Configuration.json
+│   │   └── Parameters/Portal.deploymentParameters.json + *.Linux.Rollout.json
+│   └── ev2-deploy-dev.ps1           Dev-loop helper (stages working tree + EV2 PS cmdlets).
 │
 ├── Worker/                          Worker service — no Azure resources, app-only.
 │   ├── Ev2AppDeployment/            Same 3-step rollout as Portal; manifests → worker-manifests container.
+│   │   ├── version.txt
+│   │   ├── Configuration/
+│   │   │   ├── configurationSettings.json
+│   │   │   └── ServiceGroup/Microsoft.PilotSwarm.Worker.{Dev,Prod}.Configuration.json
+│   │   └── Parameters/*.Linux.Rollout.json
 │   └── ev2-deploy-dev.ps1           Dev-loop helper.
 │
 └── Common/
@@ -86,5 +105,17 @@ ServiceGroups because it is consumed by both services.
   JSON by the OneBranch pipeline (Phase 6) before the rollout artifact
   is uploaded.
 * Dev-loop helper scripts (`ev2-deploy-dev.ps1`) stage the working tree
-  into a temp `--service-group-root` so uncommitted changes can be
-  deployed without a push.
+  into a temp ServiceGroup root so uncommitted changes can be deployed
+  without a push. They use the internal EV2 PowerShell cmdlets
+  (`Register-AzureServiceArtifacts` + `New-AzureServiceRollout`) from
+  `AzureServiceDeployClient.ps1` — **not** `az rollout start`. See
+  [`docs/deploying-to-aks-ev2.md`](../../docs/deploying-to-aks-ev2.md#dev-test-rollout)
+  for setup.
+* `$config(...)` tokens in each `scopeBinding.json` resolve against the
+  SG's `Configuration/` tree: `configurationSettings.json` (service
+  scope) merged with `ServiceGroup/<env-qualified-name>.Configuration.json`
+  (per-env scope, selected via the `$serviceGroup()` macro). This mirrors
+  the postgresql-fleet-manager PlaygroundService pattern.
+* `version.txt` at each SG root holds the `ArtifactsVersion` passed to
+  `New-AzureServiceRollout`; the OneBranch pipeline bumps it at release
+  time.

@@ -1,0 +1,25 @@
+{
+    "Settings": {
+        "environment": "Dev",
+        "TenantId": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+        "resourcePrefix": "pilotswarmdev",
+        "workerImageTag": "latest",
+        "workerOverlayPath": "overlays/dev",
+        "sourceAcrLoginServer": "pilotswarmci.azurecr.io",
+        "workerWorkloadIdentityClientId": "00000000-0000-0000-0000-000000000000"
+    },
+    "Geographies": [
+        {
+            "Name": "North America",
+            "Regions": [
+                {
+                    "Name": "westus3",
+                    "Settings": {
+                        "regionName": "westus3",
+                        "regionShortName": "wus3"
+                    }
+                }
+            ]
+        }
+    ]
+}

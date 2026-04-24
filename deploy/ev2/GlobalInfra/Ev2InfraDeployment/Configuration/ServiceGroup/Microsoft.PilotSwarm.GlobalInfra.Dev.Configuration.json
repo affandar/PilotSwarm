@@ -1,0 +1,22 @@
+{
+    "Settings": {
+        "environment": "Dev",
+        "TenantId": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+        "globalResourcePrefix": "pilotswarmglobaldev",
+        "sslCertificateDomainSuffix": "dev.pilotswarm.microsoft.com",
+        "wafMode": "Detection"
+    },
+    "Geographies": [
+        {
+            "Name": "North America",
+            "Regions": [
+                {
+                    "Name": "global",
+                    "Settings": {
+                        "regionName": "global"
+                    }
+                }
+            ]
+        }
+    ]
+}
