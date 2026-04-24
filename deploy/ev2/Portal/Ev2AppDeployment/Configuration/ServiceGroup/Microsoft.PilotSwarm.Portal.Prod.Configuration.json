@@ -3,9 +3,7 @@
         "environment": "Prod",
         "TenantId": "72f988bf-86f1-41af-91ab-2d7cd011db47",
         "resourcePrefix": "pilotswarm",
-        "portalImageTag": "latest",
         "portalOverlayPath": "overlays/prod",
-        "sourceAcrLoginServer": "pilotswarmci.azurecr.io",
         "portalWorkloadIdentityClientId": "00000000-0000-0000-0000-000000000000",
         "approvalManagedIdentityId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/pilotswarm-wus3-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/pilotswarm-approver",
         "sslCertificateDomainSuffix": "pilotswarm.microsoft.com"

@@ -1,97 +1,68 @@
 #!/usr/bin/env bash
 # UploadContainer.sh — PilotSwarm EV2 shell extension
 #
-# Copies a container image into the per-region ACR owned by this stamp.
+# Official Microsoft EV2 pattern (mirrors postgresql-fleet-manager):
+# downloads the image tarball from EV2's per-rollout SAS URL (supplied
+# by EV2 via the `reference` mechanism on a service-artifact path) and
+# pushes it to the target ACR using `oras`. No local docker daemon is
+# used on either side — tarballs travel inside the EV2 service artifact
+# rather than via a holding ACR.
 #
-# Two supported modes:
-#   1. Cross-ACR import (preferred, no local docker required):
-#        --source-acr <source>.azurecr.io --target-acr <target>.azurecr.io \
-#        --image-name <name> --image-tag <tag>
-#      Uses `az acr import` to copy <source>/<image>:<tag> → <target>/<image>:<tag>.
-#
-#   2. Local tarball load & push (fallback; requires docker runtime):
-#        --source-tarball <path> --target-acr <target>.azurecr.io \
-#        --image-name <name> --image-tag <tag>
-#      Uses `docker load` + `docker tag` + `docker push` into the target ACR.
-#
-# Authentication is via managed identity (`az login --identity`) during EV2
-# shell-extension execution.
+# Required env vars (wired from UploadContainer.Linux.Rollout.json +
+# scopeBinding.json):
+#   DEPLOYMENT_ACR_NAME      Bare ACR name (not the FQDN) of the target
+#                            per-region ACR.
+#   TARBALL_IMAGE_FILE_SAS   SAS URL that EV2 mints for the image file
+#                            inside the uploaded service artifact
+#                            (resolved from the rollout-params
+#                            reference.path = e.g.
+#                            "ContainerImages/<image>.tar.gz").
+#   DESTINATION_FILE_NAME    Local filename to wget into. Must end in
+#                            .tar or .tar.gz (gz is decompressed first).
+#   IMAGE_NAME               Target image repository name inside the ACR
+#                            (e.g. pilotswarm-worker).
+#   TAG_NAME                 Target image tag (typically $buildVersion()
+#                            from EV2, i.e. ArtifactsVersion).
 set -euo pipefail
 
-SOURCE_ACR=""
-SOURCE_TARBALL=""
-TARGET_ACR=""
-IMAGE_NAME=""
-IMAGE_TAG=""
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --source-acr)      SOURCE_ACR="$2";      shift 2 ;;
-    --source-tarball)  SOURCE_TARBALL="$2";  shift 2 ;;
-    --target-acr)      TARGET_ACR="$2";      shift 2 ;;
-    --image-name)      IMAGE_NAME="$2";      shift 2 ;;
-    --image-tag)       IMAGE_TAG="$2";       shift 2 ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      exit 2
-      ;;
-  esac
+for v in DEPLOYMENT_ACR_NAME TARBALL_IMAGE_FILE_SAS DESTINATION_FILE_NAME IMAGE_NAME TAG_NAME; do
+  if [ -z "${!v+x}" ]; then
+    echo "$v is unset, unable to continue" >&2
+    exit 1
+  fi
 done
-
-if [[ -z "$TARGET_ACR" || -z "$IMAGE_NAME" || -z "$IMAGE_TAG" ]]; then
-  echo "Required: --target-acr, --image-name, --image-tag" >&2
-  exit 2
-fi
-
-if [[ -z "$SOURCE_ACR" && -z "$SOURCE_TARBALL" ]]; then
-  echo "Required: either --source-acr or --source-tarball" >&2
-  exit 2
-fi
 
 echo "Logging in with managed identity"
 az login --identity >/dev/null
 
-# Strip any .azurecr.io suffix the caller passed to get the bare ACR name for az.
-target_acr_name="${TARGET_ACR%%.azurecr.io}"
+oras version
 
-if [[ -n "$SOURCE_ACR" ]]; then
-  source_acr_name="${SOURCE_ACR%%.azurecr.io}"
-  source_ref="${source_acr_name}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}"
-  echo "Importing ${source_ref} → ${target_acr_name}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}"
-  az acr import \
-    --name "$target_acr_name" \
-    --source "$source_ref" \
-    --image "${IMAGE_NAME}:${IMAGE_TAG}" \
-    --force
-  echo "Image imported successfully."
-  exit 0
+TMP_FOLDER="$(mktemp -d)"
+cd "$TMP_FOLDER"
+
+echo "Downloading docker tarball image from EV2-issued SAS URL"
+wget -q -O "$DESTINATION_FILE_NAME" "$TARBALL_IMAGE_FILE_SAS"
+
+echo "Requesting ACR access token for $DEPLOYMENT_ACR_NAME"
+# Tolerate callers passing either the bare ACR name or the full login
+# server FQDN (e.g. foo.azurecr.io). `az acr login --name` requires the
+# bare name, and so does the oras login host below (we re-add the
+# suffix explicitly).
+DEPLOYMENT_ACR_NAME="${DEPLOYMENT_ACR_NAME%%.azurecr.io}"
+USERNAME="00000000-0000-0000-0000-000000000000"
+PASSWORD="$(az acr login --name "$DEPLOYMENT_ACR_NAME" --expose-token --output tsv --query accessToken)"
+
+echo "Logging in to ACR with oras"
+oras login "$DEPLOYMENT_ACR_NAME.azurecr.io" --username "$USERNAME" --password-stdin <<< "$PASSWORD"
+
+DEST_IMAGE_FULL_NAME="$DEPLOYMENT_ACR_NAME.azurecr.io/$IMAGE_NAME:$TAG_NAME"
+
+if [[ "$DESTINATION_FILE_NAME" == *.gz ]]; then
+  echo "Decompressing $DESTINATION_FILE_NAME"
+  gunzip "$DESTINATION_FILE_NAME"
+  DESTINATION_FILE_NAME="${DESTINATION_FILE_NAME%.gz}"
 fi
 
-# Fallback path: docker load + tag + push.
-if [[ ! -f "$SOURCE_TARBALL" ]]; then
-  echo "Source tarball not found: $SOURCE_TARBALL" >&2
-  exit 1
-fi
-
-if ! command -v docker >/dev/null 2>&1; then
-  echo "docker not available in this shell image; use --source-acr instead." >&2
-  exit 1
-fi
-
-echo "Loading image from tarball: $SOURCE_TARBALL"
-loaded_ref="$(docker load -i "$SOURCE_TARBALL" | awk -F': ' '/Loaded image/ {print $2; exit}')"
-if [[ -z "$loaded_ref" ]]; then
-  echo "Failed to parse image reference from 'docker load' output." >&2
-  exit 1
-fi
-
-target_ref="${target_acr_name}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}"
-echo "Tagging ${loaded_ref} → ${target_ref}"
-docker tag "$loaded_ref" "$target_ref"
-
-echo "Logging in to ACR ${target_acr_name}"
-az acr login --name "$target_acr_name"
-
-echo "Pushing ${target_ref}"
-docker push "$target_ref"
+echo "Pushing $DESTINATION_FILE_NAME -> $DEST_IMAGE_FULL_NAME"
+oras cp --recursive --from-oci-layout "$DESTINATION_FILE_NAME:$TAG_NAME" "$DEST_IMAGE_FULL_NAME"
 echo "Image pushed successfully."

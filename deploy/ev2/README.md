@@ -128,8 +128,12 @@ ServiceGroups because it is consumed by both services.
     are easy to inspect.
   - Optional `-DeployInfra` fans out to GlobalInfra → BaseInfra → the
     selected service (fleet-manager parity).
-  - Optional `-BuildImage` runs `docker buildx build --platform
-    linux/amd64 --push` for Worker/Portal.
+  - Optional `-BuildImage` builds the image locally with
+    `docker buildx build --platform linux/amd64 --load`, then
+    `docker save` + gzip → stages it into the SG artifact at
+    `ContainerImages/<image>.tar.gz` (official EV2 pattern; the
+    UploadContainer shell extension downloads the tar via an
+    EV2-minted SAS URL and uses `oras cp` to push to the target ACR).
   See
   [`docs/deploying-to-aks-ev2.md`](../../docs/deploying-to-aks-ev2.md#dev-test-rollout)
   for setup and usage.

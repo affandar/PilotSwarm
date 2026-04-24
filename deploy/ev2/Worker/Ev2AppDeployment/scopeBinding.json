@@ -35,7 +35,15 @@
                 },
                 {
                     "find": "__IMAGE_TAG__",
-                    "replaceWith": "$config(workerImageTag)"
+                    "replaceWith": "$buildVersion()"
+                },
+                {
+                    "find": "__BUILD_VERSION__",
+                    "replaceWith": "$buildVersion()"
+                },
+                {
+                    "find": "__APP_IMAGE_FILE_PATH__",
+                    "replaceWith": "ContainerImages/$config(workerImageName).tar.gz"
                 },
                 {
                     "find": "__NAMESPACE__",
@@ -48,10 +56,6 @@
                 {
                     "find": "__DEPLOYMENT_OVERLAY_PATH__",
                     "replaceWith": "$config(workerOverlayPath)"
-                },
-                {
-                    "find": "__SOURCE_ACR_LOGIN_SERVER__",
-                    "replaceWith": "$config(sourceAcrLoginServer)"
                 }
             ]
         },

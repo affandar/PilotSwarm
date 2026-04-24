@@ -67,7 +67,15 @@
                 },
                 {
                     "find": "__IMAGE_TAG__",
-                    "replaceWith": "$config(portalImageTag)"
+                    "replaceWith": "$buildVersion()"
+                },
+                {
+                    "find": "__BUILD_VERSION__",
+                    "replaceWith": "$buildVersion()"
+                },
+                {
+                    "find": "__APP_IMAGE_FILE_PATH__",
+                    "replaceWith": "ContainerImages/$config(portalImageName).tar.gz"
                 },
                 {
                     "find": "__NAMESPACE__",
@@ -80,10 +88,6 @@
                 {
                     "find": "__DEPLOYMENT_OVERLAY_PATH__",
                     "replaceWith": "$config(portalOverlayPath)"
-                },
-                {
-                    "find": "__SOURCE_ACR_LOGIN_SERVER__",
-                    "replaceWith": "$config(sourceAcrLoginServer)"
                 }
             ]
         },

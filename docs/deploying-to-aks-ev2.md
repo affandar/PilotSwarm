@@ -141,7 +141,7 @@ deploy/
 │       ├── bicep/                           Verbatim fleet-manager modules
 │       │                                    (approve-private-endpoint, frontdoor-origin-route).
 │       └── scripts/                         Shell extensions.
-│           ├── UploadContainer.sh             Copy image holding ACR → per-region ACR.
+│           ├── UploadContainer.sh             Download image tarball from EV2-minted SAS URL, push to per-region ACR via oras.
 │           ├── DeployApplicationManifest.sh   Render Kustomize + upload bundle to blob.
 │           └── GenerateEnvForEv2.ps1          Write overlay .env from scope-binding env vars.
 └── gitops/
@@ -242,9 +242,11 @@ service name at runtime against the index.
 # Worker dev rollout (all steps, westus3)
 .\deploy\ev2\ev2-deploy-dev.ps1 -Service Worker -ServiceId <guid>
 
-# Portal dev rollout with image build+push to a holding ACR
-.\deploy\ev2\ev2-deploy-dev.ps1 -Service Portal -ServiceId <guid> `
-    -BuildImage -HoldingAcr <acr>.azurecr.io -ImageTag dev-$(Get-Date -Format yyyyMMddHHmm)
+# Portal dev rollout, building the container image locally and staging
+# the tarball into the EV2 service artifact (ContainerImages/*.tar.gz).
+# The image tag is taken from version.txt (ArtifactsVersion) so it
+# matches $buildVersion() at rollout time.
+.\deploy\ev2\ev2-deploy-dev.ps1 -Service Portal -ServiceId <guid> -BuildImage
 
 # Bring up a region from scratch: GlobalInfra -> BaseInfra -> Worker
 .\deploy\ev2\ev2-deploy-dev.ps1 -Service Worker -ServiceId <guid> -DeployInfra
@@ -268,7 +270,7 @@ service name at runtime against the index.
 | `-DeployInfra` | Deploy `GlobalInfra` then `BaseInfra` before the app service |
 | `-SkipBuild` | Skip `az bicep build` + `docker buildx build` |
 | `-SkipRegister` | Skip `Register-AzureServiceArtifacts` |
-| `-BuildImage` | For Worker/Portal only: `docker buildx build --platform linux/amd64 --push`. Requires `-HoldingAcr` + `-ImageTag`. |
+| `-BuildImage` | For Worker/Portal: build the image locally (`docker buildx build --platform linux/amd64 --load`), then `docker save` + gzip the tarball into `<sgRoot>/ContainerImages/<image>.tar.gz` inside the EV2 service artifact. Tag = contents of `version.txt`. No pre-push or holding ACR required. |
 | `-TestOnly` | Run `Test-AzureServiceRollout` instead of `New-AzureServiceRollout` |
 | `-Force` | Pass `-Force` to `Register-AzureServiceArtifacts` |
 
@@ -289,7 +291,7 @@ service name at runtime against the index.
 - Your corp account must be a member of the EV2 operator AAD group
   registered on the PilotSwarm ServiceTree entry.
 - `az` on `PATH` (for `az bicep build` / `az bicep build-params`).
-- For `-BuildImage`: `docker buildx` + `az acr login -n <HoldingAcr>`.
+- For `-BuildImage`: `docker buildx` and `gzip` (or a PowerShell 5.1+ host — the helper falls back to `System.IO.Compression.GZipStream` if no `gzip` binary is on PATH). No ACR credentials needed on the dev box; the image travels inside the EV2 service artifact.
 - `kubectl` on `PATH` (optional; the helper renders a local Kustomize
   preview into the staging directory for inspection).
 
@@ -298,7 +300,7 @@ service name at runtime against the index.
 - Writes under `deploy/ev2/.staging/` (gitignored; safe to delete).
 - Writes Bicep-compiled ARM JSON into each SG's `Templates/` folder
   (also gitignored; the OneBranch pipeline produces the same outputs).
-- If `-BuildImage` is set, pushes to the specified holding ACR.
+- If `-BuildImage` is set, builds the image locally (`docker buildx build --load`), `docker save`s it to `<stagingSgRoot>/ContainerImages/<repo>.tar`, gzips → `.tar.gz`. The gzipped tarball ships inside the EV2 service artifact and is downloaded via a per-rollout SAS URL at rollout time.
 - Triggers a rollout on the EV2 **Test** infra against the configured
   ServiceTree identifier.
 
@@ -336,7 +338,7 @@ Production rollouts are driven by the OneBranch Official pipelines in
 
 | Pipeline | Purpose |
 |---|---|
-| `ci.yml` | Runs on PR merge to `main`. Builds worker + portal images with `docker buildx build --platform linux/amd64`, pushes to the **holding ACR** with an immutable `:$(Build.BuildId)` tag, publishes EV2 rollout artifacts. |
+| `ci.yml` | Runs on PR merge to `main`. Builds worker + portal images with `docker buildx build --platform linux/amd64 --load`, `docker save`s each to `ContainerImages/<image>.tar.gz` alongside the rollout artifacts, and publishes the combined EV2 service artifact (image tarball travels inside the artifact; no holding ACR needed). |
 | `release-globalinfra.yml` | Prod release for GlobalInfra. Invokes `Ev2RARollout@2` with the Azure-managed SDP stage map. |
 | `release-baseinfra.yml` | Prod release for BaseInfra (per region). |
 | `release-worker.yml` | Prod release for the Worker ServiceGroup. |
@@ -442,13 +444,15 @@ for volume "secrets-store"`.
 
 ### Image pull failure (`ImagePullBackOff`)
 
-`UploadContainer.sh` re-pushes the image from the holding ACR to the
-per-region ACR at the start of every App rollout. If pods show
+`UploadContainer.sh` downloads the image tarball from the
+EV2-minted SAS URL (referencing `ContainerImages/<image>.tar.gz`
+inside the service artifact) and pushes it to the per-region ACR via
+`oras` at the start of every App rollout. If pods show
 `ImagePullBackOff`:
 
 - `az acr repository show-tags --name <per-region-acr>
-  --repository copilot-runtime-worker` (or `pilotswarm-portal`) —
-  confirm the expected `:$(Build.BuildId)` tag is present.
+  --repository pilotswarm-worker` (or `pilotswarm-portal`) —
+  confirm the expected `$buildVersion()` tag is present.
 - Confirm the AKS kubelet UAMI has **AcrPull** on the per-region ACR
   (provisioned by BaseInfra Bicep).
 - Under GitOps there is **no** `acr-pull` imagePullSecret — pull auth

@@ -16,32 +16,31 @@
             "launch": {
                 "command": [
                     "/bin/bash",
-                    "/package/unarchive/UploadContainer.sh",
-                    "--source-acr",
-                    "__SOURCE_ACR_LOGIN_SERVER__",
-                    "--target-acr",
-                    "__ACR_LOGIN_SERVER__",
-                    "--image-name",
-                    "__IMAGE_NAME__",
-                    "--image-tag",
-                    "__IMAGE_TAG__"
+                    "/package/unarchive/UploadContainer.sh"
                 ],
                 "environmentVariables": [
                     {
-                        "name": "ACR_LOGIN_SERVER",
+                        "name": "DEPLOYMENT_ACR_NAME",
                         "value": "__ACR_LOGIN_SERVER__"
                     },
                     {
-                        "name": "SOURCE_ACR_LOGIN_SERVER",
-                        "value": "__SOURCE_ACR_LOGIN_SERVER__"
+                        "name": "TARBALL_IMAGE_FILE_SAS",
+                        "reference": {
+                            "path": "__APP_IMAGE_FILE_PATH__"
+                        },
+                        "asSecureValue": "true"
+                    },
+                    {
+                        "name": "DESTINATION_FILE_NAME",
+                        "value": "__IMAGE_NAME__.tar.gz"
                     },
                     {
                         "name": "IMAGE_NAME",
                         "value": "__IMAGE_NAME__"
                     },
                     {
-                        "name": "IMAGE_TAG",
-                        "value": "__IMAGE_TAG__"
+                        "name": "TAG_NAME",
+                        "value": "__BUILD_VERSION__"
                     }
                 ],
                 "identity": {

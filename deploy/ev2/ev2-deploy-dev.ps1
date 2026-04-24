@@ -21,12 +21,15 @@
 #   3. Your corp account must be in the EV2 operator AAD group registered
 #      on the PilotSwarm ServiceTree entry (pass the ServiceId via the
 #      -ServiceId parameter, or export PS_EV2_SERVICE_ID).
-#   4. `az` on PATH (for `az bicep build`). `docker buildx` + ACR login
-#      only required when -BuildImage is used.
+#   4. `az` on PATH (for `az bicep build`). `docker buildx` + `gzip`
+#      (or PowerShell GZipStream on Windows) only required when
+#      -BuildImage is used — the image tarball is bundled as an EV2
+#      service artifact, not pre-pushed to a holding ACR.
 #
 # Side effects:
 #   - Writes under deploy/ev2/.staging/ (gitignored; safe to delete).
-#   - Optionally runs `az bicep build` and/or `docker buildx ... --push`.
+#   - Optionally runs `az bicep build` and/or builds+exports a container
+#     image into the staged SG artifact at ContainerImages/<repo>.tar.gz.
 #   - Triggers EV2 Test-endpoint rollouts via the caller's interactive AAD
 #     session. Does NOT modify the repo working tree.
 
@@ -61,13 +64,15 @@ param (
     # Skip Register-AzureServiceArtifacts.
     [switch]$SkipRegister,
 
-    # Build + push the service's container image to -HoldingAcr before
-    # rollout. Requires `docker buildx`, `az acr login`, and -HoldingAcr +
-    # -ImageTag. Only meaningful for Worker/Portal.
+    # Build + export the service's container image as a tarball and stage
+    # it into the EV2 ServiceGroup artifact at
+    # <sgRoot>/ContainerImages/<imageName>.tar.gz. EV2's UploadContainer
+    # shell extension wgets that path (via a SAS URL minted by EV2 from
+    # the scope-binding `reference`) and pushes it to the target ACR
+    # using oras. Requires local `docker buildx` and `gzip`. Only
+    # meaningful for Worker/Portal. Image tag comes from version.txt
+    # (i.e. $buildVersion() at rollout time).
     [switch]$BuildImage,
-
-    [string]$HoldingAcr,
-    [string]$ImageTag,
 
     # Run Test-AzureServiceRollout instead of New-AzureServiceRollout.
     [switch]$TestOnly,
@@ -166,20 +171,56 @@ function Invoke-BicepBuild {
     }
 }
 
-function Invoke-ImageBuildPush {
-    param([string]$RepoRoot, $Config, [string]$Acr, [string]$Tag)
+function Invoke-ImageBuildExport {
+    # Build the service's image locally and export it as a gzipped
+    # tarball into the staged SG tree at ContainerImages/<repo>.tar.gz,
+    # so it travels inside the EV2 service artifact and gets uploaded
+    # by `Register-AzureServiceArtifacts`. This mirrors the official
+    # Microsoft/fleet-manager pattern (tar artifact + oras push at
+    # rollout time), not a holding-ACR pre-push.
+    param([string]$RepoRoot, $Config, [string]$StagedSgRoot, [string]$Tag)
     if (-not $Config.DockerImageRepo) {
-        Write-Host "[$($Config.Name)] no dockerImageRepo in manifest, skipping image build." -ForegroundColor DarkGray
+        Write-Host "[$($Config.Name)] no dockerImageRepo in service.json, skipping image build." -ForegroundColor DarkGray
         return
     }
-    if (-not $Acr) { throw "-HoldingAcr is required when -BuildImage is set." }
-    if (-not $Tag) { throw "-ImageTag is required when -BuildImage is set." }
-    if (-not $Config.Dockerfile) { throw "dockerfile missing from services.json for $($Config.Name)." }
+    if (-not $Config.Dockerfile) { throw "dockerfile missing from service.json for $($Config.Name)." }
     $dockerfileAbs = Join-Path $RepoRoot $Config.Dockerfile
-    $imageRef = "$Acr/$($Config.DockerImageRepo):$Tag"
-    Write-Host "[$($Config.Name)] docker buildx build --platform linux/amd64 --push -t $imageRef -f $dockerfileAbs $RepoRoot"
-    & docker buildx build --platform linux/amd64 --push -t $imageRef -f $dockerfileAbs $RepoRoot
+
+    $tempTag = "$($Config.DockerImageRepo):$Tag"
+    Write-Host "[$($Config.Name)] docker buildx build --platform linux/amd64 --load -t $tempTag -f $dockerfileAbs $RepoRoot"
+    & docker buildx build --platform linux/amd64 --load -t $tempTag -f $dockerfileAbs $RepoRoot
     if ($LASTEXITCODE -ne 0) { throw "docker buildx build failed for $($Config.Name)." }
+
+    $imagesDir = Join-Path $StagedSgRoot 'ContainerImages'
+    if (Test-Path $imagesDir) { Remove-Item $imagesDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $imagesDir -Force | Out-Null
+
+    $tarPath = Join-Path $imagesDir "$($Config.DockerImageRepo).tar"
+    Write-Host "[$($Config.Name)] docker save -o $tarPath $tempTag"
+    & docker save -o $tarPath $tempTag
+    if ($LASTEXITCODE -ne 0) { throw "docker save failed for $($Config.Name)." }
+
+    $gzPath = "$tarPath.gz"
+    if (Test-Path $gzPath) { Remove-Item $gzPath -Force }
+    Write-Host "[$($Config.Name)] gzipping image tarball -> $gzPath"
+    # Prefer gzip if available; fall back to .NET GZipStream on Windows dev boxes.
+    $gzipCmd = Get-Command gzip -ErrorAction SilentlyContinue
+    if ($gzipCmd) {
+        & gzip -f $tarPath
+        if ($LASTEXITCODE -ne 0) { throw "gzip failed for $tarPath." }
+    } else {
+        $in = [System.IO.File]::OpenRead($tarPath)
+        try {
+            $out = [System.IO.File]::Create($gzPath)
+            try {
+                $gz = New-Object System.IO.Compression.GZipStream($out, [System.IO.Compression.CompressionLevel]::Optimal)
+                try { $in.CopyTo($gz) } finally { $gz.Dispose() }
+            } finally { $out.Dispose() }
+        } finally { $in.Dispose() }
+        Remove-Item $tarPath -Force
+    }
+
+    Write-Host "[$($Config.Name)] staged image tarball at $gzPath" -ForegroundColor DarkGray
 }
 
 function New-Staging {
@@ -296,13 +337,19 @@ function Invoke-ServiceDeploy {
 
     if (-not $SkipBuild) {
         Invoke-BicepBuild -RepoRoot $RepoRoot -Config $Config
-        if ($BuildImage) {
-            Invoke-ImageBuildPush -RepoRoot $RepoRoot -Config $Config -Acr $HoldingAcr -Tag $ImageTag
-        }
     }
 
     $staging = New-Staging -RepoRoot $RepoRoot -Config $Config
     $artifactsVersion = Get-ArtifactsVersion -SgRootAbs $staging
+
+    # Export the image into the staged SG tree AFTER staging copies the
+    # source SG (so we write into .staging and never pollute the repo).
+    # The tag matches ArtifactsVersion so EV2's $buildVersion() token
+    # resolves to the same value at rollout time.
+    if (-not $SkipBuild -and $BuildImage) {
+        Invoke-ImageBuildExport -RepoRoot $RepoRoot -Config $Config -StagedSgRoot $staging -Tag $artifactsVersion
+    }
+
     Write-Host "[$($Config.Name)] ArtifactsVersion=$artifactsVersion Region=$Region ServiceGroup=$($Config.ServiceGroupName)"
 
     Start-Ev2RegisterAndDeploy `
