@@ -326,11 +326,32 @@ function New-DeployPackages {
     # rollout-parameter files. EV2 substitutes the __TOKENS__ here
     # because the corresponding environmentVariable reference has
     # enableScopeTagBindings=true.
-    $paramsSrc = Join-Path $commonParams 'DeployApplicationManifest.parameters.json'
-    if (Test-Path $paramsSrc) {
-        $paramsDst = Join-Path $StagedSgRoot 'Parameters/DeployApplicationManifest.parameters.json'
-        Copy-Item -Force -Path $paramsSrc -Destination $paramsDst
-        Write-Host "[$($Config.Name)] staged $paramsDst" -ForegroundColor DarkGray
+    #
+    # The two rollout-parameter files (UploadContainer.Linux.Rollout.json
+    # and DeployApplicationManifest.Linux.Rollout.json) are also shared
+    # across services — they're pure __TOKEN__ templates resolved by
+    # each service's scopeBinding.json. Materialize them into the
+    # staged Parameters/ directory so EV2 sees them at the path
+    # serviceModel.json's `rolloutParametersPath` expects.
+    $sharedParamFiles = @(
+        'DeployApplicationManifest.parameters.json',
+        'UploadContainer.Linux.Rollout.json',
+        'DeployApplicationManifest.Linux.Rollout.json'
+    )
+    $stagedParamsDir = Join-Path $StagedSgRoot 'Parameters'
+    if (-not (Test-Path $stagedParamsDir)) { New-Item -ItemType Directory -Path $stagedParamsDir -Force | Out-Null }
+    foreach ($f in $sharedParamFiles) {
+        $src = Join-Path $commonParams $f
+        if (-not (Test-Path $src)) { throw "Common parameters file missing: $src" }
+        $dst = Join-Path $stagedParamsDir $f
+        if (Test-Path $dst) {
+            # A service-local copy was staged from the SG tree first.
+            # Respect it — divergence is intentional.
+            Write-Host "[$($Config.Name)] kept service-local $dst (overrides Common/)" -ForegroundColor DarkYellow
+            continue
+        }
+        Copy-Item -Path $src -Destination $dst
+        Write-Host "[$($Config.Name)] staged $dst" -ForegroundColor DarkGray
     }
 }
 
