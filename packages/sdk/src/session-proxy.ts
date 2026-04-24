@@ -17,7 +17,6 @@ import {
     isHighRiskTurnResult,
     shouldRunPromptGuardrailDetector,
 } from "./prompt-guardrails.js";
-import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import os from "node:os";
 import fs from "node:fs";
 
