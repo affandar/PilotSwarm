@@ -21,7 +21,7 @@ The GitOps path is composed of **four independent EV2 ServiceGroups**:
 | **GlobalInfra** | Subscription | Azure Front Door Premium profile + WAF policy + security policy (fleet-wide, one per environment). |
 | **BaseInfra** | Resource Group (per region) | AKS + ACR + Azure DB for PostgreSQL + Storage + Key Vault + VNet + private-link-ready Application Gateway + `microsoft.flux` / CSI addons + per-deployable FluxConfigs. |
 | **Worker** | Per region (app-only) | Pushes the worker image to the per-region ACR, renders the worker Kustomize overlay, uploads the manifest bundle to the `worker-manifests` blob container. Owns no Azure resources. |
-| **Portal** | Per region (service infra + app, single SG) | Ordered single rollout (via `rolloutSpec.dependsOn`): (1) `PortalServiceInfra` — registers a per-region AFD origin + route and auto-approves the pending Private Link Service connection on the AppGW; (2–4) same 3-step app rollout as Worker, targeting `portal-manifests`. Matches the postgresql-fleet-manager PlaygroundService "EV2 at service granularity" pattern — infra and app live in the same SG and are serialized with `dependsOn`, not a multi-SG gate. |
+| **Portal** | Per region (service infra + app, single SG) | Ordered single rollout (via `rolloutSpec.dependsOn`): (1) `PortalServiceInfra` — registers a per-region AFD origin + route and auto-approves the pending Private Link Service connection on the AppGW; (2–3) same 2-step app rollout as Worker (`UploadContainer` → `DeployApplicationManifest`), targeting `portal-manifests`. Matches the postgresql-fleet-manager PlaygroundService "EV2 at service granularity" pattern — infra and app live in the same SG and are serialized with `dependsOn`, not a multi-SG gate. |
 
 ### Traffic path
 
@@ -121,19 +121,22 @@ deploy/
 │   ├── README.md                          High-level map of the EV2 tree.
 │   ├── GlobalInfra/                       Fleet-wide Azure resources.
 │   │   ├── service.json                     Self-contained EV2 manifest.
-│   │   ├── bicep/                           Subscription-scope Bicep + bicepparams.
-│   │   └── Ev2InfraDeployment/              serviceModel + rolloutSpec + scopeBinding + Configuration/ + Parameters + version.txt.
+│   │   ├── bicep/                           Subscription-scope Bicep modules.
+│   │   └── Ev2InfraDeployment/              serviceModel + rolloutSpec + scopeBinding + Configuration/ + Parameters/ (ARM-style deploymentParameters.json) + version.txt.
 │   ├── BaseInfra/                         Per-region Azure resources.
 │   │   ├── service.json                     Self-contained EV2 manifest.
-│   │   ├── bicep/                           Resource-group-scope Bicep modules.
-│   │   └── Ev2InfraDeployment/              serviceModel + rolloutSpec + scopeBinding + Configuration/ + Parameters + version.txt.
+│   │   ├── bicep/                           Resource-group-scope Bicep (incl. ACI subnet, NAT GW, ev2-deploy-rbac).
+│   │   └── Ev2InfraDeployment/              serviceModel + rolloutSpec + scopeBinding + Configuration/ + Parameters/ (ARM-style deploymentParameters.json) + version.txt.
 │   ├── Worker/                            Worker service (single SG, app-only — no service Bicep).
 │   │   ├── service.json                     Self-contained EV2 manifest.
-│   │   └── Ev2AppDeployment/                2-step rollout (UploadContainer → DeployApplicationManifest).
+│   │   └── Ev2AppDeployment/                2-step rollout (UploadContainer → DeployApplicationManifest)
+│   │                                          + Parameters/DeployApplicationManifest.parameters.json (per-service env-substitution table).
 │   ├── Portal/                            Portal service (single SG combining service infra + app).
 │   │   ├── service.json                     Self-contained EV2 manifest.
 │   │   ├── bicep/                           AFD origin/route + PLS approval (ARM template).
-│   │   └── Ev2AppDeployment/                3-step rollout (PortalServiceInfra → UploadContainer → DeployApplicationManifest).
+│   │   └── Ev2AppDeployment/                3-step rollout (PortalServiceInfra → UploadContainer → DeployApplicationManifest)
+│   │                                          + Parameters/DeployApplicationManifest.parameters.json (per-service env-substitution table).
+│   ├── service.schema.json                JSON Schema validating each service's service.json.
 │   ├── services.json                      Root index: fleet-wide defaults + pointers to each
 │   │                                      service's service.json (self-contained per-service config).
 │   ├── ev2-deploy-dev.ps1                 Unified dev-loop helper (one script, all four SGs).
@@ -143,8 +146,11 @@ deploy/
 │       ├── bicep/                           Verbatim fleet-manager modules
 │       │                                    (approve-private-endpoint, frontdoor-origin-route).
 │       ├── Parameters/
-│       │   └── DeployApplicationManifest.parameters.json   Shared overlay-substitution table; tokens
-│       │                                                   rewritten by per-service scope-binding.
+│       │   ├── UploadContainer.Linux.Rollout.json           Shared shell-extension rollout params.
+│       │   └── DeployApplicationManifest.Linux.Rollout.json Shared shell-extension rollout params; references
+│       │                                                   __APPLICATION_MANIFEST_PARAMETERS_FILE__ which each
+│       │                                                   service's scopeBinding points at its own per-service
+│       │                                                   Parameters/DeployApplicationManifest.parameters.json.
 │       └── scripts/                         Shell extensions (verbatim from postgresql-fleet-manager).
 │           ├── UploadContainer.sh             Download image tarball from EV2-minted SAS URL, `oras cp` to per-region ACR.
 │           ├── DeployApplicationManifest.sh   Download manifests.zip + parameters JSON, rewrite overlay
@@ -185,24 +191,12 @@ az bicep build --file deploy/ev2/GlobalInfra/bicep/main.bicep
 az bicep build --file deploy/ev2/BaseInfra/bicep/main.bicep
 az bicep build --file deploy/ev2/Portal/bicep/main.bicep
 
-# bicepparam compile checks — all six bicepparam files.
-az bicep build-params --file deploy/ev2/GlobalInfra/bicep/parameters/dev.bicepparam
-az bicep build-params --file deploy/ev2/GlobalInfra/bicep/parameters/prod.bicepparam
-az bicep build-params --file deploy/ev2/BaseInfra/bicep/parameters/dev.bicepparam
-az bicep build-params --file deploy/ev2/BaseInfra/bicep/parameters/prod.bicepparam
-az bicep build-params --file deploy/ev2/Portal/bicep/parameters/dev.bicepparam
-az bicep build-params --file deploy/ev2/Portal/bicep/parameters/prod.bicepparam
-
-# What-if against a dev subscription (requires `az login`).
-az deployment sub what-if \
-  --location westus3 \
-  --template-file deploy/ev2/GlobalInfra/bicep/main.bicep \
-  --parameters deploy/ev2/GlobalInfra/bicep/parameters/dev.bicepparam
-
-az deployment group what-if \
-  --resource-group <dev-rg> \
-  --template-file deploy/ev2/BaseInfra/bicep/main.bicep \
-  --parameters deploy/ev2/BaseInfra/bicep/parameters/dev.bicepparam
+# Per-env bicep parameter values live in each service's
+# Ev2InfraDeployment/Configuration/ServiceGroup/*.{Env}.Configuration.json
+# and are token-substituted into Ev2InfraDeployment/Parameters/<Service>.deploymentParameters.json
+# by EV2 at rollout time (see scopeBinding.json). There are no .bicepparam
+# files — local what-if requires materializing a parameters.json yourself
+# from those Configuration JSONs.
 ```
 
 *Optional:*
@@ -412,8 +406,9 @@ The Portal `PortalServiceInfra` step runs
 approve` against the AppGW's `PrivateLinkConfiguration`. If the
 connection stays `Pending`:
 
-- Confirm the `approvalManagedIdentityId` bicepparam value is populated
-  and that identity has **Network Contributor** (or equivalent) on the
+- Confirm the `approvalManagedIdentityId` value resolved by the Portal
+  scopeBinding (sourced from BaseInfra outputs) points at an identity
+  that has **Network Contributor** (or equivalent) on the
   Application Gateway resource.
 - Re-run the Portal rollout; the step is idempotent, and any later
   steps (`UploadContainer`, `DeployApplicationManifest`)
@@ -475,7 +470,7 @@ Source is always the overlay's merged ConfigMap
 (`worker-env` / `portal-env`). The overlay `.env` placeholder values are
 substituted at rollout time by `GenerateEnvForEv2.ps1` (dot-sourced
 inside `DeployApplicationManifest.sh`) using the scope-tag-bound
-`Common/Parameters/DeployApplicationManifest.parameters.json`.
+per-service `<Service>/Ev2AppDeployment/Parameters/DeployApplicationManifest.parameters.json`.
 
 ### Worker
 
@@ -492,7 +487,8 @@ inside `DeployApplicationManifest.sh`) using the scope-tag-bound
 | `AZURE_TENANT_ID` | `SecretProviderClass/copilot-worker-secrets` | `spec.parameters.tenantId` |
 
 > `IMAGE` is composed by EV2 as `<ACR_LOGIN_SERVER>/<IMAGE_NAME>:<IMAGE_TAG>`
-> inside `Common/Parameters/DeployApplicationManifest.parameters.json`. Kustomize `replacements` cannot
+> inside `Worker/Ev2AppDeployment/Parameters/DeployApplicationManifest.parameters.json`
+> (and the analogous file under `Portal/`). Kustomize `replacements` cannot
 > concatenate multiple sources into one target string, so the
 > composition happens upstream.
 
