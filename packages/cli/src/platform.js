@@ -624,6 +624,7 @@ function Panel({
     children,
     lines,
     stickyLines,
+    bottomStickyLines,
     scrollOffset = 0,
     scrollMode = "top",
     fillColor,
@@ -638,7 +639,10 @@ function Panel({
     const contentHeight = Math.max(1, safeHeight - 2);
     const wrappedStickyLines = wrapNormalizedLines(normalizeLines(stickyLines), contentWidth);
     const visibleStickyLines = wrappedStickyLines.slice(0, contentHeight);
-    const scrollableHeight = Math.max(0, contentHeight - visibleStickyLines.length);
+    const wrappedBottomStickyLines = wrapNormalizedLines(normalizeLines(bottomStickyLines), contentWidth);
+    const remainingAfterTopSticky = Math.max(0, contentHeight - visibleStickyLines.length);
+    const visibleBottomStickyLines = wrappedBottomStickyLines.slice(Math.max(0, wrappedBottomStickyLines.length - remainingAfterTopSticky));
+    const scrollableHeight = Math.max(0, contentHeight - visibleStickyLines.length - visibleBottomStickyLines.length);
     const wrappedLines = wrapNormalizedLines(normalizeLines(lines), contentWidth);
     const maxOffset = Math.max(0, wrappedLines.length - scrollableHeight);
     const clampedOffset = Math.max(0, Math.min(scrollOffset, maxOffset));
@@ -654,11 +658,11 @@ function Panel({
         ? buildScrollIndicator(wrappedLines.length, scrollableHeight, startIndex)
         : null;
 
-    while (normalizedLines.length + visibleStickyLines.length < contentHeight) {
+    while (normalizedLines.length + visibleStickyLines.length + visibleBottomStickyLines.length < contentHeight) {
         normalizedLines.push(null);
     }
 
-    const visibleLines = [...visibleStickyLines, ...normalizedLines];
+    const visibleLines = [...visibleStickyLines, ...normalizedLines, ...visibleBottomStickyLines];
     if (paneId && lines) {
         registerSelectablePaneSnapshot({
             paneId,
@@ -702,6 +706,15 @@ function Panel({
                     fillColor,
                     getSelectionRangeForPaneRow(paneId, visibleStickyLines.length + index),
                     index,
+                )),
+                ...visibleBottomStickyLines.map((line, index) => renderPanelRow(
+                    line,
+                    `bottom-sticky:${index}`,
+                    contentWidth,
+                    borderColor,
+                    null,
+                    fillColor,
+                    getSelectionRangeForPaneRow(paneId, visibleStickyLines.length + normalizedLines.length + index),
                 )),
             ])
         : React.createElement(Box, {

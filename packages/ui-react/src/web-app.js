@@ -17,6 +17,7 @@ import {
     selectArtifactUploadModal,
     selectChatLines,
     selectChatPaneChrome,
+    selectOutboxOverlayLines,
     selectFileBrowserItems,
     selectFilesFilterModal,
     selectFilesScope,
@@ -453,9 +454,20 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             pane: paneKey,
             offset: pixels / SCROLL_ROW_HEIGHT,
         });
+        if (paneKey === "chat" && scrollMode === "bottom" && node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
+            controller.armChatTopHistoryLoad?.();
+        }
     }, [controller, paneKey, ref, scrollMode, stickyBottom]);
 
-    return { normalizedLines, onScroll };
+    const onWheel = React.useCallback((event) => {
+        const node = ref.current;
+        if (!node || paneKey !== "chat" || scrollMode !== "bottom" || event.deltaY >= 0) return;
+        if (node.scrollTop > PROGRAMMATIC_SCROLL_TOLERANCE_PX) return;
+        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT);
+    }, [controller, paneKey, ref, scrollMode]);
+
+    return { normalizedLines, onScroll, onWheel };
 }
 
 function Runs({ runs, theme }) {
@@ -1192,14 +1204,15 @@ function Panel({ title, titleRight = null, color = "gray", focused = false, acti
     React.createElement("div", { className: "ps-panel-body" }, children));
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false, stickyBottom = false }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false, stickyBottom = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
     const stickyRef = React.useRef(null);
     const syncingHorizontalRef = React.useRef(false);
-    const { normalizedLines, onScroll } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
+    const { normalizedLines, onScroll, onWheel } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
     const normalizedSticky = React.useMemo(() => normalizeLines(stickyLines), [stickyLines]);
+    const normalizedBottomSticky = React.useMemo(() => normalizeLines(bottomStickyLines), [bottomStickyLines]);
     const preserveHorizontalScroll = className.includes("is-preserve") && panelClassName.includes("has-preserved-sticky");
 
     const syncScrollLeft = React.useCallback((source, target) => {
@@ -1234,11 +1247,18 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll },
+        React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll, onWheel },
             structuredBlocks
                 ? React.createElement(StructuredChatBlocks, { lines: normalizedLines, theme })
                 : normalizedLines.map((line, index) => React.createElement(Line, { key: `line:${index}`, line, theme })),
-        ));
+        ),
+        normalizedBottomSticky.length > 0
+            ? React.createElement("div", {
+                className: "ps-panel-bottom-sticky",
+            },
+                normalizedBottomSticky.map((line, index) => React.createElement(Line, { key: `bottom-sticky:${index}`, line, theme })),
+            )
+            : null);
 }
 
 function SessionPane({ controller, actions = null, panelClassName = "" }) {
@@ -1427,6 +1447,10 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         () => selectChatLines(selectorState, viewState.contentWidth),
         [selectorState, viewState.contentWidth],
     );
+    const outboxLines = React.useMemo(
+        () => selectOutboxOverlayLines(selectorState, viewState.contentWidth),
+        [selectorState, viewState.contentWidth],
+    );
 
     return React.createElement(ScrollLinesPanel, {
         controller,
@@ -1435,6 +1459,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         color: chrome.color,
         focused: viewState.focused,
         lines,
+        bottomStickyLines: outboxLines,
         scrollOffset: viewState.scroll,
         scrollMode: "bottom",
         paneKey: "chat",

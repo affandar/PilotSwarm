@@ -29,6 +29,7 @@ import {
     selectFilesScope,
     selectFilesView,
     selectInspector,
+    selectOutboxOverlayLines,
     selectSessionRows,
     selectSelectedFileBrowserItem,
     selectVisibleSessionRows,
@@ -41,6 +42,7 @@ const SESSION_STATS_REFRESH_MS = 20_000;
 const FLEET_STATS_REFRESH_MS = 30_000;
 const FLEET_STATS_DEFAULT_WINDOW_DAYS = 30;
 const SESSION_REFRESH_FAILED_STATUS = "Session refresh failed";
+const AUTO_HISTORY_SCROLL_PAGE_COUNT = 3;
 const FULLSCREENABLE_PANES = new Set([
     FOCUS_REGIONS.SESSIONS,
     FOCUS_REGIONS.CHAT,
@@ -798,6 +800,8 @@ export class PilotSwarmUiController {
         this.logUnsubscribe = null;
         this.promptReferenceSignature = null;
         this.promptReferenceSyncVersion = 0;
+        this.chatTopHistoryLoadArmed = false;
+        this.chatTopHistoryLoadSessionId = null;
     }
 
     getState() {
@@ -3984,7 +3988,13 @@ export class PilotSwarmUiController {
         const nextOffset = Math.max(0, Math.min(current + delta, maxOffset));
         this.dispatch({ type: "ui/scroll", pane, offset: nextOffset });
         if (pane === "chat" && delta > 0) {
-            this.maybeAutoExpandActiveHistory(nextOffset).catch(() => {});
+            if (current >= maxOffset) {
+                this.handleChatTopHistoryScrollIntent(nextOffset).catch(() => {});
+            } else if (nextOffset >= maxOffset) {
+                this.armChatTopHistoryLoad();
+            }
+        } else if (pane === "chat" && delta < 0) {
+            this.disarmChatTopHistoryLoad();
         }
     }
 
@@ -3997,9 +4007,39 @@ export class PilotSwarmUiController {
             return;
         }
         this.dispatch({ type: "ui/scroll", pane, offset: nextOffset });
-        if (pane === "chat" && nextOffset > 0) {
-            this.maybeAutoExpandActiveHistory(nextOffset).catch(() => {});
+        if (pane === "chat") {
+            if (maxOffset > 0 && nextOffset >= maxOffset) {
+                this.armChatTopHistoryLoad();
+            } else {
+                this.disarmChatTopHistoryLoad();
+            }
         }
+    }
+
+    armChatTopHistoryLoad() {
+        const sessionId = this.getState().sessions.activeSessionId;
+        if (!sessionId) return;
+        this.chatTopHistoryLoadArmed = true;
+        this.chatTopHistoryLoadSessionId = sessionId;
+    }
+
+    disarmChatTopHistoryLoad() {
+        this.chatTopHistoryLoadArmed = false;
+        this.chatTopHistoryLoadSessionId = null;
+    }
+
+    async handleChatTopHistoryScrollIntent(requestedScrollOffset) {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        if (!sessionId) return;
+        if (!this.chatTopHistoryLoadArmed || this.chatTopHistoryLoadSessionId !== sessionId) {
+            this.armChatTopHistoryLoad();
+            return;
+        }
+
+        await this.maybeAutoExpandActiveHistory(requestedScrollOffset, {
+            pages: AUTO_HISTORY_SCROLL_PAGE_COUNT,
+        });
     }
 
     getScrollablePaneForFocus() {
@@ -4074,10 +4114,15 @@ export class PilotSwarmUiController {
         const contentWidth = Math.max(20, layout.leftWidth - 4);
         const contentHeight = Math.max(1, layout.chatPaneHeight - 2);
         const lines = selectChatLines(state, contentWidth);
+        const bottomStickyLines = selectOutboxOverlayLines(state, contentWidth);
+        const bottomStickyHeight = Math.min(
+            Math.max(0, Math.floor(contentHeight * 0.34)),
+            countWrappedRenderableLines(bottomStickyLines, contentWidth),
+        );
         const totalLines = countWrappedRenderableLines(lines, contentWidth);
         return {
             contentWidth,
-            contentHeight,
+            contentHeight: Math.max(1, contentHeight - bottomStickyHeight),
             totalLines,
         };
     }
@@ -4266,7 +4311,7 @@ export class PilotSwarmUiController {
         return 0;
     }
 
-    async maybeAutoExpandActiveHistory(targetOffset) {
+    async maybeAutoExpandActiveHistory(targetOffset, options = {}) {
         const state = this.getState();
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
@@ -4288,6 +4333,7 @@ export class PilotSwarmUiController {
         await this.expandSessionHistory(sessionId, {
             requestedScrollOffset: targetOffset,
             autoTriggered: true,
+            pages: options.pages,
         });
     }
 
@@ -4324,34 +4370,52 @@ export class PilotSwarmUiController {
 
         const loadPromise = (async () => {
             let history;
+            const pagesToLoad = Math.max(1, Math.floor(Number(options.pages) || 1));
             if (typeof this.transport.getSessionEventsBefore === "function" && oldestSeq > 0) {
-                const olderEvents = await this.transport.getSessionEventsBefore(sessionId, oldestSeq, pageLimit);
-                if (!Array.isArray(olderEvents) || olderEvents.length === 0) {
-                    history = {
-                        ...(currentHistory || buildHistoryModel([], { requestedLimit: currentLimit })),
-                        hasOlderEvents: false,
-                    };
-                } else {
+                history = currentHistory || buildHistoryModel([], { requestedLimit: currentLimit });
+                for (let pageIndex = 0; pageIndex < pagesToLoad; pageIndex += 1) {
+                    const pageOldestSeq = Array.isArray(history?.events) && history.events.length > 0
+                        ? Number(history.events[0]?.seq || 0)
+                        : 0;
+                    if (!history?.hasOlderEvents || pageOldestSeq <= 1) {
+                        history = {
+                            ...history,
+                            hasOlderEvents: false,
+                        };
+                        break;
+                    }
+                    if (Number(history.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP) {
+                        break;
+                    }
+                    const olderEvents = await this.transport.getSessionEventsBefore(sessionId, pageOldestSeq, pageLimit);
+                    if (!Array.isArray(olderEvents) || olderEvents.length === 0) {
+                        history = {
+                            ...history,
+                            hasOlderEvents: false,
+                        };
+                        break;
+                    }
                     const olderHistory = buildHistoryModel(olderEvents, { requestedLimit: pageLimit });
                     const combinedEvents = [
                         ...(olderHistory.events || []),
-                        ...(currentHistory?.events || []),
+                        ...(history?.events || []),
                     ];
                     history = {
                         chat: dedupeChatMessages([
                             ...(olderHistory.chat || []),
-                            ...(currentHistory?.chat || []),
+                            ...(history?.chat || []),
                         ]),
                         activity: [
                             ...(olderHistory.activity || []),
-                            ...(currentHistory?.activity || []),
+                            ...(history?.activity || []),
                         ],
                         events: combinedEvents,
-                        lastSeq: currentHistory?.lastSeq || currentHistory?.events?.[currentHistory?.events?.length - 1]?.seq || olderEvents[olderEvents.length - 1]?.seq || 0,
+                        lastSeq: history?.lastSeq || history?.events?.[history?.events?.length - 1]?.seq || olderEvents[olderEvents.length - 1]?.seq || 0,
                         loadedEventLimit: combinedEvents.length,
                         loadedEventCount: combinedEvents.length,
                         hasOlderEvents: olderEvents.length >= pageLimit && Number(olderEvents[0]?.seq || 0) > 1,
                     };
+                    if (!history.hasOlderEvents) break;
                 }
             } else {
                 const nextLimit = getNextHistoryEventLimit(currentLimit);
@@ -4398,6 +4462,11 @@ export class PilotSwarmUiController {
                 type: "ui/status",
                 text: stateLabel,
             });
+            if (!history.hasOlderEvents) {
+                this.disarmChatTopHistoryLoad();
+            } else if (options.autoTriggered && preserveChatView) {
+                this.armChatTopHistoryLoad();
+            }
         })().finally(() => {
             this.sessionHistoryExpansionLoads.delete(sessionId);
         });

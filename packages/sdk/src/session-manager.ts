@@ -9,6 +9,7 @@ import type { SessionCatalogProvider } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
+import { approvePermissionForSession } from "./permissions.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -230,7 +231,7 @@ export class SessionManager {
                 }
             }
             this.client = new CopilotClient({
-                ...(token ? { githubToken: token } : {}),
+                ...(token ? { gitHubToken: token } : {}),
                 logLevel: "error",
             });
         }
@@ -382,7 +383,7 @@ export class SessionManager {
             configDir: path.dirname(this.sessionStateDir),
             workingDirectory: config.workingDirectory,
             hooks: config.hooks,
-            onPermissionRequest: (config as any).onPermissionRequest ?? (async () => ({ kind: "approved" as const })),
+            onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
             // Exclude the Copilot SDK's built-in "task" tool — PilotSwarm provides
             // its own durable sub-agent mechanism via spawn_agent / check_agents.
@@ -578,7 +579,7 @@ export class SessionManager {
                             const config = this.sessionConfigs.get(sessionId) ?? {};
                             const copilotSession = await client.resumeSession(sessionId, {
                                 tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
-                                onPermissionRequest: async () => ({ kind: "approved" as const }),
+                                onPermissionRequest: approvePermissionForSession,
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);
                             this.sessions.set(sessionId, managed);
@@ -843,7 +844,7 @@ export class SessionManager {
             const resolved = registry.resolve(model);
             if (resolved) {
                 if (resolved.type === "github") {
-                    // GitHub provider — no SDK provider needed, uses githubToken on the client
+                    // GitHub provider — no SDK provider needed, uses gitHubToken on the client
                     return {};
                 }
                 if (resolved.sdkProvider) {

@@ -8,6 +8,7 @@ import { PilotSwarmClient } from "./client.js";
 import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./management-client.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
+import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import os from "node:os";
 import fs from "node:fs";
@@ -1437,7 +1438,7 @@ export function registerActivities(
         activityCtx.traceInfo("[listModels] fetching");
         if (githubToken) {
             const { CopilotClient } = await import("@github/copilot-sdk");
-            const sdk = new CopilotClient({ githubToken });
+            const sdk = new CopilotClient({ gitHubToken: githubToken });
             try {
                 await sdk.start();
                 const models = await sdk.listModels();
@@ -1543,13 +1544,13 @@ export function registerActivities(
             // Use a one-shot CopilotSession to generate the title.
             // Prefer the default provider from the registry (works without GitHub token).
             const { CopilotClient: SdkClient } = await import("@github/copilot-sdk");
-            const sdk = new SdkClient({ ...(githubToken ? { githubToken } : {}) });
+            const sdk = new SdkClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) });
             try {
                 await sdk.start();
                 // Resolve the default model + provider from the registry
                 const defaultProvider = sessionManager.resolveDefaultProvider();
                 const sessionOpts: any = {
-                    onPermissionRequest: async () => ({ kind: "approved" as const }),
+                    onPermissionRequest: approvePermissionForSession,
                 };
                 if (defaultProvider) {
                     sessionOpts.model = defaultProvider.modelName;

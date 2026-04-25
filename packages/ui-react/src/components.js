@@ -7,6 +7,7 @@ import {
     selectActiveSession,
     selectChatPaneChrome,
     selectChatLines,
+    selectOutboxOverlayLines,
     selectActivityPane,
     selectArtifactUploadModal,
     selectArtifactPickerModal,
@@ -374,6 +375,10 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             { text: "Check env credentials and model provider config, then relaunch.", color: "yellow" },
         ]
         : selectChatLines(selectorState, contentWidth)), [chatView.branding.splash, chatView.connectionError, contentWidth, selectorState, startupError]);
+    const outboxLines = React.useMemo(
+        () => startupError ? [] : selectOutboxOverlayLines(selectorState, contentWidth),
+        [contentWidth, selectorState, startupError],
+    );
 
     return React.createElement(platform.Panel, {
         title: chrome.title,
@@ -383,6 +388,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         width,
         height,
         lines: elements,
+        bottomStickyLines: outboxLines,
         scrollOffset: chatView.chatScroll,
         scrollMode: "bottom",
         paneId: "chat",

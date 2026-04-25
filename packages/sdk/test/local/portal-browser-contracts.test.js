@@ -119,6 +119,9 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, 'className: "is-wrapped"', "portal activity pane should render wrapped lines");
         assertIncludes(webApp, 'type: "code"', "portal chat renderer should recognize code fence blocks");
         assertIncludes(webApp, "ps-chat-code-block", "portal chat renderer should render code fences with a dedicated code block style");
+        assertIncludes(webApp, "selectOutboxOverlayLines(selectorState", "portal chat should render queued prompts outside scrollback");
+        assertIncludes(webApp, "bottomStickyLines: outboxLines", "portal chat should pin queued prompts below the scrollable transcript");
+        assertIncludes(css, ".ps-panel-bottom-sticky", "portal stylesheet should style the fixed queued prompt strip");
         assertIncludes(webApp, "controller.adjustSessionPaneSplit", "web app should support resizing the session list vertically");
         assertIncludes(webApp, "controller.adjustActivityPaneSplit", "web app should support resizing the inspector/activity split vertically");
         assertIncludes(layout, "sessionPaneAdjust", "layout computation should persist vertical session-pane adjustments");

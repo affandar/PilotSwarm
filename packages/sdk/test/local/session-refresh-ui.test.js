@@ -1,10 +1,12 @@
 import { describe, it } from "vitest";
+import { FOCUS_REGIONS, UI_COMMANDS } from "../../../ui-core/src/commands.js";
 import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
 import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
 import {
     selectActiveChat,
     selectChatPaneChrome,
+    selectOutboxOverlayLines,
     selectInspector,
     selectSessionOwnerFilterModal,
     selectSessionRows,
@@ -260,10 +262,17 @@ describe("session refresh UI recovery", () => {
         assertEqual(outbox[0]?.clientMessageIds?.length, 2, "the merged outbox item should preserve all contributing clientMessageIds");
 
         const chat = selectActiveChat(store.getState());
-        assert(
+        assertEqual(
             chat.some((message) => message.pendingPhase === "queued"),
-            "chat should render the merged outbox item with the queued (\u2713) phase",
+            false,
+            "queued outbox items should stay out of the scrollback until accepted",
         );
+        const overlayText = selectOutboxOverlayLines(store.getState(), 120)
+            .map((line) => Array.isArray(line) ? line.map((run) => run?.text || "").join("") : String(line?.text || ""))
+            .join("\n");
+        assertIncludes(overlayText, "queued prompts", "outbox overlay should include a visual divider");
+        assertIncludes(overlayText, "first request", "outbox overlay should show the first queued prompt");
+        assertIncludes(overlayText, "second request", "outbox overlay should show the second queued prompt");
     });
 
     it("sequential awaited sends each produce their own durable enqueue", async () => {
@@ -985,6 +994,70 @@ describe("session refresh UI recovery", () => {
             true,
             "active chat should include CMS events even when the subscription callback never fired",
         );
+    });
+
+    it("loads older CMS chat pages only after a second upward scroll at the top", async () => {
+        const sessionId = "history-session";
+        const createdAt = new Date("2026-04-09T10:00:00.000Z");
+        const makeEvent = (seq, content) => ({
+            seq,
+            sessionId,
+            eventType: "user.message",
+            data: { content },
+            createdAt,
+        });
+        const getBeforeCalls = [];
+        const makeRange = (startSeq, count, label) => Array.from({ length: count }, (_, index) => {
+            const seq = startSeq + index;
+            return makeEvent(seq, `${label} ${seq}`);
+        });
+        const { controller, store } = createController({
+            getSessionEventsBefore: async (_sessionId, beforeSeq, limit) => {
+                getBeforeCalls.push({ beforeSeq, limit });
+                if (beforeSeq === 1000) return makeRange(700, limit, "older page 1");
+                if (beforeSeq === 700) return makeRange(400, limit, "older page 2");
+                if (beforeSeq === 400) return makeRange(100, limit, "older page 3");
+                return [];
+            },
+        });
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId,
+                title: "History Session",
+                status: "idle",
+                createdAt,
+                updatedAt: createdAt,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId });
+        store.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.CHAT });
+        controller.setViewport({ width: 80, height: 18 });
+        store.dispatch({
+            type: "history/set",
+            sessionId,
+            history: {
+                ...buildHistoryModel(Array.from({ length: 20 }, (_, index) => makeEvent(index + 1000, `recent ${index + 1000}`)), {
+                    requestedLimit: 20,
+                }),
+                hasOlderEvents: true,
+            },
+        });
+
+        const maxOffset = controller.getPaneMaxScrollOffset("chat");
+        assertEqual(maxOffset > 0, true, "fixture should have enough chat to scroll");
+
+        await controller.handleCommand(UI_COMMANDS.SCROLL_TOP);
+        assertEqual(getBeforeCalls.length, 0, "jumping to the top should pause without loading older CMS events");
+
+        await controller.handleCommand(UI_COMMANDS.SCROLL_UP);
+        await (controller.sessionHistoryExpansionLoads.get(sessionId) || Promise.resolve());
+        assertEqual(getBeforeCalls.length, 3, "pressing up again at the top should load a few older CMS pages");
+
+        const chatText = linesText(selectActiveChat(store.getState()));
+        assertIncludes(chatText, "older page 1 700", "older chat should be prepended from CMS");
+        assertIncludes(chatText, "older page 3 399", "automatic top expansion should include multiple pages");
     });
 
     it("cancels a queued (durable) outbox item locally and through the transport", async () => {

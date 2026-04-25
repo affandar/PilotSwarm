@@ -695,23 +695,17 @@ export function selectActiveChat(state) {
     if (!sessionId) return createSplashCard(state.branding);
     const history = state.history.bySessionId.get(sessionId);
     const chat = history?.chat || [];
-    const outboxItems = Array.isArray(state.outbox?.bySessionId?.[sessionId])
-        ? state.outbox.bySessionId[sessionId].map((item) => buildPendingOutboxMessage(sessionId, item)).filter(Boolean)
-        : [];
     const pendingQuestionMessage = session?.pendingQuestion?.question
         && !chatAlreadyContainsPendingQuestion(chat, session.pendingQuestion.question)
         ? buildPendingQuestionMessage(session)
         : null;
     const sessionErrorMessage = buildSessionErrorMessage(session);
 
-    if ((!history || chat.length === 0) && outboxItems.length === 0 && !pendingQuestionMessage && !sessionErrorMessage) {
+    if ((!history || chat.length === 0) && !pendingQuestionMessage && !sessionErrorMessage) {
         return createSplashCard(state.branding, session);
     }
 
     const messages = chat.length > 0 ? [...chat] : createSplashCard(state.branding, session);
-    if (outboxItems.length > 0) {
-        messages.push(...outboxItems);
-    }
     if (pendingQuestionMessage) {
         messages.push(pendingQuestionMessage);
     }
@@ -719,6 +713,14 @@ export function selectActiveChat(state) {
         messages.push(sessionErrorMessage);
     }
     return messages;
+}
+
+export function selectActiveOutboxMessages(state) {
+    const sessionId = state.sessions.activeSessionId;
+    if (!sessionId) return [];
+    return Array.isArray(state.outbox?.bySessionId?.[sessionId])
+        ? state.outbox.bySessionId[sessionId].map((item) => buildPendingOutboxMessage(sessionId, item)).filter(Boolean)
+        : [];
 }
 
 function prefixRuns(text, color = "gray", options = {}) {
@@ -1195,6 +1197,42 @@ export function selectChatLines(state, maxWidth = 80) {
         }
     }
     return lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }];
+}
+
+export function selectOutboxOverlayLines(state, maxWidth = 80) {
+    const messages = selectActiveOutboxMessages(state);
+    if (!messages || messages.length === 0) return [];
+
+    const safeWidth = Math.max(20, Number(maxWidth) || 80);
+    const queuedCount = messages.filter((message) => message.pendingPhase === "queued").length;
+    const pendingCount = messages.filter((message) => message.pendingPhase === "pending").length;
+    const cancellingCount = messages.filter((message) => message.pendingPhase === "cancelling").length;
+    const parts = [];
+    if (pendingCount > 0) parts.push(`${pendingCount} pending`);
+    if (queuedCount > 0) parts.push(`${queuedCount} queued`);
+    if (cancellingCount > 0) parts.push(`${cancellingCount} cancelling`);
+    const label = parts.length > 0 ? parts.join(" · ") : "queued prompts";
+    const labelText = ` queued prompts: ${label} `;
+    const rightRule = Math.max(1, safeWidth - labelText.length);
+    const lines = [
+        [
+            { text: labelText, color: "gray" },
+            { text: "─".repeat(rightRule), color: "gray" },
+        ],
+    ];
+
+    for (const [index, message] of messages.entries()) {
+        appendChatBlockLines(lines, buildChatMessageLines(message, safeWidth));
+        const nextMessage = messages[index + 1];
+        if (
+            nextMessage
+            && shouldInsertChatSpacer(message, nextMessage)
+            && flattenLineText(lines[lines.length - 1]).trim().length > 0
+        ) {
+            lines.push(createBlankLine());
+        }
+    }
+    return lines;
 }
 
 export function selectActiveArtifactLinks(state) {
