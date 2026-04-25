@@ -98,6 +98,7 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             promptCursor: 0,
             promptRows: 1,
             promptAttachments: [],
+            promptEdit: null,
             statusText: "Starting PilotSwarm...",
             themeId: themeId || DEFAULT_THEME_ID,
             modal: null,
@@ -137,6 +138,9 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         },
         history: {
             bySessionId: new Map(),
+        },
+        outbox: {
+            bySessionId: {},
         },
         orchestration: {
             bySessionId: {},

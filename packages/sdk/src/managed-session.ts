@@ -24,6 +24,32 @@ const DEFAULT_WAIT_TOOL_DESCRIPTION =
     "Long waits may resume on a different worker unless you set " +
     "`preserveWorkerAffinity: true` for node-local work.";
 
+function normalizeAssistantToolCallMessageContent(messages: any): number {
+    if (!Array.isArray(messages)) return 0;
+    let normalized = 0;
+    for (const message of messages) {
+        if (!message || typeof message !== "object") continue;
+        if (message.role !== "assistant") continue;
+        if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) continue;
+        if (message.content != null) continue;
+
+        // Azure OpenAI rejects assistant tool-call messages when content is
+        // null. The Copilot runtime may persist tool-only assistant turns in
+        // that shape, so coerce them to the semantically-equivalent empty
+        // string before sending the next turn.
+        message.content = "";
+        normalized += 1;
+    }
+    return normalized;
+}
+
+function normalizeCopilotSessionMessageHistory(session: any): number {
+    let normalized = 0;
+    normalized += normalizeAssistantToolCallMessageContent(session?._chatMessages);
+    normalized += normalizeAssistantToolCallMessageContent(session?._systemContextMessages);
+    return normalized;
+}
+
 function acknowledgeTurnBoundary(action: string): string {
     return `[SYSTEM: ${action} acknowledged. The runtime will suspend at the end of this turn. ` +
         `Finish any remaining tool results for the current step, then stop.]`;
@@ -1120,6 +1146,8 @@ export class ManagedSession {
             : prompt;
 
         try {
+            normalizeCopilotSessionMessageHistory(this.copilotSession as any);
+
             // Fire the prompt — non-blocking
             await this.copilotSession.send({
                 prompt: effectivePrompt,

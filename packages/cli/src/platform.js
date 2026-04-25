@@ -780,7 +780,7 @@ function renderPromptRow(lineText, cursorColumn, { color, showCursor, keyPrefix,
     );
 }
 
-function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0 }) {
+function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0, readOnly = false }) {
     const safeValue = String(value || "");
     const isEmpty = safeValue.length === 0;
     const safeRows = clampValue(Number(rows) || 1, 1, MAX_PROMPT_INPUT_ROWS);
@@ -820,9 +820,10 @@ function Input({ label, value, focused, placeholder, rows = 1, cursorIndex = 0 }
                     flexDirection: "row",
                 }, React.createElement(Text, null, ""))),
             ]
-            : displayLines.map((line, index) => renderPromptRow(line, focused && visibleCursorLine === index ? cursorPosition.column : null, {
-                color: resolveColorToken("white"),
-                showCursor: Boolean(focused && visibleCursorLine === index),
+            : displayLines.map((line, index) => renderPromptRow(line, focused && !readOnly && visibleCursorLine === index ? cursorPosition.column : null, {
+                color: readOnly ? resolveColorToken("gray") : resolveColorToken("white"),
+                dimColor: readOnly ? shouldDimGrayTextForTheme() : false,
+                showCursor: Boolean(focused && !readOnly && visibleCursorLine === index),
                 keyPrefix: `prompt-line:${index}`,
                 prefix: index === 0 ? labelPrefix : null,
             })),

@@ -1370,6 +1370,9 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         return {
             activeSessionId,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            activeOutbox: activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
+                ? state.outbox.bySessionId[activeSessionId]
+                : [],
             branding: state.branding,
             connection: state.connection,
             sessionsById: state.sessions.byId,
@@ -1393,12 +1396,18 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
                 ? new Map([[viewState.activeSessionId, viewState.activeHistory]])
                 : new Map(),
         },
+        outbox: {
+            bySessionId: viewState.activeSessionId
+                ? { [viewState.activeSessionId]: viewState.activeOutbox }
+                : {},
+        },
         ui: {
             inspectorTab: viewState.inspectorTab,
         },
     }), [
         viewState.activeHistory,
         viewState.activeSessionId,
+        viewState.activeOutbox,
         viewState.branding,
         viewState.connection,
         viewState.inspectorTab,
@@ -1987,12 +1996,22 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
+        const outbox = activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
+            ? state.outbox.bySessionId[activeSessionId]
+            : [];
         return {
             value: state.ui.prompt,
             cursor: state.ui.promptCursor,
             focused: state.ui.focusRegion === "prompt",
             modalOpen: Boolean(state.ui.modal),
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
+            hasOutbox: outbox.length > 0,
+            hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
+            pendingCount: outbox.filter((item) => item?.phase === "pending").length,
+            editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
+            selectedOutboxPhase: state.ui.promptEdit?.sessionId === activeSessionId
+                ? state.ui.promptEdit?.phase || null
+                : null,
         };
     }, shallowEqualObject);
     const inputRef = React.useRef(null);
@@ -2018,17 +2037,51 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             });
     }, [controller, onAfterSend]);
 
+    const cancelPending = React.useCallback(() => {
+        if (controller.getState().ui.promptEdit) {
+            if (typeof controller.cancelSelectedOutboxPrompt === "function") {
+                controller.cancelSelectedOutboxPrompt().catch(() => {});
+            } else {
+                controller.cancelSelectedPendingPrompt();
+            }
+            return;
+        }
+        if (typeof controller.cancelLatestQueuedOutbox === "function") {
+            controller.cancelLatestQueuedOutbox().catch(() => {});
+        }
+    }, [controller]);
+
+    const sendLabel = promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+        ? (mobile ? "⇪" : "Send batch")
+        : promptState.hasOutbox
+            ? (mobile ? "+" : "Queue")
+            : mobile
+                ? "↩"
+                : "Send";
+    const selectedQueued = promptState.selectedOutboxPhase === "queued";
+    const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
+    const selectedReadOnly = selectedQueued || selectedCancelling;
+
     return React.createElement("div", {
         className: `ps-prompt-shell${mobile ? " is-mobile" : ""}`,
     },
-        React.createElement("label", { className: "ps-prompt-label" }, promptState.answerMode ? "answer" : "you"),
+        React.createElement("label", { className: "ps-prompt-label" }, promptState.answerMode ? "answer" : selectedCancelling ? "cancelling" : selectedQueued ? "queued" : promptState.editingPending ? "pending" : "you"),
         React.createElement("textarea", {
             ref: inputRef,
             className: "ps-prompt-input",
             rows: mobile ? 2 : Math.max(2, getPromptInputRows(promptState.value)),
             value: promptState.value,
+            readOnly: selectedReadOnly,
             placeholder: promptState.answerMode
                 ? "Type an answer and press Enter"
+                : promptState.editingPending
+                    ? selectedCancelling
+                        ? "Cancellation requested"
+                        : selectedQueued
+                        ? "Queued message selected"
+                        : "Edit the pending message, then send or cancel it"
+                    : promptState.hasOutbox
+                        ? "Type a message and press Enter to queue it behind the pending batch"
                 : "Type a message and press Enter",
             enterKeyHint: "send",
             onFocus: () => controller.setFocus("prompt"),
@@ -2042,19 +2095,57 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     event.preventDefault();
                     return;
                 }
+                if (event.key === "ArrowUp" && !event.shiftKey && !event.metaKey && !event.altKey) {
+                    event.preventDefault();
+                    controller.movePromptCursorVertical(-1);
+                    return;
+                }
+                if (event.key === "ArrowDown" && !event.shiftKey && !event.metaKey && !event.altKey) {
+                    event.preventDefault();
+                    controller.movePromptCursorVertical(1);
+                    return;
+                }
+                if (event.key === "Escape" && promptState.editingPending) {
+                    event.preventDefault();
+                    if (selectedReadOnly) {
+                        controller.exitPendingPromptEdit({ restoreDraft: true });
+                        return;
+                    }
+                    cancelPending();
+                    return;
+                }
                 if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !mobile) {
                     event.preventDefault();
                     sendPrompt();
                 }
             },
         }),
-        React.createElement("button", {
-        type: "button",
-        className: `ps-send-button${mobile ? " is-inline" : ""}`,
-        title: "Send prompt",
-        "aria-label": "Send prompt",
-        onClick: sendPrompt,
-        }, mobile ? "↩" : "Send"),
+        React.createElement("div", { className: "ps-prompt-actions" },
+            promptState.editingPending && !selectedCancelling
+                ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button",
+                    title: selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
+                    "aria-label": selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
+                    onClick: cancelPending,
+                }, selectedQueued ? "Delete" : "Cancel")
+                : null,
+            React.createElement("button", {
+                type: "button",
+                className: `ps-send-button${mobile ? " is-inline" : ""}`,
+                title: promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+                    ? "Send all queued prompts"
+                    : promptState.hasOutbox
+                        ? "Queue prompt behind the pending batch"
+                        : "Send prompt",
+                "aria-label": promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+                    ? "Send queued prompts"
+                    : promptState.hasOutbox
+                        ? "Queue prompt"
+                        : "Send prompt",
+                onClick: sendPrompt,
+            }, sendLabel),
+        ),
     );
 }
 
@@ -2094,7 +2185,10 @@ function buildPortalKeybindingSections({ canUpload, canOpenLocally }) {
         {
             title: "Prompt",
             items: [
-                ["Enter", "Send prompt"],
+                ["Enter", "Send prompt or queue behind pending outbox"],
+                ["Up / Down", "Recall or exit queued pending prompts at prompt boundaries"],
+                ["Esc", "Exit selected queued prompt"],
+                ["d", "Delete selected queued prompt in the TUI"],
                 ["Tab", "Accept @ / @@ autocomplete"],
                 ["@", "Browse this session's artifacts and attach the selection"],
                 ["@@", "Filter sessions and insert a durable session reference"],

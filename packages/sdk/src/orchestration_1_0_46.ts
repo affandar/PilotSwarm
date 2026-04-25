@@ -202,21 +202,16 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.47).
+ * Flat event loop durable session orchestration (v1.0.46).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
- *
- * v1.0.47 adds:
- *   - clientMessageIds threaded from message → FIFO → runTurn → durable user.message
- *   - consecutive prompt FIFO items batched into one Copilot turn
- *   - cancel_pending_message tombstone tracking that drops cancelled prompts
  *
  * @internal
  */
 export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
 
-export function* durableSessionOrchestration_1_0_47(
+export function* durableSessionOrchestration_1_0_46(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -871,36 +866,6 @@ export function* durableSessionOrchestration_1_0_47(
     let pendingSystemPrompt: string | undefined = input.systemPrompt;
     let bootstrapPrompt = input.bootstrapPrompt ?? false;
 
-    // ─── v1.0.47: cancel-pending-message tombstones ──────────
-    // Lives for the duration of this execution. Tombstones are deterministic
-    // because the cancel envelope is itself a durable message in the queue,
-    // so replay rebuilds the set in the same order.
-    const cancelledMessageIds = new Set<string>();
-    const emittedCancelledMessageIds = new Set<string>();
-
-    function promptIdsIntersectCancellation(ids: string[]): boolean {
-        return ids.length > 0 && ids.some((id) => cancelledMessageIds.has(id));
-    }
-
-    function validClientMessageIds(value: unknown): string[] {
-        return Array.isArray(value)
-            ? value.filter((id: unknown): id is string => typeof id === "string" && Boolean(id))
-            : [];
-    }
-
-    function* recordCancelledMessageIds(ids: string[], reason: string): Generator<any, void, any> {
-        const nextIds = ids.filter((id) => id && !emittedCancelledMessageIds.has(id));
-        if (nextIds.length === 0) return;
-        for (const id of nextIds) emittedCancelledMessageIds.add(id);
-        yield manager.recordSessionEvent(input.sessionId, [{
-            eventType: "pending_messages.cancelled",
-            data: {
-                clientMessageIds: nextIds,
-                reason,
-            },
-        }]);
-    }
-
     // ─── Active timer state (flat event loop) ────────────────
     interface ActiveTimer {
         deadlineMs: number;
@@ -1262,12 +1227,10 @@ export function* durableSessionOrchestration_1_0_47(
     const FIFO_BUCKET_COUNT = 20;
     const MAX_BUCKET_BYTES = 14 * 1024;
     const MAX_DRAIN_PER_TURN = 50;
-    const MAX_PREDISPATCH_SWEEP = 50;
     const MAX_ITERATIONS_PER_EXECUTION = 10;
     const MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES = 800 * 1024;
     const HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS = 3;
     const NON_BLOCKING_TIMER_MS = 10;
-    const PREDISPATCH_CANCEL_SWEEP_MS = 100;
 
     function nextTimerCandidate(now: number): {
         kind: "active" | "child-digest";
@@ -1522,11 +1485,6 @@ export function* durableSessionOrchestration_1_0_47(
         const stash: any[] = [];
         const seenChildUpdates = new Set<string>();
 
-        // v1.0.47: collect cancel-pending-message tombstones encountered in
-        // this drain pass; they are applied both to messages already buffered
-        // in this drain and to existing FIFO items in decide().
-        const cancelledThisDrain = new Set<string>();
-
         for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
             let msg: any = null;
 
@@ -1588,37 +1546,6 @@ export function* durableSessionOrchestration_1_0_47(
             }
 
             if (!msg) continue;
-
-            // ─── Route: Cancel pending message → tombstone ──────
-            // v1.0.47: a message envelope of the form { cancelPending: ["id1", ...] }
-            // marks future and already-stashed prompts whose clientMessageIds
-            // intersect the list as cancelled. The tombstone never reaches the
-            // LLM; it just suppresses the matching prompts.
-            if (msg && Array.isArray(msg.cancelPending) && msg.cancelPending.length > 0) {
-                const validCancelIds: string[] = [];
-                for (const id of msg.cancelPending) {
-                    if (typeof id === "string" && id) {
-                        validCancelIds.push(id);
-                        cancelledThisDrain.add(id);
-                        cancelledMessageIds.add(id);
-                    }
-                }
-                if (validCancelIds.length > 0) {
-                    ctx.traceInfo(`[drain] received cancel tombstone (ids=${validCancelIds.join(",")})`);
-                }
-                // Drop any stash entries that match these tombstones.
-                for (let s = stash.length - 1; s >= 0; s--) {
-                    const item = stash[s];
-                    if (item?.kind !== "prompt") continue;
-                    const ids: string[] = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [];
-                    if (ids.some((id) => cancelledThisDrain.has(id))) {
-                        ctx.traceInfo(`[drain] dropping stashed prompt cancelled by tombstone (ids=${ids.join(",")})`);
-                        yield* recordCancelledMessageIds(ids, "drain-stash");
-                        stash.splice(s, 1);
-                    }
-                }
-                continue;
-            }
 
             // ─── Route: Commands → handle immediately ───────────
             if (msg.type === "cmd") {
@@ -1733,25 +1660,11 @@ export function* durableSessionOrchestration_1_0_47(
                     userPrompt = flushPendingChildDigestIntoPrompt(userPrompt);
                 }
 
-                // v1.0.47: capture client-supplied message ids so the eventual
-                // durable user.message can be tagged for exact UI ack/cancel.
-                const incomingClientMessageIds: string[] = validClientMessageIds(msg.clientMessageIds);
-
-                // v1.0.47: if any contributing id was already tombstoned, drop
-                // the whole envelope. The UI removes per-id chat entries on
-                // its own; the LLM never sees the cancelled content.
-                if (promptIdsIntersectCancellation(incomingClientMessageIds)) {
-                    ctx.traceInfo(`[drain] dropping incoming prompt cancelled by tombstone (ids=${incomingClientMessageIds.join(",")})`);
-                    yield* recordCancelledMessageIds(incomingClientMessageIds, "drain-incoming");
-                    continue;
-                }
-
                 stash.push({
                     kind: "prompt",
                     prompt: userPrompt,
                     bootstrap: Boolean(msg.bootstrap),
                     ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
-                    ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 });
                 continue;
             }
@@ -1762,97 +1675,11 @@ export function* durableSessionOrchestration_1_0_47(
         if (stash.length > 0) appendToFifo(stash);
     }
 
-    function* sweepMessagesBeforePromptDispatch(): Generator<any, void, any> {
-        const stash: any[] = [];
-        const seenChildUpdates = new Set<string>();
-
-        for (let i = 0; i < MAX_PREDISPATCH_SWEEP; i++) {
-            const msgTask = ctx.dequeueEvent("messages");
-            const timerTask = ctx.scheduleTimer(PREDISPATCH_CANCEL_SWEEP_MS);
-            const race: any = yield ctx.race(msgTask, timerTask);
-            if (race.index === 1) break;
-
-            const msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
-            if (!msg) continue;
-
-            if (msg && Array.isArray(msg.cancelPending) && msg.cancelPending.length > 0) {
-                const validCancelIds = validClientMessageIds(msg.cancelPending);
-                for (const id of validCancelIds) {
-                    cancelledMessageIds.add(id);
-                }
-                if (validCancelIds.length > 0) {
-                    ctx.traceInfo(`[predispatch] received cancel tombstone (ids=${validCancelIds.join(",")})`);
-                    for (let s = stash.length - 1; s >= 0; s--) {
-                        const item = stash[s];
-                        if (item?.kind !== "prompt") continue;
-                        const ids: string[] = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [];
-                        if (ids.some((id) => validCancelIds.includes(id))) {
-                            ctx.traceInfo(`[predispatch] dropping stashed prompt cancelled by tombstone (ids=${ids.join(",")})`);
-                            yield* recordCancelledMessageIds(ids, "predispatch-stash");
-                            stash.splice(s, 1);
-                        }
-                    }
-                }
-                continue;
-            }
-
-            if (msg.type === "cmd") {
-                if (stash.length > 0) { appendToFifo(stash); stash.length = 0; }
-                yield* handleCommand(msg as CommandMessage);
-                if (orchestrationResult !== null) return;
-                continue;
-            }
-
-            const childUpdate = parseChildUpdate(msg.prompt);
-            if (childUpdate) {
-                const key = `${childUpdate.sessionId}|${childUpdate.updateType}|${childUpdate.content ?? ""}`;
-                if (!seenChildUpdates.has(key)) {
-                    seenChildUpdates.add(key);
-                    yield* applyChildUpdate(childUpdate);
-                    if (!pendingShutdown) {
-                        const childObservedAt: number = yield ctx.utcNow();
-                        bufferChildUpdate(childUpdate, childObservedAt);
-                    }
-                    if (waitingForAgentIds) {
-                        yield* maybeResolveAgentWaitCompletion();
-                    }
-                }
-                continue;
-            }
-
-            if (msg.answer !== undefined) {
-                stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform });
-                continue;
-            }
-
-            if (msg.prompt) {
-                const incomingClientMessageIds = validClientMessageIds(msg.clientMessageIds);
-                if (promptIdsIntersectCancellation(incomingClientMessageIds)) {
-                    ctx.traceInfo(`[predispatch] dropping incoming prompt cancelled by tombstone (ids=${incomingClientMessageIds.join(",")})`);
-                    yield* recordCancelledMessageIds(incomingClientMessageIds, "predispatch-incoming");
-                    continue;
-                }
-                stash.push({
-                    kind: "prompt",
-                    prompt: msg.prompt,
-                    bootstrap: Boolean(msg.bootstrap),
-                    ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
-                    ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
-                });
-                continue;
-            }
-
-            ctx.traceInfo(`[predispatch] skipping unknown: ${JSON.stringify(msg).slice(0, 120)}`);
-        }
-
-        if (stash.length > 0) appendToFifo(stash);
-    }
-
     // ═══════════════════════════════════════════════════════════
     // ═══ PROCESS PROMPT — hydrate + runTurn + handleResult ═══
     // ═══════════════════════════════════════════════════════════
 
-    function* processPrompt(promptText: string, isBootstrap: boolean, requiredTool?: string, clientMessageIds?: string[]): Generator<any, void, any> {
+    function* processPrompt(promptText: string, isBootstrap: boolean, requiredTool?: string): Generator<any, void, any> {
         let prompt = promptText;
         let promptIsBootstrap = isBootstrap;
 
@@ -1947,7 +1774,6 @@ export function* durableSessionOrchestration_1_0_47(
                 nestingLevel,
                 ...(requiredTool ? { requiredTool } : {}),
                 retryCount,
-                ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
             });
         } catch (err: any) {
             config.turnSystemPrompt = undefined;
@@ -3180,64 +3006,9 @@ export function* durableSessionOrchestration_1_0_47(
         const item = popFifoItem();
         if (item) {
             switch (item.kind) {
-                case "prompt": {
-                    // v1.0.47: skip prompts whose ids were tombstoned by a
-                    // cancel_pending_message envelope.
-                    const ids: string[] = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [];
-                    if (ids.length > 0) {
-                        yield* sweepMessagesBeforePromptDispatch();
-                        if (orchestrationResult !== null) return true;
-                    }
-                    if (promptIdsIntersectCancellation(ids)) {
-                        ctx.traceInfo(`[decide] dropping FIFO prompt cancelled by tombstone (ids=${ids.join(",")})`);
-                        yield* recordCancelledMessageIds(ids, "decide-fifo");
-                        return true;
-                    }
-
-                    // v1.0.47: batch consecutive prompt FIFO items into a
-                    // single Copilot turn. Distinct durable user.message rows
-                    // are still recorded for each contributing id by the
-                    // runTurn activity. Answers, timers, and agents-done
-                    // never merge.
-                    // TODO: This only batches prompts already drained into the
-                    // orchestration FIFO. It does not pause to pull additional
-                    // prompts that are still sitting in the durable messages
-                    // queue, so human sequential sends can still arrive as
-                    // separate LLM turns.
-                    let mergedPrompt = String(item.prompt || "");
-                    let mergedBootstrap = item.bootstrap ?? false;
-                    let mergedRequiredTool = item.requiredTool;
-                    const mergedClientMessageIds: string[] = [...ids];
-                    while (true) {
-                        const peek = popFifoItem();
-                        if (!peek) break;
-                        if (peek.kind !== "prompt") {
-                            // Push back: re-prepend by reading the full bucket
-                            // is awkward, so we just append and keep going —
-                            // this preserves arrival semantics because we only
-                            // ever merge prompts.
-                            appendToFifo([peek]);
-                            break;
-                        }
-                        const peekIds: string[] = Array.isArray(peek.clientMessageIds) ? peek.clientMessageIds : [];
-                        if (promptIdsIntersectCancellation(peekIds)) {
-                            ctx.traceInfo(`[decide] dropping merged FIFO prompt cancelled by tombstone (ids=${peekIds.join(",")})`);
-                            yield* recordCancelledMessageIds(peekIds, "decide-merge");
-                            continue;
-                        }
-                        mergedPrompt = `${mergedPrompt}\n\n${String(peek.prompt || "")}`;
-                        mergedBootstrap = mergedBootstrap || (peek.bootstrap ?? false);
-                        if (!mergedRequiredTool && peek.requiredTool) mergedRequiredTool = peek.requiredTool;
-                        for (const id of peekIds) mergedClientMessageIds.push(id);
-                    }
-                    yield* processPrompt(
-                        mergedPrompt,
-                        mergedBootstrap,
-                        mergedRequiredTool,
-                        mergedClientMessageIds.length > 0 ? mergedClientMessageIds : undefined,
-                    );
+                case "prompt":
+                    yield* processPrompt(item.prompt, item.bootstrap ?? false, item.requiredTool);
                     break;
-                }
                 case "answer":
                     yield* processAnswer(item);
                     break;

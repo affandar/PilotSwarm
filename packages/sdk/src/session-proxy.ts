@@ -249,7 +249,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; retryCount?: number },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; retryCount?: number; clientMessageIds?: string[] },
         ) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
@@ -263,6 +263,9 @@ export function createSessionProxy(
                     ...(turnMeta?.nestingLevel != null ? { nestingLevel: turnMeta.nestingLevel } : {}),
                     ...(turnMeta?.requiredTool ? { requiredTool: turnMeta.requiredTool } : {}),
                     ...(turnMeta?.retryCount != null ? { retryCount: turnMeta.retryCount } : {}),
+                    ...(turnMeta?.clientMessageIds && turnMeta.clientMessageIds.length > 0
+                        ? { clientMessageIds: turnMeta.clientMessageIds }
+                        : {}),
                 },
                 affinityKey,
             );
@@ -1024,9 +1027,21 @@ export function registerActivities(
             }
             if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt) {
                 const promptEventType = isInternalSystemPrompt(input.prompt) ? "system.message" : "user.message";
+                // v1.0.47: when the orchestration tagged the turn with one or
+                // more clientMessageIds (the UI-generated identities of the
+                // contributing local outbox items), persist them on the
+                // durable user.message event so the client can ack/cancel by
+                // exact id rather than text match.
+                const incomingClientMessageIds: string[] = Array.isArray((input as any).clientMessageIds)
+                    ? ((input as any).clientMessageIds as unknown[]).filter((id) => typeof id === "string" && id) as string[]
+                    : [];
+                const eventData: Record<string, unknown> = { content: input.prompt };
+                if (incomingClientMessageIds.length > 0) {
+                    eventData.clientMessageIds = incomingClientMessageIds;
+                }
                 catalog.recordEvents(input.sessionId, [{
                     eventType: promptEventType,
-                    data: { content: input.prompt },
+                    data: eventData,
                 }], workerNodeId).catch((err: any) => {
                     activityCtx.traceInfo(`[runTurn] CMS recordEvent (${promptEventType}) failed: ${err}`);
                 });

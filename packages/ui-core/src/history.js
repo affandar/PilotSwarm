@@ -454,6 +454,7 @@ function formatActivity(event) {
         case "session.idle":
         case "session.usage_info":
         case "pending_messages.modified":
+        case "pending_messages.cancelled":
         case "abort":
         case "assistant.turn_end":
             return null;

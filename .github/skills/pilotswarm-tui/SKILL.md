@@ -56,6 +56,8 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - In the portal desktop workspace, both split boundaries are resizable: the main column divider and the inspector/activity divider. Keep the right-column activity pane slightly taller by default than the historical 28% split, preserve double-click reset plus arrow-key resizing on the drag handle, collapse either inspector or activity completely once the divider is pushed far enough toward one edge, and keep the divider visible so a collapsed pane can be dragged back open.
 - Persist pane split adjustments across restarts in the same user-preference surfaces that already store theme and owner-filter state: browser storage for the portal, config file for the native TUI.
 - Keep the session/chat divider shared and capped: it is the chat resize control, and it must not let the top sessions pane grow beyond 50% of the full window height.
+- Busy/system-session prompt sends now use a shared pending outbox: queued prompts render in chat as pending user items, `Enter` on an empty draft flushes the queued batch, `Up`/`Down` at the prompt boundary navigate queued items, and `Esc` cancels the selected queued item. Keep portal, TUI, status hints, and docs aligned with that behavior.
+- Outbox items render with three visible delivery states next to the user-message label: `○` pending (client only), `✓` queued (durably enqueued), `✓✓` sent (persisted as a transcript `user.message`). Synchronous sends coalesce into a single durable enqueue; merge boundaries are not user-visible. Keep the glyph mapping in [packages/ui-core/src/selectors.js](../../../packages/ui-core/src/selectors.js) consistent across portal and TUI.
 
 ## Keybinding Rule
 

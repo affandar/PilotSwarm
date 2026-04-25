@@ -463,6 +463,24 @@ function buildPendingQuestionMessage(session) {
     };
 }
 
+function buildPendingOutboxMessage(sessionId, item) {
+    if (!sessionId || !item?.id) return null;
+    const text = String(item.text || "").trim();
+    if (!text) return null;
+    return {
+        id: `pending-outbox:${sessionId}:${item.id}`,
+        role: "user",
+        text,
+        time: "",
+        createdAt: Number(item.createdAt) || Date.now(),
+        pendingPhase: item.phase === "cancelling"
+            ? "cancelling"
+            : item.phase === "queued"
+                ? "queued"
+                : "pending",
+    };
+}
+
 function chatAlreadyContainsPendingQuestion(chat, question) {
     const normalizedQuestion = String(question || "").trim();
     if (!normalizedQuestion) return false;
@@ -544,7 +562,7 @@ function pickLatestProgressActivity(history, floorSeq = 0) {
     return null;
 }
 
-function buildLiveProgressState(session, history, chat = []) {
+function buildLiveProgressState(session, history, chat = [], outboxItems = []) {
     if (!session || session?.pendingQuestion?.question) return null;
 
     const status = String(session?.status || "").toLowerCase();
@@ -556,6 +574,9 @@ function buildLiveProgressState(session, history, chat = []) {
     const lastVisibleMessage = visibleChat[visibleChat.length - 1] || null;
     const waitingOnAssistantFromChat = lastVisibleMessage?.role === "user";
     const optimisticUserPending = waitingOnAssistantFromChat && lastVisibleMessage?.optimistic === true;
+    const pendingOutboxCount = (outboxItems || []).filter((item) => item?.phase === "pending").length;
+    const queuedOutboxCount = (outboxItems || []).filter((item) => item?.phase === "queued").length;
+    const cancellingOutboxCount = (outboxItems || []).filter((item) => item?.phase === "cancelling").length;
 
     const events = Array.isArray(history?.events) ? history.events : [];
     const lastUserSeq = latestEventSeq(events, "user.message");
@@ -605,6 +626,42 @@ function buildLiveProgressState(session, history, chat = []) {
         };
     }
 
+    if (pendingOutboxCount > 0) {
+        return {
+            kind: "pending",
+            label: pendingOutboxCount === 1 ? "Pending" : `Pending ${pendingOutboxCount}`,
+            text: pendingOutboxCount === 1 ? "One prompt is waiting to be sent." : `${pendingOutboxCount} prompts are waiting to be sent.`,
+            createdAt: outboxItems[outboxItems.length - 1]?.createdAt || session.updatedAt || Date.now(),
+            lastUserSeq,
+            lastAssistantSeq,
+            tokenSeq: 0,
+        };
+    }
+
+    if (queuedOutboxCount > 0) {
+        return {
+            kind: "queued",
+            label: queuedOutboxCount === 1 ? "Queued" : `Queued ${queuedOutboxCount}`,
+            text: queuedOutboxCount === 1 ? "One prompt is durably queued, waiting for the LLM to receive it." : `${queuedOutboxCount} prompts are durably queued, waiting for the LLM to receive them.`,
+            createdAt: outboxItems[outboxItems.length - 1]?.createdAt || session.updatedAt || Date.now(),
+            lastUserSeq,
+            lastAssistantSeq,
+            tokenSeq: 0,
+        };
+    }
+
+    if (cancellingOutboxCount > 0) {
+        return {
+            kind: "cancelling",
+            label: cancellingOutboxCount === 1 ? "Cancelling" : `Cancelling ${cancellingOutboxCount}`,
+            text: cancellingOutboxCount === 1 ? "One queued prompt is waiting for cancellation confirmation." : `${cancellingOutboxCount} queued prompts are waiting for cancellation confirmation.`,
+            createdAt: outboxItems[outboxItems.length - 1]?.createdAt || session.updatedAt || Date.now(),
+            lastUserSeq,
+            lastAssistantSeq,
+            tokenSeq: 0,
+        };
+    }
+
     if (optimisticUserPending) {
         return {
             kind: "sending",
@@ -638,17 +695,23 @@ export function selectActiveChat(state) {
     if (!sessionId) return createSplashCard(state.branding);
     const history = state.history.bySessionId.get(sessionId);
     const chat = history?.chat || [];
+    const outboxItems = Array.isArray(state.outbox?.bySessionId?.[sessionId])
+        ? state.outbox.bySessionId[sessionId].map((item) => buildPendingOutboxMessage(sessionId, item)).filter(Boolean)
+        : [];
     const pendingQuestionMessage = session?.pendingQuestion?.question
         && !chatAlreadyContainsPendingQuestion(chat, session.pendingQuestion.question)
         ? buildPendingQuestionMessage(session)
         : null;
     const sessionErrorMessage = buildSessionErrorMessage(session);
 
-    if ((!history || chat.length === 0) && !pendingQuestionMessage && !sessionErrorMessage) {
+    if ((!history || chat.length === 0) && outboxItems.length === 0 && !pendingQuestionMessage && !sessionErrorMessage) {
         return createSplashCard(state.branding, session);
     }
 
     const messages = chat.length > 0 ? [...chat] : createSplashCard(state.branding, session);
+    if (outboxItems.length > 0) {
+        messages.push(...outboxItems);
+    }
     if (pendingQuestionMessage) {
         messages.push(pendingQuestionMessage);
     }
@@ -676,18 +739,49 @@ function buildChatMessagePrefix(message) {
             : message?.role === "system"
                 ? "System"
                 : "PilotSwarm";
-    const roleColor = message?.role === "user"
-        ? USER_CHAT_LABEL_COLOR
+
+    // 3-state delivery glyph for user messages:
+    //   ○   pending  — client outbox, not yet durable
+    //   ✓   queued   — durably enqueued, waiting for orchestration to drain
+    //   x   cancelling — durable cancel requested, waiting for runtime outcome
+    //   ✓✓  sent     — persisted as user.message in CMS, LLM has it
+    let glyph = null;
+    let glyphColor = null;
+    if (message?.pendingPhase === "pending") {
+        glyph = "○";
+        glyphColor = "yellow";
+    } else if (message?.pendingPhase === "queued") {
+        glyph = "✓";
+        glyphColor = "cyan";
+    } else if (message?.pendingPhase === "cancelling") {
+        glyph = "x";
+        glyphColor = "red";
+    } else if (message?.role === "user" && !message?.optimistic && !message?.pendingPhase) {
+        // Real durable user.message in transcript — show the "sent" double-check.
+        glyph = "✓✓";
+        glyphColor = "green";
+    }
+
+    const roleColor = message?.pendingPhase === "pending"
+        ? "yellow"
+        : message?.pendingPhase === "queued"
+            ? "cyan"
+            : message?.pendingPhase === "cancelling"
+                ? "red"
+            : message?.role === "user"
+                ? USER_CHAT_LABEL_COLOR
         : message?.role === "assistant"
             ? "green"
             : message?.role === "system"
                 ? "yellow"
                 : "white";
     const prefix = time ? `[${time}] ` : "";
-    return [
-        ...prefixRuns(prefix, "gray"),
-        ...prefixRuns(`${roleLabel}: `, roleColor, { bold: true }),
-    ];
+    const runs = [...prefixRuns(prefix, "gray")];
+    if (glyph) {
+        runs.push(...prefixRuns(`${glyph} `, glyphColor));
+    }
+    runs.push(...prefixRuns(`${roleLabel}: `, roleColor, { bold: true }));
+    return runs;
 }
 
 function flattenLineText(lineRuns) {
@@ -1059,7 +1153,9 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
     ));
     const tintedMarkdownLines = tintRunsIfUnset(
         markdownLines,
-        message?.role === "user" ? USER_CHAT_COLOR : null,
+        message?.pendingPhase === "cancelling"
+            ? "red"
+            : message?.role === "user" ? USER_CHAT_COLOR : null,
     );
     const prefix = options.skipPrefix ? [] : buildChatMessagePrefix(message);
 
@@ -1140,8 +1236,10 @@ export function selectActiveHttpLinks(state) {
 
 export function selectChatPaneChrome(state, options = {}) {
     const session = selectActiveSession(state);
-    const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
-    const visibleDescendantCounts = getVisibleDescendantCounts(state.sessions.flat, state.sessions.byId);
+    const sessionsById = state.sessions?.byId || {};
+    const sessionsFlat = Array.isArray(state.sessions?.flat) ? state.sessions.flat : [];
+    const totalDescendantCounts = getTotalDescendantCounts(sessionsById);
+    const visibleDescendantCounts = getVisibleDescendantCounts(sessionsFlat, sessionsById);
     const compactSecondaryMeta = shouldCompactPaneTitleMetadata(options?.width);
 
     if (!session) {
@@ -1162,7 +1260,7 @@ export function selectChatPaneChrome(state, options = {}) {
         mainColor,
     );
 
-    const activeEntry = state.sessions.flat.find((entry) => entry.sessionId === session.sessionId);
+    const activeEntry = sessionsFlat.find((entry) => entry.sessionId === session.sessionId);
     const collapseBadge = getCollapseBadge(session.sessionId, activeEntry, totalDescendantCounts, visibleDescendantCounts);
     if (collapseBadge) {
         title.push({ text: ` ${collapseBadge.text}`, color: collapseBadge.color });
@@ -1173,7 +1271,10 @@ export function selectChatPaneChrome(state, options = {}) {
     }
 
     const history = state.history?.bySessionId?.get(session.sessionId) || null;
-    const progress = buildLiveProgressState(session, history, history?.chat || []);
+    const outboxItems = Array.isArray(state.outbox?.bySessionId?.[session.sessionId])
+        ? state.outbox.bySessionId[session.sessionId]
+        : [];
+    const progress = buildLiveProgressState(session, history, history?.chat || [], outboxItems);
 
     const modelName = shortModelName(session.model);
     if (modelName) {
@@ -1190,7 +1291,8 @@ export function selectChatPaneChrome(state, options = {}) {
         title.push({ text: ` ${compactionBadge.text}`, color: "gray" });
     }
 
-    if (!compactSecondaryMeta && (state.ui.inspectorTab === "sequence" || state.ui.inspectorTab === "nodes")) {
+    const inspectorTab = state.ui?.inspectorTab;
+    if (!compactSecondaryMeta && (inspectorTab === "sequence" || inspectorTab === "nodes")) {
         title.push({ text: " [last 5m window]", color: "gray" });
     }
 
@@ -1704,7 +1806,16 @@ export function selectFilesView(state, options = {}) {
 export function selectStatusBar(state) {
     const focus = state.ui.focusRegion;
     const paneFullscreen = state.ui.fullscreenPane || null;
-    const hasPendingQuestion = Boolean(selectActiveSession(state)?.pendingQuestion?.question);
+    const activeSession = selectActiveSession(state);
+    const hasPendingQuestion = Boolean(activeSession?.pendingQuestion?.question);
+    const activeOutbox = activeSession?.sessionId && Array.isArray(state.outbox?.bySessionId?.[activeSession.sessionId])
+        ? state.outbox.bySessionId[activeSession.sessionId]
+        : [];
+    const hasOutbox = activeOutbox.length > 0;
+    const hasPendingOutbox = activeOutbox.some((item) => item?.phase === "pending");
+    const editingPendingOutbox = state.ui.promptEdit?.sessionId === activeSession?.sessionId;
+    const selectedQueuedOutbox = editingPendingOutbox && state.ui.promptEdit?.phase === "queued";
+    const selectedCancellingOutbox = editingPendingOutbox && state.ui.promptEdit?.phase === "cancelling";
     const fullscreenHint = paneFullscreen === focus ? "v/esc close fullscreen" : "v fullscreen";
     if (state.ui.modal?.type === "artifactUpload") {
         return {
@@ -1777,7 +1888,17 @@ export function selectStatusBar(state) {
         [FOCUS_REGIONS.ACTIVITY]: `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · h left · tab next pane`,
         [FOCUS_REGIONS.PROMPT]: hasPendingQuestion
             ? `type answer · enter reply · alt-enter newline · T themes · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
-            : `type message · enter send · alt-enter newline · T themes · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
+            : editingPendingOutbox
+                ? selectedQueuedOutbox
+                    ? `queued prompt selected · d delete · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                    : selectedCancellingOutbox
+                        ? `cancelling prompt selected · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                        : `edit pending prompt · enter send batch · up/down cycle pending · esc cancel · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                : hasPendingOutbox
+                    ? `type message · enter queues · enter on empty sends batch · up/down recall pending · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                    : hasOutbox
+                        ? `type message · enter queues behind durable items · up/down recall pending · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+                        : `type message · enter send · alt-enter newline · T themes · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
     };
 
     return {

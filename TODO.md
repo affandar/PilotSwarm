@@ -1,6 +1,7 @@
 
 # TODO
 
+- harder protections for system agent IDs and names
 - formalize plugin disk layout, verisoning and update story
 - binary artifact support
     - proposal: [docs/proposals/binary-artifacts.md](docs/proposals/binary-artifacts.md)

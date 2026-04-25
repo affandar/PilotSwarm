@@ -1414,6 +1414,12 @@ body.is-resizing-pane-y * {
   gap: 8px;
 }
 
+.ps-prompt-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .ps-hidden-file-input {
   display: none;
 }

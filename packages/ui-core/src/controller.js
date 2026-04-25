@@ -173,6 +173,10 @@ function buildSessionMergePatch(previousSession, nextSession) {
     return changed ? patch : null;
 }
 
+function normalizeOutboxPromptText(text) {
+    return String(text || "").replace(/\r\n/g, "\n").trim();
+}
+
 function isTerminalOrchestrationStatus(status) {
     return status === "Completed" || status === "Failed" || status === "Terminated";
 }
@@ -790,6 +794,7 @@ export class PilotSwarmUiController {
         this.sessionHistoryLoads = new Map();
         this.sessionHistoryExpansionLoads = new Map();
         this.sessionOrchestrationStatsLoads = new Map();
+        this.outboxFlushPromises = new Map();
         this.logUnsubscribe = null;
         this.promptReferenceSignature = null;
         this.promptReferenceSyncVersion = 0;
@@ -821,6 +826,424 @@ export class PilotSwarmUiController {
             type: "ui/promptAttachments",
             attachments: Array.isArray(attachments) ? attachments : [],
         });
+    }
+
+    getSessionOutbox(sessionId) {
+        if (!sessionId) return [];
+        const items = this.getState().outbox?.bySessionId?.[sessionId];
+        return Array.isArray(items) ? items.filter(Boolean) : [];
+    }
+
+    setSessionOutboxItems(sessionId, items) {
+        if (!sessionId) return;
+        this.dispatch({
+            type: "outbox/setSessionItems",
+            sessionId,
+            items: Array.isArray(items) ? items : [],
+        });
+    }
+
+    buildOutboxItem(prompt, phase = "pending") {
+        const id = `msg:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+        const normalizedPhase = phase === "queued" || phase === "cancelling" ? phase : "pending";
+        return {
+            id,
+            text: String(prompt || ""),
+            createdAt: Date.now(),
+            phase: normalizedPhase,
+            clientMessageIds: [id],
+        };
+    }
+
+    getPendingOutboxItems(sessionId) {
+        return this.getSessionOutbox(sessionId).filter((item) => item?.phase === "pending");
+    }
+
+    getQueuedOutboxItems(sessionId) {
+        return this.getSessionOutbox(sessionId).filter((item) => item?.phase === "queued");
+    }
+
+    getNavigableOutboxItems(sessionId) {
+        return this.getSessionOutbox(sessionId).filter((item) => (
+            item?.phase === "pending" || item?.phase === "queued" || item?.phase === "cancelling"
+        ));
+    }
+
+    getEditableOutboxItems(sessionId) {
+        // Only pending items are editable/cancelable on the client; queued items
+        // are durable and need a durable cancel API to remove.
+        return this.getPendingOutboxItems(sessionId);
+    }
+
+    getPromptEditSessionMatch(sessionId = this.getState().sessions.activeSessionId) {
+        const promptEdit = this.getState().ui.promptEdit;
+        return promptEdit?.sessionId === sessionId ? promptEdit : null;
+    }
+
+    enterPendingPromptEdit(sessionId, itemId) {
+        if (!sessionId || !itemId) return false;
+        const navigableItems = this.getNavigableOutboxItems(sessionId);
+        const item = navigableItems.find((candidate) => candidate.id === itemId);
+        if (!item) return false;
+
+        const currentUi = this.getState().ui;
+        const existingEdit = this.getPromptEditSessionMatch(sessionId);
+        const promptEdit = existingEdit
+            ? { ...existingEdit, itemId, phase: item.phase }
+            : {
+                sessionId,
+                itemId,
+                phase: item.phase,
+                draftPrompt: currentUi.prompt,
+                draftCursor: currentUi.promptCursor,
+            };
+
+        this.dispatch({ type: "ui/promptEdit", promptEdit });
+        this.setPrompt(item.text, item.text.length);
+        this.setFocus(FOCUS_REGIONS.PROMPT);
+        return true;
+    }
+
+    exitPendingPromptEdit({ restoreDraft = true } = {}) {
+        const promptEdit = this.getState().ui.promptEdit;
+        if (!promptEdit) return false;
+
+        this.dispatch({ type: "ui/promptEdit", promptEdit: null });
+        if (restoreDraft) {
+            this.setPrompt(
+                promptEdit.draftPrompt || "",
+                Number.isFinite(promptEdit.draftCursor) ? promptEdit.draftCursor : String(promptEdit.draftPrompt || "").length,
+            );
+        }
+        return true;
+    }
+
+    selectPreviousPendingPrompt(sessionId = this.getState().sessions.activeSessionId) {
+        const navigableItems = this.getNavigableOutboxItems(sessionId);
+        if (navigableItems.length === 0) return false;
+
+        const promptEdit = this.getPromptEditSessionMatch(sessionId);
+        if (!promptEdit) {
+            return this.enterPendingPromptEdit(sessionId, navigableItems[navigableItems.length - 1].id);
+        }
+
+        const currentIndex = navigableItems.findIndex((item) => item.id === promptEdit.itemId);
+        if (currentIndex <= 0) return false;
+        return this.enterPendingPromptEdit(sessionId, navigableItems[currentIndex - 1].id);
+    }
+
+    selectNextPendingPrompt(sessionId = this.getState().sessions.activeSessionId) {
+        const navigableItems = this.getNavigableOutboxItems(sessionId);
+        const promptEdit = this.getPromptEditSessionMatch(sessionId);
+        if (!promptEdit) return false;
+
+        const currentIndex = navigableItems.findIndex((item) => item.id === promptEdit.itemId);
+        if (currentIndex === -1 || currentIndex >= navigableItems.length - 1) {
+            return this.exitPendingPromptEdit({ restoreDraft: true });
+        }
+
+        return this.enterPendingPromptEdit(sessionId, navigableItems[currentIndex + 1].id);
+    }
+
+    async cancelSelectedOutboxPrompt() {
+        const promptEdit = this.getState().ui.promptEdit;
+        if (!promptEdit?.sessionId || !promptEdit?.itemId) return false;
+
+        const currentItems = this.getSessionOutbox(promptEdit.sessionId);
+        const currentItem = currentItems.find((item) => item.id === promptEdit.itemId);
+        if (!currentItem) return false;
+        if (currentItem.phase === "cancelling") {
+            this.exitPendingPromptEdit({ restoreDraft: true });
+            return false;
+        }
+
+        const cancelled = await this.cancelOutboxItem(promptEdit.sessionId, promptEdit.itemId);
+        if (!cancelled) return false;
+
+        this.exitPendingPromptEdit({ restoreDraft: true });
+        return true;
+    }
+
+    cancelSelectedPendingPrompt() {
+        const promptEdit = this.getState().ui.promptEdit;
+        if (!promptEdit?.sessionId || !promptEdit?.itemId) return false;
+
+        const currentItems = this.getSessionOutbox(promptEdit.sessionId);
+        const currentItem = currentItems.find((item) => item.id === promptEdit.itemId && item.phase === "pending");
+        if (!currentItem) return false;
+
+        const nextItems = currentItems.filter((item) => item.id !== promptEdit.itemId);
+        this.setSessionOutboxItems(promptEdit.sessionId, nextItems);
+
+        this.exitPendingPromptEdit({ restoreDraft: true });
+
+        this.dispatch({ type: "ui/status", text: "Cancelled pending prompt" });
+        return true;
+    }
+
+    /**
+     * Cancel an outbox item by id. Pending (○) items are removed locally and
+     * also send a best-effort durable cancel tombstone to cover the race where
+     * the portal has already merged them into an enqueue. Queued (✓) items move
+     * to cancelling (x) while the durable cancel tombstone is sent through the
+     * transport so the orchestration can drop the message before the LLM sees
+     * it. The row disappears only after runtime confirms.
+     *
+     * Idempotent: if the durable cancel races the orchestration consuming the
+     * message, the tombstone is a no-op on the runtime side.
+     */
+    async cancelOutboxItem(sessionId, itemId) {
+        if (!sessionId || !itemId) return false;
+        const items = this.getSessionOutbox(sessionId);
+        const item = items.find((candidate) => candidate.id === itemId);
+        if (!item) return false;
+        if (item.phase === "cancelling") return false;
+
+        if (this.getPromptEditSessionMatch(sessionId)?.itemId === itemId) {
+            this.exitPendingPromptEdit({ restoreDraft: true });
+        }
+
+        const ids = Array.isArray(item.clientMessageIds) && item.clientMessageIds.length > 0
+            ? item.clientMessageIds
+            : [item.id];
+
+        if (item.phase === "queued") {
+            this.setSessionOutboxItems(sessionId, items.map((candidate) => (
+                candidate.id === itemId ? { ...candidate, phase: "cancelling" } : candidate
+            )));
+            if (typeof this.transport?.cancelPendingMessage === "function") {
+                try {
+                    await this.transport.cancelPendingMessage(sessionId, ids);
+                    this.dispatch({ type: "ui/status", text: "Cancelling queued prompt" });
+                } catch (error) {
+                    // Restore the item so the user can retry the cancel.
+                    this.setSessionOutboxItems(sessionId, items);
+                    this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+                    return false;
+                }
+            } else {
+                this.dispatch({ type: "ui/status", text: "Queued prompt marked cancelling (local only — transport has no cancel)" });
+            }
+        } else {
+            const remainingItems = items.filter((candidate) => candidate.id !== itemId);
+            this.setSessionOutboxItems(sessionId, remainingItems);
+            if (typeof this.transport?.cancelPendingMessage === "function") {
+                try {
+                    await this.transport.cancelPendingMessage(sessionId, ids);
+                } catch {
+                    // Pending cancels are local-first. A failed tombstone only
+                    // matters if the item was already being merged into a
+                    // durable enqueue, and the user can still cancel the merged
+                    // queued item if it appears.
+                }
+            }
+            this.dispatch({ type: "ui/status", text: "Cancelled pending prompt" });
+        }
+        return true;
+    }
+
+    /**
+     * Convenience: cancel the most recently queued (durable) outbox item.
+     * Used by hosts to give the user a single-keystroke way to cancel the
+     * latest queued prompt without first navigating to it.
+     */
+    async cancelLatestQueuedOutbox(sessionId = this.getState().sessions.activeSessionId) {
+        if (!sessionId) return false;
+        const queued = this.getQueuedOutboxItems(sessionId);
+        if (queued.length === 0) return false;
+        const target = queued[queued.length - 1];
+        return await this.cancelOutboxItem(sessionId, target.id);
+    }
+
+    queuePromptInOutbox(sessionId, prompt) {
+        const item = this.buildOutboxItem(prompt, "pending");
+        this.setSessionOutboxItems(sessionId, [...this.getSessionOutbox(sessionId), item]);
+        return item;
+    }
+
+    acknowledgeOutboxPrompt(sessionId, promptText, clientMessageId = null) {
+        if (!sessionId) return false;
+        const items = this.getSessionOutbox(sessionId);
+
+        // Prefer exact id match if the durable event carried our clientMessageId.
+        if (clientMessageId) {
+            const idMatchIndex = items.findIndex((item) => (
+                (item?.phase === "pending" || item?.phase === "queued" || item?.phase === "cancelling")
+                && Array.isArray(item.clientMessageIds)
+                && item.clientMessageIds.includes(clientMessageId)
+            ));
+            if (idMatchIndex !== -1) {
+                const matchedItem = items[idMatchIndex];
+                this.setSessionOutboxItems(sessionId, items.filter((_, i) => i !== idMatchIndex));
+                if (this.getPromptEditSessionMatch(sessionId)?.itemId === matchedItem?.id) {
+                    this.exitPendingPromptEdit({ restoreDraft: true });
+                }
+                return true;
+            }
+        }
+
+        // Fall back to text match for backward compatibility while clientMessageId
+        // hasn't been plumbed through every layer yet.
+        const normalizedPrompt = normalizeOutboxPromptText(promptText);
+        if (!normalizedPrompt) return false;
+        const textMatchIndex = items.findIndex((item) => (
+            (item?.phase === "pending" || item?.phase === "queued" || item?.phase === "cancelling")
+            && normalizeOutboxPromptText(item.text) === normalizedPrompt
+        ));
+        if (textMatchIndex === -1) return false;
+
+        const matchedItem = items[textMatchIndex];
+        this.setSessionOutboxItems(sessionId, items.filter((_, i) => i !== textMatchIndex));
+        if (this.getPromptEditSessionMatch(sessionId)?.itemId === matchedItem?.id) {
+            this.exitPendingPromptEdit({ restoreDraft: true });
+        }
+        return true;
+    }
+
+    acknowledgeCancelledOutboxPrompt(sessionId, clientMessageIds = []) {
+        if (!sessionId) return false;
+        const ids = new Set((clientMessageIds || []).filter((id) => typeof id === "string" && id));
+        if (ids.size === 0) return false;
+
+        const items = this.getSessionOutbox(sessionId);
+        const nextItems = items.filter((item) => {
+            if (item?.phase !== "cancelling") return true;
+            const itemIds = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [item.id];
+            return !itemIds.some((id) => ids.has(id));
+        });
+        if (nextItems.length === items.length) return false;
+
+        const removedIds = new Set(items
+            .filter((item) => !nextItems.some((nextItem) => nextItem.id === item.id))
+            .map((item) => item.id));
+        this.setSessionOutboxItems(sessionId, nextItems);
+        const promptEdit = this.getPromptEditSessionMatch(sessionId);
+        if (promptEdit && removedIds.has(promptEdit.itemId)) {
+            this.exitPendingPromptEdit({ restoreDraft: true });
+        }
+        return true;
+    }
+
+    scheduleOutboxDispatch(sessionId) {
+        if (!sessionId) return;
+        if (!this._outboxDispatchTimers) this._outboxDispatchTimers = new Map();
+        if (this._outboxDispatchTimers.has(sessionId)) return;
+        // Microtask + small delay so multiple synchronous sends coalesce into
+        // one merged durable enqueue. The merge window is intentionally tiny
+        // (~10ms) so the user never feels latency on a single send.
+        const timer = setTimeout(() => {
+            this._outboxDispatchTimers.delete(sessionId);
+            this.dispatchPendingOutbox(sessionId).catch(() => {});
+        }, 10);
+        this._outboxDispatchTimers.set(sessionId, timer);
+    }
+
+    async dispatchPendingOutbox(sessionId) {
+        if (!sessionId) return false;
+        // Yield once so any other `sendPrompt()` calls firing in the same tick
+        // get a chance to enqueue their pending items before we snapshot the
+        // pending set. This is what gives "two concurrent sends merge into a
+        // single durable enqueue" its semantics. Sequential `await sendPrompt`
+        // calls are not affected — by the time the next one runs, the first
+        // dispatch has already completed.
+        await Promise.resolve();
+
+        const existing = this.outboxFlushPromises.get(sessionId);
+        if (existing) {
+            // An enqueue is already in flight; the current pending items will
+            // be picked up by the next dispatch after it resolves.
+            await existing.catch(() => {});
+            // Re-arm if more pending items have arrived since.
+            if (this.getPendingOutboxItems(sessionId).length > 0) {
+                this.scheduleOutboxDispatch(sessionId);
+            }
+            return false;
+        }
+
+        const pendingItems = this.getPendingOutboxItems(sessionId);
+        if (pendingItems.length === 0) return false;
+
+        // Merge all current pending items into a single durable envelope.
+        // Each contributing client message id is preserved on the merged item
+        // so durable acknowledgement and (later) durable cancel can address
+        // individual original messages even after merging.
+        const mergedClientMessageIds = pendingItems.flatMap((item) => (
+            Array.isArray(item.clientMessageIds) && item.clientMessageIds.length > 0
+                ? item.clientMessageIds
+                : [item.id]
+        ));
+        const mergedText = pendingItems.map((item) => String(item.text || "")).join("\n\n");
+        const mergedItem = {
+            id: pendingItems[0].id,
+            text: mergedText,
+            createdAt: pendingItems[0].createdAt || Date.now(),
+            phase: "pending",
+            clientMessageIds: mergedClientMessageIds,
+        };
+        const pendingIdSet = new Set(pendingItems.map((item) => item.id));
+        const otherItems = this.getSessionOutbox(sessionId).filter((item) => !pendingIdSet.has(item.id));
+        this.setSessionOutboxItems(sessionId, [...otherItems, mergedItem]);
+
+        // If the user was editing one of the merged items, exit edit mode —
+        // the merged item is now a single envelope.
+        const promptEdit = this.getPromptEditSessionMatch(sessionId);
+        if (promptEdit && pendingIdSet.has(promptEdit.itemId)) {
+            this.exitPendingPromptEdit({ restoreDraft: true });
+        }
+
+        const promise = (async () => {
+            await this.transport.sendMessage(sessionId, mergedItem.text, {
+                enqueueOnly: true,
+                clientMessageIds: mergedItem.clientMessageIds,
+            });
+
+            // Promote pending → queued for the merged item.
+            const items = this.getSessionOutbox(sessionId);
+            const updated = items.map((item) => (
+                item.id === mergedItem.id ? { ...item, phase: "queued" } : item
+            ));
+            this.setSessionOutboxItems(sessionId, updated);
+
+            this.syncSessionEvents(sessionId).catch(() => {});
+            this.scheduleSessionsRefresh(250);
+            return true;
+        })().catch((error) => {
+            // Revert the merged envelope back to the original pending items so
+            // the user can edit/retry them.
+            const items = this.getSessionOutbox(sessionId);
+            const reverted = items.flatMap((item) => (
+                item.id === mergedItem.id ? pendingItems : [item]
+            ));
+            this.setSessionOutboxItems(sessionId, reverted);
+            this.dispatch({
+                type: "ui/status",
+                text: error?.message || String(error),
+            });
+            throw error;
+        }).finally(() => {
+            this.outboxFlushPromises.delete(sessionId);
+            // If new pending items arrived during the in-flight enqueue, dispatch them.
+            if (this.getPendingOutboxItems(sessionId).length > 0) {
+                this.scheduleOutboxDispatch(sessionId);
+            }
+        });
+
+        this.outboxFlushPromises.set(sessionId, promise);
+        return await promise;
+    }
+
+    // Backwards-compatible alias kept for any callers that still reference
+    // the old flushQueuedOutbox name. The new model dispatches pending →
+    // queued automatically; an explicit flush just forces the next dispatch.
+    async flushQueuedOutbox(sessionId) {
+        return await this.dispatchPendingOutbox(sessionId);
+    }
+
+    maybeFlushQueuedOutbox(sessionId) {
+        if (!sessionId) return false;
+        if (this.getPendingOutboxItems(sessionId).length === 0) return false;
+        this.scheduleOutboxDispatch(sessionId);
+        return true;
     }
 
     getPromptReferenceContext() {
@@ -2074,6 +2497,9 @@ export class PilotSwarmUiController {
         if (!sessionId) return;
         const active = this.getState().sessions.activeSessionId;
         if (active !== sessionId) {
+            if (this.getState().ui.promptEdit) {
+                this.exitPendingPromptEdit({ restoreDraft: true });
+            }
             this.dispatch({ type: "sessions/selected", sessionId });
         }
         await this.ensureSessionHistory(sessionId, { force: true });
@@ -2092,6 +2518,27 @@ export class PilotSwarmUiController {
             sessionId,
             history: appendEventToHistory(existing, event),
         });
+        if (event.eventType === "user.message") {
+            const content = event?.data?.content;
+            const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
+                ? event.data.clientMessageIds.filter((id) => typeof id === "string")
+                : (typeof event?.data?.clientMessageId === "string" ? [event.data.clientMessageId] : []);
+            if (clientMessageIds.length > 0) {
+                for (const id of clientMessageIds) {
+                    this.acknowledgeOutboxPrompt(sessionId, content, id);
+                }
+            } else if (typeof content === "string" && content.trim()) {
+                // Fallback: text-match acknowledgement until clientMessageId is
+                // plumbed through every layer.
+                this.acknowledgeOutboxPrompt(sessionId, content);
+            }
+        }
+        if (event.eventType === "pending_messages.cancelled") {
+            const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
+                ? event.data.clientMessageIds.filter((id) => typeof id === "string")
+                : (typeof event?.data?.clientMessageId === "string" ? [event.data.clientMessageId] : []);
+            this.acknowledgeCancelledOutboxPrompt(sessionId, clientMessageIds);
+        }
         const derivedModel = extractSessionModelFromEvent(event);
         const currentSession = this.getState().sessions.byId[sessionId] || { sessionId };
         const derivedContextUsage = applySessionUsageEvent(currentSession.contextUsage, event.eventType, event.data, {
@@ -2107,6 +2554,7 @@ export class PilotSwarmUiController {
                 },
             });
         }
+        this.maybeFlushQueuedOutbox(sessionId, this.getState().sessions.byId[sessionId] || currentSession);
         this.scheduleSessionDetailSync(sessionId);
         return true;
     }
@@ -2164,8 +2612,10 @@ export class PilotSwarmUiController {
         if (!session) return;
         const previousSession = this.getState().sessions.byId[sessionId] || null;
         const patch = buildSessionMergePatch(previousSession, session);
-        if (!patch) return;
-        this.dispatch({ type: "sessions/merged", session: patch });
+        if (patch) {
+            this.dispatch({ type: "sessions/merged", session: patch });
+        }
+        this.maybeFlushQueuedOutbox(sessionId, session);
     }
 
     async createSession(options = {}) {
@@ -3112,11 +3562,9 @@ export class PilotSwarmUiController {
     async sendPrompt() {
         const state = this.getState();
         const rawPrompt = state.ui.prompt;
-        const promptCursor = state.ui.promptCursor;
         const promptAttachments = this.getPromptAttachments();
         const attachmentSessionId = promptAttachments[0]?.sessionId || null;
         const prompt = expandPromptAttachments(rawPrompt, promptAttachments);
-        if (!prompt.trim()) return;
 
         let sessionId = state.sessions.activeSessionId;
         if (attachmentSessionId) {
@@ -3137,85 +3585,67 @@ export class PilotSwarmUiController {
             activeSession = this.getState().sessions.byId[sessionId] || null;
         }
 
+        // Empty Enter on a session with pending outbox items forces an immediate
+        // dispatch of any pending merge group; this is the "send batch" affordance.
+        if (!prompt.trim()) {
+            if (sessionId && this.getPendingOutboxItems(sessionId).length > 0) {
+                await this.dispatchPendingOutbox(sessionId).catch(() => {});
+            }
+            return;
+        }
+
         const answeringPendingQuestion = Boolean(activeSession?.pendingQuestion?.question);
+        const promptEdit = this.getPromptEditSessionMatch(sessionId);
 
-        const existing = this.getState().history.bySessionId.get(sessionId) || { chat: [], activity: [], lastSeq: 0 };
-        this.dispatch({
-            type: "history/set",
-            sessionId,
-            history: {
-                ...existing,
-                chat: [
-                    ...existing.chat,
-                    {
-                        id: `optimistic:${Date.now()}`,
-                        role: "user",
-                        text: prompt,
-                        time: "",
-                        createdAt: Date.now(),
-                        optimistic: true,
-                    },
-                ],
-            },
-        });
+        // If we're editing a pending item, the editor text already mutates that
+        // item in place via setPrompt. Just clear the editor and dispatch.
+        if (promptEdit) {
+            const selectedOutboxItem = this.getSessionOutbox(sessionId)
+                .find((item) => item.id === promptEdit.itemId);
+            if (selectedOutboxItem?.phase === "queued" || selectedOutboxItem?.phase === "cancelling") {
+                this.exitPendingPromptEdit({ restoreDraft: true });
+                return;
+            }
+            this.setPrompt("", 0);
+            this.setPromptAttachments([]);
+            await this.dispatchPendingOutbox(sessionId).catch(() => {});
+            return;
+        }
 
-        this.setPrompt("", 0);
-        this.dispatch({ type: "ui/status", text: "Sending..." });
-        try {
-            if (answeringPendingQuestion && typeof this.transport.sendAnswer === "function") {
+        // Pending questions still take the direct sendAnswer path — answers are
+        // an orchestration-level reply, not a user message, and don't merge.
+        if (answeringPendingQuestion && typeof this.transport.sendAnswer === "function") {
+            this.setPrompt("", 0);
+            this.setPromptAttachments([]);
+            this.dispatch({ type: "ui/status", text: "Sending answer..." });
+            try {
                 await this.transport.sendAnswer(sessionId, prompt);
                 this.dispatch({
                     type: "sessions/merged",
-                    session: {
-                        sessionId,
-                        pendingQuestion: null,
-                    },
+                    session: { sessionId, pendingQuestion: null },
                 });
                 this.scheduleSessionDetailSync(sessionId, 100);
                 this.syncSessionEvents(sessionId).catch(() => {});
                 this.scheduleSessionsRefresh(1000);
                 this.dispatch({ type: "ui/status", text: "Answer sent" });
-                return;
+            } catch (error) {
+                this.dispatch({ type: "ui/status", text: error?.message || String(error) });
             }
-
-            await this.transport.sendMessage(sessionId, prompt, {
-                enqueueOnly: Boolean(activeSession?.isSystem || activeSession?.status === "running"),
-            });
-            this.syncSessionEvents(sessionId).catch(() => {});
-            this.scheduleSessionsRefresh(1000);
-            this.dispatch({ type: "ui/status", text: "Prompt sent" });
-        } catch (error) {
-            this.setPrompt(rawPrompt, promptCursor);
-            this.setPromptAttachments(promptAttachments);
-            await this.ensureSessionHistory(sessionId, { force: true }).catch(() => {});
-            let latestSession = null;
-            if (typeof this.transport.getSession === "function") {
-                latestSession = await this.transport.getSession(sessionId).catch(() => null);
-                const patch = buildSessionMergePatch(
-                    this.getState().sessions.byId[sessionId] || null,
-                    latestSession,
-                );
-                if (patch) {
-                    this.dispatch({ type: "sessions/merged", session: patch });
-                }
-            }
-            const resolvedSession = latestSession || this.getState().sessions.byId[sessionId] || activeSession || { sessionId };
-            if (isTerminalOrchestrationStatus(resolvedSession?.orchestrationStatus) || isTerminalSendError(error)) {
-                const currentHistory = this.getState().history.bySessionId.get(sessionId) || { chat: [], activity: [], lastSeq: 0 };
-                this.dispatch({
-                    type: "history/set",
-                    sessionId,
-                    history: appendSyntheticChatMessage(
-                        currentHistory,
-                        buildTerminalSendRejectedMessage(resolvedSession, error),
-                    ),
-                });
-            }
-            this.dispatch({
-                type: "ui/status",
-                text: error?.message || String(error),
-            });
+            return;
         }
+
+        // Universal path: every user message goes through the local outbox first.
+        // The dispatcher coalesces synchronous sends into one durable enqueue.
+        // We still `await` the dispatcher so callers (and tests) that `await
+        // sendPrompt()` see the durable enqueue completed before they observe
+        // outbox state. Sends that fire in the same tick (e.g. multiple
+        // `controller.sendPrompt()` calls without intervening `await`s) still
+        // merge because the second call enters before the first dispatcher
+        // microtask runs.
+        this.queuePromptInOutbox(sessionId, prompt);
+        this.setPrompt("", 0);
+        this.setPromptAttachments([]);
+        await this.dispatchPendingOutbox(sessionId).catch(() => {});
     }
 
     setPrompt(prompt, promptCursor = String(prompt || "").length) {
@@ -3227,6 +3657,15 @@ export class PilotSwarmUiController {
         const currentUi = this.getState().ui;
         if (currentUi.prompt === nextPrompt && currentUi.promptCursor === nextCursor) {
             return;
+        }
+        if (currentUi.promptEdit?.sessionId && currentUi.promptEdit?.itemId) {
+            const items = this.getSessionOutbox(currentUi.promptEdit.sessionId);
+            const nextItems = items.map((item) => (
+                item.id === currentUi.promptEdit.itemId && item.phase === "pending"
+                    ? { ...item, text: nextPrompt }
+                    : item
+            ));
+            this.setSessionOutboxItems(currentUi.promptEdit.sessionId, nextItems);
         }
         this.dispatch({ type: "ui/prompt", prompt: nextPrompt, promptCursor: nextCursor });
         this.syncPromptReferenceBrowser();
@@ -3266,7 +3705,14 @@ export class PilotSwarmUiController {
 
     movePromptCursorVertical(direction) {
         const state = this.getState().ui;
-        this.setPrompt(state.prompt, movePromptCursorVertically(state.prompt, state.promptCursor, direction));
+        const nextCursor = movePromptCursorVertically(state.prompt, state.promptCursor, direction);
+        if (nextCursor !== state.promptCursor) {
+            this.setPrompt(state.prompt, nextCursor);
+            return;
+        }
+        if (direction < 0 && this.selectPreviousPendingPrompt()) return;
+        if (direction > 0 && this.selectNextPendingPrompt()) return;
+        this.setPrompt(state.prompt, nextCursor);
     }
 
     getCurrentLayout(overrides = {}) {

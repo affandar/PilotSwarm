@@ -310,6 +310,9 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             activeSessionId,
             activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            activeOutbox: activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
+                ? state.outbox.bySessionId[activeSessionId]
+                : [],
             branding: state.branding,
             connectionError: state.connection.error,
             connectionMode: state.connection.mode,
@@ -336,11 +339,17 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             history: {
                 bySessionId: historyMap,
             },
+            outbox: {
+                bySessionId: chatView.activeSessionId
+                    ? { [chatView.activeSessionId]: chatView.activeOutbox }
+                    : {},
+            },
         };
     }, [
         chatView.activeHistory,
         chatView.activeSessionId,
         chatView.activeSession,
+        chatView.activeOutbox,
         chatView.branding,
         chatView.connectionError,
         chatView.connectionMode,
@@ -824,21 +833,41 @@ const PromptBar = React.memo(function PromptBar({ controller, rows }) {
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
+        const outbox = activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
+            ? state.outbox.bySessionId[activeSessionId]
+            : [];
         return {
             prompt: state.ui.prompt,
             promptCursor: state.ui.promptCursor,
             focused: state.ui.focusRegion === "prompt",
             answeringQuestion: Boolean(activeSession?.pendingQuestion?.question),
+            editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
+            selectedOutboxPhase: state.ui.promptEdit?.sessionId === activeSessionId
+                ? state.ui.promptEdit?.phase || null
+                : null,
+            hasOutbox: outbox.length > 0,
+            hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
         };
     }, shallowEqualObject);
+    const selectedQueued = promptState.selectedOutboxPhase === "queued";
+    const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
     return React.createElement(platform.Input, {
-        label: promptState.answeringQuestion ? "answer" : "you",
+        label: promptState.answeringQuestion ? "answer" : selectedCancelling ? "cancelling" : selectedQueued ? "queued" : promptState.editingPending ? "pending" : "you",
         value: promptState.prompt,
         cursorIndex: promptState.promptCursor,
         focused: promptState.focused,
         placeholder: promptState.answeringQuestion
             ? "Type an answer and press Enter"
+            : promptState.editingPending
+                ? selectedCancelling
+                    ? "Cancellation requested"
+                    : selectedQueued
+                    ? "Queued prompt selected, press d to delete"
+                    : "Edit pending prompt, Enter sends batch, Esc cancels"
+                : promptState.hasOutbox
+                    ? "Type a message and press Enter to queue it"
             : "Type a message and press Enter",
+        readOnly: selectedQueued || selectedCancelling,
         rows,
     });
 });

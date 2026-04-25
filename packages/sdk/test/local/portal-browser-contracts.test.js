@@ -46,6 +46,10 @@ describe("portal browser contracts", () => {
         assertIncludes(runtime, "async downloadArtifactBinary(sessionId, filename)", "portal runtime should expose a raw-byte artifact download path for HTTP downloads");
         assertIncludes(browserTransport, "async getUserStats(opts)", "browser transport should expose user stats RPC");
         assertIncludes(runtime, 'case "getUserStats":', "portal runtime should expose user stats RPC");
+        assertIncludes(browserTransport, "async cancelPendingMessage(sessionId, clientMessageIds)", "browser transport should expose queued prompt cancellation RPC");
+        assertIncludes(browserTransport, 'return this.rpc("cancelPendingMessage"', "browser transport should send cancellation tombstones through portal RPC");
+        assertIncludes(runtime, 'case "cancelPendingMessage":', "portal runtime should expose queued prompt cancellation RPC");
+        assertIncludes(runtime, "this.transport.cancelPendingMessage(safeParams.sessionId, safeParams.clientMessageIds)", "portal runtime should forward cancellation ids to node transport");
         assertIncludes(nodeTransport, "async uploadArtifactContent(sessionId, filename, content, contentType", "node transport should accept browser-supplied artifact content");
         assertIncludes(nodeTransport, "async deleteArtifact(sessionId, filename)", "node transport should expose single-artifact deletion against the artifact store");
         assertIncludes(nodeTransport, 'if (contentEncoding === "base64")', "node transport should decode base64 upload payloads back to raw bytes");

@@ -391,6 +391,25 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (key.escape && fullscreenPane) {
             if (focus === "prompt") {
+                const promptEdit = controller.getState().ui.promptEdit;
+                if (promptEdit?.phase === "queued") {
+                    controller.exitPendingPromptEdit({ restoreDraft: true });
+                    return;
+                }
+                if (promptEdit) {
+                    if (controller.cancelSelectedOutboxPrompt) {
+                        controller.cancelSelectedOutboxPrompt().catch(() => {});
+                    } else {
+                        controller.cancelSelectedPendingPrompt();
+                    }
+                    return;
+                }
+                if (!controller.getState().ui.prompt) {
+                    if (controller.cancelLatestQueuedOutbox) {
+                        controller.cancelLatestQueuedOutbox().catch(() => {});
+                    }
+                    return;
+                }
                 controller.setPrompt("");
                 controller.setFocus(fullscreenPane);
                 return;
@@ -400,6 +419,25 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (key.escape) {
             if (focus === "prompt") {
+                const promptEdit = controller.getState().ui.promptEdit;
+                if (promptEdit?.phase === "queued") {
+                    controller.exitPendingPromptEdit({ restoreDraft: true });
+                    return;
+                }
+                if (promptEdit) {
+                    if (controller.cancelSelectedOutboxPrompt) {
+                        controller.cancelSelectedOutboxPrompt().catch(() => {});
+                    } else {
+                        controller.cancelSelectedPendingPrompt();
+                    }
+                    return;
+                }
+                if (!controller.getState().ui.prompt) {
+                    if (controller.cancelLatestQueuedOutbox) {
+                        controller.cancelLatestQueuedOutbox().catch(() => {});
+                    }
+                    return;
+                }
                 controller.setPrompt("");
                 controller.handleCommand(UI_COMMANDS.FOCUS_SESSIONS).catch(() => {});
                 return;
@@ -505,8 +543,35 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
 
         if (focus === "prompt") {
+            const promptEdit = controller.getState().ui.promptEdit;
+            const selectedQueuedOutbox = promptEdit?.phase === "queued";
+            const selectedReadOnlyOutbox = selectedQueuedOutbox || promptEdit?.phase === "cancelling";
             if (isCtrlA) {
                 controller.handleCommand(UI_COMMANDS.OPEN_ARTIFACT_UPLOAD).catch(() => {});
+                return;
+            }
+            if (selectedReadOnlyOutbox) {
+                if (key.upArrow) {
+                    controller.movePromptCursorVertical(-1);
+                    return;
+                }
+                if (key.downArrow) {
+                    controller.movePromptCursorVertical(1);
+                    return;
+                }
+                if (selectedQueuedOutbox && input === "d") {
+                    if (controller.cancelSelectedOutboxPrompt) {
+                        controller.cancelSelectedOutboxPrompt().catch(() => {});
+                    }
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    return;
+                }
+                if (key.return) {
+                    controller.exitPendingPromptEdit({ restoreDraft: true });
+                    return;
+                }
                 return;
             }
             if (key.return && key.meta) {

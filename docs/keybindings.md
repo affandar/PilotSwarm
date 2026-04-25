@@ -92,13 +92,13 @@ These keys work whenever focus is not in the prompt editor.
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Send the current message |
+| `Enter` | Send the current message, or queue it behind pending prompts for busy/system sessions |
 | `Option+Enter` / `Alt+Enter` | Insert a newline |
 | `Ctrl+J` | Insert a newline |
 | `Ctrl+A` | Attach a local file to the draft |
-| `Esc` | Leave prompt mode and return to Sessions |
+| `Esc` | Leave prompt mode and return to Sessions, or cancel the selected queued pending prompt |
 | `←` / `→` | Move cursor by character |
-| `↑` / `↓` | Move cursor vertically across prompt lines |
+| `↑` / `↓` | Move cursor vertically across prompt lines, then enter/leave queued pending-prompt editing at the top/bottom boundary |
 | `Option+←` / `Option+→` | Move cursor by word |
 | `Backspace` / `Delete` | Delete one character |
 | `Option+Backspace` / `Option+Delete` | Delete the previous word |
@@ -107,6 +107,13 @@ Notes:
 
 - The prompt grows to a three-line viewport and then scrolls as you keep adding lines.
 - Attached files are uploaded immediately and inserted into the outgoing prompt as `artifact://...` references when the message is sent.
+- Every send first lands in a per-session local outbox, then transitions through three durability states shown next to each user message in chat:
+  - `○` pending — client-only, not yet acknowledged by the runtime
+  - `✓` queued — durably enqueued to the orchestration, waiting to be processed
+  - `✓✓` sent — persisted as a `user.message` in the durable transcript; the LLM has it
+- Multiple synchronous sends coalesce into a single durable enqueue. Pressing `Enter` on an empty draft forces an immediate dispatch of any still-pending items.
+- Pressing `↑` at the top prompt boundary recalls the most recent pending item for editing. Pressing `↓` at the bottom boundary moves forward through pending items and eventually returns to the live draft.
+- `Esc` while editing a recalled pending item cancels that item before it becomes durable.
 
 ## Modals and Dialogs
 
