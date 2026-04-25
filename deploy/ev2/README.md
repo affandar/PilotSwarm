@@ -71,10 +71,11 @@ deploy/ev2/
 └── Common/
     ├── bicep/                       Verbatim reference modules (Phase 4).
     ├── Parameters/
-    │   └── DeployApplicationManifest.parameters.json  Shared overlay-substitution table; copied
-    │                                                  into each service's staged `Parameters/` and
-    │                                                  rewritten by per-service scope-binding at
-    │                                                  artifact-upload time.
+    │   ├── UploadContainer.Linux.Rollout.json           Shared shell-extension rollout params.
+    │   └── DeployApplicationManifest.Linux.Rollout.json Shared shell-extension rollout params; references
+    │                                                   __APPLICATION_MANIFEST_PARAMETERS_FILE__ which each
+    │                                                   service's scopeBinding rewrites to its own per-service
+    │                                                   `<Service>/Ev2AppDeployment/Parameters/DeployApplicationManifest.parameters.json`.
     └── scripts/                     Shell extensions used by app rollouts (verbatim
         │                            from postgresql-fleet-manager; stable/mature).
         │                            Staged into each service's SG root as zips by

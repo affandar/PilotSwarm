@@ -126,7 +126,6 @@ function Resolve-ServiceConfig {
         SgRoot           = $svc.sgRoot
         RolloutSpec      = $svc.rolloutSpec
         BicepMain        = $svc.bicepMain
-        BicepParam       = if ($svc.PSObject.Properties.Name -contains 'bicepParams' -and $svc.bicepParams) { $svc.bicepParams.$Env } else { $null }
         ArmTemplateOut   = $svc.armTemplateOut
         DockerImageRepo  = $svc.dockerImageRepo
         Dockerfile       = if ($svc.PSObject.Properties.Name -contains 'dockerfile') { $svc.dockerfile } else { $null }
@@ -162,13 +161,6 @@ function Invoke-BicepBuild {
     Write-Host "[$($Config.Name)] az bicep build --file $bicepAbs --outfile $outAbs"
     & az bicep build --file $bicepAbs --outfile $outAbs
     if ($LASTEXITCODE -ne 0) { throw "az bicep build failed for $bicepAbs" }
-
-    if ($Config.BicepParam) {
-        $paramAbs = Join-Path $RepoRoot "deploy/ev2/$($Config.BicepParam)"
-        Write-Host "[$($Config.Name)] az bicep build-params --file $paramAbs"
-        & az bicep build-params --file $paramAbs | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "az bicep build-params failed for $paramAbs" }
-    }
 }
 
 function Invoke-ImageBuildExport {
@@ -322,25 +314,38 @@ function New-DeployPackages {
         Write-Host "[$($Config.Name)] packaged $manifestsZip (source: $svcGitopsRoot)" -ForegroundColor DarkGray
     }
 
-    # 4) Loose parameters JSON staged under Parameters/ next to the
-    # rollout-parameter files. EV2 substitutes the __TOKENS__ here
-    # because the corresponding environmentVariable reference has
-    # enableScopeTagBindings=true.
+    # 4) Per-service parameters JSON + shared rollout-parameter files.
+    #
+    # DeployApplicationManifest.parameters.json is PER-SERVICE — it
+    # defines the env-substitution surface for that service's .env
+    # files (Worker and Portal have different keys). EV2 substitutes
+    # the __TOKENS__ inside because the rollout-parameter references
+    # it with `enableScopeTagBindings: true`. We require it to live in
+    # each service's own Ev2AppDeployment/Parameters/ tree (which is
+    # already copied in via the SG-root staging step above).
     #
     # The two rollout-parameter files (UploadContainer.Linux.Rollout.json
-    # and DeployApplicationManifest.Linux.Rollout.json) are also shared
+    # and DeployApplicationManifest.Linux.Rollout.json) ARE shared
     # across services — they're pure __TOKEN__ templates resolved by
     # each service's scopeBinding.json. Materialize them into the
     # staged Parameters/ directory so EV2 sees them at the path
     # serviceModel.json's `rolloutParametersPath` expects.
-    $sharedParamFiles = @(
-        'DeployApplicationManifest.parameters.json',
+    $stagedParamsDir = Join-Path $StagedSgRoot 'Parameters'
+    if (-not (Test-Path $stagedParamsDir)) { New-Item -ItemType Directory -Path $stagedParamsDir -Force | Out-Null }
+
+    # Per-service parameters file must be present (staged from the SG
+    # source). Apps with a gitops overlay require it; infra-only
+    # services (BaseInfra / GlobalInfra) don't use DeployApplicationManifest.
+    $svcParamsFile = Join-Path $stagedParamsDir 'DeployApplicationManifest.parameters.json'
+    if ($Config.KustomizeOverlay -and -not (Test-Path $svcParamsFile)) {
+        throw "Missing per-service $svcParamsFile — expected at deploy/ev2/$($Config.Name)/Ev2AppDeployment/Parameters/DeployApplicationManifest.parameters.json"
+    }
+
+    $sharedRolloutParamFiles = @(
         'UploadContainer.Linux.Rollout.json',
         'DeployApplicationManifest.Linux.Rollout.json'
     )
-    $stagedParamsDir = Join-Path $StagedSgRoot 'Parameters'
-    if (-not (Test-Path $stagedParamsDir)) { New-Item -ItemType Directory -Path $stagedParamsDir -Force | Out-Null }
-    foreach ($f in $sharedParamFiles) {
+    foreach ($f in $sharedRolloutParamFiles) {
         $src = Join-Path $commonParams $f
         if (-not (Test-Path $src)) { throw "Common parameters file missing: $src" }
         $dst = Join-Path $stagedParamsDir $f

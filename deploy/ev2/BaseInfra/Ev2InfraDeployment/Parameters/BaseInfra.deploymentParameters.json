@@ -19,6 +19,18 @@
         },
         "wafMode": {
             "value": "__WAF_MODE__"
+        },
+        "acrSku": {
+            "value": "__ACR_SKU__"
+        },
+        "appGatewayPrivateIpAddress": {
+            "value": "__APP_GATEWAY_PRIVATE_IP__"
+        },
+        "availabilityZones": {
+            "value": "__AVAILABILITY_ZONES__"
+        },
+        "environment": {
+            "value": "__ENVIRONMENT_LOWER__"
         }
     }
 }

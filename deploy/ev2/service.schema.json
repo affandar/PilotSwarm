@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/affandar/PilotSwarm/deploy/ev2/service.schema.json",
+  "title": "PilotSwarm EV2 Service Manifest",
+  "description": "Per-service EV2 manifest consumed by deploy/ev2/ev2-deploy-dev.ps1 (via deploy/ev2/services.json). Paths are relative to deploy/ev2/ unless otherwise noted; kustomizeOverlay is relative to the repo root. Token placeholders: {env} is replaced with the target environment (Dev|Prod), {envLower} with its lowercase form.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "serviceGroupName",
+    "sgRoot",
+    "rolloutSpec",
+    "isInfra"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference. Optional."
+    },
+    "_comment": {
+      "type": "string",
+      "description": "Free-form comment for human readers; ignored by tooling."
+    },
+    "serviceGroupName": {
+      "type": "string",
+      "description": "Fully-qualified EV2 ServiceGroup name. Must include the {env} token which ev2-deploy-dev.ps1 substitutes with the target environment (e.g. 'Microsoft.PilotSwarm.Worker.{env}').",
+      "pattern": "\\{env\\}"
+    },
+    "sgRoot": {
+      "type": "string",
+      "description": "Path to the ServiceGroup root (containing serviceModel.json, rolloutSpec.json, scopeBinding.json, Parameters/, Configuration/, version.txt). Relative to deploy/ev2/."
+    },
+    "rolloutSpec": {
+      "type": "string",
+      "description": "RolloutSpec filename inside sgRoot. Typically 'rolloutSpec.json'."
+    },
+    "bicepMain": {
+      "type": ["string", "null"],
+      "description": "Path to the service's main.bicep (relative to deploy/ev2/). null for services that ship no Bicep (e.g. Worker)."
+    },
+    "armTemplateOut": {
+      "type": ["string", "null"],
+      "description": "Path (relative to deploy/ev2/) where 'az bicep build' writes the compiled ARM template consumed by the ServiceGroup's serviceModel.json. null when bicepMain is null."
+    },
+    "dockerImageRepo": {
+      "type": ["string", "null"],
+      "description": "Docker image repository name (no registry prefix, no tag). null for infra-only services. Used by New-DeployPackages to drop 'ContainerImages/<repo>.tar.gz' into the staged EV2 artifact."
+    },
+    "dockerfile": {
+      "type": "string",
+      "description": "Path (relative to repo root) to the Dockerfile used when -BuildImage is passed to ev2-deploy-dev.ps1. Only meaningful when dockerImageRepo is non-null."
+    },
+    "kustomizeOverlay": {
+      "type": "string",
+      "description": "Path (relative to repo root) to the Kustomize overlay zipped into manifests.zip. Must include the {envLower} token (e.g. 'deploy/gitops/worker/overlays/{envLower}')."
+    },
+    "defaultRegion": {
+      "type": "string",
+      "description": "Default deployment region. Use 'global' for global/control-plane services."
+    },
+    "isInfra": {
+      "type": "boolean",
+      "description": "true for infra-only ServiceGroups (Bicep-only, no shell-extension app rollout); false for application ServiceGroups that package a container image + gitops manifests."
+    }
+  }
+}

@@ -44,8 +44,16 @@
                     }
                 ],
                 "identity": {
-                    "type": "systemAssigned"
-                }
+                    "type": "userAssigned",
+                    "userAssignedIdentities": [
+                        "__SERVICE_DEPLOY_MANAGED_IDENTITY_RESOURCE_ID__"
+                    ]
+                },
+                "subnetIds": [
+                    {
+                        "id": "__ACI_SUBNET_ID__"
+                    }
+                ]
             }
         }
     ]

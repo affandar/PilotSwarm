@@ -37,10 +37,6 @@ param sslCertificateDomainSuffix string
 ])
 param acrSku string = 'Basic'
 
-@description('PostgreSQL admin password. Supplied by EV2 parameter file or pipeline secret.')
-@secure()
-param postgresAdminPassword string
-
 @description('WAF mode on the App Gateway. Dev uses Detection; prod uses Prevention.')
 @allowed([
   'Detection'
@@ -104,6 +100,7 @@ module Vnet './vnet.bicep' = {
   params: {
     location: location
     resourceNamePrefix: resourceNamePrefix
+    availabilityZones: availabilityZones
   }
 }
 
@@ -190,7 +187,6 @@ module Postgres './postgres.bicep' = {
   params: {
     location: location
     serverName: postgresServerName
-    administratorPassword: postgresAdminPassword
   }
 }
 
@@ -205,6 +201,25 @@ module KeyVault './keyvault.bicep' = {
     keyVaultName: keyVaultName
     csiPrincipalId: Uami.outputs.csiIdentityPrincipalId
   }
+}
+
+// ==============================================================================
+// EV2 deploy UAMI RBAC — AcrPush + Storage Blob Data Contributor on the
+// per-region ACR + storage account. Consumed by the ACI sandbox that EV2
+// spins up for UploadContainer / DeployApplicationManifest.
+// ==============================================================================
+
+module Ev2DeployRbac './ev2-deploy-rbac.bicep' = {
+  name: '${resourceNamePrefix}-ev2deploy-rbac-${dTime}'
+  params: {
+    acrName: acrName
+    storageAccountName: storageAccountName
+    ev2DeployPrincipalId: Uami.outputs.ev2DeployIdentityPrincipalId
+  }
+  dependsOn: [
+    Acr
+    Storage
+  ]
 }
 
 // ==============================================================================
@@ -249,3 +264,6 @@ output postgresFqdn string = Postgres.outputs.fullyQualifiedDomainName
 output frontDoorProfileName string = frontDoorProfileName
 output frontDoorProfileResourceGroup string = frontDoorProfileResourceGroup
 output sslCertificateDomainSuffix string = sslCertificateDomainSuffix
+output aciSubnetId string = Vnet.outputs.aciSubnetId
+output ev2DeployIdentityResourceId string = Uami.outputs.ev2DeployIdentityResourceId
+output ev2DeployIdentityClientId string = Uami.outputs.ev2DeployIdentityClientId

@@ -48,6 +48,22 @@
                 {
                     "find": "__WAF_MODE__",
                     "replaceWith": "$config(wafMode)"
+                },
+                {
+                    "find": "__ACR_SKU__",
+                    "replaceWith": "$config(acrSku)"
+                },
+                {
+                    "find": "__APP_GATEWAY_PRIVATE_IP__",
+                    "replaceWith": "$config(appGatewayPrivateIpAddress)"
+                },
+                {
+                    "find": "\"__AVAILABILITY_ZONES__\"",
+                    "replaceWith": "$config(availabilityZones)"
+                },
+                {
+                    "find": "__ENVIRONMENT_LOWER__",
+                    "replaceWith": "$config(environmentLower)"
                 }
             ]
         }

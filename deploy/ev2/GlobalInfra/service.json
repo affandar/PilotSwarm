@@ -5,10 +5,6 @@
   "sgRoot": "GlobalInfra/Ev2InfraDeployment",
   "rolloutSpec": "rolloutSpec.json",
   "bicepMain": "GlobalInfra/bicep/main.bicep",
-  "bicepParams": {
-    "Dev": "GlobalInfra/bicep/parameters/dev.bicepparam",
-    "Prod": "GlobalInfra/bicep/parameters/prod.bicepparam"
-  },
   "armTemplateOut": "GlobalInfra/Ev2InfraDeployment/Templates/GlobalInfra.deploymentTemplate.json",
   "dockerImageRepo": null,
   "defaultRegion": "global",

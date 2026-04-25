@@ -26,6 +26,9 @@ deploy/.portal-tls/
 deploy/ev2/.staging/
 # Bicep -> ARM build outputs consumed by EV2 rolloutSpec (rebuilt by pipeline / dev helper)
 deploy/ev2/*/Ev2*Deployment/Templates/
+# Stray ARM JSON emitted by `az bicep build` next to the source bicep
+# (the pipeline emits to the staging tree, not in-place — these are local-only)
+deploy/ev2/*/bicep/*.json
 # Exported container image tarballs from -BuildImage (dev helper writes
 # these into .staging/, but ignore them at the SG root too in case a
 # dev iterates against the non-staged tree).

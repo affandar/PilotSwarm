@@ -1,0 +1,40 @@
+{
+    "Parameters": [
+        {
+            "name": "IMAGE",
+            "value": "__ACR_LOGIN_SERVER__/__IMAGE_NAME__:__BUILD_VERSION__"
+        },
+        {
+            "name": "IMAGE_TAG",
+            "value": "__BUILD_VERSION__"
+        },
+        {
+            "name": "IMAGE_NAME",
+            "value": "__IMAGE_NAME__"
+        },
+        {
+            "name": "ACR_LOGIN_SERVER",
+            "value": "__ACR_LOGIN_SERVER__"
+        },
+        {
+            "name": "ACR_NAME",
+            "value": "__ACR_NAME__"
+        },
+        {
+            "name": "NAMESPACE",
+            "value": "__NAMESPACE__"
+        },
+        {
+            "name": "KV_NAME",
+            "value": "__KV_NAME__"
+        },
+        {
+            "name": "WORKLOAD_IDENTITY_CLIENT_ID",
+            "value": "__WORKLOAD_IDENTITY_CLIENT_ID__"
+        },
+        {
+            "name": "AZURE_TENANT_ID",
+            "value": "__AZURE_TENANT_ID__"
+        }
+    ]
+}

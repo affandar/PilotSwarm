@@ -24,7 +24,7 @@ param resourceGroupName string
 @description('Naming prefix. Applied to every resource so fleet-wide resources stay correlated in Azure Portal searches.')
 param resourcePrefix string = 'pilotswarm'
 
-@description('WAF mode. Detection logs only; Prevention blocks. Set per-environment via bicepparam.')
+@description('WAF mode. Detection logs only; Prevention blocks. Set per-environment via EV2 Configuration.')
 @allowed([
   'Detection'
   'Prevention'

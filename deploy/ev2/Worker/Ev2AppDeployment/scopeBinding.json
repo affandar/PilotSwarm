@@ -105,6 +105,14 @@
                 {
                     "find": "__DEPLOYMENT_STORAGE_ACCOUNT_NAME__",
                     "replaceWith": "$config(resourcePrefix)$config(regionShortName)$stamp()sa"
+                },
+                {
+                    "find": "__ACI_SUBNET_ID__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(aciSubnetId.value)"
+                },
+                {
+                    "find": "__SERVICE_DEPLOY_MANAGED_IDENTITY_RESOURCE_ID__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(ev2DeployIdentityResourceId.value)"
                 }
             ]
         }

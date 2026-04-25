@@ -5,10 +5,6 @@
   "sgRoot": "Portal/Ev2AppDeployment",
   "rolloutSpec": "rolloutSpec.json",
   "bicepMain": "Portal/bicep/main.bicep",
-  "bicepParams": {
-    "Dev": "Portal/bicep/parameters/dev.bicepparam",
-    "Prod": "Portal/bicep/parameters/prod.bicepparam"
-  },
   "armTemplateOut": "Portal/Ev2AppDeployment/Templates/Portal.deploymentTemplate.json",
   "dockerImageRepo": "pilotswarm-portal",
   "dockerfile": "deploy/Dockerfile.portal",

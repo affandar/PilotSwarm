@@ -133,6 +133,14 @@
                 {
                     "find": "__PORTAL_HOSTNAME__",
                     "replaceWith": "$serviceResourceDefinition(PortalServiceInfraDefinition).action(deploy).outputs(BackendHostName.value)"
+                },
+                {
+                    "find": "__ACI_SUBNET_ID__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(aciSubnetId.value)"
+                },
+                {
+                    "find": "__SERVICE_DEPLOY_MANAGED_IDENTITY_RESOURCE_ID__",
+                    "replaceWith": "$serviceResourceDefinition(BaseInfraDefinition).action(deploy).outputs(ev2DeployIdentityResourceId.value)"
                 }
             ]
         }

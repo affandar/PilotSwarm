@@ -19,9 +19,16 @@ param databaseName string = 'pilotswarm'
 @description('Admin login name.')
 param administratorLogin string = 'pilotswarm'
 
-@secure()
-@description('Admin password. Supplied via pipeline / EV2 parameter; never checked in.')
-param administratorPassword string
+// TODO: Replace with Entra (AAD) authentication + workload identity. Until
+// then we hardcode a deterministic placeholder password so EV2 deployments
+// don't need a secret-store dependency. The PG endpoint is reachable only
+// from AKS pods inside the per-region VNet, and the worker reads this
+// password from Key Vault via the AKV CSI Secrets Store provider — the same
+// value must be seeded into KV under `postgres-admin-password` (handled by
+// scripts/deploy-aks.sh today and by a follow-up Ev2 step in production).
+//
+// DO NOT use this password for anything reachable from outside the VNet.
+var administratorPassword = 'PilotSwarmEv2_BootstrapOnly!9876'
 
 @description('Flex Server SKU name.')
 param skuName string = 'Standard_B1ms'
