@@ -966,7 +966,17 @@ export function registerActivities(
         }, 2_000);
 
         try {
-            // Build onEvent callback: write each non-ephemeral event to CMS as it fires
+            // Build onEvent callback: write each non-ephemeral event to CMS as it fires.
+            // We track every in-flight CMS recordEvents promise so we can flush them
+            // before posting `session.turn_completed`. Without this barrier the
+            // turn_completed insert can race ahead of the SDK's `assistant.message`
+            // insert and CMS will assign the smaller `seq` to turn_completed,
+            // breaking event-ordering invariants downstream (see cms-seq-nodemap).
+            const pendingEventWrites: Promise<unknown>[] = [];
+            const trackEventWrite = (promise: Promise<unknown> | undefined | null) => {
+                if (!promise || typeof (promise as Promise<unknown>).then !== "function") return;
+                pendingEventWrites.push((promise as Promise<unknown>).catch(() => {}));
+            };
             const EPHEMERAL_TYPES = new Set([
                 "assistant.message_delta",
                 "assistant.reasoning_delta",
@@ -1004,7 +1014,13 @@ export function registerActivities(
                             });
                         }
                     }
-                    catalog.recordEvents(input.sessionId, [persistedEvent], workerNodeId).catch((err: any) => {
+                    const writePromise = catalog.recordEvents(
+                        input.sessionId,
+                        [persistedEvent],
+                        workerNodeId,
+                    );
+                    trackEventWrite(writePromise);
+                    writePromise.catch((err: any) => {
                         activityCtx.traceInfo(`[runTurn] CMS recordEvent failed: ${err}`);
                     });
                 }
@@ -1204,9 +1220,36 @@ export function registerActivities(
             }
             activityCtx.traceInfo(`[runTurn] ManagedSession.runTurn completed for ${input.sessionId} type=${result.type}`);
 
-            // Record turn_completed CMS event
+            // Record turn_completed CMS event.
+            //
+            // Ordering matters here: every per-event CMS write fired by the
+            // SDK's onEvent callback (assistant.message, tool calls, usage,
+            // etc.) must land in `session_events` with a smaller `seq` than
+            // `session.turn_completed`, otherwise downstream consumers that
+            // walk events in seq order (e.g. cms-seq-nodemap) see the turn
+            // close before its own assistant.message.
+            //
+            // `runTurn` resolves once the SDK has emitted its final events,
+            // but the corresponding `recordEvents` calls were dispatched
+            // fire-and-forget. We therefore:
+            //   1. Sleep 100ms to let any straggler onEvent callbacks fire
+            //      and enqueue their CMS write (quiesce window).
+            //   2. Drain `pendingEventWrites` and await all of them with
+            //      allSettled — failed writes were already logged inline,
+            //      we only need the ordering guarantee.
+            //   3. Await the turn_completed insert so subsequent activity
+            //      logic and any immediate CMS readers see a consistent tail.
+            //
+            // The 100ms is a deliberate, bounded pause. If it ever needs to
+            // grow, prefer a real "SDK turn fully flushed" signal over a
+            // larger sleep.
             if (catalog) {
-                catalog.recordEvents(input.sessionId, [{
+                await new Promise((resolve) => setTimeout(resolve, 100));
+                const pendingWritesAtBarrier = pendingEventWrites.splice(0);
+                if (pendingWritesAtBarrier.length > 0) {
+                    await Promise.allSettled(pendingWritesAtBarrier);
+                }
+                await catalog.recordEvents(input.sessionId, [{
                     eventType: "session.turn_completed",
                     data: { iteration: input.turnIndex ?? 0 },
                 }], workerNodeId).catch((err: any) => {
