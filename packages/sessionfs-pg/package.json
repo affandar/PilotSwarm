@@ -1,0 +1,42 @@
+{
+  "name": "pilotswarm-sessionfs-pg",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Postgres-backed Copilot SessionFs provider. Standalone, not yet integrated into PilotSwarm runtime.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "test": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run",
+    "test:standalone": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/standalone.test.js",
+    "test:copilot-sdk": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/copilot-sdk.test.js",
+    "test:copilot-sdk:heavy": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/copilot-sdk-heavy.test.js"
+  },
+  "dependencies": {
+    "pg": "^8.18.0"
+  },
+  "peerDependencies": {
+    "@github/copilot-sdk": "^0.3.0"
+  },
+  "devDependencies": {
+    "@github/copilot": "^1.0.36",
+    "@github/copilot-sdk": "^0.3.0",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.16.0",
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
