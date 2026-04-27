@@ -857,16 +857,28 @@ function buildCodeFenceBodyLines(codeLines, width) {
 export function parseMarkdownLines(input, options = {}) {
     const lines = [];
     const maxWidth = Math.max(20, Number(options?.width) || 80);
-    const source = formatMarkdownTables(
-        String(input || ""),
-        maxWidth,
-    );
+    // tableMode controls how markdown tables are emitted:
+    //   - "boxArt"  (default, TUI):  pre-rendered into Unicode box-drawing
+    //                                lines via formatMarkdownTables.
+    //   - "sentinel" (portal):       emitted as a single sentinel line of
+    //                                shape { kind: "markdownTable", header,
+    //                                rows } so the host (web) can render a
+    //                                native HTML table with markdown cell
+    //                                content (so [label](url) inside cells
+    //                                survives as a clickable link instead of
+    //                                being flattened into plain text by the
+    //                                box-art width-fitter).
+    const tableMode = options.tableMode === "sentinel" ? "sentinel" : "boxArt";
+    const source = tableMode === "boxArt"
+        ? formatMarkdownTables(String(input || ""), maxWidth)
+        : String(input || "");
     const rawLines = source.split("\n");
     let inCodeFence = false;
     let codeFenceLanguage = "";
     let codeFenceLines = [];
 
-    for (const rawLine of rawLines) {
+    for (let lineIndex = 0; lineIndex < rawLines.length; lineIndex += 1) {
+        const rawLine = rawLines[lineIndex];
         const trimmed = rawLine.trim();
         if (trimmed.startsWith("```")) {
             if (inCodeFence) {
@@ -887,6 +899,37 @@ export function parseMarkdownLines(input, options = {}) {
         if (inCodeFence) {
             codeFenceLines.push(rawLine);
             continue;
+        }
+
+        // Sentinel-mode markdown table detection. Mirrors formatMarkdownTables
+        // detection (header row + separator row of the same column count) so
+        // both modes recognize the same set of tables.
+        if (tableMode === "sentinel" && rawLine && isMarkdownTableLine(rawLine)) {
+            const nextRawLine = rawLines[lineIndex + 1] || "";
+            if (isMarkdownTableLine(nextRawLine)) {
+                const headerCells = splitMarkdownTableCells(rawLine);
+                const separatorCells = splitMarkdownTableCells(nextRawLine);
+                if (isMarkdownTableSeparatorRow(separatorCells)
+                    && headerCells.length === separatorCells.length
+                ) {
+                    const bodyRows = [];
+                    let scan = lineIndex + 2;
+                    while (scan < rawLines.length && isMarkdownTableLine(rawLines[scan])) {
+                        const rowCells = splitMarkdownTableCells(rawLines[scan]);
+                        if (!isMarkdownTableSeparatorRow(rowCells)) {
+                            bodyRows.push(rowCells);
+                        }
+                        scan += 1;
+                    }
+                    lines.push({
+                        kind: "markdownTable",
+                        header: headerCells,
+                        rows: bodyRows,
+                    });
+                    lineIndex = scan - 1; // for-loop ++ advances past the consumed table
+                    continue;
+                }
+            }
         }
 
         if (!rawLine) {

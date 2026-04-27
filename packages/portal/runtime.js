@@ -141,6 +141,8 @@ export class PortalRuntime {
                 return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, safeParams.options);
             case "sendAnswer":
                 return this.transport.sendAnswer(safeParams.sessionId, safeParams.answer);
+            case "cancelPendingMessage":
+                return this.transport.cancelPendingMessage(safeParams.sessionId, safeParams.clientMessageIds);
             case "renameSession":
                 return this.transport.renameSession(safeParams.sessionId, safeParams.title);
             case "cancelSession":

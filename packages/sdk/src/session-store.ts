@@ -197,7 +197,11 @@ function buildMetadata(tarPath: string, sessionId: string, meta?: Record<string,
 }
 
 function archiveSessionDir(sessionStateDir: string, sessionId: string, tarPath: string): void {
-    execSync(`tar czf "${tarPath}" -C "${sessionStateDir}" "${sessionId}"`);
+    // Exclude live `inuse.<pid>.lock` files: they are scoped to the live SDK
+    // process and would resurrect a stale lock when extracted on another node.
+    execSync(
+        `tar --exclude='inuse.*.lock' -czf "${tarPath}" -C "${sessionStateDir}" "${sessionId}"`,
+    );
 }
 
 function extractSessionArchive(sessionStateDir: string, tarPath: string): void {
@@ -216,6 +220,17 @@ async function waitForPath(pathToCheck: string, timeoutMs = 5_000, pollMs = 100)
 
 const LEGACY_SESSION_FILES = ["events.jsonl", "workspace.yaml"];
 const REQUIRED_SESSION_FILES = ["workspace.yaml"];
+// Files we treat as "the SDK actually wrote a session here" once they appear.
+// Keep this list aligned with @github/copilot CLI persistence (see audit notes
+// in docs/inbox or ask the SDK team before adding/removing entries).
+const CURRENT_LAYOUT_SIGNAL_FILES = new Set([
+    "workspace.yaml",
+    "session.db",
+    "session.db-wal",
+    "session.db-shm",
+    "events.jsonl",
+]);
+const CURRENT_LAYOUT_SIGNAL_DIRS = new Set(["checkpoints", "files", "research"]);
 const SESSION_LOCK_FILE = /^inuse\..+\.lock$/i;
 
 function isIgnoredSessionEntry(relativePath: string): boolean {
@@ -249,82 +264,67 @@ function collectSessionSnapshotEntries(sessionDir: string): string[] {
     return entries;
 }
 
+/**
+ * Single-shot readiness check for a session-state directory.
+ *
+ * As of @github/copilot 1.0.36, `client.createSession` writes `workspace.yaml`
+ * (plus `checkpoints/`, `files/`, `research/`) before returning, and
+ * `session.disconnect()` preserves the directory intact. There is therefore
+ * no race to poll for: either the SDK has placed the directory by the time
+ * we get here or it never will. We retain the legacy ("events.jsonl" +
+ * "workspace.yaml") fallback for snapshots produced by older SDK builds, and
+ * the lock-file filter so we ignore live `inuse.<pid>.lock` churn.
+ */
+function checkSessionSnapshot(
+    sessionStateDir: string,
+    sessionId: string,
+): { ready: boolean; missing: string[] } {
+    const sessionDir = path.join(sessionStateDir, sessionId);
+
+    if (!fs.existsSync(sessionDir)) {
+        return { ready: false, missing: [`${sessionId}/`] };
+    }
+
+    const missingRequired = REQUIRED_SESSION_FILES
+        .filter((file) => !fs.existsSync(path.join(sessionDir, file)))
+        .map((file) => `${sessionId}/${file}`);
+
+    if (missingRequired.length === 0) {
+        const snapshotEntries = collectSessionSnapshotEntries(sessionDir);
+        const hasCurrentLayoutSignal = snapshotEntries.some((entry) => {
+            const [kind, relPath = ""] = entry.split(":");
+            if (!relPath) return false;
+            if (kind === "file" && CURRENT_LAYOUT_SIGNAL_FILES.has(relPath)) return true;
+            if (kind === "dir" && CURRENT_LAYOUT_SIGNAL_DIRS.has(relPath)) return true;
+            const top = relPath.split(path.sep)[0];
+            return CURRENT_LAYOUT_SIGNAL_DIRS.has(top);
+        });
+        if (hasCurrentLayoutSignal) return { ready: true, missing: [] };
+        return { ready: false, missing: [`${sessionId}/workspace.yaml or layout signal`] };
+    }
+
+    const hasLegacyLayoutSignal = LEGACY_SESSION_FILES.every((file) =>
+        fs.existsSync(path.join(sessionDir, file)),
+    );
+    if (hasLegacyLayoutSignal) return { ready: true, missing: [] };
+
+    return { ready: false, missing: missingRequired };
+}
+
+/**
+ * Backwards-compatible wrapper kept for callers that historically expected an
+ * async, polling readiness check. Today this is a single-shot probe; the
+ * arguments other than `sessionStateDir` and `sessionId` are accepted but
+ * ignored, intentionally — see {@link checkSessionSnapshot} for rationale.
+ */
 async function waitForSessionSnapshot(
     sessionStateDir: string,
     sessionId: string,
-    timeoutMs = 5_000,
-    pollMs = 100,
-    stablePolls = 3,
+    _timeoutMs?: number,
+    _pollMs?: number,
+    _stablePolls?: number,
 ): Promise<{ ready: boolean; missing: string[] }> {
-    const sessionDir = path.join(sessionStateDir, sessionId);
-    let lastSignature = "";
-    let stableCount = 0;
-    let missing = [`${sessionId}/`];
-
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-        if (!fs.existsSync(sessionDir)) {
-            missing = [`${sessionId}/`];
-            stableCount = 0;
-            lastSignature = "";
-        } else {
-            missing = REQUIRED_SESSION_FILES
-                .filter((file) => !fs.existsSync(path.join(sessionDir, file)))
-                .map((file) => `${sessionId}/${file}`);
-
-            if (missing.length === 0) {
-                const snapshotEntries = collectSessionSnapshotEntries(sessionDir);
-
-                // Support both the current Copilot session layout and older
-                // layouts that included events.jsonl. We intentionally ignore
-                // inuse.*.lock churn so active sessions can stabilize.
-                const hasCurrentLayoutSignal = snapshotEntries.some((entry) => {
-                    const relPath = entry.split(":")[1] || "";
-                    return relPath === "workspace.yaml"
-                        || relPath === "checkpoints"
-                        || relPath.startsWith("checkpoints/")
-                        || relPath === "files"
-                        || relPath.startsWith("files/")
-                        || relPath === "research"
-                        || relPath.startsWith("research/");
-                });
-                const hasLegacyLayoutSignal = LEGACY_SESSION_FILES.every((file) =>
-                    fs.existsSync(path.join(sessionDir, file)),
-                );
-
-                if (!hasCurrentLayoutSignal && !hasLegacyLayoutSignal) {
-                    missing = [`${sessionId}/workspace.yaml or legacy session files`];
-                    stableCount = 0;
-                    lastSignature = "";
-                    await new Promise((resolve) => setTimeout(resolve, pollMs));
-                    continue;
-                }
-
-                const signature = snapshotEntries.join("|");
-
-                if (signature === lastSignature) {
-                    stableCount += 1;
-                } else {
-                    lastSignature = signature;
-                    stableCount = 1;
-                }
-
-                if (stableCount >= stablePolls) {
-                    return { ready: true, missing: [] };
-                }
-            } else {
-                stableCount = 0;
-                lastSignature = "";
-            }
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, pollMs));
-    }
-
-    if (missing.length === 0) {
-        missing = [`${sessionId}/snapshot still changing`];
-    }
-    return { ready: false, missing };
+    return checkSessionSnapshot(sessionStateDir, sessionId);
 }
 
 export class FilesystemSessionStore implements SessionStateStore {

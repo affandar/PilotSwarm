@@ -817,6 +817,18 @@ body.is-resizing-pane-y * {
   scrollbar-gutter: stable both-edges;
 }
 
+.ps-panel-bottom-sticky {
+  flex: 0 0 auto;
+  max-height: 34%;
+  overflow: auto;
+  padding: 4px 10px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent);
+  background: color-mix(in srgb, var(--ps-surface) 94%, #0f172a 6%);
+  font-size: var(--ps-font-size-dense);
+  line-height: var(--ps-line-height-dense);
+  scrollbar-gutter: stable both-edges;
+}
+
 .ps-line {
   min-height: 1.16rem;
   white-space: pre-wrap;
@@ -1374,6 +1386,10 @@ body.is-resizing-pane-y * {
   padding-top: 6px;
 }
 
+.ps-chat-panel .ps-panel-bottom-sticky {
+  box-shadow: 0 -10px 22px color-mix(in srgb, #000 24%, transparent);
+}
+
 .ps-status-strip {
   display: flex;
   justify-content: space-between;
@@ -1411,6 +1427,12 @@ body.is-resizing-pane-y * {
 
 .ps-prompt-shell.is-mobile {
   grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.ps-prompt-actions {
+  display: inline-flex;
+  align-items: center;
   gap: 8px;
 }
 

@@ -406,6 +406,8 @@ When a new version of `duroxide` is published to npm (after the Node.js SDK is u
 
 ### Updating Copilot SDK (`@github/copilot`, `@github/copilot-sdk`)
 
+When asked to update Copilot SDK dependencies, update **both** `@github/copilot-sdk` and `@github/copilot` together. Do not bump only one package: the SDK's permission protocol, built-in tools, and generated RPC schemas must stay aligned with the bundled Copilot CLI package. After updating, verify `packages/sdk/package.json` and `package-lock.json` resolve compatible versions of both packages.
+
 When a new version of the Copilot SDK is pulled in, run the tool-collision regression check **before** rolling the new version to production:
 
 ```bash

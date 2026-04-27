@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ManagedSession } from "../../src/managed-session.js";
 
 let mockSession;
 let mockManager;
@@ -188,5 +189,53 @@ describe("rehydration message reuse", () => {
         expect(secondTurnText).not.toContain("The previous worker lost the live Copilot connection");
         expect(secondTurnText).toContain("The session was dehydrated and has been rehydrated on a new worker");
         expect(secondTurnText).toContain("polling custom opus46 lead handoff");
+    });
+
+    it("normalizes assistant tool-call history entries with null content before the next turn", async () => {
+        const namedHandlers = new Map();
+        const fakeCopilotSession = {
+            _chatMessages: [
+                {
+                    role: "assistant",
+                    content: null,
+                    tool_calls: [
+                        {
+                            id: "call_wait_1",
+                            type: "function",
+                            function: {
+                                name: "wait",
+                                arguments: '{"seconds":35}',
+                            },
+                        },
+                    ],
+                },
+            ],
+            _systemContextMessages: [],
+            registerTools: vi.fn(),
+            on: vi.fn((eventOrHandler, maybeHandler) => {
+                if (typeof eventOrHandler === "function") {
+                    return () => {};
+                }
+                const handlers = namedHandlers.get(eventOrHandler) || [];
+                handlers.push(maybeHandler);
+                namedHandlers.set(eventOrHandler, handlers);
+                return () => {};
+            }),
+            send: vi.fn(async () => {
+                expect(fakeCopilotSession._chatMessages[0].content).toBe("");
+                for (const handler of namedHandlers.get("session.idle") || []) {
+                    await handler({});
+                }
+            }),
+            abort: vi.fn(),
+            disconnect: vi.fn(),
+        };
+
+        const managed = new ManagedSession("compat-session", fakeCopilotSession, {});
+        const result = await managed.runTurn("ok what is going on right now");
+
+        expect(fakeCopilotSession.send).toHaveBeenCalledTimes(1);
+        expect(fakeCopilotSession._chatMessages[0].content).toBe("");
+        expect(result.type).toBe("completed");
     });
 });

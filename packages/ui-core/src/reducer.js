@@ -21,6 +21,10 @@ function cloneFilesBySessionId(bySessionId) {
     return { ...(bySessionId || {}) };
 }
 
+function cloneOutboxBySessionId(bySessionId) {
+    return { ...(bySessionId || {}) };
+}
+
 function cloneOrchestrationBySessionId(bySessionId) {
     return { ...(bySessionId || {}) };
 }
@@ -454,6 +458,15 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "ui/promptEdit":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    promptEdit: action.promptEdit ?? null,
+                },
+            };
+
         case "ui/promptAttachments":
             return {
                 ...state,
@@ -681,11 +694,36 @@ export function appReducer(state, action) {
             if (ids.length === 0) return state;
             const nextHistory = cloneHistoryMap(state.history.bySessionId);
             for (const id of ids) nextHistory.delete(id);
+            const nextOutbox = cloneOutboxBySessionId(state.outbox?.bySessionId);
+            for (const id of ids) delete nextOutbox[id];
             return {
                 ...state,
                 history: {
                     ...state.history,
                     bySessionId: nextHistory,
+                },
+                outbox: {
+                    ...state.outbox,
+                    bySessionId: nextOutbox,
+                },
+            };
+        }
+
+        case "outbox/setSessionItems": {
+            const sessionId = action.sessionId;
+            if (!sessionId) return state;
+            const items = Array.isArray(action.items) ? action.items.filter(Boolean) : [];
+            const nextOutbox = cloneOutboxBySessionId(state.outbox?.bySessionId);
+            if (items.length === 0) {
+                delete nextOutbox[sessionId];
+            } else {
+                nextOutbox[sessionId] = items;
+            }
+            return {
+                ...state,
+                outbox: {
+                    ...state.outbox,
+                    bySessionId: nextOutbox,
                 },
             };
         }

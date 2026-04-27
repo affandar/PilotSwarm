@@ -17,6 +17,7 @@ import {
     selectArtifactUploadModal,
     selectChatLines,
     selectChatPaneChrome,
+    selectOutboxOverlayLines,
     selectFileBrowserItems,
     selectFilesFilterModal,
     selectFilesScope,
@@ -230,6 +231,12 @@ function normalizeLines(lines) {
             for (const parsedLine of parseTerminalMarkupRuns(line.value || "")) {
                 normalized.push({ kind: "runs", runs: parsedLine });
             }
+            continue;
+        }
+        // Sentinel kinds preserved as-is so parseStructuredChatBlocks can
+        // recognize and render them (e.g. markdownTable → HTML <table>).
+        if (line?.kind === "markdownTable") {
+            normalized.push(line);
             continue;
         }
         if (Array.isArray(line)) {
@@ -453,9 +460,20 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             pane: paneKey,
             offset: pixels / SCROLL_ROW_HEIGHT,
         });
+        if (paneKey === "chat" && scrollMode === "bottom" && node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
+            controller.armChatTopHistoryLoad?.();
+        }
     }, [controller, paneKey, ref, scrollMode, stickyBottom]);
 
-    return { normalizedLines, onScroll };
+    const onWheel = React.useCallback((event) => {
+        const node = ref.current;
+        if (!node || paneKey !== "chat" || scrollMode !== "bottom" || event.deltaY >= 0) return;
+        if (node.scrollTop > PROGRAMMATIC_SCROLL_TOLERANCE_PX) return;
+        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT);
+    }, [controller, paneKey, ref, scrollMode]);
+
+    return { normalizedLines, onScroll, onWheel };
 }
 
 function Runs({ runs, theme }) {
@@ -587,34 +605,6 @@ function renderInlineMarkdown(source, theme, keyPrefix = "md") {
         }
         return React.createElement(React.Fragment, { key }, token.text);
     });
-}
-
-function normalizeTableCellText(value = "") {
-    return String(value || "")
-        .replace(/\s+/g, " ")
-        .trim();
-}
-
-function computeFitWidthColumnPercentages(rows = []) {
-    const columnCount = Math.max(0, ...rows.map((row) => row.length));
-    if (columnCount <= 0) return null;
-
-    const maxLengths = Array.from({ length: columnCount }, () => 0);
-    for (const row of rows) {
-        for (let index = 0; index < columnCount; index += 1) {
-            const cellText = normalizeTableCellText(row[index] || "");
-            maxLengths[index] = Math.max(maxLengths[index], cellText.length);
-        }
-    }
-
-    const weights = maxLengths.map((length) => {
-        const normalizedLength = Math.max(6, Math.min(196, length || 0));
-        return Math.sqrt(normalizedLength);
-    });
-    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
-    if (!(totalWeight > 0)) return null;
-
-    return weights.map((weight) => `${((weight / totalWeight) * 100).toFixed(2)}%`);
 }
 
 function isMarkdownSpecialLine(line = "", nextLine = "") {
@@ -770,9 +760,11 @@ function MarkdownPreviewContent({ content, theme }) {
                 // every cell (>6 columns is the practical readability cliff
                 // on phones).
                 const fitToWidth = columnCount > 0 && columnCount <= 6;
-                const columnWidths = fitToWidth
-                    ? computeFitWidthColumnPercentages([block.header, ...block.rows])
-                    : null;
+                // Let the browser's auto-table-layout do column sizing under
+                // the fit-content constraint — it uses min/max content widths
+                // per column, which is the standard algorithm and handles
+                // mixed narrow + wide columns much better than a sqrt-of-max
+                // heuristic that floors short columns at width-6.
                 return React.createElement("div", {
                     key: `block:${index}`,
                     className: `ps-md-table-wrap${fitToWidth ? " is-fit-width" : ""}`,
@@ -780,13 +772,6 @@ function MarkdownPreviewContent({ content, theme }) {
                     React.createElement("table", {
                         className: `ps-md-table${fitToWidth ? " is-fit-width" : ""}`,
                     },
-                        columnWidths
-                            ? React.createElement("colgroup", null,
-                                columnWidths.map((width, columnIndex) => React.createElement("col", {
-                                    key: `col:${columnIndex}`,
-                                    style: width ? { width } : undefined,
-                                })))
-                            : null,
                         React.createElement("thead", null,
                             React.createElement("tr", null,
                                 block.header.map((cell, cellIndex) => React.createElement("th", { key: `head:${cellIndex}` },
@@ -968,6 +953,24 @@ function parseStructuredChatBlocks(lines = []) {
 
     for (let index = 0; index < lines.length;) {
         const currentLine = lines[index];
+
+        // Sentinel markdown-table line emitted by parseMarkdownLines when
+        // tableMode === "sentinel". Carries the raw header + rows so the
+        // portal renders a real HTML table with markdown cell content (so
+        // [label](url) inside cells stays clickable, instead of being flattened
+        // into plain text by the box-art width-fitter).
+        if (currentLine?.kind === "markdownTable") {
+            blocks.push({
+                type: "table",
+                headerRows: Array.isArray(currentLine.header) && currentLine.header.length > 0
+                    ? [currentLine.header]
+                    : [],
+                bodyRows: Array.isArray(currentLine.rows) ? currentLine.rows : [],
+            });
+            index += 1;
+            continue;
+        }
+
         const currentText = lineText(currentLine);
 
         if (isBoxTopLine(currentText) && currentText.includes("┬")) {
@@ -1133,9 +1136,14 @@ function StructuredChatBlocks({ lines, theme }) {
                     ...bodyRows.map((row) => row.length),
                 );
                 const fitToWidth = columnCount <= 6;
-                const columnWidths = fitToWidth
-                    ? computeFitWidthColumnPercentages([...headerRows, ...bodyRows])
-                    : null;
+                // No precomputed <colgroup> widths: a sqrt(maxLength) heuristic
+                // floors short columns and compresses long ones, leaving narrow
+                // columns (Work item, Current stance) padded and wide columns
+                // (Title, Notes) cramped. The browser's native auto layout uses
+                // min/max content widths under the container's max-width and
+                // produces much more proportional results — the "standard
+                // algorithm" for this. CSS gives us fit-content + word-break +
+                // overflow-wrap so wide columns wrap and narrow columns shrink.
                 return React.createElement("div", {
                     key: `table:${index}`,
                     className: `ps-chat-table-wrap${fitToWidth ? " is-fit-width" : ""}`,
@@ -1143,13 +1151,6 @@ function StructuredChatBlocks({ lines, theme }) {
                     React.createElement("table", {
                         className: `ps-chat-table${fitToWidth ? " is-fit-width" : ""}`,
                     },
-                        columnWidths
-                            ? React.createElement("colgroup", null,
-                                columnWidths.map((width, columnIndex) => React.createElement("col", {
-                                    key: `col:${columnIndex}`,
-                                    style: width ? { width } : undefined,
-                                })))
-                            : null,
                         headerRows.length > 0
                             ? React.createElement("thead", null,
                                 headerRows.map((row, rowIndex) => React.createElement("tr", { key: `thead:${rowIndex}` },
@@ -1192,14 +1193,15 @@ function Panel({ title, titleRight = null, color = "gray", focused = false, acti
     React.createElement("div", { className: "ps-panel-body" }, children));
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false, stickyBottom = false }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false, stickyBottom = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
     const stickyRef = React.useRef(null);
     const syncingHorizontalRef = React.useRef(false);
-    const { normalizedLines, onScroll } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
+    const { normalizedLines, onScroll, onWheel } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
     const normalizedSticky = React.useMemo(() => normalizeLines(stickyLines), [stickyLines]);
+    const normalizedBottomSticky = React.useMemo(() => normalizeLines(bottomStickyLines), [bottomStickyLines]);
     const preserveHorizontalScroll = className.includes("is-preserve") && panelClassName.includes("has-preserved-sticky");
 
     const syncScrollLeft = React.useCallback((source, target) => {
@@ -1234,11 +1236,18 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll },
+        React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll, onWheel },
             structuredBlocks
                 ? React.createElement(StructuredChatBlocks, { lines: normalizedLines, theme })
                 : normalizedLines.map((line, index) => React.createElement(Line, { key: `line:${index}`, line, theme })),
-        ));
+        ),
+        normalizedBottomSticky.length > 0
+            ? React.createElement("div", {
+                className: "ps-panel-bottom-sticky",
+            },
+                normalizedBottomSticky.map((line, index) => React.createElement(Line, { key: `bottom-sticky:${index}`, line, theme })),
+            )
+            : null);
 }
 
 function SessionPane({ controller, actions = null, panelClassName = "" }) {
@@ -1370,6 +1379,9 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         return {
             activeSessionId,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            activeOutbox: activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
+                ? state.outbox.bySessionId[activeSessionId]
+                : [],
             branding: state.branding,
             connection: state.connection,
             sessionsById: state.sessions.byId,
@@ -1393,12 +1405,18 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
                 ? new Map([[viewState.activeSessionId, viewState.activeHistory]])
                 : new Map(),
         },
+        outbox: {
+            bySessionId: viewState.activeSessionId
+                ? { [viewState.activeSessionId]: viewState.activeOutbox }
+                : {},
+        },
         ui: {
             inspectorTab: viewState.inspectorTab,
         },
     }), [
         viewState.activeHistory,
         viewState.activeSessionId,
+        viewState.activeOutbox,
         viewState.branding,
         viewState.connection,
         viewState.inspectorTab,
@@ -1415,7 +1433,11 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
     const lines = React.useMemo(
-        () => selectChatLines(selectorState, viewState.contentWidth),
+        () => selectChatLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
+        [selectorState, viewState.contentWidth],
+    );
+    const outboxLines = React.useMemo(
+        () => selectOutboxOverlayLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],
     );
 
@@ -1426,6 +1448,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         color: chrome.color,
         focused: viewState.focused,
         lines,
+        bottomStickyLines: outboxLines,
         scrollOffset: viewState.scroll,
         scrollMode: "bottom",
         paneKey: "chat",
@@ -1987,12 +2010,22 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
+        const outbox = activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
+            ? state.outbox.bySessionId[activeSessionId]
+            : [];
         return {
             value: state.ui.prompt,
             cursor: state.ui.promptCursor,
             focused: state.ui.focusRegion === "prompt",
             modalOpen: Boolean(state.ui.modal),
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
+            hasOutbox: outbox.length > 0,
+            hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
+            pendingCount: outbox.filter((item) => item?.phase === "pending").length,
+            editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
+            selectedOutboxPhase: state.ui.promptEdit?.sessionId === activeSessionId
+                ? state.ui.promptEdit?.phase || null
+                : null,
         };
     }, shallowEqualObject);
     const inputRef = React.useRef(null);
@@ -2018,17 +2051,51 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             });
     }, [controller, onAfterSend]);
 
+    const cancelPending = React.useCallback(() => {
+        if (controller.getState().ui.promptEdit) {
+            if (typeof controller.cancelSelectedOutboxPrompt === "function") {
+                controller.cancelSelectedOutboxPrompt().catch(() => {});
+            } else {
+                controller.cancelSelectedPendingPrompt();
+            }
+            return;
+        }
+        if (typeof controller.cancelLatestQueuedOutbox === "function") {
+            controller.cancelLatestQueuedOutbox().catch(() => {});
+        }
+    }, [controller]);
+
+    const sendLabel = promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+        ? (mobile ? "⇪" : "Send batch")
+        : promptState.hasOutbox
+            ? (mobile ? "+" : "Queue")
+            : mobile
+                ? "↩"
+                : "Send";
+    const selectedQueued = promptState.selectedOutboxPhase === "queued";
+    const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
+    const selectedReadOnly = selectedQueued || selectedCancelling;
+
     return React.createElement("div", {
         className: `ps-prompt-shell${mobile ? " is-mobile" : ""}`,
     },
-        React.createElement("label", { className: "ps-prompt-label" }, promptState.answerMode ? "answer" : "you"),
+        React.createElement("label", { className: "ps-prompt-label" }, promptState.answerMode ? "answer" : selectedCancelling ? "cancelling" : selectedQueued ? "queued" : promptState.editingPending ? "pending" : "you"),
         React.createElement("textarea", {
             ref: inputRef,
             className: "ps-prompt-input",
             rows: mobile ? 2 : Math.max(2, getPromptInputRows(promptState.value)),
             value: promptState.value,
+            readOnly: selectedReadOnly,
             placeholder: promptState.answerMode
                 ? "Type an answer and press Enter"
+                : promptState.editingPending
+                    ? selectedCancelling
+                        ? "Cancellation requested"
+                        : selectedQueued
+                        ? "Queued message selected"
+                        : "Edit the pending message, then send or cancel it"
+                    : promptState.hasOutbox
+                        ? "Type a message and press Enter to queue it behind the pending batch"
                 : "Type a message and press Enter",
             enterKeyHint: "send",
             onFocus: () => controller.setFocus("prompt"),
@@ -2042,19 +2109,57 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     event.preventDefault();
                     return;
                 }
+                if (event.key === "ArrowUp" && !event.shiftKey && !event.metaKey && !event.altKey) {
+                    event.preventDefault();
+                    controller.movePromptCursorVertical(-1);
+                    return;
+                }
+                if (event.key === "ArrowDown" && !event.shiftKey && !event.metaKey && !event.altKey) {
+                    event.preventDefault();
+                    controller.movePromptCursorVertical(1);
+                    return;
+                }
+                if (event.key === "Escape" && promptState.editingPending) {
+                    event.preventDefault();
+                    if (selectedReadOnly) {
+                        controller.exitPendingPromptEdit({ restoreDraft: true });
+                        return;
+                    }
+                    cancelPending();
+                    return;
+                }
                 if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !mobile) {
                     event.preventDefault();
                     sendPrompt();
                 }
             },
         }),
-        React.createElement("button", {
-        type: "button",
-        className: `ps-send-button${mobile ? " is-inline" : ""}`,
-        title: "Send prompt",
-        "aria-label": "Send prompt",
-        onClick: sendPrompt,
-        }, mobile ? "↩" : "Send"),
+        React.createElement("div", { className: "ps-prompt-actions" },
+            promptState.editingPending && !selectedCancelling
+                ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button",
+                    title: selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
+                    "aria-label": selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
+                    onClick: cancelPending,
+                }, selectedQueued ? "Delete" : "Cancel")
+                : null,
+            React.createElement("button", {
+                type: "button",
+                className: `ps-send-button${mobile ? " is-inline" : ""}`,
+                title: promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+                    ? "Send all queued prompts"
+                    : promptState.hasOutbox
+                        ? "Queue prompt behind the pending batch"
+                        : "Send prompt",
+                "aria-label": promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+                    ? "Send queued prompts"
+                    : promptState.hasOutbox
+                        ? "Queue prompt"
+                        : "Send prompt",
+                onClick: sendPrompt,
+            }, sendLabel),
+        ),
     );
 }
 
@@ -2094,7 +2199,10 @@ function buildPortalKeybindingSections({ canUpload, canOpenLocally }) {
         {
             title: "Prompt",
             items: [
-                ["Enter", "Send prompt"],
+                ["Enter", "Send prompt or queue behind pending outbox"],
+                ["Up / Down", "Recall or exit queued pending prompts at prompt boundaries"],
+                ["Esc", "Exit selected queued prompt"],
+                ["d", "Delete selected queued prompt in the TUI"],
                 ["Tab", "Accept @ / @@ autocomplete"],
                 ["@", "Browse this session's artifacts and attach the selection"],
                 ["@@", "Filter sessions and insert a durable session reference"],
@@ -3265,9 +3373,25 @@ export function PilotSwarmWebApp({ controller }) {
         className: "ps-workspace-column",
         style: { gridTemplateRows: `${layout.sessionPaneHeight}fr 16px ${layout.chatPaneHeight}fr` },
     },
-    React.createElement(SessionPane, { controller }),
-    React.createElement(RowResizeHandle, { controller, sessionPaneAdjust: state.sessionPaneAdjust }),
-    React.createElement(ChatPane, { controller })),
+    React.createElement("div", {
+        className: "ps-workspace-pane-slot",
+        style: { gridRow: "1" },
+    },
+        !layout.sessionHidden ? React.createElement(SessionPane, { controller }) : null),
+    React.createElement("div", {
+        style: {
+            gridRow: "2",
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+        },
+    },
+        React.createElement(RowResizeHandle, { controller, sessionPaneAdjust: state.sessionPaneAdjust })),
+    React.createElement("div", {
+        className: "ps-workspace-pane-slot",
+        style: { gridRow: "3" },
+    },
+        !layout.chatHidden ? React.createElement(ChatPane, { controller }) : null)),
     React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust }),
     React.createElement("div", {
         className: "ps-workspace-column",
