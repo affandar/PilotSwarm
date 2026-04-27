@@ -13,7 +13,8 @@
 #   - GITHUB_TOKEN in .env (for Copilot SDK)
 
 set -euo pipefail
-cd "$(dirname "$0")/.."
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
 
 SDK_DIR="packages/sdk"
 ENV_FILE=".env"
@@ -69,7 +70,7 @@ set -a; source "$ENV_FILE"; set +a
 
 cleanup_test_state() {
     echo "🧹 Cleaning stale local test state..."
-    node scripts/cleanup-test-schemas.js
+    node "$REPO_ROOT/scripts/cleanup-test-schemas.js"
 }
 
 cleanup_test_state

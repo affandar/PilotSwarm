@@ -34,6 +34,8 @@
     "test:local:skill-usage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/skill-usage.test.js",
     "test:local:cache-observability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cache-observability.test.js",
     "test:local:facts-stats": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/facts-stats.test.js",
+    "test:local:sdk-disk-format": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sdk-disk-format.test.js",
+    "test:local:dehydrate-no-fallback": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/dehydrate-no-fallback.test.js",
     "test:local": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run",
     "test:perf": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run",
     "test:perf:spawn": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run test/perf/spawn.perf.test.js",
@@ -60,8 +62,8 @@
   },
   "dependencies": {
     "@azure/storage-blob": "^12.31.0",
-    "@github/copilot": "^1.0.32",
-    "@github/copilot-sdk": "^0.2.2",
+    "@github/copilot": "^1.0.36",
+    "@github/copilot-sdk": "^0.3.0",
     "duroxide": "^0.1.23",
     "file-type": "^20.5.0",
     "pg": "^8.18.0"

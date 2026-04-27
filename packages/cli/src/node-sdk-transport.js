@@ -638,24 +638,46 @@ export class NodeSdkTransport {
             throw new Error(buildTerminalSendError(sessionId, session));
         }
 
+        const sendOptions = options?.clientMessageIds && Array.isArray(options.clientMessageIds) && options.clientMessageIds.length > 0
+            ? { clientMessageIds: options.clientMessageIds }
+            : undefined;
+
         if (options?.enqueueOnly) {
-            await this.mgmt.sendMessage(sessionId, prompt);
+            // enqueueOnly originally routed through mgmt.sendMessage to skip
+            // the wait-for-result polling, but PilotSwarmSession.send is
+            // already fire-and-forget. Routing through the session handle
+            // ensures _ensureOrchestrationAndSend starts the orchestration
+            // on the very first message — mgmt.sendMessage only enqueues
+            // and would silently produce orphan queue messages for fresh
+            // sessions.
+            const sessionHandleEnqueue = await this.getSessionHandle(sessionId);
+            await sessionHandleEnqueue.send(prompt, sendOptions);
             return;
         }
 
-        try {
-            const sessionHandle = await this.getSessionHandle(sessionId);
-            await sessionHandle.send(prompt);
-        } catch (error) {
-            if (isTerminalSendError(error)) {
-                throw error;
-            }
-            await this.mgmt.sendMessage(sessionId, prompt);
-        }
+        // IMPORTANT: do NOT silently fall back to mgmt.sendMessage on transient
+        // errors. mgmt.sendMessage only enqueues onto the durable messages
+        // queue — it never starts the orchestration. If sessionHandle.send
+        // fails (for example startOrchestrationVersioned threw transiently),
+        // falling back to a pure enqueue produces an "orphan queue message"
+        // that duroxide-pg eventually drops, leaving the CMS row in `running`
+        // state with `orchestration_id = NULL` and the UI stuck on
+        // "Working…" forever. Propagate the error so the caller can retry
+        // through the full sessionHandle.send path that owns the start.
+        const sessionHandle = await this.getSessionHandle(sessionId);
+        await sessionHandle.send(prompt);
     }
 
     async sendAnswer(sessionId, answer) {
         await this.mgmt.sendAnswer(sessionId, answer);
+    }
+
+    async cancelPendingMessage(sessionId, clientMessageIds) {
+        const ids = Array.isArray(clientMessageIds)
+            ? clientMessageIds.filter((id) => typeof id === "string" && id)
+            : [];
+        if (ids.length === 0) return;
+        await this.mgmt.cancelPendingMessage(sessionId, ids);
     }
 
     async renameSession(sessionId, title) {

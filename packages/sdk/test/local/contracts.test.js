@@ -71,7 +71,6 @@ const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     "report_intent",
     "parallel",
     "rg",
-    "session_store_sql",
     "skill",
     "sql",
     "stop_bash",

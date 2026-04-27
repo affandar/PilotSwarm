@@ -9,13 +9,14 @@ import type { SessionCatalogProvider } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
+import { approvePermissionForSession } from "./permissions.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
-const DEHYDRATE_STORE_MAX_RETRIES = 3;
-const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 500;
+const DEHYDRATE_STORE_MAX_RETRIES = 1;
+const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 0;
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -230,8 +231,19 @@ export class SessionManager {
                 }
             }
             this.client = new CopilotClient({
-                ...(token ? { githubToken: token } : {}),
+                ...(token ? { gitHubToken: token } : {}),
                 logLevel: "error",
+                // The Copilot CLI honors COPILOT_HOME (and only COPILOT_HOME) to decide
+                // where to write per-session state. Passing `configDir` on SessionConfig
+                // is inert for state placement (verified empirically against
+                // @github/copilot 1.0.36). We export COPILOT_HOME here so the CLI's
+                // ~/.copilot resolves to <sessionStateDir>/.., which keeps test isolation
+                // honest and lets production deployments place session state on the
+                // mounted emptyDir volume rather than the container's user home.
+                env: {
+                    ...process.env,
+                    COPILOT_HOME: path.dirname(this.sessionStateDir),
+                },
             });
         }
         return this.client;
@@ -379,11 +391,23 @@ export class SessionManager {
             systemMessage: systemMessage
                 ? (typeof systemMessage === "string" ? { content: systemMessage } : systemMessage)
                 : undefined,
-            configDir: path.dirname(this.sessionStateDir),
+            // configDir is intentionally omitted: the Copilot CLI does not honor it for
+            // state placement (verified against @github/copilot 1.0.36). State location is
+            // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
             workingDirectory: config.workingDirectory,
             hooks: config.hooks,
-            onPermissionRequest: (config as any).onPermissionRequest ?? (async () => ({ kind: "approved" as const })),
+            onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
+            // Enable token-level streaming so the catch-all event handler in
+            // ManagedSession sees `assistant.message_delta` /
+            // `assistant.streaming_delta` arrivals and can emit a coarse
+            // `assistant.streaming_progress` heartbeat for the activity pane.
+            // The deltas themselves stay ephemeral (see EPHEMERAL_TYPES in
+            // session-proxy.ts) so they never reach CMS.
+            streaming: true,
+            // Suppress sub-agent streaming events — we never want the parent
+            // session's event log polluted with grandchild deltas.
+            includeSubAgentStreamingEvents: false,
             // Exclude the Copilot SDK's built-in "task" tool — PilotSwarm provides
             // its own durable sub-agent mechanism via spawn_agent / check_agents.
             // The native "task" tool spawns in-process sub-agents that bypass the
@@ -510,17 +534,19 @@ export class SessionManager {
     }
 
     /**
-     * Dehydrate a session: destroy in memory, then persist state to the configured session store.
+     * Dehydrate a session: snapshot to the session store, release in-memory state.
      *
-     * The Copilot SDK's disconnect path preserves session state on disk, so we
-     * first release the in-memory session and then archive the resulting local
-     * session files into the configured session store.
-     *
-     * If destroy() fails (e.g., Copilot connection already disposed), we retry
-     * by re-creating the session from local files and destroying again.
-     * After destroy retries, we still attempt the session-store write. That
-     * write is retried separately so transient archive/blob failures can
-     * recover before we bubble a terminal error back to the orchestration.
+     * Order of operations matters here. The Copilot SDK's `disconnect()` is
+     * documented to preserve the on-disk session directory intact (verified
+     * empirically against @github/copilot 1.0.36). We:
+     *   1. Take a pre-destroy checkpoint of the live directory as a safety net.
+     *   2. Disconnect the in-memory session, retrying with `resumeSession` if
+     *      the connection was already torn down (e.g. CLI process died).
+     *   3. Persist the post-disconnect snapshot to the session store. This
+     *      is a single-shot attempt because the SDK does not asynchronously
+     *      flush after disconnect: the files either exist or they don't.
+     *   4. If the post-disconnect snapshot is missing (which would indicate
+     *      a future SDK regression), fall back to the pre-destroy checkpoint.
      */
     async dehydrate(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter }): Promise<void> {
         const DESTROY_MAX_RETRIES = 3;
@@ -528,10 +554,15 @@ export class SessionManager {
         let lastDestroyError: Error | undefined;
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         let checkpointPrepared = false;
+        // Captured before destroy so we can tell whether a pre-destroy safety
+        // checkpoint exists. Absence of local files is not benign by itself:
+        // this dehydrate may have landed on a different worker after a prior
+        // live turn, so the activity layer must treat missing state as lossy.
+        const sessionDirExistedPreDestroy = fs.existsSync(sessionDir);
 
         emitSessionManagerTrace(sessionId, `dehydrate start reason=${reason}`, { trace });
 
-        if (this.sessionStore && fs.existsSync(sessionDir)) {
+        if (this.sessionStore && sessionDirExistedPreDestroy) {
             try {
                 emitSessionManagerTrace(sessionId, "pre-dehydrate checkpoint start", { trace });
                 await this.sessionStore.checkpoint(sessionId);
@@ -578,7 +609,7 @@ export class SessionManager {
                             const config = this.sessionConfigs.get(sessionId) ?? {};
                             const copilotSession = await client.resumeSession(sessionId, {
                                 tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
-                                onPermissionRequest: async () => ({ kind: "approved" as const }),
+                                onPermissionRequest: approvePermissionForSession,
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);
                             this.sessions.set(sessionId, managed);
@@ -843,7 +874,7 @@ export class SessionManager {
             const resolved = registry.resolve(model);
             if (resolved) {
                 if (resolved.type === "github") {
-                    // GitHub provider — no SDK provider needed, uses githubToken on the client
+                    // GitHub provider — no SDK provider needed, uses gitHubToken on the client
                     return {};
                 }
                 if (resolved.sdkProvider) {

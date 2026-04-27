@@ -317,6 +317,10 @@ export class BrowserPortalTransport {
         return this.rpc("sendAnswer", { sessionId, answer });
     }
 
+    async cancelPendingMessage(sessionId, clientMessageIds) {
+        return this.rpc("cancelPendingMessage", { sessionId, clientMessageIds });
+    }
+
     async renameSession(sessionId, title) {
         return this.rpc("renameSession", { sessionId, title });
     }

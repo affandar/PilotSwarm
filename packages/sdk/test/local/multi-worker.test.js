@@ -341,9 +341,14 @@ async function testTurnOneLossyReplaysWithoutStoredSession(env) {
 
     let sessionId;
     try {
-        const session = await clientA.createSession(MEMORY_CONFIG);
+        const session = await clientA.createSession({
+            systemMessage: {
+                mode: "replace",
+                content: "Do not call tools. Reply immediately with the exact requested acknowledgement text.",
+            },
+        });
         sessionId = session.sessionId;
-        const response = await session.sendAndWait("Remember this exact code: LOST77", TIMEOUT);
+        const response = await session.sendAndWait("Reply with exactly: TURN-ONE-READY", TIMEOUT);
         assert(response && response.length > 0, "Turn 1 response should exist before state deletion");
     } finally {
         await clientA.stop();
@@ -373,10 +378,10 @@ async function testTurnOneLossyReplaysWithoutStoredSession(env) {
     try {
         const resumed = await clientB.resumeSession(sessionId);
         const response = await resumed.sendAndWait(
-            "State may have been lost. Give a short recovery acknowledgement and continue carefully.",
+            "Do not call tools or wait. Reply immediately with exactly: LOSSY-REPLAY-READY",
             TIMEOUT,
         );
-        assert(response && response.length > 0, "turn 1+ should recover via lossy replay when no resumable session state exists");
+        assertIncludes(response, "LOSSY-REPLAY-READY", "turn 1+ should recover via lossy replay when no resumable session state exists");
 
         const catalog = await createCatalog(env);
         try {

@@ -991,8 +991,17 @@ export class PilotSwarmManagementClient {
 
     /**
      * Send a prompt message to a session's orchestration.
+     *
+     * @param options.clientMessageIds Optional list of UI-generated message ids
+     *   that contributed to this (potentially merged) prompt. The orchestration
+     *   preserves these and records them on the durable user.message event so
+     *   the client can ack/cancel by exact id rather than text match.
      */
-    async sendMessage(sessionId: string, prompt: string): Promise<void> {
+    async sendMessage(
+        sessionId: string,
+        prompt: string,
+        options?: { clientMessageIds?: string[] },
+    ): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
         if (!session) {
@@ -1015,17 +1024,68 @@ export class PilotSwarmManagementClient {
             );
         }
         const orchId = `session-${sessionId}`;
+        await this._assertOrchestrationLive(orchId, sessionId, "sendMessage");
         await this._catalog!.updateSession(sessionId, {
             state: "running",
             lastError: null,
             waitReason: null,
             lastActiveAt: new Date(),
         }).catch(() => {});
+
+        // Optional: only include clientMessageIds in the payload when present so
+        // the JSON shape stays byte-for-byte identical for callers that don't
+        // pass them. This keeps every existing frozen orchestration version
+        // happy on replay.
+        const payload: Record<string, unknown> = { prompt };
+        if (options?.clientMessageIds && options.clientMessageIds.length > 0) {
+            payload.clientMessageIds = options.clientMessageIds;
+        }
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
-            JSON.stringify({ prompt }),
+            JSON.stringify(payload),
         );
+    }
+
+    /**
+     * Defense-in-depth guard for management enqueue paths.
+     *
+     * The management client only enqueues onto the durable messages queue —
+     * it never starts an orchestration. If the orchestration was never
+     * started (or has been removed), the enqueue lands on a queue with no
+     * live instance and duroxide-pg eventually drops it as an orphan,
+     * silently breaking the session. Refuse to enqueue in that case so the
+     * caller sees an actionable error and can retry through the start-aware
+     * path (`PilotSwarmSession.send` → `_ensureOrchestrationAndSend`).
+     */
+    private async _assertOrchestrationLive(
+        orchId: string,
+        sessionId: string,
+        operation: string,
+    ): Promise<void> {
+        // Use getStatus, not getInstanceInfo: getStatus returns
+        // `{ status: "NotFound" }` for non-existent instances, while
+        // getInstanceInfo throws — and we cannot distinguish a real
+        // "not found" from a transient connection error in a thrown
+        // message reliably. With getStatus we can fail closed on
+        // NotFound and fail open on transient errors.
+        let status: string | undefined;
+        try {
+            const info = await this._duroxideClient.getStatus(orchId);
+            status = info?.status;
+        } catch {
+            // Transient duroxide query failure — fail open so legitimate
+            // enqueues are not blocked when the durable layer is briefly
+            // unavailable. The dispatcher's orphan-drop is the last-resort
+            // backstop.
+            return;
+        }
+        if (!status || status === "NotFound" || status === "Unknown") {
+            throw new Error(
+                `Cannot ${operation} for session ${sessionId.slice(0, 8)}: orchestration ${orchId} is not started (status=${status ?? "missing"}). ` +
+                `Use PilotSwarmSession.send (which starts the orchestration on the first turn) instead of the management enqueue path.`,
+            );
+        }
     }
 
     /**
@@ -1034,10 +1094,32 @@ export class PilotSwarmManagementClient {
     async sendAnswer(sessionId: string, answer: string): Promise<void> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
+        await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
             JSON.stringify({ answer, wasFreeform: true }),
+        );
+    }
+
+    /**
+     * Cancel one or more queued (durable) pending messages by their
+     * UI-generated client message ids.
+     *
+     * @internal Prefer `PilotSwarmSession.cancelPendingMessage` for in-process
+     * callers and the public client transport surface for remote callers; this
+     * method is the low-level durable enqueue both layers funnel through.
+     */
+    async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {
+        this._ensureStarted();
+        const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
+        if (ids.length === 0) return;
+        const orchId = `session-${sessionId}`;
+        await this._assertOrchestrationLive(orchId, sessionId, "cancelPendingMessage");
+        await this._duroxideClient.enqueueEvent(
+            orchId,
+            "messages",
+            JSON.stringify({ cancelPending: ids }),
         );
     }
 
@@ -1047,6 +1129,7 @@ export class PilotSwarmManagementClient {
     async sendCommand(sessionId: string, command: { cmd: string; id: string; args?: Record<string, unknown> }): Promise<void> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
+        await this._assertOrchestrationLive(orchId, sessionId, "sendCommand");
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",

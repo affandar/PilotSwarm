@@ -15,10 +15,13 @@ function makeConnectionString() {
 }
 
 describe("SessionBlobStore", () => {
-    it("waits for the current session snapshot layout before archiving on dehydrate", async () => {
+    it("archives the current session snapshot layout on dehydrate", async () => {
+        // The post-disconnect contract: by the time we call dehydrate, the SDK
+        // has either flushed durably or it never will. There is no race to
+        // wait for; the directory either has the layout or it doesn't.
         const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-blob-store-"));
         const sessionStateDir = path.join(baseDir, "session-state");
-        const sessionId = "delayed-session";
+        const sessionId = "current-layout-session";
         const sessionDir = path.join(sessionStateDir, sessionId);
 
         const store = new SessionBlobStore(makeConnectionString(), "test-container", sessionStateDir);
@@ -47,13 +50,13 @@ describe("SessionBlobStore", () => {
             async *listBlobsFlat() {},
         };
 
-        setTimeout(() => {
-            fs.mkdirSync(path.join(sessionDir, "checkpoints"), { recursive: true });
-            fs.mkdirSync(path.join(sessionDir, "files"), { recursive: true });
-            fs.writeFileSync(path.join(sessionDir, "workspace.yaml"), "cwd: /tmp\n", "utf-8");
-            fs.writeFileSync(path.join(sessionDir, "checkpoints", "index.md"), "# checkpoint\n", "utf-8");
-            fs.writeFileSync(path.join(sessionDir, "files", "README.md"), "workspace file\n", "utf-8");
-        }, 50);
+        // Write the layout synchronously, the way a healthy post-disconnect
+        // session directory looks on disk.
+        fs.mkdirSync(path.join(sessionDir, "checkpoints"), { recursive: true });
+        fs.mkdirSync(path.join(sessionDir, "files"), { recursive: true });
+        fs.writeFileSync(path.join(sessionDir, "workspace.yaml"), "cwd: /tmp\n", "utf-8");
+        fs.writeFileSync(path.join(sessionDir, "checkpoints", "index.md"), "# checkpoint\n", "utf-8");
+        fs.writeFileSync(path.join(sessionDir, "files", "README.md"), "workspace file\n", "utf-8");
 
         try {
             await store.dehydrate(sessionId, { reason: "cron" });
@@ -65,6 +68,36 @@ describe("SessionBlobStore", () => {
             expect(metadataWrites[0].name).toBe(`${sessionId}.meta.json`);
             expect(JSON.parse(metadataWrites[0].body).reason).toBe("cron");
             expect(fs.existsSync(sessionDir)).toBe(false);
+        } finally {
+            fs.rmSync(baseDir, { recursive: true, force: true });
+        }
+    });
+
+    it("rejects when the session directory is missing the required layout", async () => {
+        // Single-shot semantics: if the dir is missing or empty when dehydrate
+        // is called, that's terminal — the SDK will never produce more state
+        // for this session.
+        const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-blob-store-empty-"));
+        const sessionStateDir = path.join(baseDir, "session-state");
+        const sessionId = "missing-layout-session";
+
+        const store = new SessionBlobStore(makeConnectionString(), "test-container", sessionStateDir);
+        store.containerClient = {
+            getBlockBlobClient() {
+                return {
+                    async uploadFile() { throw new Error("uploadFile should not be called"); },
+                    async upload() { throw new Error("upload should not be called"); },
+                    async deleteIfExists() {},
+                    async exists() { return false; },
+                    url: "https://example.test/missing",
+                };
+            },
+            async *listBlobsFlat() {},
+        };
+
+        try {
+            await expect(store.dehydrate(sessionId, { reason: "cron" }))
+                .rejects.toThrow(/Session state directory not ready during dehydrate/i);
         } finally {
             fs.rmSync(baseDir, { recursive: true, force: true });
         }

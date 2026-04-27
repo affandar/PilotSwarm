@@ -46,6 +46,10 @@ describe("portal browser contracts", () => {
         assertIncludes(runtime, "async downloadArtifactBinary(sessionId, filename)", "portal runtime should expose a raw-byte artifact download path for HTTP downloads");
         assertIncludes(browserTransport, "async getUserStats(opts)", "browser transport should expose user stats RPC");
         assertIncludes(runtime, 'case "getUserStats":', "portal runtime should expose user stats RPC");
+        assertIncludes(browserTransport, "async cancelPendingMessage(sessionId, clientMessageIds)", "browser transport should expose queued prompt cancellation RPC");
+        assertIncludes(browserTransport, 'return this.rpc("cancelPendingMessage"', "browser transport should send cancellation tombstones through portal RPC");
+        assertIncludes(runtime, 'case "cancelPendingMessage":', "portal runtime should expose queued prompt cancellation RPC");
+        assertIncludes(runtime, "this.transport.cancelPendingMessage(safeParams.sessionId, safeParams.clientMessageIds)", "portal runtime should forward cancellation ids to node transport");
         assertIncludes(nodeTransport, "async uploadArtifactContent(sessionId, filename, content, contentType", "node transport should accept browser-supplied artifact content");
         assertIncludes(nodeTransport, "async deleteArtifact(sessionId, filename)", "node transport should expose single-artifact deletion against the artifact store");
         assertIncludes(nodeTransport, 'if (contentEncoding === "base64")', "node transport should decode base64 upload payloads back to raw bytes");
@@ -115,6 +119,9 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, 'className: "is-wrapped"', "portal activity pane should render wrapped lines");
         assertIncludes(webApp, 'type: "code"', "portal chat renderer should recognize code fence blocks");
         assertIncludes(webApp, "ps-chat-code-block", "portal chat renderer should render code fences with a dedicated code block style");
+        assertIncludes(webApp, "selectOutboxOverlayLines(selectorState", "portal chat should render queued prompts outside scrollback");
+        assertIncludes(webApp, "bottomStickyLines: outboxLines", "portal chat should pin queued prompts below the scrollable transcript");
+        assertIncludes(css, ".ps-panel-bottom-sticky", "portal stylesheet should style the fixed queued prompt strip");
         assertIncludes(webApp, "controller.adjustSessionPaneSplit", "web app should support resizing the session list vertically");
         assertIncludes(webApp, "controller.adjustActivityPaneSplit", "web app should support resizing the inspector/activity split vertically");
         assertIncludes(layout, "sessionPaneAdjust", "layout computation should persist vertical session-pane adjustments");

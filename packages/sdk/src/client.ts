@@ -371,6 +371,23 @@ export class PilotSwarmClient {
         this.activeOrchestrations.delete(sessionId);
     }
 
+    /**
+     * Cancel one or more queued (durable) pending messages for a session by
+     * their UI-generated client message ids. Convenience wrapper around
+     * `PilotSwarmSession.cancelPendingMessage`.
+     */
+    async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {
+        const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
+        if (ids.length === 0) return;
+        if (!this.duroxideClient) return;
+        const orchestrationId = `session-${sessionId}`;
+        await this.duroxideClient.enqueueEvent(
+            orchestrationId,
+            "messages",
+            JSON.stringify({ cancelPending: ids }),
+        );
+    }
+
     // ─── Lifecycle ───────────────────────────────────────────
 
     async start(): Promise<void> {
@@ -435,7 +452,7 @@ export class PilotSwarmClient {
     private async _ensureOrchestrationAndSend(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string },
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] },
     ): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
         const _trace = this.config.traceWriter ?? (() => {});
@@ -537,6 +554,9 @@ export class PilotSwarmClient {
                 prompt,
                 ...(opts?.bootstrap ? { bootstrap: true } : {}),
                 ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
+                ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
+                    ? { clientMessageIds: opts.clientMessageIds }
+                    : {}),
             }),
         );
         trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
@@ -570,7 +590,7 @@ export class PilotSwarmClient {
     async _startTurn(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string },
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] },
     ): Promise<string> {
         return this._ensureOrchestrationAndSend(sessionId, prompt, opts);
     }
@@ -916,6 +936,12 @@ export class PilotSwarmClient {
                 const orchStatus = await getDuroxideClient().getStatus(orchestrationId);
                 if (orchStatus.status === "Failed") throw new Error(orchStatus.error ?? "Orchestration failed");
                 if (orchStatus.status === "Completed") return orchStatus.output;
+                const currentVersion = orchStatus.customStatusVersion || 0;
+                if (currentVersion < lastSeenVersion) {
+                    lastSeenVersion = 0;
+                    lastSeenIteration = -1;
+                    this.lastSeenStatusVersion.set(orchestrationId, 0);
+                }
             }
 
             throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
@@ -980,7 +1006,7 @@ export class PilotSwarmSession {
         );
     }
 
-    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string }): Promise<void> {
+    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] }): Promise<void> {
         this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt, opts);
     }
 
@@ -1049,6 +1075,28 @@ export class PilotSwarmSession {
                 JSON.stringify(data),
             );
         }
+    }
+
+    /**
+     * Cancel one or more queued (durable) pending messages by their
+     * UI-generated client message ids.
+     *
+     * Enqueues a tombstone envelope on the same durable messages queue. The
+     * orchestration drain marks the matching ids as cancelled and drops any
+     * matching prompts before they reach the LLM. Already-processed messages
+     * are unaffected (no-op). Idempotent and safe to call repeatedly.
+     */
+    async cancelPendingMessage(clientMessageIds: string[]): Promise<void> {
+        const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
+        if (ids.length === 0) return;
+        const duroxideClient = this.client._getDuroxideClient();
+        if (!duroxideClient) return;
+        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
+        await duroxideClient.enqueueEvent(
+            orchestrationId,
+            "messages",
+            JSON.stringify({ cancelPending: ids }),
+        );
     }
 
     async abort(): Promise<void> {

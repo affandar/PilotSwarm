@@ -8,6 +8,7 @@ import { PilotSwarmClient } from "./client.js";
 import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./management-client.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
+import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import os from "node:os";
 import fs from "node:fs";
@@ -249,7 +250,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; retryCount?: number },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; retryCount?: number; clientMessageIds?: string[] },
         ) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
@@ -263,6 +264,9 @@ export function createSessionProxy(
                     ...(turnMeta?.nestingLevel != null ? { nestingLevel: turnMeta.nestingLevel } : {}),
                     ...(turnMeta?.requiredTool ? { requiredTool: turnMeta.requiredTool } : {}),
                     ...(turnMeta?.retryCount != null ? { retryCount: turnMeta.retryCount } : {}),
+                    ...(turnMeta?.clientMessageIds && turnMeta.clientMessageIds.length > 0
+                        ? { clientMessageIds: turnMeta.clientMessageIds }
+                        : {}),
                 },
                 affinityKey,
             );
@@ -962,9 +966,20 @@ export function registerActivities(
         }, 2_000);
 
         try {
-            // Build onEvent callback: write each non-ephemeral event to CMS as it fires
+            // Build onEvent callback: write each non-ephemeral event to CMS as it fires.
+            // We track every in-flight CMS recordEvents promise so we can flush them
+            // before posting `session.turn_completed`. Without this barrier the
+            // turn_completed insert can race ahead of the SDK's `assistant.message`
+            // insert and CMS will assign the smaller `seq` to turn_completed,
+            // breaking event-ordering invariants downstream (see cms-seq-nodemap).
+            const pendingEventWrites: Promise<unknown>[] = [];
+            const trackEventWrite = (promise: Promise<unknown> | undefined | null) => {
+                if (!promise || typeof (promise as Promise<unknown>).then !== "function") return;
+                pendingEventWrites.push((promise as Promise<unknown>).catch(() => {}));
+            };
             const EPHEMERAL_TYPES = new Set([
                 "assistant.message_delta",
+                "assistant.streaming_delta",
                 "assistant.reasoning_delta",
                 "user.message", // Already recorded explicitly above — skip the SDK's duplicate
             ]);
@@ -1000,7 +1015,13 @@ export function registerActivities(
                             });
                         }
                     }
-                    catalog.recordEvents(input.sessionId, [persistedEvent], workerNodeId).catch((err: any) => {
+                    const writePromise = catalog.recordEvents(
+                        input.sessionId,
+                        [persistedEvent],
+                        workerNodeId,
+                    );
+                    trackEventWrite(writePromise);
+                    writePromise.catch((err: any) => {
                         activityCtx.traceInfo(`[runTurn] CMS recordEvent failed: ${err}`);
                     });
                 }
@@ -1024,9 +1045,21 @@ export function registerActivities(
             }
             if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt) {
                 const promptEventType = isInternalSystemPrompt(input.prompt) ? "system.message" : "user.message";
+                // v1.0.47: when the orchestration tagged the turn with one or
+                // more clientMessageIds (the UI-generated identities of the
+                // contributing local outbox items), persist them on the
+                // durable user.message event so the client can ack/cancel by
+                // exact id rather than text match.
+                const incomingClientMessageIds: string[] = Array.isArray((input as any).clientMessageIds)
+                    ? ((input as any).clientMessageIds as unknown[]).filter((id) => typeof id === "string" && id) as string[]
+                    : [];
+                const eventData: Record<string, unknown> = { content: input.prompt };
+                if (incomingClientMessageIds.length > 0) {
+                    eventData.clientMessageIds = incomingClientMessageIds;
+                }
                 catalog.recordEvents(input.sessionId, [{
                     eventType: promptEventType,
-                    data: { content: input.prompt },
+                    data: eventData,
                 }], workerNodeId).catch((err: any) => {
                     activityCtx.traceInfo(`[runTurn] CMS recordEvent (${promptEventType}) failed: ${err}`);
                 });
@@ -1188,9 +1221,36 @@ export function registerActivities(
             }
             activityCtx.traceInfo(`[runTurn] ManagedSession.runTurn completed for ${input.sessionId} type=${result.type}`);
 
-            // Record turn_completed CMS event
+            // Record turn_completed CMS event.
+            //
+            // Ordering matters here: every per-event CMS write fired by the
+            // SDK's onEvent callback (assistant.message, tool calls, usage,
+            // etc.) must land in `session_events` with a smaller `seq` than
+            // `session.turn_completed`, otherwise downstream consumers that
+            // walk events in seq order (e.g. cms-seq-nodemap) see the turn
+            // close before its own assistant.message.
+            //
+            // `runTurn` resolves once the SDK has emitted its final events,
+            // but the corresponding `recordEvents` calls were dispatched
+            // fire-and-forget. We therefore:
+            //   1. Sleep 100ms to let any straggler onEvent callbacks fire
+            //      and enqueue their CMS write (quiesce window).
+            //   2. Drain `pendingEventWrites` and await all of them with
+            //      allSettled — failed writes were already logged inline,
+            //      we only need the ordering guarantee.
+            //   3. Await the turn_completed insert so subsequent activity
+            //      logic and any immediate CMS readers see a consistent tail.
+            //
+            // The 100ms is a deliberate, bounded pause. If it ever needs to
+            // grow, prefer a real "SDK turn fully flushed" signal over a
+            // larger sleep.
             if (catalog) {
-                catalog.recordEvents(input.sessionId, [{
+                await new Promise((resolve) => setTimeout(resolve, 100));
+                const pendingWritesAtBarrier = pendingEventWrites.splice(0);
+                if (pendingWritesAtBarrier.length > 0) {
+                    await Promise.allSettled(pendingWritesAtBarrier);
+                }
+                await catalog.recordEvents(input.sessionId, [{
                     eventType: "session.turn_completed",
                     data: { iteration: input.turnIndex ?? 0 },
                 }], workerNodeId).catch((err: any) => {
@@ -1422,7 +1482,7 @@ export function registerActivities(
         activityCtx.traceInfo("[listModels] fetching");
         if (githubToken) {
             const { CopilotClient } = await import("@github/copilot-sdk");
-            const sdk = new CopilotClient({ githubToken });
+            const sdk = new CopilotClient({ gitHubToken: githubToken });
             try {
                 await sdk.start();
                 const models = await sdk.listModels();
@@ -1528,13 +1588,13 @@ export function registerActivities(
             // Use a one-shot CopilotSession to generate the title.
             // Prefer the default provider from the registry (works without GitHub token).
             const { CopilotClient: SdkClient } = await import("@github/copilot-sdk");
-            const sdk = new SdkClient({ ...(githubToken ? { githubToken } : {}) });
+            const sdk = new SdkClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) });
             try {
                 await sdk.start();
                 // Resolve the default model + provider from the registry
                 const defaultProvider = sessionManager.resolveDefaultProvider();
                 const sessionOpts: any = {
-                    onPermissionRequest: async () => ({ kind: "approved" as const }),
+                    onPermissionRequest: approvePermissionForSession,
                 };
                 if (defaultProvider) {
                     sessionOpts.model = defaultProvider.modelName;
