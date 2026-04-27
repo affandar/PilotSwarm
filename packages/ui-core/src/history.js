@@ -1,4 +1,4 @@
-import { formatTimestamp, shortSessionId, stripTerminalMarkupTags, summarizeJson } from "./formatting.js";
+import { formatHumanDurationSeconds, formatTimestamp, shortSessionId, stripTerminalMarkupTags, summarizeJson } from "./formatting.js";
 import { formatCompactionActivityRuns } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 
@@ -457,6 +457,7 @@ function formatActivity(event) {
         case "pending_messages.cancelled":
         case "abort":
         case "assistant.turn_end":
+        case "assistant.streaming_progress":
             return null;
 
         case "tool.execution_start":
@@ -471,9 +472,32 @@ function formatActivity(event) {
             runs = formatToolActivityRuns(time, event, "partial");
             break;
 
+        case "tool.execution_progress": {
+            const data = (event?.data ?? {}) || {};
+            const toolName = data.toolName || data.name || "tool";
+            const detail = typeof data.message === "string" && data.message
+                ? data.message
+                : typeof data.detail === "string" && data.detail
+                    ? data.detail
+                    : (data.percent != null ? `${Math.round(Number(data.percent))}%` : "running…");
+            runs = buildLabeledActivityRuns(time, "[tool]", "cyan", `${toolName} ${detail}`, "white");
+            break;
+        }
+
         case "assistant.reasoning":
             runs = buildLabeledActivityRuns(time, "[reasoning]", "gray", body || "…", "white");
             break;
+
+        case "assistant.intent": {
+            const data = (event?.data ?? {}) || {};
+            const text = typeof data.summary === "string" && data.summary
+                ? data.summary
+                : typeof data.intent === "string" && data.intent
+                    ? data.intent
+                    : (body || "");
+            runs = buildLabeledActivityRuns(time, "[intent]", "gray", text || "…", "white");
+            break;
+        }
 
         case "assistant.turn_start":
             runs = buildLabeledActivityRuns(time, "[turn start]", "gray", body);

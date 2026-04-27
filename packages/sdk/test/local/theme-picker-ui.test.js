@@ -50,10 +50,18 @@ describe("theme picker UI behavior", () => {
         assertEqual(state.ui.layout.activityPaneAdjust, 5, "initial state should honor a persisted inspector/activity pane split");
     });
 
-    it("caps the session/chat divider at half the full window height", () => {
+    it("collapses the chat pane when the session/chat divider is dragged past the chat minimum", () => {
         const layout = computeLegacyLayout({ width: 120, height: 40 }, 0, 1, 999);
-        assertEqual(layout.sessionPaneHeight, 20, "session pane should not grow beyond half of the full window height");
-        assertEqual(layout.chatPaneHeight, 14, "chat pane should retain the remaining workspace height below the 50% cap");
+        assertEqual(layout.chatHidden, true, "chat pane should be hidden when the divider is pushed all the way down");
+        assertEqual(layout.chatPaneHeight, 0, "chat pane height should be zero when collapsed");
+        assertEqual(layout.sessionPaneHeight, layout.bodyHeight, "session pane should occupy the entire workspace when chat is collapsed");
+    });
+
+    it("collapses the session pane when the session/chat divider is dragged past the session minimum", () => {
+        const layout = computeLegacyLayout({ width: 120, height: 40 }, 0, 1, -999);
+        assertEqual(layout.sessionHidden, true, "session pane should be hidden when the divider is pushed all the way up");
+        assertEqual(layout.sessionPaneHeight, 0, "session pane height should be zero when collapsed");
+        assertEqual(layout.chatPaneHeight, layout.bodyHeight, "chat pane should occupy the entire workspace when sessions is collapsed");
     });
 
     it("opens the shared theme picker with the current theme preselected", async () => {

@@ -1681,6 +1681,14 @@ export class PilotSwarmUiController {
                 sessionId,
                 history,
             });
+            // Bulk-loaded events bypass mergeSessionEvent, so reconcile the
+            // outbox here too. Without this, an outbox item whose durable
+            // user.message arrived before the page subscribed (e.g., because
+            // ensureSessionHistory ran first on attach, or after a force
+            // refresh) stays stuck as "queued" or "cancelling" forever.
+            for (const event of events || []) {
+                this.reconcileOutboxAgainstEvent(sessionId, event);
+            }
             const derivedModel = extractSessionModelFromEvents(events);
             const currentSession = this.getState().sessions.byId[sessionId] || { sessionId };
             const derivedContextUsage = extractSessionContextUsageFromEvents(currentSession.contextUsage, events);
@@ -2512,16 +2520,20 @@ export class PilotSwarmUiController {
         this.ensureInspectorData().catch(() => {});
     }
 
-    mergeSessionEvent(sessionId, event) {
-        if (!sessionId || !event) return false;
-        const state = this.getState();
-        const existing = state.history.bySessionId.get(sessionId) || { chat: [], activity: [], lastSeq: 0 };
-        if (event.seq <= (existing.lastSeq || 0)) return false;
-        this.dispatch({
-            type: "history/set",
-            sessionId,
-            history: appendEventToHistory(existing, event),
-        });
+    /**
+     * Reconcile outbox state against a single CMS event. Removes outbox items
+     * whose `clientMessageIds` were observed as a durable `user.message`
+     * (acknowledged → drop the local optimistic item) or as a
+     * `pending_messages.cancelled` (cancel confirmed → drop the cancelling
+     * item). Pure side-effect helper that is safe to call repeatedly.
+     *
+     * Must be invoked from BOTH per-event paths (`mergeSessionEvent`) and
+     * bulk-load paths (`ensureSessionHistory`). Bulk loads previously skipped
+     * this and left outbox items stranded as "queued" or "cancelling" forever
+     * even after the durable event was already in CMS.
+     */
+    reconcileOutboxAgainstEvent(sessionId, event) {
+        if (!sessionId || !event) return;
         if (event.eventType === "user.message") {
             const content = event?.data?.content;
             const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
@@ -2536,6 +2548,7 @@ export class PilotSwarmUiController {
                 // plumbed through every layer.
                 this.acknowledgeOutboxPrompt(sessionId, content);
             }
+            return;
         }
         if (event.eventType === "pending_messages.cancelled") {
             const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
@@ -2543,6 +2556,19 @@ export class PilotSwarmUiController {
                 : (typeof event?.data?.clientMessageId === "string" ? [event.data.clientMessageId] : []);
             this.acknowledgeCancelledOutboxPrompt(sessionId, clientMessageIds);
         }
+    }
+
+    mergeSessionEvent(sessionId, event) {
+        if (!sessionId || !event) return false;
+        const state = this.getState();
+        const existing = state.history.bySessionId.get(sessionId) || { chat: [], activity: [], lastSeq: 0 };
+        if (event.seq <= (existing.lastSeq || 0)) return false;
+        this.dispatch({
+            type: "history/set",
+            sessionId,
+            history: appendEventToHistory(existing, event),
+        });
+        this.reconcileOutboxAgainstEvent(sessionId, event);
         const derivedModel = extractSessionModelFromEvent(event);
         const currentSession = this.getState().sessions.byId[sessionId] || { sessionId };
         const derivedContextUsage = applySessionUsageEvent(currentSession.contextUsage, event.eventType, event.data, {
@@ -3810,15 +3836,20 @@ export class PilotSwarmUiController {
         const layoutState = this.getState().ui.layout || {};
         const currentLayout = this.getCurrentLayout();
         const bodyHeight = currentLayout.bodyHeight ?? (layoutState.viewportHeight ?? 40);
-        const baseSessionPaneHeight = getBaseSessionPaneHeight(bodyHeight);
-        const maxSessionPaneHeight = getMaxSessionPaneHeight(currentLayout.totalHeight ?? (layoutState.viewportHeight ?? 40), bodyHeight);
-        const minAdjust = MIN_SESSION_PANE_HEIGHT - baseSessionPaneHeight;
-        const maxAdjust = maxSessionPaneHeight - baseSessionPaneHeight;
-        const nextAdjust = Math.max(minAdjust, Math.min(maxAdjust, (layoutState.sessionPaneAdjust || 0) + delta));
+        // Allow the adjust to push past the per-pane minimums so the
+        // collapse logic in computeLegacyLayout can fully hide one of the
+        // two panes (mirrors adjustActivityPaneSplit).
+        const nextAdjust = Math.max(-bodyHeight, Math.min(bodyHeight, (layoutState.sessionPaneAdjust || 0) + delta));
         this.dispatch({
             type: "ui/sessionPaneAdjust",
             sessionPaneAdjust: nextAdjust,
         });
+        const nextLayout = this.getCurrentLayout({ sessionPaneAdjust: nextAdjust });
+        const currentFocus = this.getState().ui.focusRegion;
+        const safeFocus = normalizeFocusRegion(currentFocus, nextLayout);
+        if (safeFocus !== currentFocus) {
+            this.setFocus(safeFocus);
+        }
     }
 
     adjustActivityPaneSplit(delta) {
@@ -4439,6 +4470,9 @@ export class PilotSwarmUiController {
                 sessionId,
                 history,
             });
+            for (const event of history?.events || []) {
+                this.reconcileOutboxAgainstEvent(sessionId, event);
+            }
 
             if (preserveChatView && previousScrollOffset > 0) {
                 const nextState = this.getState();

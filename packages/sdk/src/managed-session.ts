@@ -949,6 +949,30 @@ export class ManagedSession {
         let lastReasoningPublishAt = 0;
         let deferredSessionError: CapturedEvent | null = null;
 
+        // Streaming progress + turn timing state.
+        // Token-level deltas (`assistant.message_delta`,
+        // `assistant.streaming_delta`, `assistant.reasoning_delta`) stay
+        // ephemeral — see EPHEMERAL_TYPES in session-proxy.ts. We collapse
+        // them into a coarse `assistant.streaming_progress` heartbeat so the
+        // activity pane has a live signal during long generations without
+        // flooding CMS. Also augment `assistant.turn_end` with `durationMs`
+        // computed from the matching `assistant.turn_start` so the activity
+        // formatter can render "[turn end] 4m 12s, 1843 chars".
+        let turnStartedAtMs: number | null = null;
+        let streamingDeltaCount = 0;
+        let streamingDeltaChars = 0;
+        // Note: we used to emit a synthetic `assistant.streaming_progress`
+        // heartbeat into CMS for the activity pane. The user found those
+        // rows noisy compared to the actual reasoning snapshots, so the
+        // synthetic emission was removed. The counters are still tracked
+        // so we can stamp `assistant.turn_end.data.streamingChars` /
+        // `streamingDeltas` for post-hoc analysis.
+        const flushStreamingProgress = (_force: boolean) => {
+            // Intentionally a no-op. Kept as a hook so existing call sites
+            // (turn_end / session.idle / per-delta) compile without churn,
+            // and so re-enabling a heartbeat is a one-line change.
+        };
+
         function getToolEventKey(eventData: any): string | null {
             if (!eventData || typeof eventData !== "object") return null;
             if (typeof eventData.toolCallId === "string" && eventData.toolCallId.trim()) {
@@ -989,7 +1013,11 @@ export class ManagedSession {
 
             const now = Date.now();
             const lengthDelta = Math.abs(content.length - lastPublishedReasoning.length);
-            if (!force && lengthDelta < 24 && now - lastReasoningPublishAt < 250) return;
+            // Streaming makes reasoning_delta arrive constantly. Be aggressive
+            // about throttling synthetic snapshots: only emit on force (turn
+            // boundary), or when the content has grown by >=200 chars and
+            // 5s have elapsed since the last publish.
+            if (!force && (lengthDelta < 200 || now - lastReasoningPublishAt < 5000)) return;
 
             const captured: CapturedEvent = {
                 eventType: "assistant.reasoning",
@@ -1002,7 +1030,10 @@ export class ManagedSession {
             collectedEvents.push(captured);
             lastPublishedReasoning = content;
             lastReasoningPublishAt = now;
-            if (opts?.onEvent) {
+            // Only forward to CMS on force (turn boundaries). Mid-stream
+            // synthetic snapshots stay in-memory for the runTurn() return
+            // value; they are noise in the activity pane.
+            if (force && opts?.onEvent) {
                 try { opts.onEvent(captured); } catch {}
             }
         }
@@ -1059,6 +1090,60 @@ export class ManagedSession {
                         deferredSessionError = captured;
                         return;
                     }
+
+                    // Track turn boundaries so we can stamp turn_end with a
+                    // durationMs and the streaming counters.
+                    if (eventType === "assistant.turn_start") {
+                        turnStartedAtMs = Date.now();
+                        streamingDeltaCount = 0;
+                        streamingDeltaChars = 0;
+                    } else if (eventType === "assistant.turn_end") {
+                        flushStreamingProgress(true);
+                        if (turnStartedAtMs && eventData && typeof eventData === "object") {
+                            (eventData as Record<string, unknown>).durationMs = Date.now() - turnStartedAtMs;
+                            (eventData as Record<string, unknown>).streamingDeltas = streamingDeltaCount;
+                            (eventData as Record<string, unknown>).streamingChars = streamingDeltaChars;
+                        }
+                        turnStartedAtMs = null;
+                    } else if (eventType === "assistant.message_delta" || eventType === "assistant.streaming_delta") {
+                        streamingDeltaCount += 1;
+                        const deltaText = (eventData && typeof eventData === "object")
+                            ? ((eventData as any).deltaContent ?? (eventData as any).delta ?? (eventData as any).content ?? "")
+                            : "";
+                        if (typeof deltaText === "string") streamingDeltaChars += deltaText.length;
+                        // Don't record the delta itself in collectedEvents —
+                        // it's pure noise for replay. Only emit the throttled
+                        // synthetic when we actually received text; some
+                        // deltas carry no content and would render as
+                        // "[streaming] 4s · 0 chars".
+                        if (streamingDeltaChars > 0) flushStreamingProgress(false);
+                        if (opts?.onEvent) {
+                            // Forward the raw delta too in case onDelta-style
+                            // consumers want it; they're already filtered out
+                            // of CMS persistence by EPHEMERAL_TYPES.
+                            try { opts.onEvent(captured); } catch {}
+                        }
+                        return;
+                    }
+
+                    // Dedup real `assistant.reasoning` events from the SDK.
+                    // With streaming enabled the SDK can re-emit the same
+                    // reasoning snapshot multiple times in a burst, which
+                    // would otherwise flood CMS and the activity pane with
+                    // visually-identical lines. Drop the event if its content
+                    // matches the last reasoning snapshot we already
+                    // persisted.
+                    if (eventType === "assistant.reasoning") {
+                        const content = String(extractReasoningText(eventData) || "").trim();
+                        if (content && content === lastPublishedReasoning) {
+                            return;
+                        }
+                        if (content) {
+                            lastPublishedReasoning = content;
+                            lastReasoningPublishAt = Date.now();
+                        }
+                    }
+
                     collectedEvents.push(captured);
                     // Fire immediately so callers can write to CMS in real-time
                     if (opts?.onEvent) {
@@ -1120,6 +1205,7 @@ export class ManagedSession {
             // session.idle = turn finished (normal completion or post-abort)
             unsubscribers.push(
                 this.copilotSession.on("session.idle", () => {
+                    flushStreamingProgress(true);
                     publishReasoningSnapshot("session.idle", true);
                     resolve();
                 }),

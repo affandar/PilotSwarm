@@ -233,6 +233,12 @@ function normalizeLines(lines) {
             }
             continue;
         }
+        // Sentinel kinds preserved as-is so parseStructuredChatBlocks can
+        // recognize and render them (e.g. markdownTable → HTML <table>).
+        if (line?.kind === "markdownTable") {
+            normalized.push(line);
+            continue;
+        }
         if (Array.isArray(line)) {
             normalized.push({ kind: "runs", runs: line });
             continue;
@@ -601,34 +607,6 @@ function renderInlineMarkdown(source, theme, keyPrefix = "md") {
     });
 }
 
-function normalizeTableCellText(value = "") {
-    return String(value || "")
-        .replace(/\s+/g, " ")
-        .trim();
-}
-
-function computeFitWidthColumnPercentages(rows = []) {
-    const columnCount = Math.max(0, ...rows.map((row) => row.length));
-    if (columnCount <= 0) return null;
-
-    const maxLengths = Array.from({ length: columnCount }, () => 0);
-    for (const row of rows) {
-        for (let index = 0; index < columnCount; index += 1) {
-            const cellText = normalizeTableCellText(row[index] || "");
-            maxLengths[index] = Math.max(maxLengths[index], cellText.length);
-        }
-    }
-
-    const weights = maxLengths.map((length) => {
-        const normalizedLength = Math.max(6, Math.min(196, length || 0));
-        return Math.sqrt(normalizedLength);
-    });
-    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
-    if (!(totalWeight > 0)) return null;
-
-    return weights.map((weight) => `${((weight / totalWeight) * 100).toFixed(2)}%`);
-}
-
 function isMarkdownSpecialLine(line = "", nextLine = "") {
     const value = String(line || "");
     return /^\s*#{1,6}\s+/.test(value)
@@ -782,9 +760,11 @@ function MarkdownPreviewContent({ content, theme }) {
                 // every cell (>6 columns is the practical readability cliff
                 // on phones).
                 const fitToWidth = columnCount > 0 && columnCount <= 6;
-                const columnWidths = fitToWidth
-                    ? computeFitWidthColumnPercentages([block.header, ...block.rows])
-                    : null;
+                // Let the browser's auto-table-layout do column sizing under
+                // the fit-content constraint — it uses min/max content widths
+                // per column, which is the standard algorithm and handles
+                // mixed narrow + wide columns much better than a sqrt-of-max
+                // heuristic that floors short columns at width-6.
                 return React.createElement("div", {
                     key: `block:${index}`,
                     className: `ps-md-table-wrap${fitToWidth ? " is-fit-width" : ""}`,
@@ -792,13 +772,6 @@ function MarkdownPreviewContent({ content, theme }) {
                     React.createElement("table", {
                         className: `ps-md-table${fitToWidth ? " is-fit-width" : ""}`,
                     },
-                        columnWidths
-                            ? React.createElement("colgroup", null,
-                                columnWidths.map((width, columnIndex) => React.createElement("col", {
-                                    key: `col:${columnIndex}`,
-                                    style: width ? { width } : undefined,
-                                })))
-                            : null,
                         React.createElement("thead", null,
                             React.createElement("tr", null,
                                 block.header.map((cell, cellIndex) => React.createElement("th", { key: `head:${cellIndex}` },
@@ -980,6 +953,24 @@ function parseStructuredChatBlocks(lines = []) {
 
     for (let index = 0; index < lines.length;) {
         const currentLine = lines[index];
+
+        // Sentinel markdown-table line emitted by parseMarkdownLines when
+        // tableMode === "sentinel". Carries the raw header + rows so the
+        // portal renders a real HTML table with markdown cell content (so
+        // [label](url) inside cells stays clickable, instead of being flattened
+        // into plain text by the box-art width-fitter).
+        if (currentLine?.kind === "markdownTable") {
+            blocks.push({
+                type: "table",
+                headerRows: Array.isArray(currentLine.header) && currentLine.header.length > 0
+                    ? [currentLine.header]
+                    : [],
+                bodyRows: Array.isArray(currentLine.rows) ? currentLine.rows : [],
+            });
+            index += 1;
+            continue;
+        }
+
         const currentText = lineText(currentLine);
 
         if (isBoxTopLine(currentText) && currentText.includes("┬")) {
@@ -1145,9 +1136,14 @@ function StructuredChatBlocks({ lines, theme }) {
                     ...bodyRows.map((row) => row.length),
                 );
                 const fitToWidth = columnCount <= 6;
-                const columnWidths = fitToWidth
-                    ? computeFitWidthColumnPercentages([...headerRows, ...bodyRows])
-                    : null;
+                // No precomputed <colgroup> widths: a sqrt(maxLength) heuristic
+                // floors short columns and compresses long ones, leaving narrow
+                // columns (Work item, Current stance) padded and wide columns
+                // (Title, Notes) cramped. The browser's native auto layout uses
+                // min/max content widths under the container's max-width and
+                // produces much more proportional results — the "standard
+                // algorithm" for this. CSS gives us fit-content + word-break +
+                // overflow-wrap so wide columns wrap and narrow columns shrink.
                 return React.createElement("div", {
                     key: `table:${index}`,
                     className: `ps-chat-table-wrap${fitToWidth ? " is-fit-width" : ""}`,
@@ -1155,13 +1151,6 @@ function StructuredChatBlocks({ lines, theme }) {
                     React.createElement("table", {
                         className: `ps-chat-table${fitToWidth ? " is-fit-width" : ""}`,
                     },
-                        columnWidths
-                            ? React.createElement("colgroup", null,
-                                columnWidths.map((width, columnIndex) => React.createElement("col", {
-                                    key: `col:${columnIndex}`,
-                                    style: width ? { width } : undefined,
-                                })))
-                            : null,
                         headerRows.length > 0
                             ? React.createElement("thead", null,
                                 headerRows.map((row, rowIndex) => React.createElement("tr", { key: `thead:${rowIndex}` },
@@ -1444,11 +1433,11 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
     const lines = React.useMemo(
-        () => selectChatLines(selectorState, viewState.contentWidth),
+        () => selectChatLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],
     );
     const outboxLines = React.useMemo(
-        () => selectOutboxOverlayLines(selectorState, viewState.contentWidth),
+        () => selectOutboxOverlayLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],
     );
 
@@ -3384,9 +3373,25 @@ export function PilotSwarmWebApp({ controller }) {
         className: "ps-workspace-column",
         style: { gridTemplateRows: `${layout.sessionPaneHeight}fr 16px ${layout.chatPaneHeight}fr` },
     },
-    React.createElement(SessionPane, { controller }),
-    React.createElement(RowResizeHandle, { controller, sessionPaneAdjust: state.sessionPaneAdjust }),
-    React.createElement(ChatPane, { controller })),
+    React.createElement("div", {
+        className: "ps-workspace-pane-slot",
+        style: { gridRow: "1" },
+    },
+        !layout.sessionHidden ? React.createElement(SessionPane, { controller }) : null),
+    React.createElement("div", {
+        style: {
+            gridRow: "2",
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+        },
+    },
+        React.createElement(RowResizeHandle, { controller, sessionPaneAdjust: state.sessionPaneAdjust })),
+    React.createElement("div", {
+        className: "ps-workspace-pane-slot",
+        style: { gridRow: "3" },
+    },
+        !layout.chatHidden ? React.createElement(ChatPane, { controller }) : null)),
     React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust }),
     React.createElement("div", {
         className: "ps-workspace-column",

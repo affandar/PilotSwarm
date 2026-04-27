@@ -17,6 +17,8 @@ export const MIN_INSPECTOR_PANE_HEIGHT = 10;
 export const DEFAULT_ACTIVITY_PANE_RATIO = 0.336;
 export const COLLAPSE_ACTIVITY_THRESHOLD = MIN_ACTIVITY_PANE_HEIGHT;
 export const COLLAPSE_INSPECTOR_THRESHOLD = MIN_INSPECTOR_PANE_HEIGHT;
+export const COLLAPSE_SESSION_THRESHOLD = MIN_SESSION_PANE_HEIGHT;
+export const COLLAPSE_CHAT_THRESHOLD = MIN_CHAT_PANE_HEIGHT;
 
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -94,12 +96,38 @@ export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1, se
     }
 
     const baseSessionPaneHeight = getBaseSessionPaneHeight(bodyHeight);
-    const maxSessionPaneHeight = getMaxSessionPaneHeight(totalHeight, bodyHeight);
-    const sessionPaneHeight = clamp(
-        baseSessionPaneHeight + (Number(sessionPaneAdjust) || 0),
-        MIN_SESSION_PANE_HEIGHT,
-        maxSessionPaneHeight,
-    );
+    const desiredSessionPaneHeight = baseSessionPaneHeight + (Number(sessionPaneAdjust) || 0);
+    const desiredChatPaneHeight = bodyHeight - desiredSessionPaneHeight;
+
+    let sessionHidden = false;
+    let chatHidden = false;
+
+    if (desiredChatPaneHeight <= COLLAPSE_CHAT_THRESHOLD && desiredSessionPaneHeight > COLLAPSE_SESSION_THRESHOLD) {
+        chatHidden = true;
+    } else if (desiredSessionPaneHeight <= COLLAPSE_SESSION_THRESHOLD && desiredChatPaneHeight > COLLAPSE_CHAT_THRESHOLD) {
+        sessionHidden = true;
+    } else if (desiredChatPaneHeight <= COLLAPSE_CHAT_THRESHOLD && desiredSessionPaneHeight <= COLLAPSE_SESSION_THRESHOLD) {
+        chatHidden = (Number(sessionPaneAdjust) || 0) >= 0;
+        sessionHidden = !chatHidden;
+    }
+
+    let sessionPaneHeight;
+    let chatPaneHeight;
+    if (sessionHidden) {
+        sessionPaneHeight = 0;
+        chatPaneHeight = bodyHeight;
+    } else if (chatHidden) {
+        sessionPaneHeight = bodyHeight;
+        chatPaneHeight = 0;
+    } else {
+        const maxSessionPaneHeight = getMaxSessionPaneHeight(totalHeight, bodyHeight);
+        sessionPaneHeight = clamp(
+            desiredSessionPaneHeight,
+            MIN_SESSION_PANE_HEIGHT,
+            maxSessionPaneHeight,
+        );
+        chatPaneHeight = Math.max(MIN_CHAT_PANE_HEIGHT, bodyHeight - sessionPaneHeight);
+    }
     const baseActivityPaneHeight = Math.max(MIN_ACTIVITY_PANE_HEIGHT, Math.floor(bodyHeight * DEFAULT_ACTIVITY_PANE_RATIO));
     const desiredActivityPaneHeight = baseActivityPaneHeight + (Number(activityPaneAdjust) || 0);
     const desiredInspectorPaneHeight = bodyHeight - desiredActivityPaneHeight;
@@ -148,10 +176,12 @@ export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1, se
         rightHidden,
         inspectorHidden,
         activityHidden,
+        sessionHidden,
+        chatHidden,
         leftWidth,
         rightWidth,
         sessionPaneHeight,
-        chatPaneHeight: Math.max(MIN_CHAT_PANE_HEIGHT, bodyHeight - sessionPaneHeight),
+        chatPaneHeight,
         activityPaneHeight,
         inspectorPaneHeight,
     };
@@ -165,7 +195,28 @@ export function getFocusOrderForLayout(layout) {
         return [FOCUS_REGIONS.INSPECTOR, FOCUS_REGIONS.ACTIVITY, FOCUS_REGIONS.PROMPT];
     }
     if (layout?.rightHidden) {
-        return [FOCUS_REGIONS.SESSIONS, FOCUS_REGIONS.CHAT, FOCUS_REGIONS.PROMPT];
+        const left = layout?.sessionHidden
+            ? [FOCUS_REGIONS.CHAT]
+            : layout?.chatHidden
+                ? [FOCUS_REGIONS.SESSIONS]
+                : [FOCUS_REGIONS.SESSIONS, FOCUS_REGIONS.CHAT];
+        return [...left, FOCUS_REGIONS.PROMPT];
+    }
+    if (layout?.sessionHidden) {
+        const right = layout?.inspectorHidden
+            ? [FOCUS_REGIONS.ACTIVITY]
+            : layout?.activityHidden
+                ? [FOCUS_REGIONS.INSPECTOR]
+                : [FOCUS_REGIONS.INSPECTOR, FOCUS_REGIONS.ACTIVITY];
+        return [FOCUS_REGIONS.CHAT, ...right, FOCUS_REGIONS.PROMPT];
+    }
+    if (layout?.chatHidden) {
+        const right = layout?.inspectorHidden
+            ? [FOCUS_REGIONS.ACTIVITY]
+            : layout?.activityHidden
+                ? [FOCUS_REGIONS.INSPECTOR]
+                : [FOCUS_REGIONS.INSPECTOR, FOCUS_REGIONS.ACTIVITY];
+        return [FOCUS_REGIONS.SESSIONS, ...right, FOCUS_REGIONS.PROMPT];
     }
     if (layout?.inspectorHidden) {
         return [
@@ -214,20 +265,20 @@ export function getFocusLeftTarget(focusRegion, layout) {
     if (layout?.rightHidden) {
         const map = {
             [FOCUS_REGIONS.PROMPT]: FOCUS_REGIONS.PROMPT,
-            [FOCUS_REGIONS.CHAT]: FOCUS_REGIONS.SESSIONS,
+            [FOCUS_REGIONS.CHAT]: layout?.sessionHidden ? FOCUS_REGIONS.CHAT : FOCUS_REGIONS.SESSIONS,
             [FOCUS_REGIONS.SESSIONS]: FOCUS_REGIONS.SESSIONS,
         };
-        return map[focusRegion] || FOCUS_REGIONS.SESSIONS;
+        return map[focusRegion] || (layout?.sessionHidden ? FOCUS_REGIONS.CHAT : FOCUS_REGIONS.SESSIONS);
     }
 
     const map = {
-        [FOCUS_REGIONS.PROMPT]: FOCUS_REGIONS.SESSIONS,
-        [FOCUS_REGIONS.ACTIVITY]: FOCUS_REGIONS.CHAT,
-        [FOCUS_REGIONS.INSPECTOR]: FOCUS_REGIONS.CHAT,
-        [FOCUS_REGIONS.CHAT]: FOCUS_REGIONS.SESSIONS,
+        [FOCUS_REGIONS.PROMPT]: layout?.sessionHidden ? FOCUS_REGIONS.CHAT : FOCUS_REGIONS.SESSIONS,
+        [FOCUS_REGIONS.ACTIVITY]: layout?.chatHidden ? FOCUS_REGIONS.SESSIONS : FOCUS_REGIONS.CHAT,
+        [FOCUS_REGIONS.INSPECTOR]: layout?.chatHidden ? FOCUS_REGIONS.SESSIONS : FOCUS_REGIONS.CHAT,
+        [FOCUS_REGIONS.CHAT]: layout?.sessionHidden ? FOCUS_REGIONS.CHAT : FOCUS_REGIONS.SESSIONS,
         [FOCUS_REGIONS.SESSIONS]: FOCUS_REGIONS.SESSIONS,
     };
-    return map[focusRegion] || FOCUS_REGIONS.SESSIONS;
+    return map[focusRegion] || (layout?.sessionHidden ? FOCUS_REGIONS.CHAT : FOCUS_REGIONS.SESSIONS);
 }
 
 export function getFocusRightTarget(focusRegion, layout) {
@@ -246,10 +297,10 @@ export function getFocusRightTarget(focusRegion, layout) {
     if (layout?.rightHidden) {
         const map = {
             [FOCUS_REGIONS.PROMPT]: FOCUS_REGIONS.PROMPT,
-            [FOCUS_REGIONS.SESSIONS]: FOCUS_REGIONS.CHAT,
+            [FOCUS_REGIONS.SESSIONS]: layout?.chatHidden ? FOCUS_REGIONS.SESSIONS : FOCUS_REGIONS.CHAT,
             [FOCUS_REGIONS.CHAT]: FOCUS_REGIONS.CHAT,
         };
-        return map[focusRegion] || FOCUS_REGIONS.CHAT;
+        return map[focusRegion] || (layout?.chatHidden ? FOCUS_REGIONS.SESSIONS : FOCUS_REGIONS.CHAT);
     }
     if (layout?.inspectorHidden) {
         const map = {

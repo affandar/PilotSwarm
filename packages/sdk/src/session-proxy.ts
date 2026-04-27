@@ -979,6 +979,7 @@ export function registerActivities(
             };
             const EPHEMERAL_TYPES = new Set([
                 "assistant.message_delta",
+                "assistant.streaming_delta",
                 "assistant.reasoning_delta",
                 "user.message", // Already recorded explicitly above — skip the SDK's duplicate
             ]);

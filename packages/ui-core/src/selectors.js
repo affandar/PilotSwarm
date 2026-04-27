@@ -787,7 +787,14 @@ function buildChatMessagePrefix(message) {
 }
 
 function flattenLineText(lineRuns) {
-    if (!Array.isArray(lineRuns)) return String(lineRuns?.text || "");
+    if (!Array.isArray(lineRuns)) {
+        // Sentinel block-shaped lines (e.g. { kind: "markdownTable" }) have
+        // no flat text but are NOT blank — surface a placeholder so callers
+        // like trimLeadingBlankLines and the chat-spacer logic treat them
+        // as content rather than padding.
+        if (lineRuns?.kind === "markdownTable") return "[table]";
+        return String(lineRuns?.text || "");
+    }
     return (lineRuns || []).map((run) => run?.text || "").join("");
 }
 
@@ -1003,10 +1010,15 @@ function buildChatProgressTitleRuns(progress) {
 
 function tintRunsIfUnset(lines, color) {
     if (!color) return lines;
-    return (lines || []).map((lineRuns) => (lineRuns || []).map((run) => ({
-        ...run,
-        color: run?.color || color,
-    })));
+    return (lines || []).map((lineRuns) => {
+        // Block-shaped sentinel lines (e.g. { kind: "markdownTable" }) carry
+        // their own per-cell rendering and don't have a flat run array to tint.
+        if (!Array.isArray(lineRuns)) return lineRuns;
+        return lineRuns.map((run) => ({
+            ...run,
+            color: run?.color || color,
+        }));
+    });
 }
 
 function startsWithCardBlock(lines) {
@@ -1096,7 +1108,7 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
                 ...buildChatMessageLines({
                     ...message,
                     text: askedAndAnswered.answer,
-                }, maxWidth),
+                }, maxWidth, options),
             ];
         }
     }
@@ -1113,6 +1125,7 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
                     ...message,
                     text: segment.text,
                 }, maxWidth, {
+                    ...options,
                     allowLeadingSystemNotices: false,
                     skipPrefix: renderedSpeakerText,
                 }));
@@ -1130,7 +1143,14 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
         if (message?.role === "system" && !strippedSystemText) {
             return [];
         }
-        if (message?.role === "system") {
+        // System-role messages that carry an explicit non-"System" cardTitle
+        // (e.g. "Question", "Error", "Warning") are real product cards built by
+        // selectors like buildPendingQuestionMessage / buildSessionErrorMessage.
+        // Render them as full cards instead of collapsing into a one-line
+        // System: notice.
+        const hasExplicitCardTitle = Boolean(message?.cardTitle)
+            && String(message.cardTitle).toLowerCase() !== "system";
+        if (message?.role === "system" && !hasExplicitCardTitle) {
             return [buildCollapsedSystemNoticeLine(
                 strippedSystemText || message?.text || "",
                 formatTimestamp(message?.createdAt || message?.time),
@@ -1151,7 +1171,7 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
 
     const markdownLines = trimLeadingBlankLines(parseMarkdownLines(
         decorateArtifactLinksForChat(message?.text || ""),
-        { width: maxWidth },
+        { width: maxWidth, tableMode: options.tableMode },
     ));
     const tintedMarkdownLines = tintRunsIfUnset(
         markdownLines,
@@ -1177,15 +1197,16 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
     });
 }
 
-export function selectChatLines(state, maxWidth = 80) {
+export function selectChatLines(state, maxWidth = 80, options = {}) {
     const messages = selectActiveChat(state);
     if (!messages || messages.length === 0) {
         return [{ text: "No messages yet.", color: "gray" }];
     }
 
+    const buildOptions = options?.tableMode ? { tableMode: options.tableMode } : {};
     const lines = [];
     for (const [index, message] of messages.entries()) {
-        const messageLines = buildChatMessageLines(message, maxWidth);
+        const messageLines = buildChatMessageLines(message, maxWidth, buildOptions);
         appendChatBlockLines(lines, messageLines);
         const nextMessage = messages[index + 1];
         if (
@@ -1199,7 +1220,7 @@ export function selectChatLines(state, maxWidth = 80) {
     return lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }];
 }
 
-export function selectOutboxOverlayLines(state, maxWidth = 80) {
+export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
     const messages = selectActiveOutboxMessages(state);
     if (!messages || messages.length === 0) return [];
 
@@ -1221,8 +1242,9 @@ export function selectOutboxOverlayLines(state, maxWidth = 80) {
         ],
     ];
 
+    const buildOptions = options?.tableMode ? { tableMode: options.tableMode } : {};
     for (const [index, message] of messages.entries()) {
-        appendChatBlockLines(lines, buildChatMessageLines(message, safeWidth));
+        appendChatBlockLines(lines, buildChatMessageLines(message, safeWidth, buildOptions));
         const nextMessage = messages[index + 1];
         if (
             nextMessage

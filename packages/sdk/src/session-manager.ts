@@ -398,6 +398,16 @@ export class SessionManager {
             hooks: config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
+            // Enable token-level streaming so the catch-all event handler in
+            // ManagedSession sees `assistant.message_delta` /
+            // `assistant.streaming_delta` arrivals and can emit a coarse
+            // `assistant.streaming_progress` heartbeat for the activity pane.
+            // The deltas themselves stay ephemeral (see EPHEMERAL_TYPES in
+            // session-proxy.ts) so they never reach CMS.
+            streaming: true,
+            // Suppress sub-agent streaming events — we never want the parent
+            // session's event log polluted with grandchild deltas.
+            includeSubAgentStreamingEvents: false,
             // Exclude the Copilot SDK's built-in "task" tool — PilotSwarm provides
             // its own durable sub-agent mechanism via spawn_agent / check_agents.
             // The native "task" tool spawns in-process sub-agents that bypass the

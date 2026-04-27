@@ -219,15 +219,15 @@ function buildWorkspacePaneFrames(layout) {
     const activityY = layout.inspectorHidden ? 0 : layout.inspectorPaneHeight + PANE_GAP_Y;
 
     return {
-        sessions: layout.leftHidden ? null : {
+        sessions: layout.leftHidden || layout.sessionHidden ? null : {
             x: leftX,
             y: 0,
             width: layout.leftWidth,
             height: layout.sessionPaneHeight,
         },
-        chat: layout.leftHidden ? null : {
+        chat: layout.leftHidden || layout.chatHidden ? null : {
             x: leftX,
-            y: layout.sessionPaneHeight + PANE_GAP_Y,
+            y: layout.sessionHidden ? 0 : layout.sessionPaneHeight + PANE_GAP_Y,
             width: layout.leftWidth,
             height: layout.chatPaneHeight,
         },
@@ -1591,7 +1591,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
                                 })
                 : [
                     !layout.leftHidden && React.createElement(platform.Column, { key: "left", width: layout.leftWidth, marginRight: layout.rightHidden ? 0 : PANE_GAP_X, flexGrow: 0 },
-                        React.createElement(SessionList, {
+                        !layout.sessionHidden && React.createElement(SessionList, {
                             controller,
                             width: layout.leftWidth,
                             height: layout.sessionPaneHeight,
@@ -1599,7 +1599,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
                             frame: frames.sessions,
                             versionLabel,
                         }),
-                        React.createElement(ChatPane, {
+                        !layout.chatHidden && React.createElement(ChatPane, {
                             controller,
                             width: layout.leftWidth,
                             height: layout.chatPaneHeight,
