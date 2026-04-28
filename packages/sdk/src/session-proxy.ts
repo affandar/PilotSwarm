@@ -730,13 +730,11 @@ export function registerActivities(
                             `If you are unsure, omit model so the sub-agent inherits your current model.]`;
                     }
 
-                    if (agentId) {
-                        const existingChild = existingChildren.find(child => child.agentId === agentId && child.status === "running");
-                        if (existingChild) {
-                            return `[SYSTEM: Agent "${resolvedAgentName || agentId}" is already running as sub-agent ${existingChild.orchId.slice(0, 16)}. ` +
-                                `Use check_agents to see its status, or message_agent to communicate with it.]`;
-                        }
-                    }
+                    // v1.0.49: same-name duplicate spawns are allowed. The
+                    // global MAX_SUB_AGENTS cap and per-spawn nesting limit
+                    // still apply. The parent is responsible for closing
+                    // each instance with complete_agent / cancel_agent /
+                    // delete_agent when it no longer needs the child.
 
                     const {
                         boundAgentName: _parentBoundAgentName,
