@@ -184,6 +184,8 @@ For the native TUI files inspector, keep the standard outer inspector shell as t
 
 Pane headers in the shared UI should stay compact. Keep title text data plain; the portal may use a slim card header, while the TUI should render pane titles without a highlighted header background. When a pane narrows, prefer dropping low-priority title metadata such as session ids or recent-window labels before squeezing content.
 
+Named-agent session titles should be displayed with the user-assigned title or uniquifier first, then the agent type, then the agent/persona metadata (for example `M61 Conductor · R2D Train Watcher · Mad-Eye Moody`). Keep this ordering consistent in session rows and chat pane headers so narrow/mobile views expose the useful title first.
+
 Use the `pilotswarm-tui` agent/skill for TUI-specific work. Treat it as the canonical short-form memory for the current TUI design choices and maintenance preferences.
 
 ## Builder Agent Templates

@@ -202,15 +202,12 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.48).
+ * Flat event loop durable session orchestration (v1.0.47).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
- * v1.0.48 adds:
- *   - interactive FIFO dispatch priority so user prompts/answers do not wait behind fired timers
- *
- * v1.0.47 added:
+ * v1.0.47 adds:
  *   - clientMessageIds threaded from message → FIFO → runTurn → durable user.message
  *   - consecutive prompt FIFO items batched into one Copilot turn
  *   - cancel_pending_message tombstone tracking that drops cancelled prompts
@@ -219,7 +216,7 @@ function updateContextUsageFromEvents(
  */
 export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
 
-export function* durableSessionOrchestration_1_0_48(
+export function* durableSessionOrchestration_1_0_47(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -1346,28 +1343,6 @@ export function* durableSessionOrchestration_1_0_48(
             }
         }
         return null;
-    }
-
-    function popFirstFifoItemMatching(predicate: (item: any) => boolean): any | null {
-        for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
-            const items = readFifoBucket(i);
-            const index = items.findIndex(predicate);
-            if (index >= 0) {
-                const [item] = items.splice(index, 1);
-                writeFifoBucket(i, items);
-                return item;
-            }
-        }
-        return null;
-    }
-
-    function popNextDispatchFifoItem(): any | null {
-        const interactive = popFirstFifoItemMatching((item) => item?.kind === "prompt" || item?.kind === "answer");
-        if (interactive) {
-            ctx.traceInfo(`[fifo] dispatching interactive ${interactive.kind} before queued timers`);
-            return interactive;
-        }
-        return popFifoItem();
     }
 
     function hasFifoItems(): boolean {
@@ -3202,7 +3177,7 @@ export function* durableSessionOrchestration_1_0_48(
         }
 
         // Priority 3: FIFO — next item in arrival order
-        const item = popNextDispatchFifoItem();
+        const item = popFifoItem();
         if (item) {
             switch (item.kind) {
                 case "prompt": {
