@@ -202,22 +202,12 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.49).
+ * Flat event loop durable session orchestration (v1.0.48).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
  *
- * v1.0.49 changes the sub-agent lifecycle:
- *   - non-system sub-agents no longer auto-terminate when their final
- *     assistant message arrives. Instead they fall through to the same
- *     idle/dehydrate path as a top-level session and stay alive waiting
- *     for `message_agent` follow-ups or explicit `complete_agent` /
- *     `cancel_agent` / `delete_agent` from the parent.
- *   - the same-name dedup guard on `spawn_agent(agent_name=...)` is
- *     removed. The orchestration still enforces the global
- *     `MAX_SUB_AGENTS` cap and per-spawn nesting limit.
- *
- * v1.0.48 added:
+ * v1.0.48 adds:
  *   - interactive FIFO dispatch priority so user prompts/answers do not wait behind fired timers
  *
  * v1.0.47 added:
@@ -229,7 +219,7 @@ function updateContextUsageFromEvents(
  */
 export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
 
-export function* durableSessionOrchestration_1_0_49(
+export function* durableSessionOrchestration_1_0_48(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -762,23 +752,7 @@ export function* durableSessionOrchestration_1_0_49(
                 .filter(child => !child.isSystem)
                 .map((child) => {
                     const existing = subAgents.find(agent => agent.sessionId === child.sessionId || agent.orchId === child.orchId);
-                    // v1.0.49: sub-agents no longer auto-terminate when their
-                    // task completes, so the CMS row may still report "running"
-                    // even after the parent has observed a CHILD_UPDATE
-                    // type=completed. Keep the locally-tracked terminal status
-                    // sticky so wait_for_agents and check_agents do not regress.
-                    const localStatus = existing?.status;
-                    if (localStatus && isSubAgentTerminalStatus(localStatus)) {
-                        return {
-                            orchId: child.orchId,
-                            sessionId: child.sessionId,
-                            task: existing?.task ?? child.title ?? "(spawned sub-agent)",
-                            status: localStatus,
-                            result: child.result ?? existing?.result,
-                            agentId: child.agentId ?? existing?.agentId,
-                        } satisfies SubAgentEntry;
-                    }
-                    const rawStatus = child.status ?? localStatus ?? "running";
+                    const rawStatus = child.status ?? existing?.status ?? "running";
                     const normalizedStatus =
                         rawStatus === "failed" ? "failed"
                             : rawStatus === "cancelled" ? "cancelled"
@@ -2200,10 +2174,7 @@ export function* durableSessionOrchestration_1_0_49(
                     model: (result as any).model,
                 });
 
-                // Notify parent if sub-agent. The child stays alive after this
-                // notification so the parent can follow up with `message_agent`,
-                // and is only torn down by an explicit `complete_agent`,
-                // `cancel_agent`, or `delete_agent` from the parent.
+                // Notify parent if sub-agent
                 if (parentSessionId) {
                     try {
                         yield manager.sendToSession(parentSessionId,
@@ -2212,14 +2183,18 @@ export function* durableSessionOrchestration_1_0_49(
                         ctx.traceInfo(`[orch] sendToSession(parent) failed: ${err.message} (non-fatal)`);
                     }
 
-                    if (input.isSystem && !cronSchedule) {
-                        ctx.traceInfo(`[orch] system sub-agent completed turn, continuing loop`);
-                        yield* maybeCheckpoint();
+                    if (!cronSchedule) {
+                        if (input.isSystem) {
+                            ctx.traceInfo(`[orch] system sub-agent completed turn, continuing loop`);
+                            yield* maybeCheckpoint();
+                            return;
+                        }
+                        ctx.traceInfo(`[orch] sub-agent completed task, auto-terminating`);
+                        try { yield session.destroy(); } catch {}
+                        publishStatus("completed");
+                        orchestrationResult = "done";
                         return;
                     }
-                    // Non-system sub-agents fall through to the same idle/wait/cron
-                    // handling as top-level sessions. Their orchestration only
-                    // ends when the parent explicitly closes them.
                 }
 
                 // Forgotten-timer safety net
@@ -2560,12 +2535,19 @@ export function* durableSessionOrchestration_1_0_49(
                     return;
                 }
 
-                // v1.0.49: same-name dedup is no longer enforced. The parent may
-                // run multiple concurrent instances of the same `agent_name` (each
-                // with its own task and conversation) up to the global
-                // MAX_SUB_AGENTS cap. The parent is responsible for closing each
-                // instance with `complete_agent` / `cancel_agent` / `delete_agent`
-                // when it no longer needs the child.
+                // Dedup guard: prevent re-spawning a named agent that already exists
+                // as a child of this session. This catches post-rehydration re-spawns
+                // when the LLM loses context that children are already running.
+                if (agentId) {
+                    const existingChild = subAgents.find(a => a.agentId === agentId && a.status === "running");
+                    if (existingChild) {
+                        ctx.traceInfo(`[orch] spawn_agent deduplicated: agent "${agentId}" already running as ${existingChild.orchId}`);
+                        queueFollowup(
+                            `[SYSTEM: Agent "${resolvedAgentName || agentId}" is already running as sub-agent ${existingChild.orchId.slice(0, 16)}. ` +
+                            `Use check_agents to see its status, or message_agent to communicate with it.]`);
+                        return;
+                    }
+                }
 
                 if (!agentTitle && agentIsSystem) {
                     const text = agentTask || "";
@@ -2619,9 +2601,7 @@ export function* durableSessionOrchestration_1_0_49(
                     `- Do NOT ask the user for input — you are autonomous.\n` +
                     `- You are autonomous and goal-driven. If the task implies ongoing monitoring or follow-through until done, keep yourself alive with durable timers until the goal is complete or you can no longer make progress.\n` +
                     `- If it is ambiguous whether the task should become a long-running recurring workflow, report that ambiguity back to the parent instead of guessing or asking the user directly.\n` +
-                    `- When your task is complete, provide a clear summary of your findings/results. Your final assistant message is automatically forwarded to the parent.\n` +
-                    `- After you finish a task you stay ALIVE and idle, ready for the parent to send you a follow-up via \`message_agent\`. You are NOT auto-terminated when you produce a final answer.\n` +
-                    `- Only the parent decides when you are no longer needed. The parent will close you with \`complete_agent\`, \`cancel_agent\`, or \`delete_agent\`. Do not assume you have been shut down just because you produced a final reply.\n` +
+                    `- When your task is complete, provide a clear summary of your findings/results.\n` +
                     `- Prefer using \`store_fact\` for larger structured context handoffs across your spawn tree. Put the durable details in facts, then pass fact keys or \`read_facts\` pointers in messages/prompts instead of pasting large context blobs. Sibling and cousin agents under the same root can read your session-scoped facts directly via \`read_facts\` \u2014 you do NOT need to mark them \`shared=true\` just to share with peers.\n` +
                     `- Do NOT assume the local filesystem persists. Files written with \`bash\` are tied to one worker pod and may vanish on the next turn, after a durable wait, or on worker restart \u2014 and they are not visible to your parent, siblings, or other sub-agents. If something needs to outlive the turn or be shared, use \`write_artifact\` + \`export_artifact\` (for files) or \`store_fact\` (for structured state).\n` +
                     `- If you write any files with write_artifact, you MUST also call export_artifact and include the artifact:// link in your response.\n` +

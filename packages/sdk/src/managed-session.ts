@@ -240,6 +240,8 @@ export class ManagedSession {
                 "If the user did not explicitly ask for delegation, use your judgment about whether parallel work is actually helpful. " +
                 "Each agent adds cost, so avoid unnecessary fan-out when delegation was not requested. " +
                 "For KNOWN user-creatable agents, pass agent_name. The agent's prompt, tools, and task load automatically. " +
+                "You MAY spawn multiple concurrent instances of the same agent_name (e.g. one per bug or per shard); they each get their own conversation. The only caps are the global maximum concurrent sub-agents and the maximum nesting depth. " +
+                "Sub-agents do NOT auto-terminate when they finish their task \u2014 they stay alive idle, ready for follow-up via message_agent. YOU are responsible for closing each child with complete_agent (graceful), cancel_agent (interrupt), or delete_agent (forceful) when you no longer need it. " +
                 "Worker-managed system agents are NOT valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
                 "For CUSTOM agents (ad-hoc tasks), pass task instead. " +
                 "Call ps_list_agents to see all available named agents you CAN spawn. " +
@@ -829,7 +831,7 @@ export class ManagedSession {
             description:
                 "Gracefully complete a running sub-agent. " +
                 "Sends a /done command to the sub-agent, causing it to finish and send its final result back. " +
-                "Use this when a sub-agent has accomplished its task and should stop.",
+                "Sub-agents do NOT auto-terminate after their final reply, so it is YOUR responsibility to call this (or cancel_agent / delete_agent) when you no longer need a child \u2014 otherwise it stays idle and counts against your sub-agent budget.",
             parameters: {
                 type: "object",
                 properties: {
