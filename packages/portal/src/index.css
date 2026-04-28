@@ -1077,6 +1077,40 @@ body.is-resizing-pane-y * {
   overflow-wrap: anywhere;
 }
 
+/* When the column-fit algorithm identifies a "flex" column (long, prose-like,
+   often Description / Mechanism / Notes), let it absorb overflow by forcing
+   the table to fill its container with a fixed layout. The colgroup
+   percentages are then honored strictly: the rigid columns hold their
+   content-fit width, and the flex column wraps to pick up the rest. */
+.ps-chat-table-wrap.is-fit-width.has-flex-column,
+.ps-md-table-wrap.is-fit-width.has-flex-column {
+  width: 100%;
+  max-width: 100%;
+}
+
+.ps-chat-table.is-fit-width.has-flex-column,
+.ps-md-table.is-fit-width.has-flex-column {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.ps-chat-table.is-fit-width.has-flex-column th,
+.ps-chat-table.is-fit-width.has-flex-column td,
+.ps-md-table.is-fit-width.has-flex-column th,
+.ps-md-table.is-fit-width.has-flex-column td {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.ps-chat-table.is-fit-width.has-flex-column th.is-flex-column,
+.ps-chat-table.is-fit-width.has-flex-column td.is-flex-column,
+.ps-md-table.is-fit-width.has-flex-column th.is-flex-column,
+.ps-md-table.is-fit-width.has-flex-column td.is-flex-column {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .ps-chat-table th:last-child,
 .ps-chat-table td:last-child {
   border-right: 0;

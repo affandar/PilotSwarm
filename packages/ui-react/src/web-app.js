@@ -607,6 +607,121 @@ function renderInlineMarkdown(source, theme, keyPrefix = "md") {
     });
 }
 
+function normalizeTableCellText(value = "") {
+    return String(value || "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+const FIT_WIDTH_FLEX_HEADER_KEYWORDS = [
+    "description",
+    "mechanism",
+    "details",
+    "notes",
+    "summary",
+    "message",
+    "comment",
+    "reason",
+    "body",
+    "content",
+    "explanation",
+    "rationale",
+    "one-liner",
+];
+
+const FIT_WIDTH_FLEX_MIN_MAX_LEN = 24;
+const FIT_WIDTH_RIGID_CHAR_CAP = 32;
+const FIT_WIDTH_MIN_RIGID_CHARS = 4;
+const FIT_WIDTH_FLEX_MIN_CHARS = 30;
+const FIT_WIDTH_FLEX_MIN_FRACTION = 0.4;
+
+/**
+ * Compute per-column layout for a fit-width markdown / chat table.
+ *
+ * Strategy:
+ *   1. Measure max cell length and "wrappability" (cells with whitespace) per column.
+ *   2. Identify a single "flex" column — long, prose-like, ideally with a
+ *      header keyword like Description / Mechanism / Notes. This column
+ *      absorbs overflow by wrapping aggressively.
+ *   3. Give every other column a budget = clamp(maxLen + padding, MIN, RIGID_CAP),
+ *      so rigid columns stay at their content-fit width even when one
+ *      sibling column has hundreds of characters of prose.
+ *   4. Give the flex column the remainder, floored so it owns at least
+ *      FIT_WIDTH_FLEX_MIN_FRACTION of the table width.
+ *
+ * Returns { widths: ["12.34%", ...], flexIndex: number } when a flex column
+ * is identified — the table renderer then forces table-layout: fixed and
+ * adds an `is-flex-column` class to the chosen column so the column widths
+ * are honored strictly. Returns null when no flex column is found, in which
+ * case the renderer falls back to the browser's auto-table-layout (which is
+ * already good for short / uniform tables).
+ *
+ * Background: the previous behavior used the browser's auto-table-layout
+ * unconditionally. That works well when columns are uniform but is biased
+ * toward wide columns when one column has prose hundreds of characters
+ * long (e.g. a Mechanism / Description column) — auto-layout distributes
+ * width proportional to (max-content − min-content), which lets the prose
+ * column squeeze the rigid columns down to a few characters each.
+ */
+function computeFitWidthColumnLayout(rows = []) {
+    const columnCount = Math.max(0, ...rows.map((row) => row.length));
+    if (columnCount <= 0) return null;
+
+    const headerRow = rows[0] || [];
+    const dataRowCount = Math.max(1, rows.length - 1);
+
+    const stats = Array.from({ length: columnCount }, () => ({
+        max: 0,
+        spaceCells: 0,
+    }));
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+        const row = rows[rowIndex];
+        for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+            const text = normalizeTableCellText(row[columnIndex] || "");
+            if (text.length > stats[columnIndex].max) stats[columnIndex].max = text.length;
+            if (rowIndex > 0 && /\s/.test(text)) stats[columnIndex].spaceCells += 1;
+        }
+    }
+
+    let flexIndex = -1;
+    let flexScore = 0;
+    for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+        const stat = stats[columnIndex];
+        if (stat.max < FIT_WIDTH_FLEX_MIN_MAX_LEN) continue;
+        const spaceRatio = stat.spaceCells / dataRowCount;
+        if (spaceRatio < 0.4) continue;
+        const headerText = normalizeTableCellText(headerRow[columnIndex] || "").toLowerCase();
+        const headerBonus = FIT_WIDTH_FLEX_HEADER_KEYWORDS.some((keyword) => headerText.includes(keyword)) ? 60 : 0;
+        const score = stat.max + headerBonus;
+        if (score > flexScore) {
+            flexScore = score;
+            flexIndex = columnIndex;
+        }
+    }
+
+    if (flexIndex < 0) return null;
+
+    const budgets = stats.map((stat, columnIndex) => {
+        if (columnIndex === flexIndex) {
+            return Math.max(FIT_WIDTH_FLEX_MIN_CHARS, stat.max * 0.5);
+        }
+        return Math.max(FIT_WIDTH_MIN_RIGID_CHARS, Math.min(stat.max + 2, FIT_WIDTH_RIGID_CHAR_CAP));
+    });
+
+    const totalBudget = budgets.reduce((sum, value) => sum + value, 0);
+    if (totalBudget > 0 && budgets[flexIndex] / totalBudget < FIT_WIDTH_FLEX_MIN_FRACTION) {
+        const sumRigid = totalBudget - budgets[flexIndex];
+        budgets[flexIndex] = sumRigid * (FIT_WIDTH_FLEX_MIN_FRACTION / (1 - FIT_WIDTH_FLEX_MIN_FRACTION));
+    }
+
+    const finalTotal = budgets.reduce((sum, value) => sum + value, 0);
+    if (!(finalTotal > 0)) return null;
+    return {
+        widths: budgets.map((value) => `${((value / finalTotal) * 100).toFixed(2)}%`),
+        flexIndex,
+    };
+}
+
 function isMarkdownSpecialLine(line = "", nextLine = "") {
     const value = String(line || "");
     return /^\s*#{1,6}\s+/.test(value)
@@ -760,25 +875,51 @@ function MarkdownPreviewContent({ content, theme }) {
                 // every cell (>6 columns is the practical readability cliff
                 // on phones).
                 const fitToWidth = columnCount > 0 && columnCount <= 6;
-                // Let the browser's auto-table-layout do column sizing under
-                // the fit-content constraint — it uses min/max content widths
-                // per column, which is the standard algorithm and handles
-                // mixed narrow + wide columns much better than a sqrt-of-max
-                // heuristic that floors short columns at width-6.
+                // Default: let the browser's auto-table-layout do column
+                // sizing under the fit-content constraint — that handles
+                // short / uniform tables well. When one column has long
+                // prose (e.g. a Mechanism / Description column), auto-layout
+                // squeezes the rigid columns; computeFitWidthColumnLayout
+                // detects that case, picks a flex column, and assigns
+                // explicit widths so the rigid columns hold their
+                // content-fit width and the flex column wraps to absorb the
+                // remainder.
+                const layout = fitToWidth
+                    ? computeFitWidthColumnLayout([block.header, ...block.rows])
+                    : null;
+                const hasFlexColumn = !!layout;
+                const flexIndex = layout ? layout.flexIndex : -1;
+                const cellClass = (cellIndex) => (cellIndex === flexIndex ? "is-flex-column" : null);
+                const tableClass = `ps-md-table${fitToWidth ? " is-fit-width" : ""}${hasFlexColumn ? " has-flex-column" : ""}`;
+                const wrapClass = `ps-md-table-wrap${fitToWidth ? " is-fit-width" : ""}${hasFlexColumn ? " has-flex-column" : ""}`;
                 return React.createElement("div", {
                     key: `block:${index}`,
-                    className: `ps-md-table-wrap${fitToWidth ? " is-fit-width" : ""}`,
+                    className: wrapClass,
                 },
                     React.createElement("table", {
-                        className: `ps-md-table${fitToWidth ? " is-fit-width" : ""}`,
+                        className: tableClass,
                     },
+                        layout
+                            ? React.createElement("colgroup", null,
+                                layout.widths.map((width, columnIndex) => React.createElement("col", {
+                                    key: `col:${columnIndex}`,
+                                    className: cellClass(columnIndex) || undefined,
+                                    style: { width },
+                                })))
+                            : null,
                         React.createElement("thead", null,
                             React.createElement("tr", null,
-                                block.header.map((cell, cellIndex) => React.createElement("th", { key: `head:${cellIndex}` },
+                                block.header.map((cell, cellIndex) => React.createElement("th", {
+                                    key: `head:${cellIndex}`,
+                                    className: cellClass(cellIndex) || undefined,
+                                },
                                     renderInlineMarkdown(cell, theme, `table:${index}:head:${cellIndex}`))))),
                         React.createElement("tbody", null,
                             block.rows.map((row, rowIndex) => React.createElement("tr", { key: `row:${rowIndex}` },
-                                row.map((cell, cellIndex) => React.createElement("td", { key: `cell:${rowIndex}:${cellIndex}` },
+                                row.map((cell, cellIndex) => React.createElement("td", {
+                                    key: `cell:${rowIndex}:${cellIndex}`,
+                                    className: cellClass(cellIndex) || undefined,
+                                },
                                     renderInlineMarkdown(cell, theme, `table:${index}:${rowIndex}:${cellIndex}`))))))));
             }
             return React.createElement("p", { key: `block:${index}`, className: "ps-md-paragraph" },
@@ -1136,30 +1277,52 @@ function StructuredChatBlocks({ lines, theme }) {
                     ...bodyRows.map((row) => row.length),
                 );
                 const fitToWidth = columnCount <= 6;
-                // No precomputed <colgroup> widths: a sqrt(maxLength) heuristic
-                // floors short columns and compresses long ones, leaving narrow
-                // columns (Work item, Current stance) padded and wide columns
-                // (Title, Notes) cramped. The browser's native auto layout uses
-                // min/max content widths under the container's max-width and
-                // produces much more proportional results — the "standard
-                // algorithm" for this. CSS gives us fit-content + word-break +
-                // overflow-wrap so wide columns wrap and narrow columns shrink.
+                // Default: rely on the browser's auto-table-layout under
+                // fit-content for short / uniform tables (best
+                // proportional sizing). When one column has long prose
+                // (Mechanism / Description / Notes), auto-layout squeezes
+                // the rigid columns; computeFitWidthColumnLayout picks a
+                // flex column and assigns explicit widths so the rigid
+                // columns stay at content-fit and the flex column wraps to
+                // absorb the remainder.
+                const layout = fitToWidth
+                    ? computeFitWidthColumnLayout([...headerRows, ...bodyRows])
+                    : null;
+                const hasFlexColumn = !!layout;
+                const flexIndex = layout ? layout.flexIndex : -1;
+                const cellClass = (cellIndex) => (cellIndex === flexIndex ? "is-flex-column" : null);
+                const tableClass = `ps-chat-table${fitToWidth ? " is-fit-width" : ""}${hasFlexColumn ? " has-flex-column" : ""}`;
+                const wrapClass = `ps-chat-table-wrap${fitToWidth ? " is-fit-width" : ""}${hasFlexColumn ? " has-flex-column" : ""}`;
                 return React.createElement("div", {
                     key: `table:${index}`,
-                    className: `ps-chat-table-wrap${fitToWidth ? " is-fit-width" : ""}`,
+                    className: wrapClass,
                 },
                     React.createElement("table", {
-                        className: `ps-chat-table${fitToWidth ? " is-fit-width" : ""}`,
+                        className: tableClass,
                     },
+                        layout
+                            ? React.createElement("colgroup", null,
+                                layout.widths.map((width, columnIndex) => React.createElement("col", {
+                                    key: `col:${columnIndex}`,
+                                    className: cellClass(columnIndex) || undefined,
+                                    style: { width },
+                                })))
+                            : null,
                         headerRows.length > 0
                             ? React.createElement("thead", null,
                                 headerRows.map((row, rowIndex) => React.createElement("tr", { key: `thead:${rowIndex}` },
-                                    Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("th", { key: `th:${rowIndex}:${cellIndex}` },
+                                    Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("th", {
+                                        key: `th:${rowIndex}:${cellIndex}`,
+                                        className: cellClass(cellIndex) || undefined,
+                                    },
                                         renderInlineMarkdown(row[cellIndex] || "", theme, `chat-table:${index}:head:${rowIndex}:${cellIndex}`))))))
                             : null,
                         React.createElement("tbody", null,
                             bodyRows.map((row, rowIndex) => React.createElement("tr", { key: `tbody:${rowIndex}` },
-                                Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("td", { key: `td:${rowIndex}:${cellIndex}` },
+                                Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("td", {
+                                    key: `td:${rowIndex}:${cellIndex}`,
+                                    className: cellClass(cellIndex) || undefined,
+                                },
                                     renderInlineMarkdown(row[cellIndex] || "", theme, `chat-table:${index}:${rowIndex}:${cellIndex}`))))))));
             }
 
