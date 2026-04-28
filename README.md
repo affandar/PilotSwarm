@@ -6,7 +6,7 @@ A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/c
 
 For the fastest first run, start with the [Docker Quickstart Guide](docs/getting-started-docker-appliance.md).
 
-**v0.1.22** — Env-configurable worker/database sizing with conservative defaults, a 50-sub-agent live cap, and shared portal/TUI layout fixes. See [CHANGELOG.md](CHANGELOG.md) for details.
+**v0.1.23** — Orchestration v1.0.48 prioritizes interactive prompts over queued timers, plus portal layout overflow hardening and named-agent title ordering across the shared UI. See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Builder Agents
 

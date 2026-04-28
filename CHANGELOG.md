@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.23 — 2026-04-27
+
+### SDK / Runtime
+
+- **Orchestration v1.0.48** — froze `1.0.47` and added a new latest orchestration version that introduces interactive FIFO dispatch priority so user prompts and answers are processed ahead of queued timer fires when both are pending.
+
+### Portal / TUI / Shared UI
+
+- **Portal layout overflow hardening** — workspace grid, columns, pane slots, chat focus shell/body/overlay, mobile workspace/chat panes, panel headers/bodies, action lists, session row content, and markdown links now apply consistent `min-width: 0`, `max-width: 100%`, and `overflow` clamps so narrow widths and long unbroken strings no longer push panes past the viewport.
+- **Named-agent session titles** — session rows and chat pane headers now lead with the user-assigned title or uniquifier, then the agent type, then the agent/persona metadata (e.g. `M61 Conductor · R2D Train Watcher · Mad-Eye Moody`), keeping the useful title visible first on narrow/mobile views. The TUI maintainer skill and contributor instructions document this ordering.
+
 ## 0.1.22 — 2026-04-23
 
 ### SDK / Runtime

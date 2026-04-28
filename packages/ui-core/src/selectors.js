@@ -186,6 +186,71 @@ function buildSessionListTitle(session, brandingTitle, decorateOwners = false) {
     return `(${prefix}) ${title}`;
 }
 
+function normalizeAgentTitleComparable(value) {
+    return String(value || "").toLowerCase().replace(/[^a-z0-9]+/gu, "");
+}
+
+function isLikelyAgentTitlePrefix(prefix, session) {
+    const comparablePrefix = normalizeAgentTitleComparable(prefix);
+    const comparableAgentId = normalizeAgentTitleComparable(session?.agentId);
+    return Boolean(comparablePrefix && comparableAgentId && comparablePrefix === comparableAgentId);
+}
+
+function splitAgentPrefixedSessionTitle(session) {
+    if (!session?.agentId || session?.isSystem) return null;
+    const currentTitle = String(session?.title || "").trim();
+    if (!currentTitle) return null;
+
+    const suffixSeparator = " · ";
+    const suffixIndex = currentTitle.lastIndexOf(suffixSeparator);
+    if (suffixIndex > 0) {
+        const displayTitle = currentTitle.slice(0, suffixIndex).trim();
+        const agentTitle = currentTitle.slice(suffixIndex + suffixSeparator.length).trim();
+        if (displayTitle && isLikelyAgentTitlePrefix(agentTitle, session)) {
+            return { displayTitle, agentTitle };
+        }
+    }
+
+    const dashMatch = /^(.+?)\s+[–—-]\s+(.+)$/u.exec(currentTitle);
+    if (dashMatch) {
+        const agentTitle = dashMatch[1].trim();
+        const displayTitle = dashMatch[2].trim();
+        if (agentTitle && displayTitle) return { displayTitle, agentTitle };
+    }
+
+    const separatorIndex = currentTitle.indexOf(": ");
+    if (separatorIndex > 0) {
+        const agentTitle = currentTitle.slice(0, separatorIndex).trim();
+        const displayTitle = currentTitle.slice(separatorIndex + 2).trim();
+        if (displayTitle && isLikelyAgentTitlePrefix(agentTitle, session)) {
+            return { displayTitle, agentTitle };
+        }
+    }
+
+    return null;
+}
+
+function splitTypedSessionTitle(displayTitle) {
+    const title = String(displayTitle || "");
+    const separatorIndex = title.indexOf(": ");
+    if (separatorIndex <= 0) return null;
+    const typeTitle = title.slice(0, separatorIndex).trim();
+    const userTitle = title.slice(separatorIndex + 2).trim();
+    if (!typeTitle || !userTitle) return null;
+    return { userTitle, typeTitle };
+}
+
+function buildSessionDisplayTitle(session) {
+    const title = String(session?.title || "").trim();
+    const splitTitle = splitAgentPrefixedSessionTitle(session);
+    if (!splitTitle) return title;
+    const typedTitle = splitTypedSessionTitle(splitTitle.displayTitle);
+    if (typedTitle) {
+        return `${typedTitle.userTitle} · ${typedTitle.typeTitle} · ${splitTitle.agentTitle}`;
+    }
+    return `${splitTitle.displayTitle} · ${splitTitle.agentTitle}`;
+}
+
 function buildSessionTitle(session, brandingTitle) {
     const shortId = shortSessionId(session?.sessionId);
 
@@ -193,7 +258,7 @@ function buildSessionTitle(session, brandingTitle) {
         return `${canonicalSystemTitle(session, brandingTitle)} (${shortId})`;
     }
 
-    const title = String(session?.title || "");
+    const title = buildSessionDisplayTitle(session);
     if (!title) return `(${shortId})`;
     return title.includes(shortId) ? title : `${title} (${shortId})`;
 }
@@ -1316,7 +1381,7 @@ export function selectChatPaneChrome(state, options = {}) {
     const title = buildPaneTitleRuns(
         session.isSystem
             ? `≈ ${canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")}`
-            : (session.title || "Chat"),
+            : (buildSessionDisplayTitle(session) || "Chat"),
         mainColor,
     );
 

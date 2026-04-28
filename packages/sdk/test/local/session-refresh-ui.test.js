@@ -218,6 +218,80 @@ describe("session refresh UI recovery", () => {
         assertIncludes(chromeRight, "Sending", "chat chrome should show a sending status on the right side while the optimistic turn is in flight");
     });
 
+    it("shows agent-prefixed session titles with the uniquifier first", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "8a01cdad-1111-2222-3333-444444444444",
+                title: "Mad-Eye Moody - R2D Train Watcher: M61 Conductor",
+                agentId: "mad-eye-moody",
+                status: "running",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "8a01cdad-1111-2222-3333-444444444444" });
+
+        const rowText = selectSessionRows(store.getState())[0]?.text || "";
+        const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
+
+        assertIncludes(rowText, "M61 Conductor · R2D Train Watcher · Mad-Eye Moody", "session row should show the uniquifier before type and agent name");
+        assert(!rowText.includes("Mad-Eye Moody - R2D Train Watcher"), "session row should not keep the agent-first title shape");
+        assertIncludes(chromeTitle, "M61 Conductor · R2D Train Watcher · Mad-Eye Moody", "chat header should show the uniquifier before type and agent name");
+        assertIncludes(chromeTitle, "[8a01cdad]", "chat header should still keep the session id metadata");
+    });
+
+    it("normalizes existing agent-suffixed typed session titles", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "8a01cdad-1111-2222-3333-444444444444",
+                title: "R2D Train Watcher: M61 Conductor · Mad-Eye Moody",
+                agentId: "mad-eye-moody",
+                status: "running",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "8a01cdad-1111-2222-3333-444444444444" });
+
+        const rowText = selectSessionRows(store.getState())[0]?.text || "";
+        const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
+
+        assertIncludes(rowText, "M61 Conductor · R2D Train Watcher · Mad-Eye Moody", "session row should normalize the previous suffix display shape");
+        assert(!rowText.includes("R2D Train Watcher: M61 Conductor · Mad-Eye Moody"), "session row should not keep the previous type-first display shape");
+        assertIncludes(chromeTitle, "M61 Conductor · R2D Train Watcher · Mad-Eye Moody", "chat header should normalize the previous suffix display shape");
+    });
+
+    it("does not split normal colon titles when no agent prefix is present", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "5174729a-1111-2222-3333-444444444444",
+                title: "R2D Train Watcher: M61 Conductor",
+                agentId: "mad-eye-moody",
+                status: "running",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "5174729a-1111-2222-3333-444444444444" });
+
+        const rowText = selectSessionRows(store.getState())[0]?.text || "";
+        const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
+
+        assertIncludes(rowText, "R2D Train Watcher: M61 Conductor", "session row should keep a normal colon title intact");
+        assert(!rowText.includes("M61 Conductor · R2D Train Watcher"), "session row should not treat normal colon text as an agent prefix");
+        assertIncludes(chromeTitle, "R2D Train Watcher: M61 Conductor", "chat header should keep a normal colon title intact");
+        assert(!chromeTitle.includes("M61 Conductor · R2D Train Watcher"), "chat header should not reorder normal colon text");
+    });
+
     it("merges multiple concurrent sends into a single durable enqueue", async () => {
         const sentPrompts = [];
         const { controller, store } = createController({
