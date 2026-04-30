@@ -98,6 +98,53 @@ export function buildSystemAgentBootstrapPayload(
  * constructor so they share the database provider and the client can
  * forward tool/hook registrations.
  */
+/**
+ * Resolve the spawn-tree session IDs for a given session.
+ *
+ * Walks up to the root ancestor via `parentSessionId`, then returns
+ * `[root, ...descendants_of_root]` minus the caller itself. This is the
+ * visibility set used by `setLineageSessionLookup` so peer agents
+ * (siblings, cousins) under a common root can share session-scoped
+ * facts without needing `shared=true`.
+ *
+ * Exported so tests can verify spawn-tree visibility behavior with a
+ * mock `SessionCatalogProvider`.
+ *
+ * @internal
+ */
+export async function resolveSpawnTreeSessionIds(
+    sessionId: string,
+    catalog: Pick<SessionCatalogProvider, "getSession" | "getDescendantSessionIds">,
+): Promise<string[]> {
+    const seen = new Set([sessionId]);
+    const lineage: string[] = [];
+
+    let rootSessionId = sessionId;
+    const walked = new Set([sessionId]);
+    while (true) {
+        const row = await catalog.getSession(rootSessionId);
+        const parentSessionId = row?.parentSessionId ?? null;
+        if (!parentSessionId || parentSessionId === rootSessionId) break;
+        if (walked.has(parentSessionId)) break; // cycle guard
+        walked.add(parentSessionId);
+        rootSessionId = parentSessionId;
+    }
+
+    if (rootSessionId !== sessionId) {
+        lineage.push(rootSessionId);
+        seen.add(rootSessionId);
+    }
+
+    const treeMembers = await catalog.getDescendantSessionIds(rootSessionId);
+    for (const memberSessionId of treeMembers) {
+        if (seen.has(memberSessionId)) continue;
+        lineage.push(memberSessionId);
+        seen.add(memberSessionId);
+    }
+
+    return lineage;
+}
+
 export class PilotSwarmWorker {
     private config: PilotSwarmWorkerOptions & { waitThreshold: number };
     private sessionManager: SessionManager;
@@ -313,29 +360,9 @@ export class PilotSwarmWorker {
         this.sessionManager.setFactStore(this.factStore);
         if (this._catalog) {
             this.sessionManager.setSessionCatalog(this._catalog);
-            this.sessionManager.setLineageSessionLookup(async (sessionId) => {
-                const seen = new Set([sessionId]);
-                const lineage: string[] = [];
-
-                let currentSessionId = sessionId;
-                while (true) {
-                    const row = await this._catalog!.getSession(currentSessionId);
-                    const parentSessionId = row?.parentSessionId ?? null;
-                    if (!parentSessionId || seen.has(parentSessionId)) break;
-                    lineage.push(parentSessionId);
-                    seen.add(parentSessionId);
-                    currentSessionId = parentSessionId;
-                }
-
-                const descendants = await this._catalog!.getDescendantSessionIds(sessionId);
-                for (const descendantSessionId of descendants) {
-                    if (seen.has(descendantSessionId)) continue;
-                    lineage.push(descendantSessionId);
-                    seen.add(descendantSessionId);
-                }
-
-                return lineage;
-            });
+            this.sessionManager.setLineageSessionLookup(async (sessionId) => (
+                resolveSpawnTreeSessionIds(sessionId, this._catalog!)
+            ));
         }
 
         // Inspect tools (e.g. agent-tuner read tools) need a duroxide client

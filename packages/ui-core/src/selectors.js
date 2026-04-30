@@ -29,8 +29,8 @@ import { normalizeArtifactEntries } from "./state.js";
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
-const USER_CHAT_COLOR = "#ffd866";
-const USER_CHAT_LABEL_COLOR = "#ffec99";
+const USER_CHAT_COLOR = "userChat";
+const USER_CHAT_LABEL_COLOR = "userChatLabel";
 
 const totalDescendantCountsCache = new WeakMap();
 const visibleDescendantCountsCache = new WeakMap();
@@ -378,6 +378,20 @@ function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visib
         runs.push({ text: depthPrefix, color: "gray" });
     }
 
+    const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
+    const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
+    const selectMode = Boolean(state.sessions?.selectMode);
+    const isSelected = selectedSet.has(entry.sessionId);
+    const isPinned = pinnedSet.has(entry.sessionId);
+
+    if (selectMode) {
+        runs.push({
+            text: isSelected ? "[x] " : "[ ] ",
+            color: isSelected ? "cyan" : "gray",
+            bold: isSelected,
+        });
+    }
+
     if (session?.isSystem) {
         runs.push({ text: "≈ ", color: "yellow", bold: true });
     } else {
@@ -386,6 +400,10 @@ function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visib
             text: icon ? `${icon} ` : "  ",
             color: sessionStatusColor(session, mode),
         });
+    }
+
+    if (isPinned && !session?.isSystem) {
+        runs.push({ text: "📌 ", color: "yellow" });
     }
 
     const mainColor = session?.isSystem ? "yellow" : sessionStatusColor(session, mode);
@@ -429,6 +447,8 @@ export function selectSessionRows(state) {
     const query = normalizeSearchQuery(state.sessions?.filterQuery || "");
     const ownerFilter = state.sessions?.ownerFilter || { all: true };
     const auth = state.auth || {};
+    const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
+    const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
 
     return state.sessions.flat.map((entry) => {
         const session = state.sessions.byId[entry.sessionId];
@@ -444,6 +464,9 @@ export function selectSessionRows(state) {
             isSystem: Boolean(session?.isSystem),
             hasChildren: entry.hasChildren,
             collapsed: entry.collapsed,
+            pinned: pinnedSet.has(entry.sessionId),
+            selected: selectedSet.has(entry.sessionId),
+            canPin: !session?.isSystem && !session?.parentSessionId,
         };
     }).filter((row) => {
         const session = state.sessions.byId[row.sessionId];
@@ -907,8 +930,23 @@ function extractWrappedSystemNotice(text) {
         }
     }
 
+    // The orchestration's queueFollowup() strips the [SYSTEM: ...] wrapper
+    // before persisting tool-result followups (sub-agent completions, agent
+    // listings, etc.) so the LLM doesn't loop on a synthetic system prompt.
+    // The bare text still describes a system notice — match the known
+    // followup shapes here so the renderer can surface them as cards
+    // instead of as raw "You: …" bubbles.
+    if (BARE_SYSTEM_NOTICE_PATTERN.test(trimmed)) {
+        return { leadingText: "", systemText: trimmed };
+    }
+
     return null;
 }
+
+// Bare followup shapes produced by orchestration.ts queueFollowup() after
+// the [SYSTEM: …] wrapper has been stripped. Keep this aligned with the
+// `queueFollowup(...)` call sites in orchestration.ts.
+const BARE_SYSTEM_NOTICE_PATTERN = /^(?:Sub-agents?\s+completed\b|Sub-agent\s+status\s+report\b|Active\s+sessions\b|No\s+(?:tracked\s+sub-agents|running\s+sub-agents|sub-agents\s+have\s+been\s+spawned)\b|spawn_agent\s+failed\b|message_agent\s+failed\b|complete_agent\s+failed\b)/i;
 
 function splitSystemNoticeSegments(text) {
     const wrapped = extractWrappedSystemNotice(text);
@@ -1064,6 +1102,18 @@ function buildCollapsedSystemNoticeLine(text, timestamp = "") {
     };
 }
 
+function buildSystemNoticeLine({ title, summary, body, timestamp = "", color = "gray" }) {
+    const normalizedTitle = String(title || "System").trim() || "System";
+    const normalizedSummary = String(summary || "").replace(/\s+/g, " ").trim();
+    return {
+        kind: "systemNotice",
+        text: `${timestamp ? `[${timestamp}] ` : ""}${normalizedTitle}${normalizedSummary ? `: ${normalizedSummary}` : ""}`,
+        summary: normalizedSummary,
+        body: decorateArtifactLinksForChat(body || normalizedSummary),
+        color,
+    };
+}
+
 function buildChatProgressTitleRuns(progress) {
     if (!progress?.label) return null;
     return [{
@@ -1102,6 +1152,105 @@ function appendChatBlockLines(targetLines, nextLines) {
         targetLines.push([{ text: "", color: null }]);
     }
     targetLines.push(...nextLines);
+}
+
+/**
+ * Parse the orchestration's `[SYSTEM: Sub-agent(s) completed …]` follow-up
+ * prompt into structured per-agent entries. Returns null if `systemText`
+ * is not a sub-agent completion notice.
+ *
+ * Single-agent format (built by `buildWaitForAgentsFollowup` in the
+ * orchestration): `Sub-agent completed. <relay instructions>\n  - Agent
+ * <orchId>\n    Task: "<task>"\n    Status: <status>\n    Result: <body>`.
+ *
+ * Multi-agent format: `Sub-agents completed:\n  - Agent <id>\n    Task:
+ * "..."\n    ...` repeated per child.
+ */
+function parseSubAgentNotice(systemText) {
+    const text = String(systemText || "");
+    const isSingle = /^\s*Sub-agent\s+completed\b/i.test(text);
+    const isMulti = /^\s*Sub-agents\s+completed/i.test(text);
+    if (!isSingle && !isMulti) return null;
+    const agents = [];
+    const entryRegex = /(?:^|\n)\s*-\s*Agent\s+(\S+)\s*\n\s*Task:\s*"([^"]*)"\s*\n\s*Status:\s*(\S+)\s*\n\s*Result:\s*([\s\S]*?)(?=(?:\n\s*-\s*Agent\s+\S+)|$)/g;
+    let m;
+    while ((m = entryRegex.exec(text)) !== null) {
+        agents.push({
+            agentId: m[1],
+            task: m[2],
+            status: m[3],
+            result: m[4].trim(),
+        });
+    }
+    if (agents.length === 0) return null;
+    if (isSingle || agents.length === 1) {
+        return { kind: "subAgentSingle", ...agents[0] };
+    }
+    return { kind: "subAgentMulti", agents };
+}
+
+/**
+ * Render an in-message `[SYSTEM: …]` notice as a bordered card. When the
+ * notice is a sub-agent completion (`Sub-agent completed`/`Sub-agents
+ * completed`), parse it into per-child sections and title the card
+ * "Sub-agent Response". Otherwise fall back to a plain "System" card.
+ */
+function buildSystemNoticeCardLines(systemText, message, maxWidth) {
+    const safeWidth = Math.max(20, Number(maxWidth) || 20);
+    const timestamp = formatTimestamp(message?.createdAt || message?.time);
+    const subAgent = parseSubAgentNotice(systemText);
+    // Strip the orchestration's `session-` prefix when present so the
+    // displayed short id surfaces the unique uuid suffix instead of a
+    // useless "session-" stub.
+    const shortAgentId = (id) => {
+        const raw = String(id || "").replace(/^session-/i, "");
+        return shortSessionId(raw) || raw || String(id || "");
+    };
+    if (subAgent?.kind === "subAgentSingle") {
+        const shortId = shortAgentId(subAgent.agentId);
+        const body = [
+            subAgent.task ? `**Task:** ${subAgent.task}` : "",
+            subAgent.status ? `**Status:** ${subAgent.status}` : "",
+            "",
+            subAgent.result || "_(no result)_",
+        ].filter((line, index) => index === 2 || line).join("\n");
+        return [buildSystemNoticeLine({
+            title: `Sub-agent Response — ${shortId}`,
+            summary: subAgent.status || "completed",
+            timestamp,
+            body,
+            color: "cyan",
+        })];
+    }
+    if (subAgent?.kind === "subAgentMulti") {
+        const sections = subAgent.agents.map((agent) => {
+            const shortId = shortAgentId(agent.agentId);
+            const taskLine = agent.task ? `**Task:** ${agent.task}` : "";
+            const statusLine = agent.status ? `**Status:** ${agent.status}` : "";
+            const header = [`### ${shortId}`, taskLine, statusLine].filter(Boolean).join("\n");
+            return `${header}\n\n${agent.result || "_(no result)_"}`;
+        });
+        const summary = subAgent.agents
+            .map((agent) => `${shortAgentId(agent.agentId)} ${agent.status || "completed"}`)
+            .join(" · ");
+        return [buildSystemNoticeLine({
+            title: `Sub-agent Responses (${subAgent.agents.length})`,
+            summary,
+            timestamp,
+            body: sections.join("\n\n---\n\n"),
+            color: "cyan",
+        })];
+    }
+    return buildMessageCardLines({
+        title: "System",
+        timestamp,
+        body: systemText,
+        width: safeWidth,
+        titleColor: "yellow",
+        borderColor: "gray",
+        bodyColor: "gray",
+        fitToContent: true,
+    });
 }
 
 function buildThinkingCardLines(message, maxWidth) {
@@ -1199,6 +1348,22 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
 
             if (rendered.length > 0) {
                 return rendered;
+            }
+
+            // No speaker-visible text remained after stripping the system
+            // notices. Render the notice itself as a card so the message
+            // doesn't fall through to a raw "You: [SYSTEM: …]" bubble.
+            // Sub-agent completion notices get a dedicated card title.
+            const cardLines = [];
+            for (const segment of segments) {
+                if (segment.kind !== "system" || !segment.text.trim()) continue;
+                appendChatBlockLines(
+                    cardLines,
+                    buildSystemNoticeCardLines(segment.text, message, maxWidth),
+                );
+            }
+            if (cardLines.length > 0) {
+                return cardLines;
             }
         }
     }
@@ -1996,8 +2161,16 @@ export function selectStatusBar(state) {
             right: "up/down choose · space toggle · esc close",
         };
     }
+    const selectMode = Boolean(state.sessions?.selectMode);
+    const selectedCount = Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds.length : 0;
+    if (selectMode && focus === FOCUS_REGIONS.SESSIONS) {
+        return {
+            left: `Select mode · ${selectedCount} selected · only Cancel (c) acts on the selection`,
+            right: "up/down move · space toggle · c cancel selected · V/esc exit select",
+        };
+    }
     const hints = {
-        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · f filter · d done · D delete · r refresh · t title · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · f filter · P pin · V select · d done · D delete · r refresh · t title · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.CHAT]: `j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
             ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] side pane · T themes · a linked items · drag copy · tab next pane`
@@ -3382,7 +3555,9 @@ function formatRelativeTime(ts) {
 
 function formatLocalTimestamp(ts) {
     if (!ts) return "—";
-    return new Date(ts).toLocaleString(undefined, {
+    const date = ts instanceof Date ? ts : new Date(ts);
+    if (Number.isNaN(date.getTime())) return "—";
+    return date.toLocaleString(undefined, {
         year: "numeric",
         month: "short",
         day: "numeric",
@@ -3470,6 +3645,18 @@ function buildSessionStatsLines(state, session, maxWidth) {
         lines.push(fitRuns([
             { text: "Model    ", color: "cyan", bold: true },
             { text: summary.model, color: "white" },
+        ], w));
+    }
+    if (session.createdAt) {
+        lines.push(fitRuns([
+            { text: "Created  ", color: "cyan", bold: true },
+            { text: formatLocalTimestamp(session.createdAt), color: "white" },
+        ], w));
+    }
+    if (session.updatedAt) {
+        lines.push(fitRuns([
+            { text: "Updated  ", color: "cyan", bold: true },
+            { text: formatLocalTimestamp(session.updatedAt), color: "white" },
         ], w));
     }
     lines.push(plainInspectorLine(""));

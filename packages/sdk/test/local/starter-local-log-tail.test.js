@@ -6,6 +6,8 @@ import { NodeSdkTransport } from "../../../cli/src/node-sdk-transport.js";
 
 const ORIGINAL_LOG_DIR = process.env.PILOTSWARM_LOG_DIR;
 const ORIGINAL_POLL_INTERVAL = process.env.PILOTSWARM_LOG_POLL_INTERVAL_MS;
+const ORIGINAL_AZURE_STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
+const ORIGINAL_AZURE_STORAGE_CONTAINER = process.env.AZURE_STORAGE_CONTAINER;
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -28,6 +30,12 @@ afterEach(() => {
 
     if (ORIGINAL_POLL_INTERVAL == null) delete process.env.PILOTSWARM_LOG_POLL_INTERVAL_MS;
     else process.env.PILOTSWARM_LOG_POLL_INTERVAL_MS = ORIGINAL_POLL_INTERVAL;
+
+    if (ORIGINAL_AZURE_STORAGE_CONNECTION_STRING == null) delete process.env.AZURE_STORAGE_CONNECTION_STRING;
+    else process.env.AZURE_STORAGE_CONNECTION_STRING = ORIGINAL_AZURE_STORAGE_CONNECTION_STRING;
+
+    if (ORIGINAL_AZURE_STORAGE_CONTAINER == null) delete process.env.AZURE_STORAGE_CONTAINER;
+    else process.env.AZURE_STORAGE_CONTAINER = ORIGINAL_AZURE_STORAGE_CONTAINER;
 });
 
 describe("starter local log tailing", () => {
@@ -38,6 +46,8 @@ describe("starter local log tailing", () => {
 
         process.env.PILOTSWARM_LOG_DIR = tempDir;
         process.env.PILOTSWARM_LOG_POLL_INTERVAL_MS = "50";
+        delete process.env.AZURE_STORAGE_CONNECTION_STRING;
+        delete process.env.AZURE_STORAGE_CONTAINER;
 
         const transport = new NodeSdkTransport({ store: "sqlite::memory:", mode: "local" });
         const entries = [];

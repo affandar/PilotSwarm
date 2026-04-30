@@ -17,6 +17,28 @@ import os from "node:os";
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
 const DEHYDRATE_STORE_MAX_RETRIES = 1;
 const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 0;
+const SESSION_LOCK_BACKOFF_MS = [5_000, 10_000, 20_000] as const;
+const SESSION_LOCK_MAX_WAIT_MS = 120_000;
+export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
+
+export class SessionLockAcquireTimeoutError extends Error {
+    readonly code = SESSION_LOCK_ACQUIRE_TIMEOUT_CODE;
+    readonly sessionId: string;
+    readonly operation: string;
+    readonly waitedMs: number;
+
+    constructor(sessionId: string, operation: string, waitedMs: number) {
+        super(`can't acquire session lock for session ${sessionId} while running ${operation} after ${waitedMs}ms`);
+        this.name = "SessionLockAcquireTimeoutError";
+        this.sessionId = sessionId;
+        this.operation = operation;
+        this.waitedMs = waitedMs;
+    }
+}
+
+export function isSessionLockAcquireTimeoutError(error: unknown): error is SessionLockAcquireTimeoutError {
+    return Boolean(error && typeof error === "object" && (error as any).code === SESSION_LOCK_ACQUIRE_TIMEOUT_CODE);
+}
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -114,6 +136,8 @@ export class SessionManager {
     private _duroxideClient: any = null;
     /** Lineage lookup for ancestor/descendant facts access. */
     private _getLineageSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
+    /** Per-session critical sections; protects the SDK session handle and local session.db. */
+    private sessionLocks = new Map<string, Promise<void>>();
 
     constructor(
         private githubToken?: string,
@@ -283,6 +307,72 @@ export class SessionManager {
         }
     }
 
+    private async _withSessionLock<T>(
+        sessionId: string,
+        operation: string,
+        fn: () => Promise<T>,
+        options?: { trace?: SessionTraceWriter },
+    ): Promise<T> {
+        const startedAt = Date.now();
+        let backoffIndex = 0;
+        let loggedFirstBackoff = false;
+
+        while (true) {
+            const currentLock = this.sessionLocks.get(sessionId);
+            if (!currentLock) {
+                let release!: () => void;
+                const lock = new Promise<void>((resolve) => { release = resolve; });
+                this.sessionLocks.set(sessionId, lock);
+                try {
+                    return await fn();
+                } finally {
+                    if (this.sessionLocks.get(sessionId) === lock) {
+                        this.sessionLocks.delete(sessionId);
+                    }
+                    release();
+                }
+            }
+
+            const waitedMs = Date.now() - startedAt;
+            const remainingMs = SESSION_LOCK_MAX_WAIT_MS - waitedMs;
+            if (remainingMs <= 0) {
+                throw new SessionLockAcquireTimeoutError(sessionId, operation, SESSION_LOCK_MAX_WAIT_MS);
+            }
+
+            const configuredDelayMs = SESSION_LOCK_BACKOFF_MS[Math.min(backoffIndex, SESSION_LOCK_BACKOFF_MS.length - 1)];
+            const delayMs = Math.min(configuredDelayMs, remainingMs);
+            if (!loggedFirstBackoff) {
+                loggedFirstBackoff = true;
+                const message = `session lock busy for ${sessionId} during ${operation}; backing off for ${delayMs / 1000}s before retrying`;
+                if (options?.trace) {
+                    emitSessionManagerTrace(sessionId, message, { trace: options.trace, level: "warn" });
+                }
+                console.error(`[SessionManager] ${message}`);
+            } else if (options?.trace) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    `session lock still busy during ${operation}; backing off for ${delayMs / 1000}s before retrying`,
+                    { trace: options.trace },
+                );
+            }
+
+            await Promise.race([
+                currentLock.catch(() => undefined),
+                sleep(delayMs),
+            ]);
+            backoffIndex += 1;
+        }
+    }
+
+    async withRunTurnLock<T>(
+        sessionId: string,
+        operation: string,
+        fn: () => Promise<T>,
+        options?: { trace?: SessionTraceWriter },
+    ): Promise<T> {
+        return this._withSessionLock(sessionId, operation, fn, options);
+    }
+
     /**
      * Get existing session or create/resume one.
      * Merges: worker defaults → serializable config (from client) → in-memory config (tools/hooks).
@@ -290,7 +380,23 @@ export class SessionManager {
     async getOrCreate(
         sessionId: string,
         serializableConfig: SerializableSessionConfig,
-        options?: { turnIndex?: number; trace?: SessionTraceWriter },
+        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean },
+    ): Promise<ManagedSession> {
+        if (!options?.lockHeld) {
+            return this._withSessionLock(
+                sessionId,
+                "getOrCreate",
+                () => this._getOrCreateUnlocked(sessionId, serializableConfig, options),
+                { trace: options?.trace },
+            );
+        }
+        return this._getOrCreateUnlocked(sessionId, serializableConfig, options);
+    }
+
+    private async _getOrCreateUnlocked(
+        sessionId: string,
+        serializableConfig: SerializableSessionConfig,
+        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean },
     ): Promise<ManagedSession> {
         const turnIndex = options?.turnIndex;
         const trace = options?.trace;
@@ -548,7 +654,19 @@ export class SessionManager {
      *   4. If the post-disconnect snapshot is missing (which would indicate
      *      a future SDK regression), fall back to the pre-destroy checkpoint.
      */
-    async dehydrate(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter }): Promise<void> {
+    async dehydrate(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; lockHeld?: boolean }): Promise<void> {
+        if (!options?.lockHeld) {
+            return this._withSessionLock(
+                sessionId,
+                "dehydrate",
+                () => this._dehydrateUnlocked(sessionId, reason, options),
+                { trace: options?.trace },
+            );
+        }
+        return this._dehydrateUnlocked(sessionId, reason, options);
+    }
+
+    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter }): Promise<void> {
         const DESTROY_MAX_RETRIES = 3;
         const trace = options?.trace;
         let lastDestroyError: Error | undefined;
@@ -715,7 +833,19 @@ export class SessionManager {
      * Hydrate session state from the configured session store to local disk.
      * The next getOrCreate() will detect local files and resume.
      */
-    async hydrate(sessionId: string, options?: { trace?: SessionTraceWriter }): Promise<void> {
+    async hydrate(sessionId: string, options?: { trace?: SessionTraceWriter; lockHeld?: boolean }): Promise<void> {
+        if (!options?.lockHeld) {
+            return this._withSessionLock(
+                sessionId,
+                "hydrate",
+                () => this._hydrateUnlocked(sessionId, options),
+                { trace: options?.trace },
+            );
+        }
+        return this._hydrateUnlocked(sessionId, options);
+    }
+
+    private async _hydrateUnlocked(sessionId: string, options?: { trace?: SessionTraceWriter }): Promise<void> {
         const trace = options?.trace;
         if (this.sessionStore) {
             emitSessionManagerTrace(sessionId, "hydrate start via session store", { trace });
@@ -771,7 +901,10 @@ export class SessionManager {
     /**
      * Destroy a session and remove from tracking.
      */
-    async destroySession(sessionId: string): Promise<void> {
+    async destroySession(sessionId: string, options?: { lockHeld?: boolean }): Promise<void> {
+        if (!options?.lockHeld) {
+            return this._withSessionLock(sessionId, "destroySession", () => this.destroySession(sessionId, { lockHeld: true }));
+        }
         const session = this.sessions.get(sessionId);
         if (session) {
             await session.destroy();
@@ -784,7 +917,10 @@ export class SessionManager {
      * local/session-store state. Used when the underlying Copilot session
      * becomes invalid and we want the next getOrCreate() to resume/hydrate it.
      */
-    async invalidateWarmSession(sessionId: string): Promise<void> {
+    async invalidateWarmSession(sessionId: string, options?: { lockHeld?: boolean }): Promise<void> {
+        if (!options?.lockHeld) {
+            return this._withSessionLock(sessionId, "invalidateWarmSession", () => this.invalidateWarmSession(sessionId, { lockHeld: true }));
+        }
         const session = this.sessions.get(sessionId);
         if (!session) return;
         try {
@@ -798,7 +934,10 @@ export class SessionManager {
      * Used when the stored transcript/session state becomes unusable and the
      * runtime must recreate a fresh Copilot session for lossy replay.
      */
-    async resetSessionState(sessionId: string): Promise<void> {
+    async resetSessionState(sessionId: string, options?: { lockHeld?: boolean }): Promise<void> {
+        if (!options?.lockHeld) {
+            return this._withSessionLock(sessionId, "resetSessionState", () => this._resetSessionState(sessionId));
+        }
         await this._resetSessionState(sessionId);
     }
 
@@ -806,7 +945,10 @@ export class SessionManager {
      * Checkpoint session state without destroying the session or
      * releasing affinity. Used for crash resilience — session stays warm.
      */
-    async checkpoint(sessionId: string): Promise<void> {
+    async checkpoint(sessionId: string, options?: { lockHeld?: boolean }): Promise<void> {
+        if (!options?.lockHeld) {
+            return this._withSessionLock(sessionId, "checkpoint", () => this.checkpoint(sessionId, { lockHeld: true }));
+        }
         if (this.sessionStore) {
             await this.sessionStore.checkpoint(sessionId);
         }

@@ -1,4 +1,4 @@
-import type { SessionManager } from "./session-manager.js";
+import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
 import type { SessionStateStore } from "./session-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
@@ -491,12 +491,19 @@ export function registerActivities(
             return { type: "error", message } as TurnResult;
         };
 
+        let inlineSdkClient: PilotSwarmClient | null = null;
+        let inlineSdkClientPromise: Promise<PilotSwarmClient> | null = null;
+        let cancelPoll: ReturnType<typeof setInterval> | null = null;
+
+        try {
+            return await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
         let session: any = null;
         let effectivePrompt = input.prompt;
         try {
             session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
                 turnIndex: input.turnIndex,
                 trace,
+                lockHeld: true,
             });
         } catch (err: any) {
             const message = err?.message || String(err);
@@ -539,6 +546,7 @@ export function registerActivities(
                     session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
                         turnIndex: 0,
                         trace,
+                        lockHeld: true,
                     });
                 } catch (recoveryErr: any) {
                     const recoveryMessage = recoveryErr?.message || String(recoveryErr);
@@ -557,8 +565,6 @@ export function registerActivities(
             }
         }
 
-        let inlineSdkClient: PilotSwarmClient | null = null;
-        let inlineSdkClientPromise: Promise<PilotSwarmClient> | null = null;
         const getInlineClient = async () => {
             if (inlineSdkClient) return inlineSdkClient;
             if (inlineSdkClientPromise) return await inlineSdkClientPromise;
@@ -955,15 +961,14 @@ export function registerActivities(
 
         // Cooperative cancellation: poll for lock steal
         let cancelled = false;
-        const cancelPoll = setInterval(() => {
+        cancelPoll = setInterval(() => {
             if (activityCtx.isCancelled()) {
                 cancelled = true;
                 session?.abort?.();
-                clearInterval(cancelPoll);
+                if (cancelPoll) clearInterval(cancelPoll);
             }
         }, 2_000);
 
-        try {
             // Build onEvent callback: write each non-ephemeral event to CMS as it fires.
             // We track every in-flight CMS recordEvents promise so we can flush them
             // before posting `session.turn_completed`. Without this barrier the
@@ -1102,7 +1107,7 @@ export function registerActivities(
                     `[runTurn] live Copilot session lost for ${input.sessionId}; invalidating warm session and attempting recovery`,
                 );
 
-                await sessionManager.invalidateWarmSession(input.sessionId).catch((err: any) => {
+                await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true }).catch((err: any) => {
                     activityCtx.traceInfo(`[runTurn] warm-session invalidation failed (non-fatal): ${err?.message ?? err}`);
                 });
 
@@ -1123,6 +1128,7 @@ export function registerActivities(
                     session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
                         turnIndex: input.turnIndex,
                         trace,
+                        lockHeld: true,
                     });
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);
@@ -1152,7 +1158,7 @@ export function registerActivities(
                     `[runTurn] corrupted live Copilot transcript for ${input.sessionId}; resetting stored session state and attempting fresh-session replay`,
                 );
 
-                await sessionManager.resetSessionState(input.sessionId).catch((err: any) => {
+                await sessionManager.resetSessionState(input.sessionId, { lockHeld: true }).catch((err: any) => {
                     activityCtx.traceInfo(`[runTurn] stored-session reset failed (non-fatal): ${err?.message ?? err}`);
                 });
 
@@ -1190,6 +1196,7 @@ export function registerActivities(
                     session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
                         turnIndex: 0,
                         trace,
+                        lockHeld: true,
                     });
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);
@@ -1302,8 +1309,32 @@ export function registerActivities(
             }
 
             return result;
+            }, { trace });
+        } catch (err: any) {
+            if (isSessionLockAcquireTimeoutError(err)) {
+                const message = err.message || String(err);
+                activityCtx.traceInfo(`[runTurn] ${message}`);
+                if (catalog) {
+                    await catalog.recordEvents(input.sessionId, [{
+                        eventType: "session.error",
+                        data: { message, errorType: "session_lock_timeout" },
+                    }], workerNodeId).catch((catalogErr: any) => {
+                        activityCtx.traceInfo(`[runTurn] CMS session lock timeout event failed: ${catalogErr}`);
+                    });
+                    await catalog.updateSession(input.sessionId, {
+                        state: "error",
+                        lastError: message,
+                        waitReason: null,
+                        lastActiveAt: new Date(),
+                    }).catch((catalogErr: any) => {
+                        activityCtx.traceInfo(`[runTurn] CMS session lock timeout status update failed: ${catalogErr}`);
+                    });
+                }
+                return { type: "error", message } as TurnResult;
+            }
+            throw err;
         } finally {
-            clearInterval(cancelPoll);
+            if (cancelPoll) clearInterval(cancelPoll);
             const clientToStop: PilotSwarmClient | null = inlineSdkClient;
             if (clientToStop) {
                 try { await (clientToStop as any).stop(); } catch {}

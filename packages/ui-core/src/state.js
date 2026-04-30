@@ -78,7 +78,20 @@ export function normalizeStoredLayoutAdjustments(layoutAdjustments) {
     };
 }
 
-export function createInitialState({ mode = "local", branding = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null } = {}) {
+export function normalizeStoredPinnedSessionIds(value) {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const entry of value) {
+        const id = String(entry || "").trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+    }
+    return out;
+}
+
+export function createInitialState({ mode = "local", branding = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null } = {}) {
     const hasStoredSessionOwnerFilter = sessionOwnerFilter != null;
     const initialLayoutAdjustments = normalizeStoredLayoutAdjustments(layoutAdjustments);
     return {
@@ -130,6 +143,9 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             flat: [],
             activeSessionId: null,
             collapsedIds: new Set(),
+            pinnedIds: normalizeStoredPinnedSessionIds(pinnedSessionIds),
+            selectedIds: [],
+            selectMode: false,
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",

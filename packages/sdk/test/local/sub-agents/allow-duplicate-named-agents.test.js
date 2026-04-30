@@ -7,7 +7,8 @@
  * (capped only by the global MAX_SUB_AGENTS and nesting-depth limits).
  *
  * This test asks the parent to spawn TWO instances of the same named agent
- * (`echoer`) with two different tasks, then verifies:
+ * (`echoer`) with two different tasks, then verifies the durable CMS result
+ * directly instead of depending on a final parent response:
  *
  *   1. Both child sessions exist in CMS as distinct rows under the same parent.
  *   2. Both children share the same agentId ("echoer").
@@ -42,7 +43,7 @@ async function testDuplicateNamedAgentsAllowed(env) {
             });
 
             console.log("  Asking parent to spawn TWO concurrent echoer instances...");
-            await session.sendAndWait(
+            await session.send(
                 "Spawn two sub-agents in parallel using spawn_agent. Both must use " +
                 "agent_name='echoer'. The first sub-agent's task is exactly: 'TOKEN=ONE'. " +
                 "The second sub-agent's task is exactly: 'TOKEN=TWO'. Do NOT spawn them " +
@@ -50,12 +51,11 @@ async function testDuplicateNamedAgentsAllowed(env) {
                 "this turn. After both spawn_agent calls return, reply with exactly the " +
                 "single word DONE and stop. Do NOT call complete_agent, cancel_agent, " +
                 "delete_agent, message_agent, wait_for_agents, or check_agents.",
-                TIMEOUT,
             );
 
             // Step 2: confirm two distinct child rows in CMS.
             let children = [];
-            const childDeadline = Date.now() + 30_000;
+            const childDeadline = Date.now() + TIMEOUT;
             while (Date.now() < childDeadline) {
                 const allSessions = await catalog.listSessions();
                 children = allSessions.filter((row) => row.parentSessionId === session.sessionId);

@@ -119,6 +119,7 @@ export async function startTuiApp(config) {
         themeId: userConfig.themeId,
         sessionOwnerFilter: userConfig.sessionOwnerFilter,
         layoutAdjustments: userConfig.layoutAdjustments,
+        pinnedSessionIds: userConfig.pinnedSessionIds,
     }));
     const controller = new PilotSwarmUiController({ store, transport });
     let tuiApp;
@@ -211,6 +212,7 @@ export async function startTuiApp(config) {
         sessionPaneAdjust: store.getState().ui.layout?.sessionPaneAdjust || 0,
         activityPaneAdjust: store.getState().ui.layout?.activityPaneAdjust || 0,
     });
+    let lastPersistedPinnedSessionIds = JSON.stringify(store.getState().sessions.pinnedIds || []);
     store.subscribe(() => {
         const state = store.getState();
         const currentThemeId = state.ui.themeId;
@@ -222,6 +224,8 @@ export async function startTuiApp(config) {
             activityPaneAdjust: state.ui.layout?.activityPaneAdjust || 0,
         };
         const currentLayoutAdjustmentsJson = JSON.stringify(currentLayoutAdjustments);
+        const currentPinnedSessionIds = Array.isArray(state.sessions.pinnedIds) ? state.sessions.pinnedIds : [];
+        const currentPinnedSessionIdsJson = JSON.stringify(currentPinnedSessionIds);
         const patch = {};
         let changed = false;
 
@@ -240,6 +244,12 @@ export async function startTuiApp(config) {
         if (currentLayoutAdjustmentsJson !== lastPersistedLayoutAdjustments) {
             lastPersistedLayoutAdjustments = currentLayoutAdjustmentsJson;
             patch.layoutAdjustments = currentLayoutAdjustments;
+            changed = true;
+        }
+
+        if (currentPinnedSessionIdsJson !== lastPersistedPinnedSessionIds) {
+            lastPersistedPinnedSessionIds = currentPinnedSessionIdsJson;
+            patch.pinnedSessionIds = currentPinnedSessionIds;
             changed = true;
         }
 

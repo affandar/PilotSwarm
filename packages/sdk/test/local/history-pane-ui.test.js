@@ -6,7 +6,13 @@ import { appReducer } from "../../../ui-core/src/reducer.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
 import { createStore } from "../../../ui-core/src/store.js";
 import { selectActivityPane, selectChatLines, selectChatPaneChrome, selectFileBrowserItems, selectInspector } from "../../../ui-core/src/selectors.js";
+import { DEFAULT_THEME_ID, getTheme } from "../../../ui-core/src/themes/index.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
+
+function resolveTuiColor(color) {
+    const theme = getTheme(DEFAULT_THEME_ID);
+    return theme?.tui?.[color] || color;
+}
 
 function createController(transportOverrides = {}) {
     const transport = {
@@ -652,8 +658,10 @@ describe("history pane UI behavior", () => {
         const labelRun = userLine.find((run) => String(run?.text || "") === "You: ");
         const bodyRun = userLine.find((run) => String(run?.text || "").includes("Track these flights."));
 
-        assertEqual(labelRun?.color, "#ffec99", "user label should use the brighter yellow tint");
-        assertEqual(bodyRun?.color, "#ffd866", "user body should use the shared yellow tint");
+        assertEqual(labelRun?.color, "userChatLabel", "user label should carry the brighter yellow theme token");
+        assertEqual(bodyRun?.color, "userChat", "user body should carry the shared yellow theme token");
+        assertEqual(resolveTuiColor(labelRun?.color), "#ffec99", "user label token should resolve to the brighter yellow tint");
+        assertEqual(resolveTuiColor(bodyRun?.color), "#ffd866", "user body token should resolve to the shared yellow tint");
     });
 
     it("shows child-session artifacts in the selected session tree and still offers all-sessions scope", async () => {

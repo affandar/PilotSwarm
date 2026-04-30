@@ -414,11 +414,55 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
         throw new Error("Exceeded execution limit before orchestration completed.");
     }
 
+    async function runUntilBlockedOrContinueAsNew() {
+        const orchestrationModule = await import("../../src/orchestration.ts");
+        const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
+            .replace(/\./g, "_")}`;
+        const handler = orchestrationModule[handlerName];
+        if (typeof handler !== "function") {
+            throw new Error(`Could not resolve latest orchestration handler: ${handlerName}`);
+        }
+        const gen = handler(ctx, {
+            sessionId: "parent-session",
+            config: {},
+            iteration: 5,
+            isSystem: true,
+            blobEnabled: false,
+            ...inputOverrides,
+        });
+
+        let input;
+        for (let step = 0; step < 800; step += 1) {
+            const next = gen.next(input);
+            if (next.done) {
+                return { done: true, value: next.value, state };
+            }
+
+            state.continueAsNew = null;
+            if (next.value?.effect === "dequeueEvent" && scheduledMessages.length === 0) {
+                return { blocked: true, state };
+            }
+
+            const resolved = resolve(next.value);
+            if (resolved === STOP) {
+                return { blocked: false, runTurnCall: state.runTurnCall, state };
+            }
+            input = resolved;
+
+            if (state.continueAsNew) {
+                return { blocked: false, continueAsNew: state.continueAsNew, state };
+            }
+        }
+
+        throw new Error("Exceeded step limit before blocking or continuing as new.");
+    }
+
     return {
         runUntilRunTurn,
         runThroughTurn,
         runUntilSecondRunTurn,
         runUntilDone,
+        runUntilBlockedOrContinueAsNew,
         state,
         values,
     };
@@ -589,6 +633,83 @@ describe("orchestration child update batching", () => {
         );
         expect(result.state.nowMs).toBe(180_000);
         expect(mockSession.runTurn).toHaveBeenCalledTimes(2);
+    });
+
+    it("treats a ready child digest as buffered work before blocking for new messages", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                pendingChildDigest: {
+                    startedAtMs: 0,
+                    ready: true,
+                    updates: [
+                        {
+                            sessionId: "child-session-1",
+                            updateType: "completed",
+                            content: "Child finished while the parent was between executions",
+                            observedAtMs: 0,
+                        },
+                    ],
+                },
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track source", status: "completed" },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("Child finished while the parent was between executions");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not dehydrate again when an idle timer fires after the session is already dehydrated", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                blobEnabled: true,
+                needsHydration: true,
+                cronSchedule: undefined,
+                activeTimerState: {
+                    remainingMs: 0,
+                    originalDurationMs: 60_000,
+                    reason: "idle timeout",
+                    type: "idle",
+                },
+            },
+        });
+
+        const result = await harness.runUntilBlockedOrContinueAsNew();
+
+        expect(result.blocked).toBe(true);
+        expect(mockSession.dehydrate).not.toHaveBeenCalled();
+    });
+
+    it("ignores child updates from sessions that are no longer tracked", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=9]\nCompleted by parent",
+                    },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                subAgents: [],
+            },
+        });
+
+        const result = await harness.runUntilBlockedOrContinueAsNew();
+
+        expect(mockManager.getSessionStatus).not.toHaveBeenCalled();
+        expect(mockSession.runTurn).not.toHaveBeenCalled();
+        if (result.continueAsNew) {
+            expect(result.continueAsNew.input.pendingChildDigest).toBeUndefined();
+        }
     });
 });
 
