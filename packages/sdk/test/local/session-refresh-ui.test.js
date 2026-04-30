@@ -5,6 +5,7 @@ import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
 import {
     selectActiveChat,
+    selectChatLines,
     selectChatPaneChrome,
     selectOutboxOverlayLines,
     selectInspector,
@@ -960,14 +961,16 @@ describe("session refresh UI recovery", () => {
 
     it("keeps existing session stats visible while a refresh is in flight", () => {
         const { store } = createController();
+        const createdAt = new Date("2026-04-09T10:00:00.000Z");
+        const updatedAt = new Date("2026-04-09T10:05:30.000Z");
         store.dispatch({
             type: "sessions/loaded",
             sessions: [{
                 sessionId: "stats-session",
                 title: "Stats Session",
                 status: "idle",
-                createdAt: 1,
-                updatedAt: 2,
+                createdAt,
+                updatedAt,
             }],
         });
         store.dispatch({ type: "sessions/selected", sessionId: "stats-session" });
@@ -1002,8 +1005,107 @@ describe("session refresh UI recovery", () => {
         const inspector = selectInspector(store.getState(), { width: 72 });
         const text = linesText(inspector.lines);
         assertIncludes(text, "watcher", "session stats should stay visible while a refresh is in flight");
+        assertIncludes(text, "Created", "session stats should include created time");
+        assertIncludes(text, "Updated", "session stats should include updated time");
+        assertIncludes(text, createdAt.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" }), "session stats should format created time in client timezone");
+        assertIncludes(text, updatedAt.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" }), "session stats should format updated time in client timezone");
         assertIncludes(text, "TOKENS", "session stats cards should remain rendered while loading");
         assertEqual(text.includes("Loading session stats..."), false, "refreshing session stats should not blank the pane");
+    });
+
+    it("renders sub-agent responses as one expandable system notice line", () => {
+        const { store } = createController();
+        const sessionId = "sub-agent-response-session";
+        const createdAt = new Date("2026-04-09T10:00:00.000Z");
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId,
+                title: "Sub-agent Response Session",
+                status: "idle",
+                createdAt,
+                updatedAt: createdAt,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId });
+        store.dispatch({
+            type: "history/set",
+            sessionId,
+            history: buildHistoryModel([{
+                seq: 1,
+                sessionId,
+                eventType: "user.message",
+                data: {
+                    content:
+                        "Sub-agent completed. Review the result and continue.\n" +
+                        "  - Agent session-12345678-90ab-cdef-1234-567890abcdef\n" +
+                        "    Task: \"Review PR 2069239\"\n" +
+                        "    Status: completed\n" +
+                        "    Result: Remove or downgrade recommendation item 4.",
+                },
+                createdAt,
+            }]),
+        });
+
+        const lines = selectChatLines(store.getState(), 120);
+        const notice = lines.find((line) => line?.kind === "systemNotice");
+        assert(notice, "sub-agent response should render as a system notice line");
+        assertIncludes(notice.text, "Sub-agent Response", "sub-agent response summary should name the notice");
+        assertIncludes(notice.text, "completed", "sub-agent response summary should include status");
+        assertIncludes(notice.body, "Review PR 2069239", "sub-agent response detail should preserve the task");
+        assertIncludes(notice.body, "Remove or downgrade recommendation item 4", "sub-agent response detail should preserve the result");
+        assertEqual(linesText(lines).includes("Remove or downgrade recommendation item 4"), false, "sub-agent response result should not be plastered into the main chat transcript");
+    });
+
+    it("does not resurrect an answered pending question from a stale session refresh", async () => {
+        const sessionId = "answered-question-session";
+        const pendingQuestion = {
+            question: "Proceed with review pr 2069239?",
+            choices: ["Go", "Cancel"],
+            allowFreeform: true,
+        };
+        const sendAnswerCalls = [];
+        const { controller, store } = createController({
+            sendAnswer: async (sentSessionId, answer) => {
+                sendAnswerCalls.push({ sentSessionId, answer });
+            },
+        });
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId,
+                title: "Answered Question Session",
+                status: "input_required",
+                createdAt: 1,
+                updatedAt: 2,
+                pendingQuestion,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId });
+        controller.setPrompt("Go");
+
+        await controller.sendPrompt();
+
+        assertEqual(sendAnswerCalls.length, 1, "answer should be sent through sendAnswer");
+        assertEqual(store.getState().sessions.byId[sessionId].pendingQuestion, null, "answer should clear the local pending question");
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId,
+                title: "Answered Question Session",
+                status: "input_required",
+                createdAt: 1,
+                updatedAt: 3,
+                pendingQuestion,
+            }],
+        });
+
+        const session = store.getState().sessions.byId[sessionId];
+        assertEqual(session.pendingQuestion, null, "stale refresh should not restore the answered question");
+        assertEqual(session.answeredPendingQuestion.question, pendingQuestion.question, "answered question marker should be retained for stale-refresh suppression");
+        assertEqual(linesText(selectActiveChat(store.getState())).includes(pendingQuestion.question), false, "answered question should not reappear in chat");
     });
 
     it("incrementally refreshes active chat from CMS when live subscription misses events", async () => {

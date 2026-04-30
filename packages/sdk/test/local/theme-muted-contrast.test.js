@@ -62,6 +62,42 @@ describe("theme muted text contrast", () => {
         }
     });
 
+    it("keeps GitHub Light muted text readable without dark-theme dimming", () => {
+        const theme = getTheme("github-light");
+        assertNotNull(theme, "GitHub Light should exist");
+
+        assertGreaterOrEqual(
+            getContrastRatio(theme.tui.gray, theme.tui.background),
+            4.5,
+            "GitHub Light TUI gray contrast",
+        );
+        assertGreaterOrEqual(
+            getContrastRatio(theme.page.modalMuted, theme.page.modalBackground),
+            4.5,
+            "GitHub Light modal muted contrast",
+        );
+        assertGreaterOrEqual(
+            getContrastRatio(theme.terminal.brightBlack, theme.terminal.background),
+            4.5,
+            "GitHub Light terminal gray contrast",
+        );
+        assertGreaterOrEqual(
+            getContrastRatio(theme.tui.userChat, theme.tui.background),
+            4.5,
+            "GitHub Light user chat text contrast",
+        );
+        assertGreaterOrEqual(
+            getContrastRatio(theme.tui.userChatLabel, theme.tui.background),
+            4.5,
+            "GitHub Light user chat label contrast",
+        );
+        assertEqual(
+            shouldDimGrayTextForTheme(theme),
+            false,
+            "light themes should not apply Ink dimming to gray text",
+        );
+    });
+
     it("only dims gray runs for dark themes in the Ink TUI renderer", () => {
         assertEqual(
             shouldDimGrayTextForTheme(getTheme("github-dark")),

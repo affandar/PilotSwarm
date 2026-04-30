@@ -3180,6 +3180,24 @@ export class PilotSwarmUiController {
      */
     openTerminatePickerModal() {
         const state = this.getState();
+        const selectedIds = Array.isArray(state.sessions.selectedIds) ? state.sessions.selectedIds : [];
+        // In bulk-select mode, open the same picker but configured for the
+        // whole selection. Each action (Mark Completed / Cancel / Delete)
+        // delegates to the corresponding bulk-aware handler. The reducer
+        // already filters system sessions out of the selection, so every
+        // selected id here is bulk-eligible.
+        if (selectedIds.length > 1) {
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "terminatePicker",
+                    title: `Terminate ${selectedIds.length} sessions`,
+                    bulkCount: selectedIds.length,
+                    previousFocus: state.ui.focusRegion,
+                },
+            });
+            return;
+        }
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) {
             this.dispatch({ type: "ui/status", text: "No session selected" });
@@ -3624,7 +3642,8 @@ export class PilotSwarmUiController {
             return;
         }
 
-        const answeringPendingQuestion = Boolean(activeSession?.pendingQuestion?.question);
+        const activePendingQuestion = activeSession?.pendingQuestion || null;
+        const answeringPendingQuestion = Boolean(activePendingQuestion?.question);
         const promptEdit = this.getPromptEditSessionMatch(sessionId);
 
         // If we're editing a pending item, the editor text already mutates that
@@ -3652,7 +3671,14 @@ export class PilotSwarmUiController {
                 await this.transport.sendAnswer(sessionId, prompt);
                 this.dispatch({
                     type: "sessions/merged",
-                    session: { sessionId, pendingQuestion: null },
+                    session: {
+                        sessionId,
+                        pendingQuestion: null,
+                        answeredPendingQuestion: {
+                            ...activePendingQuestion,
+                            answeredAt: Date.now(),
+                        },
+                    },
                 });
                 this.scheduleSessionDetailSync(sessionId, 100);
                 this.syncSessionEvents(sessionId).catch(() => {});
@@ -4510,10 +4536,59 @@ export class PilotSwarmUiController {
     }
 
     async cancelActiveSession({ confirmed = false } = {}) {
-        const sessionId = this.getState().sessions.activeSessionId;
+        const state = this.getState();
+        const selectedIds = Array.isArray(state.sessions.selectedIds) ? state.sessions.selectedIds : [];
+        // When the user has multi-selected sessions, terminate the WHOLE
+        // selection in a single confirmation. System sessions are skipped.
+        if (selectedIds.length > 1) {
+            const eligible = selectedIds
+                .map((id) => state.sessions.byId[id])
+                .filter((session) => session && !session.isSystem);
+            const skippedSystem = selectedIds.length - eligible.length;
+            if (eligible.length === 0) {
+                this.dispatch({
+                    type: "ui/status",
+                    text: "No cancellable sessions in selection (system sessions are skipped).",
+                });
+                return;
+            }
+            if (!confirmed) {
+                this.dispatch({
+                    type: "ui/modal",
+                    modal: {
+                        type: "confirm",
+                        title: "Cancel Sessions",
+                        message: `Cancel ${eligible.length} selected session${eligible.length === 1 ? "" : "s"}?${skippedSystem > 0 ? ` (${skippedSystem} system session${skippedSystem === 1 ? "" : "s"} will be skipped)` : ""}`,
+                        confirmLabel: "Cancel Sessions",
+                        action: "cancelSession",
+                        previousFocus: state.ui.focusRegion,
+                    },
+                });
+                return;
+            }
+            let succeeded = 0;
+            const failures = [];
+            for (const session of eligible) {
+                try {
+                    await this.transport.cancelSession(session.sessionId);
+                    succeeded += 1;
+                } catch (error) {
+                    failures.push(`${session.sessionId.slice(0, 8)}: ${error?.message || String(error)}`);
+                }
+            }
+            this.dispatch({ type: "sessions/selectClear" });
+            const summary = failures.length === 0
+                ? `Cancelled ${succeeded} session${succeeded === 1 ? "" : "s"}`
+                : `Cancelled ${succeeded}/${eligible.length}; ${failures.length} failed: ${failures.slice(0, 2).join(", ")}${failures.length > 2 ? "…" : ""}`;
+            this.dispatch({ type: "ui/status", text: summary });
+            await this.refreshSessions();
+            return;
+        }
+
+        const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
         if (!confirmed) {
-            const session = this.getState().sessions.byId[sessionId];
+            const session = state.sessions.byId[sessionId];
             const label = session?.title || sessionId.slice(0, 8);
             this.dispatch({
                 type: "ui/modal",
@@ -4524,7 +4599,7 @@ export class PilotSwarmUiController {
                     confirmLabel: "Cancel Session",
                     action: "cancelSession",
                     sessionId,
-                    previousFocus: this.getState().ui.focusRegion,
+                    previousFocus: state.ui.focusRegion,
                 },
             });
             return;
@@ -4534,7 +4609,116 @@ export class PilotSwarmUiController {
         await this.refreshSessions();
     }
 
+    togglePinActiveSession() {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        if (!sessionId) return;
+        const session = state.sessions.byId[sessionId];
+        if (!session) return;
+        if (session.isSystem) {
+            this.dispatch({ type: "ui/status", text: "System sessions cannot be pinned." });
+            return;
+        }
+        if (session.parentSessionId) {
+            this.dispatch({ type: "ui/status", text: "Only top-level sessions can be pinned." });
+            return;
+        }
+        const isPinned = Array.isArray(state.sessions.pinnedIds) && state.sessions.pinnedIds.includes(sessionId);
+        this.dispatch({ type: "sessions/pinToggle", sessionId });
+        this.dispatch({
+            type: "ui/status",
+            text: isPinned
+                ? `Unpinned ${sessionId.slice(0, 8)}`
+                : `Pinned ${sessionId.slice(0, 8)}`,
+        });
+    }
+
+    toggleSessionSelectMode() {
+        const state = this.getState();
+        const enabled = !state.sessions.selectMode;
+        this.dispatch({ type: "sessions/selectMode", enabled });
+        if (enabled) {
+            // Seed the selection with the active session so V immediately
+            // gives the user a non-empty selection to act on.
+            const activeId = state.sessions.activeSessionId;
+            if (activeId && state.sessions.byId[activeId]) {
+                this.dispatch({ type: "sessions/selectToggle", sessionId: activeId });
+            }
+            this.dispatch({ type: "ui/status", text: "Select mode: space toggles, c cancels, V/esc exits" });
+        } else {
+            this.dispatch({ type: "ui/status", text: "Select mode off" });
+        }
+    }
+
+    toggleActiveSessionSelection() {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        if (!sessionId) return;
+        if (!state.sessions.selectMode) {
+            this.dispatch({ type: "sessions/selectMode", enabled: true });
+        }
+        this.dispatch({ type: "sessions/selectToggle", sessionId });
+    }
+
+    setSessionSelection(sessionIds) {
+        const ids = Array.isArray(sessionIds) ? sessionIds : [];
+        this.dispatch({ type: "sessions/selectSet", sessionIds: ids });
+    }
+
+    clearSessionSelection() {
+        this.dispatch({ type: "sessions/selectClear" });
+    }
+
     async completeActiveSession(reason = "Completed by user", { confirmed = false } = {}) {
+        const state = this.getState();
+        const selectedIds = Array.isArray(state.sessions.selectedIds) ? state.sessions.selectedIds : [];
+        // Bulk-complete: iterate every selected session. The reducer
+        // already filters out system sessions, so the selection is
+        // guaranteed to be eligible.
+        if (selectedIds.length > 1) {
+            if (typeof this.transport.completeSession !== "function") {
+                this.dispatch({ type: "ui/status", text: "Session completion is not supported by this transport" });
+                return;
+            }
+            const eligible = selectedIds
+                .map((id) => state.sessions.byId[id])
+                .filter((session) => session && !session.isSystem);
+            if (eligible.length === 0) {
+                this.dispatch({ type: "ui/status", text: "No completable sessions in selection." });
+                return;
+            }
+            if (!confirmed) {
+                this.dispatch({
+                    type: "ui/modal",
+                    modal: {
+                        type: "confirm",
+                        title: "Complete Sessions",
+                        message: `Mark ${eligible.length} selected session${eligible.length === 1 ? "" : "s"} as completed? This will cascade to their sub-agents.`,
+                        confirmLabel: "Complete",
+                        action: "completeSession",
+                        previousFocus: state.ui.focusRegion,
+                    },
+                });
+                return;
+            }
+            let succeeded = 0;
+            const failures = [];
+            for (const session of eligible) {
+                try {
+                    await this.transport.completeSession(session.sessionId, reason);
+                    succeeded += 1;
+                } catch (error) {
+                    failures.push(`${session.sessionId.slice(0, 8)}: ${error?.message || String(error)}`);
+                }
+            }
+            this.dispatch({ type: "sessions/selectClear" });
+            const summary = failures.length === 0
+                ? `Completed ${succeeded} session${succeeded === 1 ? "" : "s"}`
+                : `Completed ${succeeded}/${eligible.length}; ${failures.length} failed: ${failures.slice(0, 2).join(", ")}${failures.length > 2 ? "\u2026" : ""}`;
+            this.dispatch({ type: "ui/status", text: summary });
+            await this.refreshSessions();
+            return;
+        }
         const sessionId = this.getState().sessions.activeSessionId;
         if (!sessionId) return;
         if (typeof this.transport.completeSession !== "function") {
@@ -4585,10 +4769,54 @@ export class PilotSwarmUiController {
     }
 
     async deleteActiveSession({ confirmed = false } = {}) {
-        const sessionId = this.getState().sessions.activeSessionId;
+        const state = this.getState();
+        const selectedIds = Array.isArray(state.sessions.selectedIds) ? state.sessions.selectedIds : [];
+        // Bulk-delete: iterate every selected session. The reducer
+        // already filters out system sessions.
+        if (selectedIds.length > 1) {
+            const eligible = selectedIds
+                .map((id) => state.sessions.byId[id])
+                .filter((session) => session && !session.isSystem);
+            if (eligible.length === 0) {
+                this.dispatch({ type: "ui/status", text: "No deletable sessions in selection." });
+                return;
+            }
+            if (!confirmed) {
+                this.dispatch({
+                    type: "ui/modal",
+                    modal: {
+                        type: "confirm",
+                        title: "Delete Sessions",
+                        message: `Delete ${eligible.length} selected session${eligible.length === 1 ? "" : "s"}? This action cannot be undone.`,
+                        confirmLabel: "Delete",
+                        action: "deleteSession",
+                        previousFocus: state.ui.focusRegion,
+                    },
+                });
+                return;
+            }
+            let succeeded = 0;
+            const failures = [];
+            for (const session of eligible) {
+                try {
+                    await this.transport.deleteSession(session.sessionId);
+                    succeeded += 1;
+                } catch (error) {
+                    failures.push(`${session.sessionId.slice(0, 8)}: ${error?.message || String(error)}`);
+                }
+            }
+            this.dispatch({ type: "sessions/selectClear" });
+            const summary = failures.length === 0
+                ? `Deleted ${succeeded} session${succeeded === 1 ? "" : "s"}`
+                : `Deleted ${succeeded}/${eligible.length}; ${failures.length} failed: ${failures.slice(0, 2).join(", ")}${failures.length > 2 ? "\u2026" : ""}`;
+            this.dispatch({ type: "ui/status", text: summary });
+            await this.refreshSessions();
+            return;
+        }
+        const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
         if (!confirmed) {
-            const session = this.getState().sessions.byId[sessionId];
+            const session = state.sessions.byId[sessionId];
             const label = session?.title || sessionId.slice(0, 8);
             this.dispatch({
                 type: "ui/modal",
@@ -4599,7 +4827,7 @@ export class PilotSwarmUiController {
                     confirmLabel: "Delete",
                     action: "deleteSession",
                     sessionId,
-                    previousFocus: this.getState().ui.focusRegion,
+                    previousFocus: state.ui.focusRegion,
                 },
             });
             return;
@@ -4780,6 +5008,18 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.DELETE_SESSION:
                 await this.deleteActiveSession();
+                return;
+            case UI_COMMANDS.PIN_SESSION:
+                this.togglePinActiveSession();
+                return;
+            case UI_COMMANDS.TOGGLE_SELECT_MODE:
+                this.toggleSessionSelectMode();
+                return;
+            case UI_COMMANDS.TOGGLE_SESSION_SELECTION:
+                this.toggleActiveSessionSelection();
+                return;
+            case UI_COMMANDS.CLEAR_SESSION_SELECTION:
+                this.clearSessionSelection();
                 return;
             case UI_COMMANDS.OPEN_HISTORY_FORMAT:
                 this.openHistoryFormat();

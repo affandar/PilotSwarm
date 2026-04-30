@@ -417,6 +417,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.TOGGLE_PANE_FULLSCREEN).catch(() => {});
             return;
         }
+        if (key.escape && focus === "sessions" && controller.getState().sessions.selectMode) {
+            controller.handleCommand(UI_COMMANDS.CLEAR_SESSION_SELECTION).catch(() => {});
+            return;
+        }
         if (key.escape) {
             if (focus === "prompt") {
                 const promptEdit = controller.getState().ui.promptEdit;
@@ -700,6 +704,18 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             }
             if (plainShortcut && input === "t") {
                 controller.handleCommand(UI_COMMANDS.OPEN_RENAME_SESSION).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "P") {
+                controller.handleCommand(UI_COMMANDS.PIN_SESSION).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "V") {
+                controller.handleCommand(UI_COMMANDS.TOGGLE_SELECT_MODE).catch(() => {});
+                return;
+            }
+            if (input === " " && controller.getState().sessions.selectMode) {
+                controller.handleCommand(UI_COMMANDS.TOGGLE_SESSION_SELECTION).catch(() => {});
                 return;
             }
         }

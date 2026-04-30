@@ -36,6 +36,11 @@ These keys work whenever focus is not in the prompt editor.
 | `+` / `=` | Expand the selected parent session |
 | `-` | Collapse the selected session |
 | `t` | Rename the selected session |
+| `P` | Pin or unpin the selected top-level session (system and child sessions cannot be pinned) |
+| `V` | Toggle multi-select mode (seeds the selection with the active session) |
+| `Space` | (in multi-select mode) Toggle selection on the active row |
+| `c` | (in multi-select mode) Cancel every selected session in one confirmation; system sessions are skipped |
+| `Esc` | (in multi-select mode) Exit multi-select and clear the selection |
 
 ## Chat, Activity, Sequence, Logs, and Node Map
 

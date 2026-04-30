@@ -1,6 +1,15 @@
 
 # TODO
 
+- Refactor the 3.5k line Orchestration file
+- Parent agents need to aggressively tear down sub agents when they are done unless needed
+- Archive sessions to blob?
+- Ability to restart system processes
+- Ability to hot reload agent/skills/tools
+- Ability to Batch operate against multiple sessions
+- Ability to pin certain sessions in the UX top view
+- Ability to associate GHCP tokens with users, and build lifecycle mgmt around those
+- Make color themes pluggable
 - harder protections for system agent IDs and names
 - formalize plugin disk layout, verisoning and update story
 - binary artifact support

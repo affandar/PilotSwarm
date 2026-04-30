@@ -55,6 +55,8 @@ export function createTheme({ id, label, description, page, terminal, tui = {} }
         blue: terminal?.blue || "#5555ff",
         magenta: terminal?.magenta || "#ff55ff",
         cyan: terminal?.cyan || "#55ffff",
+        userChat: "#ffd866",
+        userChatLabel: "#ffec99",
         activeHighlightBackground: terminal?.blue || "#5555ff",
         activeHighlightForeground: terminal?.background || "#000000",
         selectionBackground: terminal?.cursor || terminal?.blue || "#5555ff",

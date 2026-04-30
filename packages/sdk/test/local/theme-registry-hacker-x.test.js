@@ -2,7 +2,7 @@ import { describe, it } from "vitest";
 import { getTheme, listThemes } from "../../../ui-core/src/themes/index.js";
 import { assertEqual, assertIncludes, assertNotNull } from "../helpers/assertions.js";
 
-describe("theme registry hacker x additions", () => {
+describe("theme registry additions", () => {
     it("registers the new Hacker X themes for the shared picker", () => {
         const orionPrimeTheme = getTheme("hacker-x-orion-prime");
         const matrixTheme = getTheme("hacker-x-matrix");
@@ -14,5 +14,14 @@ describe("theme registry hacker x additions", () => {
         assertIncludes(themeIds.join(","), "hacker-x-matrix", "theme list should include Matrix");
         assertEqual(orionPrimeTheme.label, "Hacker X - Orion Prime", "orion prime label should match");
         assertEqual(matrixTheme.label, "Hacker X - Matrix", "matrix label should match");
+    });
+
+    it("registers GitHub Light for the shared picker", () => {
+        const githubLightTheme = getTheme("github-light");
+        const themeIds = listThemes().map((theme) => theme.id);
+
+        assertNotNull(githubLightTheme, "GitHub Light theme should be registered");
+        assertIncludes(themeIds.join(","), "github-light", "theme list should include GitHub Light");
+        assertEqual(githubLightTheme.label, "GitHub Light", "GitHub Light label should match");
     });
 });

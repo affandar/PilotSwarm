@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.24 — 2026-04-29
+
+### SDK / Runtime
+
+- **Orchestration v1.0.50** — freezes `1.0.49` and makes the latest orchestration idempotent around repeated dehydrate paths, skips stale child-update digests for untracked sub-agents, and preserves the v1.0.49 sub-agent lifecycle where non-system children settle into the normal idle/dehydrate flow instead of auto-terminating after the first final response.
+- **Spawn-tree fact visibility** — session-scoped facts are now visible across the whole spawn tree, including ancestors, descendants, siblings, and cousins under the same root. Fact tool descriptions, docs, and worker lookup logic now describe that broader tree visibility instead of only parent/child lineage.
+- **Per-session runtime locking** — session creation/resume, run turns, hydration/dehydration, checkpoints, resets, and warm-session invalidation now share a worker-local per-session mutex so duplicate activity attempts cannot exercise the same Copilot `session.db` concurrently. Contended run turns back off at 5s, 10s, then 20s until the 2-minute acquisition timeout reports `can't acquire session lock for session <id>`.
+- **Default agent prompt tuning** — the built-in default agent prompt now emphasizes facts as durable planning/state memory for long-running work.
+
+### Portal / TUI / Shared UI
+
+- **Session pinning and multi-select actions** — sessions can be pinned, persisted in local TUI config, selected in bulk, and cancelled/completed/deleted as a group while system sessions remain protected. Keybinding docs, TUI skill notes, and contributor instructions were updated with the new `P`, `V`, `Space`, and `Esc` session-pane behavior.
+- **GitHub Light theme and theme-token cleanup** — the shared theme registry now includes GitHub Light, user chat tinting uses semantic theme tokens, and contrast tests cover the new light palette.
+- **Portal table responsiveness** — compact fit-width markdown/chat tables get explicit minimum-width handling and mobile flex-column rendering so dense key/value tables fit narrower panes without horizontal spill.
+- **Chat notice cleanup** — sub-agent completion notices now collapse to a single expandable system notice instead of pasting the full child response into the main transcript, and answered pending questions no longer reappear after stale session refreshes.
+
+### Tests
+
+- Added coverage for spawn-tree fact visibility, session-lock contention/timeout behavior, child-update batching, light-theme contrast/registry behavior, session pinning and multi-select state, collapsed sub-agent notices, and stale answered-question refresh suppression.
+
 ## 0.1.23 — 2026-04-27
 
 ### SDK / Runtime

@@ -60,8 +60,8 @@ export function createFactTools(opts: {
     const storeTool = defineTool("store_fact", {
         description:
             "Store a fact in the facts table for durable structured memory. " +
-            "Facts are session-scoped by default, visible to ancestor/descendant sessions in the same spawned-agent lineage, and are deleted when the session is deleted. " +
-            "Set shared=true to create shared durable memory visible across sessions; shared facts persist until explicitly deleted.",
+            "Facts are session-scoped by default, visible to every session in the same spawn tree (ancestors, descendants, siblings, cousins — anything spawned from a common root), and are deleted when the session is deleted. " +
+            "Set shared=true to create shared durable memory visible across all sessions globally; shared facts persist until explicitly deleted.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -108,9 +108,9 @@ export function createFactTools(opts: {
 
     const readTool = defineTool("read_facts", {
         description:
-            "Read durable facts. By default this returns facts accessible to you now: your current session's facts, lineage facts from ancestor/descendant sessions, plus shared facts. " +
-            "Use scope='shared' to read only shared facts. " +
-            "Use scope='descendants' as an explicit family-tree view of spawned-agent lineage facts.",
+            "Read durable facts. By default this returns facts accessible to you now: your current session's facts, plus all session-scoped facts from any other session in the same spawn tree (ancestors, descendants, siblings, cousins), plus globally-shared facts. " +
+            "Use scope='shared' to read only globally-shared facts. " +
+            "Use scope='descendants' as an explicit family-tree view of spawn-tree facts (same visibility as the default).",
         parameters: {
             type: "object" as const,
             properties: {
@@ -127,7 +127,7 @@ export function createFactTools(opts: {
                 session_id: {
                     type: "string",
                     description:
-                        "Filter by source session. When targeting an ancestor or descendant session in your spawned-agent lineage, its private facts become visible automatically.",
+                        "Filter by source session. When targeting any session in your spawn tree (ancestor, descendant, sibling, cousin), its session-scoped facts become visible automatically.",
                 },
                 agent_id: {
                     type: "string",
@@ -141,10 +141,10 @@ export function createFactTools(opts: {
                     type: "string",
                     enum: ["accessible", "shared", "session", "descendants"],
                     description:
-                        "accessible = current session facts + lineage facts from ancestor/descendant sessions + shared facts (default). " +
-                        "shared = shared facts only. " +
+                        "accessible = current session facts + spawn-tree facts (ancestors, descendants, siblings, cousins) + globally-shared facts (default). " +
+                        "shared = globally-shared facts only. " +
                         "session = current session facts only. " +
-                        "descendants = the same family-tree visibility as accessible, kept as an explicit lineage view for parent/child workflows.",
+                        "descendants = same spawn-tree visibility as accessible, kept as an explicit family-tree view.",
                 },
             },
         },

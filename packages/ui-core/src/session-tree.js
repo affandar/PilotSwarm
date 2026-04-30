@@ -5,11 +5,6 @@ function systemSessionOrder(session) {
     return systemSessionSortOrder(session);
 }
 
-function rankSystemSession(session) {
-    if (!session.isSystem) return 1;
-    return 0;
-}
-
 function buildPreviousOrderMap(previousFlat = []) {
     const order = new Map();
     for (let index = 0; index < previousFlat.length; index += 1) {
@@ -35,9 +30,15 @@ function buildStableOrderMap(orderSource = []) {
     return order;
 }
 
-function sortSessions(a, b, stableOrderMap) {
-    const aRank = rankSystemSession(a);
-    const bRank = rankSystemSession(b);
+function rankSessionBand(session, pinnedIds) {
+    if (session.isSystem) return 0;
+    if (pinnedIds && pinnedIds.has(session.sessionId)) return 1;
+    return 2;
+}
+
+function sortSessions(a, b, stableOrderMap, pinnedIds) {
+    const aRank = rankSessionBand(a, pinnedIds);
+    const bRank = rankSessionBand(b, pinnedIds);
     if (aRank !== bRank) return aRank - bRank;
 
     const aSystemOrder = systemSessionOrder(a);
@@ -65,10 +66,13 @@ function sortSessions(a, b, stableOrderMap) {
     return String(a.sessionId || "").localeCompare(String(b.sessionId || ""));
 }
 
-export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderSource = []) {
+export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderSource = [], pinnedIds = null) {
     const byId = new Map();
     const children = new Map();
     const stableOrderMap = buildStableOrderMap(orderSource);
+    const pinSet = pinnedIds instanceof Set
+        ? pinnedIds
+        : new Set(Array.isArray(pinnedIds) ? pinnedIds : []);
 
     for (const session of sessions) {
         byId.set(session.sessionId, session);
@@ -82,12 +86,14 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
     }
 
     for (const childList of children.values()) {
-        childList.sort((a, b) => sortSessions(a, b, stableOrderMap));
+        // Children are never re-banded by pin — pinning is a top-level concept.
+        // Pass an empty Set so child ordering stays stable regardless of pins.
+        childList.sort((a, b) => sortSessions(a, b, stableOrderMap, null));
     }
 
     const roots = sessions
         .filter((session) => !session.parentSessionId || !byId.has(session.parentSessionId))
-        .sort((a, b) => sortSessions(a, b, stableOrderMap));
+        .sort((a, b) => sortSessions(a, b, stableOrderMap, pinSet));
 
     const flat = [];
 

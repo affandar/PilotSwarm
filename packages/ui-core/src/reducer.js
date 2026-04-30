@@ -13,6 +13,26 @@ function cloneCollapsedIds(collapsedIds) {
     return new Set(collapsedIds);
 }
 
+function clonePinnedIds(pinnedIds) {
+    return Array.isArray(pinnedIds) ? [...pinnedIds] : [];
+}
+
+function cloneSelectedIds(selectedIds) {
+    return Array.isArray(selectedIds) ? [...selectedIds] : [];
+}
+
+function pruneIdList(ids, byId) {
+    const out = [];
+    const seen = new Set();
+    for (const id of ids || []) {
+        if (!id || seen.has(id)) continue;
+        if (!byId[id]) continue;
+        seen.add(id);
+        out.push(id);
+    }
+    return out;
+}
+
 function cloneOrderById(orderById) {
     return { ...(orderById || {}) };
 }
@@ -84,6 +104,13 @@ function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
     let merged = previousSession || {};
     for (const [key, value] of Object.entries(nextSession || {})) {
         if (value === undefined) continue;
+        if (key === "pendingQuestion" && isAnsweredPendingQuestion(previousSession, value)) {
+            if (merged === previousSession) {
+                merged = { ...(previousSession || {}) };
+            }
+            merged.pendingQuestion = null;
+            continue;
+        }
         if (areStructuredValuesEqual(previousSession?.[key], value)) continue;
         if (merged === previousSession) {
             merged = { ...(previousSession || {}) };
@@ -91,6 +118,16 @@ function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
         merged[key] = value;
     }
     return merged;
+}
+
+function normalizedPendingQuestionText(pendingQuestion) {
+    return String(pendingQuestion?.question || "").trim();
+}
+
+function isAnsweredPendingQuestion(previousSession, pendingQuestion) {
+    const answeredQuestion = normalizedPendingQuestionText(previousSession?.answeredPendingQuestion);
+    const incomingQuestion = normalizedPendingQuestionText(pendingQuestion);
+    return Boolean(answeredQuestion && incomingQuestion && answeredQuestion === incomingQuestion);
 }
 
 function pickDefaultActiveSessionId(sessions = []) {
@@ -533,11 +570,19 @@ export function appReducer(state, action) {
                     collapsedIds.add(sessionId);
                 }
             }
-            const flat = buildSessionTree(mergedSessions, collapsedIds, orderById);
+            // Drop pins/selection for sessions that no longer exist; only
+            // keep pins on top-level rows (children cannot be pinned).
+            const survivingPins = pruneIdList(state.sessions.pinnedIds, byId)
+                .filter((sessionId) => !byId[sessionId]?.parentSessionId);
+            const survivingSelected = pruneIdList(state.sessions.selectedIds, byId);
+            const flat = buildSessionTree(mergedSessions, collapsedIds, orderById, survivingPins);
             const nextSessions = {
                 ...state.sessions,
                 byId,
                 collapsedIds,
+                pinnedIds: survivingPins,
+                selectedIds: survivingSelected,
+                selectMode: state.sessions.selectMode && survivingSelected.length > 0,
                 flat,
                 activeSessionId: state.sessions.activeSessionId,
                 orderById,
@@ -571,7 +616,7 @@ export function appReducer(state, action) {
             const nextSessions = {
                 ...state.sessions,
                 byId,
-                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById),
+                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById, state.sessions.pinnedIds),
                 activeSessionId: state.sessions.activeSessionId,
                 orderById,
                 nextOrderOrdinal,
@@ -633,7 +678,7 @@ export function appReducer(state, action) {
                 sessions: {
                     ...state.sessions,
                     collapsedIds,
-                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById),
+                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds),
                 },
             };
         }
@@ -646,7 +691,94 @@ export function appReducer(state, action) {
                 sessions: {
                     ...state.sessions,
                     collapsedIds,
-                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById),
+                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds),
+                },
+            };
+        }
+
+        case "sessions/pinToggle": {
+            const sessionId = String(action.sessionId || "").trim();
+            if (!sessionId) return state;
+            const session = state.sessions.byId[sessionId];
+            // Pinning is a TOP-LEVEL-only concept. System sessions and child
+            // sessions cannot be pinned.
+            if (!session || session.isSystem || session.parentSessionId) return state;
+            const current = clonePinnedIds(state.sessions.pinnedIds);
+            const existingIndex = current.indexOf(sessionId);
+            const nextPinned = existingIndex >= 0
+                ? current.filter((id) => id !== sessionId)
+                : [...current, sessionId];
+            return {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    pinnedIds: nextPinned,
+                    flat: buildSessionTree(Object.values(state.sessions.byId), state.sessions.collapsedIds, state.sessions.orderById, nextPinned),
+                },
+            };
+        }
+
+        case "sessions/selectMode": {
+            const enabled = Boolean(action.enabled);
+            if (enabled === Boolean(state.sessions.selectMode)
+                && (enabled || state.sessions.selectedIds.length === 0)) {
+                return state;
+            }
+            return {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    selectMode: enabled,
+                    selectedIds: enabled ? state.sessions.selectedIds : [],
+                },
+            };
+        }
+
+        case "sessions/selectToggle": {
+            const sessionId = String(action.sessionId || "").trim();
+            const session = sessionId ? state.sessions.byId[sessionId] : null;
+            if (!session) return state;
+            // System sessions (PilotSwarm, Sweeper, Resource Manager, etc.)
+            // are managed by the worker and cannot be bulk-terminated.
+            if (session.isSystem) return state;
+            const current = cloneSelectedIds(state.sessions.selectedIds);
+            const existingIndex = current.indexOf(sessionId);
+            const nextSelected = existingIndex >= 0
+                ? current.filter((id) => id !== sessionId)
+                : [...current, sessionId];
+            return {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    selectedIds: nextSelected,
+                    selectMode: nextSelected.length > 0 ? true : state.sessions.selectMode,
+                },
+            };
+        }
+
+        case "sessions/selectSet": {
+            const ids = Array.isArray(action.sessionIds) ? action.sessionIds : [];
+            // System sessions are not selectable for bulk operations.
+            const next = pruneIdList(ids, state.sessions.byId)
+                .filter((id) => !state.sessions.byId[id]?.isSystem);
+            return {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    selectedIds: next,
+                    selectMode: next.length > 0 ? true : state.sessions.selectMode,
+                },
+            };
+        }
+
+        case "sessions/selectClear": {
+            if (state.sessions.selectedIds.length === 0 && !state.sessions.selectMode) return state;
+            return {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    selectedIds: [],
+                    selectMode: false,
                 },
             };
         }

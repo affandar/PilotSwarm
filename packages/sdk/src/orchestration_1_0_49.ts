@@ -202,14 +202,10 @@ function updateContextUsageFromEvents(
 }
 
 /**
- * Flat event loop durable session orchestration (v1.0.50).
+ * Flat event loop durable session orchestration (v1.0.49).
  *
  * Replaces the nested while loops of v1.0.31 with a single
  * drain → decide → process loop backed by a KV FIFO work buffer.
- *
- * v1.0.50 added:
- *   - idempotent dehydrate guard for sessions already marked dehydrated
- *   - stale child-update digest suppression for untracked sub-agents
  *
  * v1.0.49 changes the sub-agent lifecycle:
  *   - non-system sub-agents no longer auto-terminate when their final
@@ -233,7 +229,7 @@ function updateContextUsageFromEvents(
  */
 export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
 
-export function* durableSessionOrchestration_1_0_50(
+export function* durableSessionOrchestration_1_0_49(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -711,13 +707,10 @@ export function* durableSessionOrchestration_1_0_50(
         yield* processPrompt(`[SYSTEM: ${digestPrompt}]`, true);
     }
 
-    function* applyChildUpdate(update: { sessionId: string; updateType: string; content: string }): Generator<any, boolean, any> {
+    function* applyChildUpdate(update: { sessionId: string; updateType: string; content: string }): Generator<any, void, any> {
         ctx.traceInfo(`[orch] child update from=${update.sessionId} type=${update.updateType}`);
         const agent = subAgents.find(a => a.sessionId === update.sessionId);
-        if (!agent) {
-            ctx.traceInfo(`[orch] ignoring child update from untracked session ${update.sessionId}`);
-            return false;
-        }
+        if (!agent) return;
 
         if (update.content) {
             agent.result = update.content.slice(0, 2000);
@@ -747,8 +740,6 @@ export function* durableSessionOrchestration_1_0_50(
                 agent.result = parsed.result.slice(0, 2000);
             }
         } catch {}
-
-        return true;
     }
 
     function* refreshTrackedSubAgents(): Generator<any, void, any> {
@@ -838,12 +829,6 @@ export function* durableSessionOrchestration_1_0_50(
         resetAffinity = true,
         eventData?: Record<string, unknown>,
     ): Generator<any, void, any> {
-        if (needsHydration) {
-            ctx.traceInfo(`[orch] skipping dehydrate (reason=${reason}) because the session is already marked dehydrated`);
-            activeTimer = null;
-            return;
-        }
-
         if (lastLiveSessionAction === "dehydrate") {
             ctx.traceInfo(`[orch] skipping redundant dehydrate (reason=${reason}) because the last live-session action was already dehydrate`);
             activeTimer = null;
@@ -858,6 +843,10 @@ export function* durableSessionOrchestration_1_0_50(
         if (lossyHandoff && typeof lossyHandoff === "object") {
             const lossyMessage = String((lossyHandoff as any).message || "dehydrate lost the live Copilot session state");
             ctx.traceInfo(`[orch] ${lossyMessage}`);
+            yield manager.recordSessionEvent(input.sessionId, [{
+                eventType: "session.lossy_handoff",
+                data: lossyHandoff,
+            }]);
             needsHydration = false;
             preserveAffinityOnHydrate = false;
             if (resetAffinity) {
@@ -1570,15 +1559,10 @@ export function* durableSessionOrchestration_1_0_50(
     // ═══ DRAIN — greedily move queue + timer into KV FIFO ════
     // ═══════════════════════════════════════════════════════════
 
-    function hasReadyPendingChildDigest(): boolean {
-        return Boolean(pendingChildDigest?.ready && pendingChildDigest.updates.length > 0);
-    }
-
     function needsBlockingDequeue(): boolean {
         return (
             legacyPendingMessage === undefined &&
             !activeTimer &&
-            !hasReadyPendingChildDigest() &&
             pendingToolActions.length === 0 &&
             !pendingPrompt &&
             !hasFifoItems()
@@ -1702,14 +1686,14 @@ export function* durableSessionOrchestration_1_0_50(
                 const key = `${childUpdate.sessionId}|${childUpdate.updateType}|${childUpdate.content ?? ""}`;
                 if (!seenChildUpdates.has(key)) {
                     seenChildUpdates.add(key);
-                    const tracked = yield* applyChildUpdate(childUpdate);
-                    if (tracked && !pendingShutdown) {
+                    yield* applyChildUpdate(childUpdate);
+                    if (!pendingShutdown) {
                         const childObservedAt: number = yield ctx.utcNow();
                         bufferChildUpdate(childUpdate, childObservedAt);
                     }
 
                     // Check if all waited-for agents are now done
-                    if (tracked && waitingForAgentIds) {
+                    if (waitingForAgentIds) {
                         yield* maybeResolveAgentWaitCompletion();
                     }
                 }
@@ -1875,12 +1859,12 @@ export function* durableSessionOrchestration_1_0_50(
                 const key = `${childUpdate.sessionId}|${childUpdate.updateType}|${childUpdate.content ?? ""}`;
                 if (!seenChildUpdates.has(key)) {
                     seenChildUpdates.add(key);
-                    const tracked = yield* applyChildUpdate(childUpdate);
-                    if (tracked && !pendingShutdown) {
+                    yield* applyChildUpdate(childUpdate);
+                    if (!pendingShutdown) {
                         const childObservedAt: number = yield ctx.utcNow();
                         bufferChildUpdate(childUpdate, childObservedAt);
                     }
-                    if (tracked && waitingForAgentIds) {
+                    if (waitingForAgentIds) {
                         yield* maybeResolveAgentWaitCompletion();
                     }
                 }

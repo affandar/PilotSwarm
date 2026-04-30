@@ -1,4 +1,5 @@
 import githubDarkTheme from "./github-dark.js";
+import githubLightTheme from "./github-light.js";
 import cobalt2Theme from "./cobalt2.js";
 import draculaTheme from "./dracula.js";
 import catppuccinMochaTheme from "./catppuccin-mocha.js";
@@ -16,6 +17,7 @@ import darkHighContrastTheme from "./dark-high-contrast.js";
 const THEMES = Object.freeze([
     draculaTheme,
     githubDarkTheme,
+    githubLightTheme,
     cobalt2Theme,
     hackerXOrionPrimeTheme,
     hackerXMatrixTheme,

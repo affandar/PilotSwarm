@@ -156,6 +156,8 @@ Current overlap to preserve unless intentionally changed:
 - `Shift+N` opens the model picker, and model selection should flow into the same new-session/agent-picker path
 - `f` in the sessions pane opens the session owner filter
 - `t` in the sessions pane opens the rename-title dialog
+- `P` in the sessions pane pins or unpins the active top-level session (system + child sessions cannot be pinned)
+- `V` in the sessions pane toggles multi-select; `Space` toggles selection on the active row; `c` then cancels the entire selection in one confirmation; `Esc` exits select mode
 - `t` in the logs inspector toggles log tailing
 - `Ctrl+A` in the prompt opens the attach-file dialog
 - `x` in the files inspector deletes the selected artifact after confirmation

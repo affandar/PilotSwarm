@@ -16,6 +16,7 @@ function makeHarness(options = {}) {
     };
 
     const sessionManager = {
+        withRunTurnLock: vi.fn(async (_sessionId, _operation, fn) => await fn()),
         getOrCreate: vi.fn(async () => session),
         getModelSummary: vi.fn(() => undefined),
         invalidateWarmSession: vi.fn(async () => {}),
@@ -242,7 +243,7 @@ describe("session-proxy CMS prompt classification", () => {
         );
 
         expect(result).toMatchObject({ type: "completed", content: "recovered ok" });
-        expect(sessionManager.invalidateWarmSession).toHaveBeenCalledWith("session-recover");
+        expect(sessionManager.invalidateWarmSession).toHaveBeenCalledWith("session-recover", { lockHeld: true });
         const recoveryNotice = recordedEvents.find((event) =>
             event.eventType === "system.message"
             && String(event.data?.content || "").includes("worker lost the live Copilot session"),
@@ -284,7 +285,7 @@ describe("session-proxy CMS prompt classification", () => {
         );
 
         expect(result).toMatchObject({ type: "completed", content: "recovered from transcript corruption" });
-        expect(sessionManager.resetSessionState).toHaveBeenCalledWith("session-corrupt-transcript");
+        expect(sessionManager.resetSessionState).toHaveBeenCalledWith("session-corrupt-transcript", { lockHeld: true });
         expect(sessionManager.getOrCreate).toHaveBeenNthCalledWith(
             2,
             "session-corrupt-transcript",

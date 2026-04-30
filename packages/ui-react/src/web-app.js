@@ -49,6 +49,7 @@ const SESSION_OWNER_FILTER_STORAGE_KEY = "pilotswarm.sessionOwnerFilter";
 const SESSION_OWNER_FILTER_COOKIE_NAME = "pilotswarm_session_owner_filter";
 const CHAT_FOCUS_MODE_STORAGE_KEY = "pilotswarm.chatFocus";
 const LAYOUT_STORAGE_KEY = "pilotswarm.layoutAdjustments";
+const PINNED_SESSIONS_STORAGE_KEY = "pilotswarm.pinnedSessions";
 const INSPECTOR_TAB_LABELS = {
     sequence: "Sequence",
     logs: "Logs",
@@ -184,6 +185,39 @@ function writeStoredLayoutAdjustments(layoutAdjustments) {
     } catch {}
 }
 
+function readStoredPinnedSessionIds() {
+    if (typeof window === "undefined") return [];
+    try {
+        const rawValue = window.localStorage.getItem(PINNED_SESSIONS_STORAGE_KEY);
+        if (!rawValue) return [];
+        const parsed = JSON.parse(rawValue);
+        if (!Array.isArray(parsed)) return [];
+        const seen = new Set();
+        const out = [];
+        for (const id of parsed) {
+            const trimmed = String(id || "").trim();
+            if (!trimmed || seen.has(trimmed)) continue;
+            seen.add(trimmed);
+            out.push(trimmed);
+        }
+        return out;
+    } catch {
+        return [];
+    }
+}
+
+function writeStoredPinnedSessionIds(pinnedIds) {
+    if (typeof window === "undefined") return;
+    try {
+        const list = Array.isArray(pinnedIds) ? pinnedIds : [];
+        if (list.length === 0) {
+            window.localStorage.removeItem(PINNED_SESSIONS_STORAGE_KEY);
+            return;
+        }
+        window.localStorage.setItem(PINNED_SESSIONS_STORAGE_KEY, JSON.stringify(list));
+    } catch {}
+}
+
 function getVisibleInspectorTabs(controller) {
     return supportsArtifactBrowser(controller)
         ? INSPECTOR_TABS
@@ -295,7 +329,7 @@ function applyDocumentTheme(themeId) {
     root.style.setProperty("--ps-background", theme.tui.background);
     root.style.setProperty("--ps-foreground", theme.tui.foreground);
     root.style.setProperty("--ps-muted", theme.tui.gray);
-    root.style.setProperty("--ps-border", theme.tui.gray);
+    root.style.setProperty("--ps-border", theme.tui.border || theme.tui.gray);
     root.style.setProperty("--ps-selection-background", theme.tui.selectionBackground);
     root.style.setProperty("--ps-selection-foreground", theme.tui.selectionForeground);
     root.style.setProperty("--ps-highlight-background", theme.tui.activeHighlightBackground);
@@ -631,9 +665,12 @@ const FIT_WIDTH_FLEX_HEADER_KEYWORDS = [
 
 const FIT_WIDTH_FLEX_MIN_MAX_LEN = 24;
 const FIT_WIDTH_RIGID_CHAR_CAP = 32;
-const FIT_WIDTH_MIN_RIGID_CHARS = 4;
+const FIT_WIDTH_MIN_RIGID_CHARS = 6;
 const FIT_WIDTH_FLEX_MIN_CHARS = 30;
+const FIT_WIDTH_FLEX_MAX_CHARS = 56;
 const FIT_WIDTH_FLEX_MIN_FRACTION = 0.4;
+const FIT_WIDTH_FLEX_TO_RIGID_RATIO = 1.4;
+const FIT_WIDTH_MIN_EXTRA_CHARS = 2;
 
 /**
  * Compute per-column layout for a fit-width markdown / chat table.
@@ -646,15 +683,18 @@ const FIT_WIDTH_FLEX_MIN_FRACTION = 0.4;
  *   3. Give every other column a budget = clamp(maxLen + padding, MIN, RIGID_CAP),
  *      so rigid columns stay at their content-fit width even when one
  *      sibling column has hundreds of characters of prose.
- *   4. Give the flex column the remainder, floored so it owns at least
- *      FIT_WIDTH_FLEX_MIN_FRACTION of the table width.
+ *   4. Give the flex column a bounded share of the rigid-column budget. A
+ *      very long cell should wrap; it should not steal so much percentage
+ *      width that compact columns like Count / Status collapse on phones.
+ *   5. Return a minimum table width in ch so the wrapper can scroll
+ *      horizontally rather than forcing all columns below readable size.
  *
- * Returns { widths: ["12.34%", ...], flexIndex: number } when a flex column
- * is identified — the table renderer then forces table-layout: fixed and
- * adds an `is-flex-column` class to the chosen column so the column widths
- * are honored strictly. Returns null when no flex column is found, in which
- * case the renderer falls back to the browser's auto-table-layout (which is
- * already good for short / uniform tables).
+ * Returns { widths: ["12.34%", ...], flexIndex: number, minWidth: "64ch" }
+ * when a flex column is identified — the table renderer then forces
+ * table-layout: fixed, adds an `is-flex-column` class to the chosen column,
+ * and gives the table a readable minimum width. Returns null when no flex
+ * column is found, in which case the renderer falls back to the browser's
+ * auto-table-layout (which is already good for short / uniform tables).
  *
  * Background: the previous behavior used the browser's auto-table-layout
  * unconditionally. That works well when columns are uniform but is biased
@@ -701,12 +741,23 @@ function computeFitWidthColumnLayout(rows = []) {
 
     if (flexIndex < 0) return null;
 
-    const budgets = stats.map((stat, columnIndex) => {
-        if (columnIndex === flexIndex) {
-            return Math.max(FIT_WIDTH_FLEX_MIN_CHARS, stat.max * 0.5);
-        }
+    const rigidBudgets = stats.map((stat, columnIndex) => {
+        if (columnIndex === flexIndex) return 0;
         return Math.max(FIT_WIDTH_MIN_RIGID_CHARS, Math.min(stat.max + 2, FIT_WIDTH_RIGID_CHAR_CAP));
     });
+    const sumRigid = rigidBudgets.reduce((sum, value) => sum + value, 0);
+    const flexStat = stats[flexIndex];
+    const flexBudget = Math.max(
+        FIT_WIDTH_FLEX_MIN_CHARS,
+        Math.min(
+            flexStat.max * 0.45,
+            FIT_WIDTH_FLEX_MAX_CHARS,
+            Math.max(FIT_WIDTH_FLEX_MIN_CHARS, sumRigid * FIT_WIDTH_FLEX_TO_RIGID_RATIO),
+        ),
+    );
+    const budgets = rigidBudgets.map((value, columnIndex) => (
+        columnIndex === flexIndex ? flexBudget : value
+    ));
 
     const totalBudget = budgets.reduce((sum, value) => sum + value, 0);
     if (totalBudget > 0 && budgets[flexIndex] / totalBudget < FIT_WIDTH_FLEX_MIN_FRACTION) {
@@ -719,7 +770,18 @@ function computeFitWidthColumnLayout(rows = []) {
     return {
         widths: budgets.map((value) => `${((value / finalTotal) * 100).toFixed(2)}%`),
         flexIndex,
+        minWidth: `${Math.ceil(finalTotal + FIT_WIDTH_MIN_EXTRA_CHARS)}ch`,
     };
+}
+
+function buildTableColumnLabels(headerRows = [], columnCount = 0) {
+    return Array.from({ length: columnCount }, (_, columnIndex) => {
+        const label = (Array.isArray(headerRows) ? headerRows : [])
+            .map((row) => normalizeTableCellText(row?.[columnIndex] || ""))
+            .filter(Boolean)
+            .join(" / ");
+        return label || null;
+    });
 }
 
 function isMarkdownSpecialLine(line = "", nextLine = "") {
@@ -890,6 +952,7 @@ function MarkdownPreviewContent({ content, theme }) {
                 const hasFlexColumn = !!layout;
                 const flexIndex = layout ? layout.flexIndex : -1;
                 const cellClass = (cellIndex) => (cellIndex === flexIndex ? "is-flex-column" : null);
+                const columnLabels = buildTableColumnLabels([block.header], columnCount);
                 const tableClass = `ps-md-table${fitToWidth ? " is-fit-width" : ""}${hasFlexColumn ? " has-flex-column" : ""}`;
                 const wrapClass = `ps-md-table-wrap${fitToWidth ? " is-fit-width" : ""}${hasFlexColumn ? " has-flex-column" : ""}`;
                 return React.createElement("div", {
@@ -898,6 +961,7 @@ function MarkdownPreviewContent({ content, theme }) {
                 },
                     React.createElement("table", {
                         className: tableClass,
+                        style: layout?.minWidth ? { "--ps-table-min-width": layout.minWidth } : undefined,
                     },
                         layout
                             ? React.createElement("colgroup", null,
@@ -919,8 +983,10 @@ function MarkdownPreviewContent({ content, theme }) {
                                 row.map((cell, cellIndex) => React.createElement("td", {
                                     key: `cell:${rowIndex}:${cellIndex}`,
                                     className: cellClass(cellIndex) || undefined,
+                                    "data-label": columnLabels[cellIndex] || undefined,
                                 },
-                                    renderInlineMarkdown(cell, theme, `table:${index}:${rowIndex}:${cellIndex}`))))))));
+                                    React.createElement("span", { className: "ps-table-cell-value" },
+                                        renderInlineMarkdown(cell, theme, `table:${index}:${rowIndex}:${cellIndex}`)))))))));
             }
             return React.createElement("p", { key: `block:${index}`, className: "ps-md-paragraph" },
                 renderInlineMarkdown(block.text, theme, `para:${index}`));
@@ -1291,6 +1357,7 @@ function StructuredChatBlocks({ lines, theme }) {
                 const hasFlexColumn = !!layout;
                 const flexIndex = layout ? layout.flexIndex : -1;
                 const cellClass = (cellIndex) => (cellIndex === flexIndex ? "is-flex-column" : null);
+                const columnLabels = buildTableColumnLabels(headerRows, columnCount);
                 const tableClass = `ps-chat-table${fitToWidth ? " is-fit-width" : ""}${hasFlexColumn ? " has-flex-column" : ""}`;
                 const wrapClass = `ps-chat-table-wrap${fitToWidth ? " is-fit-width" : ""}${hasFlexColumn ? " has-flex-column" : ""}`;
                 return React.createElement("div", {
@@ -1299,6 +1366,7 @@ function StructuredChatBlocks({ lines, theme }) {
                 },
                     React.createElement("table", {
                         className: tableClass,
+                        style: layout?.minWidth ? { "--ps-table-min-width": layout.minWidth } : undefined,
                     },
                         layout
                             ? React.createElement("colgroup", null,
@@ -1322,8 +1390,10 @@ function StructuredChatBlocks({ lines, theme }) {
                                 Array.from({ length: columnCount }, (_, cellIndex) => React.createElement("td", {
                                     key: `td:${rowIndex}:${cellIndex}`,
                                     className: cellClass(cellIndex) || undefined,
+                                    "data-label": columnLabels[cellIndex] || undefined,
                                 },
-                                    renderInlineMarkdown(row[cellIndex] || "", theme, `chat-table:${index}:${rowIndex}:${cellIndex}`))))))));
+                                    React.createElement("span", { className: "ps-table-cell-value" },
+                                        renderInlineMarkdown(row[cellIndex] || "", theme, `chat-table:${index}:${rowIndex}:${cellIndex}`)))))))));
             }
 
             return React.createElement(Line, { key: `line:${index}`, line: block.line, theme });
@@ -1423,6 +1493,9 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
         sessionsFlat: state.sessions.flat,
         filterQuery: state.sessions.filterQuery || "",
         ownerFilter: state.sessions.ownerFilter,
+        pinnedIds: state.sessions.pinnedIds,
+        selectedIds: state.sessions.selectedIds,
+        selectMode: state.sessions.selectMode,
         auth: state.auth,
         connectionMode: state.connection?.mode || "local",
         modalOpen: Boolean(state.ui.modal),
@@ -1435,16 +1508,37 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
             flat: viewState.sessionsFlat,
             filterQuery: viewState.filterQuery,
             ownerFilter: viewState.ownerFilter,
+            pinnedIds: viewState.pinnedIds,
+            selectedIds: viewState.selectedIds,
+            selectMode: viewState.selectMode,
         },
         auth: viewState.auth,
         connection: {
             mode: viewState.connectionMode,
         },
-    }), [viewState.activeSessionId, viewState.auth, viewState.connectionMode, viewState.filterQuery, viewState.ownerFilter, viewState.sessionsById, viewState.sessionsFlat]);
+    }), [viewState.activeSessionId, viewState.auth, viewState.connectionMode, viewState.filterQuery, viewState.ownerFilter, viewState.pinnedIds, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     const activeSession = viewState.activeSessionId
         ? viewState.sessionsById[viewState.activeSessionId] || null
         : null;
     const canRenameActiveSession = Boolean(activeSession && !activeSession.isSystem);
+    const selectedCount = Array.isArray(viewState.selectedIds) ? viewState.selectedIds.length : 0;
+    const isBulkSelection = selectedCount > 1;
+    const canPinActiveSession = Boolean(
+        activeSession
+        && !activeSession.isSystem
+        && !activeSession.parentSessionId,
+    );
+    const isActivePinned = Boolean(
+        activeSession
+        && Array.isArray(viewState.pinnedIds)
+        && viewState.pinnedIds.includes(activeSession.sessionId),
+    );
+    const canTerminate = isBulkSelection
+        ? Array.isArray(viewState.selectedIds) && viewState.selectedIds.some((id) => {
+            const s = viewState.sessionsById[id];
+            return s && !s.isSystem;
+        })
+        : canRenameActiveSession;
     const combinedPanelClassName = `ps-session-pane${panelClassName ? ` ${panelClassName}` : ""}`;
     const setSessionButtonRef = React.useCallback((sessionId, node) => {
         if (!sessionId) return;
@@ -1463,23 +1557,56 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
         if (document.activeElement !== activeButton) {
             activeButton.focus({ preventScroll: true });
         }
+        // Only pull the active row into view when the active session itself
+        // changes (or on focus/modal transitions). Re-running scrollIntoView
+        // on every `sessions/loaded` refresh would yank the list back to the
+        // active row even when the user has deliberately scrolled away to
+        // browse older sessions in a long list.
         activeButton.scrollIntoView({ block: "nearest" });
-    }, [rows, viewState.activeSessionId, viewState.focused, viewState.modalOpen]);
+    }, [viewState.activeSessionId, viewState.focused, viewState.modalOpen]);
 
     const panelActions = React.createElement(React.Fragment, null,
+        isBulkSelection
+            ? React.createElement("span", {
+                className: "ps-mini-button-label",
+                style: { padding: "0 6px", fontSize: "12px", opacity: 0.85 },
+                title: "Multiple sessions selected. Only Cancel is available; click Clear to exit.",
+            }, `${selectedCount} selected`)
+            : null,
+        isBulkSelection
+            ? React.createElement("button", {
+                type: "button",
+                className: "ps-mini-button",
+                onClick: () => controller.handleCommand(UI_COMMANDS.CLEAR_SESSION_SELECTION).catch(() => {}),
+                title: "Clear multi-selection",
+            }, "Clear")
+            : React.createElement("button", {
+                type: "button",
+                className: "ps-mini-button",
+                onClick: () => controller.handleCommand(UI_COMMANDS.PIN_SESSION).catch(() => {}),
+                disabled: !canPinActiveSession,
+                title: canPinActiveSession
+                    ? (isActivePinned
+                        ? "Unpin this session"
+                        : "Pin this session to the top of the list")
+                    : "Only top-level non-system sessions can be pinned",
+            }, isActivePinned ? "Unpin" : "Pin"),
         React.createElement("button", {
             type: "button",
             className: "ps-mini-button",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_RENAME_SESSION).catch(() => {}),
-            disabled: !canRenameActiveSession,
+            disabled: !canRenameActiveSession || isBulkSelection,
+            title: isBulkSelection ? "Disabled while multiple sessions are selected" : undefined,
         }, "Rename"),
         React.createElement("button", {
             type: "button",
             className: "ps-mini-button",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_TERMINATE_PICKER).catch(() => {}),
-            disabled: !canRenameActiveSession,
-            title: "Mark Completed, Cancel, or Delete the active session",
-        }, "Terminate"),
+            disabled: !canTerminate,
+            title: isBulkSelection
+                ? `Terminate ${selectedCount} selected sessions (Mark Completed, Cancel, or Delete)`
+                : "Mark Completed, Cancel, or Delete the active session",
+        }, isBulkSelection ? `Terminate (${selectedCount})` : "Terminate"),
         actions);
 
     return React.createElement(Panel, {
@@ -1499,11 +1626,38 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
                 key: row.sessionId,
                 type: "button",
                 ref: (node) => setSessionButtonRef(row.sessionId, node),
-                className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}`,
+                className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}`,
                 tabIndex: row.active ? 0 : -1,
                 "aria-selected": row.active ? "true" : "false",
                 onClick: (event) => {
-                    const shouldToggleChildren = row.hasChildren && row.active && !event.metaKey && !event.ctrlKey;
+                    // Cmd/Ctrl-click toggles multi-selection (any row).
+                    if (event.metaKey || event.ctrlKey) {
+                        event.preventDefault();
+                        if (!viewState.selectMode) {
+                            controller.dispatch({ type: "sessions/selectMode", enabled: true });
+                        }
+                        controller.dispatch({ type: "sessions/selectToggle", sessionId: row.sessionId });
+                        controller.setFocus("sessions");
+                        return;
+                    }
+                    // Shift-click selects a contiguous range from the active row.
+                    if (event.shiftKey && viewState.activeSessionId) {
+                        event.preventDefault();
+                        const ids = rows.map((r) => r.sessionId);
+                        const startIndex = ids.indexOf(viewState.activeSessionId);
+                        const endIndex = ids.indexOf(row.sessionId);
+                        if (startIndex >= 0 && endIndex >= 0) {
+                            const [from, to] = startIndex <= endIndex
+                                ? [startIndex, endIndex]
+                                : [endIndex, startIndex];
+                            const range = ids.slice(from, to + 1);
+                            const merged = Array.from(new Set([...(viewState.selectedIds || []), ...range]));
+                            controller.setSessionSelection(merged);
+                            controller.setFocus("sessions");
+                            return;
+                        }
+                    }
+                    const shouldToggleChildren = row.hasChildren && row.active;
                     if (shouldToggleChildren) {
                         controller.dispatch({
                             type: row.collapsed ? "sessions/expand" : "sessions/collapse",
@@ -1511,6 +1665,11 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
                         });
                         controller.setFocus("sessions");
                         return;
+                    }
+                    // A normal click on a different row clears any
+                    // multi-selection and switches the active session.
+                    if (viewState.selectMode) {
+                        controller.dispatch({ type: "sessions/selectClear" });
                     }
                     controller.setFocus("sessions");
                     if (!row.active) {
@@ -2963,7 +3122,12 @@ function ModalLayer({ controller }) {
             ));
     }
     if (modal.type === "terminatePicker") {
+        const isBulk = Number(modal.bulkCount) > 1;
         const sessionLabel = String(modal.sessionTitle || "").trim() || "this session";
+        const bulkCount = Number(modal.bulkCount) || 0;
+        const bodyText = isBulk
+            ? `What should happen to the ${bulkCount} selected sessions? Choose an action; you'll be asked to confirm.`
+            : `What should happen to "${sessionLabel}"? Choose an action; you'll be asked to confirm.`;
         const pick = (action) => () => {
             controller.pickTerminateAction(action).catch(() => {});
         };
@@ -2974,8 +3138,7 @@ function ModalLayer({ controller }) {
                     React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
                 ),
                 React.createElement("div", { className: "ps-modal-body", style: { padding: "12px 16px 4px" } },
-                    React.createElement("p", { style: { color: "#94a3b8", margin: 0 } },
-                        `What should happen to "${sessionLabel}"? Choose an action; you'll be asked to confirm.`)),
+                    React.createElement("p", { style: { color: "#94a3b8", margin: 0 } }, bodyText)),
                 React.createElement("div", {
                     className: "ps-modal-body",
                     style: { padding: "10px 16px 16px", display: "flex", flexDirection: "column", gap: 8 },
@@ -2985,19 +3148,19 @@ function ModalLayer({ controller }) {
                         className: "ps-modal-button is-primary",
                         style: { width: "100%", justifyContent: "flex-start" },
                         onClick: pick("complete"),
-                    }, "Mark Completed"),
+                    }, isBulk ? `Mark ${bulkCount} Completed` : "Mark Completed"),
                     React.createElement("button", {
                         type: "button",
                         className: "ps-modal-button",
                         style: { width: "100%", justifyContent: "flex-start" },
                         onClick: pick("cancel"),
-                    }, "Cancel Session"),
+                    }, isBulk ? `Cancel ${bulkCount} Sessions` : "Cancel Session"),
                     React.createElement("button", {
                         type: "button",
                         className: "ps-modal-button is-danger",
                         style: { width: "100%", justifyContent: "flex-start" },
                         onClick: pick("delete"),
-                    }, "Delete Session"),
+                    }, isBulk ? `Delete ${bulkCount} Sessions` : "Delete Session"),
                 ),
                 React.createElement("div", { className: "ps-modal-footer" },
                     React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Close")),
@@ -3407,7 +3570,8 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     const themeId = readStoredThemeId();
     const sessionOwnerFilter = readStoredSessionOwnerFilter();
     const layoutAdjustments = readStoredLayoutAdjustments();
-    const store = createStore(appReducer, createInitialState({ mode, branding, themeId, sessionOwnerFilter, layoutAdjustments }));
+    const pinnedSessionIds = readStoredPinnedSessionIds();
+    const store = createStore(appReducer, createInitialState({ mode, branding, themeId, sessionOwnerFilter, layoutAdjustments, pinnedSessionIds }));
     return new PilotSwarmUiController({ store, transport });
 }
 
@@ -3422,6 +3586,7 @@ export function PilotSwarmWebApp({ controller }) {
     const state = useControllerSelector(controller, (rootState) => ({
         themeId: rootState.ui.themeId,
         ownerFilter: rootState.sessions.ownerFilter,
+        pinnedIds: rootState.sessions.pinnedIds,
         promptRows: getStatePromptRows(rootState),
         paneAdjust: rootState.ui.layout?.paneAdjust ?? 0,
         sessionPaneAdjust: rootState.ui.layout?.sessionPaneAdjust ?? 0,
@@ -3476,6 +3641,10 @@ export function PilotSwarmWebApp({ controller }) {
             activityPaneAdjust: state.activityPaneAdjust,
         });
     }, [state.activityPaneAdjust, state.paneAdjust, state.sessionPaneAdjust]);
+
+    React.useEffect(() => {
+        writeStoredPinnedSessionIds(state.pinnedIds);
+    }, [state.pinnedIds]);
 
     React.useEffect(() => {
         if (mobile && state.focusRegion !== "prompt") {

@@ -17,8 +17,8 @@ All tests use `vitest` (`describe`/`it`) and follow PilotSwarm test conventions:
 **What it verifies:**
 - `store_fact` stores session-scoped facts by default (one per session, keyed by `session:<sessionId>:<key>`).
 - `store_fact` with `shared=true` stores shared facts (keyed by `shared:<key>`).
-- `read_facts` with `scope=accessible` returns the caller's own session facts + shared facts.
-- `read_facts` with `scope=accessible` does **not** return another session's private facts.
+- `read_facts` with `scope=accessible` returns the caller's own session facts + shared facts when no spawn-tree lookup is configured.
+- `read_facts` with `scope=accessible` does **not** return another session's private facts unless that session is granted by the spawn-tree lookup.
 - `read_facts` with `scope=session` returns only the caller's own session-scoped facts.
 - `delete_fact` deletes the current session's private fact without affecting other sessions or shared facts.
 
@@ -29,8 +29,8 @@ All tests use `vitest` (`describe`/`it`) and follow PilotSwarm test conventions:
 - Stores one shared fact `baseline/tps`.
 
 **Assertions:**
-1. `accessible` scope from `session-a` returns exactly 2 facts (its own `build/status` + shared `baseline/tps`).
-2. `session-b`'s private fact is not visible to `session-a`.
+1. `accessible` scope from `session-a` returns exactly 2 facts (its own `build/status` + shared `baseline/tps`) without a spawn-tree lookup.
+2. `session-b`'s private fact is not visible to `session-a` without a spawn-tree grant.
 3. `session` scope from `session-b` returns exactly 1 fact (its own `build/status`).
 4. After deleting `session-a`'s `build/status`, only 2 facts remain in the table.
 5. `session-b`'s private fact and the shared fact remain intact.
@@ -94,50 +94,50 @@ All tests use `vitest` (`describe`/`it`) and follow PilotSwarm test conventions:
 
 The following tests should be added to strengthen coverage of the facts feature:
 
-### Test 5: Parent reads child's session-scoped facts via session_id
+### Test 5: Spawn-tree member reads another member's session-scoped facts via session_id
 
 **What to verify:**
-- A parent session can read a child's non-shared facts by passing `session_id=<child>` to `read_facts`.
-- Lineage is verified via `getDescendantSessionIds()` — if the target is a descendant, access is granted.
-- The parent sees the child's session-scoped facts alongside shared facts.
+- A session can read another spawn-tree member's non-shared facts by passing `session_id=<other-tree-member>` to `read_facts`.
+- Spawn-tree membership is verified by the worker lineage lookup: walk to the root, then expand root descendants.
+- The caller sees the target member's session-scoped facts alongside shared facts.
 
 **Setup:**
-- Creates a `PgFactStore` and `createFactTools` with a mock `getDescendantSessionIds` that returns `["child-session"]`.
-- Parent stores a session-scoped fact. Child stores a session-scoped fact.
-- Parent calls `read_facts({ session_id: "child-session" })`.
+- Creates a `PgFactStore` and `createFactTools` with a mock `getLineageSessionIds` that returns another member of the same spawn tree.
+- Two spawn-tree members store session-scoped facts.
+- One member calls `read_facts({ session_id: "other-tree-member" })`.
 
 **Assertions:**
-1. The parent sees the child's session-scoped fact.
+1. The caller sees the other member's session-scoped fact.
 2. No error is thrown.
 
 ---
 
-### Test 6: Parent reads all descendants' facts via scope=descendants
+### Test 6: Session reads spawn-tree facts via scope=descendants
 
 **What to verify:**
-- `read_facts({ scope: "descendants" })` returns the parent's own facts, shared facts, and all descendants' session-scoped facts.
-- Works for grandchildren (depth 2+).
+- `read_facts({ scope: "descendants" })` returns the caller's own facts, shared facts, and all granted spawn-tree session-scoped facts.
+- Works for ancestors, descendants, siblings, and cousins under the same root.
 
 **Setup:**
-- Creates facts for parent, child, and grandchild sessions.
-- Mock `getDescendantSessionIds("parent")` returns `["child", "grandchild"]`.
-- Parent calls `read_facts({ scope: "descendants" })`.
+- Creates facts for a root, child, sibling, and cousin session.
+- Mock `getLineageSessionIds("child")` returns the rest of that spawn tree.
+- Child calls `read_facts({ scope: "descendants" })`.
 
 **Assertions:**
-1. All three sessions' facts are returned plus any shared facts.
+1. All spawn-tree members' facts are returned plus any shared facts.
 2. Facts from an unrelated session are not returned.
 
 ---
 
-### Test 7: Non-descendant session cannot read another session's private facts
+### Test 7: Non-spawn-tree session cannot read another session's private facts
 
 **What to verify:**
-- When `session_id=<other>` is passed but `<other>` is not a descendant of the caller, the caller still cannot see the other session's private facts.
-- Lineage check fails silently — no error, just no access.
+- When `session_id=<other>` is passed but `<other>` is outside the caller's spawn tree, the caller still cannot see the other session's private facts.
+- Spawn-tree check fails silently — no error, just no access.
 
 **Setup:**
 - Two unrelated sessions store session-scoped facts.
-- Session A calls `read_facts({ session_id: "session-b" })` with a mock `getDescendantSessionIds` that returns `[]`.
+- Session A calls `read_facts({ session_id: "session-b" })` with a mock `getLineageSessionIds` that returns `[]`.
 
 **Assertions:**
 1. Session A does not see session B's private facts.
@@ -145,13 +145,13 @@ The following tests should be added to strengthen coverage of the facts feature:
 
 ---
 
-### Test 8: scope=descendants with no sub-agents
+### Test 8: scope=descendants with no other spawn-tree members
 
 **What to verify:**
-- When a session has no descendants, `scope=descendants` behaves identically to `scope=accessible` (own facts + shared).
+- When a session has no other visible spawn-tree members, `scope=descendants` behaves identically to `scope=accessible` (own facts + shared).
 
 **Setup:**
-- Mock `getDescendantSessionIds` returns `[]`.
+- Mock `getLineageSessionIds` returns `[]`.
 - Session stores a session-scoped fact and a shared fact.
 - Session calls `read_facts({ scope: "descendants" })`.
 
@@ -193,10 +193,11 @@ The following tests should be added to strengthen coverage of the facts feature:
 - `read_facts` with `agent_id="builder"` returns only facts stored by the `builder` agent.
 - Combined with scope filters, provenance narrows but doesn't widen visibility.
 
-### Test 14: Concurrent session isolation
+### Test 14: Concurrent spawn-tree isolation
 
 **What to verify:**
-- Two sessions running concurrently cannot see each other's session-scoped facts.
+- Two unrelated spawn trees running concurrently cannot see each other's session-scoped facts.
+- Sessions inside the same spawn tree can see each other's session-scoped facts.
 - Both can see the same shared facts.
 - Deleting one session's facts does not affect the other.
 
