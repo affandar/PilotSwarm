@@ -244,6 +244,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         const isShiftN = input === "N" || (key.shift && key.name === "n");
         const isShiftD = input === "D" || (key.shift && key.name === "d");
         const isShiftT = !key.ctrl && !key.meta && !key.alt && (input === "T" || (key.shift && key.name === "t"));
+        const isShiftA = !key.ctrl && !key.meta && !key.alt && (input === "A" || (key.shift && key.name === "a"));
         const isAltBackspace = key.meta && (key.backspace || key.delete || key.name === "backspace" || key.name === "delete");
         const isAltLeftWord = key.meta && (key.leftArrow || key.name === "left" || input === "b" || input === "B");
         const isAltRightWord = key.meta && (key.rightArrow || key.name === "right" || input === "f" || input === "F");
@@ -275,6 +276,63 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
 
         if (key.name !== "escape") {
             clearQuitArm(true);
+        }
+
+        // ── Admin Console keybindings ─────────────────────────
+        // The Admin Console replaces the workspace, so its input
+        // handling must run before the modal/normal path. The GHCP key
+        // editor overlay (`adminGhcpKey.editing`) acts like a modal:
+        // route every printable / navigation key into the cursor-aware
+        // controller mutators, and only Esc / Enter exit composition.
+        const adminState = controller.getState().admin;
+        const adminVisible = Boolean(adminState?.visible);
+        const adminEditing = Boolean(adminState?.ghcpKey?.editing);
+        const adminSaving = Boolean(adminState?.ghcpKey?.saving);
+        if (adminEditing) {
+            // Block all input while saving so we don't enqueue mutations
+            // against a stale draft. Esc still cancels in case the
+            // network call hangs.
+            if (key.escape) {
+                if (adminSaving) return;
+                controller.cancelAdminEditGhcpKey();
+                return;
+            }
+            if (adminSaving) return;
+            if (key.return) {
+                controller.handleCommand(UI_COMMANDS.ADMIN_SAVE_GHCP_KEY).catch(() => {});
+                return;
+            }
+            if (key.leftArrow) { controller.moveAdminGhcpKeyCursor(-1); return; }
+            if (key.rightArrow) { controller.moveAdminGhcpKeyCursor(1); return; }
+            if (key.home) { controller.moveAdminGhcpKeyCursorToBoundary("start"); return; }
+            if (key.end) { controller.moveAdminGhcpKeyCursorToBoundary("end"); return; }
+            if (key.backspace || key.delete) { controller.deleteAdminGhcpKeyChar(); return; }
+            if (!key.ctrl && !key.meta && input) {
+                controller.insertAdminGhcpKeyText(input);
+            }
+            return;
+        }
+        if (adminVisible) {
+            if (key.escape) {
+                controller.handleCommand(UI_COMMANDS.CLOSE_ADMIN_CONSOLE).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "e") {
+                controller.handleCommand(UI_COMMANDS.ADMIN_BEGIN_EDIT_GHCP_KEY).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "c" && adminState?.profile?.githubCopilotKeySet) {
+                controller.handleCommand(UI_COMMANDS.ADMIN_CLEAR_GHCP_KEY).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "r") {
+                controller.handleCommand(UI_COMMANDS.ADMIN_REFRESH_PROFILE).catch(() => {});
+                return;
+            }
+            // Everything else is swallowed — the console is a modal-like
+            // surface and we don't want session/chat shortcuts firing
+            // behind it.
+            return;
         }
 
         if (modal) {
@@ -371,6 +429,15 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
 
         if (focus !== "prompt" && isShiftT) {
             controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {});
+            return;
+        }
+
+        if (focus !== "prompt" && isShiftA) {
+            // Shift+A toggles the per-user Admin Console (settings +
+            // GitHub Copilot key). Plain `a` is reserved for the
+            // artifact picker, so the open shortcut needs the shift
+            // modifier.
+            controller.handleCommand(UI_COMMANDS.OPEN_ADMIN_CONSOLE).catch(() => {});
             return;
         }
 

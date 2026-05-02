@@ -665,6 +665,7 @@ export function registerActivities(
                 agent_name?: string;
                 task?: string;
                 model?: string;
+                reasoning_effort?: import("./model-providers.js").ReasoningEffort;
                 system_message?: string;
                 tool_names?: string[];
                 title?: string;
@@ -687,6 +688,7 @@ export function registerActivities(
                     let agentSystemMessage = args.system_message;
                     let agentToolNames = args.tool_names;
                     let agentModel = args.model;
+                    let agentReasoningEffort = args.reasoning_effort;
                     let agentIsSystem = false;
                     const explicitAgentTitle = typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined;
                     let agentTitle: string | undefined = explicitAgentTitle;
@@ -750,6 +752,7 @@ export function registerActivities(
                     const childConfig: SerializableSessionConfig = {
                         ...parentConfig,
                         ...(agentModel ? { model: agentModel } : {}),
+                        ...(agentReasoningEffort ? { reasoningEffort: agentReasoningEffort } : {}),
                         ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
                         ...(boundAgentName ? { boundAgentName } : {}),
                         ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
@@ -797,6 +800,7 @@ export function registerActivities(
                         parentSessionId: input.sessionId,
                         nestingLevel: childNestingLevel,
                         model: childConfig.model,
+                        reasoningEffort: childConfig.reasoningEffort,
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         promptLayering: childConfig.promptLayering,
@@ -1764,6 +1768,29 @@ export function registerActivities(
             }
             trace(`model normalization done (${input.config.model ?? "inherit"})`);
 
+            // Inherit the parent's owner so the spawned child renders under
+            // the same owner-filtered tree the parent already passes. System
+            // children stay unowned by design — they should always render
+            // under the system-include filter regardless of who triggered
+            // the spawn. For non-system children we walk up to the nearest
+            // owned ancestor so a system parent (e.g. Facts Manager)
+            // spawning a named agent on behalf of a user still attributes
+            // the new child to that user.
+            let inheritedOwner: any = null;
+            if (!input.isSystem && catalog) {
+                const ownerLookupAt = Date.now();
+                let ancestorId: string | undefined = input.parentSessionId;
+                let hops = 0;
+                while (ancestorId && hops < 8) {
+                    const ancestor = await catalog.getSession(ancestorId);
+                    if (!ancestor) break;
+                    if (ancestor.owner) { inheritedOwner = ancestor.owner; break; }
+                    ancestorId = ancestor.parentSessionId || undefined;
+                    hops += 1;
+                }
+                trace(`owner inheritance lookup done (${Date.now() - ownerLookupAt}ms; ${inheritedOwner ? "found" : "none"})`);
+            }
+
             // Create the child session via the SDK — handles CMS row + orchestration start
             const createSessionAt = Date.now();
             const session = await sdkClient.createSession({
@@ -1777,6 +1804,7 @@ export function registerActivities(
                 toolNames: input.config.toolNames,
                 waitThreshold: input.config.waitThreshold,
                 agentId: input.agentId,
+                ...(inheritedOwner ? { owner: inheritedOwner } : {}),
             });
             trace(`sdkClient.createSession done (${Date.now() - createSessionAt}ms)`);
 

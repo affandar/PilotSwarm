@@ -72,6 +72,26 @@ function groupModelsByProvider(models = []) {
     return groups;
 }
 
+function normalizeReasoningEfforts(values) {
+    if (!Array.isArray(values)) return [];
+    const out = [];
+    for (const raw of values) {
+        const value = String(raw || "").trim().toLowerCase();
+        if (!value || out.includes(value)) continue;
+        out.push(value);
+    }
+    return out;
+}
+
+function resolveDefaultReasoningEffort(model) {
+    const supported = normalizeReasoningEfforts(model?.supportedReasoningEfforts);
+    if (supported.length === 0) return null;
+    const candidate = String(model?.defaultReasoningEffort || "").trim().toLowerCase();
+    if (candidate && supported.includes(candidate)) return candidate;
+    if (supported.includes("medium")) return "medium";
+    return supported[0] || null;
+}
+
 function extractSessionModelFromEvents(events = []) {
     for (let index = events.length - 1; index >= 0; index -= 1) {
         const data = events[index]?.data;
@@ -1845,9 +1865,7 @@ export class PilotSwarmUiController {
     }
 
     async ensureFleetStats({ force = false } = {}) {
-        if (typeof this.transport.getFleetStats !== "function") return;
-
-        const current = this.getState().fleetStats;
+        if (typeof this.transport.getFleetStats !== "function") return;        const current = this.getState().fleetStats;
         const now = Date.now();
         if (!force && current?.loading) return;
         if (!force && current?.data && Number.isFinite(current.fetchedAt) && (now - current.fetchedAt) < FLEET_STATS_REFRESH_MS) return;
@@ -1876,6 +1894,129 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "fleetStats/loaded", data, userStats, skillUsage, sharedFactsStats });
         } catch {
             this.dispatch({ type: "fleetStats/loaded", data: null, userStats: null, skillUsage: null, sharedFactsStats: null });
+        }
+    }
+
+    // ─── Admin Console ─────────────────────────────────────────
+
+    /**
+     * Open the Admin Console (replaces sessions+chat with the per-user
+     * admin view) and refresh the user profile so the UI is current.
+     */
+    async openAdminConsole() {
+        this.dispatch({ type: "admin/visibility", visible: true });
+        await this.refreshAdminProfile().catch(() => {});
+    }
+
+    /** Close the Admin Console and return to the standard workspace. */
+    closeAdminConsole() {
+        this.dispatch({ type: "admin/visibility", visible: false });
+    }
+
+    /**
+     * Re-fetch the current user's profile (settings + ghcp key-set
+     * flag). Safe to call repeatedly; updates state in place.
+     */
+    async refreshAdminProfile() {
+        if (typeof this.transport.getCurrentUserProfile !== "function") {
+            this.dispatch({ type: "admin/profile/loadFailed", error: "Admin Console is not available on this transport." });
+            return null;
+        }
+        this.dispatch({ type: "admin/profile/loading" });
+        try {
+            const profile = await this.transport.getCurrentUserProfile();
+            this.dispatch({ type: "admin/profile/loaded", profile });
+            return profile || null;
+        } catch (error) {
+            this.dispatch({ type: "admin/profile/loadFailed", error: error?.message || String(error) });
+            return null;
+        }
+    }
+
+    beginAdminEditGhcpKey() {
+        this.dispatch({ type: "admin/ghcpKey/beginEdit", draft: "" });
+    }
+
+    setAdminGhcpKeyDraft(draft, cursorIndex = String(draft || "").length) {
+        this.dispatch({ type: "admin/ghcpKey/setDraft", draft, cursorIndex });
+    }
+
+    insertAdminGhcpKeyText(text) {
+        const ghcp = this.getState().admin?.ghcpKey;
+        if (!ghcp?.editing) return;
+        // GitHub Copilot keys are single-line opaque tokens — strip
+        // newlines so accidental paste of a multi-line clipboard still
+        // produces a usable key.
+        const sanitized = String(text || "").replace(/\r?\n/g, "");
+        const next = insertPromptTextAtCursor(ghcp.draft || "", ghcp.cursorIndex || 0, sanitized);
+        this.setAdminGhcpKeyDraft(next.prompt, next.cursor);
+    }
+
+    deleteAdminGhcpKeyChar() {
+        const ghcp = this.getState().admin?.ghcpKey;
+        if (!ghcp?.editing) return;
+        const next = deletePromptCharBackward(ghcp.draft || "", ghcp.cursorIndex || 0);
+        this.setAdminGhcpKeyDraft(next.prompt, next.cursor);
+    }
+
+    moveAdminGhcpKeyCursor(delta) {
+        const ghcp = this.getState().admin?.ghcpKey;
+        if (!ghcp?.editing) return;
+        const draft = ghcp.draft || "";
+        this.setAdminGhcpKeyDraft(draft, clampPromptCursor(draft, (ghcp.cursorIndex || 0) + delta));
+    }
+
+    moveAdminGhcpKeyCursorToBoundary(kind) {
+        const ghcp = this.getState().admin?.ghcpKey;
+        if (!ghcp?.editing) return;
+        const draft = ghcp.draft || "";
+        this.setAdminGhcpKeyDraft(draft, kind === "start" ? 0 : draft.length);
+    }
+
+    cancelAdminEditGhcpKey() {
+        this.dispatch({ type: "admin/ghcpKey/cancelEdit" });
+    }
+
+    /**
+     * Save the current draft as the per-user GitHub Copilot key. Empty
+     * or whitespace-only drafts are rejected so users cannot
+     * accidentally clear their key by hitting Enter on a blank field —
+     * use `clearAdminGhcpKey()` for that.
+     */
+    async saveAdminGhcpKey() {
+        if (typeof this.transport.setCurrentUserGitHubCopilotKey !== "function") {
+            this.dispatch({ type: "admin/ghcpKey/saveFailed", error: "Admin Console is not available on this transport." });
+            return;
+        }
+        const draft = String(this.getState().admin.ghcpKey.draft || "").trim();
+        if (draft.length === 0) {
+            this.dispatch({ type: "admin/ghcpKey/saveFailed", error: "Enter a key, or use Clear to remove the override." });
+            return;
+        }
+        this.dispatch({ type: "admin/ghcpKey/saving" });
+        try {
+            const profile = await this.transport.setCurrentUserGitHubCopilotKey({ key: draft });
+            this.dispatch({ type: "admin/ghcpKey/saved", profile });
+        } catch (error) {
+            this.dispatch({ type: "admin/ghcpKey/saveFailed", error: error?.message || String(error) });
+        }
+    }
+
+    /**
+     * Clear the per-user GitHub Copilot key, reverting the user to the
+     * worker's env-supplied default token.
+     */
+    async clearAdminGhcpKey() {
+        if (typeof this.transport.setCurrentUserGitHubCopilotKey !== "function") {
+            this.dispatch({ type: "admin/ghcpKey/saveFailed", error: "Admin Console is not available on this transport." });
+            return;
+        }
+        this.dispatch({ type: "admin/ghcpKey/saving" });
+        try {
+            const profile = await this.transport.setCurrentUserGitHubCopilotKey({ key: null });
+            this.dispatch({ type: "admin/ghcpKey/saved", profile });
+        } catch (error) {
+            this.dispatch({ type: "admin/ghcpKey/saveFailed", error: error?.message || String(error) });
         }
     }
 
@@ -2649,25 +2790,37 @@ export class PilotSwarmUiController {
     }
 
     async createSession(options = {}) {
-        const created = await this.transport.createSession(options);
-        await this.refreshSessions();
-        await this.loadSession(created.sessionId);
-        this.setFocus(FOCUS_REGIONS.PROMPT);
-        this.dispatch({ type: "ui/status", text: `Created session ${created.sessionId.slice(0, 8)}` });
+        try {
+            const created = await this.transport.createSession(options);
+            await this.refreshSessions();
+            await this.loadSession(created.sessionId);
+            this.setFocus(FOCUS_REGIONS.PROMPT);
+            this.dispatch({ type: "ui/status", text: `Created session ${created.sessionId.slice(0, 8)}` });
+            return created;
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: error?.message || String(error) || "Failed to create session" });
+            return null;
+        }
     }
 
     async createSessionForAgent(agentName, options = {}) {
         if (typeof this.transport.createSessionForAgent !== "function") {
             throw new Error("Named-agent session creation is not supported by this transport");
         }
-        const created = await this.transport.createSessionForAgent(agentName, options);
-        await this.refreshSessions();
-        await this.loadSession(created.sessionId);
-        this.setFocus(FOCUS_REGIONS.PROMPT);
-        this.dispatch({
-            type: "ui/status",
-            text: `Created ${formatAgentDisplayTitle(agentName, options.title)} session ${created.sessionId.slice(0, 8)}`,
-        });
+        try {
+            const created = await this.transport.createSessionForAgent(agentName, options);
+            await this.refreshSessions();
+            await this.loadSession(created.sessionId);
+            this.setFocus(FOCUS_REGIONS.PROMPT);
+            this.dispatch({
+                type: "ui/status",
+                text: `Created ${formatAgentDisplayTitle(agentName, options.title)} session ${created.sessionId.slice(0, 8)}`,
+            });
+            return created;
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: error?.message || String(error) || "Failed to create session" });
+            return null;
+        }
     }
 
     async openSessionAgentPicker(options = {}) {
@@ -2737,6 +2890,36 @@ export class PilotSwarmUiController {
         await this.openSessionAgentPicker(options);
     }
 
+    openReasoningEffortPicker(modelItem, sessionOptions = {}) {
+        const supported = normalizeReasoningEfforts(modelItem?.supportedReasoningEfforts);
+        const selectedEffort = resolveDefaultReasoningEffort(modelItem);
+        if (!supported.length || !selectedEffort) {
+            this.openNewSessionFlow(sessionOptions).catch(() => {});
+            return;
+        }
+
+        const items = supported.map((effort) => ({
+            id: effort,
+            effort,
+            label: effort,
+            isDefault: selectedEffort === effort,
+        }));
+        const selectedIndex = Math.max(0, items.findIndex((item) => item.id === selectedEffort));
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "reasoningEffortPicker",
+                title: `Reasoning effort for ${modelItem?.modelName || modelItem?.qualifiedName || "model"}`,
+                items,
+                selectedIndex,
+                previousFocus: this.getState().ui.focusRegion,
+                modelItem,
+                sessionOptions,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Select a reasoning effort and press Enter" });
+    }
+
     async openModelPicker() {
         if (typeof this.transport.listModels !== "function") {
             await this.openNewSessionFlow();
@@ -2769,6 +2952,8 @@ export class PilotSwarmUiController {
                         providerType: model.providerType || group.type || group.providerType,
                         description: model.description || "",
                         cost: model.cost || null,
+                        supportedReasoningEfforts: normalizeReasoningEfforts(model.supportedReasoningEfforts),
+                        defaultReasoningEffort: model.defaultReasoningEffort || null,
                         isDefault: defaultModel === model.qualifiedName,
                     };
                     items.push(item);
@@ -2920,10 +3105,8 @@ export class PilotSwarmUiController {
         const activeSessionId = this.getState().sessions.activeSessionId;
         if (activeSessionId) return activeSessionId;
 
-        const created = await this.transport.createSession({});
-        await this.refreshSessions();
-        await this.loadSession(created.sessionId);
-        this.setFocus(FOCUS_REGIONS.PROMPT);
+        const created = await this.createSession({});
+        if (!created?.sessionId) throw new Error("Create a session before attaching files");
         return created.sessionId;
     }
 
@@ -3464,7 +3647,28 @@ export class PilotSwarmUiController {
             if (previousFocus) {
                 this.setFocus(previousFocus);
             }
-            await this.openNewSessionFlow(item?.id ? { model: item.id } : {});
+            if (!item) {
+                await this.openNewSessionFlow({});
+                return;
+            }
+            this.openReasoningEffortPicker(item, {
+                model: item.id,
+                ...(resolveDefaultReasoningEffort(item) ? { reasoningEffort: resolveDefaultReasoningEffort(item) } : {}),
+            });
+            return;
+        }
+        if (modal.type === "reasoningEffortPicker") {
+            const item = modal.items?.[modal.selectedIndex || 0];
+            const previousFocus = modal.previousFocus;
+            const sessionOptions = modal.sessionOptions || {};
+            this.dispatch({ type: "ui/modal", modal: null });
+            if (previousFocus) {
+                this.setFocus(previousFocus);
+            }
+            await this.openNewSessionFlow({
+                ...sessionOptions,
+                ...(item?.id ? { reasoningEffort: item.id } : {}),
+            });
             return;
         }
         if (modal.type === "sessionAgentPicker") {
@@ -3626,10 +3830,9 @@ export class PilotSwarmUiController {
             activeSession = this.getState().sessions.byId[sessionId] || null;
         }
         if (!sessionId) {
-            const created = await this.transport.createSession({});
+            const created = await this.createSession({});
+            if (!created?.sessionId) return;
             sessionId = created.sessionId;
-            await this.refreshSessions();
-            await this.loadSession(sessionId);
             activeSession = this.getState().sessions.byId[sessionId] || null;
         }
 
@@ -5035,6 +5238,27 @@ export class PilotSwarmUiController {
                 await this.exportExecutionHistory();
                 return;
             }
+            case UI_COMMANDS.OPEN_ADMIN_CONSOLE:
+                await this.openAdminConsole();
+                return;
+            case UI_COMMANDS.CLOSE_ADMIN_CONSOLE:
+                this.closeAdminConsole();
+                return;
+            case UI_COMMANDS.ADMIN_REFRESH_PROFILE:
+                await this.refreshAdminProfile();
+                return;
+            case UI_COMMANDS.ADMIN_BEGIN_EDIT_GHCP_KEY:
+                this.beginAdminEditGhcpKey();
+                return;
+            case UI_COMMANDS.ADMIN_CANCEL_EDIT_GHCP_KEY:
+                this.cancelAdminEditGhcpKey();
+                return;
+            case UI_COMMANDS.ADMIN_SAVE_GHCP_KEY:
+                await this.saveAdminGhcpKey();
+                return;
+            case UI_COMMANDS.ADMIN_CLEAR_GHCP_KEY:
+                await this.clearAdminGhcpKey();
+                return;
             default:
                 return;
         }

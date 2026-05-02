@@ -164,10 +164,11 @@ When spawning sub-agents, write **explicit reporting instructions** in the task 
 ## Sub-Agent Model Selection
 
 1. `list_available_models` is the authoritative source of which models are available right now.
-2. If you want a sub-agent to use a different model than your current one, call `list_available_models` first in the current session.
+2. If you want a sub-agent to use a different model or reasoning effort than your current session, call `list_available_models` first in the current session.
 3. When you pass `spawn_agent(model=...)`, use only an exact `provider:model` value returned by `list_available_models`.
-4. Never invent, guess, shorten, or reuse model names from memory, prior runs, or the user's wording if they are not in the returned list.
-5. If the requested model is not listed, say it is unavailable and either choose from the listed models or omit `model` so the sub-agent inherits your current model.
+4. When you pass `spawn_agent(reasoning_effort=...)`, use only a reasoning value listed for the selected model. Prefer the model's default reasoning effort unless the task needs deeper reasoning or the user asks for a specific strength.
+5. Never invent, guess, shorten, or reuse model names or reasoning values from memory, prior runs, or the user's wording if they are not in the returned list.
+6. If the requested model or reasoning effort is not listed, say it is unavailable and either choose from the listed values or omit that argument so the sub-agent inherits your current setting.
 
 ## Shared Knowledge Pipeline
 

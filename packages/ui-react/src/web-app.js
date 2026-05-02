@@ -13,6 +13,7 @@ import {
     PilotSwarmUiController,
     tokenizeInlineMarkdown,
     selectActivityPane,
+    selectAdminConsole,
     selectArtifactPickerModal,
     selectArtifactUploadModal,
     selectChatLines,
@@ -26,6 +27,7 @@ import {
     selectInspector,
     selectLogFilterModal,
     selectModelPickerModal,
+    selectReasoningEffortPickerModal,
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
     selectSessionOwnerFilterModal,
@@ -34,6 +36,7 @@ import {
     selectThemePickerModal,
     selectConfirmModal,
     normalizeStoredLayoutAdjustments,
+    normalizeStoredPinnedSessionIds,
 } from "pilotswarm-ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 
@@ -43,13 +46,18 @@ const GRID_CELL_HEIGHT = 19;
 const SCROLL_ROW_HEIGHT = 16;
 const SCROLL_BOTTOM_EPSILON_PX = 0.5;
 const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX;
-const THEME_STORAGE_KEY = "pilotswarm.theme";
-const THEME_COOKIE_NAME = "pilotswarm_theme";
-const SESSION_OWNER_FILTER_STORAGE_KEY = "pilotswarm.sessionOwnerFilter";
-const SESSION_OWNER_FILTER_COOKIE_NAME = "pilotswarm_session_owner_filter";
-const CHAT_FOCUS_MODE_STORAGE_KEY = "pilotswarm.chatFocus";
-const LAYOUT_STORAGE_KEY = "pilotswarm.layoutAdjustments";
-const PINNED_SESSIONS_STORAGE_KEY = "pilotswarm.pinnedSessions";
+const PROFILE_SETTINGS_POLL_MS = 5000;
+const LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS = [
+    "pilotswarm.theme",
+    "pilotswarm.sessionOwnerFilter",
+    "pilotswarm.chatFocus",
+    "pilotswarm.layoutAdjustments",
+    "pilotswarm.pinnedSessions",
+];
+const LEGACY_BROWSER_PREFERENCE_COOKIE_NAMES = [
+    "pilotswarm_theme",
+    "pilotswarm_session_owner_filter",
+];
 const INSPECTOR_TAB_LABELS = {
     sequence: "Sequence",
     logs: "Logs",
@@ -88,134 +96,88 @@ function supportsLocalFileOpen(controller) {
     return typeof controller?.transport?.openPathInDefaultApp === "function";
 }
 
-function readStoredChatFocusMode() {
-    if (typeof window === "undefined") return false;
-    try {
-        return window.localStorage.getItem(CHAT_FOCUS_MODE_STORAGE_KEY) === "1";
-    } catch {
-        return false;
-    }
-}
-
-function writeStoredChatFocusMode(enabled) {
+function clearBrowserPreferenceCache() {
     if (typeof window === "undefined") return;
     try {
-        window.localStorage.setItem(CHAT_FOCUS_MODE_STORAGE_KEY, enabled ? "1" : "0");
-    } catch {
-        // Ignore localStorage failures in private or constrained environments.
-    }
-}
-
-function isDefaultSessionOwnerFilter(filter) {
-    return filter?.all === true
-        && filter?.includeSystem !== true
-        && filter?.includeUnowned !== true
-        && filter?.includeMe !== true
-        && (!Array.isArray(filter?.ownerKeys) || filter.ownerKeys.length === 0);
-}
-
-function readStoredSessionOwnerFilter() {
-    let rawValue = null;
-    try {
-        const cookieMatch = document.cookie.match(new RegExp(`(?:^|; )${SESSION_OWNER_FILTER_COOKIE_NAME}=([^;]+)`));
-        if (cookieMatch?.[1]) {
-            rawValue = decodeURIComponent(cookieMatch[1]);
+        for (const key of LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS) {
+            window.localStorage.removeItem(key);
         }
     } catch {}
-    if (!rawValue) {
-        try {
-            rawValue = window.localStorage.getItem(SESSION_OWNER_FILTER_STORAGE_KEY);
-        } catch {
-            return null;
-        }
-    }
-    if (!rawValue) return null;
     try {
-        const parsed = JSON.parse(rawValue);
-        return parsed && typeof parsed === "object" ? parsed : null;
-    } catch {
-        return null;
-    }
-}
-
-function writeStoredSessionOwnerFilter(filter) {
-    const shouldClear = isDefaultSessionOwnerFilter(filter);
-    const serialized = shouldClear ? "" : JSON.stringify(filter || null);
-    try {
-        document.cookie = `${SESSION_OWNER_FILTER_COOKIE_NAME}=${encodeURIComponent(serialized)}; Path=/; Max-Age=${shouldClear ? 0 : 31536000}; SameSite=Lax`;
-    } catch {}
-    try {
-        if (shouldClear) {
-            window.localStorage.removeItem(SESSION_OWNER_FILTER_STORAGE_KEY);
-        } else {
-            window.localStorage.setItem(SESSION_OWNER_FILTER_STORAGE_KEY, serialized);
+        for (const name of LEGACY_BROWSER_PREFERENCE_COOKIE_NAMES) {
+            document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Lax`;
         }
     } catch {}
 }
 
-function isDefaultStoredLayoutAdjustments(layoutAdjustments) {
-    const normalized = normalizeStoredLayoutAdjustments(layoutAdjustments);
-    return normalized.paneAdjust === 0
-        && normalized.sessionPaneAdjust === 0
-        && normalized.activityPaneAdjust === 0;
-}
-
-function readStoredLayoutAdjustments() {
-    if (typeof window === "undefined") return null;
-    try {
-        const rawValue = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
-        if (!rawValue) return null;
-        return normalizeStoredLayoutAdjustments(JSON.parse(rawValue));
-    } catch {
-        return null;
+function normalizeProfileSettings(settings) {
+    const candidate = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
+    const normalized = {};
+    if (typeof candidate.themeId === "string" && candidate.themeId.trim()) {
+        normalized.themeId = candidate.themeId.trim();
     }
-}
-
-function writeStoredLayoutAdjustments(layoutAdjustments) {
-    if (typeof window === "undefined") return;
-    try {
-        if (isDefaultStoredLayoutAdjustments(layoutAdjustments)) {
-            window.localStorage.removeItem(LAYOUT_STORAGE_KEY);
-            return;
-        }
-        window.localStorage.setItem(
-            LAYOUT_STORAGE_KEY,
-            JSON.stringify(normalizeStoredLayoutAdjustments(layoutAdjustments)),
-        );
-    } catch {}
-}
-
-function readStoredPinnedSessionIds() {
-    if (typeof window === "undefined") return [];
-    try {
-        const rawValue = window.localStorage.getItem(PINNED_SESSIONS_STORAGE_KEY);
-        if (!rawValue) return [];
-        const parsed = JSON.parse(rawValue);
-        if (!Array.isArray(parsed)) return [];
-        const seen = new Set();
-        const out = [];
-        for (const id of parsed) {
-            const trimmed = String(id || "").trim();
-            if (!trimmed || seen.has(trimmed)) continue;
-            seen.add(trimmed);
-            out.push(trimmed);
-        }
-        return out;
-    } catch {
-        return [];
+    if (hasOwn(candidate, "sessionOwnerFilter") && candidate.sessionOwnerFilter && typeof candidate.sessionOwnerFilter === "object") {
+        normalized.sessionOwnerFilter = candidate.sessionOwnerFilter;
     }
+    if (hasOwn(candidate, "layoutAdjustments")) {
+        normalized.layoutAdjustments = normalizeStoredLayoutAdjustments(candidate.layoutAdjustments);
+    }
+    if (hasOwn(candidate, "pinnedSessionIds")) {
+        normalized.pinnedSessionIds = normalizeStoredPinnedSessionIds(candidate.pinnedSessionIds);
+    }
+    return normalized;
 }
 
-function writeStoredPinnedSessionIds(pinnedIds) {
-    if (typeof window === "undefined") return;
-    try {
-        const list = Array.isArray(pinnedIds) ? pinnedIds : [];
-        if (list.length === 0) {
-            window.localStorage.removeItem(PINNED_SESSIONS_STORAGE_KEY);
-            return;
-        }
-        window.localStorage.setItem(PINNED_SESSIONS_STORAGE_KEY, JSON.stringify(list));
-    } catch {}
+function hasOwn(value, key) {
+    return Boolean(value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function profileSettingsFromViewState(state) {
+    return normalizeProfileSettings({
+        themeId: state.themeId,
+        sessionOwnerFilter: state.ownerFilter,
+        layoutAdjustments: {
+            paneAdjust: state.paneAdjust,
+            sessionPaneAdjust: state.sessionPaneAdjust,
+            activityPaneAdjust: state.activityPaneAdjust,
+        },
+        pinnedSessionIds: state.pinnedIds,
+    });
+}
+
+function buildDefaultProfileSettingsFromState(state) {
+    return normalizeProfileSettings({
+        themeId: state?.ui?.themeId,
+        sessionOwnerFilter: state?.sessions?.ownerFilter,
+        layoutAdjustments: state?.ui?.layout,
+        pinnedSessionIds: state?.sessions?.pinnedIds,
+    });
+}
+
+function materializeProfileSettings(remoteSettings, defaults) {
+    const normalizedRemote = normalizeProfileSettings(remoteSettings);
+    const normalizedDefaults = normalizeProfileSettings(defaults);
+    return normalizeProfileSettings({
+        themeId: hasOwn(normalizedRemote, "themeId")
+            ? normalizedRemote.themeId
+            : normalizedDefaults.themeId,
+        sessionOwnerFilter: hasOwn(normalizedRemote, "sessionOwnerFilter")
+            ? normalizedRemote.sessionOwnerFilter
+            : normalizedDefaults.sessionOwnerFilter,
+        layoutAdjustments: hasOwn(normalizedRemote, "layoutAdjustments")
+            ? normalizedRemote.layoutAdjustments
+            : normalizedDefaults.layoutAdjustments,
+        pinnedSessionIds: hasOwn(normalizedRemote, "pinnedSessionIds")
+            ? normalizedRemote.pinnedSessionIds
+            : normalizedDefaults.pinnedSessionIds,
+    });
+}
+
+async function saveProfileSettings(controller, settings) {
+    if (typeof controller?.transport?.setCurrentUserProfileSettings !== "function") return null;
+    return controller.transport.setCurrentUserProfileSettings({
+        settings: normalizeProfileSettings(settings),
+    });
 }
 
 function getVisibleInspectorTabs(controller) {
@@ -342,29 +304,6 @@ function applyDocumentTheme(themeId) {
     root.style.setProperty("--ps-modal-selected-background", theme.page.modalSelectedBackground);
     root.style.setProperty("--ps-modal-selected-border", theme.page.modalSelectedBorder);
     root.style.setProperty("--ps-modal-selected-foreground", theme.page.modalSelectedForeground);
-}
-
-function readStoredThemeId() {
-    try {
-        const cookieMatch = document.cookie.match(new RegExp(`(?:^|; )${THEME_COOKIE_NAME}=([^;]+)`));
-        if (cookieMatch?.[1]) {
-            return decodeURIComponent(cookieMatch[1]);
-        }
-    } catch {}
-    try {
-        return window.localStorage.getItem(THEME_STORAGE_KEY);
-    } catch {
-        return null;
-    }
-}
-
-function writeStoredThemeId(themeId) {
-    try {
-        document.cookie = `${THEME_COOKIE_NAME}=${encodeURIComponent(themeId)}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    } catch {}
-    try {
-        window.localStorage.setItem(THEME_STORAGE_KEY, themeId);
-    } catch {}
 }
 
 function useMeasuredViewport(ref) {
@@ -2600,6 +2539,7 @@ function PromptOverlay({ controller, open, onClose }) {
 
 function Toolbar({ controller, mobile, onToggleLegend, onOpenPrompt, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
     const status = useControllerSelector(controller, (state) => selectStatusBar(state), shallowEqualObject);
+    const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
 
     return React.createElement("div", { className: `ps-toolbar${mobile ? " is-mobile" : ""}` },
         React.createElement("div", { className: "ps-toolbar-actions" },
@@ -2636,6 +2576,11 @@ function Toolbar({ controller, mobile, onToggleLegend, onOpenPrompt, chatFocusMo
         }, mobile
             ? (chatFocusMode ? "Exit Focus" : "Focus")
             : (chatFocusMode ? "Exit Focus" : "Chat Focus")) : null,
+            React.createElement("button", {
+            type: "button",
+            className: `ps-toolbar-button${adminVisible ? " is-active" : ""}`,
+            onClick: () => controller.handleCommand(adminVisible ? UI_COMMANDS.CLOSE_ADMIN_CONSOLE : UI_COMMANDS.OPEN_ADMIN_CONSOLE).catch(() => {}),
+        }, adminVisible ? "Close Admin" : "Admin"),
             React.createElement("button", {
             type: "button",
             className: "ps-toolbar-button",
@@ -2888,6 +2833,7 @@ function ModalLayer({ controller }) {
         rawModal: state.ui.modal,
         themePicker: selectThemePickerModal(state),
         modelPicker: selectModelPickerModal(state),
+        reasoningEffortPicker: selectReasoningEffortPickerModal(state),
         sessionAgentPicker: selectSessionAgentPickerModal(state),
         artifactPicker: selectArtifactPickerModal(state),
         logFilter: selectLogFilterModal(state),
@@ -2924,6 +2870,7 @@ function ModalLayer({ controller }) {
         if (![
             "themePicker",
             "modelPicker",
+            "reasoningEffortPicker",
             "sessionAgentPicker",
             "artifactPicker",
             "sessionOwnerFilter",
@@ -2945,6 +2892,7 @@ function ModalLayer({ controller }) {
         modal?.selectedIndex,
         modalState.themePicker?.selectedRowIndex,
         modalState.modelPicker?.selectedRowIndex,
+        modalState.reasoningEffortPicker?.selectedRowIndex,
         modalState.sessionAgentPicker?.selectedRowIndex,
         modalState.artifactPicker?.selectedRowIndex,
         modalState.sessionOwnerFilter?.selectedRowIndex,
@@ -2960,7 +2908,7 @@ function ModalLayer({ controller }) {
     const renderListModal = (presentation, confirmLabel = "Apply") => {
         const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
         const rowItemIndexes = Array.isArray(presentation.rowItemIndexes) ? presentation.rowItemIndexes : null;
-        const usesHangingIndent = modal.type === "modelPicker" || modal.type === "sessionAgentPicker";
+        const usesHangingIndent = modal.type === "modelPicker" || modal.type === "reasoningEffortPicker" || modal.type === "sessionAgentPicker";
         const renderedList = rowItemIndexes && rowItemIndexes.length === rows.length
             ? rows.map((row, rowIndex) => {
                 const itemIndex = rowItemIndexes[rowIndex];
@@ -3047,6 +2995,9 @@ function ModalLayer({ controller }) {
     }
     if (modal.type === "modelPicker" && modalState.modelPicker) {
         return renderListModal(modalState.modelPicker, "Create Session");
+    }
+    if (modal.type === "reasoningEffortPicker" && modalState.reasoningEffortPicker) {
+        return renderListModal(modalState.reasoningEffortPicker, "Create Session");
     }
     if (modal.type === "sessionAgentPicker" && modalState.sessionAgentPicker) {
         return renderListModal(modalState.sessionAgentPicker, "Create Session");
@@ -3566,12 +3517,132 @@ function useKeyboardShortcuts(
     }, [controller, legendOpen, mobile, onCloseLegend, onToggleLegend, onClosePromptOverlay, onOpenPromptOverlay, promptOverlayOpen]);
 }
 
+function formatAdminPrincipalLabel(principal) {
+    if (!principal) return "Unknown user";
+    const name = String(principal.displayName || "").trim();
+    const email = String(principal.email || "").trim();
+    if (name && email && name.toLowerCase() !== email.toLowerCase()) return `${name} <${email}>`;
+    if (name) return name;
+    if (email) return email;
+    const provider = String(principal.provider || "").trim();
+    const subject = String(principal.subject || "").trim();
+    return [provider, subject].filter(Boolean).join(":") || "user";
+}
+
+function AdminConsolePanel({ controller }) {
+    const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
+    const draftRef = React.useRef(null);
+
+    React.useEffect(() => {
+        if (view.ghcpKey.editing) {
+            // Defer focus to next tick so the input has mounted.
+            const handle = window.requestAnimationFrame(() => {
+                if (draftRef.current) draftRef.current.focus();
+            });
+            return () => window.cancelAnimationFrame(handle);
+        }
+        return undefined;
+    }, [view.ghcpKey.editing]);
+
+    const onClose = React.useCallback(() => {
+        controller.closeAdminConsole();
+    }, [controller]);
+    const onRefresh = React.useCallback(() => {
+        controller.refreshAdminProfile().catch(() => {});
+    }, [controller]);
+    const onBeginEdit = React.useCallback(() => {
+        controller.beginAdminEditGhcpKey();
+    }, [controller]);
+    const onCancelEdit = React.useCallback(() => {
+        controller.cancelAdminEditGhcpKey();
+    }, [controller]);
+    const onClear = React.useCallback(() => {
+        controller.clearAdminGhcpKey().catch(() => {});
+    }, [controller]);
+    const onSubmit = React.useCallback((event) => {
+        event.preventDefault();
+        controller.saveAdminGhcpKey().catch(() => {});
+    }, [controller]);
+    const onDraftChange = React.useCallback((event) => {
+        controller.setAdminGhcpKeyDraft(event.target.value);
+    }, [controller]);
+
+    const principalLabel = formatAdminPrincipalLabel(view.principal);
+
+    return React.createElement("div", { className: "ps-admin-console" },
+        React.createElement("header", { className: "ps-admin-console__header" },
+            React.createElement("h2", null, "Admin Console"),
+            React.createElement("button", {
+                type: "button",
+                className: "ps-mini-button",
+                onClick: onClose,
+            }, "Close")),
+        React.createElement("section", { className: "ps-admin-console__identity" },
+            React.createElement("dl", null,
+                React.createElement("dt", null, "Signed in as"),
+                React.createElement("dd", null, principalLabel))),
+        view.loadError
+            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, view.loadError)
+            : null,
+        React.createElement("section", { className: "ps-admin-console__section" },
+            React.createElement("h3", null, "GitHub Copilot key"),
+            React.createElement("p", { className: "ps-admin-console__hint" },
+                "Per-user override for the GitHub Copilot model provider token. ",
+                "When set, this key is used instead of the worker's env-supplied ",
+                "GITHUB_TOKEN for sessions you own. Clearing the key reverts to ",
+                "the worker default."),
+            React.createElement("p", { className: `ps-admin-console__status${view.ghcpKey.error ? " is-error" : ""}` },
+                view.ghcpKey.error || view.ghcpKey.statusText),
+            view.ghcpKey.editing
+                ? React.createElement("form", { className: "ps-admin-console__form", onSubmit },
+                    React.createElement("input", {
+                        ref: draftRef,
+                        type: "password",
+                        autoComplete: "off",
+                        spellCheck: false,
+                        value: view.ghcpKey.draft,
+                        disabled: view.ghcpKey.saving,
+                        placeholder: "Paste GitHub Copilot key",
+                        onChange: onDraftChange,
+                    }),
+                    React.createElement("div", { className: "ps-admin-console__actions" },
+                        React.createElement("button", {
+                            type: "submit",
+                            className: "ps-primary-button",
+                            disabled: view.ghcpKey.saving,
+                        }, view.ghcpKey.saving ? "Saving..." : "Save"),
+                        React.createElement("button", {
+                            type: "button",
+                            className: "ps-mini-button",
+                            onClick: onCancelEdit,
+                            disabled: view.ghcpKey.saving,
+                        }, "Cancel")))
+                : React.createElement("div", { className: "ps-admin-console__actions" },
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-primary-button",
+                        onClick: onBeginEdit,
+                    }, view.ghcpKey.configured ? "Replace key" : "Set key"),
+                    view.ghcpKey.configured
+                        ? React.createElement("button", {
+                            type: "button",
+                            className: "ps-mini-button",
+                            onClick: onClear,
+                        }, "Clear key")
+                        : null,
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button",
+                        onClick: onRefresh,
+                    }, view.loading ? "Refreshing..." : "Refresh"))));
+}
+
 export function createWebPilotSwarmController({ transport, mode = "remote", branding = null } = {}) {
-    const themeId = readStoredThemeId();
-    const sessionOwnerFilter = readStoredSessionOwnerFilter();
-    const layoutAdjustments = readStoredLayoutAdjustments();
-    const pinnedSessionIds = readStoredPinnedSessionIds();
-    const store = createStore(appReducer, createInitialState({ mode, branding, themeId, sessionOwnerFilter, layoutAdjustments, pinnedSessionIds }));
+    clearBrowserPreferenceCache();
+    const store = createStore(appReducer, createInitialState({
+        mode,
+        branding,
+    }));
     return new PilotSwarmUiController({ store, transport });
 }
 
@@ -3581,7 +3652,7 @@ export function PilotSwarmWebApp({ controller }) {
     const gridViewport = computeGridViewport(viewport);
     const [showKeyLegend, setShowKeyLegend] = React.useState(false);
     const [showPromptOverlay, setShowPromptOverlay] = React.useState(false);
-    const [chatFocusMode, setChatFocusMode] = React.useState(() => readStoredChatFocusMode());
+    const [chatFocusMode, setChatFocusMode] = React.useState(false);
     const [chatFocusPane, setChatFocusPane] = React.useState(null);
     const state = useControllerSelector(controller, (rootState) => ({
         themeId: rootState.ui.themeId,
@@ -3594,7 +3665,16 @@ export function PilotSwarmWebApp({ controller }) {
         focusRegion: rootState.ui.focusRegion,
         inspectorTab: rootState.ui.inspectorTab,
         filesFullscreen: Boolean(rootState.files.fullscreen),
+        adminVisible: Boolean(rootState.admin?.visible),
     }), shallowEqualObject);
+    const profileSettingsHydratedRef = React.useRef(false);
+    const lastProfileSettingsJsonRef = React.useRef(null);
+    const profileSettingsSaveTimerRef = React.useRef(null);
+    const profileSettingsPollTimerRef = React.useRef(null);
+    const profileSettingsPollInFlightRef = React.useRef(false);
+    const profileSettingsSaveInFlightRef = React.useRef(false);
+    const appliedProfileSettingsJsonRef = React.useRef(null);
+    const defaultProfileSettingsRef = React.useRef(null);
     const [mobilePane, setMobilePane] = React.useState("workspace");
     const [mobileSessionsCollapsed, setMobileSessionsCollapsed] = React.useState(false);
     const mobile = (viewport.width || window.innerWidth || 0) < MOBILE_BREAKPOINT;
@@ -3622,29 +3702,102 @@ export function PilotSwarmWebApp({ controller }) {
     }, [controller, gridViewport.height, gridViewport.width]);
 
     React.useEffect(() => {
+        let active = true;
+        profileSettingsHydratedRef.current = false;
+        lastProfileSettingsJsonRef.current = null;
+        appliedProfileSettingsJsonRef.current = null;
+        defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(controller.getState());
+        if (profileSettingsSaveTimerRef.current) {
+            clearTimeout(profileSettingsSaveTimerRef.current);
+            profileSettingsSaveTimerRef.current = null;
+        }
+        if (profileSettingsPollTimerRef.current) {
+            clearInterval(profileSettingsPollTimerRef.current);
+            profileSettingsPollTimerRef.current = null;
+        }
+        profileSettingsPollInFlightRef.current = false;
+        profileSettingsSaveInFlightRef.current = false;
+
+        const transport = controller.transport;
+        if (typeof transport?.getCurrentUserProfile !== "function"
+            || typeof transport?.setCurrentUserProfileSettings !== "function") {
+            profileSettingsHydratedRef.current = true;
+            return () => {
+                active = false;
+            };
+        }
+
+        const pollProfileSettings = async () => {
+            if (!active || profileSettingsPollInFlightRef.current) return;
+            profileSettingsPollInFlightRef.current = true;
+            try {
+                const profile = await transport.getCurrentUserProfile();
+                if (!active) return;
+                const settings = materializeProfileSettings(
+                    profile?.profileSettings,
+                    defaultProfileSettingsRef.current,
+                );
+                const settingsJson = JSON.stringify(settings);
+                const hasPendingLocalWrite = Boolean(profileSettingsSaveTimerRef.current) || profileSettingsSaveInFlightRef.current;
+                if (!hasPendingLocalWrite && appliedProfileSettingsJsonRef.current !== settingsJson) {
+                    controller.dispatch({ type: "profileSettings/apply", settings });
+                    appliedProfileSettingsJsonRef.current = settingsJson;
+                }
+
+                const currentSettings = profileSettingsFromViewState(controller.getState());
+                lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
+                profileSettingsHydratedRef.current = true;
+            } catch {
+                if (!active) return;
+                profileSettingsHydratedRef.current = true;
+            } finally {
+                profileSettingsPollInFlightRef.current = false;
+            }
+        };
+
+        pollProfileSettings().catch(() => {});
+        profileSettingsPollTimerRef.current = setInterval(() => {
+            pollProfileSettings().catch(() => {});
+        }, PROFILE_SETTINGS_POLL_MS);
+
+        return () => {
+            active = false;
+            if (profileSettingsSaveTimerRef.current) {
+                clearTimeout(profileSettingsSaveTimerRef.current);
+                profileSettingsSaveTimerRef.current = null;
+            }
+            if (profileSettingsPollTimerRef.current) {
+                clearInterval(profileSettingsPollTimerRef.current);
+                profileSettingsPollTimerRef.current = null;
+            }
+            profileSettingsPollInFlightRef.current = false;
+        };
+    }, [controller]);
+
+    React.useEffect(() => {
+        if (!profileSettingsHydratedRef.current) return undefined;
+        const settings = profileSettingsFromViewState(state);
+        const settingsJson = JSON.stringify(settings);
+        if (lastProfileSettingsJsonRef.current === settingsJson) return undefined;
+        lastProfileSettingsJsonRef.current = settingsJson;
+        if (profileSettingsSaveTimerRef.current) {
+            clearTimeout(profileSettingsSaveTimerRef.current);
+        }
+        profileSettingsSaveTimerRef.current = setTimeout(() => {
+            profileSettingsSaveTimerRef.current = null;
+            profileSettingsSaveInFlightRef.current = true;
+            saveProfileSettings(controller, settings)
+                .catch(() => {})
+                .finally(() => {
+                    profileSettingsSaveInFlightRef.current = false;
+                });
+        }, 400);
+        return undefined;
+    }, [controller, state.activityPaneAdjust, state.ownerFilter, state.paneAdjust, state.pinnedIds, state.sessionPaneAdjust, state.themeId]);
+
+    React.useEffect(() => {
         applyDocumentTheme(state.themeId);
-        writeStoredThemeId(state.themeId);
     }, [state.themeId]);
-
-    React.useEffect(() => {
-        writeStoredSessionOwnerFilter(state.ownerFilter);
-    }, [state.ownerFilter]);
-
-    React.useEffect(() => {
-        writeStoredChatFocusMode(chatFocusMode);
-    }, [chatFocusMode]);
-
-    React.useEffect(() => {
-        writeStoredLayoutAdjustments({
-            paneAdjust: state.paneAdjust,
-            sessionPaneAdjust: state.sessionPaneAdjust,
-            activityPaneAdjust: state.activityPaneAdjust,
-        });
-    }, [state.activityPaneAdjust, state.paneAdjust, state.sessionPaneAdjust]);
-
-    React.useEffect(() => {
-        writeStoredPinnedSessionIds(state.pinnedIds);
-    }, [state.pinnedIds]);
 
     React.useEffect(() => {
         if (mobile && state.focusRegion !== "prompt") {
@@ -3790,11 +3943,13 @@ export function PilotSwarmWebApp({ controller }) {
             chatFocusDisabled: filesFullscreenActive,
         }),
         React.createElement("div", { className: "ps-workspace" },
-            filesFullscreenActive
-                ? fullscreenWorkspace
-                : (chatFocusMode
-                    ? chatFocusWorkspace
-                    : (mobile ? mobileContent : desktopWorkspace))),
+            state.adminVisible
+                ? React.createElement(AdminConsolePanel, { controller })
+                : (filesFullscreenActive
+                    ? fullscreenWorkspace
+                    : (chatFocusMode
+                        ? chatFocusWorkspace
+                        : (mobile ? mobileContent : desktopWorkspace)))),
         // Hide the prompt composer on mobile when on the inspector or
         // activity pane. Those panes are read-only inspection surfaces;
         // the prompt is only useful in the Main pane. Hiding it gives

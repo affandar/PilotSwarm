@@ -60,6 +60,21 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "user_stats_by_model",
             sql: migration_0009_user_stats_by_model(schema),
         },
+        {
+            version: "0010",
+            name: "user_profile_and_copilot_key",
+            sql: migration_0010_user_profile_and_copilot_key(schema),
+        },
+        {
+            version: "0011",
+            name: "session_reasoning_effort",
+            sql: migration_0011_session_reasoning_effort(schema),
+        },
+        {
+            version: "0012",
+            name: "session_reasoning_effort_read_views",
+            sql: migration_0012_session_reasoning_effort_read_views(schema),
+        },
     ];
 }
 
@@ -1196,6 +1211,547 @@ BEGIN
         b.owner_display_name,
         b.owner_email,
         b.model;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0010: User Profile + GitHub Copilot Key ───────────
+
+function migration_0010_user_profile_and_copilot_key(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0010_user_profile_and_copilot_key:
+--   - profile_settings JSONB on users: per-user UI preferences blob (theme,
+--     pinned sessions, layout adjustments, etc.). Replaced wholesale by the
+--     setter so the application owns the schema of the JSON document.
+--   - github_copilot_key TEXT on users: optional per-user override for the
+--     github-copilot model provider token. When set, the worker prefers it
+--     over the env-supplied GITHUB_TOKEN for sessions owned by this user.
+
+ALTER TABLE ${s}.users ADD COLUMN IF NOT EXISTS profile_settings JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE ${s}.users ADD COLUMN IF NOT EXISTS github_copilot_key TEXT;
+
+-- ── cms_get_user_profile ─────────────────────────────────────────
+-- Public read: returns the user row plus a boolean flag indicating whether
+-- a GitHub Copilot key is set. The actual key is intentionally NOT returned
+-- here; use cms_get_user_github_copilot_key() from the worker resolver only.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_user_profile(
+    p_provider TEXT,
+    p_subject  TEXT
+) RETURNS TABLE (
+    user_id                BIGINT,
+    provider               TEXT,
+    subject                TEXT,
+    email                  TEXT,
+    display_name           TEXT,
+    profile_settings       JSONB,
+    github_copilot_key_set BOOLEAN,
+    created_at             TIMESTAMPTZ,
+    updated_at             TIMESTAMPTZ
+) AS $$
+DECLARE
+    v_provider TEXT := NULLIF(BTRIM(p_provider), '');
+    v_subject  TEXT := NULLIF(BTRIM(p_subject),  '');
+BEGIN
+    IF v_provider IS NULL OR v_subject IS NULL THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        u.user_id,
+        u.provider,
+        u.subject,
+        u.email,
+        u.display_name,
+        COALESCE(u.profile_settings, '{}'::jsonb)        AS profile_settings,
+        (u.github_copilot_key IS NOT NULL)::boolean      AS github_copilot_key_set,
+        u.created_at,
+        u.updated_at
+    FROM ${s}.users u
+    WHERE u.provider = v_provider AND u.subject = v_subject;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_user_github_copilot_key ──────────────────────────────
+-- Internal-only read: returns the raw key text for the worker's per-user
+-- token resolver. Never expose this through the public management API.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_user_github_copilot_key(
+    p_provider TEXT,
+    p_subject  TEXT
+) RETURNS TEXT AS $$
+DECLARE
+    v_provider TEXT := NULLIF(BTRIM(p_provider), '');
+    v_subject  TEXT := NULLIF(BTRIM(p_subject),  '');
+    v_key      TEXT;
+BEGIN
+    IF v_provider IS NULL OR v_subject IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT u.github_copilot_key INTO v_key
+    FROM ${s}.users u
+    WHERE u.provider = v_provider AND u.subject = v_subject;
+
+    RETURN v_key;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_set_user_profile_settings ────────────────────────────────
+-- Creates the user row if it does not yet exist (so settings can be saved
+-- before the user has any sessions), then replaces profile_settings with
+-- the supplied JSONB document. Pass '{}' to clear all settings.
+CREATE OR REPLACE FUNCTION ${s}.cms_set_user_profile_settings(
+    p_provider     TEXT,
+    p_subject      TEXT,
+    p_email        TEXT,
+    p_display_name TEXT,
+    p_settings     JSONB
+) RETURNS BIGINT AS $$
+DECLARE
+    v_user_id  BIGINT;
+    v_settings JSONB := COALESCE(p_settings, '{}'::jsonb);
+BEGIN
+    v_user_id := ${s}.cms_register_user(p_provider, p_subject, p_email, p_display_name);
+
+    UPDATE ${s}.users
+    SET profile_settings = v_settings,
+        updated_at       = now()
+    WHERE user_id = v_user_id;
+
+    RETURN v_user_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_set_user_github_copilot_key ──────────────────────────────
+-- Creates the user row if missing, then sets or clears the per-user key.
+-- A NULL or all-whitespace key clears the override and reverts the user
+-- to the worker's env-supplied default token.
+CREATE OR REPLACE FUNCTION ${s}.cms_set_user_github_copilot_key(
+    p_provider     TEXT,
+    p_subject      TEXT,
+    p_email        TEXT,
+    p_display_name TEXT,
+    p_key          TEXT
+) RETURNS BIGINT AS $$
+DECLARE
+    v_user_id BIGINT;
+    v_key     TEXT := NULLIF(BTRIM(p_key), '');
+BEGIN
+    v_user_id := ${s}.cms_register_user(p_provider, p_subject, p_email, p_display_name);
+
+    UPDATE ${s}.users
+    SET github_copilot_key = v_key,
+        updated_at         = now()
+    WHERE user_id = v_user_id;
+
+    RETURN v_user_id;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0011: Session Reasoning Effort ───────────────────
+
+function migration_0011_session_reasoning_effort(schema: string): string {
+    const s = `"${schema}"`;
+    const modelLabelExpr = `(CASE
+            WHEN NULLIF(BTRIM(m.reasoning_effort), '') IS NULL THEN m.model
+            WHEN NULLIF(BTRIM(m.model), '') IS NULL THEN '(unknown):' || BTRIM(m.reasoning_effort)
+            ELSE m.model || ':' || BTRIM(m.reasoning_effort)
+        END)`;
+    return `
+-- 0011_session_reasoning_effort:
+--   - Persist optional per-session reasoning effort alongside the canonical
+--     provider:model id.
+--   - Keep stats return shapes stable by deriving model classification labels
+--     as provider:model:reasoning_effort inside the existing model column.
+
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS reasoning_effort TEXT;
+ALTER TABLE ${s}.session_metric_summaries ADD COLUMN IF NOT EXISTS reasoning_effort TEXT;
+
+UPDATE ${s}.session_metric_summaries m
+SET reasoning_effort = sess.reasoning_effort,
+    updated_at       = now()
+FROM ${s}.sessions sess
+WHERE sess.session_id = m.session_id
+  AND m.reasoning_effort IS NULL
+  AND sess.reasoning_effort IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_sms_agent_model_reasoning
+    ON ${s}.session_metric_summaries(agent_id, model, reasoning_effort);
+
+-- ── cms_create_session ───────────────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_create_session(
+    p_session_id        TEXT,
+    p_model             TEXT,
+    p_reasoning_effort  TEXT,
+    p_parent_session_id TEXT,
+    p_is_system         BOOLEAN,
+    p_agent_id          TEXT,
+    p_splash            TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_reasoning_effort TEXT := NULLIF(BTRIM(p_reasoning_effort), '');
+BEGIN
+    INSERT INTO ${s}.sessions
+        (session_id, model, reasoning_effort, parent_session_id, is_system, agent_id, splash)
+    VALUES
+        (p_session_id, p_model, v_reasoning_effort, p_parent_session_id, p_is_system, p_agent_id, p_splash)
+    ON CONFLICT (session_id) DO UPDATE
+    SET model             = EXCLUDED.model,
+        reasoning_effort  = EXCLUDED.reasoning_effort,
+        parent_session_id = EXCLUDED.parent_session_id,
+        is_system         = EXCLUDED.is_system,
+        agent_id          = EXCLUDED.agent_id,
+        splash            = EXCLUDED.splash,
+        deleted_at        = NULL,
+        updated_at        = now(),
+        state             = 'pending',
+        orchestration_id  = NULL,
+        last_error        = NULL,
+        last_active_at    = NULL,
+        current_iteration = 0,
+        wait_reason       = NULL,
+        title_locked      = FALSE
+    WHERE ${s}.sessions.deleted_at IS NOT NULL;
+
+    INSERT INTO ${s}.session_metric_summaries
+        (session_id, agent_id, model, reasoning_effort, parent_session_id)
+    VALUES
+        (p_session_id, p_agent_id, p_model, v_reasoning_effort, p_parent_session_id)
+    ON CONFLICT (session_id) DO UPDATE
+    SET agent_id          = COALESCE(${s}.session_metric_summaries.agent_id, EXCLUDED.agent_id),
+        model             = COALESCE(${s}.session_metric_summaries.model, EXCLUDED.model),
+        reasoning_effort  = COALESCE(${s}.session_metric_summaries.reasoning_effort, EXCLUDED.reasoning_effort),
+        parent_session_id = COALESCE(${s}.session_metric_summaries.parent_session_id, EXCLUDED.parent_session_id),
+        updated_at        = now();
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_update_session ───────────────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session(
+    p_session_id TEXT,
+    p_updates    JSONB
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.sessions SET
+        orchestration_id  = CASE WHEN p_updates ? 'orchestrationId'  THEN (p_updates->>'orchestrationId')                         ELSE orchestration_id  END,
+        title             = CASE WHEN p_updates ? 'title'            THEN (p_updates->>'title')                                    ELSE title             END,
+        title_locked      = CASE WHEN p_updates ? 'titleLocked'     THEN (p_updates->>'titleLocked')::BOOLEAN                     ELSE title_locked      END,
+        state             = CASE WHEN p_updates ? 'state'           THEN (p_updates->>'state')                                     ELSE state             END,
+        model             = CASE WHEN p_updates ? 'model'           THEN (p_updates->>'model')                                     ELSE model             END,
+        reasoning_effort  = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '')          ELSE reasoning_effort  END,
+        last_active_at    = CASE WHEN p_updates ? 'lastActiveAt'    THEN (p_updates->>'lastActiveAt')::TIMESTAMPTZ                 ELSE last_active_at    END,
+        current_iteration = CASE WHEN p_updates ? 'currentIteration' THEN (p_updates->>'currentIteration')::INT                   ELSE current_iteration END,
+        last_error        = CASE WHEN p_updates ? 'lastError'       THEN (p_updates->>'lastError')                                 ELSE last_error        END,
+        wait_reason       = CASE WHEN p_updates ? 'waitReason'      THEN (p_updates->>'waitReason')                                ELSE wait_reason       END,
+        is_system         = CASE WHEN p_updates ? 'isSystem'        THEN (p_updates->>'isSystem')::BOOLEAN                         ELSE is_system         END,
+        agent_id          = CASE WHEN p_updates ? 'agentId'         THEN (p_updates->>'agentId')                                   ELSE agent_id          END,
+        splash            = CASE WHEN p_updates ? 'splash'          THEN (p_updates->>'splash')                                    ELSE splash            END,
+        updated_at        = now()
+    WHERE session_id = p_session_id;
+
+    UPDATE ${s}.session_metric_summaries
+    SET model = CASE WHEN p_updates ? 'model' THEN (p_updates->>'model') ELSE model END,
+        reasoning_effort = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '') ELSE reasoning_effort END,
+        updated_at = CASE WHEN p_updates ? 'model' OR p_updates ? 'reasoningEffort' THEN now() ELSE updated_at END
+    WHERE session_id = p_session_id
+      AND (p_updates ? 'model' OR p_updates ? 'reasoningEffort');
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_session_tree_stats_by_model ─────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_tree_stats_by_model(
+    p_session_id TEXT
+) RETURNS TABLE (
+    model                       TEXT,
+    session_count               INT,
+    total_tokens_input          BIGINT,
+    total_tokens_output         BIGINT,
+    total_tokens_cache_read     BIGINT,
+    total_tokens_cache_write    BIGINT,
+    total_snapshot_size_bytes   BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH RECURSIVE tree AS (
+        SELECT m.session_id FROM ${s}.session_metric_summaries m
+        WHERE m.session_id = p_session_id
+        UNION ALL
+        SELECT m.session_id FROM ${s}.session_metric_summaries m
+        INNER JOIN tree t ON m.parent_session_id = t.session_id
+    )
+    SELECT
+        COALESCE(${modelLabelExpr}, '(unknown)')          AS model,
+        COUNT(*)::int                                    AS session_count,
+        COALESCE(SUM(m.tokens_input), 0)::bigint        AS total_tokens_input,
+        COALESCE(SUM(m.tokens_output), 0)::bigint       AS total_tokens_output,
+        COALESCE(SUM(m.tokens_cache_read), 0)::bigint   AS total_tokens_cache_read,
+        COALESCE(SUM(m.tokens_cache_write), 0)::bigint  AS total_tokens_cache_write,
+        COALESCE(SUM(m.snapshot_size_bytes), 0)::bigint AS total_snapshot_size_bytes
+    FROM ${s}.session_metric_summaries m
+    WHERE m.session_id IN (SELECT tree.session_id FROM tree)
+    GROUP BY ${modelLabelExpr}
+    ORDER BY total_tokens_input DESC, model;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_fleet_stats_by_agent ────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_get_fleet_stats_by_agent(
+    p_include_deleted BOOLEAN,
+    p_since           TIMESTAMPTZ
+) RETURNS TABLE (
+    agent_id                    TEXT,
+    model                       TEXT,
+    session_count               INT,
+    total_snapshot_size_bytes    BIGINT,
+    total_dehydration_count     INT,
+    total_hydration_count       INT,
+    total_lossy_handoff_count   INT,
+    total_tokens_input          BIGINT,
+    total_tokens_output         BIGINT,
+    total_tokens_cache_read     BIGINT,
+    total_tokens_cache_write    BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        m.agent_id,
+        ${modelLabelExpr}                                  AS model,
+        COUNT(*)::int                                      AS session_count,
+        COALESCE(SUM(m.snapshot_size_bytes), 0)::bigint    AS total_snapshot_size_bytes,
+        COALESCE(SUM(m.dehydration_count), 0)::int         AS total_dehydration_count,
+        COALESCE(SUM(m.hydration_count), 0)::int           AS total_hydration_count,
+        COALESCE(SUM(m.lossy_handoff_count), 0)::int       AS total_lossy_handoff_count,
+        COALESCE(SUM(m.tokens_input), 0)::bigint           AS total_tokens_input,
+        COALESCE(SUM(m.tokens_output), 0)::bigint          AS total_tokens_output,
+        COALESCE(SUM(m.tokens_cache_read), 0)::bigint      AS total_tokens_cache_read,
+        COALESCE(SUM(m.tokens_cache_write), 0)::bigint     AS total_tokens_cache_write
+    FROM ${s}.session_metric_summaries m
+    WHERE (p_include_deleted OR m.deleted_at IS NULL)
+      AND (p_since IS NULL OR m.created_at >= p_since)
+    GROUP BY m.agent_id, ${modelLabelExpr};
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_user_stats_by_model ─────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_get_user_stats_by_model(
+    p_include_deleted BOOLEAN,
+    p_since           TIMESTAMPTZ
+) RETURNS TABLE (
+    owner_kind                  TEXT,
+    owner_provider              TEXT,
+    owner_subject               TEXT,
+    owner_email                 TEXT,
+    owner_display_name          TEXT,
+    model                       TEXT,
+    session_ids                 TEXT[],
+    session_count               INT,
+    total_snapshot_size_bytes    BIGINT,
+    total_dehydration_count     INT,
+    total_hydration_count       INT,
+    total_lossy_handoff_count   INT,
+    total_tokens_input          BIGINT,
+    total_tokens_output         BIGINT,
+    total_tokens_cache_read     BIGINT,
+    total_tokens_cache_write    BIGINT,
+    earliest_session_created_at TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH base AS (
+        SELECT
+            CASE
+                WHEN sess.is_system THEN 'system'
+                WHEN u.user_id IS NULL THEN 'unowned'
+                ELSE 'user'
+            END::text      AS owner_kind,
+            u.provider     AS owner_provider,
+            u.subject      AS owner_subject,
+            u.email        AS owner_email,
+            u.display_name AS owner_display_name,
+            ${modelLabelExpr} AS model,
+            m.session_id,
+            m.created_at,
+            m.snapshot_size_bytes,
+            m.dehydration_count,
+            m.hydration_count,
+            m.lossy_handoff_count,
+            m.tokens_input,
+            m.tokens_output,
+            m.tokens_cache_read,
+            m.tokens_cache_write
+        FROM ${s}.session_metric_summaries m
+        INNER JOIN ${s}.sessions sess ON sess.session_id = m.session_id
+        LEFT JOIN ${s}.session_owners so ON so.session_id = m.session_id
+        LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+        WHERE (p_include_deleted OR m.deleted_at IS NULL)
+          AND (p_since IS NULL OR m.created_at >= p_since)
+    )
+    SELECT
+        b.owner_kind                                           AS owner_kind,
+        b.owner_provider                                       AS owner_provider,
+        b.owner_subject                                        AS owner_subject,
+        b.owner_email                                          AS owner_email,
+        b.owner_display_name                                   AS owner_display_name,
+        b.model                                                AS model,
+        ARRAY_AGG(b.session_id ORDER BY b.created_at DESC)     AS session_ids,
+        COUNT(*)::int                                          AS session_count,
+        COALESCE(SUM(b.snapshot_size_bytes), 0)::bigint        AS total_snapshot_size_bytes,
+        COALESCE(SUM(b.dehydration_count), 0)::int             AS total_dehydration_count,
+        COALESCE(SUM(b.hydration_count), 0)::int               AS total_hydration_count,
+        COALESCE(SUM(b.lossy_handoff_count), 0)::int           AS total_lossy_handoff_count,
+        COALESCE(SUM(b.tokens_input), 0)::bigint               AS total_tokens_input,
+        COALESCE(SUM(b.tokens_output), 0)::bigint              AS total_tokens_output,
+        COALESCE(SUM(b.tokens_cache_read), 0)::bigint          AS total_tokens_cache_read,
+        COALESCE(SUM(b.tokens_cache_write), 0)::bigint         AS total_tokens_cache_write,
+        MIN(b.created_at)                                      AS earliest_session_created_at
+    FROM base b
+    GROUP BY
+        b.owner_kind,
+        b.owner_provider,
+        b.owner_subject,
+        b.owner_email,
+        b.owner_display_name,
+        b.model
+    ORDER BY
+        COALESCE(SUM(b.tokens_input), 0)::bigint DESC,
+        b.owner_kind,
+        b.owner_display_name,
+        b.owner_email,
+        b.model;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0012: Reasoning Effort Read Views ────────────────
+
+function migration_0012_session_reasoning_effort_read_views(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0012_session_reasoning_effort_read_views:
+--   The reasoning_effort columns were added in 0011. The owner-aware session
+--   read procedures from 0008 use explicit RETURNS TABLE shapes, so they must
+--   be drop/recreated to expose reasoning_effort to management clients.
+
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions();
+CREATE FUNCTION ${s}.cms_list_sessions()
+RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.deleted_at IS NULL
+    ORDER BY sess.updated_at DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS ${s}.cms_get_session(TEXT);
+CREATE FUNCTION ${s}.cms_get_session(
+    p_session_id TEXT
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.session_id = p_session_id AND sess.deleted_at IS NULL;
 END;
 $$ LANGUAGE plpgsql;
 `;

@@ -139,6 +139,7 @@ export class PilotSwarmClient {
         if (config) {
             const fullConfig: ManagedSessionConfig = {
                 model: config.model,
+                reasoningEffort: config.reasoningEffort,
                 systemMessage: config.systemMessage,
                 boundAgentName: config.boundAgentName,
                 promptLayering: config.promptLayering,
@@ -154,6 +155,7 @@ export class PilotSwarmClient {
         // CMS: write session record (state=pending, no orchestration yet)
         await this._catalog.createSession(sessionId, {
             model: config?.model,
+            reasoningEffort: config?.reasoningEffort,
             parentSessionId: config?.parentSessionId,
             owner: config?.owner ?? null,
         });
@@ -185,6 +187,7 @@ export class PilotSwarmClient {
      */
     async createSessionForAgent(agentName: string, opts?: {
         model?: string;
+        reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
         onUserInputRequest?: UserInputHandler;
         toolNames?: string[];
         title?: string;
@@ -202,6 +205,7 @@ export class PilotSwarmClient {
 
         const session = await this.createSession({
             model: opts?.model,
+            reasoningEffort: opts?.reasoningEffort,
             toolNames: opts?.toolNames,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
@@ -235,6 +239,7 @@ export class PilotSwarmClient {
      */
     async createSystemSession(config: {
         model?: string;
+        reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
         systemMessage?: string;
         toolNames?: string[];
         title?: string;
@@ -257,6 +262,7 @@ export class PilotSwarmClient {
         this.systemSessions.add(sessionId);
         const fullConfig: ManagedSessionConfig = {
             model: config.model,
+            reasoningEffort: config.reasoningEffort,
             systemMessage: config.systemMessage,
             toolNames: config.toolNames,
         };
@@ -265,6 +271,7 @@ export class PilotSwarmClient {
         // CMS: create with is_system = true
         await this._catalog.createSession(sessionId, {
             model: config.model,
+            reasoningEffort: config.reasoningEffort,
             isSystem: true,
         });
 

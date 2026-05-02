@@ -3,7 +3,12 @@ import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
 import { selectSessionRows } from "./selectors.js";
-import { normalizeArtifactEntries, normalizeSessionOwnerFilter } from "./state.js";
+import {
+    normalizeArtifactEntries,
+    normalizeSessionOwnerFilter,
+    normalizeStoredLayoutAdjustments,
+    normalizeStoredPinnedSessionIds,
+} from "./state.js";
 
 function cloneHistoryMap(historyMap) {
     return new Map(historyMap);
@@ -287,6 +292,52 @@ export function appReducer(state, action) {
                     themeId: action.themeId || state.ui.themeId,
                 },
             };
+
+        case "profileSettings/apply": {
+            const settings = action.settings && typeof action.settings === "object" && !Array.isArray(action.settings)
+                ? action.settings
+                : {};
+            const hasTheme = Object.prototype.hasOwnProperty.call(settings, "themeId")
+                && typeof settings.themeId === "string"
+                && settings.themeId.trim();
+            const hasOwnerFilter = Object.prototype.hasOwnProperty.call(settings, "sessionOwnerFilter");
+            const hasLayout = Object.prototype.hasOwnProperty.call(settings, "layoutAdjustments");
+            const hasPins = Object.prototype.hasOwnProperty.call(settings, "pinnedSessionIds");
+            const nextLayout = hasLayout
+                ? {
+                    ...(state.ui.layout || {}),
+                    ...normalizeStoredLayoutAdjustments(settings.layoutAdjustments),
+                }
+                : state.ui.layout;
+            const nextPinnedIds = hasPins
+                ? normalizeStoredPinnedSessionIds(settings.pinnedSessionIds)
+                : state.sessions.pinnedIds;
+            const nextSessions = {
+                ...state.sessions,
+                ...(hasOwnerFilter
+                    ? {
+                        ownerFilter: normalizeSessionOwnerFilter(settings.sessionOwnerFilter),
+                        ownerFilterExplicit: true,
+                    }
+                    : {}),
+                pinnedIds: nextPinnedIds,
+                flat: hasPins
+                    ? buildSessionTree(Object.values(state.sessions.byId), state.sessions.collapsedIds, state.sessions.orderById, nextPinnedIds)
+                    : state.sessions.flat,
+            };
+            const selection = hasOwnerFilter || hasPins
+                ? applyVisibleSessionSelection(state, nextSessions)
+                : { sessions: nextSessions, ui: state.ui };
+            return {
+                ...state,
+                sessions: selection.sessions,
+                ui: {
+                    ...selection.ui,
+                    themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
+                    layout: nextLayout,
+                },
+            };
+        }
 
         case "ui/modal":
             return {
@@ -1043,6 +1094,157 @@ export function appReducer(state, action) {
                     skillUsage: action.skillUsage || null,
                     sharedFactsStats: action.sharedFactsStats || null,
                     fetchedAt: Date.now(),
+                },
+            };
+        }
+
+        case "admin/visibility": {
+            const visible = Boolean(action.visible);
+            if (state.admin.visible === visible) return state;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    visible,
+                    // Closing the console resets any in-progress edit so the
+                    // next open starts on the read-only view, not on a stale
+                    // draft.
+                    ghcpKey: visible
+                        ? state.admin.ghcpKey
+                        : { editing: false, draft: "", saving: false, error: null, lastSavedAt: state.admin.ghcpKey.lastSavedAt },
+                },
+            };
+        }
+        case "admin/profile/loading": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    loading: true,
+                    loadError: null,
+                },
+            };
+        }
+        case "admin/profile/loaded": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    loading: false,
+                    loadError: null,
+                    profile: action.profile || null,
+                    ghcpKey: {
+                        ...state.admin.ghcpKey,
+                        // A successful load doesn't clobber an in-progress
+                        // edit; the user may be in the middle of typing.
+                        error: state.admin.ghcpKey.editing ? state.admin.ghcpKey.error : null,
+                    },
+                },
+            };
+        }
+        case "admin/profile/loadFailed": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    loading: false,
+                    loadError: action.error ? String(action.error) : "Failed to load profile",
+                },
+            };
+        }
+        case "admin/ghcpKey/beginEdit": {
+            const draft = typeof action.draft === "string" ? action.draft : "";
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    ghcpKey: {
+                        editing: true,
+                        draft,
+                        cursorIndex: draft.length,
+                        saving: false,
+                        error: null,
+                        lastSavedAt: state.admin.ghcpKey.lastSavedAt,
+                    },
+                },
+            };
+        }
+        case "admin/ghcpKey/setDraft": {
+            if (!state.admin.ghcpKey.editing) return state;
+            const draft = typeof action.draft === "string" ? action.draft : "";
+            const cursorRaw = Number.isFinite(action.cursorIndex) ? Number(action.cursorIndex) : draft.length;
+            const cursorIndex = Math.max(0, Math.min(cursorRaw, draft.length));
+            if (draft === state.admin.ghcpKey.draft && cursorIndex === state.admin.ghcpKey.cursorIndex) return state;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    ghcpKey: {
+                        ...state.admin.ghcpKey,
+                        draft,
+                        cursorIndex,
+                        error: null,
+                    },
+                },
+            };
+        }
+        case "admin/ghcpKey/cancelEdit": {
+            if (!state.admin.ghcpKey.editing && !state.admin.ghcpKey.draft) return state;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    ghcpKey: {
+                        editing: false,
+                        draft: "",
+                        cursorIndex: 0,
+                        saving: false,
+                        error: null,
+                        lastSavedAt: state.admin.ghcpKey.lastSavedAt,
+                    },
+                },
+            };
+        }
+        case "admin/ghcpKey/saving": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    ghcpKey: {
+                        ...state.admin.ghcpKey,
+                        saving: true,
+                        error: null,
+                    },
+                },
+            };
+        }
+        case "admin/ghcpKey/saveFailed": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    ghcpKey: {
+                        ...state.admin.ghcpKey,
+                        saving: false,
+                        error: action.error ? String(action.error) : "Failed to save key",
+                    },
+                },
+            };
+        }
+        case "admin/ghcpKey/saved": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    profile: action.profile || state.admin.profile,
+                    ghcpKey: {
+                        editing: false,
+                        draft: "",
+                        cursorIndex: 0,
+                        saving: false,
+                        error: null,
+                        lastSavedAt: Date.now(),
+                    },
                 },
             };
         }

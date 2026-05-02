@@ -123,6 +123,54 @@ describe("inline control tool execution", () => {
         expect(result.content).toBe("Spawned titled child.");
     });
 
+    it("advertises model reasoning options through list_available_models", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.assistantContent = "checked models";
+
+        const managed = new ManagedSession("inline-list-models", fakeSession, {});
+        await managed.runTurn("list models", {
+            modelSummary: "Available models\n- github-copilot:gpt-5.5 [reasoning: medium, xhigh; default: medium]",
+        });
+
+        const listTool = fakeSession.registeredTools.find((tool) => tool.name === "list_available_models");
+        expect(listTool?.description).toContain("supported reasoning efforts");
+        const result = await listTool.handler({});
+        expect(result).toContain("github-copilot:gpt-5.5");
+        expect(result).toContain("reasoning: medium, xhigh; default: medium");
+    });
+
+    it("advertises and forwards an optional spawn_agent reasoning_effort", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [
+            { name: "spawn_agent", args: { task: "reason deeply", model: "github-copilot:gpt-5.5", reasoning_effort: "xhigh" } },
+        ];
+        fakeSession.assistantContent = "Spawned reasoning child.";
+
+        const controlToolBridge = {
+            spawnAgent: vi.fn(async () => "[SYSTEM: spawned]"),
+            messageAgent: vi.fn(),
+            checkAgents: vi.fn(),
+            resolveWaitForAgents: vi.fn(),
+            listSessions: vi.fn(),
+            completeAgent: vi.fn(),
+            cancelAgent: vi.fn(),
+            deleteAgent: vi.fn(),
+        };
+
+        const managed = new ManagedSession("inline-spawn-reasoning", fakeSession, {});
+        const result = await managed.runTurn("spawn a high reasoning child", { controlToolBridge });
+
+        const spawnTool = fakeSession.registeredTools.find((tool) => tool.name === "spawn_agent");
+        expect(spawnTool?.parameters?.properties?.reasoning_effort?.enum).toEqual(["low", "medium", "high", "xhigh"]);
+        expect(controlToolBridge.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({
+            task: "reason deeply",
+            model: "github-copilot:gpt-5.5",
+            reasoning_effort: "xhigh",
+        }));
+        expect(result.type).toBe("completed");
+        expect(result.content).toBe("Spawned reasoning child.");
+    });
+
     it("still suspends the turn for wait_for_agents", async () => {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedToolCalls = [

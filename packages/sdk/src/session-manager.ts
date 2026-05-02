@@ -117,8 +117,42 @@ export interface WorkerDefaults {
  * @internal
  */
 export class SessionManager {
-    private client: CopilotClient | null = null;
+    private clients = new Map<string, CopilotClient>();
+    /**
+     * Backward-compat accessor for the default-token CopilotClient.
+     *
+     * The internal multi-client pool is keyed by GitHub Copilot token (so
+     * per-user keys can override `GITHUB_TOKEN` for a specific session).
+     * Tests that predate the pool — and a couple of internal call sites
+     * that assume a single shared client — still read or assign
+     * `manager.client = fakeClient` to inject a stub. Honor that by
+     * populating both the empty-key slot AND the worker-default token
+     * slot so `ensureClient()` returns the fake whether or not the
+     * default `GITHUB_TOKEN` was set on the constructor.
+     */
+    get client(): CopilotClient | undefined {
+        return this.clients.get("") ?? this.clients.get(this.githubToken || "");
+    }
+    set client(value: CopilotClient | undefined) {
+        if (value) {
+            this.clients.set("", value);
+            if (this.githubToken) this.clients.set(this.githubToken, value);
+        } else {
+            this.clients.delete("");
+            if (this.githubToken) this.clients.delete(this.githubToken);
+        }
+    }
     private sessions = new Map<string, ManagedSession>();
+    /**
+     * Records which CopilotClient each warm session is bound to (keyed by
+     * the GitHub Copilot token). When the resolved token for a session
+     * changes (for example the owner edited their per-user key in the
+     * Admin Console), the warm session is destroyed at the start of the
+     * next `getOrCreate` call so the next resume binds to the right
+     * client. Sessions never appear in this map until they are actually
+     * created/resumed in `_getOrCreateUnlocked`.
+     */
+    private sessionClientKeys = new Map<string, string>();
     private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
@@ -239,38 +273,114 @@ export class SessionManager {
     }
 
     /** Ensure the CopilotClient is started. */
-    private async ensureClient(): Promise<CopilotClient> {
-        if (!this.client) {
-            // Resolve githubToken: explicit > registry (github provider) > none.
-            // The token is optional — BYOK providers work without it.
-            let token = this.githubToken;
-            if (!token && this.workerDefaults.modelProviders) {
-                for (const p of this.workerDefaults.modelProviders.allProviders) {
-                    if (p.type === "github" && p.models.length > 0) {
-                        const firstModel = typeof p.models[0] === "string" ? p.models[0] : p.models[0].name;
-                        const resolved = this.workerDefaults.modelProviders.resolve(`${p.id}:${firstModel}`);
-                        token = resolved?.githubToken;
-                        break;
-                    }
+    private async ensureClient(tokenOverride?: string): Promise<CopilotClient> {
+        // Resolve the effective token: explicit override > worker default >
+        // first registry github provider's resolved token. The override is
+        // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
+        // get plumbed through to a dedicated CopilotClient.
+        let token = tokenOverride;
+        if (!token) token = this.githubToken;
+        if (!token && this.workerDefaults.modelProviders) {
+            for (const p of this.workerDefaults.modelProviders.allProviders) {
+                if (p.type === "github" && p.models.length > 0) {
+                    const firstModel = typeof p.models[0] === "string" ? p.models[0] : p.models[0].name;
+                    const resolved = this.workerDefaults.modelProviders.resolve(`${p.id}:${firstModel}`);
+                    token = resolved?.githubToken;
+                    break;
                 }
             }
-            this.client = new CopilotClient({
-                ...(token ? { gitHubToken: token } : {}),
-                logLevel: "error",
-                // The Copilot CLI honors COPILOT_HOME (and only COPILOT_HOME) to decide
-                // where to write per-session state. Passing `configDir` on SessionConfig
-                // is inert for state placement (verified empirically against
-                // @github/copilot 1.0.36). We export COPILOT_HOME here so the CLI's
-                // ~/.copilot resolves to <sessionStateDir>/.., which keeps test isolation
-                // honest and lets production deployments place session state on the
-                // mounted emptyDir volume rather than the container's user home.
-                env: {
-                    ...process.env,
-                    COPILOT_HOME: path.dirname(this.sessionStateDir),
-                },
-            });
         }
-        return this.client;
+
+        const clientKey = token || "";
+        const existing = this.clients.get(clientKey);
+        if (existing) return existing;
+
+        const created = new CopilotClient({
+            ...(token ? { gitHubToken: token } : {}),
+            logLevel: "error",
+            // The Copilot CLI honors COPILOT_HOME (and only COPILOT_HOME) to decide
+            // where to write per-session state. Passing `configDir` on SessionConfig
+            // is inert for state placement (verified empirically against
+            // @github/copilot 1.0.36). We export COPILOT_HOME here so the CLI's
+            // ~/.copilot resolves to <sessionStateDir>/.., which keeps test isolation
+            // honest and lets production deployments place session state on the
+            // mounted emptyDir volume rather than the container's user home.
+            //
+            // All per-token CopilotClients share the same COPILOT_HOME; this is
+            // safe because each session id is owned by a single client at any
+            // moment (sessionClientKeys maps session_id -> token), and the
+            // SessionManager destroys the warm handle on a token-change before
+            // the new client touches the same session id.
+            env: {
+                ...process.env,
+                COPILOT_HOME: path.dirname(this.sessionStateDir),
+            },
+        });
+        this.clients.set(clientKey, created);
+        return created;
+    }
+
+    /**
+     * Return the GitHub Copilot token that should back the CopilotClient
+     * used to resume/create the given session id. Resolution order:
+     *
+     *   1. Per-user override on the session's owner row in CMS
+     *      (`users.github_copilot_key`). Only applied when the session's
+     *      effective model resolves to a `type=github` provider — for
+     *      BYOK Anthropic/OpenAI sessions the SDK never reads the token
+     *      so there is no point spinning up a per-user CLI process.
+     *   2. Worker-default resolution (constructor token > registry).
+     *
+     * Returns `undefined` to mean "use the worker default", which is the
+     * shape `ensureClient` already understands.
+     */
+    private async _resolveSessionGitHubToken(
+        sessionId: string,
+        config: ManagedSessionConfig,
+        effectiveModel: string,
+    ): Promise<string | undefined> {
+        if (!this.sessionCatalog) return undefined;
+
+        const registry = this.workerDefaults.modelProviders;
+        if (!registry || !effectiveModel) return undefined;
+        const resolved = registry.resolve(effectiveModel);
+        if (!resolved || resolved.type !== "github") return undefined;
+
+        let row: any = null;
+        try {
+            row = await this.sessionCatalog.getSession(sessionId);
+        } catch {
+            return undefined;
+        }
+        const owner = row?.owner;
+        if (!owner?.provider || !owner?.subject) return undefined;
+
+        try {
+            const userKey = await this.sessionCatalog.getUserGitHubCopilotKey({
+                provider: owner.provider,
+                subject: owner.subject,
+                email: owner.email ?? null,
+                displayName: owner.displayName ?? null,
+            });
+            return userKey ?? undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
+     * Pick the CopilotClient that was used to create/resume the given
+     * session. Used by destroy / reset paths that operate on a known
+     * session id outside the main getOrCreate flow.
+     */
+    private async _ensureClientForSession(sessionId: string): Promise<CopilotClient> {
+        const cachedKey = this.sessionClientKeys.get(sessionId);
+        if (cachedKey != null) {
+            const cached = this.clients.get(cachedKey);
+            if (cached) return cached;
+            return this.ensureClient(cachedKey || undefined);
+        }
+        return this.ensureClient();
     }
 
     private _missingSessionStateError(sessionId: string, turnIndex: number, detail?: string): Error {
@@ -291,9 +401,14 @@ export class SessionManager {
         }
 
         try {
-            const client = await this.ensureClient();
+            const client = await this._ensureClientForSession(sessionId);
             await client.deleteSession(sessionId);
         } catch {}
+
+        // After we drop the session state we no longer remember which
+        // CopilotClient (= which token) it was bound to; the next
+        // getOrCreate will re-resolve.
+        this.sessionClientKeys.delete(sessionId);
 
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (fs.existsSync(sessionDir)) {
@@ -421,7 +536,51 @@ export class SessionManager {
         };
         this.sessionConfigs.set(sessionId, config);
 
-        const client = await this.ensureClient();
+        // Resolve model up-front so we can pick the right CopilotClient
+        // (per-user GitHub Copilot token) before any session create/resume.
+        const registry = this.workerDefaults.modelProviders;
+        const effectiveModel = this.normalizeModelRef(config.model) || "";
+        const resolvedProvider = registry?.resolve(effectiveModel);
+        const resolvedProviderConfig = this._resolveProviderConfig(effectiveModel);
+        let sdkModelName = effectiveModel;
+        if (registry && effectiveModel) {
+            const desc = registry.getDescriptor(effectiveModel);
+            if (desc) sdkModelName = desc.modelName;
+        }
+
+        // Resolve the per-user GitHub Copilot token only when a catalog
+        // is wired in. Skipping the await on the no-catalog path matters
+        // for the SessionManager unit tests that exercise lock ordering
+        // by counting microtasks before the first `resumeSession()` call.
+        const userGithubToken = this.sessionCatalog
+            ? await this._resolveSessionGitHubToken(sessionId, config, effectiveModel)
+            : undefined;
+        if (resolvedProvider?.type === "github" && !userGithubToken && !this.githubToken && !resolvedProvider.githubToken) {
+            throw new Error(
+                "GitHub Copilot key not configured. Set GITHUB_TOKEN on the worker or set your per-user GitHub Copilot key in Admin before creating GitHub Copilot model sessions.",
+            );
+        }
+        const desiredClientKey = userGithubToken || "";
+        const previousClientKey = this.sessionClientKeys.get(sessionId);
+        if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
+            // Owner changed their per-user GitHub Copilot key (or it was
+            // cleared) since we last warmed this session. Tear down the
+            // warm handle so the resume path below binds to the right
+            // CopilotClient. The session state on disk is reusable — we
+            // only drop the in-memory CopilotSession.
+            const existingWarm = this.sessions.get(sessionId);
+            if (existingWarm) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    `github copilot token changed; recycling warm session onto new client`,
+                    { trace },
+                );
+                try { await existingWarm.destroy(); } catch {}
+                this.sessions.delete(sessionId);
+            }
+        }
+        const client = await this.ensureClient(userGithubToken);
+        this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
         // Merge user tools with system tool definitions (wait, ask_user, sub-agent tools)
@@ -478,22 +637,11 @@ export class SessionManager {
         // Build system message: worker base + client override
         const systemMessage = this._buildSystemMessage(sessionId, config);
 
-        // Resolve model: config.model may be qualified (provider:model) or bare.
-        // The SDK needs the bare model name; the provider config is separate.
-        // Fall back to registry default if no model specified.
-        const registry = this.workerDefaults.modelProviders;
-        const effectiveModel = this.normalizeModelRef(config.model) || "";
-        const resolvedProviderConfig = this._resolveProviderConfig(effectiveModel);
-        let sdkModelName = effectiveModel;
-        if (registry && effectiveModel) {
-            const desc = registry.getDescriptor(effectiveModel);
-            if (desc) sdkModelName = desc.modelName;
-        }
-
         const sessionConfig: any = {
             sessionId,
             tools: allTools,
             model: sdkModelName,
+            ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
             systemMessage: systemMessage
                 ? (typeof systemMessage === "string" ? { content: systemMessage } : systemMessage)
                 : undefined,
@@ -723,7 +871,7 @@ export class SessionManager {
                     // Re-create the session from local files so we can try destroy again.
                     if (fs.existsSync(sessionDir)) {
                         try {
-                            const client = await this.ensureClient();
+                            const client = await this._ensureClientForSession(sessionId);
                             const config = this.sessionConfigs.get(sessionId) ?? {};
                             const copilotSession = await client.resumeSession(sessionId, {
                                 tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
@@ -965,10 +1113,11 @@ export class SessionManager {
             try { await session.destroy(); } catch {}
         }
         this.sessions.clear();
-        if (this.client) {
-            await this.client.stop();
-            this.client = null;
+        this.sessionClientKeys.clear();
+        for (const [, client] of this.clients) {
+            try { await client.stop(); } catch {}
         }
+        this.clients.clear();
     }
 
     /**

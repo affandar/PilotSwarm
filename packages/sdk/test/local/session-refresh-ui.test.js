@@ -1,4 +1,5 @@
 import { describe, it } from "vitest";
+import { NodeSdkTransport } from "../../../cli/src/node-sdk-transport.js";
 import { FOCUS_REGIONS, UI_COMMANDS } from "../../../ui-core/src/commands.js";
 import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
 import { buildHistoryModel } from "../../../ui-core/src/history.js";
@@ -9,13 +10,15 @@ import {
     selectChatPaneChrome,
     selectOutboxOverlayLines,
     selectInspector,
+    selectModelPickerModal,
+    selectReasoningEffortPickerModal,
     selectSessionOwnerFilterModal,
     selectSessionRows,
     selectVisibleSessionRows,
 } from "../../../ui-core/src/selectors.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
 import { createStore } from "../../../ui-core/src/store.js";
-import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
+import { assert, assertEqual, assertIncludes, assertThrows } from "../helpers/assertions.js";
 
 function createController(transportOverrides = {}, { branding = null, sessionOwnerFilter = null } = {}) {
     const transport = {
@@ -291,6 +294,76 @@ describe("session refresh UI recovery", () => {
         assert(!rowText.includes("M61 Conductor · R2D Train Watcher"), "session row should not treat normal colon text as an agent prefix");
         assertIncludes(chromeTitle, "R2D Train Watcher: M61 Conductor", "chat header should keep a normal colon title intact");
         assert(!chromeTitle.includes("M61 Conductor · R2D Train Watcher"), "chat header should not reorder normal colon text");
+    });
+
+    it("shows reasoning effort next to the model in the chat header", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "reason-title-session",
+                title: "Reasoning Session",
+                status: "running",
+                model: "github-copilot:gpt-5.5",
+                reasoningEffort: "xhigh",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "reason-title-session" });
+
+        const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
+        assertIncludes(chromeTitle, "gpt-5.5:xhigh", "chat header should append reasoning effort to the model label");
+    });
+
+    it("shows reasoning effort next to the model in session stats", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "reason-stats-session",
+                title: "Reasoning Stats Session",
+                status: "idle",
+                model: "github-copilot:gpt-5.5",
+                reasoningEffort: "xhigh",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "reason-stats-session" });
+        store.dispatch({
+            type: "sessionStats/loaded",
+            sessionId: "reason-stats-session",
+            summary: {
+                sessionId: "reason-stats-session",
+                agentId: null,
+                model: "github-copilot:gpt-5.5",
+                parentSessionId: null,
+                snapshotSizeBytes: 0,
+                dehydrationCount: 0,
+                hydrationCount: 0,
+                lossyHandoffCount: 0,
+                tokensInput: 1,
+                tokensOutput: 1,
+                tokensCacheRead: 0,
+                tokensCacheWrite: 0,
+                cacheHitRatio: 0,
+                createdAt: 1,
+                updatedAt: 2,
+            },
+        });
+        store.dispatch({ type: "ui/inspectorTab", inspectorTab: "stats" });
+
+        const statsText = selectInspector(store.getState(), { width: 80 }).lines
+            .map((line) => {
+                if (typeof line === "string") return line;
+                const runs = Array.isArray(line) ? line : line.runs || [];
+                return runs.map((run) => run.text).join("");
+            })
+            .join("\n");
+        assertIncludes(statsText, "gpt-5.5:xhigh", "session stats should append reasoning effort to the model label");
     });
 
     it("merges multiple concurrent sends into a single durable enqueue", async () => {
@@ -780,6 +853,406 @@ describe("session refresh UI recovery", () => {
         } finally {
             await controller.stop();
         }
+    });
+
+    it("renders unowned spawned children under a visible parent when their direct owner would be filtered out", async () => {
+        // Repro: a system parent (e.g. Facts Manager) spawns a non-system
+        // child whose CMS owner is NULL. The owner filter has
+        // includeUnowned=false so the child would be hidden directly, but
+        // its parent passes includeSystem=true. The child must still
+        // render (otherwise the tree silently drops it and the parent
+        // shows a [+1] hidden-descendant badge instead — which was the
+        // reported bug).
+        const owner = {
+            provider: "test",
+            subject: "me",
+            email: "me@example.com",
+            displayName: "Me User",
+        };
+        const { controller, store } = createController({
+            getAuthContext: () => ({
+                principal: owner,
+                authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] },
+            }),
+            listSessions: async () => [
+                {
+                    sessionId: "facts-manager",
+                    title: "Facts Manager",
+                    isSystem: true,
+                    status: "idle",
+                    createdAt: 1,
+                    updatedAt: 2,
+                },
+                {
+                    sessionId: "spawned-sherlock",
+                    title: "HDB Engineer",
+                    parentSessionId: "facts-manager",
+                    status: "running",
+                    createdAt: 3,
+                    updatedAt: 4,
+                },
+            ],
+        });
+
+        try {
+            await controller.start();
+            // Newly-discovered parents are auto-collapsed on first refresh,
+            // which would hide the child from the flat list before the
+            // owner filter even runs. Expand it to mirror the user's view.
+            store.dispatch({ type: "sessions/expand", sessionId: "facts-manager" });
+            const rows = selectSessionRows(store.getState()).map((row) => row.sessionId);
+            assert(rows.includes("facts-manager"), "system parent should be visible");
+            assert(rows.includes("spawned-sherlock"), "unowned child of a visible system parent should also be visible");
+        } finally {
+            await controller.stop();
+        }
+    });
+
+    it("applies user profile settings to theme pins filters and layout", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "profile-pin-session",
+                title: "Pinned From Profile",
+                status: "idle",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({
+            type: "profileSettings/apply",
+            settings: {
+                themeId: "dracula",
+                sessionOwnerFilter: {
+                    all: false,
+                    includeSystem: true,
+                    includeUnowned: true,
+                    includeMe: false,
+                    ownerKeys: ["test:owner"],
+                },
+                layoutAdjustments: {
+                    paneAdjust: 3,
+                    sessionPaneAdjust: -2,
+                    activityPaneAdjust: 4,
+                },
+                pinnedSessionIds: ["profile-pin-session"],
+            },
+        });
+
+        const state = store.getState();
+        assertEqual(state.ui.themeId, "dracula", "profile settings should hydrate the theme");
+        assertEqual(state.ui.layout.paneAdjust, 3, "profile settings should hydrate the pane split");
+        assertEqual(state.ui.layout.sessionPaneAdjust, -2, "profile settings should hydrate the session/chat split");
+        assertEqual(state.ui.layout.activityPaneAdjust, 4, "profile settings should hydrate the activity split");
+        assertEqual(state.sessions.ownerFilter.includeUnowned, true, "profile settings should hydrate the session owner filter");
+        assertEqual(state.sessions.pinnedIds.includes("profile-pin-session"), true, "profile settings should hydrate pinned session ids");
+        const rows = selectSessionRows(state);
+        assertIncludes(rows[0]?.text || "", "Pinned From Profile", "pinned session should remain visible after hydration");
+    });
+
+    it("opens the model picker even when the current user has no per-user GitHub Copilot key", async () => {
+        const owner = {
+            provider: "test",
+            subject: "me",
+            email: "me@example.com",
+            displayName: "Me User",
+        };
+        const { controller, store } = createController({
+            getAuthContext: () => ({
+                principal: owner,
+                authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] },
+            }),
+            listModels: async () => [
+                { qualifiedName: "github-copilot:gpt-5.5", providerId: "github-copilot", providerType: "github", modelName: "gpt-5.5" },
+                { qualifiedName: "azure-openai:gpt-5.4-mini", providerId: "azure-openai", providerType: "openai", modelName: "gpt-5.4-mini" },
+            ],
+            getModelsByProvider: () => [
+                {
+                    providerId: "github-copilot",
+                    type: "github",
+                    models: [{ qualifiedName: "github-copilot:gpt-5.5", providerId: "github-copilot", providerType: "github", modelName: "gpt-5.5" }],
+                },
+                {
+                    providerId: "azure-openai",
+                    type: "openai",
+                    models: [{ qualifiedName: "azure-openai:gpt-5.4-mini", providerId: "azure-openai", providerType: "openai", modelName: "gpt-5.4-mini" }],
+                },
+            ],
+            getCurrentUserProfile: async () => ({
+                provider: owner.provider,
+                subject: owner.subject,
+                email: owner.email,
+                displayName: owner.displayName,
+                profileSettings: {},
+                githubCopilotKeySet: false,
+            }),
+        });
+
+        try {
+            await controller.start();
+            await controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER);
+            assertEqual(store.getState().admin.visible, false, "Model picker should not redirect to Admin just because the per-user key is unset");
+            assertEqual(store.getState().ui.modal?.type, "modelPicker", "Model picker should still open");
+            const modelIds = store.getState().ui.modal.items.map((item) => item.qualifiedName).join("\n");
+            assertIncludes(modelIds, "github-copilot:gpt-5.5", "GitHub models should still be visible");
+            assertIncludes(modelIds, "azure-openai:gpt-5.4-mini", "Non-GitHub models should still be visible");
+        } finally {
+            await controller.stop();
+        }
+    });
+
+    it("lets the user choose reasoning effort after model selection", async () => {
+        let created = false;
+        let createOptions = null;
+        const { controller, store } = createController({
+            listSessions: async () => created
+                ? [{ sessionId: "reasoning-session", status: "idle", createdAt: 1, updatedAt: 2 }]
+                : [],
+            listModels: async () => [
+                {
+                    qualifiedName: "github-copilot:gpt-5.5",
+                    providerId: "github-copilot",
+                    providerType: "github",
+                    modelName: "gpt-5.5",
+                    supportedReasoningEfforts: ["medium", "xhigh"],
+                    defaultReasoningEffort: "medium",
+                },
+            ],
+            getModelsByProvider: () => [
+                {
+                    providerId: "github-copilot",
+                    type: "github",
+                    models: [
+                        {
+                            qualifiedName: "github-copilot:gpt-5.5",
+                            providerId: "github-copilot",
+                            providerType: "github",
+                            modelName: "gpt-5.5",
+                            supportedReasoningEfforts: ["medium", "xhigh"],
+                            defaultReasoningEffort: "medium",
+                        },
+                    ],
+                },
+            ],
+            createSession: async (options) => {
+                createOptions = options;
+                created = true;
+                return { sessionId: "reasoning-session" };
+            },
+            getSession: async () => ({ sessionId: "reasoning-session", status: "idle", createdAt: 1, updatedAt: 2 }),
+        });
+
+        try {
+            await controller.start();
+            await controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER);
+            const modelPicker = selectModelPickerModal(store.getState());
+            assertIncludes(
+                JSON.stringify(modelPicker.detailsLines),
+                "Default reasoning: medium",
+                "model details should show the configured default reasoning effort",
+            );
+
+            await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+            assertEqual(store.getState().ui.modal?.type, "reasoningEffortPicker", "model selection should open reasoning picker");
+            const reasoningPicker = selectReasoningEffortPickerModal(store.getState());
+            assertIncludes(JSON.stringify(reasoningPicker.rows), "xhigh", "reasoning picker should expose xhigh");
+
+            store.dispatch({ type: "ui/modalSelection", index: 1 });
+            await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+
+            assertEqual(createOptions?.model, "github-copilot:gpt-5.5", "created session should use selected model");
+            assertEqual(createOptions?.reasoningEffort, "xhigh", "created session should use selected reasoning effort");
+            assertEqual(store.getState().sessions.activeSessionId, "reasoning-session");
+        } finally {
+            await controller.stop();
+        }
+    });
+
+    it("uses the model default reasoning effort when accepted", async () => {
+        let created = false;
+        let createOptions = null;
+        const { controller, store } = createController({
+            listSessions: async () => created
+                ? [{ sessionId: "default-reasoning-session", status: "idle", createdAt: 1, updatedAt: 2 }]
+                : [],
+            listModels: async () => [
+                {
+                    qualifiedName: "github-copilot:gpt-5.5",
+                    providerId: "github-copilot",
+                    providerType: "github",
+                    modelName: "gpt-5.5",
+                    supportedReasoningEfforts: ["medium", "xhigh"],
+                    defaultReasoningEffort: "medium",
+                },
+            ],
+            getModelsByProvider: () => [
+                {
+                    providerId: "github-copilot",
+                    type: "github",
+                    models: [
+                        {
+                            qualifiedName: "github-copilot:gpt-5.5",
+                            providerId: "github-copilot",
+                            providerType: "github",
+                            modelName: "gpt-5.5",
+                            supportedReasoningEfforts: ["medium", "xhigh"],
+                            defaultReasoningEffort: "medium",
+                        },
+                    ],
+                },
+            ],
+            createSession: async (options) => {
+                createOptions = options;
+                created = true;
+                return { sessionId: "default-reasoning-session" };
+            },
+            getSession: async () => ({ sessionId: "default-reasoning-session", status: "idle", createdAt: 1, updatedAt: 2 }),
+        });
+
+        try {
+            await controller.start();
+            await controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER);
+            await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+            assertEqual(store.getState().ui.modal?.type, "reasoningEffortPicker", "model selection should open reasoning picker");
+            await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+
+            assertEqual(createOptions?.model, "github-copilot:gpt-5.5", "created session should use selected model");
+            assertEqual(createOptions?.reasoningEffort, "medium", "created session should use the selected default reasoning effort");
+            assertEqual(store.getState().sessions.activeSessionId, "default-reasoning-session");
+        } finally {
+            await controller.stop();
+        }
+    });
+
+    it("allows UX session creation without a per-user key when the selected provider can create", async () => {
+        const owner = {
+            provider: "test",
+            subject: "me",
+            email: "me@example.com",
+            displayName: "Me User",
+        };
+        let createCalls = 0;
+        let created = false;
+        const { controller, store } = createController({
+            getAuthContext: () => ({
+                principal: owner,
+                authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] },
+            }),
+            listSessions: async () => created
+                ? [{ sessionId: "created-session", status: "idle", createdAt: 1, updatedAt: 2 }]
+                : [],
+            getCurrentUserProfile: async () => ({
+                provider: owner.provider,
+                subject: owner.subject,
+                email: owner.email,
+                displayName: owner.displayName,
+                profileSettings: {},
+                githubCopilotKeySet: false,
+            }),
+            createSession: async () => {
+                createCalls += 1;
+                created = true;
+                return { sessionId: "created-session" };
+            },
+            getSession: async () => ({ sessionId: "created-session", status: "idle", createdAt: 1, updatedAt: 2 }),
+        });
+
+        try {
+            await controller.start();
+            await controller.createSession({ model: "azure-openai:gpt-5.4-mini" });
+            assertEqual(createCalls, 1, "Non-GitHub session creation should proceed without a per-user GitHub key");
+            assertEqual(store.getState().sessions.activeSessionId, "created-session");
+            assertEqual(store.getState().admin.visible, false, "Successful non-GitHub create should not open Admin");
+        } finally {
+            await controller.stop();
+        }
+    });
+
+    it("surfaces GitHub provider create failures without redirecting to Admin", async () => {
+        const owner = {
+            provider: "test",
+            subject: "me",
+            email: "me@example.com",
+            displayName: "Me User",
+        };
+        let createCalls = 0;
+        const { controller, store } = createController({
+            getAuthContext: () => ({
+                principal: owner,
+                authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] },
+            }),
+            getCurrentUserProfile: async () => ({
+                provider: owner.provider,
+                subject: owner.subject,
+                email: owner.email,
+                displayName: owner.displayName,
+                profileSettings: {},
+                githubCopilotKeySet: false,
+            }),
+            createSession: async () => {
+                createCalls += 1;
+                throw new Error("GitHub Copilot key not configured");
+            },
+        });
+
+        try {
+            await controller.start();
+            const created = await controller.createSession({ model: "github-copilot:gpt-5.5" });
+            assertEqual(created, null, "failed GitHub session creation should return null to the UI layer");
+            assertEqual(createCalls, 1, "GitHub model creation should be attempted and fail at create time");
+            assertEqual(store.getState().admin.visible, false, "GitHub create failure should not force Admin open");
+            assertIncludes(store.getState().ui.statusText, "GitHub Copilot key not configured", "status should show the provider-specific failure");
+        } finally {
+            await controller.stop();
+        }
+    });
+
+    it("transport only rejects GitHub provider models when no env or per-user key exists", async () => {
+        const owner = {
+            provider: "test",
+            subject: "me",
+            email: "me@example.com",
+            displayName: "Me User",
+        };
+        const fakeTransport = {
+            currentUser: owner,
+            mgmt: {
+                getDefaultModel: () => "azure-openai:gpt-5.4-mini",
+                getModelCredentialStatus: (model) => model?.startsWith("github-copilot:")
+                    ? { qualifiedName: model, providerType: "github", credentialAvailable: false }
+                    : { qualifiedName: model, providerType: "openai", credentialAvailable: true },
+                getUserProfile: async () => ({ ...owner, githubCopilotKeySet: false }),
+            },
+        };
+
+        await assertThrows(
+            () => NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, { model: "github-copilot:gpt-5.5", owner }),
+            /GitHub Copilot key not configured/,
+            "GitHub model without env or user key should fail at create time",
+        );
+
+        const azureModel = await NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, {
+            model: "azure-openai:gpt-5.4-mini",
+            owner,
+        });
+        assertEqual(azureModel, "azure-openai:gpt-5.4-mini", "non-GitHub provider should remain creatable");
+
+        fakeTransport.mgmt.getModelCredentialStatus = (model) => ({ qualifiedName: model, providerType: "github", credentialAvailable: true });
+        const githubWithEnv = await NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, {
+            model: "github-copilot:gpt-5.5",
+            owner,
+        });
+        assertEqual(githubWithEnv, "github-copilot:gpt-5.5", "GitHub provider should be creatable when env credential is available");
+
+        fakeTransport.mgmt.getModelCredentialStatus = (model) => ({ qualifiedName: model, providerType: "github", credentialAvailable: false });
+        fakeTransport.mgmt.getUserProfile = async () => ({ ...owner, githubCopilotKeySet: true });
+        const githubWithUserKey = await NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, {
+            model: "github-copilot:gpt-5.5",
+            owner,
+        });
+        assertEqual(githubWithUserKey, "github-copilot:gpt-5.5", "GitHub provider should be creatable when the user key is set");
     });
 
     it("preserves a restored owner filter across startup when auth is enabled", async () => {

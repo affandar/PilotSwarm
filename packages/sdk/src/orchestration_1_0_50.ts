@@ -62,34 +62,6 @@ function isCopilotConnectionClosedError(message?: string): boolean {
     return /\bConnection is closed\b/i.test(String(message || ""));
 }
 
-/**
- * Auth-failure detection for runTurn errors.
- *
- * The Copilot SDK surfaces invalid GitHub Copilot tokens as messages like
- * `No authentication info available` (also: `unauthorized`, `401`,
- * `Bad credentials`, `Authentication failed`). Retrying these is pointless
- * — the same token will keep failing — and the rapid retry storm causes
- * the chat warning card to flicker as each attempt clears and re-sets the
- * error state. Treat them as non-retryable and leave the orchestration
- * idle so the user can update their GitHub Copilot key (Admin Console)
- * and resend the prompt to retry against the new token.
- */
-function isAuthFailureError(message?: string): boolean {
-    const text = String(message || "");
-    return (
-        /\bNo authentication info available\b/i.test(text)
-        || /\bBad credentials\b/i.test(text)
-        || /\bAuthentication failed\b/i.test(text)
-        || /\bunauthorized\b/i.test(text)
-        || /\b401\b/.test(text)
-    );
-}
-
-const AUTH_FAILURE_USER_HINT =
-    "GitHub Copilot rejected the authentication token. " +
-    "Open the Admin Console (portal toolbar 'Admin' button or TUI Shift+A) " +
-    "to update your GitHub Copilot key, then resend the prompt to retry.";
-
 function buildConnectionClosedRetryDetail(retryAttempt: number): string {
     return `Live Copilot connection lost; retry ${retryAttempt}/${COPILOT_CONNECTION_CLOSED_MAX_RETRIES} in ${COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS}s.`;
 }
@@ -261,7 +233,7 @@ function updateContextUsageFromEvents(
  */
 export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
 
-export function* durableSessionOrchestration_1_0_51(
+export function* durableSessionOrchestration_1_0_50(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
@@ -2055,27 +2027,6 @@ export function* durableSessionOrchestration_1_0_51(
                 yield manager.updateCmsState(input.sessionId, "failed", fatalError);
                 throw new Error(fatalError);
             }
-
-            // Non-retryable auth failure: the SDK rejected the GitHub Copilot
-            // token. Retrying with the same key just produces the same error
-            // and makes the chat warning flicker every 15s/30s/60s. Stop
-            // retrying, surface a clear hint pointing the user at the Admin
-            // Console, and return so the orchestration sits idle. The next
-            // prompt the user sends will go through SessionManager which
-            // re-reads the (presumably updated) per-user key from CMS and
-            // recycles the warm session onto a fresh CopilotClient.
-            if (isAuthFailureError(errorMsg)) {
-                const blockedDetail = `${errorMsg} — ${AUTH_FAILURE_USER_HINT}`;
-                ctx.traceInfo(`[orch] runTurn FAILED with auth error; not retrying: ${errorMsg}`);
-                publishStatus("error", {
-                    error: blockedDetail,
-                    retriesExhausted: true,
-                    authFailure: true,
-                });
-                retryCount = 0;
-                return;
-            }
-
             retryCount++;
             ctx.traceInfo(`[orch] runTurn FAILED (attempt ${retryCount}/${MAX_RETRIES}): ${errorMsg}`);
 
@@ -2568,7 +2519,6 @@ export function* durableSessionOrchestration_1_0_51(
                 let agentSystemMessage = result.systemMessage;
                 let agentToolNames = result.toolNames;
                 let agentModel = result.model;
-                let agentReasoningEffort = result.reasoningEffort;
                 let agentIsSystem = false;
                 const explicitAgentTitle = typeof result.title === "string" && result.title.trim() ? result.title.trim() : undefined;
                 let agentTitle: string | undefined = explicitAgentTitle;
@@ -2652,7 +2602,6 @@ export function* durableSessionOrchestration_1_0_51(
                 const childConfig: SerializableSessionConfig = {
                     ...parentConfig,
                     ...(agentModel ? { model: agentModel } : {}),
-                    ...(agentReasoningEffort ? { reasoningEffort: agentReasoningEffort } : {}),
                     ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
                     ...(boundAgentName ? { boundAgentName } : {}),
                     ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),

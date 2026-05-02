@@ -33,11 +33,13 @@ import type {
     SkillUsageRow,
     SessionTreeSkillUsage,
     FleetSkillUsage,
+    UserProfile,
+    UserPrincipal,
 } from "./cms.js";
 import type { FactStore, FactsStatsRow } from "./facts-store.js";
 import { createFactStoreForUrl } from "./facts-store.js";
 import { SessionDumper } from "./session-dumper.js";
-import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor } from "./model-providers.js";
+import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort } from "./model-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
@@ -148,6 +150,7 @@ export interface PilotSwarmSessionView {
     parentSessionId?: string;
     isSystem?: boolean;
     model?: string;
+    reasoningEffort?: string;
     error?: string;
     waitReason?: string;
     cronActive?: boolean;
@@ -168,6 +171,16 @@ export interface ModelSummary {
     modelName: string;
     description?: string;
     cost?: string;
+    supportedReasoningEfforts?: ReasoningEffort[];
+    defaultReasoningEffort?: ReasoningEffort;
+}
+
+/** Credential availability for a configured model provider. */
+export interface ModelCredentialStatus {
+    qualifiedName?: string;
+    providerId?: string;
+    providerType?: string;
+    credentialAvailable: boolean;
 }
 
 /** Status change result from watchSessionStatus. */
@@ -385,6 +398,7 @@ export class PilotSwarmManagementClient {
                 parentSessionId: row.parentSessionId ?? undefined,
                 isSystem: row.isSystem || undefined,
                 model: row.model ?? undefined,
+                reasoningEffort: row.reasoningEffort ?? undefined,
                 error: row.lastError ?? undefined,
                 waitReason: row.waitReason ?? undefined,
                 statusVersion: undefined,
@@ -526,6 +540,7 @@ export class PilotSwarmManagementClient {
             parentSessionId: row.parentSessionId ?? undefined,
             isSystem: row.isSystem || undefined,
             model: row.model ?? undefined,
+            reasoningEffort: row.reasoningEffort ?? undefined,
             error: effectiveError,
             waitReason: normalizedCustomStatus.waitReason,
             cronActive,
@@ -814,6 +829,53 @@ export class PilotSwarmManagementClient {
         }
         stats.totals.totalOrchestrationHistorySizeBytes = totalOrchestrationHistorySizeBytes;
         return stats;
+    }
+
+    // ─── User Profile (Admin Console) ───────────────────────
+
+    /**
+     * Read a single user's profile (settings + key-set flag). Returns
+     * `null` when the principal has no row yet — callers should treat
+     * that as the unconfigured state.
+     *
+     * The raw GitHub Copilot key is intentionally NOT returned here.
+     * The Admin Console only needs to know whether one is set so it can
+     * render "configured" / "not configured" affordances; the worker's
+     * per-user token resolver reads the actual key directly from CMS.
+     */
+    async getUserProfile(principal: UserPrincipal): Promise<UserProfile | null> {
+        this._ensureStarted();
+        return this._catalog!.getUserProfile(principal);
+    }
+
+    /**
+     * Replace the user's `profile_settings` JSON document. Creates the
+     * user row lazily so settings can be saved before the principal has
+     * created any sessions.
+     */
+    async setUserProfileSettings(
+        principal: UserPrincipal,
+        settings: Record<string, unknown>,
+    ): Promise<UserProfile> {
+        this._ensureStarted();
+        return this._catalog!.setUserProfileSettings(principal, settings);
+    }
+
+    /**
+     * Set or clear the per-user GitHub Copilot key. Pass `null` (or an
+     * all-whitespace string) to remove the override and revert the user
+     * to the worker's env-supplied default token.
+     *
+     * Warm sessions belonging to this user will rebind to the new
+     * CopilotClient on their next `runTurn` (the SessionManager
+     * detects the token change and recycles the warm handle).
+     */
+    async setUserGitHubCopilotKey(
+        principal: UserPrincipal,
+        key: string | null,
+    ): Promise<UserProfile> {
+        this._ensureStarted();
+        return this._catalog!.setUserGitHubCopilotKey(principal, key);
     }
 
     /**
@@ -1151,6 +1213,8 @@ export class PilotSwarmManagementClient {
             modelName: m.modelName,
             description: m.description,
             cost: m.cost,
+            ...(m.supportedReasoningEfforts?.length ? { supportedReasoningEfforts: m.supportedReasoningEfforts } : {}),
+            ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
         }));
     }
 
@@ -1169,6 +1233,8 @@ export class PilotSwarmManagementClient {
                 modelName: m.modelName,
                 description: m.description,
                 cost: m.cost,
+                ...(m.supportedReasoningEfforts?.length ? { supportedReasoningEfforts: m.supportedReasoningEfforts } : {}),
+                ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
             })),
         }));
     }
@@ -1185,6 +1251,34 @@ export class PilotSwarmManagementClient {
      */
     normalizeModel(ref?: string): string | undefined {
         return this._modelProviders?.normalize(ref);
+    }
+
+    /**
+     * Return whether the model's provider has a process/env credential
+     * available. For GitHub providers this intentionally does not include
+     * per-user CMS keys; callers that create user-owned sessions should OR
+     * this with the relevant profile's githubCopilotKeySet flag.
+     */
+    getModelCredentialStatus(ref?: string): ModelCredentialStatus {
+        const normalized = this._modelProviders?.normalize(ref);
+        if (!this._modelProviders || !normalized) {
+            return { qualifiedName: normalized, credentialAvailable: false };
+        }
+
+        const descriptor = this._modelProviders.getDescriptor(normalized);
+        const resolved = this._modelProviders.resolve(normalized);
+        if (!descriptor || !resolved) {
+            return { qualifiedName: normalized, credentialAvailable: false };
+        }
+
+        return {
+            qualifiedName: descriptor.qualifiedName,
+            providerId: descriptor.providerId,
+            providerType: descriptor.providerType,
+            credentialAvailable: resolved.type === "github"
+                ? Boolean(resolved.githubToken)
+                : Boolean(resolved.sdkProvider?.apiKey),
+        };
     }
 
     // ─── Session Dump ────────────────────────────────────────

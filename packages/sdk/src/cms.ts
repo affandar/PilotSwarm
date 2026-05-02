@@ -31,6 +31,7 @@ export interface SessionRow {
     titleLocked: boolean;
     state: string;
     model: string | null;
+    reasoningEffort: string | null;
     createdAt: Date;
     updatedAt: Date;
     lastActiveAt: Date | null;
@@ -58,6 +59,7 @@ export interface SessionRowUpdates {
     titleLocked?: boolean;
     state?: string;
     model?: string | null;
+    reasoningEffort?: string | null;
     lastActiveAt?: Date;
     currentIteration?: number;
     lastError?: string | null;
@@ -74,6 +76,7 @@ export interface SessionMetricSummary {
     sessionId: string;
     agentId: string | null;
     model: string | null;
+    reasoningEffort: string | null;
     parentSessionId: string | null;
     snapshotSizeBytes: number;
     dehydrationCount: number;
@@ -187,6 +190,36 @@ export interface UserStats {
     };
 }
 
+/**
+ * Public user profile shape exposed through the management surface and
+ * consumed by the Admin Console UI.
+ *
+ * `profileSettings` is an opaque application-owned JSON document (the
+ * Admin Console + future client-state migrations decide its schema).
+ *
+ * `githubCopilotKeySet` is a presence flag; the raw key text is only
+ * available through the worker-side resolver in `SessionCatalogProvider`
+ * to prevent accidental leakage through this management-facing type.
+ */
+export interface UserProfile {
+    userId: number;
+    provider: string;
+    subject: string;
+    email: string | null;
+    displayName: string | null;
+    profileSettings: Record<string, unknown>;
+    githubCopilotKeySet: boolean;
+    createdAt: Date | null;
+    updatedAt: Date | null;
+}
+
+export interface UserPrincipal {
+    provider: string;
+    subject: string;
+    email?: string | null;
+    displayName?: string | null;
+}
+
 /** Aggregate of a session and all its descendants. */
 export interface SessionTreeStats {
     rootSessionId: string;
@@ -291,6 +324,7 @@ export interface SessionCatalogProvider {
     /** Insert a new session. No-op if session already exists. */
     createSession(sessionId: string, opts?: {
         model?: string;
+        reasoningEffort?: string;
         parentSessionId?: string;
         isSystem?: boolean;
         agentId?: string;
@@ -343,6 +377,38 @@ export interface SessionCatalogProvider {
     /** Get user/session-owner aggregate stats, optionally filtered. */
     getUserStats(opts?: { includeDeleted?: boolean; since?: Date }): Promise<UserStats>;
 
+    // ── User Profiles (settings + per-user GitHub Copilot key) ──
+
+    /**
+     * Read the public user profile (settings + key-set flag). Returns
+     * `null` when the principal has not been registered yet.
+     *
+     * Never returns the raw key text; callers wanting the key must use
+     * `getUserGitHubCopilotKey` so leakage stays auditable.
+     */
+    getUserProfile(principal: UserPrincipal): Promise<UserProfile | null>;
+
+    /**
+     * Internal: fetch the raw GitHub Copilot key for a user. Used by the
+     * worker's per-user token resolver. Returns `null` when no override
+     * is set or the user is unknown.
+     */
+    getUserGitHubCopilotKey(principal: UserPrincipal): Promise<string | null>;
+
+    /**
+     * Replace the user's `profile_settings` JSON document. Creates the
+     * user row lazily if needed so settings can be saved before the
+     * principal owns any sessions.
+     */
+    setUserProfileSettings(principal: UserPrincipal, settings: Record<string, unknown>): Promise<UserProfile>;
+
+    /**
+     * Set or clear the per-user GitHub Copilot key. Pass `null` to
+     * remove the override (which reverts the user to the worker's
+     * env-supplied default).
+     */
+    setUserGitHubCopilotKey(principal: UserPrincipal, key: string | null): Promise<UserProfile>;
+
     /** Get skill usage (skill.invoked event aggregation) for a single session. */
     getSessionSkillUsage(sessionId: string, opts?: { since?: Date }): Promise<SkillUsageRow[]>;
 
@@ -393,6 +459,10 @@ function sqlForSchema(schema: string) {
             getFleetStatsByAgent:       `${s}.cms_get_fleet_stats_by_agent`,
             getFleetStatsTotals:        `${s}.cms_get_fleet_stats_totals`,
             getUserStatsByModel:        `${s}.cms_get_user_stats_by_model`,
+            getUserProfile:             `${s}.cms_get_user_profile`,
+            getUserGitHubCopilotKey:    `${s}.cms_get_user_github_copilot_key`,
+            setUserProfileSettings:     `${s}.cms_set_user_profile_settings`,
+            setUserGitHubCopilotKey:    `${s}.cms_set_user_github_copilot_key`,
             upsertSessionMetricSummary: `${s}.cms_upsert_session_metric_summary`,
             pruneDeletedSummaries:      `${s}.cms_prune_deleted_summaries`,
             getSessionSkillUsage:       `${s}.cms_get_session_skill_usage`,
@@ -462,6 +532,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
 
     async createSession(sessionId: string, opts?: {
         model?: string;
+        reasoningEffort?: string;
         parentSessionId?: string;
         isSystem?: boolean;
         agentId?: string;
@@ -469,8 +540,8 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         owner?: SessionOwnerInfo | null;
     }): Promise<void> {
         await this.pool.query(
-            `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6)`,
-            [sessionId, opts?.model ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null],
+            `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7)`,
+            [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null],
         );
         if (opts?.isSystem) return;
 
@@ -503,6 +574,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         if (updates.titleLocked !== undefined) jsonUpdates.titleLocked = updates.titleLocked;
         if (updates.state !== undefined) jsonUpdates.state = updates.state;
         if (updates.model !== undefined) jsonUpdates.model = updates.model;
+        if (updates.reasoningEffort !== undefined) jsonUpdates.reasoningEffort = updates.reasoningEffort;
         if (updates.lastActiveAt !== undefined) jsonUpdates.lastActiveAt = updates.lastActiveAt ? updates.lastActiveAt.toISOString() : null;
         if (updates.currentIteration !== undefined) jsonUpdates.currentIteration = updates.currentIteration;
         if (updates.lastError !== undefined) jsonUpdates.lastError = updates.lastError;
@@ -837,6 +909,80 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         );
     }
 
+    async getUserProfile(principal: UserPrincipal): Promise<UserProfile | null> {
+        const provider = principal?.provider?.trim();
+        const subject = principal?.subject?.trim();
+        if (!provider || !subject) return null;
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getUserProfile}($1, $2)`,
+            [provider, subject],
+        );
+        if (rows.length === 0) return null;
+        return rowToUserProfile(rows[0]);
+    }
+
+    async getUserGitHubCopilotKey(principal: UserPrincipal): Promise<string | null> {
+        const provider = principal?.provider?.trim();
+        const subject = principal?.subject?.trim();
+        if (!provider || !subject) return null;
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.getUserGitHubCopilotKey}($1, $2) AS key`,
+            [provider, subject],
+        );
+        const raw = rows[0]?.key;
+        if (raw == null) return null;
+        const text = String(raw);
+        return text.length === 0 ? null : text;
+    }
+
+    async setUserProfileSettings(principal: UserPrincipal, settings: Record<string, unknown>): Promise<UserProfile> {
+        const provider = principal?.provider?.trim();
+        const subject = principal?.subject?.trim();
+        if (!provider || !subject) {
+            throw new Error("setUserProfileSettings: provider and subject are required");
+        }
+        const safeSettings = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
+        await this.pool.query(
+            `SELECT ${this.sql.fn.setUserProfileSettings}($1, $2, $3, $4, $5::jsonb)`,
+            [
+                provider,
+                subject,
+                principal.email ?? null,
+                principal.displayName ?? null,
+                JSON.stringify(safeSettings),
+            ],
+        );
+        const profile = await this.getUserProfile(principal);
+        if (!profile) {
+            throw new Error("setUserProfileSettings: failed to read back the user profile after write");
+        }
+        return profile;
+    }
+
+    async setUserGitHubCopilotKey(principal: UserPrincipal, key: string | null): Promise<UserProfile> {
+        const provider = principal?.provider?.trim();
+        const subject = principal?.subject?.trim();
+        if (!provider || !subject) {
+            throw new Error("setUserGitHubCopilotKey: provider and subject are required");
+        }
+        const normalized = typeof key === "string" && key.trim().length > 0 ? key.trim() : null;
+        await this.pool.query(
+            `SELECT ${this.sql.fn.setUserGitHubCopilotKey}($1, $2, $3, $4, $5)`,
+            [
+                provider,
+                subject,
+                principal.email ?? null,
+                principal.displayName ?? null,
+                normalized,
+            ],
+        );
+        const profile = await this.getUserProfile(principal);
+        if (!profile) {
+            throw new Error("setUserGitHubCopilotKey: failed to read back the user profile after write");
+        }
+        return profile;
+    }
+
     async pruneDeletedSummaries(olderThan: Date): Promise<number> {
         const { rows } = await this.pool.query(
             `SELECT ${this.sql.fn.pruneDeletedSummaries}($1) AS deleted_count`,
@@ -945,6 +1091,7 @@ function rowToSessionRow(row: any): SessionRow {
         titleLocked: row.title_locked ?? false,
         state: row.state,
         model: row.model ?? null,
+        reasoningEffort: row.reasoning_effort ?? null,
         createdAt: new Date(row.created_at),
         updatedAt: new Date(row.updated_at),
         lastActiveAt: row.last_active_at ? new Date(row.last_active_at) : null,
@@ -995,6 +1142,7 @@ function rowToSessionMetricSummary(row: any): SessionMetricSummary {
         sessionId: row.session_id,
         agentId: row.agent_id ?? null,
         model: row.model ?? null,
+        reasoningEffort: row.reasoning_effort ?? null,
         parentSessionId: row.parent_session_id ?? null,
         snapshotSizeBytes: Number(row.snapshot_size_bytes) || 0,
         dehydrationCount: Number(row.dehydration_count) || 0,
@@ -1025,5 +1173,33 @@ function rowToSkillUsageRow(row: any): SkillUsageRow {
         invocations: Number(row.invocations) || 0,
         firstUsedAt: new Date(row.first_used_at ?? row.last_used_at),
         lastUsedAt: new Date(row.last_used_at),
+    };
+}
+
+function rowToUserProfile(row: any): UserProfile {
+    let parsedSettings: Record<string, unknown> = {};
+    const rawSettings = row?.profile_settings;
+    if (rawSettings && typeof rawSettings === "object" && !Array.isArray(rawSettings)) {
+        parsedSettings = rawSettings as Record<string, unknown>;
+    } else if (typeof rawSettings === "string" && rawSettings.length > 0) {
+        try {
+            const parsed = JSON.parse(rawSettings);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                parsedSettings = parsed as Record<string, unknown>;
+            }
+        } catch {
+            parsedSettings = {};
+        }
+    }
+    return {
+        userId: Number(row.user_id) || 0,
+        provider: String(row.provider ?? ""),
+        subject: String(row.subject ?? ""),
+        email: row.email ?? null,
+        displayName: row.display_name ?? null,
+        profileSettings: parsedSettings,
+        githubCopilotKeySet: Boolean(row.github_copilot_key_set),
+        createdAt: row.created_at ? new Date(row.created_at) : null,
+        updatedAt: row.updated_at ? new Date(row.updated_at) : null,
     };
 }

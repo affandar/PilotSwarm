@@ -18,6 +18,7 @@ These keys work whenever focus is not in the prompt editor.
 | `Shift+N` | Open the model picker before creating a session |
 | `r` | Refresh sessions and visible data |
 | `a` | Open the linked-item picker for current chat artifacts and visible URLs |
+| `Shift+A` | Open or close the per-user Admin Console (profile + GitHub Copilot key) |
 | `m` | Cycle inspector tab (`sequence` → `logs` → `nodes` → `history` → `files` → `stats`) |
 | `[` / `]` | Resize the main split |
 | `c` | Cancel the selected session |
@@ -131,3 +132,22 @@ Notes:
 | log/files filters | `Tab` / `Shift+Tab`, `j/k`, arrows, `Enter`, `Esc` |
 | rename dialog | type text, `←/→`, `Home`, `End`, `Backspace`, `Enter`, `Esc` |
 | attach-file dialog | type path, `←/→`, `Home`, `End`, `Backspace`, `Enter`, `Esc` |
+
+## Admin Console (`Shift+A`)
+
+The Admin Console takes over the workspace until you press `Esc` to close it. While the console is visible the normal workspace shortcuts are suppressed.
+
+| Key | Action |
+|-----|--------|
+| `e` | Begin editing the per-user GitHub Copilot key |
+| `c` | Clear the per-user GitHub Copilot key (only when one is configured) |
+| `r` | Refresh the profile snapshot from the management API |
+| `Esc` | Close the console and return to the workspace |
+
+While the GitHub Copilot key editor is open the console behaves like a modal:
+
+| Key | Action |
+|-----|--------|
+| type text, `←/→`, `Home`, `End`, `Backspace` | Edit the key (input is masked on screen) |
+| `Enter` | Save the key to the user profile |
+| `Esc` | Cancel the edit without saving |

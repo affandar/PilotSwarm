@@ -263,7 +263,7 @@ function buildSessionTitle(session, brandingTitle) {
     return title.includes(shortId) ? title : `${title} (${shortId})`;
 }
 
-function matchesOwnerFilter(session, ownerFilter = {}, auth = {}) {
+function matchesOwnerFilterDirect(session, ownerFilter = {}, auth = {}) {
     if (!ownerFilter || ownerFilter.all === true) return true;
     if (session?.isSystem) return ownerFilter.includeSystem === true;
     const ownerKey = ownerKeyForOwner(session?.owner);
@@ -271,6 +271,30 @@ function matchesOwnerFilter(session, ownerFilter = {}, auth = {}) {
     const currentUserKey = ownerKeyForOwner(auth?.principal);
     if (ownerFilter.includeMe && currentUserKey && ownerKey === currentUserKey) return true;
     return Array.isArray(ownerFilter.ownerKeys) && ownerFilter.ownerKeys.includes(ownerKey);
+}
+
+/**
+ * A session passes the owner filter if it matches directly OR if any of
+ * its ancestors matches. This keeps spawned children (which may be
+ * unowned, e.g. when a system agent like Facts Manager spawns a named
+ * agent on behalf of a user) visible under their visible parent. Without
+ * this, the tree would silently drop the child and only show a `[+1]`
+ * hidden-descendant badge on the parent — which is what the bug report
+ * showed.
+ */
+function matchesOwnerFilter(session, ownerFilter = {}, auth = {}, byId = null) {
+    if (matchesOwnerFilterDirect(session, ownerFilter, auth)) return true;
+    if (!byId) return false;
+    let current = session;
+    let hops = 0;
+    while (current?.parentSessionId && hops < 16) {
+        const parent = byId[current.parentSessionId];
+        if (!parent) return false;
+        if (matchesOwnerFilterDirect(parent, ownerFilter, auth)) return true;
+        current = parent;
+        hops += 1;
+    }
+    return false;
 }
 
 function flattenRunsText(runs) {
@@ -470,7 +494,7 @@ export function selectSessionRows(state) {
         };
     }).filter((row) => {
         const session = state.sessions.byId[row.sessionId];
-        if (!matchesOwnerFilter(session, ownerFilter, auth)) return false;
+        if (!matchesOwnerFilter(session, ownerFilter, auth, state.sessions.byId)) return false;
         const ownerSearchText = session?.owner
             ? `${ownerDisplayName(session.owner, "")} ${session.owner.email || ""}`
             : "";
@@ -1524,6 +1548,13 @@ export function selectActiveHttpLinks(state) {
     return links;
 }
 
+function shortModelReasoningLabel(model, reasoningEffort) {
+    const modelName = shortModelName(model);
+    if (!modelName) return "";
+    const effort = String(reasoningEffort || "").trim();
+    return effort ? `${modelName}:${effort}` : modelName;
+}
+
 export function selectChatPaneChrome(state, options = {}) {
     const session = selectActiveSession(state);
     const sessionsById = state.sessions?.byId || {};
@@ -1566,7 +1597,7 @@ export function selectChatPaneChrome(state, options = {}) {
         : [];
     const progress = buildLiveProgressState(session, history, history?.chat || [], outboxItems);
 
-    const modelName = shortModelName(session.model);
+    const modelName = shortModelReasoningLabel(session.model, session.reasoningEffort);
     if (modelName) {
         title.push({ text: ` ${modelName}`, color: "cyan" });
     }
@@ -2093,6 +2124,133 @@ export function selectFilesView(state, options = {}) {
     };
 }
 
+/**
+ * Project the Admin Console view-model. Returns the props needed to
+ * render the admin pane in either the native TUI or the portal: the
+ * current principal label, the GitHub Copilot key state (configured /
+ * editing / saving / error), and a small set of "actions" describing
+ * what keybindings or buttons are currently meaningful.
+ */
+export function selectAdminConsole(state) {
+    const admin = state.admin || {};
+    const profile = admin.profile || null;
+    const ghcpKey = admin.ghcpKey || { editing: false, draft: "", saving: false, error: null };
+    const principal = profile
+        ? {
+            provider: profile.provider || "",
+            subject: profile.subject || "",
+            email: profile.email || null,
+            displayName: profile.displayName || null,
+        }
+        : (state.auth?.principal || null);
+
+    const ghcpStatusText = ghcpKey.saving
+        ? "Saving..."
+        : ghcpKey.editing
+            ? "Editing — Enter to save, Esc to cancel"
+            : (profile?.githubCopilotKeySet
+                ? "Configured (overrides env GITHUB_TOKEN for this user)"
+                : "Not configured (using env GITHUB_TOKEN fallback)");
+
+    const actions = [];
+    if (!ghcpKey.editing) {
+        actions.push({ id: "edit", label: profile?.githubCopilotKeySet ? "Replace key" : "Set key", key: "e" });
+        if (profile?.githubCopilotKeySet) {
+            actions.push({ id: "clear", label: "Clear key", key: "c" });
+        }
+        actions.push({ id: "refresh", label: "Refresh", key: "r" });
+    } else {
+        actions.push({ id: "save", label: "Save", key: "Enter" });
+        actions.push({ id: "cancel", label: "Cancel", key: "Esc" });
+    }
+    actions.push({ id: "close", label: "Close console", key: ghcpKey.editing ? "Ctrl+Esc" : "Esc" });
+
+    return {
+        visible: Boolean(admin.visible),
+        loading: Boolean(admin.loading),
+        loadError: admin.loadError || null,
+        principal,
+        ghcpKey: {
+            configured: Boolean(profile?.githubCopilotKeySet),
+            editing: Boolean(ghcpKey.editing),
+            draft: ghcpKey.draft || "",
+            cursorIndex: Math.max(0, Math.min(Number(ghcpKey.cursorIndex) || 0, String(ghcpKey.draft || "").length)),
+            saving: Boolean(ghcpKey.saving),
+            error: ghcpKey.error || null,
+            statusText: ghcpStatusText,
+        },
+        actions,
+    };
+}
+
+/**
+ * Native-TUI view-model for the GitHub Copilot key editor overlay.
+ * Returns `null` when the user is not currently editing — the TUI
+ * mounts the overlay only when this returns a value, mirroring the
+ * `selectRenameSessionModal` pattern.
+ *
+ * The portal does not consume this selector; its inline `<input>`
+ * already provides browser-native focus, cursor, and selection
+ * handling, so a synthetic cursor view-model would be redundant there.
+ */
+export function selectAdminGhcpKeyEditorModal(state, maxWidth = 76) {
+    const admin = state.admin || {};
+    const ghcpKey = admin.ghcpKey || {};
+    if (!admin.visible || !ghcpKey.editing) return null;
+
+    const value = String(ghcpKey.draft || "");
+    // Mask the displayed text so an over-the-shoulder reader cannot
+    // capture the key while it is being typed. The cursor position is
+    // preserved as-is because the masked length matches the source.
+    const maskedValue = value ? "•".repeat(value.length) : "";
+
+    const helpLines = [
+        [
+            { text: "Enter", color: "cyan", bold: true },
+            { text: " save  ", color: "gray" },
+            { text: "Esc", color: "cyan", bold: true },
+            { text: " cancel", color: "gray" },
+        ],
+        [{ text: "", color: "gray" }],
+        [{
+            text: "The key is stored in CMS and used by the worker instead of the env",
+            color: "gray",
+        }],
+        [{
+            text: "GITHUB_TOKEN for sessions you own. Use the Clear button to revert.",
+            color: "gray",
+        }],
+    ];
+
+    const detailsLines = [
+        [
+            { text: "Configured: ", color: "gray" },
+            {
+                text: ghcpKey.configured ? "yes (will be replaced)" : "no",
+                color: ghcpKey.configured ? "yellow" : "white",
+            },
+        ],
+        [
+            { text: "Length:     ", color: "gray" },
+            { text: String(value.length), color: value.length > 0 ? "white" : "gray" },
+        ],
+    ];
+
+    return {
+        title: "GitHub Copilot Key",
+        value,
+        displayValue: maskedValue,
+        cursorIndex: Math.max(0, Math.min(Number(ghcpKey.cursorIndex) || 0, value.length)),
+        placeholder: "Paste your GitHub Copilot key",
+        helpTitle: "Key Editor",
+        helpLines,
+        detailsLines,
+        saving: Boolean(ghcpKey.saving),
+        error: ghcpKey.error || null,
+        idealWidth: Math.min(72, Math.max(56, maxWidth)),
+    };
+}
+
 export function selectStatusBar(state) {
     const focus = state.ui.focusRegion;
     const paneFullscreen = state.ui.fullscreenPane || null;
@@ -2128,6 +2286,12 @@ export function selectStatusBar(state) {
     if (state.ui.modal?.type === "modelPicker") {
         return {
             left: "Select a model for the new session",
+            right: "up/down move · enter next · esc cancel",
+        };
+    }
+    if (state.ui.modal?.type === "reasoningEffortPicker") {
+        return {
+            left: "Select reasoning effort for the new session",
             right: "up/down move · enter create · esc cancel",
         };
     }
@@ -2960,6 +3124,12 @@ export function selectModelPickerModal(state, maxWidth = 72) {
     }
 
     const selectedItem = Array.isArray(modal.items) ? modal.items[selectedIndex] || null : null;
+    const supportedReasoning = Array.isArray(selectedItem?.supportedReasoningEfforts)
+        ? selectedItem.supportedReasoningEfforts.filter(Boolean)
+        : [];
+    const defaultReasoning = typeof selectedItem?.defaultReasoningEffort === "string"
+        ? selectedItem.defaultReasoningEffort
+        : null;
     const detailsLines = selectedItem
         ? [
             [{
@@ -2972,6 +3142,10 @@ export function selectModelPickerModal(state, maxWidth = 72) {
                 color: "gray",
             }],
             ...(selectedItem.cost ? [[{ text: `Cost: ${selectedItem.cost}`, color: "gray" }]] : []),
+            ...(supportedReasoning.length > 0
+                ? [[{ text: `Reasoning: ${supportedReasoning.join(", ")}`, color: "gray" }]]
+                : []),
+            ...(defaultReasoning ? [[{ text: `Default reasoning: ${defaultReasoning}`, color: "gray" }]] : []),
             [{ text: "", color: "gray" }],
             [{
                 text: selectedItem.description || "No description available for this model.",
@@ -3023,6 +3197,7 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
 
     const selectedItem = items[selectedIndex] || null;
     const selectedModel = modal.sessionOptions?.model || null;
+    const selectedReasoningEffort = modal.sessionOptions?.reasoningEffort || null;
     const detailsLines = selectedItem
         ? [
             [{
@@ -3034,6 +3209,7 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
                 ? [[{ text: "Open-ended session", color: "gray" }]]
                 : [[{ text: selectedItem.agentName || selectedItem.id || "agent", color: "gray" }]]),
             ...(selectedModel ? [[{ text: `Model: ${selectedModel}`, color: "gray" }]] : []),
+            ...(selectedReasoningEffort ? [[{ text: `Reasoning: ${selectedReasoningEffort}`, color: "gray" }]] : []),
             [{ text: "", color: "gray" }],
             [{
                 text: selectedItem.description || (
@@ -3062,6 +3238,54 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
         idealWidth: Math.min(
             Math.max(
                 52,
+                rows.reduce((max, row) => {
+                    if (Array.isArray(row)) return Math.max(max, flattenRunsLength(row));
+                    return Math.max(max, String(row?.text || "").length);
+                }, 0) + 4,
+            ),
+            maxWidth,
+        ),
+    };
+}
+
+export function selectReasoningEffortPickerModal(state, maxWidth = 64) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "reasoningEffortPicker") return null;
+
+    const items = Array.isArray(modal.items) ? modal.items : [];
+    const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
+    const contentWidth = Math.max(24, maxWidth - 4);
+
+    const rows = items.map((item, index) => {
+        const isSelected = index === selectedIndex;
+        const labelRuns = fitRuns([
+            { text: "· ", color: "gray" },
+            { text: String(item?.label || item?.id || "effort"), color: "white", bold: true },
+            ...(item?.isDefault ? [{ text: " ← model default", color: "gray" }] : []),
+        ], contentWidth);
+        return isSelected
+            ? buildActiveHighlightLine(labelRuns.map((run) => run.text).join("").padEnd(contentWidth, " "))
+            : labelRuns;
+    });
+
+    const selectedItem = items[selectedIndex] || null;
+    const modelItem = modal.modelItem || null;
+    const detailsLines = [
+        [{ text: modelItem?.modelName || modelItem?.qualifiedName || "Selected model", color: "white", bold: true }],
+        [{ text: `${modelItem?.providerId || "provider"} (${modelItem?.providerType || "provider"})`, color: "gray" }],
+        [{ text: "", color: "gray" }],
+        [{ text: selectedItem?.id ? `Using reasoning effort: ${selectedItem.id}` : "Choose an effort.", color: "white" }],
+    ];
+
+    return {
+        title: modal.title || "Select reasoning effort",
+        rows,
+        selectedRowIndex: selectedIndex,
+        detailsTitle: "Reasoning Details",
+        detailsLines,
+        idealWidth: Math.min(
+            Math.max(
+                46,
                 rows.reduce((max, row) => {
                     if (Array.isArray(row)) return Math.max(max, flattenRunsLength(row));
                     return Math.max(max, String(row?.text || "").length);
@@ -3641,10 +3865,14 @@ function buildSessionStatsLines(state, session, maxWidth) {
             { text: summary.agentId, color: "white" },
         ], w));
     }
-    if (summary.model) {
+    const summaryModelLabel = shortModelReasoningLabel(
+        summary.model || session.model,
+        summary.reasoningEffort || session.reasoningEffort,
+    );
+    if (summaryModelLabel) {
         lines.push(fitRuns([
             { text: "Model    ", color: "cyan", bold: true },
-            { text: summary.model, color: "white" },
+            { text: summaryModelLabel, color: "white" },
         ], w));
     }
     if (session.createdAt) {

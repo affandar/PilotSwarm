@@ -141,6 +141,8 @@ describe("session owner catalog", () => {
             }));
             await catalog.initialize();
             await catalog.createSession(sessionId, {
+                model: "owner-test:test-model",
+                reasoningEffort: "xhigh",
                 owner: {
                     provider: "test",
                     subject: `${sessionId}-subject`,
@@ -155,6 +157,11 @@ describe("session owner catalog", () => {
             assert(view, "management list should include the owned session");
             assertEqual(view.owner?.displayName, "Managed Owner", "management view should expose owner display name");
             assertEqual(view.owner?.email, "managed@example.com", "management view should expose owner email");
+            assertEqual(view.model, "owner-test:test-model", "management view should expose the canonical model id");
+            assertEqual(view.reasoningEffort, "xhigh", "management view should expose reasoning effort");
+
+            const singleView = await mgmt.getSession(sessionId);
+            assertEqual(singleView?.reasoningEffort, "xhigh", "management getSession should expose reasoning effort");
         } finally {
             await mgmt.stop().catch(() => {});
             await catalog.close();
@@ -177,8 +184,8 @@ describe("session owner catalog", () => {
                 email: "stats-owner@example.com",
                 displayName: "Stats Owner",
             };
-            await catalog.createSession(firstSessionId, { model: "model-a", owner });
-            await catalog.createSession(secondSessionId, { model: "model-b", owner });
+            await catalog.createSession(firstSessionId, { model: "model-a", reasoningEffort: "medium", owner });
+            await catalog.createSession(secondSessionId, { model: "model-b", reasoningEffort: "xhigh", owner });
             await catalog.createSession(unownedSessionId, { model: "model-a" });
             await catalog.upsertSessionMetricSummary(firstSessionId, {
                 tokensInputIncrement: 100,
@@ -203,8 +210,8 @@ describe("session owner catalog", () => {
             assertEqual(owned.totalTokensInput, 300, "owned bucket should sum input tokens");
             assertEqual(owned.totalSnapshotSizeBytes, 3072, "owned bucket should sum snapshots");
             assertEqual(owned.cacheHitRatio, 50 / 300, "owned bucket should derive cache ratio");
-            assert(owned.byModel.some((row) => row.model === "model-a" && row.sessionIds.includes(firstSessionId)), "model-a row should include first session id");
-            assert(owned.byModel.some((row) => row.model === "model-b" && row.sessionIds.includes(secondSessionId)), "model-b row should include second session id");
+            assert(owned.byModel.some((row) => row.model === "model-a:medium" && row.sessionIds.includes(firstSessionId)), "model-a:medium row should include first session id");
+            assert(owned.byModel.some((row) => row.model === "model-b:xhigh" && row.sessionIds.includes(secondSessionId)), "model-b:xhigh row should include second session id");
 
             const unowned = stats.users.find((user) => user.ownerKind === "unowned" && user.sessionIds.includes(unownedSessionId));
             assert(unowned, "unowned stats bucket should be present");

@@ -8,6 +8,7 @@
 | claude-sonnet-4-6 | Anthropic (BYOK) | ✅ | ✅ | ✅ | ✅ | None | **97% (174/180)** | **1164s** | Tied best & fastest. Zero model-specific failures. |
 | FW-GLM-5 | Azure AI Foundry | ✅ | ✅ | ✅ | ✅ | None | **96% (173/180)** | 1237s | Reliable. Zero model-specific failures. |
 | gpt-5.1-chat | Azure AI Foundry | ⚠️ | ✅ | ❌ | ✅ | Strict | 96% (173/180) | 1294s | 1 model-specific failure (session-policy sub-agent). Latency spikes. |
+| gpt-5.5 | GitHub Copilot | ? | ✅ | ? | ? | None observed in smoke | Smoke only | ~4s | 2026-05-01: Direct Copilot SDK streaming and PilotSwarm full-stack smoke both returned `PONG`; model is available via SDK and registered in `.model_providers*.json`. Full matrix not yet run. |
 | model-router | Azure AI Foundry | ⚠️ | ✅ | ? | ✅ | Varies | 94% (170/180) | 1443s | 2 multi-worker failures. Slowest. |
 | Kimi-K2.5 | Azure AI Foundry | ⚠️ | ✅ | ? | ✅ | None | **93% (167/180)** | 1446s | 4 model-specific failures (multi-worker, policy). Slowest. |
 
@@ -65,6 +66,8 @@ Timer context: {seconds}s timer (reason: "{reason}"), {elapsed}s elapsed, {remai
 - 2026-04-29: Hardened the default base agent prompt to explicitly close task-scoped sub-agents with `complete_agent` once their assigned task is done and no further conversation with that child is needed. Follow-up adjustment: the rule now explicitly defers when active user/task instructions say to keep the child alive, send follow-ups, or not call `complete_agent`, so keep-alive and parent-child roundtrip workflows can intentionally hold children open. Expected behavior: parents harvest/summarize the child result, then promptly complete the child unless the current task requires keeping it alive. Not model-specific; no compatibility-matrix change.
 
 - 2026-04-29: Clarified the default facts prompt after spawn-tree visibility broadened. Session-scoped facts are now described as readable by the whole spawn tree, and `shared=true` is reserved for facts that must persist across unrelated sessions/spawn trees. Expected behavior: peer agents use session-scoped facts for intra-tree handoffs instead of overusing global shared facts. Not model-specific; no compatibility-matrix change.
+
+- 2026-05-01: Extended default sub-agent model-selection guidance so agents know `list_available_models` now advertises supported/default reasoning efforts and `spawn_agent(reasoning_effort=...)` can select the child session's reasoning power. Expected behavior: agents use exact listed `provider:model` values and exact listed reasoning efforts, preferring the model default unless deeper reasoning is needed or requested. Not model-specific; no compatibility-matrix change.
 
 ### Other Options Considered (not implemented)
 - **Option A (dual-action):** "You MUST do BOTH: 1. Reply with text. 2. Call wait." — Not tried, likely same result with GPT-5.1.

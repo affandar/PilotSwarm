@@ -4,6 +4,7 @@ export const FOCUS_REGIONS = {
     INSPECTOR: "inspector",
     ACTIVITY: "activity",
     PROMPT: "prompt",
+    ADMIN: "admin",
 };
 
 export const INSPECTOR_TABS = ["sequence", "logs", "nodes", "history", "files", "stats"];
@@ -70,6 +71,14 @@ export const UI_COMMANDS = {
     OPEN_HISTORY_FORMAT: "openHistoryFormat",
     REFRESH_EXECUTION_HISTORY: "refreshExecutionHistory",
     EXPORT_EXECUTION_HISTORY: "exportExecutionHistory",
+    // Admin Console — swaps out sessions+chat for the per-user admin view.
+    OPEN_ADMIN_CONSOLE: "openAdminConsole",
+    CLOSE_ADMIN_CONSOLE: "closeAdminConsole",
+    ADMIN_REFRESH_PROFILE: "adminRefreshProfile",
+    ADMIN_BEGIN_EDIT_GHCP_KEY: "adminBeginEditGhcpKey",
+    ADMIN_CANCEL_EDIT_GHCP_KEY: "adminCancelEditGhcpKey",
+    ADMIN_SAVE_GHCP_KEY: "adminSaveGhcpKey",
+    ADMIN_CLEAR_GHCP_KEY: "adminClearGhcpKey",
 };
 
 export function cycleValue(values, current, delta) {

@@ -1,5 +1,6 @@
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
+import type { ReasoningEffort } from "./model-providers.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -63,6 +64,13 @@ function failureToolResult(error: unknown) {
         error: message,
         toolTelemetry: {},
     };
+}
+
+function normalizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
+    const effort = String(value || "").trim().toLowerCase();
+    return effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh"
+        ? effort
+        : undefined;
 }
 
 function isBenignPostCompletionQueryError(eventData: any): boolean {
@@ -213,6 +221,7 @@ export class ManagedSession {
                 "This output is the authoritative source for model selection. " +
                 "Use this when choosing the best model for a sub-agent task, or when the user asks about available models. " +
                 "If you plan to pass spawn_agent(model=...), you must choose an exact provider:model value from this list and must not invent or shorten names. " +
+                "Models may also list supported reasoning efforts; pass spawn_agent(reasoning_effort=...) only with one of those listed values. " +
                 "When choosing a model for a sub-agent, prefer lower-cost models for simple tasks " +
                 "and higher-cost models for complex reasoning tasks.",
             parameters: {
@@ -247,6 +256,7 @@ export class ManagedSession {
                 "Call ps_list_agents to see all available named agents you CAN spawn. " +
                 "By default, sub-agents inherit the parent's model. " +
                 "If you want to override the model, call list_available_models first and use only an exact provider:model value returned there. " +
+                "If you want to override reasoning power, also use only a reasoning_effort value listed for that model. " +
                 "Never invent, guess, or shorten model names.",
             parameters: {
                 type: "object",
@@ -262,6 +272,11 @@ export class ManagedSession {
                     model: {
                         type: "string",
                         description: "Optional exact provider:model override from list_available_models (e.g. 'anthropic:claude-sonnet-4-6'). Do not invent or shorten model names. If omitted, inherits parent's model.",
+                    },
+                    reasoning_effort: {
+                        type: "string",
+                        enum: ["low", "medium", "high", "xhigh"],
+                        description: "Optional reasoning effort override for the sub-agent. Call list_available_models first and use only a reasoning value listed for the selected model. If omitted, inherits the parent's reasoning effort.",
                     },
                     system_message: {
                         type: "string",
@@ -630,6 +645,7 @@ export class ManagedSession {
                 "This output is the authoritative source for model selection. " +
                 "Use this when choosing the best model for a sub-agent task, or when the user asks about available models. " +
                 "If you plan to pass spawn_agent(model=...), you must choose an exact provider:model value from this list and must not invent or shorten names. " +
+                "Models may also list supported reasoning efforts; pass spawn_agent(reasoning_effort=...) only with one of those listed values. " +
                 "When choosing a model for a sub-agent, prefer lower-cost models for simple tasks " +
                 "and higher-cost models for complex reasoning tasks.",
             parameters: {
@@ -653,6 +669,7 @@ export class ManagedSession {
                 "For CUSTOM agents (ad-hoc tasks), pass task instead — no agent_name is needed. " +
                 "Any task you can describe can be spawned as a custom agent; you do not need a skill or pre-configured definition. " +
                 "If you want a different model, call list_available_models first and use only an exact provider:model value from that list. " +
+                "If you want different reasoning power, also use only a reasoning_effort value listed for that model. " +
                 "Never invent, guess, or shorten model names.",
             parameters: {
                 type: "object",
@@ -669,6 +686,11 @@ export class ManagedSession {
                         type: "string",
                         description: "Optional exact provider:model override from list_available_models. Do not invent or shorten model names.",
                     },
+                    reasoning_effort: {
+                        type: "string",
+                        enum: ["low", "medium", "high", "xhigh"],
+                        description: "Optional reasoning effort override from list_available_models for the selected model. If omitted, inherits the parent's reasoning effort.",
+                    },
                     system_message: {
                         type: "string",
                         description: "Optional custom system message. Only for custom agents.",
@@ -684,17 +706,22 @@ export class ManagedSession {
                     },
                 },
             },
-            handler: async (args: { agent_name?: string; task?: string; model?: string; system_message?: string; tool_names?: string[]; title?: string }) => {
+            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; system_message?: string; tool_names?: string[]; title?: string }) => {
                 if (!args.agent_name && !args.task) {
                     return "Error: either agent_name or task is required.";
                 }
+                const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
+                if (args.reasoning_effort && !reasoningEffort) {
+                    return "Error: reasoning_effort must be one of low, medium, high, xhigh.";
+                }
                 if (controlBridge) {
-                    return await controlBridge.spawnAgent(args);
+                    return await controlBridge.spawnAgent({ ...args, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) });
                 }
                 turnState.pendingActions.push({
                     type: "spawn_agent",
                     task: args.task || "",
                     model: args.model,
+                    reasoningEffort,
                     systemMessage: args.system_message,
                     toolNames: args.tool_names,
                     agentName: args.agent_name,

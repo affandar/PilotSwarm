@@ -250,6 +250,22 @@ export class BrowserPortalTransport {
         });
     }
 
+    async getCurrentUserProfile() {
+        return this.rpc("getCurrentUserProfile", {});
+    }
+
+    async setCurrentUserProfileSettings({ settings } = {}) {
+        return this.rpc("setCurrentUserProfileSettings", {
+            settings: settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {},
+        });
+    }
+
+    async setCurrentUserGitHubCopilotKey({ key } = {}) {
+        return this.rpc("setCurrentUserGitHubCopilotKey", {
+            key: typeof key === "string" ? key : null,
+        });
+    }
+
     async getSessionSkillUsage(sessionId, opts) {
         return this.rpc("getSessionSkillUsage", {
             sessionId,

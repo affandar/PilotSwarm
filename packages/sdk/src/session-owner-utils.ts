@@ -2,6 +2,21 @@ import type { SessionOwnerInfo } from "./types.js";
 
 export type SessionOwnerKind = "user" | "system" | "unowned";
 
+/**
+ * Synthetic principal used by the native TUI / non-authenticated local
+ * deployments so user-scoped surfaces (Admin Console, profile settings,
+ * per-user GitHub Copilot key) have a stable identity to attach to.
+ *
+ * Portal / authenticated deployments derive the real principal from the
+ * portal auth provider — never use this constant in those code paths.
+ */
+export const LOCAL_DEFAULT_USER_PRINCIPAL: Readonly<SessionOwnerInfo> = Object.freeze({
+    provider: "local",
+    subject: "default",
+    email: null,
+    displayName: "Local User",
+});
+
 export interface SessionOwnerFilterOptions {
     includeSystem?: boolean;
     ownerQuery?: string | null;

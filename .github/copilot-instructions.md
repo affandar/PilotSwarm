@@ -163,6 +163,7 @@ Current overlap to preserve unless intentionally changed:
 - `x` in the files inspector deletes the selected artifact after confirmation
 - `o` in the files inspector opens the selected file in the OS default app
 - `f` in the logs inspector opens the log-filter dialog, `f` in the files inspector opens the files-filter dialog, and `f` in the stats inspector cycles between session, fleet, and users views
+- `Shift+A` opens or closes the per-user Admin Console (profile + GitHub Copilot key); inside the console `e` edits the key, `c` clears it, `r` refreshes the profile, and `Esc` returns to the workspace
 
 ## TUI Maintenance
 

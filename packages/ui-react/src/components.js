@@ -5,9 +5,10 @@ import {
     computeLegacyLayout,
     getPromptInputRows,
     selectActiveSession,
+    selectAdminConsole,
+    selectAdminGhcpKeyEditorModal,
     selectChatPaneChrome,
     selectChatLines,
-    selectOutboxOverlayLines,
     selectActivityPane,
     selectArtifactUploadModal,
     selectArtifactPickerModal,
@@ -219,15 +220,15 @@ function buildWorkspacePaneFrames(layout) {
     const activityY = layout.inspectorHidden ? 0 : layout.inspectorPaneHeight + PANE_GAP_Y;
 
     return {
-        sessions: layout.leftHidden || layout.sessionHidden ? null : {
+        sessions: layout.leftHidden ? null : {
             x: leftX,
             y: 0,
             width: layout.leftWidth,
             height: layout.sessionPaneHeight,
         },
-        chat: layout.leftHidden || layout.chatHidden ? null : {
+        chat: layout.leftHidden ? null : {
             x: leftX,
-            y: layout.sessionHidden ? 0 : layout.sessionPaneHeight + PANE_GAP_Y,
+            y: layout.sessionPaneHeight + PANE_GAP_Y,
             width: layout.leftWidth,
             height: layout.chatPaneHeight,
         },
@@ -311,9 +312,6 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             activeSessionId,
             activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
-            activeOutbox: activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
-                ? state.outbox.bySessionId[activeSessionId]
-                : [],
             branding: state.branding,
             connectionError: state.connection.error,
             connectionMode: state.connection.mode,
@@ -340,17 +338,11 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             history: {
                 bySessionId: historyMap,
             },
-            outbox: {
-                bySessionId: chatView.activeSessionId
-                    ? { [chatView.activeSessionId]: chatView.activeOutbox }
-                    : {},
-            },
         };
     }, [
         chatView.activeHistory,
         chatView.activeSessionId,
         chatView.activeSession,
-        chatView.activeOutbox,
         chatView.branding,
         chatView.connectionError,
         chatView.connectionMode,
@@ -375,10 +367,6 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             { text: "Check env credentials and model provider config, then relaunch.", color: "yellow" },
         ]
         : selectChatLines(selectorState, contentWidth)), [chatView.branding.splash, chatView.connectionError, contentWidth, selectorState, startupError]);
-    const outboxLines = React.useMemo(
-        () => startupError ? [] : selectOutboxOverlayLines(selectorState, contentWidth),
-        [contentWidth, selectorState, startupError],
-    );
 
     return React.createElement(platform.Panel, {
         title: chrome.title,
@@ -388,7 +376,6 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         width,
         height,
         lines: elements,
-        bottomStickyLines: outboxLines,
         scrollOffset: chatView.chatScroll,
         scrollMode: "bottom",
         paneId: "chat",
@@ -848,32 +835,22 @@ const PromptBar = React.memo(function PromptBar({ controller, rows }) {
             focused: state.ui.focusRegion === "prompt",
             answeringQuestion: Boolean(activeSession?.pendingQuestion?.question),
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
-            selectedOutboxPhase: state.ui.promptEdit?.sessionId === activeSessionId
-                ? state.ui.promptEdit?.phase || null
-                : null,
             hasOutbox: outbox.length > 0,
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
         };
     }, shallowEqualObject);
-    const selectedQueued = promptState.selectedOutboxPhase === "queued";
-    const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
     return React.createElement(platform.Input, {
-        label: promptState.answeringQuestion ? "answer" : selectedCancelling ? "cancelling" : selectedQueued ? "queued" : promptState.editingPending ? "pending" : "you",
+        label: promptState.answeringQuestion ? "answer" : promptState.editingPending ? "pending" : "you",
         value: promptState.prompt,
         cursorIndex: promptState.promptCursor,
         focused: promptState.focused,
         placeholder: promptState.answeringQuestion
             ? "Type an answer and press Enter"
             : promptState.editingPending
-                ? selectedCancelling
-                    ? "Cancellation requested"
-                    : selectedQueued
-                    ? "Queued prompt selected, press d to delete"
-                    : "Edit pending prompt, Enter sends batch, Esc cancels"
+                ? "Edit pending prompt, Enter sends batch, Esc cancels"
                 : promptState.hasOutbox
                     ? "Type a message and press Enter to queue it"
             : "Type a message and press Enter",
-        readOnly: selectedQueued || selectedCancelling,
         rows,
     });
 });
@@ -1509,6 +1486,179 @@ function ConfirmModalContainer({ controller }) {
     return React.createElement(ConfirmModal, { state });
 }
 
+function formatAdminPrincipalLabelTui(principal) {
+    if (!principal) return "Unknown user";
+    const name = String(principal.displayName || "").trim();
+    const email = String(principal.email || "").trim();
+    if (name && email && name.toLowerCase() !== email.toLowerCase()) return `${name} <${email}>`;
+    if (name) return name;
+    if (email) return email;
+    const provider = String(principal.provider || "").trim();
+    const subject = String(principal.subject || "").trim();
+    return [provider, subject].filter(Boolean).join(":") || "user";
+}
+
+function buildAdminConsoleLines(view) {
+    const lines = [];
+    lines.push([
+        { text: "Signed in as ", color: "gray" },
+        { text: formatAdminPrincipalLabelTui(view.principal), color: "white", bold: true },
+    ]);
+    if (view.principal?.provider || view.principal?.subject) {
+        lines.push([
+            { text: "Principal     ", color: "gray" },
+            { text: `${view.principal?.provider || "?"}:${view.principal?.subject || "?"}`, color: "gray" },
+        ]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+
+    if (view.loadError) {
+        lines.push([{ text: `! ${view.loadError}`, color: "red", bold: true }]);
+        lines.push([{ text: "", color: "gray" }]);
+    }
+
+    lines.push([{ text: "GitHub Copilot key", color: "cyan", bold: true }]);
+    lines.push([
+        { text: "Status  ", color: "gray" },
+        {
+            text: view.ghcpKey.configured ? "configured (overrides env GITHUB_TOKEN)" : "not configured (env GITHUB_TOKEN fallback)",
+            color: view.ghcpKey.configured ? "green" : "yellow",
+        },
+    ]);
+    lines.push([
+        { text: "        ", color: "gray" },
+        { text: view.ghcpKey.statusText, color: view.ghcpKey.error ? "red" : "gray" },
+    ]);
+    lines.push([{ text: "", color: "gray" }]);
+
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    if (view.ghcpKey.editing) {
+        lines.push([
+            { text: " Enter ", color: "green", bold: true },
+            { text: "save  ", color: "gray" },
+            { text: "Esc ", color: "red", bold: true },
+            { text: "cancel", color: "gray" },
+        ]);
+    } else {
+        lines.push([
+            { text: " e ", color: "green", bold: true },
+            { text: view.ghcpKey.configured ? "replace key  " : "set key  ", color: "gray" },
+            ...(view.ghcpKey.configured
+                ? [{ text: "c ", color: "yellow", bold: true }, { text: "clear key  ", color: "gray" }]
+                : []),
+            { text: "r ", color: "cyan", bold: true },
+            { text: view.loading ? "refreshing..." : "refresh", color: "gray" },
+        ]);
+        lines.push([
+            { text: " Esc ", color: "red", bold: true },
+            { text: "close console and return to workspace", color: "gray" },
+        ]);
+    }
+
+    return lines;
+}
+
+function AdminConsolePanel({ controller, width, height, frame }) {
+    const platform = useUiPlatform();
+    const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
+    const lines = React.useMemo(() => buildAdminConsoleLines(view), [view]);
+    return React.createElement(platform.Panel, {
+        title: "Admin Console",
+        color: "cyan",
+        focused: true,
+        width,
+        height,
+        lines,
+        scrollOffset: 0,
+        scrollMode: "top",
+        frame,
+        fillColor: "surface",
+    });
+}
+
+function AdminGhcpKeyEditorModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectAdminGhcpKeyEditorModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(5, Math.min(6, (modal.detailsLines?.length || 0) + 2, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(7, Math.min(8, (viewport.height || 40) - detailsHeight - 8));
+
+    const statusLines = [];
+    if (modal.error) {
+        statusLines.push([{ text: `! ${modal.error}`, color: "red", bold: true }]);
+    } else if (modal.saving) {
+        statusLines.push([{ text: "Saving...", color: "yellow" }]);
+    }
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Input, {
+                label: "key",
+                // Render a masked value so on-screen viewers cannot
+                // capture the secret. The cursor index is preserved as-is
+                // because the masked length matches the source length.
+                value: modal.displayValue,
+                cursorIndex: modal.cursorIndex,
+                focused: !modal.saving,
+                placeholder: modal.placeholder,
+                rows: 1,
+                readOnly: modal.saving,
+            }),
+            statusLines.length > 0
+                ? React.createElement(platform.Panel, {
+                    title: "Status",
+                    color: modal.error ? "red" : "yellow",
+                    focused: false,
+                    width,
+                    height: 3,
+                    lines: statusLines,
+                    scrollOffset: 0,
+                    scrollMode: "top",
+                    marginBottom: 1,
+                    fillColor: "surface",
+                })
+                : null,
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Help",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function AdminGhcpKeyEditorModalContainer({ controller }) {
+    // Project the slice this overlay actually depends on so the modal
+    // does not re-render on unrelated state churn (orchestration events,
+    // skill usage, etc.).
+    const state = useControllerSelector(controller, (rootState) => ({
+        admin: rootState.admin,
+    }), shallowEqualObject);
+    return React.createElement(AdminGhcpKeyEditorModal, { state });
+}
+
 export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
     const platform = useUiPlatform();
     const layoutState = useControllerSelector(controller, (state) => ({
@@ -1520,6 +1670,8 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         themeId: state.ui.themeId,
         viewportWidth: state.ui.layout?.viewportWidth ?? 120,
         viewportHeight: state.ui.layout?.viewportHeight ?? 40,
+        adminVisible: Boolean(state.admin?.visible),
+        adminEditing: Boolean(state.admin?.ghcpKey?.editing),
     }), shallowEqualObject);
     const viewportWidth = layoutState.viewportWidth;
     const viewportHeight = layoutState.viewportHeight;
@@ -1550,7 +1702,14 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
 
     return React.createElement(platform.Root, null,
         React.createElement(platform.Row, { flexGrow: 1 },
-            filesFullscreenActive
+            layoutState.adminVisible
+                ? React.createElement(AdminConsolePanel, {
+                    controller,
+                    width: layout.totalWidth,
+                    height: workspaceHeight,
+                    frame: frames.fullscreenPane,
+                })
+                : filesFullscreenActive
                 ? React.createElement(FilesBrowser, {
                     controller,
                     width: layout.totalWidth,
@@ -1591,7 +1750,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
                                 })
                 : [
                     !layout.leftHidden && React.createElement(platform.Column, { key: "left", width: layout.leftWidth, marginRight: layout.rightHidden ? 0 : PANE_GAP_X, flexGrow: 0 },
-                        !layout.sessionHidden && React.createElement(SessionList, {
+                        React.createElement(SessionList, {
                             controller,
                             width: layout.leftWidth,
                             height: layout.sessionPaneHeight,
@@ -1599,7 +1758,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
                             frame: frames.sessions,
                             versionLabel,
                         }),
-                        !layout.chatHidden && React.createElement(ChatPane, {
+                        React.createElement(ChatPane, {
                             controller,
                             width: layout.leftWidth,
                             height: layout.chatPaneHeight,
@@ -1636,5 +1795,6 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(FilesFilterModalContainer, { controller }),
         React.createElement(HistoryFormatModalContainer, { controller }),
         React.createElement(ConfirmModalContainer, { controller }),
+        React.createElement(AdminGhcpKeyEditorModalContainer, { controller }),
     );
 }

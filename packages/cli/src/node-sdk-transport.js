@@ -9,6 +9,7 @@ import {
     PilotSwarmClient,
     PilotSwarmManagementClient,
     SessionBlobStore,
+    LOCAL_DEFAULT_USER_PRINCIPAL,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
@@ -399,8 +400,29 @@ function buildTerminalSendError(sessionId, session) {
     return `Session ${sessionId.slice(0, 8)} is a terminal orchestration instance (${statusLabel}) and cannot accept new messages.`;
 }
 
+function normalizeUserPrincipal(principal) {
+    const provider = String(principal?.provider || "").trim();
+    const subject = String(principal?.subject || "").trim();
+    if (!provider || !subject) return { ...LOCAL_DEFAULT_USER_PRINCIPAL };
+    const email = String(principal?.email || "").trim();
+    const displayName = String(principal?.displayName || "").trim();
+    return {
+        provider,
+        subject,
+        email: email || null,
+        displayName: displayName || null,
+    };
+}
+
+function resolveUserPrincipalFor(transport, principal) {
+    if (principal && principal.provider && principal.subject) {
+        return normalizeUserPrincipal(principal);
+    }
+    return normalizeUserPrincipal(transport.currentUser);
+}
+
 export class NodeSdkTransport {
-    constructor({ store, mode }) {
+    constructor({ store, mode, currentUser } = {}) {
         this.store = store;
         this.mode = mode;
         this.client = null;
@@ -418,6 +440,27 @@ export class NodeSdkTransport {
         this.logSubscribers = new Set();
         this.logEntryCounter = 0;
         this.kubectlAvailable = null;
+        // The native TUI runs as the local user. Portal deployments override
+        // this per-RPC from the auth context inside PortalRuntime.call().
+        this.currentUser = currentUser ? normalizeUserPrincipal(currentUser) : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
+    }
+
+    /**
+     * Replace the principal that user-scoped RPCs (Admin Console,
+     * profile settings, GitHub Copilot key) attach to. Local TUI hosts
+     * may set this once at startup; portal hosts pass principals per
+     * RPC instead and never call this method.
+     */
+    setCurrentUser(principal) {
+        if (!principal || !principal.provider || !principal.subject) {
+            this.currentUser = { ...LOCAL_DEFAULT_USER_PRINCIPAL };
+            return;
+        }
+        this.currentUser = normalizeUserPrincipal(principal);
+    }
+
+    getCurrentUserPrincipal() {
+        return { ...this.currentUser };
     }
 
     async start() {
@@ -550,6 +593,37 @@ export class NodeSdkTransport {
         return this.mgmt.getUserStats(opts);
     }
 
+    /**
+     * Read the current user's profile (settings + ghcp key-set flag).
+     * The portal supplies `principal` from the auth context per-request;
+     * the native TUI omits it and falls back to the transport's
+     * `currentUser` (defaults to LOCAL_DEFAULT_USER_PRINCIPAL).
+     */
+    async getCurrentUserProfile({ principal } = {}) {
+        const resolved = resolveUserPrincipalFor(this, principal);
+        return this.mgmt.getUserProfile(resolved);
+    }
+
+    /**
+     * Replace the current user's profile_settings JSON document.
+     */
+    async setCurrentUserProfileSettings({ principal, settings } = {}) {
+        const resolved = resolveUserPrincipalFor(this, principal);
+        const safeSettings = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
+        return this.mgmt.setUserProfileSettings(resolved, safeSettings);
+    }
+
+    /**
+     * Set or clear the per-user GitHub Copilot key. Pass `null` (or an
+     * all-whitespace string) to clear the override and revert to the
+     * worker's env-supplied default.
+     */
+    async setCurrentUserGitHubCopilotKey({ principal, key } = {}) {
+        const resolved = resolveUserPrincipalFor(this, principal);
+        const normalized = typeof key === "string" && key.trim().length > 0 ? key : null;
+        return this.mgmt.setUserGitHubCopilotKey(resolved, normalized);
+    }
+
     async getSessionSkillUsage(sessionId, opts) {
         return this.mgmt.getSessionSkillUsage(sessionId, opts);
     }
@@ -582,20 +656,41 @@ export class NodeSdkTransport {
         return this.mgmt.getExecutionHistory(sessionId, executionId);
     }
 
-    async createSession({ model, owner } = {}) {
+    async assertSessionModelCreatable({ model, owner } = {}) {
         const effectiveModel = model || this.mgmt.getDefaultModel();
+        if (!effectiveModel || typeof this.mgmt.getModelCredentialStatus !== "function") return effectiveModel;
+
+        const credentialStatus = this.mgmt.getModelCredentialStatus(effectiveModel);
+        if (credentialStatus.providerType !== "github") return effectiveModel;
+        if (credentialStatus.credentialAvailable) return effectiveModel;
+
+        const principal = owner ? normalizeUserPrincipal(owner) : resolveUserPrincipalFor(this, null);
+        const profile = principal
+            ? await this.mgmt.getUserProfile(principal).catch(() => null)
+            : null;
+        if (profile?.githubCopilotKeySet === true) return effectiveModel;
+
+        throw new Error(
+            "GitHub Copilot key not configured. Set GITHUB_TOKEN on the worker or set your per-user GitHub Copilot key in Admin before creating GitHub Copilot model sessions.",
+        );
+    }
+
+    async createSession({ model, reasoningEffort, owner } = {}) {
+        const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSession({
             ...(effectiveModel ? { model: effectiveModel } : {}),
+            ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(owner ? { owner } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
-        return { sessionId: session.sessionId, model: effectiveModel };
+        return { sessionId: session.sessionId, model: effectiveModel, reasoningEffort: reasoningEffort || undefined };
     }
 
-    async createSessionForAgent(agentName, { model, title, splash, initialPrompt, owner } = {}) {
-        const effectiveModel = model || this.mgmt.getDefaultModel();
+    async createSessionForAgent(agentName, { model, reasoningEffort, title, splash, initialPrompt, owner } = {}) {
+        const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSessionForAgent(agentName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),
+            ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(title ? { title } : {}),
             ...(splash ? { splash } : {}),
             ...(initialPrompt ? { initialPrompt } : {}),
@@ -605,6 +700,7 @@ export class NodeSdkTransport {
         return {
             sessionId: session.sessionId,
             model: effectiveModel,
+            reasoningEffort: reasoningEffort || undefined,
             agentName,
         };
     }

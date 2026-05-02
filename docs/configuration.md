@@ -327,7 +327,9 @@ PilotSwarm uses the local `.model_providers.json` to configure LLM providers. Mo
 
 For BYOK (bring-your-own-key) providers like Azure OpenAI, edit the local `.model_providers.json` and set the corresponding API key in `.env`.
 
-Providers whose API key env var is not set are **automatically excluded** from the model list — they won't appear in the TUI model picker or the `list_available_models` tool. This means you only need credentials for the providers you actually use.
+BYOK providers whose API key env var is not set are **automatically excluded** from the model list — they won't appear in the TUI model picker or the `list_available_models` tool. This means you only need credentials for the providers you actually use.
+
+The `github-copilot` provider is different: configured GitHub Copilot models remain visible even when the worker-wide `GITHUB_TOKEN` env var is not set, because a user may supply a per-user key from the Admin Console. Creating a session with a GitHub Copilot model requires either the worker env `GITHUB_TOKEN` or the session owner's per-user GitHub Copilot key. Non-GitHub provider models can still be created when no GitHub key is configured.
 
 ```bash
 # Get a GitHub token (easiest path)
@@ -335,6 +337,31 @@ gh auth token
 ```
 
 The token is only needed on the **worker** side. Clients don't need it.
+
+### Per-User GitHub Copilot Key Override
+
+In addition to the worker-wide `GITHUB_TOKEN`, each user can store their own
+GitHub Copilot key in their CMS user profile. When a session runs on a model
+served by the `github-copilot` provider, the worker first looks up the
+session owner's per-user key and uses it as the GitHub token for that
+session's `CopilotClient`. If the user has not configured a key (or the
+session has no resolvable owner), the worker falls back to the env-supplied
+`GITHUB_TOKEN`. If neither is available, creating a session with a
+`github-copilot:*` model fails with a clear configuration error; other
+configured providers are unaffected.
+
+Users manage their key from the **Admin Console**:
+
+- Native TUI: press `Shift+A` to open the console, then `e` to set or
+  replace the key, `c` to clear it, `r` to refresh, `Esc` to close.
+- Portal: click the `Admin` button in the toolbar, then use the inline
+  form to set, clear, or refresh.
+
+The raw key is never exposed through the public profile API — both the
+management client (`getUserProfile`) and the shared UI selector
+(`selectAdminConsole`) only carry a `githubCopilotKeySet` boolean. The
+key text is read internally only by the worker's per-session token
+resolver.
 
 ## npm Scripts
 

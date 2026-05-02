@@ -8,17 +8,40 @@
                 {
                     "name": "claude-opus-4.7",
                     "description": "Claude Opus 4.7 (latest). Most capable model. Deep reasoning, complex multi-step tasks, nuanced analysis.",
-                    "cost": "high"
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 },
                 {
                     "name": "claude-opus-4.6",
                     "description": "Claude Opus 4.6. Most capable model. Deep reasoning, complex multi-step tasks, nuanced analysis. Use for hard problems where quality matters most.",
-                    "cost": "high"
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 },
                 {
                     "name": "claude-sonnet-4.6",
                     "description": "Claude Sonnet 4.6. Strong all-rounder. Good balance of capability and speed. Use for general coding, analysis, and multi-step tasks.",
-                    "cost": "medium"
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "medium",
+                        "high"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                },
+                {
+                    "name": "gpt-5.5",
+                    "description": "GPT-5.5 via GitHub Copilot. High-capability GPT model for advanced reasoning and coding tasks.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "medium",
+                        "xhigh"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 }
             ]
         },
@@ -31,7 +54,11 @@
                 {
                     "name": "model-router",
                     "description": "Azure Model Router. Auto-selects the best model per request. Good default for diverse workloads.",
-                    "cost": "medium"
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 }
             ]
         },
@@ -44,7 +71,11 @@
                 {
                     "name": "FW-GLM-5",
                     "description": "FW-GLM-5. Preview model via Azure AI. DataZoneStandard deployment, 100K TPM.",
-                    "cost": "medium"
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 }
             ]
         },
@@ -57,7 +88,11 @@
                 {
                     "name": "Kimi-K2.5",
                     "description": "Kimi-K2.5. Strong reasoning and coding model via Azure AI.",
-                    "cost": "medium"
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 }
             ]
         },
@@ -70,17 +105,30 @@
                 {
                     "name": "gpt-5.4",
                     "description": "GPT-5.4 via Azure OpenAI. High reasoning effort, advanced multi-turn and coding tasks.",
-                    "cost": "high"
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "medium",
+                        "xhigh"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 },
                 {
                     "name": "gpt-5.4-mini",
                     "description": "GPT-5.4 Mini via Azure OpenAI. Faster and cheaper than full GPT-5.4, with stronger general capability than nano for everyday coding and chat tasks.",
-                    "cost": "medium"
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 },
                 {
                     "name": "gpt-5.4-nano",
                     "description": "GPT-5.4 Nano via Azure OpenAI. Lightweight, fast, cost-efficient for simpler tasks.",
-                    "cost": "low"
+                    "cost": "low",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 }
             ]
         },
@@ -93,12 +141,21 @@
                 {
                     "name": "claude-opus-4-6",
                     "description": "Claude Opus 4.6 (latest). Most capable. Deep reasoning, complex multi-step tasks.",
-                    "cost": "high"
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "medium"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 },
                 {
                     "name": "claude-sonnet-4-6",
                     "description": "Claude Sonnet 4.6 (latest). Fast, capable all-rounder.",
-                    "cost": "medium"
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "medium",
+                        "high"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 }
             ]
         }

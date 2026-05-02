@@ -19,6 +19,9 @@ import path from "node:path";
 
 // ─── Types ───────────────────────────────────────────────────────
 
+/** Reasoning effort levels accepted by the Copilot SDK. */
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+
 /** A model entry within a provider. */
 export interface ModelEntry {
     /** Model name (deployment name for Azure). */
@@ -27,6 +30,10 @@ export interface ModelEntry {
     description?: string;
     /** Relative cost tier. */
     cost?: "low" | "medium" | "high";
+    /** Optional reasoning effort levels exposed in the UI for this model. */
+    supportedReasoningEfforts?: ReasoningEffort[];
+    /** Optional default reasoning effort when creating sessions. */
+    defaultReasoningEffort?: ReasoningEffort;
 }
 
 /** A single provider entry in model_providers.json. */
@@ -76,6 +83,10 @@ export interface ModelDescriptor {
     description?: string;
     /** Relative cost tier. */
     cost?: "low" | "medium" | "high";
+    /** Optional reasoning effort levels exposed in the UI for this model. */
+    supportedReasoningEfforts?: ReasoningEffort[];
+    /** Optional default reasoning effort when creating sessions. */
+    defaultReasoningEffort?: ReasoningEffort;
 }
 
 /** Resolved provider info for a specific model — ready to use. */
@@ -122,10 +133,13 @@ export class ModelProviderRegistry {
         this._defaultModel = configuredDefaultModel;
 
         // Filter to providers whose credentials are actually available.
-        // GitHub providers need a resolved githubToken; BYOK providers need a resolved apiKey.
+        // GitHub providers are kept even without an env token because a
+        // per-user key may be supplied later from CMS, and the UX should
+        // still show configured GitHub models. GitHub credential enforcement
+        // happens when creating/resuming a GitHub-backed session.
         this.providers = config.providers.filter(p => {
             if (p.type === "github") {
-                return !!resolveEnvValue(p.githubToken);
+                return true;
             }
             return !!resolveEnvValue(p.apiKey);
         });
@@ -134,6 +148,10 @@ export class ModelProviderRegistry {
         for (const p of this.providers) {
             for (const m of p.models) {
                 const entry: ModelEntry = typeof m === "string" ? { name: m } : m;
+                const supportedReasoningEfforts = normalizeReasoningEfforts(entry.supportedReasoningEfforts);
+                const defaultReasoningEffort = supportedReasoningEfforts.includes(entry.defaultReasoningEffort as ReasoningEffort)
+                    ? entry.defaultReasoningEffort
+                    : undefined;
                 const qualified = `${p.id}:${entry.name}`;
                 const desc: ModelDescriptor = {
                     qualifiedName: qualified,
@@ -142,6 +160,8 @@ export class ModelProviderRegistry {
                     providerType: p.type,
                     description: entry.description,
                     cost: entry.cost,
+                    ...(supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts } : {}),
+                    ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
                 };
                 this.descriptors.set(qualified, desc);
                 this.qualifiedToProvider.set(qualified, p);
@@ -264,8 +284,11 @@ export class ModelProviderRegistry {
             lines.push(`\n## ${group.providerId} (${group.type})`);
             for (const m of group.models) {
                 const costLabel = m.cost ? ` [cost: ${m.cost}]` : "";
+                const reasoningLabel = m.supportedReasoningEfforts?.length
+                    ? ` [reasoning: ${m.supportedReasoningEfforts.join(", ")}${m.defaultReasoningEffort ? `; default: ${m.defaultReasoningEffort}` : ""}]`
+                    : "";
                 const desc = m.description ? ` — ${m.description}` : "";
-                lines.push(`- ${m.qualifiedName}${costLabel}${desc}`);
+                lines.push(`- ${m.qualifiedName}${costLabel}${reasoningLabel}${desc}`);
             }
         }
         lines.push(`\nDefault: ${this._defaultModel || "none"}`);
@@ -352,6 +375,20 @@ function buildFromEnv(): ModelProviderRegistry | null {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
+
+const REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
+
+function normalizeReasoningEfforts(values?: ReasoningEffort[]): ReasoningEffort[] {
+    if (!Array.isArray(values)) return [];
+    const out: ReasoningEffort[] = [];
+    for (const raw of values) {
+        const value = String(raw || "").trim().toLowerCase();
+        if (!REASONING_EFFORTS.has(value)) continue;
+        if (out.includes(value as ReasoningEffort)) continue;
+        out.push(value as ReasoningEffort);
+    }
+    return out;
+}
 
 function resolveEnvValue(value?: string): string | undefined {
     if (!value) return undefined;

@@ -194,5 +194,31 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             userStats: null,
             fetchedAt: 0,
         },
+        admin: {
+            // Whether the Admin Console is taking over the workspace and
+            // hiding the session/chat panes. Persisted only in-memory.
+            visible: false,
+            loading: false,
+            loadError: null,
+            // Public profile snapshot from the management API. Never holds
+            // the raw GitHub Copilot key — only the `githubCopilotKeySet`
+            // boolean flag.
+            profile: null,
+            ghcpKey: {
+                // Editing flag is the single host-neutral signal that the
+                // user is composing a new key. Both the portal's inline
+                // form and the native TUI's overlay render against this.
+                editing: false,
+                draft: "",
+                // cursorIndex is only consumed by the native TUI overlay
+                // (browser <input> elements manage their own cursor). It
+                // is kept in shared state so the controller mutators can
+                // remain host-neutral.
+                cursorIndex: 0,
+                saving: false,
+                error: null,
+                lastSavedAt: 0,
+            },
+        },
     };
 }

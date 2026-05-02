@@ -8,12 +8,14 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assertEqual, assertNotNull, assertThrows } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { TEST_CLAUDE_MODEL, TEST_GPT_MODEL } from "../helpers/fixtures.js";
-import { ModelProviderRegistry } from "../../src/index.ts";
+import { ModelProviderRegistry, PilotSwarmManagementClient } from "../../src/index.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -169,6 +171,125 @@ async function testMissingConfiguredDefaultDoesNotFallback() {
     );
 }
 
+async function testGithubModelsRemainVisibleWithoutEnvToken() {
+    const previousToken = process.env.GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    try {
+        const registry = new ModelProviderRegistry({
+            providers: [
+                {
+                    id: "github-copilot",
+                    type: "github",
+                    githubToken: "env:GITHUB_TOKEN",
+                    models: ["gpt-5.5"],
+                },
+                {
+                    id: "missing-openai",
+                    type: "openai",
+                    baseUrl: "https://example.invalid/openai/v1",
+                    apiKey: "env:MISSING_OPENAI_KEY_FOR_TEST",
+                    models: ["missing-model"],
+                },
+            ],
+        });
+
+        assertNotNull(
+            registry.getDescriptor("github-copilot:gpt-5.5"),
+            "GitHub models should remain visible even when env GITHUB_TOKEN is missing",
+        );
+        assertEqual(
+            registry.getDescriptor("missing-openai:missing-model"),
+            undefined,
+            "non-GitHub providers should still require their API key before becoming visible",
+        );
+        assertEqual(
+            registry.resolve("github-copilot:gpt-5.5")?.githubToken,
+            undefined,
+            "GitHub provider should expose missing env token as undefined for create-time enforcement",
+        );
+    } finally {
+        if (previousToken == null) delete process.env.GITHUB_TOKEN;
+        else process.env.GITHUB_TOKEN = previousToken;
+    }
+}
+
+async function testReasoningEffortMetadata() {
+    const registry = new ModelProviderRegistry({
+        providers: [
+            {
+                id: "github-copilot",
+                type: "github",
+                githubToken: "env:GITHUB_TOKEN",
+                models: [
+                    {
+                        name: "gpt-5.5",
+                        supportedReasoningEfforts: ["medium", "xhigh"],
+                        defaultReasoningEffort: "medium",
+                    },
+                    "legacy-model",
+                ],
+            },
+        ],
+    });
+
+    const gpt55 = registry.getDescriptor("github-copilot:gpt-5.5");
+    assertNotNull(gpt55, "gpt-5.5 descriptor should exist");
+    assertEqual(
+        JSON.stringify(gpt55.supportedReasoningEfforts),
+        JSON.stringify(["medium", "xhigh"]),
+        "supported reasoning efforts should be preserved from model config",
+    );
+    assertEqual(gpt55.defaultReasoningEffort, "medium", "default reasoning effort should be preserved from model config");
+    const summary = registry.getModelSummaryForLLM();
+    assertEqual(summary.includes("[reasoning: medium, xhigh; default: medium]"), true, "LLM model summary should advertise supported and default reasoning efforts");
+
+    const legacy = registry.getDescriptor("github-copilot:legacy-model");
+    assertNotNull(legacy, "legacy descriptor should exist");
+    assertEqual(
+        legacy.supportedReasoningEfforts,
+        undefined,
+        "legacy string model entries should remain backward compatible and omit reasoning metadata",
+    );
+    assertEqual(legacy.defaultReasoningEffort, undefined, "legacy string model entries should not invent a default reasoning effort");
+}
+
+async function testManagementListModelsReasoningMetadata(env) {
+    const modelProvidersPath = path.join(env.baseDir, "model-providers.reasoning-list.json");
+    fs.writeFileSync(modelProvidersPath, JSON.stringify({
+        providers: [{
+            id: "github-copilot",
+            type: "github",
+            githubToken: "env:GITHUB_TOKEN",
+            models: [{
+                name: "gpt-5.5",
+                description: "Reasoning metadata test model.",
+                cost: "high",
+                supportedReasoningEfforts: ["medium", "xhigh"],
+                defaultReasoningEffort: "medium",
+            }],
+        }],
+        defaultModel: "github-copilot:gpt-5.5",
+    }));
+
+    const mgmt = new PilotSwarmManagementClient({
+        store: env.store,
+        duroxideSchema: env.duroxideSchema,
+        cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
+        modelProvidersPath,
+    });
+    try {
+        await mgmt.start();
+        const models = mgmt.listModels();
+        const model = models.find((entry) => entry.qualifiedName === "github-copilot:gpt-5.5");
+        assertNotNull(model, "management listModels should include configured model");
+        assertEqual(JSON.stringify(model.supportedReasoningEfforts), JSON.stringify(["medium", "xhigh"]), "management listModels should expose supported reasoning efforts");
+        assertEqual(model.defaultReasoningEffort, "medium", "management listModels should expose default reasoning effort");
+    } finally {
+        await mgmt.stop().catch(() => {});
+    }
+}
+
 describeModelSelection("Model Selection", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -189,5 +310,14 @@ describeModelSelection("Model Selection", () => {
     });
     it("Missing Configured Default Does Not Fallback", async () => {
         await testMissingConfiguredDefaultDoesNotFallback();
+    });
+    it("GitHub Models Remain Visible Without Env Token", async () => {
+        await testGithubModelsRemainVisibleWithoutEnvToken();
+    });
+    it("Reasoning Effort Metadata", async () => {
+        await testReasoningEffortMetadata();
+    });
+    it("Management List Models Includes Reasoning Metadata", async () => {
+        await testManagementListModelsReasoningMetadata(getEnv());
     });
 });

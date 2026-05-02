@@ -81,8 +81,8 @@ describe("Cache Observability", () => {
         try {
             const parent = `sess-${Math.random().toString(36).slice(2, 10)}`;
             const child = `sess-${Math.random().toString(36).slice(2, 10)}`;
-            await seedSession(catalog, parent, { agentId: "coordinator", model: "gpt-5" });
-            await seedSession(catalog, child, { agentId: "alpha", parentSessionId: parent, model: "gpt-5-mini" });
+            await seedSession(catalog, parent, { agentId: "coordinator", model: "gpt-5", reasoningEffort: "medium" });
+            await seedSession(catalog, child, { agentId: "alpha", parentSessionId: parent, model: "gpt-5-mini", reasoningEffort: "xhigh" });
 
             await seedMetrics(catalog, parent, { input: 1000, output: 100, cacheRead: 500, cacheWrite: 50 });
             await seedMetrics(catalog, child,  { input: 3000, output: 300, cacheRead: 2500, cacheWrite: 0 });
@@ -99,13 +99,13 @@ describe("Cache Observability", () => {
             // Tree by-model breakdown — sorted by total input tokens DESC.
             assertEqual(tree.byModel.length, 2, "two models in the tree");
             const m0 = tree.byModel[0];
-            assertEqual(m0.model, "gpt-5-mini", "child has 3000 input → ranks first");
+            assertEqual(m0.model, "gpt-5-mini:xhigh", "child has 3000 input → ranks first with reasoning suffix");
             assertEqual(m0.sessionCount, 1);
             assertEqual(m0.totalTokensInput, 3000);
             assertEqual(m0.totalTokensCacheRead, 2500);
             assertEqual(m0.cacheHitRatio, 2500 / 3000);
             const m1 = tree.byModel[1];
-            assertEqual(m1.model, "gpt-5");
+            assertEqual(m1.model, "gpt-5:medium");
             assertEqual(m1.totalTokensInput, 1000);
             assertEqual(m1.cacheHitRatio, 0.5);
             console.log("  byModel:", tree.byModel.map(m => `${m.model}=${m.totalTokensInput}`).join(", "));
@@ -121,8 +121,8 @@ describe("Cache Observability", () => {
             const a1 = `sess-${Math.random().toString(36).slice(2, 10)}`;
             const a2 = `sess-${Math.random().toString(36).slice(2, 10)}`;
             const b  = `sess-${Math.random().toString(36).slice(2, 10)}`;
-            await seedSession(catalog, a1, { agentId: "alpha", model: "gpt-4o" });
-            await seedSession(catalog, a2, { agentId: "alpha", model: "gpt-4o" });
+            await seedSession(catalog, a1, { agentId: "alpha", model: "gpt-4o", reasoningEffort: "medium" });
+            await seedSession(catalog, a2, { agentId: "alpha", model: "gpt-4o", reasoningEffort: "medium" });
             await seedSession(catalog, b,  { agentId: "beta",  model: "claude" });
 
             await seedMetrics(catalog, a1, { input: 2000, output: 100, cacheRead: 1500, cacheWrite: 0 });
@@ -137,6 +137,7 @@ describe("Cache Observability", () => {
 
             const alphaBucket = fleet.byAgent.find(g => g.agentId === "alpha");
             assertNotNull(alphaBucket, "alpha bucket present");
+            assertEqual(alphaBucket.model, "gpt-4o:medium", "fleet by-agent model classification should include reasoning suffix");
             assertEqual(alphaBucket.totalTokensCacheRead, 2000);
             // 2000 / 3000 ≈ 0.6667
             assert(Math.abs(alphaBucket.cacheHitRatio - (2000 / 3000)) < 1e-9, "alpha hit ratio");

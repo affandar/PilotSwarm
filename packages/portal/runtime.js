@@ -17,6 +17,16 @@ function normalizeSessionOwner(authContext) {
     };
 }
 
+function requireUserPrincipal(authContext, methodName) {
+    const principal = normalizeSessionOwner(authContext);
+    if (!principal) {
+        const err = new Error(`Portal RPC '${methodName}' requires an authenticated principal.`);
+        err.code = "PORTAL_AUTH_REQUIRED";
+        throw err;
+    }
+    return principal;
+}
+
 export class PortalRuntime {
     constructor({ store, mode }) {
         this.transport = new NodeSdkTransport({ store, mode });
@@ -100,6 +110,20 @@ export class PortalRuntime {
                     includeDeleted: safeParams.includeDeleted,
                     since: safeParams.since ? new Date(safeParams.since) : undefined,
                 });
+            case "getCurrentUserProfile":
+                return this.transport.getCurrentUserProfile({
+                    principal: requireUserPrincipal(authContext, "getCurrentUserProfile"),
+                });
+            case "setCurrentUserProfileSettings":
+                return this.transport.setCurrentUserProfileSettings({
+                    principal: requireUserPrincipal(authContext, "setCurrentUserProfileSettings"),
+                    settings: safeParams.settings,
+                });
+            case "setCurrentUserGitHubCopilotKey":
+                return this.transport.setCurrentUserGitHubCopilotKey({
+                    principal: requireUserPrincipal(authContext, "setCurrentUserGitHubCopilotKey"),
+                    key: typeof safeParams.key === "string" ? safeParams.key : null,
+                });
             case "getSessionSkillUsage":
                 return this.transport.getSessionSkillUsage(safeParams.sessionId, {
                     since: safeParams.since ? new Date(safeParams.since) : undefined,
@@ -124,10 +148,15 @@ export class PortalRuntime {
             case "getExecutionHistory":
                 return this.transport.getExecutionHistory(safeParams.sessionId, safeParams.executionId);
             case "createSession":
-                return this.transport.createSession({ model: safeParams.model, owner });
+                return this.transport.createSession({
+                    model: safeParams.model,
+                    reasoningEffort: safeParams.reasoningEffort,
+                    owner,
+                });
             case "createSessionForAgent":
                 return this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
+                    reasoningEffort: safeParams.reasoningEffort,
                     title: safeParams.title,
                     splash: safeParams.splash,
                     initialPrompt: safeParams.initialPrompt,
