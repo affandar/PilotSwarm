@@ -2,18 +2,17 @@
 # TODO
 
 - Refactor the 3.5k line Orchestration file
+- A2A protocol for the cluster
+- Test MCP server support 
+- Evaluate pluggability of Claude code
+- Tools to allow LLMs to ask to rehydrate on specific workers 
 - Parent agents need to aggressively tear down sub agents when they are done unless needed
 - Archive sessions to blob?
 - Ability to restart system processes
 - Ability to hot reload agent/skills/tools
-- Ability to Batch operate against multiple sessions
-- Ability to pin certain sessions in the UX top view
-- Ability to associate GHCP tokens with users, and build lifecycle mgmt around those
 - Make color themes pluggable
 - harder protections for system agent IDs and names
 - formalize plugin disk layout, verisoning and update story
-- binary artifact support
-    - proposal: [docs/proposals/binary-artifacts.md](docs/proposals/binary-artifacts.md)
 - support for uploading images (need to support copy/paste as well)
     - proposal: [docs/proposals/image-attachments-in-chat.md](docs/proposals/image-attachments-in-chat.md)
 - materailize learned skills on filesystem instead of system prompts:
@@ -52,6 +51,11 @@
 - agent to agent messaging
 
 # DONE
+- binary artifact support
+    - proposal: [docs/proposals/binary-artifacts.md](docs/proposals/binary-artifacts.md)
+- Ability to Batch operate against multiple sessions 
+- Ability to pin certain sessions in the UX top view
+- Ability to associate GHCP tokens with users, and build lifecycle mgmt around those
 - add auth user who started in cms, add filtering, stamp the session list and info.
 - add ps_ prefix to list_agent tool to avoid conflict
 - session titles are not sticking
