@@ -1,5 +1,18 @@
 # Orchestration Hardening Plan
 
+> **Status: largely implemented and superseded.** The three goals below all
+> shipped:
+>
+> | Goal | Status | Where |
+> |---|---|---|
+> | Make the main loop smaller and easier to reason about | **Done** | Flat event loop ([proposals-impl](./proposals-impl/orchestration-flat-event-loop.md)) and directory refactor ([proposals-impl](./proposals-impl/orchestration-directory-refactor.md)) |
+> | Reduce status and continue-as-new state churn | **Done** | `SessionResponsePayload` / `SessionCommandResponse` separated from `customStatus`; CAN input only carries durable control state |
+> | Use duroxide's newer KV store APIs | **Done** | KV FIFO buckets in `queue.ts`; counter keys for response/command versions in `lifecycle.ts` |
+>
+> The "Current Orchestration Pseudocode" and complexity numbers below are from
+> the pre-refactor monolith and are kept for archaeology. For the current
+> design see [Orchestration Design](./orchestration-design.md).
+
 This note lays out the next refactor for the durable session orchestration.
 It focuses on three goals:
 

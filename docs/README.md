@@ -8,7 +8,8 @@ Start with the path that matches what you are trying to do.
 
 - [Working On PilotSwarm](./contributors/working-on-pilotswarm.md) — repo map, runtime/TUI/orchestration workflows, and contributor checklists
 - [Architecture](./architecture.md) — how the durable runtime, CMS, client, and worker fit together
-- [Main Orchestration Loop](./orchestration-loop.md) — detailed walkthrough of the durable session state machine, timers, hydration, and `continueAsNew`
+- [Orchestration Design](./orchestration-design.md) — comprehensive reference for the durable session orchestration: modules, runtime model, drain/decide pseudocode, TurnResult dispatch, sub-agents, shutdown, CAN, hydration, replay invariants
+- [Main Orchestration Loop](./orchestration-loop.md) — short orientation; links into the design doc above
 - [TUI Architecture](./tui-architecture.md) — the current shared terminal UI stack across `packages/cli`, `ui-core`, and `ui-react`
 - [TUI Design And Implementor Guide](./tui-implementor-guide.md) — detailed contributor guide for terminal UI ownership, runtime flow, rendering, state, and change patterns
 - [Plugin Architecture & Layering Guide](./plugin-architecture-guide.md) — deep reference for agents, skills, MCP, and merge semantics

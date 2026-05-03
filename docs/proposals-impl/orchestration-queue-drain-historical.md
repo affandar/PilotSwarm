@@ -1,6 +1,15 @@
-# PilotSwarm Orchestration Loop & Queue Drain Problem
+# PilotSwarm Orchestration Loop & Queue Drain Problem (Historical)
 
-## Current Architecture
+> **Status: implemented and superseded.** This document describes the
+> pre-flat-event-loop orchestration and the queue-drain bug it suffered. The
+> fix shipped as the [flat event loop proposal](./orchestration-flat-event-loop.md)
+> and was followed by the [directory refactor](./orchestration-directory-refactor.md).
+> Kept for archaeology — the line numbers, file references, and "current
+> architecture" diagrams are pre-2026-05.
+>
+> For the current orchestration, see [Orchestration Design](../orchestration-design.md).
+
+## Original Architecture
 
 ```
  EXTERNAL PRODUCERS                          DURABLE QUEUE                        ORCHESTRATION

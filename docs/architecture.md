@@ -742,8 +742,35 @@ interface SessionConfig {
 
 ### 7.1 Orchestration: `durable-session-v2`
 
-One orchestration per session. Long-lived, event-driven main loop.
-Uses the `SessionProxy` to call into the `SessionManager` / `ManagedSession` interface.
+One orchestration per session. Long-lived, flat event-driven loop backed by a
+KV FIFO work buffer. Uses the `SessionProxy` to call into the `SessionManager`
+/ `ManagedSession` interface.
+
+The full design — module layout, runtime model, drain/decide pseudocode,
+TurnResult dispatch, sub-agent lifecycle, shutdown cascade, CAN, hydration,
+replay invariants — is in [Orchestration Design](./orchestration-design.md).
+
+At a glance:
+
+```text
+index.ts ──► createRuntime ──► runLoop {
+                                    drain  (queue + timer fires → KV FIFO)
+                                    decide (pop one unit, dispatch)
+                                    if no work → continueAsNew
+                                }
+```
+
+The current latest is v1.0.52 in
+[`packages/sdk/src/orchestration/`](../packages/sdk/src/orchestration/);
+frozen prior versions live as `orchestration_1_0_*.ts` siblings.
+
+The legacy single-file pseudocode that used to live here (a `dequeueEvent →
+switch → race` shape from v1.0.4) is preserved in
+[`docs/proposals-impl/orchestration-queue-drain-historical.md`](./proposals-impl/orchestration-queue-drain-historical.md)
+for archaeology.
+
+<details>
+<summary>Legacy v1.0.4 pseudocode (kept for reference, no longer accurate)</summary>
 
 ```typescript
 function* durableSessionOrchestration(ctx, input) {
@@ -896,6 +923,8 @@ function* durableSessionOrchestration(ctx, input) {
     }
 }
 ```
+
+</details>
 
 ### 7.2 ManagedSession (Session Manager)
 
@@ -1592,17 +1621,34 @@ Orchestration code is **replayed from the beginning** on every new event. Changi
 
 ### 9.1 Versioning Strategy
 
-Each version is a separate file:
+The current latest version lives as a folder; frozen prior versions live as
+sibling single files:
 
 ```
-src/orchestration_1_0_0.ts   — v1.0.0 (original)
-src/orchestration_1_0_1.ts   — v1.0.1 (added sub-agents)
-src/orchestration_1_0_2.ts   — v1.0.2 (added task context)
-src/orchestration_1_0_3.ts   — v1.0.3 (added agent management tools)
-src/orchestration.ts         — current development version (1.0.4)
+src/orchestration_1_0_47.ts   ┐
+src/orchestration_1_0_48.ts   │ frozen — replay only
+src/orchestration_1_0_49.ts   │
+src/orchestration_1_0_50.ts   │
+src/orchestration_1_0_51.ts   ┘
+src/orchestration/            ← current latest (1.0.52, eight modules)
+src/orchestration.ts          ← compatibility shim that re-exports the latest
 ```
 
-All versions are registered in the duroxide runtime. A running execution replays under the version it started on, but every new start and every `continueAsNewVersioned(...)` handoff targets the shared latest version. That means the latest handler must treat `OrchestrationInput` as a backward-compatible wire format for every version that is still registered in the repo.
+The current latest version is declared in
+[`src/orchestration-version.ts`](../packages/sdk/src/orchestration-version.ts).
+The active registry (latest plus the five most recent frozen versions) is in
+[`src/orchestration-registry.ts`](../packages/sdk/src/orchestration-registry.ts).
+Older versions are pruned from the repo.
+
+Bumping the version is a copy-folder-and-rename operation, documented in the
+[directory refactor proposal](./proposals-impl/orchestration-directory-refactor.md).
+
+A running execution replays under the version it started on, but every new
+start and every `continueAsNewVersioned(...)` handoff targets the shared
+latest version. That means the latest handler must treat `OrchestrationInput`
+as a backward-compatible wire format for every version that is still
+registered in the repo (down to
+`DURABLE_SESSION_COMPATIBILITY_FLOOR_VERSION`).
 
 ### 9.2 When to Create a New Version
 
