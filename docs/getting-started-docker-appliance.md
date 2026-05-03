@@ -5,7 +5,7 @@ PilotSwarm can be up and running in a few minutes from a single Docker image.
 This starter image gives you:
 
 - a browser portal at `http://localhost:3001`
-- an SSH-accessible TUI at `ssh -p 2222 pilotswarm@localhost`
+- an SSH-accessible TUI at `ssh -o StrictHostKeyChecking=accept-new -p 2222 pilotswarm@localhost`
 - two background PilotSwarm workers
 - durable session state in PostgreSQL
 - local filesystem artifacts by default, or Azure Blob storage if you wire it in
@@ -27,7 +27,7 @@ Silicon.
 If you want the exact released build instead of the moving `latest` tag, pull the versioned image:
 
 ```bash
-docker pull affandar/pilotswarm-starter:0.1.25
+docker pull affandar/pilotswarm-starter:0.1.26
 ```
 
 ---
@@ -185,7 +185,7 @@ What this does:
 
                     ┌──────────────────────────────┐
                     │          SSH TUI             │
-                    │ ssh -p 2222 pilotswarm@...   │
+                    │ localhost:2222 + accept-new  │
                     └──────────────────────────────┘
 ```
 

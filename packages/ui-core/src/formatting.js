@@ -705,7 +705,8 @@ function renderPlainMarkdownTable(rows, maxWidth) {
     if (!rows || rows.length === 0) return "";
     const columnCount = Math.max(1, ...rows.map((row) => row.length));
     const normalizedRows = rows.map((row) => Array.from({ length: columnCount }, (_, index) => row[index] || ""));
-    const widths = computeMarkdownTableColumnWidths(normalizedRows, maxWidth);
+    const displayRows = normalizedRows.map((row) => row.map((cell) => flattenInlineMarkdownText(cell)));
+    const widths = computeMarkdownTableColumnWidths(displayRows, maxWidth);
     const rendered = [];
 
     const topBorder = `┌${widths.map((width) => "─".repeat(width + 2)).join("┬")}┐`;
@@ -723,14 +724,11 @@ function renderPlainMarkdownTable(rows, maxWidth) {
     };
 
     rendered.push(topBorder);
-    renderRow(normalizedRows[0]);
+    renderRow(displayRows[0]);
     rendered.push(middleBorder);
-    const bodyRows = normalizedRows.slice(1);
-    for (const [index, row] of bodyRows.entries()) {
+    const bodyRows = displayRows.slice(1);
+    for (const row of bodyRows) {
         renderRow(row);
-        if (index < bodyRows.length - 1) {
-            rendered.push(middleBorder);
-        }
     }
     rendered.push(bottomBorder);
 

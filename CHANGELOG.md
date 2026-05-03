@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.1.26 — 2026-05-03
+
+### TUI / Shared UI
+
+- **Cleaner markdown table rendering** — native TUI markdown tables now size
+  columns from rendered display text instead of raw markdown links, render link
+  cells as readable labels, and keep only the header divider rather than drawing
+  a full divider between every body row.
+
+### Docker / Docs
+
+- **Starter SSH first-run guidance aligned** — the Docker quickstart now uses
+  `StrictHostKeyChecking=accept-new` consistently for the optional SSH TUI path,
+  matching the first-run flow for recreated starter containers and fresh
+  `known_hosts` state.
+
 ## 0.1.25 — 2026-05-03
 
 ### SDK / Runtime

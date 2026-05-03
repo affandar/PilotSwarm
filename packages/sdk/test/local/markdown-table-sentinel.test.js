@@ -27,6 +27,28 @@ describe("parseMarkdownLines tableMode", () => {
             "boxArt mode should render box-drawing table characters");
     });
 
+    it("default boxArt mode renders compact readable TUI tables", () => {
+        const source = [
+            "| # | Title | Points | Comments | Δ | Topic |",
+            "|---|---|---:|---:|---:|---|",
+            "| 1 | Mercedes-Benz commits to bringing back physical buttons | 518 | 397 | +2 | Tech/UX |",
+            "| 9 | [I recreated the Apple Lisa inside an FPGA](https://www.youtube.com/watch?v=8jNQDcpHc68) | 50 | 5 | new | Hardware/Retro |",
+            "| 10 | US-Indian space mission maps subsidence in Mexico City | 40 | 14 | +1 | Science |",
+        ].join("\n");
+        const lines = parseMarkdownLines(source, { width: 84 });
+        const flat = lines.map((line) => Array.isArray(line)
+            ? line.map((run) => run?.text || "").join("")
+            : (line?.text || "")).join("\n");
+
+        assert(flat.includes("I recreated the Apple Lisa"), "link cells should render the readable link label");
+        assert(!flat.includes("https://www.youtube.com"), "link cells should not size or render from the raw URL");
+        const dividerCount = (flat.match(/├/g) || []).length;
+        assertEqual(dividerCount, 1, "TUI table should only draw the header divider, not one divider per body row");
+        for (const line of flat.split("\n")) {
+            assert(line.length <= 84, `rendered table line should fit width: ${line}`);
+        }
+    });
+
     it("sentinel mode emits a markdownTable line preserving cell markdown", () => {
         const lines = parseMarkdownLines(tableSource, { width: 80, tableMode: "sentinel" });
         const sentinel = lines.find((line) => line?.kind === "markdownTable");
