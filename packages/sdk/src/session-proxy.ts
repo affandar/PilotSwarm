@@ -10,6 +10,7 @@ import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
+import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
 import os from "node:os";
 import fs from "node:fs";
 
@@ -1467,16 +1468,24 @@ export function registerActivities(
         }
         trace(`session=${input.sessionId} complete`);
         if (catalog) {
-            await catalog.upsertSessionMetricSummary(input.sessionId, {
-                hydrationCountIncrement: 1,
-                lastHydratedAt: true,
-            }).catch((err: any) => {
-                activityCtx.traceInfo(`[hydrateSession] CMS summary update failed: ${err}`);
-            });
-            catalog.recordEvents(input.sessionId, [{
-                eventType: "session.hydrated",
-                data: {},
-            }], workerNodeId).catch(() => {});
+            // Best-effort: metric summary and the session.hydrated event are
+            // observability only. Never block hydrate on CMS hiccups.
+            await cmsRetryBestEffort(
+                `hydrateSession.upsertSummary session=${input.sessionId}`,
+                () => catalog!.upsertSessionMetricSummary(input.sessionId, {
+                    hydrationCountIncrement: 1,
+                    lastHydratedAt: true,
+                }),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+            await cmsRetryBestEffort(
+                `hydrateSession.recordEvents session=${input.sessionId}`,
+                () => catalog!.recordEvents(input.sessionId, [{
+                    eventType: "session.hydrated",
+                    data: {},
+                }], workerNodeId),
+                (msg) => activityCtx.traceInfo(msg),
+            );
         }
     });
 
@@ -1496,12 +1505,16 @@ export function registerActivities(
         await sessionManager.checkpoint(input.sessionId);
         if (catalog) {
             const snapshotSizeBytes = await tryReadSnapshotSizeBytes(_sessionStore, input.sessionId);
-            await catalog.upsertSessionMetricSummary(input.sessionId, {
-                ...(snapshotSizeBytes != null ? { snapshotSizeBytes } : {}),
-                lastCheckpointAt: true,
-            }).catch((err: any) => {
-                activityCtx.traceInfo(`[checkpointSession] CMS summary update failed: ${err}`);
-            });
+            // Best-effort: metric summary is observability only. The blob has
+            // already been written by sessionManager.checkpoint above.
+            await cmsRetryBestEffort(
+                `checkpointSession.upsertSummary session=${input.sessionId}`,
+                () => catalog!.upsertSessionMetricSummary(input.sessionId, {
+                    ...(snapshotSizeBytes != null ? { snapshotSizeBytes } : {}),
+                    lastCheckpointAt: true,
+                }),
+                (msg) => activityCtx.traceInfo(msg),
+            );
         }
     });
 
@@ -1746,7 +1759,13 @@ export function registerActivities(
 
             if (isDeterministicSystemChild && catalog) {
                 const existingCheckAt = Date.now();
-                const existing = await catalog.getSession(childSessionId);
+                // Critical: missing this read causes a duplicate child spawn for
+                // a deterministic system agent (same UUID, two creates).
+                const existing = await cmsRetryCritical(
+                    `spawnChildSession.getSession existing-check session=${childSessionId}`,
+                    () => catalog!.getSession(childSessionId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
                 trace(`catalog.getSession existing check done (${Date.now() - existingCheckAt}ms)`);
                 if (existing && !["completed", "failed", "terminated"].includes(existing.state)) {
                     trace(`reusing existing live system child: ${childSessionId}`);
@@ -1782,7 +1801,14 @@ export function registerActivities(
                 let ancestorId: string | undefined = input.parentSessionId;
                 let hops = 0;
                 while (ancestorId && hops < 8) {
-                    const ancestor = await catalog.getSession(ancestorId);
+                    // Critical: skipping this read leaves the child unowned,
+                    // making it invisible under owner-filtered tree views.
+                    const lookupId = ancestorId;
+                    const ancestor: any = await cmsRetryCritical(
+                        `spawnChildSession.getSession ancestor=${lookupId}`,
+                        () => catalog!.getSession(lookupId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
                     if (!ancestor) break;
                     if (ancestor.owner) { inheritedOwner = ancestor.owner; break; }
                     ancestorId = ancestor.parentSessionId || undefined;
@@ -1822,7 +1848,13 @@ export function registerActivities(
             if (input.splash) meta.splash = input.splash;
             if (Object.keys(meta).length > 0 && catalog) {
                 const metaAt = Date.now();
-                await catalog.updateSession(childSessionId, meta);
+                // Critical: title/agentId/splash drive UI rendering of the
+                // newly-spawned child. Idempotent — set-style update.
+                await cmsRetryCritical(
+                    `spawnChildSession.updateSession meta session=${childSessionId}`,
+                    () => catalog!.updateSession(childSessionId, meta),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
                 trace(`catalog.updateSession meta done (${Date.now() - metaAt}ms)`);
             }
 
@@ -2081,7 +2113,13 @@ export function registerActivities(
     ): Promise<string[]> => {
         activityCtx.traceInfo(`[getDescendantSessionIds] session=${input.sessionId}`);
         if (!catalog) return [];
-        const descendants = await catalog.getDescendantSessionIds(input.sessionId);
+        // Critical: delete cascade depends on this list. Skipping descendants
+        // would orphan child sessions, so retry transient PG errors hard.
+        const descendants = await cmsRetryCritical(
+            `getDescendantSessionIds session=${input.sessionId}`,
+            () => catalog!.getDescendantSessionIds(input.sessionId),
+            (msg) => activityCtx.traceInfo(msg),
+        );
         activityCtx.traceInfo(`[getDescendantSessionIds] found ${descendants.length} descendants`);
         return descendants;
     });
@@ -2109,13 +2147,19 @@ export function registerActivities(
                 orchestrationId,
                 input.reason ?? "Cancelled by parent",
             );
-            // Update CMS status
+            // Update CMS status. Critical — terminal state must land in CMS
+            // for clients to see the session as cancelled. Retry transient PG
+            // errors hard; non-transient errors propagate to the caller.
             if (catalog) {
-                await catalog.updateSession(input.sessionId, {
-                    state: "cancelled",
-                    lastError: input.reason ? `Cancelled: ${input.reason}` : "Cancelled",
-                    waitReason: null,
-                });
+                await cmsRetryCritical(
+                    `cancelSession.updateSession session=${input.sessionId}`,
+                    () => catalog!.updateSession(input.sessionId, {
+                        state: "cancelled",
+                        lastError: input.reason ? `Cancelled: ${input.reason}` : "Cancelled",
+                        waitReason: null,
+                    }),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
             }
             activityCtx.traceInfo(`[cancelSession] cancelled ${orchestrationId}`);
         } finally {
@@ -2150,6 +2194,8 @@ export function registerActivities(
 
     // ── updateCmsState ─────────────────────────────────────
     // Updates a session's state in CMS (e.g. "rejected" for policy violations).
+    // Critical: this is how terminal state lands in CMS; failure here desyncs
+    // CMS from the orchestration's view, so retry transient PG errors hard.
     if (catalog) {
         runtime.registerActivity("updateCmsState", async (
             activityCtx: any,
@@ -2161,9 +2207,11 @@ export function registerActivities(
             };
             if (Object.prototype.hasOwnProperty.call(input, "lastError")) updates.lastError = input.lastError ?? null;
             if (Object.prototype.hasOwnProperty.call(input, "waitReason")) updates.waitReason = input.waitReason ?? null;
-            await catalog.updateSession(input.sessionId, {
-                ...updates,
-            });
+            await cmsRetryCritical(
+                `updateCmsState session=${input.sessionId} state=${input.state}`,
+                () => catalog.updateSession(input.sessionId, { ...updates }),
+                (msg) => activityCtx.traceInfo(msg),
+            );
         });
     }
 
@@ -2201,11 +2249,18 @@ export function registerActivities(
     // ── recordSessionEvent ──────────────────────────────────
     // Lightweight CMS event recording for orchestration-level lifecycle events
     // (waits, spawns, cron, commands) that don't happen inside an existing activity.
+    // Best-effort: nothing in the orchestration reads these back; losing one
+    // degrades UI completeness but does not affect orchestration correctness.
     runtime.registerActivity("recordSessionEvent", async (
-        _activityCtx: any,
+        activityCtx: any,
         input: { sessionId: string; events: { eventType: string; data: unknown }[] },
     ): Promise<void> => {
         if (!catalog) return;
-        await catalog.recordEvents(input.sessionId, input.events, workerNodeId);
+        const eventTypes = input.events.map((e) => e.eventType).join(",");
+        await cmsRetryBestEffort(
+            `recordSessionEvent session=${input.sessionId} events=${eventTypes}`,
+            () => catalog!.recordEvents(input.sessionId, input.events, workerNodeId),
+            (msg) => activityCtx.traceInfo(msg),
+        );
     });
 }
