@@ -12,6 +12,15 @@ on:
         description: Optional extra tag, for example test or rc1
         required: false
         default: ""
+      release_tag:
+        description: Optional release tag to publish, for example v0.1.24. Also publishes the bare version tag.
+        required: false
+        default: ""
+      publish_latest:
+        description: Also publish latest when release_tag is provided
+        required: false
+        default: true
+        type: boolean
   release:
     types: [published]
 
@@ -47,24 +56,46 @@ jobs:
         id: tags
         env:
           EXTRA_TAG: ${{ inputs.image_tag }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          PUBLISH_LATEST: ${{ inputs.publish_latest }}
         shell: bash
         run: |
           set -euo pipefail
 
-          tags=("${IMAGE_NAME}:sha-${GITHUB_SHA::12}")
+          tags=()
+          add_tag() {
+            local tag="$1"
+            for existing in "${tags[@]}"; do
+              if [[ "${existing}" == "${tag}" ]]; then
+                return
+              fi
+            done
+            tags+=("${tag}")
+          }
+
+          add_tag "${IMAGE_NAME}:sha-${GITHUB_SHA::12}"
+
+          release_tag=""
 
           if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
             release_tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${RELEASE_TAG_INPUT}" ]]; then
+            release_tag="${RELEASE_TAG_INPUT}"
+          fi
+
+          if [[ -n "${release_tag}" ]]; then
             version_tag="${release_tag#v}"
-            tags+=("${IMAGE_NAME}:${release_tag}")
+            add_tag "${IMAGE_NAME}:${release_tag}"
             if [[ "${version_tag}" != "${release_tag}" ]]; then
-              tags+=("${IMAGE_NAME}:${version_tag}")
+              add_tag "${IMAGE_NAME}:${version_tag}"
             fi
-            tags+=("${IMAGE_NAME}:latest")
+            if [[ "${GITHUB_EVENT_NAME}" == "release" || "${PUBLISH_LATEST}" == "true" ]]; then
+              add_tag "${IMAGE_NAME}:latest"
+            fi
           fi
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${EXTRA_TAG}" ]]; then
-            tags+=("${IMAGE_NAME}:${EXTRA_TAG}")
+            add_tag "${IMAGE_NAME}:${EXTRA_TAG}"
           fi
 
           {
@@ -78,7 +109,7 @@ jobs:
         with:
           context: .
           file: deploy/Dockerfile.starter
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name == 'release' || inputs.push }}
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
