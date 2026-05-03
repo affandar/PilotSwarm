@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.1.25 — 2026-05-03
+
+### SDK / Runtime
+
+- **Duroxide 0.1.24** — bumps the SDK dependency to the release that publishes
+  `duroxide-linux-arm64-gnu`, allowing PilotSwarm to load its durable runtime
+  natively in Linux ARM64 Node.js containers.
+
+### Docker
+
+- **Multi-arch starter image restored** — the starter image publish workflow now
+  builds `linux/amd64,linux/arm64` by default on release, so Apple Silicon users
+  can run the starter appliance without forcing Docker Desktop amd64 emulation.
+
+### Docs
+
+- **Docker quickstart refreshed** — removes the temporary `--platform
+  linux/amd64` workaround and points versioned pulls at `0.1.25`.
+
 ## 0.1.24 — 2026-05-03
 
 ### SDK / Runtime
