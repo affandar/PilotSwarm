@@ -22,20 +22,40 @@ These are not active agents in this repo. They are templates intended to be copi
 
 ## Quick Start
 
+Two paths:
+
+### Try it from this repo (3 minutes)
+
+The Docker quickstart is the fastest first run. One image, browser portal,
+local PostgreSQL, two embedded workers — set `GITHUB_TOKEN` and go:
+
+→ [Docker Quickstart Guide](docs/getting-started-docker-appliance.md)
+
+If you'd rather run from source instead of Docker:
+
+```bash
+git clone https://github.com/affandar/pilotswarm.git
+cd pilotswarm && npm install && npm run build
+
+cp .env.example .env
+cp .model_providers.example.json .model_providers.json
+# edit .env: set DATABASE_URL and at least one LLM provider key.
+# easiest: GITHUB_TOKEN (gives Claude, GPT-4.1, etc. via GitHub Copilot).
+
+./run.sh local --db   # launches Postgres + workers + TUI
+```
+
+→ [Full source-based getting started](docs/getting-started.md)
+
+### Use as a library in your own app
+
 ```bash
 npm install pilotswarm-sdk
-cp .env.example .env
-# copy the checked-in model catalog template, then edit the local file
-cp .model_providers.example.json .model_providers.json
-$EDITOR .model_providers.json
-# edit .env: set DATABASE_URL and at least one LLM provider key
-# easiest: set GITHUB_TOKEN (gives access to Claude, GPT, etc. via GitHub Copilot)
 ```
 
 ```typescript
 import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
 
-// Define tools — same API as Copilot SDK
 const getWeather = defineTool("get_weather", {
     description: "Get weather for a city",
     parameters: {
@@ -49,36 +69,42 @@ const getWeather = defineTool("get_weather", {
     },
 });
 
-// Start a worker (runs LLM turns, executes tools)
-const worker = new PilotSwarmWorker({
-    store: process.env.DATABASE_URL,          // PostgreSQL connection string
-});
-worker.registerTools([getWeather]);           // register tools at the worker level
+// Worker runs LLM turns + tools. In production it lives in its own
+// long-running process (see "Durability" below); here we co-locate for demo.
+const worker = new PilotSwarmWorker({ store: process.env.DATABASE_URL });
+worker.registerTools([getWeather]);
 await worker.start();
 
-// Start a client (manages sessions — can run on a different machine)
-const client = new PilotSwarmClient({
-    store: process.env.DATABASE_URL,
-});
+const client = new PilotSwarmClient({ store: process.env.DATABASE_URL });
 await client.start();
 
-// Create a session — reference tools by name (serializable)
 const session = await client.createSession({
     toolNames: ["get_weather"],
     systemMessage: "You are a weather assistant.",
 });
-
-const response = await session.sendAndWait("Check NYC weather every hour for 8 hours");
+const response = await session.sendAndWait("What's the weather in NYC?");
 console.log(response);
-// For recurring schedules, the agent can call cron(3600, ...)
-// so the process shuts down, a durable wake-up fires later,
-// and any worker resumes the session. Use wait(...) for one-shot delays.
 
 await client.stop();
 await worker.stop();
 ```
 
 PilotSwarm's own framework prompt and management plugins ship embedded inside `pilotswarm-sdk`. Apps layer their own `plugin/` directories on top; they do not need to copy the framework's built-in plugin text into their own repos.
+
+### Durability — recurring and long-waiting agents
+
+The single-process demo above doesn't show the durability story because the
+process exits as soon as the response lands. To run an agent that pauses for
+hours or runs a recurring schedule, the worker has to be a long-running
+process — typically:
+
+- one or more `PilotSwarmWorker`s in their own service (locally with `npm run worker`, in production on Kubernetes), and
+- clients (CLI, TUI, browser portal, or your app) connecting to the same PostgreSQL
+
+The agent then calls `wait(...)` for one-shot delays, or `cron(...)` for
+recurring schedules. Long waits dehydrate the session to blob storage; any
+worker rehydrates it when the timer fires. See [Architecture](docs/architecture.md)
+and [Building SDK Apps](docs/sdk/building-apps.md) for the full pattern.
 
 ## What You Get
 

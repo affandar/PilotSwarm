@@ -407,3 +407,85 @@ kubectl create secret generic copilot-runtime-secrets -n copilot-runtime \
 # Restart workers to pick up new secret
 kubectl rollout restart deployment/copilot-runtime-worker -n copilot-runtime
 ```
+
+## Sharing An Existing AKS Cluster
+
+Multiple teams or projects can share one AKS cluster. Each deployment gets its
+own Kubernetes namespace, secrets, and optionally its own database schemas.
+
+### Option A: Separate Databases (Simplest)
+
+Each deployment uses a different PostgreSQL database on the same server. No code
+changes needed — just different `DATABASE_URL`s.
+
+```
+Team Alpha: postgresql://user:pass@pg-server:5432/alpha_pilotswarm
+Team Beta:  postgresql://user:pass@pg-server:5432/beta_pilotswarm
+```
+
+### Option B: Separate Schemas (Same Database)
+
+Use custom schema names to isolate deployments within a single database. Set
+`duroxideSchema` and `cmsSchema` on both worker and client (see
+[Getting Started → Custom Schema Names](./getting-started.md#custom-schema-names)).
+
+### Setup Per Team
+
+Each team creates their own namespace and secrets:
+
+```bash
+TEAM_NS=copilot-alpha
+
+kubectl create namespace $TEAM_NS
+
+kubectl create secret generic copilot-runtime-secrets \
+    -n $TEAM_NS \
+    --from-literal=DATABASE_URL="postgresql://..." \
+    --from-literal=GITHUB_TOKEN="$(gh auth token)" \
+    --from-literal=AZURE_STORAGE_CONNECTION_STRING="..." \
+    --from-literal=AZURE_STORAGE_CONTAINER="alpha-sessions"
+```
+
+Copy and customize the deployment manifests:
+
+```bash
+cp deploy/k8s/worker-deployment.yaml deploy/k8s/worker-deployment-alpha.yaml
+```
+
+Edit the copy to update:
+- `metadata.namespace` → your team namespace
+- `spec.template.spec.containers[0].image` → your ACR image
+
+Then deploy:
+
+```bash
+kubectl apply -f deploy/k8s/worker-deployment-alpha.yaml
+```
+
+### Connect The TUI To A Specific Namespace
+
+```bash
+node packages/cli/bin/tui.js remote \
+    --env .env.alpha \
+    --namespace copilot-alpha \
+    --label app.kubernetes.io/component=worker
+```
+
+### Resource Isolation
+
+For tighter isolation, use Kubernetes resource quotas:
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: copilot-quota
+  namespace: copilot-alpha
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.cpu: "8"
+    limits.memory: 8Gi
+    pods: "10"
+```
