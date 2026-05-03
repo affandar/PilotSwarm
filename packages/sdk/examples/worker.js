@@ -37,10 +37,13 @@ import { PilotSwarmWorker } from "pilotswarm-sdk";
 const logLevel = process.env.LOG_LEVEL || "info";
 const podName = process.env.POD_NAME || os.hostname();
 
-// Plugin directories: env override or auto-detect /app/plugin (Docker default)
+// Plugin directories: env override or auto-detect bundled/default Docker plugin dirs.
 const pluginDirs = process.env.PLUGIN_DIRS
     ? process.env.PLUGIN_DIRS.split(",").map(d => d.trim()).filter(Boolean)
     : [];
+if (pluginDirs.length === 0 && fs.existsSync("/app/packages/cli/plugins/plugin.json")) {
+    pluginDirs.push("/app/packages/cli/plugins");
+}
 if (pluginDirs.length === 0 && fs.existsSync("/app/plugin/plugin.json")) {
     pluginDirs.push("/app/plugin");
 }

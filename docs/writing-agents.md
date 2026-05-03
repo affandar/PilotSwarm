@@ -426,7 +426,7 @@ Create a `.mcp.json` file in your plugin root:
 {
     "context7": {
         "type": "http",
-        "url": "https://context7-mcp--upstash.run.tools/mcp",
+        "url": "https://mcp.context7.com/mcp",
         "tools": ["resolve-library-id", "query-docs"]
     },
     "local-db": {

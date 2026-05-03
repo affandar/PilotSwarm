@@ -75,6 +75,8 @@ describe("portal browser contracts", () => {
 
         assertIncludes(portalApp, "portal-header-version", "portal header should render a version indicator near sign-out");
         assertIncludes(webApp, 'controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER)', "web app should expose new-session model selection");
+        assertIncludes(sharedTui, "selectReasoningEffortPickerModal", "native TUI should render the reasoning-effort picker overlay");
+        assertIncludes(sharedTui, "ReasoningEffortPickerModalContainer", "native TUI should mount the reasoning-effort picker container");
         assertIncludes(webApp, "presentation.rowItemIndexes", "portal list modal should support row-to-item mapping for grouped pickers");
         assertIncludes(webApp, 'querySelector(".ps-list-button.is-selected")', "portal list modals should keep the selected row visible in the browser");
         assertIncludes(webApp, 'selected.scrollIntoView({ block: "nearest" });', "portal list modals should scroll the selected option into view");

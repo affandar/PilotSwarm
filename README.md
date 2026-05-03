@@ -2,6 +2,8 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
+> **Latest release: v0.1.24** — Context7 MCP defaults, orchestration/runtime hardening, and native TUI reasoning-effort selection.
+
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
 For the fastest first run, start with the [Docker Quickstart Guide](docs/getting-started-docker-appliance.md).
