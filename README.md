@@ -159,6 +159,7 @@ Start with the documentation hub:
 
 Common entry points:
 
+- [User Guide](docs/user-guide/README.md) — scenario-based walkthroughs of the TUI and browser portal, simple to advanced
 - [Working On PilotSwarm](docs/contributors/working-on-pilotswarm.md) — contributors working on the SDK, TUI, providers, prompts, or orchestration
 - [Builder Agent Templates](docs/builder-agents.md) — copyable Copilot custom agents for users building apps on top of PilotSwarm
 - [Building SDK Apps](docs/sdk/building-apps.md) — app developers using `PilotSwarmClient` and `PilotSwarmWorker`

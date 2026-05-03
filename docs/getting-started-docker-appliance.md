@@ -66,13 +66,28 @@ http://localhost:3001
 Optional SSH access:
 
 ```bash
-ssh -p 2222 pilotswarm@localhost
+ssh -o StrictHostKeyChecking=accept-new -p 2222 pilotswarm@localhost
 ```
 
 Default SSH password:
 
 ```text
 pilotswarm
+```
+
+The first SSH connection records the starter container's host key in your local
+`~/.ssh/known_hosts`. The starter stores its SSH host keys in the Docker volume
+at `/data/ssh`, so recreating or upgrading the container with the same
+`pilotswarm-data` volume keeps the same SSH identity.
+
+If you intentionally delete the volume or switch to a fresh volume, SSH may warn
+that the host key for `localhost:2222` changed. That is expected after a full
+reset; remove only the stale local entry and connect again:
+
+```bash
+ssh-keygen -R '[localhost]:2222'
+ssh-keygen -R '[127.0.0.1]:2222'
+ssh -o StrictHostKeyChecking=accept-new -p 2222 pilotswarm@localhost
 ```
 
 ---

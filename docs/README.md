@@ -2,6 +2,10 @@
 
 Start with the path that matches what you are trying to do.
 
+## I want to use PilotSwarm
+
+- [User Guide](./user-guide/README.md) — scenario-based walkthroughs from "say hello" to multi-hour multi-agent workflows. Picks up after the Docker quickstart and forks into [TUI](./user-guide/tui.md) and [Portal](./user-guide/portal.md) tracks.
+
 ## Choose Your Path
 
 ### I want to work on PilotSwarm itself

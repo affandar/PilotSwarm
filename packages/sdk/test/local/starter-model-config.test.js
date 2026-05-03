@@ -10,6 +10,10 @@ function loadStarterModelConfig() {
     return JSON.parse(fs.readFileSync(configPath, "utf8"));
 }
 
+function readRepoFile(relativePath) {
+    return fs.readFileSync(path.resolve(__dirname, "../../../..", relativePath), "utf8");
+}
+
 describe("starter docker model config", () => {
     it("keeps the local starter catalog on the gpt-5.4 family", () => {
         const config = loadStarterModelConfig();
@@ -29,5 +33,19 @@ describe("starter docker model config", () => {
         expect(names).not.toContain("gpt-5-mini");
         expect(names).not.toContain("gpt-5.4-nano");
         expect(names).not.toContain("gpt-5.1");
+    });
+
+    it("persists starter SSH host keys in the data volume", () => {
+        const starter = readRepoFile("deploy/bin/start-starter.sh");
+        const quickstart = readRepoFile("docs/getting-started-docker-appliance.md");
+
+        expect(starter).toContain("SSH_HOST_KEY_DIR=${PILOTSWARM_SSH_HOST_KEY_DIR:-${DATA_DIR}/ssh}");
+        expect(starter).toContain("configure_ssh_host_keys");
+        expect(starter).toContain("ensure_ssh_host_key rsa 3072");
+        expect(starter).toContain("ln -sf \"${key_path}\" \"${system_key_path}\"");
+
+        expect(quickstart).toContain("StrictHostKeyChecking=accept-new");
+        expect(quickstart).toContain("/data/ssh");
+        expect(quickstart).toContain("ssh-keygen -R '[localhost]:2222'");
     });
 });

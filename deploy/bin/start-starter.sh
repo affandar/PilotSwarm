@@ -17,6 +17,7 @@ SSH_PORT=${SSH_PORT:-2222}
 DB_WAIT_SECONDS=${PILOTSWARM_DB_WAIT_SECONDS:-90}
 MODEL_PROVIDERS_PATH=${PS_MODEL_PROVIDERS_PATH:-/app/config/model_providers.local-docker.json}
 AUTHORIZED_KEYS_SOURCE=${AUTHORIZED_KEYS_PATH:-/run/pilotswarm/authorized_keys}
+SSH_HOST_KEY_DIR=${PILOTSWARM_SSH_HOST_KEY_DIR:-${DATA_DIR}/ssh}
 PORTAL_AUTH_PROVIDER=${PORTAL_AUTH_PROVIDER:-none}
 SSH_PASSWORD=${PILOTSWARM_SSH_PASSWORD:-pilotswarm}
 
@@ -52,6 +53,41 @@ configure_ssh_access() {
         chmod 600 "${target_file}"
         echo "[starter] No SSH authorized_keys file found at ${AUTHORIZED_KEYS_SOURCE}; using password login fallback for local SSH access."
     fi
+}
+
+configure_ssh_host_keys() {
+    install -d -m 700 -o root -g root "${SSH_HOST_KEY_DIR}"
+
+    ensure_ssh_host_key rsa 3072
+    ensure_ssh_host_key ecdsa 256
+    ensure_ssh_host_key ed25519
+}
+
+ensure_ssh_host_key() {
+    local key_type=$1
+    local key_bits=${2:-}
+    local key_path="${SSH_HOST_KEY_DIR}/ssh_host_${key_type}_key"
+    local system_key_path="/etc/ssh/ssh_host_${key_type}_key"
+
+    if [[ ! -f "${key_path}" ]]; then
+        echo "[starter] Generating persistent SSH ${key_type} host key at ${key_path}."
+        if [[ -n "${key_bits}" ]]; then
+            ssh-keygen -q -t "${key_type}" -b "${key_bits}" -N "" -f "${key_path}"
+        else
+            ssh-keygen -q -t "${key_type}" -N "" -f "${key_path}"
+        fi
+    else
+        echo "[starter] Reusing persistent SSH ${key_type} host key from ${key_path}."
+    fi
+
+    if [[ ! -f "${key_path}.pub" ]]; then
+        ssh-keygen -y -f "${key_path}" > "${key_path}.pub"
+    fi
+
+    chmod 600 "${key_path}"
+    chmod 644 "${key_path}.pub"
+    ln -sf "${key_path}" "${system_key_path}"
+    ln -sf "${key_path}.pub" "${system_key_path}.pub"
 }
 
 write_env() {
@@ -145,8 +181,8 @@ prepare_directories() {
 main() {
     configure_database
     prepare_directories
+    configure_ssh_host_keys
     configure_ssh_access
-    ssh-keygen -A
     write_env
     render_supervisor_config
 
