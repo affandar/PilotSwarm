@@ -1,6 +1,6 @@
 # Perf Agent Memory
 
-This file is maintained by the canonical spawn perf runner and the repo-local `pilotswarm-perf` agent in [.github/agents/pilotswarm-perf.agent.md](/Users/affandar/workshop/drox/pilotswarm/.github/agents/pilotswarm-perf.agent.md).
+This file is maintained by the canonical spawn perf runner and the repo-local `pilotswarm-perf` agent in [.github/agents/pilotswarm-perf.agent.md](../../.github/agents/pilotswarm-perf.agent.md).
 
 The runner rewrites this file after every canonical spawn perf run so the latest numbers, findings, and next steps stay in-repo.
 

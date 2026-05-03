@@ -5,7 +5,7 @@
 > **MANDATORY:** Do NOT run `git commit`, `git push`, `git tag`, deploy scripts, or any
 > operation that modifies the repository history or remote state without the user
 > explicitly saying "commit", "push", or "deploy". Stage files and describe what
-> you'd commit, then ask. This applies to ALL agents including Squad members.
+> you'd commit, then ask.
 
 ## Repo Scope Boundary
 

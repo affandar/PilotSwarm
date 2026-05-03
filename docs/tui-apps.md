@@ -4,8 +4,8 @@
 
 PilotSwarm now ships one supported terminal UI:
 
-- the TUI package in [`packages/cli/`](/Users/affandar/workshop/drox/pilotswarm/packages/cli)
-- the repo launcher in [`run.sh`](/Users/affandar/workshop/drox/pilotswarm/run.sh)
+- the TUI package in [`packages/cli/`](../packages/cli)
+- the repo launcher in [`run.sh`](../run.sh)
 
 If you are building on top of the shipped terminal UI, use these guides instead:
 

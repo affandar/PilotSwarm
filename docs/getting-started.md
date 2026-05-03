@@ -75,8 +75,8 @@ npm install pilotswarm-cli
 ```
 
 Inside this repo, the recommended terminal UI path is
-[`run.sh`](/Users/affandar/workshop/drox/pilotswarm/run.sh) or
-[`packages/cli/bin/tui.js`](/Users/affandar/workshop/drox/pilotswarm/packages/cli/bin/tui.js).
+[`run.sh`](../run.sh) or
+[`packages/cli/bin/tui.js`](../packages/cli/bin/tui.js).
 
 ---
 

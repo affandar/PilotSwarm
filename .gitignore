@@ -4,6 +4,7 @@ dist/
 .env.remote
 .env.local.docker
 .env.pilotswarm*
+docs/aks-topology.md
 .model_providers.json
 *.tgz
 vendor/
@@ -12,13 +13,6 @@ dumps/
 perf/reports/
 TODO.md
 docs/inbox/
-# Squad: ignore runtime state (logs, inbox, sessions)
-.squad/orchestration-log/
-.squad/log/
-.squad/decisions/inbox/
-.squad/sessions/
-# Squad: SubSquad activation file (local to this machine)
-.squad-workstream
 .portal.pids
 scripts/tmp/
 .tmp/

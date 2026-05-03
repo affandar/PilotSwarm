@@ -4,9 +4,9 @@ This document describes the current PilotSwarm terminal UI architecture.
 
 PilotSwarm now has one terminal UI stack:
 
-- [`packages/cli/`](/Users/affandar/workshop/drox/pilotswarm/packages/cli) — the terminal host and launcher binary
-- [`packages/ui-core/`](/Users/affandar/workshop/drox/pilotswarm/packages/ui-core) — state, controller logic, selectors, formatting, and shared view models
-- [`packages/ui-react/`](/Users/affandar/workshop/drox/pilotswarm/packages/ui-react) — shared React composition used by the terminal UI and portal
+- [`packages/cli/`](../packages/cli) — the terminal host and launcher binary
+- [`packages/ui-core/`](../packages/ui-core) — state, controller logic, selectors, formatting, and shared view models
+- [`packages/ui-react/`](../packages/ui-react) — shared React composition used by the terminal UI and portal
 
 ## Goals
 
@@ -137,14 +137,14 @@ keyboard/mouse ──► packages/cli host ──► controller commands ──�
 
 ## Important Files
 
-- [`packages/cli/src/index.js`](/Users/affandar/workshop/drox/pilotswarm/packages/cli/src/index.js)
-- [`packages/cli/src/app.js`](/Users/affandar/workshop/drox/pilotswarm/packages/cli/src/app.js)
-- [`packages/cli/src/platform.js`](/Users/affandar/workshop/drox/pilotswarm/packages/cli/src/platform.js)
-- [`packages/cli/src/node-sdk-transport.js`](/Users/affandar/workshop/drox/pilotswarm/packages/cli/src/node-sdk-transport.js)
-- [`packages/ui-core/src/controller.js`](/Users/affandar/workshop/drox/pilotswarm/packages/ui-core/src/controller.js)
-- [`packages/ui-core/src/selectors.js`](/Users/affandar/workshop/drox/pilotswarm/packages/ui-core/src/selectors.js)
-- [`packages/ui-core/src/history.js`](/Users/affandar/workshop/drox/pilotswarm/packages/ui-core/src/history.js)
-- [`packages/ui-react/src/components.js`](/Users/affandar/workshop/drox/pilotswarm/packages/ui-react/src/components.js)
+- [`packages/cli/src/index.js`](../packages/cli/src/index.js)
+- [`packages/cli/src/app.js`](../packages/cli/src/app.js)
+- [`packages/cli/src/platform.js`](../packages/cli/src/platform.js)
+- [`packages/cli/src/node-sdk-transport.js`](../packages/cli/src/node-sdk-transport.js)
+- [`packages/ui-core/src/controller.js`](../packages/ui-core/src/controller.js)
+- [`packages/ui-core/src/selectors.js`](../packages/ui-core/src/selectors.js)
+- [`packages/ui-core/src/history.js`](../packages/ui-core/src/history.js)
+- [`packages/ui-react/src/components.js`](../packages/ui-react/src/components.js)
 
 ## Related Docs
 

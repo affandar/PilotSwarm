@@ -6,7 +6,7 @@ A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/c
 
 For the fastest first run, start with the [Docker Quickstart Guide](docs/getting-started-docker-appliance.md).
 
-**v0.1.24** — Orchestration v1.0.50 hardens dehydrate and child-update handling, spawn-tree facts now cover siblings and cousins, and the shared UI adds session pinning, multi-select actions, GitHub Light, and tighter portal table behavior. See [CHANGELOG.md](CHANGELOG.md) for details.
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Builder Agents
 

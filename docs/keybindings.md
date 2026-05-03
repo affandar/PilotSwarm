@@ -1,6 +1,6 @@
 # PilotSwarm TUI — Keybinding Reference
 
-This document matches the current terminal UI behavior in [`run.sh`](/Users/affandar/workshop/drox/pilotswarm/run.sh) and [`packages/cli/src/app.js`](/Users/affandar/workshop/drox/pilotswarm/packages/cli/src/app.js).
+This document matches the current terminal UI behavior in [`run.sh`](../run.sh) and [`packages/cli/src/app.js`](../packages/cli/src/app.js).
 
 ## Global Navigation
 

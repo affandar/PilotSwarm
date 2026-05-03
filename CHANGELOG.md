@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### SDK / Runtime
+
+- **Orchestration v1.0.52 — directory refactor** — the durable session orchestration moves from a single 2148-line file to an eight-module layout under `packages/sdk/src/orchestration/`: `index.ts` (entrypoint), `runtime.ts` (createRuntime + runLoop), `state.ts` (DurableSessionRuntime + DurableSessionState + constants), `lifecycle.ts` (status, persistence, commands, dehydrate, child digest, continueAsNew), `queue.ts` (KV FIFO + drain + decide), `turn.ts` (processPrompt + handleTurnResult + processTimer), `agents.ts` (sub-agent tracking + tool actions + shutdown cascade), `utils.ts` (pure helpers). Helpers take a single `runtime` object and mutate `runtime.state.*` directly. Adapter interfaces and the closure-and-getters bridges are gone. Yield order unchanged. Frozen prior versions (`1.0.47` … `1.0.51`) remain as sibling files registered in the orchestration registry.
+- **Comprehensive orchestration design doc** — new [`docs/orchestration-design.md`](docs/orchestration-design.md) is the canonical reference for module layout, runtime/state model, drain/decide pseudocode, TurnResult dispatch, sub-agents, shutdown cascade, continueAsNew, hydration, replay invariants, and determinism rules. The shorter [`docs/orchestration-loop.md`](docs/orchestration-loop.md) is a stub that links into it; `architecture.md` §7.1 / §9.1 were rewritten to match the folder layout.
+- **CMS retry hardening** — new `cms-retry.ts` provides `cmsRetryCritical` (1s/5s/15s/90s, throws on exhaustion) and `cmsRetryBestEffort` (1 retry @ 3s, swallows on exhaustion). Both retry only on transient PG signals — connection-family SQLSTATEs, serialization/deadlock, query-canceled — and trust the structured error code as the verdict when present so non-transient errors propagate immediately. 26 catalog call sites across 8 activities (`updateCmsState`, `cancelSession`, `getDescendantSessionIds`, `spawnChildSession`, `hydrateSession`, `checkpointSession`, `recordSessionEvent`, `runTurn`) are now wrapped, with the four critical state-mutating sites in `cmsRetryCritical` and the rest preserving their existing fire-and-forget contract under `cmsRetryBestEffort`.
+
+### Repository
+
+- **Open-source readiness pass** — added `SECURITY.md` and `CONTRIBUTING.md`; removed the deployment-specific AKS topology doc, internal squad/Ralph automation workflows and proposals, and the committed perf-report history; rewrote committed docs to use relative paths.
+
 ## 0.1.24 — 2026-04-29
 
 ### SDK / Runtime

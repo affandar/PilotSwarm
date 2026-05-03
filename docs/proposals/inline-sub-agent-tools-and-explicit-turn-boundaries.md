@@ -39,7 +39,7 @@ This proposal keeps durable orchestration behavior, but narrows turn-breaking be
 
 ### Current behavior
 
-`ManagedSession.runTurn()` uses `session.abort()` to break out of the Copilot SDK turn when a control-plane tool fires. That is currently implemented in [managed-session.ts](/Users/affandar/workshop/drox/pilotswarm/packages/sdk/src/managed-session.ts).
+`ManagedSession.runTurn()` uses `session.abort()` to break out of the Copilot SDK turn when a control-plane tool fires. That is currently implemented in [managed-session.ts](../../packages/sdk/src/managed-session.ts).
 
 For `spawn_agent`, the flow today is roughly:
 
