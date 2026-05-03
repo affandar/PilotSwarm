@@ -3,6 +3,7 @@ dist/
 .env
 .env.remote
 .env.local.docker
+.env.pilotswarm*
 .model_providers.json
 *.tgz
 vendor/
