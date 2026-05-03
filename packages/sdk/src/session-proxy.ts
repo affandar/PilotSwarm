@@ -473,10 +473,12 @@ export function registerActivities(
         // Self-heal older persisted system sessions created before agentIdentity
         // was forwarded through worker bootstrap/orchestration input.
         if (!input.config.agentIdentity && catalog) {
-            try {
-                const row = await catalog.getSession(input.sessionId);
-                fallbackAgentIdentity = row?.agentId ?? undefined;
-            } catch {}
+            const row = await cmsRetryBestEffort(
+                `runTurn.getSession agentId-fallback session=${input.sessionId}`,
+                () => catalog!.getSession(input.sessionId),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+            fallbackAgentIdentity = row?.agentId ?? undefined;
         }
 
         const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
@@ -484,10 +486,16 @@ export function registerActivities(
 
         const failForMissingState = async (message: string) => {
             if (catalog) {
-                await catalog.updateSession(input.sessionId, {
-                    state: "failed",
-                    lastError: message,
-                }).catch(() => {});
+                // Best-effort: this fires from already-failed code paths;
+                // we don't want a CMS hiccup to escalate into a thrown activity.
+                await cmsRetryBestEffort(
+                    `runTurn.failForMissingState session=${input.sessionId}`,
+                    () => catalog!.updateSession(input.sessionId, {
+                        state: "failed",
+                        lastError: message,
+                    }),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
             }
             return { type: "error", message } as TurnResult;
         };
@@ -532,16 +540,18 @@ export function registerActivities(
                     (failureMessage) => activityCtx.traceInfo(`[runTurn] ${failureMessage}`),
                 );
                 if (catalog) {
-                    await catalog.recordEvents(input.sessionId, [{
-                        eventType: "system.message",
-                        data: {
-                            content:
-                                "The runtime is replaying this turn after a worker restart lost the live Copilot session state before durable dehydrate completed. " +
-                                "Some recent work may be missing or partially executed.",
-                        },
-                    }], workerNodeId).catch((catalogErr: any) => {
-                        activityCtx.traceInfo(`[runTurn] CMS lossy replay notice failed: ${catalogErr}`);
-                    });
+                    await cmsRetryBestEffort(
+                        `runTurn.recordEvent system.message-lossy-replay session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "system.message",
+                            data: {
+                                content:
+                                    "The runtime is replaying this turn after a worker restart lost the live Copilot session state before durable dehydrate completed. " +
+                                    "Some recent work may be missing or partially executed.",
+                            },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
                 }
                 try {
                     session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
@@ -820,17 +830,30 @@ export function registerActivities(
                         if (agentId) meta.agentId = agentId;
                         if (agentSplash) meta.splash = agentSplash;
                         if (Object.keys(meta).length > 0) {
-                            await catalog.updateSession(childSession.sessionId, meta);
+                            // Best-effort: child has been created and is about to be
+                            // sent its bootstrap. A failed meta update means the row
+                            // is missing title/agentId/splash, not that the spawn
+                            // failed. Don't escalate to a thrown spawn_agent.
+                            const capturedMeta = meta;
+                            await cmsRetryBestEffort(
+                                `runTurn.spawn.updateSession meta session=${childSession.sessionId}`,
+                                () => catalog!.updateSession(childSession.sessionId, capturedMeta),
+                                (msg) => activityCtx.traceInfo(msg),
+                            );
                         }
                     }
 
                     await childSession.send(agentTask, { bootstrap: true });
 
                     if (catalog) {
-                        await catalog.recordEvents(input.sessionId, [{
-                            eventType: "session.agent_spawned",
-                            data: { childSessionId: childSession.sessionId, agentId: agentId || undefined, task: agentTask.slice(0, 500) },
-                        }], workerNodeId);
+                        await cmsRetryBestEffort(
+                            `runTurn.spawn.recordEvent agent_spawned session=${input.sessionId}`,
+                            () => catalog!.recordEvents(input.sessionId, [{
+                                eventType: "session.agent_spawned",
+                                data: { childSessionId: childSession.sessionId, agentId: agentId || undefined, task: agentTask.slice(0, 500) },
+                            }], workerNodeId),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
                     }
 
                     const childOrchId = `session-${childSession.sessionId}`;
@@ -998,40 +1021,46 @@ export function registerActivities(
                     if (!persistedEvent) return;
                     if (event.eventType === "session.wait_started") {
                         const data = (event.data ?? {}) as { reason?: string };
-                        catalog.updateSession(input.sessionId, {
-                            state: "waiting",
-                            waitReason: data.reason ?? null,
-                            lastActiveAt: new Date(),
-                        }).catch((err: any) => {
-                            activityCtx.traceInfo(`[runTurn] CMS wait_started status update failed: ${err}`);
-                        });
+                        void cmsRetryBestEffort(
+                            `runTurn.onEvent updateSession state=waiting session=${input.sessionId}`,
+                            () => catalog.updateSession(input.sessionId, {
+                                state: "waiting",
+                                waitReason: data.reason ?? null,
+                                lastActiveAt: new Date(),
+                            }),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
                     } else if (event.eventType === "session.input_required_started") {
                         const data = (event.data ?? {}) as { question?: string };
-                        catalog.updateSession(input.sessionId, {
-                            state: "input_required",
-                            waitReason: data.question ?? null,
-                            lastActiveAt: new Date(),
-                        }).catch((err: any) => {
-                            activityCtx.traceInfo(`[runTurn] CMS input_required_started status update failed: ${err}`);
-                        });
+                        void cmsRetryBestEffort(
+                            `runTurn.onEvent updateSession state=input_required session=${input.sessionId}`,
+                            () => catalog.updateSession(input.sessionId, {
+                                state: "input_required",
+                                waitReason: data.question ?? null,
+                                lastActiveAt: new Date(),
+                            }),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
                     }
                     if (event.eventType === "assistant.usage") {
                         const usageUpsert = buildUsageSummaryUpsert(event.data);
                         if (usageUpsert) {
-                            catalog.upsertSessionMetricSummary(input.sessionId, usageUpsert).catch((err: any) => {
-                                activityCtx.traceInfo(`[runTurn] CMS assistant.usage summary update failed: ${err}`);
-                            });
+                            void cmsRetryBestEffort(
+                                `runTurn.onEvent upsertSummary usage session=${input.sessionId}`,
+                                () => catalog.upsertSessionMetricSummary(input.sessionId, usageUpsert),
+                                (msg) => activityCtx.traceInfo(msg),
+                            );
                         }
                     }
-                    const writePromise = catalog.recordEvents(
-                        input.sessionId,
-                        [persistedEvent],
-                        workerNodeId,
+                    // Best-effort with one transient retry. trackEventWrite tracks
+                    // the wrapped promise so the post-turn barrier waits for the
+                    // retry to settle before emitting turn_completed.
+                    const writePromise = cmsRetryBestEffort(
+                        `runTurn.onEvent recordEvent ${persistedEvent.eventType} session=${input.sessionId}`,
+                        () => catalog.recordEvents(input.sessionId, [persistedEvent], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
                     );
                     trackEventWrite(writePromise);
-                    writePromise.catch((err: any) => {
-                        activityCtx.traceInfo(`[runTurn] CMS recordEvent failed: ${err}`);
-                    });
                 }
                 : undefined;
 
@@ -1044,12 +1073,14 @@ export function registerActivities(
                     input.config.turnSystemPrompt,
                     workerNodeId,
                 );
-                catalog.recordEvents(input.sessionId, [{
-                    eventType: "system.message",
-                    data: { content: persistedSystemPrompt },
-                }], workerNodeId).catch((err: any) => {
-                    activityCtx.traceInfo(`[runTurn] CMS recordEvent (system) failed: ${err}`);
-                });
+                void cmsRetryBestEffort(
+                    `runTurn.recordEvent system-prompt session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "system.message",
+                        data: { content: persistedSystemPrompt },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
             }
             if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt) {
                 const promptEventType = isInternalSystemPrompt(input.prompt) ? "system.message" : "user.message";
@@ -1065,34 +1096,41 @@ export function registerActivities(
                 if (incomingClientMessageIds.length > 0) {
                     eventData.clientMessageIds = incomingClientMessageIds;
                 }
-                catalog.recordEvents(input.sessionId, [{
-                    eventType: promptEventType,
-                    data: eventData,
-                }], workerNodeId).catch((err: any) => {
-                    activityCtx.traceInfo(`[runTurn] CMS recordEvent (${promptEventType}) failed: ${err}`);
-                });
+                const capturedPromptEventType = promptEventType;
+                void cmsRetryBestEffort(
+                    `runTurn.recordEvent ${capturedPromptEventType} session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: capturedPromptEventType,
+                        data: eventData,
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
             }
 
             // Mark session as "running" in CMS before the turn
             if (catalog) {
-                await catalog.updateSession(input.sessionId, {
-                    state: "running",
-                    lastActiveAt: new Date(),
-                }).catch((err: any) => {
-                    activityCtx.traceInfo(`[runTurn] CMS pre-turn status update failed: ${err}`);
-                });
+                await cmsRetryBestEffort(
+                    `runTurn.preTurn updateSession state=running session=${input.sessionId}`,
+                    () => catalog!.updateSession(input.sessionId, {
+                        state: "running",
+                        lastActiveAt: new Date(),
+                    }),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
             }
 
             activityCtx.traceInfo(`[runTurn] invoking ManagedSession.runTurn for ${input.sessionId}`);
 
             // Record turn_started CMS event
             if (catalog) {
-                catalog.recordEvents(input.sessionId, [{
-                    eventType: "session.turn_started",
-                    data: { iteration: input.turnIndex ?? 0 },
-                }], workerNodeId).catch((err: any) => {
-                    activityCtx.traceInfo(`[runTurn] CMS turn_started event failed: ${err}`);
-                });
+                void cmsRetryBestEffort(
+                    `runTurn.recordEvent turn_started session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.turn_started",
+                        data: { iteration: input.turnIndex ?? 0 },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
             }
 
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
@@ -1117,16 +1155,18 @@ export function registerActivities(
                 });
 
                 if (catalog) {
-                    await catalog.recordEvents(input.sessionId, [{
-                        eventType: "system.message",
-                        data: {
-                            content:
-                                "The runtime recovered this session after the worker lost the live Copilot session. " +
-                                "Some very recent in-memory state may have been lost.",
-                        },
-                    }], workerNodeId).catch((err: any) => {
-                        activityCtx.traceInfo(`[runTurn] CMS recovery notice failed: ${err}`);
-                    });
+                    await cmsRetryBestEffort(
+                        `runTurn.recordEvent system.message-recovery session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "system.message",
+                            data: {
+                                content:
+                                    "The runtime recovered this session after the worker lost the live Copilot session. " +
+                                    "Some very recent in-memory state may have been lost.",
+                            },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
                 }
 
                 try {
@@ -1185,16 +1225,18 @@ export function registerActivities(
                 );
 
                 if (catalog) {
-                    await catalog.recordEvents(input.sessionId, [{
-                        eventType: "system.message",
-                        data: {
-                            content:
-                                "The runtime recreated this session after the live Copilot transcript became inconsistent. " +
-                                "Some recent in-memory work may be missing or partially executed.",
-                        },
-                    }], workerNodeId).catch((err: any) => {
-                        activityCtx.traceInfo(`[runTurn] CMS corrupted-transcript recovery notice failed: ${err}`);
-                    });
+                    await cmsRetryBestEffort(
+                        `runTurn.recordEvent system.message-corrupted-transcript session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "system.message",
+                            data: {
+                                content:
+                                    "The runtime recreated this session after the live Copilot transcript became inconsistent. " +
+                                    "Some recent in-memory work may be missing or partially executed.",
+                            },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
                 }
 
                 try {
@@ -1260,12 +1302,14 @@ export function registerActivities(
                 if (pendingWritesAtBarrier.length > 0) {
                     await Promise.allSettled(pendingWritesAtBarrier);
                 }
-                await catalog.recordEvents(input.sessionId, [{
-                    eventType: "session.turn_completed",
-                    data: { iteration: input.turnIndex ?? 0 },
-                }], workerNodeId).catch((err: any) => {
-                    activityCtx.traceInfo(`[runTurn] CMS turn_completed event failed: ${err}`);
-                });
+                await cmsRetryBestEffort(
+                    `runTurn.recordEvent turn_completed session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.turn_completed",
+                        data: { iteration: input.turnIndex ?? 0 },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
             }
 
             if (cancelled) return { type: "cancelled" };
@@ -1308,9 +1352,12 @@ export function registerActivities(
                     updates.waitReason = null;
                     updates.lastError = null;
                 }
-                await catalog.updateSession(input.sessionId, updates).catch((err: any) => {
-                    activityCtx.traceInfo(`[runTurn] CMS post-turn status writeback failed: ${err}`);
-                });
+                const capturedUpdates = updates;
+                await cmsRetryBestEffort(
+                    `runTurn.postTurn updateSession state=${capturedUpdates.state} session=${input.sessionId}`,
+                    () => catalog!.updateSession(input.sessionId, capturedUpdates),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
             }
 
             return result;
@@ -1320,20 +1367,24 @@ export function registerActivities(
                 const message = err.message || String(err);
                 activityCtx.traceInfo(`[runTurn] ${message}`);
                 if (catalog) {
-                    await catalog.recordEvents(input.sessionId, [{
-                        eventType: "session.error",
-                        data: { message, errorType: "session_lock_timeout" },
-                    }], workerNodeId).catch((catalogErr: any) => {
-                        activityCtx.traceInfo(`[runTurn] CMS session lock timeout event failed: ${catalogErr}`);
-                    });
-                    await catalog.updateSession(input.sessionId, {
-                        state: "error",
-                        lastError: message,
-                        waitReason: null,
-                        lastActiveAt: new Date(),
-                    }).catch((catalogErr: any) => {
-                        activityCtx.traceInfo(`[runTurn] CMS session lock timeout status update failed: ${catalogErr}`);
-                    });
+                    await cmsRetryBestEffort(
+                        `runTurn.lockTimeout recordEvent session.error session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "session.error",
+                            data: { message, errorType: "session_lock_timeout" },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                    await cmsRetryBestEffort(
+                        `runTurn.lockTimeout updateSession state=error session=${input.sessionId}`,
+                        () => catalog!.updateSession(input.sessionId, {
+                            state: "error",
+                            lastError: message,
+                            waitReason: null,
+                            lastActiveAt: new Date(),
+                        }),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
                 }
                 return { type: "error", message } as TurnResult;
             }
