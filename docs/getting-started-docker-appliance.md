@@ -17,13 +17,18 @@ If you want the fastest path to seeing PilotSwarm do real work, start with the p
 ## Step 1: Pull The Image
 
 ```bash
-docker pull affandar/pilotswarm-starter:latest
+docker pull --platform linux/amd64 affandar/pilotswarm-starter:latest
 ```
+
+The starter image currently runs as `linux/amd64`. On Apple Silicon, Docker
+Desktop runs it through its built-in amd64 emulation. Native `linux/arm64`
+publishing is blocked until the `duroxide` npm package publishes a Linux arm64
+native runtime package.
 
 If you want the exact released build instead of the moving `latest` tag, pull the versioned image:
 
 ```bash
-docker pull affandar/pilotswarm-starter:0.1.17
+docker pull --platform linux/amd64 affandar/pilotswarm-starter:0.1.24
 ```
 
 ---
@@ -38,6 +43,7 @@ run Docker. If you do not have one yet, jump to
 export GITHUB_TOKEN=your_github_token
 
 docker run -d \
+  --platform linux/amd64 \
   --name pilotswarm-starter \
   -p 127.0.0.1:3001:3001 \
   -p 127.0.0.1:2222:2222 \
@@ -372,6 +378,7 @@ If you already have a shared PostgreSQL instance:
 
 ```bash
 docker run -d \
+  --platform linux/amd64 \
   --name pilotswarm-starter \
   -p 127.0.0.1:3001:3001 \
   -p 127.0.0.1:2222:2222 \
@@ -385,6 +392,7 @@ If you also want shared blob-backed artifacts and dehydration:
 
 ```bash
 docker run -d \
+  --platform linux/amd64 \
   --name pilotswarm-starter \
   -p 127.0.0.1:3001:3001 \
   -p 127.0.0.1:2222:2222 \
