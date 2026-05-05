@@ -21,8 +21,8 @@ deploy/
 ├── envs/
 │   └── dev.env                       # canonical env values (committed)
 │   └── <env>.local.env               # personal/secret overrides (gitignored)
-├── bicep-params/
-│   └── *.params.template.json        # ${VAR} substituted before az deployment
+├── services/
+│   └── <module>/bicep/<module>.params.template.json   # ${VAR} substituted before az deployment
 └── scripts/
     ├── deploy.mjs                    # entrypoint
     ├── README.md                     # contributor docs
@@ -58,7 +58,7 @@ A root `package.json` `scripts.deploy` wrapper allows
 | No zip on the wire | The EV2 zip was an EV2 transport artifact; OSS uploads files directly via `az storage blob upload-batch --overwrite` | Removes a moving part with no functional difference for Flux. |
 | Rollout verify | `kubectl rollout status deployment/<svc>` → `kubectl wait kustomization/<svc> -n flux-system --for=condition=Ready` → live `image` `endsWith(":<tag>")` check | Catches Flux racing back to a stale revision (CodeResearch Q5). |
 | Production guard | `--allow-prod` required for `<env>=prod` | FR-018; prevents accidental prod runs. |
-| Coexistence | No edits to `scripts/deploy-aks.sh`, `scripts/reset-local.sh`, `deploy/ev2/**`, or `deploy/gitops/**` source overlays | All work additive under `deploy/scripts/`, `deploy/envs/`, `deploy/bicep-params/`, plus a single `package.json` wrapper script and a cross-reference paragraph in `docs/deploying-to-aks-ev2.md`. |
+| Coexistence | No edits to `scripts/deploy-aks.sh`, `scripts/reset-local.sh`, `deploy/ev2/**`, or `deploy/gitops/**` source overlays | All work additive under `deploy/scripts/`, `deploy/envs/`, `deploy/services/<module>/bicep/`, plus a single `package.json` wrapper script and a cross-reference paragraph in `docs/deploying-to-aks-ev2.md`. |
 
 ## Per-service Flux ownership (post-final-review refactor)
 
@@ -185,7 +185,7 @@ Run via `npm run test:deploy-scripts` (no new npm dependencies — uses
 | `deploy/gitops/**` (source overlays) | Untouched. The OSS `manifests` step copies the source tree into a staging directory and substitutes the overlay `.env` *only inside the staging copy*. |
 | `deploy/scripts/**` | New. OSS-friendly equivalent of the EV2 path. |
 | `deploy/envs/**` | New. Source-of-truth env files (committed) + optional `.local.env` (gitignored) for personal overrides. |
-| `deploy/bicep-params/**` | New. `${VAR}`-templated parameter JSONs rendered by `render-params.mjs`. |
+| `deploy/services/<module>/bicep/<module>.params.template.json` | New. `${VAR}`-templated parameter JSONs rendered by `render-params.mjs`. |
 | `docs/deploying-to-aks-ev2.md` | One paragraph added near the top cross-referencing the OSS path. No other changes. |
 | `docs/deploying-to-aks.md` | Untouched (engineer-smoke doc, per SC-008). |
 
