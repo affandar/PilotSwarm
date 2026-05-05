@@ -1,0 +1,35 @@
+{
+  "$schema": "./deploy-manifest.schema.json",
+  "schemaVersion": 1,
+  "_comment": "Root manifest for the OSS Node deploy orchestrator (deploy/scripts/). Distinct from the EV2 services.json that sits alongside this file (which will be ported to a parent repo). Each entry in `services` plus each name in `infraOrder` MUST have a matching deploy/services/<name>/deploy.json file.",
+
+  "infraOrder": ["global-infra", "base-infra", "cert-manager", "cert-manager-issuers"],
+  "services":   ["worker", "portal"],
+
+  "regionShort": {
+    "westus":         "wus",
+    "westus2":        "wus2",
+    "westus3":        "wus3",
+    "eastus":         "eus",
+    "eastus2":        "eus2",
+    "centralus":      "cus",
+    "southcentralus": "scus",
+    "northcentralus": "ncus",
+    "westcentralus":  "wcus",
+    "westeurope":     "weu",
+    "northeurope":    "neu",
+    "uksouth":        "uks",
+    "ukwest":         "ukw",
+    "southeastasia":  "sea",
+    "eastasia":       "ea",
+    "australiaeast":  "aue",
+    "japaneast":      "jpe"
+  },
+
+  "defaults": {
+    "pipelineByKind": {
+      "infra": ["bicep"],
+      "app":   ["build", "bicep", "push", "manifests", "rollout"]
+    }
+  }
+}

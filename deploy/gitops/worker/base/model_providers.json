@@ -1,0 +1,92 @@
+{
+    "providers": [
+        {
+            "id": "github-copilot",
+            "type": "github",
+            "githubToken": "env:GITHUB_TOKEN",
+            "models": [
+                {
+                    "name": "claude-sonnet-4.6",
+                    "description": "Claude Sonnet 4.6. Balanced default for everyday coding, chat, and multi-step work.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "gpt-5.4",
+                    "description": "GPT-5.4. Strong flagship GPT model for harder reasoning, planning, and coding tasks through GitHub Copilot.",
+                    "cost": "high"
+                },
+                {
+                    "name": "gpt-5.4-mini",
+                    "description": "GPT-5.4 Mini. Faster, lighter-weight GPT option for everyday chat, drafting, and cheaper iteration.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "claude-opus-4.7",
+                    "description": "Claude Opus 4.7 (latest). Most capable Claude option for the hardest analysis and reasoning tasks through GitHub Copilot.",
+                    "cost": "high"
+                },
+                {
+                    "name": "claude-opus-4.6",
+                    "description": "Claude Opus 4.6. Most capable option for deeper analysis and harder tasks.",
+                    "cost": "high"
+                }
+            ]
+        },
+        {
+            "id": "anthropic",
+            "type": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "apiKey": "env:ANTHROPIC_API_KEY",
+            "models": [
+                {
+                    "name": "claude-opus-4-6",
+                    "description": "Claude Opus 4.6 (direct Anthropic). Most capable. Deep reasoning, complex multi-step tasks.",
+                    "cost": "high"
+                },
+                {
+                    "name": "claude-sonnet-4-6",
+                    "description": "Claude Sonnet 4.6 (direct Anthropic). Fast, capable all-rounder.",
+                    "cost": "medium"
+                }
+            ]
+        },
+        {
+            "id": "azure-foundry",
+            "type": "openai",
+            "baseUrl": "__FOUNDRY_ENDPOINT__/openai/v1",
+            "apiKey": "env:AZURE_OAI_KEY",
+            "models": [
+                {
+                    "name": "gpt-5.4",
+                    "description": "GPT-5.4 via Azure AI Foundry. High reasoning effort, advanced multi-turn and coding tasks. Deployment must be created on the Foundry account (deploy/envs/local/<env>/foundry-deployments.json).",
+                    "cost": "high"
+                },
+                {
+                    "name": "gpt-5.4-mini",
+                    "description": "GPT-5.4 Mini via Azure AI Foundry. Faster and cheaper than full GPT-5.4. Deployment must be created on the Foundry account.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "gpt-5.4-nano",
+                    "description": "GPT-5.4 Nano via Azure AI Foundry. Lightweight, fast, cost-efficient for simpler tasks. Deployment must be created on the Foundry account.",
+                    "cost": "low"
+                }
+            ]
+        },
+        {
+            "id": "azure-kimi",
+            "type": "openai",
+            "baseUrl": "__FOUNDRY_ENDPOINT__/openai/v1",
+            "apiKey": "env:AZURE_OAI_KEY",
+            "models": [
+                {
+                    "name": "Kimi-K2.5",
+                    "description": "Kimi-K2.5 (Moonshot AI) via Azure AI Foundry. Strong reasoning. Note: known multi-worker session-state failures; avoid for that scenario.",
+                    "cost": "medium"
+                }
+            ]
+        }
+    ],
+    "defaultModel": "github-copilot:claude-sonnet-4.6"
+}
+

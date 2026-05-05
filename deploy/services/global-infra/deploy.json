@@ -1,0 +1,11 @@
+{
+  "$schema": "../deploy.schema.json",
+  "schemaVersion": 1,
+  "_comment": "OSS per-service deploy manifest for global-infra. Read by deploy/scripts/lib/services-manifest.mjs. Distinct from the EV2 service.json sibling which will be ported to a parent repo.",
+  "name": "global-infra",
+  "kind": "infra",
+  "bicep": {
+    "modules":        [{ "name": "global-infra", "scope": "sub" }],
+    "allModeModules": [{ "name": "global-infra", "scope": "sub" }]
+  }
+}

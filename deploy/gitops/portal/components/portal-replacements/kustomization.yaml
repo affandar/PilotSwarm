@@ -1,0 +1,85 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# TLS-source-agnostic env-driven replacements for the portal overlay.
+#
+# Sourced from the overlay-generated `portal-env` ConfigMap (each overlay's
+# `configMapGenerator` builds it from `.env`). This Component stays the same
+# for both AKV and letsencrypt paths — TLS-specific replacements (e.g.
+# patching the AKV SPC's clientID) are handled by the tls-akv component
+# whose SPC is contributed alongside it.
+#
+# Components run AFTER the overlay's resources are loaded, so the
+# `portal-env` ConfigMap is visible by the time these replacements fire.
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.IMAGE
+    targets:
+      - select:
+          kind: Deployment
+          name: pilotswarm-portal
+        fieldPaths:
+          - spec.template.spec.containers.[name=portal].image
+
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.PORTAL_HOSTNAME
+    targets:
+      - select:
+          kind: Ingress
+          name: pilotswarm-portal-ingress
+        fieldPaths:
+          - spec.rules.0.host
+          - spec.tls.0.hosts.0
+
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.WORKLOAD_IDENTITY_CLIENT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.clientID
+      - select:
+          kind: ServiceAccount
+          name: pilotswarm-portal
+        fieldPaths:
+          - metadata.annotations.[azure.workload.identity/client-id]
+
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.KV_NAME
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.keyvaultName
+
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.AZURE_TENANT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.tenantId
+
+  # SPC-keys hash, sourced from the env-derived ConfigMap. See
+  # deploy/scripts/lib/spc-keys-hash.mjs for the full rationale.
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.SPC_KEYS_HASH
+    targets:
+      - select:
+          kind: Deployment
+          name: pilotswarm-portal
+        fieldPaths:
+          - spec.template.metadata.annotations.[pilotswarm.dev/spc-keys-hash]

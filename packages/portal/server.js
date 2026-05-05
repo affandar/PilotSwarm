@@ -56,11 +56,27 @@ export async function startServer(opts = {}) {
     if (Number.isFinite(workers) && !process.env.WORKERS) {
         process.env.WORKERS = String(workers);
     }
+
+    // Strip "__PS_UNSET__" sentinels written by deploy seed-secrets so
+    // optional env vars (like ANTHROPIC_API_KEY or PORTAL_AUTH_*) appear
+    // unset to downstream code. Mirrors the worker's behavior in
+    // packages/sdk/examples/worker.js.
+    const SEED_SECRETS_UNSET_SENTINEL = "__PS_UNSET__";
+    for (const [k, v] of Object.entries(process.env)) {
+        if (v === SEED_SECRETS_UNSET_SENTINEL) delete process.env[k];
+    }
+
     const portalConfig = getPortalConfig();
     const mode = getPortalMode();
+    const useManagedIdentity = ["1", "true", "yes", "on"].includes(
+        String(process.env.PILOTSWARM_USE_MANAGED_IDENTITY || "").toLowerCase(),
+    );
     const runtime = new PortalRuntime({
         store: process.env.DATABASE_URL || "sqlite::memory:",
         mode,
+        useManagedIdentity,
+        cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
+        aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
     });
 
     const app = express();

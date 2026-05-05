@@ -31,7 +31,7 @@ export type {
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
-export { SessionBlobStore } from "./blob-store.js";
+export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
 export { PgFactStore, createFactStoreForUrl } from "./facts-store.js";
 export { PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";

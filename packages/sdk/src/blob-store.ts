@@ -1,10 +1,12 @@
 import {
     BlobServiceClient,
+    ContainerClient,
     StorageSharedKeyCredential,
     generateBlobSASQueryParameters,
     BlobSASPermissions,
     SASProtocol,
 } from "@azure/storage-blob";
+import { DefaultAzureCredential, type TokenCredential } from "@azure/identity";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -66,6 +68,29 @@ function errorMessage(error: unknown): string {
 }
 
 /**
+ * Configuration for constructing a {@link SessionBlobStore} against an
+ * already-built `ContainerClient`. Used by the managed-identity path
+ * (where there is no connection string to parse) and by tests that want
+ * to inject a mocked client.
+ *
+ * @internal
+ */
+export interface SessionBlobStoreClientConfig {
+    containerClient: ContainerClient;
+    containerName: string;
+    /**
+     * Optional `StorageSharedKeyCredential` used solely to mint
+     * read-only SAS URLs in {@link SessionBlobStore.generateArtifactSasUrl}.
+     * In managed-identity mode this is intentionally `null`/absent —
+     * SAS generation will throw `NotSupportedInManagedIdentityMode` so
+     * callers (TUI / portal) know to proxy downloads through the worker
+     * instead of relying on shared-key SAS.
+     */
+    sharedKeyCredential?: StorageSharedKeyCredential | null;
+    sessionStateDir?: string;
+}
+
+/**
  * Manages session state in Azure Blob Storage.
  *
  * - `dehydrate()` — tar + upload session dir, remove local files
@@ -73,28 +98,54 @@ function errorMessage(error: unknown): string {
  * - `checkpoint()` — tar + upload without removing local files
  * - `exists()` / `delete()` — blob lifecycle
  *
+ * Two construction modes:
+ * - **Connection string** (legacy / local / `scripts/deploy-aks.sh`):
+ *   `new SessionBlobStore(connectionString, containerName?, sessionStateDir?)`.
+ *   Parses `AccountName` + `AccountKey` out of the conn string for SAS URL
+ *   generation. This is what every current caller uses.
+ * - **Managed identity** (new bicep-deploy flow when
+ *   `PILOTSWARM_USE_MANAGED_IDENTITY=1`): construct via
+ *   {@link createSessionBlobStore} or pass a {@link SessionBlobStoreClientConfig}.
+ *   No shared key is available, so SAS URL generation throws.
+ *
  * @internal
  */
 export class SessionBlobStore implements SessionStateStore, ArtifactStore {
-    private containerClient;
-    private connectionString: string;
+    private containerClient: ContainerClient;
     private containerName: string;
     private credential: StorageSharedKeyCredential | null = null;
     private sessionStateDir: string;
     private snapshotSizeBySession = new Map<string, number>();
 
-    constructor(connectionString: string, containerName = "copilot-sessions", sessionStateDir?: string) {
-        this.connectionString = connectionString;
-        this.containerName = containerName;
-        this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
-        const blobService = BlobServiceClient.fromConnectionString(connectionString);
-        this.containerClient = blobService.getContainerClient(containerName);
+    constructor(
+        connectionStringOrConfig: string | SessionBlobStoreClientConfig,
+        containerName: string = "copilot-sessions",
+        sessionStateDir?: string,
+    ) {
+        if (typeof connectionStringOrConfig === "string") {
+            // Legacy connection-string path. Identical to the pre-MI
+            // behaviour — every existing caller hits this branch.
+            const connectionString = connectionStringOrConfig;
+            this.containerName = containerName;
+            this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
+            const blobService = BlobServiceClient.fromConnectionString(connectionString);
+            this.containerClient = blobService.getContainerClient(containerName);
 
-        // Parse account name + key from connection string for SAS generation
-        const accountMatch = connectionString.match(/AccountName=([^;]+)/i);
-        const keyMatch = connectionString.match(/AccountKey=([^;]+)/i);
-        if (accountMatch && keyMatch) {
-            this.credential = new StorageSharedKeyCredential(accountMatch[1], keyMatch[1]);
+            // Parse account name + key from connection string for SAS generation
+            const accountMatch = connectionString.match(/AccountName=([^;]+)/i);
+            const keyMatch = connectionString.match(/AccountKey=([^;]+)/i);
+            if (accountMatch && keyMatch) {
+                this.credential = new StorageSharedKeyCredential(accountMatch[1], keyMatch[1]);
+            }
+        } else {
+            // Pre-built ContainerClient path (used by managed-identity mode
+            // and by tests). The caller has already chosen a credential —
+            // we just record what's needed for SAS minting.
+            const cfg = connectionStringOrConfig;
+            this.containerClient = cfg.containerClient;
+            this.containerName = cfg.containerName;
+            this.sessionStateDir = cfg.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
+            this.credential = cfg.sharedKeyCredential ?? null;
         }
     }
 
@@ -455,7 +506,21 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
         expiryMinutes = 1,
     ): string {
         if (!this.credential) {
-            throw new Error("Cannot generate SAS URL: connection string has no AccountKey");
+            // Managed-identity mode: there is no shared key on this
+            // instance, so we cannot mint a shared-key SAS. We
+            // intentionally do *not* fall back to user-delegation key
+            // (UDK) SAS here — UDK refresh introduces non-trivial
+            // lifetime tracking, and the portal/TUI proxy path is a
+            // simpler answer that already works. Callers that hit this
+            // branch should switch to streaming the artifact through the
+            // worker rather than handing the client a direct SAS URL.
+            const error = new Error(
+                "Cannot generate SAS URL: SessionBlobStore is in managed-identity mode " +
+                "(no shared-key credential available). Stream the artifact through " +
+                "downloadArtifact/downloadArtifactText instead.",
+            ) as Error & { code: string };
+            error.code = "NotSupportedInManagedIdentityMode";
+            throw error;
         }
 
         const blobPath = this.artifactBlobPath(sessionId, filename);
@@ -490,4 +555,96 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
         }
         return count;
     }
+}
+
+// ─── Factory ─────────────────────────────────────────────────────────────
+
+/**
+ * Environment shape consumed by {@link createSessionBlobStore}. We accept a
+ * loose `Record<string, string | undefined>` so callers can pass either
+ * `process.env` or a curated env map (the deploy orchestrator's
+ * `loadEnv()` output, the worker's `options`, etc.) without juggling
+ * types.
+ *
+ * @internal
+ */
+export interface SessionBlobStoreEnv {
+    /**
+     * `1` / `true` selects managed-identity mode. When set, the factory
+     * requires `AZURE_STORAGE_ACCOUNT_URL` and ignores any
+     * `AZURE_STORAGE_CONNECTION_STRING` value.
+     *
+     * Why a flag and not "MI iff conn string is absent"? Because we want
+     * the legacy code path (connection string → shared-key credential →
+     * shared-key SAS) to remain the default for the existing
+     * `scripts/deploy-aks.sh` flow, local Docker storage, CI, and any
+     * stamp that hasn't migrated. The flag is the explicit opt-in that
+     * the bicep-deploy orchestrator sets in the worker overlay
+     * ConfigMap.
+     */
+    PILOTSWARM_USE_MANAGED_IDENTITY?: string;
+    /** `https://<account>.blob.core.windows.net` — required in MI mode. */
+    AZURE_STORAGE_ACCOUNT_URL?: string;
+    AZURE_STORAGE_CONNECTION_STRING?: string;
+    AZURE_STORAGE_CONTAINER?: string;
+}
+
+/**
+ * Pick the right `SessionBlobStore` implementation based on env. Returns
+ * `null` when no Azure storage backing is configured (caller falls back
+ * to the filesystem store).
+ *
+ * Selection (first match wins):
+ *   1. `PILOTSWARM_USE_MANAGED_IDENTITY=1` + `AZURE_STORAGE_ACCOUNT_URL`
+ *      → managed-identity mode. Uses {@link DefaultAzureCredential}, which
+ *      picks up the workload-identity token in AKS or `az login` /
+ *      env-var creds locally. SAS URL minting will throw — callers must
+ *      proxy downloads.
+ *   2. `AZURE_STORAGE_CONNECTION_STRING` set → legacy connection-string
+ *      mode. Identical to pre-MI behaviour. Used by the existing
+ *      `scripts/deploy-aks.sh` flow, local Docker storage, CI, and any
+ *      stamp that hasn't switched the flag on.
+ *   3. Otherwise → `null`.
+ *
+ * @internal
+ */
+export function createSessionBlobStore(
+    env: SessionBlobStoreEnv,
+    opts: { sessionStateDir?: string } = {},
+): SessionBlobStore | null {
+    const containerName =
+        (env.AZURE_STORAGE_CONTAINER || "").trim() || "copilot-sessions";
+    const useMi = isTruthyFlag(env.PILOTSWARM_USE_MANAGED_IDENTITY);
+    const accountUrl = (env.AZURE_STORAGE_ACCOUNT_URL || "").trim();
+    const connStr = (env.AZURE_STORAGE_CONNECTION_STRING || "").trim();
+
+    if (useMi) {
+        if (!accountUrl) {
+            throw new Error(
+                "PILOTSWARM_USE_MANAGED_IDENTITY=1 but AZURE_STORAGE_ACCOUNT_URL is not set. " +
+                "Set AZURE_STORAGE_ACCOUNT_URL to https://<account>.blob.core.windows.net (the bicep-deploy worker-env ConfigMap wires this automatically).",
+            );
+        }
+        const credential: TokenCredential = new DefaultAzureCredential();
+        const blobService = new BlobServiceClient(accountUrl, credential);
+        const containerClient = blobService.getContainerClient(containerName);
+        return new SessionBlobStore({
+            containerClient,
+            containerName,
+            sharedKeyCredential: null,
+            sessionStateDir: opts.sessionStateDir,
+        });
+    }
+
+    if (connStr) {
+        return new SessionBlobStore(connStr, containerName, opts.sessionStateDir);
+    }
+
+    return null;
+}
+
+function isTruthyFlag(value: string | undefined): boolean {
+    if (!value) return false;
+    const v = value.trim().toLowerCase();
+    return v === "1" || v === "true" || v === "yes" || v === "on";
 }

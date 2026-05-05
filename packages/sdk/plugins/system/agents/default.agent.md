@@ -123,6 +123,18 @@ Treat ownership as part of the authoritative session state when you need to find
 - Session listings include an `Owner:` line for each match.
 - Some permanent system agents also have `list_all_sessions`, `read_session_info`, and `read_user_stats` for fleet-wide owner analysis. Use those owner-aware tools when they are available instead of scanning unfiltered fleet output.
 
+## Session Owners
+
+Sessions may carry durable owner metadata for the authenticated user who first created them.
+Treat ownership as part of the authoritative session state when you need to find a user's sessions or reason about usage by person or cohort.
+
+- `list_sessions` accepts `owner_query`, `owner_kind`, and `include_system`.
+- Do not add `owner_query` or `owner_kind` when checking general session health, system sessions, or the session tree. Use unfiltered discovery unless the user specifically asks for an owner/user/system/unowned filter.
+- `owner_query` does substring matching across owner display name, email, subject, and provider. It is not a session title, agent name, or task search field.
+- `owner_kind="user"` restricts to authenticated-user sessions. `system` and `unowned` are also valid only when the user specifically asks for that owner bucket.
+- Session listings include an `Owner:` line for each match.
+- Some permanent system agents also have `list_all_sessions`, `read_session_info`, and `read_user_stats` for fleet-wide owner analysis. Use those owner-aware tools when they are available instead of scanning unfiltered fleet output.
+
 ## Sub-Agent Waiting
 
 When you have spawned sub-agents and need to wait for them:

@@ -1,0 +1,59 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Let's Encrypt TLS path. cert-manager (installed cluster-wide via the
+# `cert-manager` Flux Kustomization) issues a real CA cert from the
+# `letsencrypt-prod` ClusterIssuer and writes it into a kubernetes.io/tls
+# Secret named `pilotswarm-portal-tls-le`. AGIC then imports that Secret
+# into the AppGw listener via `spec.tls.0.secretName`.
+#
+# Adds the cert-manager.io/cluster-issuer annotation, rewrites the
+# Ingress `tls.0.secretName` to the cert-manager-managed Secret, and
+# repoints the Deployment's `portal-tls-secret` volume at the same
+# Secret (so the pod mounts tls.crt + tls.key and serves HTTPS).
+#
+# Also strips the `appgw-ssl-certificate` annotation contributed by
+# `edge-appgw`. In afd+letsencrypt the cert lives in the K8s Secret
+# named by `tls.0.secretName`; AGIC must import it from there. Leaving
+# the AKV-cert annotation set would make AGIC prefer an AppGw-installed
+# cert that doesn't exist on this path. JSON6902 `op: remove` is the
+# only reliable removal — strategic-merge with `null` gets stringified
+# by kustomize.
+
+patches:
+  - target:
+      kind: Ingress
+      name: pilotswarm-portal-ingress
+    patch: |-
+      - op: remove
+        path: /metadata/annotations/appgw.ingress.kubernetes.io~1appgw-ssl-certificate
+  - target:
+      kind: Deployment
+      name: pilotswarm-portal
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: pilotswarm-portal
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: portal-tls-secret
+                secret:
+                  secretName: pilotswarm-portal-tls-le
+  - target:
+      kind: Ingress
+      name: pilotswarm-portal-ingress
+    patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: pilotswarm-portal-ingress
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+      spec:
+        tls:
+          - secretName: pilotswarm-portal-tls-le
+            hosts:
+              - __PORTAL_HOSTNAME__

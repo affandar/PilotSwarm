@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "resourceName": {
+      "value": "${PORTAL_RESOURCE_NAME}"
+    },
+    "region": {
+      "value": "${LOCATION}"
+    },
+    "sslCertificateDomainSuffix": {
+      "value": "${SSL_CERT_DOMAIN_SUFFIX}"
+    },
+    "applicationGatewayName": {
+      "value": "${APPLICATION_GATEWAY_NAME}"
+    },
+    "privateLinkConfigurationName": {
+      "value": "${PRIVATE_LINK_CONFIGURATION_NAME}"
+    },
+    "approvalManagedIdentityId": {
+      "value": "${APPROVAL_MANAGED_IDENTITY_ID}"
+    },
+    "frontDoorProfileName": {
+      "value": "${FRONT_DOOR_PROFILE_NAME}"
+    },
+    "frontDoorProfileResourceGroup": {
+      "value": "${FRONT_DOOR_PROFILE_RESOURCE_GROUP}"
+    },
+    "frontDoorEndpointName": {
+      "value": "${FRONT_DOOR_ENDPOINT_NAME}"
+    },
+    "storageAccountName": {
+      "value": "${DEPLOYMENT_STORAGE_ACCOUNT_NAME}"
+    },
+    "aksClusterName": {
+      "value": "${AKS_CLUSTER_NAME}"
+    },
+    "keyVaultName": {
+      "value": "${KV_NAME}"
+    },
+    "certScriptIdentityResourceId": {
+      "value": "${APPROVAL_MANAGED_IDENTITY_ID}"
+    },
+    "edgeMode": {
+      "value": "${EDGE_MODE}"
+    },
+    "tlsSource": {
+      "value": "${TLS_SOURCE}"
+    },
+    "portalHostnameOverride": {
+      "value": "${PORTAL_HOSTNAME}"
+    },
+    "privateDnsZoneName": {
+      "value": "${PRIVATE_DNS_ZONE}"
+    },
+    "aksVnetId": {
+      "value": "${AKS_VNET_ID}"
+    }
+  }
+}

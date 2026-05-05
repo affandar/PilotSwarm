@@ -1,0 +1,34 @@
+# RBAC for the AKS Flux extension's per-namespace impersonation.
+#
+# The Flux extension's helm-controller is started with
+# `--default-service-account=flux-applier`. When a HelmRelease in this
+# namespace doesn't pin its own `spec.serviceAccountName`, helm-controller
+# impersonates `system:serviceaccount:<hr-namespace>:flux-applier` to
+# read/write its Helm release storage Secret. AKS pre-creates only
+# `flux-system:flux-applier` (with cluster-admin); per-namespace SAs are
+# the responsibility of the manifests that target that namespace.
+#
+# cert-manager's chart creates cluster-scoped resources (CRDs,
+# ClusterRoles, ClusterRoleBindings, ValidatingWebhookConfigurations,
+# MutatingWebhookConfigurations), so the SA needs cluster-admin to
+# install. We mirror the AKS-default `flux-applier-binding` shape (SA in
+# the namespace, ClusterRoleBinding to cluster-admin) instead of trying
+# to enumerate every chart-required permission.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flux-applier
+  namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cert-manager-flux-applier
+subjects:
+  - kind: ServiceAccount
+    name: flux-applier
+    namespace: cert-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin

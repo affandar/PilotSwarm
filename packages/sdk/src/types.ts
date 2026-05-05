@@ -403,6 +403,40 @@ export interface PilotSwarmWorkerOptions {
     blobConnectionString?: string;
     /** Blob container name for the built-in blob-backed session store. */
     blobContainer?: string;
+    /**
+     * Account-level URL (`https://<account>.blob.core.windows.net`) used
+     * when running with `useManagedIdentity: true`. Ignored otherwise.
+     */
+    blobAccountUrl?: string;
+    /**
+     * Opt into managed-identity auth for Azure Blob Storage. When `true`,
+     * `blobAccountUrl` is required and `blobConnectionString` is ignored;
+     * the worker uses `DefaultAzureCredential` (workload identity in AKS,
+     * `az login` / env-var creds locally). SAS URL generation will throw
+     * `NotSupportedInManagedIdentityMode` — callers must proxy artifact
+     * downloads through the worker.
+     *
+     * Also routes CMS + facts pools through the AAD pg-pool factory:
+     * tokens are minted via `DefaultAzureCredential` and pg invokes the
+     * `password` callback on every new physical connection. Duroxide's
+     * orchestration store still uses the password URL in `store` because
+     * its `PostgresProvider` has no token-callback hook upstream.
+     */
+    useManagedIdentity?: boolean;
+    /**
+     * Override URL used by CMS + facts pools. Defaults to `store`. When
+     * `useManagedIdentity` is `true` this should be the passwordless URL
+     * whose `user@` segment is the AAD principal name registered as a
+     * Postgres administrator.
+     */
+    cmsFactsDatabaseUrl?: string;
+    /**
+     * AAD principal name (UAMI display name / SP appId / user UPN) used
+     * as the Postgres role when authenticating via token. Defaults to
+     * the `user` field parsed from `cmsFactsDatabaseUrl`. Only consulted
+     * when `useManagedIdentity` is `true`.
+     */
+    aadDbUser?: string;
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
 
@@ -583,6 +617,31 @@ export interface PilotSwarmClientOptions {
      * to co-located clients for client-side policy validation.
      */
     allowedAgentNames?: string[];
+
+    /**
+     * Use AAD/Managed Identity for Postgres auth (CMS + facts) and Azure
+     * Storage. When `true`, `cmsFactsDatabaseUrl` (or `store`) must be a
+     * passwordless URL — the auth token is minted at connect time via
+     * `DefaultAzureCredential` (see `pg-pool-factory.ts`). When `false` or
+     * unset, the password embedded in `store` is used (legacy path —
+     * `scripts/deploy-aks.sh` and local development). Mirrors the same
+     * field on `PilotSwarmWorkerOptions`.
+     */
+    useManagedIdentity?: boolean;
+
+    /**
+     * Optional separate URL for CMS + facts pools. When unset, `store` is
+     * reused. When `useManagedIdentity` is `true` this should be the
+     * passwordless URL (e.g. `postgresql://<aad-user>@<host>/<db>?sslmode=require`).
+     */
+    cmsFactsDatabaseUrl?: string;
+
+    /**
+     * Override the AAD principal name used as the Postgres `user` when
+     * minting tokens. Defaults to the `user` field parsed from the URL.
+     * Only consulted when `useManagedIdentity` is `true`.
+     */
+    aadDbUser?: string;
 }
 
 // ─── User Input ──────────────────────────────────────────────────

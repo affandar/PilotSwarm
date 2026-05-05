@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# cert-manager-issuers base — same inert-base pattern as worker/portal.
+# Per-stamp values (ACME_EMAIL, INGRESS_CLASS) come from the overlay's
+# .env-generated ConfigMap and are fanned out via `replacements`
+# declared in the overlay kustomization.
+
+resources:
+  - cluster-issuer-letsencrypt.yaml

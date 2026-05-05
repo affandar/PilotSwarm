@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace fan-out (kustomize-level). Overrides any existing
+# metadata.namespace and adds it where missing on every
+# namespaceable resource — including the overlay-generated
+# portal-env ConfigMap, which is required for nameReference
+# rewriting (envFrom.configMapRef.name -> hashed) to work.
+namespace: pilotswarm
+
+# AFD + Let's Encrypt path. AGIC + AppGw private FE behind Azure Front
+# Door (Private Link); cert-manager + LE prod ACME (HTTP-01) issues the
+# TLS cert into a K8s Secret that AGIC imports into the AppGw listener.
+# OSS public default — no DNS / domain prerequisite (AppGw exposes a
+# `<appgw>.<region>.cloudapp.azure.com` DNS label that LE issues against,
+# AFD endpoint at `*.z01.azurefd.net` is the user-facing URL).
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/edge-appgw
+  - ../../components/tls-letsencrypt
+  - ../../components/portal-replacements
+
+configMapGenerator:
+  - name: portal-env
+    envs:
+      - .env

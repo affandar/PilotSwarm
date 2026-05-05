@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "region": {
+      "value": "${LOCATION}"
+    },
+    "resourceGroupName": {
+      "value": "${GLOBAL_RESOURCE_GROUP}"
+    },
+    "resourcePrefix": {
+      "value": "${GLOBAL_RESOURCE_PREFIX}"
+    },
+    "wafMode": {
+      "value": "${WAF_MODE}"
+    }
+  }
+}

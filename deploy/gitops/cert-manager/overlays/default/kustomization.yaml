@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# cert-manager has no env-specific knobs — chart version, namespace, and
+# values are identical across stamps. The overlay exists only to satisfy
+# the deploy pipeline's stage-manifests contract (every service has an
+# `overlays/<env>/` dir with a `.env` file) and to give the FluxConfiguration
+# a stable `overlays/<env>` path matching worker/portal.
+resources:
+  - ../../base
