@@ -714,7 +714,7 @@ export function scaffoldFoundryDeploymentsJson() {
     {
       _comment: "Starter Foundry deployment. Edit name/model/version/capacity to match your subscription's region+quota. Capacity is in 1K-tokens-per-minute units (50 = 50K TPM). Run `az cognitiveservices model list --location <region>` to see what's offered.",
       name: "gpt-5-mini",
-      model: { format: "OpenAI", name: "gpt-5-mini", version: "2024-07-18" },
+      model: { format: "OpenAI", name: "gpt-5-mini", version: "2025-08-07" },
       sku: { name: "GlobalStandard", capacity: 50 },
     },
   ];
@@ -727,17 +727,22 @@ export function scaffoldFoundryDeploymentsJson() {
 const FOUNDRY_DEPLOYMENT_EXAMPLES = `
 Common deployment entries (copy into foundry-deployments.json as needed):
 
-  { "name": "gpt-5.4",
-    "model": { "format": "OpenAI", "name": "gpt-5", "version": "2024-08-06" },
+  { "name": "gpt-5",
+    "model": { "format": "OpenAI", "name": "gpt-5", "version": "2025-08-07" },
     "sku":   { "name": "GlobalStandard", "capacity": 100 } }
 
-  { "name": "gpt-5.4-nano",
-    "model": { "format": "OpenAI", "name": "gpt-5-nano", "version": "2024-07-18" },
+  { "name": "gpt-5-nano",
+    "model": { "format": "OpenAI", "name": "gpt-5-nano", "version": "2025-08-07" },
     "sku":   { "name": "GlobalStandard", "capacity": 250 } }
 
   { "name": "model-router",
-    "model": { "format": "OpenAI", "name": "model-router", "version": "2024-08-06" },
+    "model": { "format": "OpenAI", "name": "model-router", "version": "2025-05-19" },
     "sku":   { "name": "GlobalStandard", "capacity": 100 } }
+
+Note: model versions vary by region. If the deploy fails with
+"DeploymentModelNotSupported", run
+  az cognitiveservices model list --location <region>
+to see what's currently offered.
 `;
 
 async function main() {
