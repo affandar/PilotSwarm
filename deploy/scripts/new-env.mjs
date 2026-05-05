@@ -46,6 +46,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { validateLocalEnvName, envFilePath, parseEnvFile, templateEnvPath, log } from "./lib/common.mjs";
 import { loadDeployManifest } from "./lib/services-manifest.mjs";
 import { SEEDABLE_SECRET_KEYS } from "./lib/seed-secrets.mjs";
+import { listAvailableFoundryModels } from "./lib/validate-foundry-deployments.mjs";
 
 // Common Azure regions → short name. Sourced from
 // deploy/services/deploy-manifest.json `regionShort`. Unknown regions prompt
@@ -698,52 +699,75 @@ async function gatherInputs(args, existingSecrets) {
   }
 }
 
-// Starter content for deploy/envs/local/<env>/foundry-deployments.json.
-// Must be VALID JSON — `az deployment group create --parameters
-// foundryDeployments=@<file>` parses it. Bicep tolerates extra fields
-// like `_comment` on each entry.
+// Preferred Foundry deployments to scaffold when the operator says 'y' to
+// `--foundry-enabled`. The scaffolder queries the live Azure model catalog
+// for the target region and emits an entry for each preferred model that is
+// actually offered there, using the latest available version. This avoids
+// hard-coding stale `format/name/version` triples that drift every few
+// months.
 //
-// One known-stable deployment as a starting point. Operator edits this
-// file before running `npm run deploy -- base-infra <env>`. Foundry's
-// available model `format/name/version` triples change frequently;
-// `az cognitiveservices model list --location <region>` lists what is
-// currently offered in a given region. The scaffolder also prints a
-// block of common deployment shapes to stdout for convenience.
-export function scaffoldFoundryDeploymentsJson() {
-  const obj = [
-    {
-      _comment: "Starter Foundry deployment. Edit name/model/version/capacity to match your subscription's region+quota. Capacity is in 1K-tokens-per-minute units (50 = 50K TPM). Run `az cognitiveservices model list --location <region>` to see what's offered.",
-      name: "gpt-5-mini",
-      model: { format: "OpenAI", name: "gpt-5-mini", version: "2025-08-07" },
-      sku: { name: "GlobalStandard", capacity: 50 },
-    },
-  ];
-  return JSON.stringify(obj, null, 2) + "\n";
+// `capacity` is in 1K-tokens-per-minute units (50 = 50K TPM) and is just a
+// reasonable starting point — the operator is expected to tune per quota.
+const PREFERRED_FOUNDRY_DEPLOYMENTS = [
+  { format: "OpenAI", name: "gpt-5-mini", capacity: 50 },
+  { format: "OpenAI", name: "gpt-5", capacity: 100 },
+  { format: "OpenAI", name: "gpt-5-nano", capacity: 250 },
+];
+
+// Pick the latest offered version of `(format, name)` from the catalog
+// returned by `az cognitiveservices model list`. Versions are date-shaped
+// strings (YYYY-MM-DD), so a lexical sort is the same as a chronological
+// sort. Returns null if the model is not offered in the catalog.
+function pickLatestVersion(availableModels, format, name) {
+  const versions = availableModels
+    .map((m) => m && m.model)
+    .filter((m) => m && m.format === format && m.name === name)
+    .map((m) => m.version)
+    .filter(Boolean)
+    .sort();
+  return versions.length ? versions[versions.length - 1] : null;
 }
 
-// Common deployment shapes printed to stdout when the scaffolder writes
-// foundry-deployments.json. Operator copy-pastes the entries they want
-// into the JSON file.
-const FOUNDRY_DEPLOYMENT_EXAMPLES = `
-Common deployment entries (copy into foundry-deployments.json as needed):
+// Build foundry-deployments.json contents from the live catalog.
+//
+// `availableModels` is the parsed array from `az cognitiveservices model
+// list -o json`. When it is null (lookup failed — operator not logged in,
+// no network, etc.) the scaffolder emits an empty array so base-infra still
+// deploys (Foundry just provisions zero deployments) and the operator can
+// fill it in by hand.
+//
+// Pure function: the live `az` call is done by the caller.
+export function scaffoldFoundryDeploymentsJson({ availableModels = null } = {}) {
+  if (!Array.isArray(availableModels)) {
+    return JSON.stringify([], null, 2) + "\n";
+  }
+  const entries = [];
+  for (const pref of PREFERRED_FOUNDRY_DEPLOYMENTS) {
+    const version = pickLatestVersion(availableModels, pref.format, pref.name);
+    if (!version) continue;
+    entries.push({
+      name: pref.name,
+      model: { format: pref.format, name: pref.name, version },
+      sku: { name: "GlobalStandard", capacity: pref.capacity },
+    });
+  }
+  return JSON.stringify(entries, null, 2) + "\n";
+}
 
-  { "name": "gpt-5",
-    "model": { "format": "OpenAI", "name": "gpt-5", "version": "2025-08-07" },
-    "sku":   { "name": "GlobalStandard", "capacity": 100 } }
-
-  { "name": "gpt-5-nano",
-    "model": { "format": "OpenAI", "name": "gpt-5-nano", "version": "2025-08-07" },
-    "sku":   { "name": "GlobalStandard", "capacity": 250 } }
-
-  { "name": "model-router",
-    "model": { "format": "OpenAI", "name": "model-router", "version": "2025-05-19" },
-    "sku":   { "name": "GlobalStandard", "capacity": 100 } }
-
-Note: model versions vary by region. If the deploy fails with
-"DeploymentModelNotSupported", run
-  az cognitiveservices model list --location <region>
-to see what's currently offered.
-`;
+// Wrapper around `listAvailableFoundryModels` that swallows az failures and
+// returns null. The scaffolder must not hard-fail just because the operator
+// hasn't `az login`-ed yet; an empty Foundry array still produces a valid
+// deploy config.
+function tryFetchFoundryCatalog(region) {
+  try {
+    const models = listAvailableFoundryModels(region);
+    return Array.isArray(models) ? models : null;
+  } catch (err) {
+    log("warn", `Could not query Foundry model catalog for ${region}: ${err.message}`);
+    log("warn", `Scaffolding an empty foundry-deployments.json — edit it before running base-infra deploy.`);
+    return null;
+  }
+}
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -806,9 +830,22 @@ async function main() {
     if (existsSync(foundryFile) && !args.force) {
       log("info", `Foundry deployments file already exists; leaving it alone: ${foundryFile}`);
     } else {
-      writeFileSync(foundryFile, scaffoldFoundryDeploymentsJson(), "utf8");
-      log("ok", `Scaffolded Foundry deployments file at ${foundryFile}`);
-      console.log(FOUNDRY_DEPLOYMENT_EXAMPLES);
+      log("info", `Querying Foundry model catalog for ${targets.LOCATION}...`);
+      const availableModels = tryFetchFoundryCatalog(targets.LOCATION);
+      const body = scaffoldFoundryDeploymentsJson({ availableModels });
+      writeFileSync(foundryFile, body, "utf8");
+      const parsed = JSON.parse(body);
+      if (parsed.length === 0) {
+        log("warn", `Scaffolded empty foundry-deployments.json at ${foundryFile}`);
+        log("warn", `Add deployment entries before running 'npm run deploy -- base-infra ${inputs.name}'.`);
+      } else {
+        log("ok", `Scaffolded foundry-deployments.json at ${foundryFile} with ${parsed.length} deployment(s):`);
+        for (const e of parsed) {
+          console.log(`    - ${e.name} (${e.model.format}/${e.model.name}@${e.model.version}, capacity=${e.sku.capacity})`);
+        }
+        console.log(`  Tune capacities / add more models by editing the file directly.`);
+        console.log(`  See \`az cognitiveservices model list --location ${targets.LOCATION}\` for the full catalog.`);
+      }
     }
   }
 

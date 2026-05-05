@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 
-import { renderLocalEnv, deriveTargets, INPUTS } from "../new-env.mjs";
+import { renderLocalEnv, deriveTargets, INPUTS, scaffoldFoundryDeploymentsJson } from "../new-env.mjs";
 import { REPO_ROOT } from "../lib/common.mjs";
 
 const SCRIPT = join(REPO_ROOT, "deploy", "scripts", "new-env.mjs");
@@ -248,6 +248,41 @@ test("scaffolder skips foundry-deployments.json when --foundry-enabled=n", () =>
   } finally {
     cleanup();
   }
+});
+
+test("scaffoldFoundryDeploymentsJson emits an entry per preferred model offered in the region", () => {
+  const availableModels = [
+    { model: { format: "OpenAI", name: "gpt-5", version: "2025-08-07" } },
+    { model: { format: "OpenAI", name: "gpt-5-mini", version: "2024-07-18" } },
+    { model: { format: "OpenAI", name: "gpt-5-mini", version: "2025-08-07" } },
+    // gpt-5-nano deliberately not offered → must be skipped, not emitted
+    { model: { format: "OpenAI", name: "irrelevant", version: "2099-01-01" } },
+  ];
+  const body = scaffoldFoundryDeploymentsJson({ availableModels });
+  const arr = JSON.parse(body);
+  assert.ok(Array.isArray(arr));
+  const names = arr.map((e) => e.name).sort();
+  assert.deepEqual(names, ["gpt-5", "gpt-5-mini"]);
+  // Picks the latest available version for each model
+  const mini = arr.find((e) => e.name === "gpt-5-mini");
+  assert.equal(mini.model.version, "2025-08-07");
+  // Sku shape is preserved
+  assert.equal(mini.sku.name, "GlobalStandard");
+  assert.equal(typeof mini.sku.capacity, "number");
+});
+
+test("scaffoldFoundryDeploymentsJson returns an empty array when catalog lookup failed", () => {
+  // Caller passes null when az is unavailable
+  const body = scaffoldFoundryDeploymentsJson({ availableModels: null });
+  assert.deepEqual(JSON.parse(body), []);
+});
+
+test("scaffoldFoundryDeploymentsJson returns an empty array when no preferred models are offered", () => {
+  const availableModels = [
+    { model: { format: "OpenAI", name: "some-other-model", version: "2099-01-01" } },
+  ];
+  const body = scaffoldFoundryDeploymentsJson({ availableModels });
+  assert.deepEqual(JSON.parse(body), []);
 });
 
 test("deriveTargets composes PORTAL_HOSTNAME from HOST + PRIVATE_DNS_ZONE in private mode", () => {

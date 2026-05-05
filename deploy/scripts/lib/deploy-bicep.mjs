@@ -8,7 +8,7 @@
 //
 // Subsequent stages (manifests, rollout) see the merged env map in-process.
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { run, runJson, log, REPO_ROOT } from "./common.mjs";
 import { renderParams } from "./render-params.mjs";
@@ -20,6 +20,7 @@ import {
   shouldSkipDeploy,
   saveMarker,
 } from "./deploy-marker.mjs";
+import { assertFoundryDeploymentsValid } from "./validate-foundry-deployments.mjs";
 
 // Bicep main.bicep paths and params templates are derived by convention from
 // the module name: deploy/services/<Module>/bicep/{main.bicep,<Module>.params.template.json}.
@@ -180,6 +181,25 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
             `array file. See deploy/services/base-infra/bicep/foundry.bicep ` +
             `for the expected entry shape.`,
         );
+      }
+      // Preflight: verify each deployment entry's model.format/name/version
+      // is actually offered in this region. Catches the most common
+      // base-infra failure ("DeploymentModelNotSupported") with a clear
+      // message + the available alternatives, before we shell out to az.
+      let parsedDeployments;
+      try {
+        parsedDeployments = JSON.parse(readFileSync(abs, "utf8"));
+      } catch (e) {
+        throw new Error(
+          `FOUNDRY_DEPLOYMENTS_FILE is not valid JSON (${abs}): ${e.message}`,
+        );
+      }
+      if (Array.isArray(parsedDeployments) && parsedDeployments.length > 0) {
+        log("info", `[${moduleName}] validating ${parsedDeployments.length} Foundry deployment(s) against ${env.LOCATION}`);
+        assertFoundryDeploymentsValid({
+          deployments: parsedDeployments,
+          region: env.LOCATION,
+        });
       }
       baseArgs.push("--parameters", `foundryDeployments=@${abs}`);
       log("info", `[${moduleName}] applying Foundry deployments from ${abs}`);
