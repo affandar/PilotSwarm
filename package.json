@@ -9,7 +9,7 @@
   "scripts": {
     "deploy": "node deploy/scripts/deploy.mjs",
     "deploy:new-env": "node deploy/scripts/new-env.mjs",
-    "test:deploy-scripts": "node --test deploy/scripts/test/substitute-env.test.mjs deploy/scripts/test/alias-map.test.mjs deploy/scripts/test/all-mode.test.mjs deploy/scripts/test/local-env.test.mjs deploy/scripts/test/new-env.test.mjs deploy/scripts/test/services-manifest.test.mjs deploy/scripts/test/bicep-outputs-cache.test.mjs deploy/scripts/test/deploy-marker.test.mjs deploy/scripts/test/foundry-substitute.test.mjs deploy/scripts/test/spc-keys-hash.test.mjs deploy/scripts/test/render-params.test.mjs deploy/scripts/test/stage-manifests.test.mjs deploy/scripts/test/test-discovery.test.mjs deploy/scripts/test/validate-foundry-deployments.test.mjs",
+    "test:deploy-scripts": "node --test deploy/scripts/test/substitute-env.test.mjs deploy/scripts/test/alias-map.test.mjs deploy/scripts/test/all-mode.test.mjs deploy/scripts/test/local-env.test.mjs deploy/scripts/test/new-env.test.mjs deploy/scripts/test/services-manifest.test.mjs deploy/scripts/test/bicep-outputs-cache.test.mjs deploy/scripts/test/deploy-marker.test.mjs deploy/scripts/test/foundry-substitute.test.mjs deploy/scripts/test/spc-keys-hash.test.mjs deploy/scripts/test/render-params.test.mjs deploy/scripts/test/stage-manifests.test.mjs deploy/scripts/test/test-discovery.test.mjs deploy/scripts/test/validate-foundry-deployments.test.mjs deploy/scripts/test/compose-env.test.mjs",
     "build": "npm run build --workspaces",
     "dev": "npm run dev --workspace=packages/sdk",
     "test": "npm test --workspace=packages/sdk",

@@ -25,6 +25,7 @@ import { buildImage } from "./lib/build-image.mjs";
 import { pushImage } from "./lib/push-image.mjs";
 import { deployBicep } from "./lib/deploy-bicep.mjs";
 import { loadCache as loadBicepOutputsCache } from "./lib/bicep-outputs-cache.mjs";
+import { composeDerivedEnv } from "./lib/compose-env.mjs";
 import { stageManifests } from "./lib/stage-manifests.mjs";
 import { publishManifests } from "./lib/publish-manifests.mjs";
 import { waitRollout } from "./lib/wait-rollout.mjs";
@@ -166,6 +167,13 @@ async function runStage(name, ctx) {
         moduleListOverride: ctx.moduleListOverride,
         force: ctx.force,
       });
+      // Re-run composition: a fresh `all` run starts with an empty outputs
+      // cache, so the startup pass at line ~258 had nothing to compose.
+      // Now that bicep merged BaseInfra outputs (POSTGRES_FQDN /
+      // BLOB_CONTAINER_ENDPOINT / POSTGRES_AAD_ADMIN_PRINCIPAL_NAME) into
+      // the in-process env map, derive DATABASE_URL et al. so the
+      // subsequent manifests stage finds them.
+      composeDerivedEnv(ctx.env);
       return;
     case "seed-secrets":
       await seedSecrets({
@@ -251,51 +259,14 @@ async function main() {
   // `--clean` (or deleting deploy/.tmp/<env>/bicep-outputs.cache.json) busts it.
   loadBicepOutputsCache(envName, env);
 
-  // 3b) Compose DATABASE_URL (overlay ConfigMap value) from BaseInfra outputs
-  // if it isn't already set. The bicep-deploy path treats DATABASE_URL as
-  // a config value, NOT a KV secret — see deploy/gitops/worker/base/secret-
-  // provider-class.yaml. Until Chunk C lands AAD/workload-identity auth on
-  // the bicep-provisioned Postgres flexible server, this URL still embeds
-  // the deterministic bootstrap admin password from postgres.bicep. The
-  // password is identical on every stamp and never reaches a real
-  // production cluster (prod uses the EV2 path).
-  if (!env.DATABASE_URL && env.POSTGRES_FQDN) {
-    const pgUser = env.POSTGRES_ADMIN_LOGIN || "pilotswarm";
-    const pgDb = env.POSTGRES_DATABASE_NAME || "pilotswarm";
-    const pgPwd = env.POSTGRES_ADMIN_PASSWORD || "PilotSwarmEv2_BootstrapOnly!9876";
-    env.DATABASE_URL = `postgresql://${pgUser}:${pgPwd}@${env.POSTGRES_FQDN}:5432/${pgDb}?sslmode=require`;
-    log("info", `Composed DATABASE_URL for overlay from POSTGRES_FQDN (Chunk C will eliminate the password).`);
-  }
-
-  // 3c) Compose AZURE_STORAGE_ACCOUNT_URL for the worker-env ConfigMap.
-  // The bicep-deploy worker runs with PILOTSWARM_USE_MANAGED_IDENTITY=1
-  // (see deploy/gitops/worker/overlays/<env>/.env) and authenticates to
-  // Azure Blob Storage via the federated CSI UAMI — no shared key. The
-  // SDK's createSessionBlobStore() reads this URL from env. We strip any
-  // trailing slash so the value is the canonical account-level form
-  // (`https://<account>.blob.core.windows.net`).
-  if (!env.AZURE_STORAGE_ACCOUNT_URL && env.BLOB_CONTAINER_ENDPOINT) {
-    env.AZURE_STORAGE_ACCOUNT_URL = env.BLOB_CONTAINER_ENDPOINT.replace(/\/+$/, "");
-    log("info", `Composed AZURE_STORAGE_ACCOUNT_URL for overlay from BLOB_CONTAINER_ENDPOINT.`);
-  }
-
-  // 3d) Compose passwordless CMS/facts DATABASE URL + AAD user for the
-  // hybrid auth path. CMS + facts pools use AAD tokens via
-  // packages/sdk/src/pg-pool-factory.ts — the URL `user@` segment must
-  // match the AAD principal name registered as a Postgres administrator
-  // (postgres.bicep `aadAdminPrincipalName`, output captured into env
-  // key POSTGRES_AAD_ADMIN_PRINCIPAL_NAME by deploy-bicep.mjs alias map).
-  // Duroxide stays on the password URL (DATABASE_URL) because its
-  // PostgresProvider has no token-callback hook upstream.
-  if (!env.PILOTSWARM_DB_AAD_USER && env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME) {
-    env.PILOTSWARM_DB_AAD_USER = env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME;
-  }
-  if (!env.PILOTSWARM_CMS_FACTS_DATABASE_URL && env.POSTGRES_FQDN && env.PILOTSWARM_DB_AAD_USER) {
-    const pgDb = env.POSTGRES_DATABASE_NAME || "pilotswarm";
-    env.PILOTSWARM_CMS_FACTS_DATABASE_URL =
-      `postgresql://${encodeURIComponent(env.PILOTSWARM_DB_AAD_USER)}@${env.POSTGRES_FQDN}:5432/${pgDb}?sslmode=require`;
-    log("info", `Composed PILOTSWARM_CMS_FACTS_DATABASE_URL (passwordless AAD URL) for CMS + facts.`);
-  }
+  // 3b) Compose derived env values (DATABASE_URL, AZURE_STORAGE_ACCOUNT_URL,
+  // PILOTSWARM_CMS_FACTS_DATABASE_URL, PILOTSWARM_DB_AAD_USER) from
+  // BaseInfra Bicep outputs already in env. This handles single-service
+  // re-runs that load values from the outputs cache. For first-time `all`
+  // runs the cache starts empty; composeDerivedEnv is invoked again after
+  // each successful bicep stage in runStage() so manifests-stage env
+  // substitution sees the composed values.
+  composeDerivedEnv(env);
 
   // 4) Preflight CLIs (EC-1)
   assertCli("az", "https://aka.ms/azcli (winget install Microsoft.AzureCLI / brew install azure-cli)");
