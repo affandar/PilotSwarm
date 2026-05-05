@@ -406,25 +406,6 @@ module AutoSecretsSentinel './auto-secrets-sentinel.bicep' = if (!foundryEnabled
   }
 }
 
-// ==============================================================================
-// EV2 deploy UAMI RBAC — AcrPush + Storage Blob Data Contributor on the
-// per-region ACR + storage account. Consumed by the ACI sandbox that EV2
-// spins up for UploadContainer / DeployApplicationManifest.
-// ==============================================================================
-
-module Ev2DeployRbac './ev2-deploy-rbac.bicep' = {
-  name: '${resourceNamePrefix}-ev2deploy-rbac-${dTime}'
-  params: {
-    acrName: acrName
-    storageAccountName: storageAccountName
-    ev2DeployPrincipalId: Uami.outputs.ev2DeployIdentityPrincipalId
-  }
-  dependsOn: [
-    Acr
-    Storage
-  ]
-}
-
 // AppGW Private Link approver UAMI needs Network Contributor on the AppGW
 // so the Portal deployment script can approve the Front Door PE connection.
 // Skipped in private mode — no AppGw, no PE.
@@ -499,8 +480,6 @@ output frontDoorProfileName string = frontDoorProfileName
 output frontDoorProfileResourceGroup string = frontDoorProfileResourceGroup
 output sslCertificateDomainSuffix string = sslCertificateDomainSuffix
 output aciSubnetId string = Vnet.outputs.aciSubnetId
-output ev2DeployIdentityResourceId string = Uami.outputs.ev2DeployIdentityResourceId
-output ev2DeployIdentityClientId string = Uami.outputs.ev2DeployIdentityClientId
 // Shared `csiIdentity` UAMI clientId — worker and portal both federate
 // against this identity (uami-federation.bicep). Captured by the OSS
 // deploy script (deploy-bicep.mjs OUTPUT_ALIAS) into env key
