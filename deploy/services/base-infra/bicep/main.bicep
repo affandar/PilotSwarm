@@ -133,7 +133,6 @@ module Vnet './vnet.bicep' = {
   params: {
     location: location
     resourceNamePrefix: resourceNamePrefix
-    availabilityZones: availabilityZones
   }
 }
 
@@ -479,7 +478,6 @@ output postgresAadAdminPrincipalName string = Postgres.outputs.aadAdminPrincipal
 output frontDoorProfileName string = frontDoorProfileName
 output frontDoorProfileResourceGroup string = frontDoorProfileResourceGroup
 output sslCertificateDomainSuffix string = sslCertificateDomainSuffix
-output aciSubnetId string = Vnet.outputs.aciSubnetId
 // Shared `csiIdentity` UAMI clientId — worker and portal both federate
 // against this identity (uami-federation.bicep). Captured by the OSS
 // deploy script (deploy-bicep.mjs OUTPUT_ALIAS) into env key
