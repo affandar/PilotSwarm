@@ -916,6 +916,7 @@ function createBlankLine() {
 
 function startsWithStructuredBlock(lines) {
     const firstVisibleLine = (lines || []).find((line) => flattenLineText(line).trim().length > 0);
+    if (firstVisibleLine?.kind === "markdownTable") return true;
     const text = flattenLineText(firstVisibleLine).trimStart();
     return /^[┌│└]/.test(text);
 }
@@ -1443,12 +1444,25 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
         return prefix.length > 0 ? [prefix, ...tintedMarkdownLines] : tintedMarkdownLines;
     }
 
-    return tintedMarkdownLines.map((lineRuns, index) => {
-        if (index === 0 && prefix.length > 0) {
-            return [...prefix, ...lineRuns];
+    const renderedLines = [];
+    let prefixRendered = prefix.length === 0;
+    for (const lineRuns of tintedMarkdownLines) {
+        if (!Array.isArray(lineRuns)) {
+            if (!prefixRendered) {
+                renderedLines.push(prefix);
+                prefixRendered = true;
+            }
+            renderedLines.push(lineRuns);
+            continue;
         }
-        return lineRuns;
-    });
+        if (!prefixRendered) {
+            renderedLines.push([...prefix, ...lineRuns]);
+            prefixRendered = true;
+        } else {
+            renderedLines.push(lineRuns);
+        }
+    }
+    return renderedLines;
 }
 
 export function selectChatLines(state, maxWidth = 80, options = {}) {

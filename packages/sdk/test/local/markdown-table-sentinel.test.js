@@ -1,6 +1,36 @@
 import { describe, it } from "vitest";
 import { parseMarkdownLines } from "../../../ui-core/src/formatting.js";
+import { selectChatLines } from "../../../ui-core/src/selectors.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
+
+function chatStateForAssistantText(text) {
+    const sessionId = "session-table-sentinel";
+    return {
+        branding: {},
+        connection: {},
+        sessions: {
+            activeSessionId: sessionId,
+            byId: {
+                [sessionId]: {
+                    sessionId,
+                    status: "completed",
+                    createdAt: 0,
+                    updatedAt: 0,
+                },
+            },
+            flat: [{ sessionId }],
+        },
+        history: {
+            bySessionId: new Map([[sessionId, {
+                chat: [{ role: "assistant", text, createdAt: 0 }],
+                activity: [],
+                events: [],
+            }]]),
+        },
+        outbox: { bySessionId: {} },
+        ui: { inspectorTab: "activity" },
+    };
+}
 
 describe("parseMarkdownLines tableMode", () => {
     const tableSource = [
@@ -63,6 +93,25 @@ describe("parseMarkdownLines tableMode", () => {
         assertEqual(sentinel.rows[0][1], "[5168910](https://dev.azure.com/edit/5168910)",
             "markdown link inside cell must survive intact in sentinel mode");
         assertEqual(sentinel.rows[1][1], "[5175869](https://dev.azure.com/edit/5175869)");
+    });
+
+    it("chat selector preserves sentinel tables without spreading block lines", () => {
+        const tableFirst = [
+            "| Tool | Call | Outcome | Evidence/Error |",
+            "|---|---|---|---|",
+            "| `bluebird-mcp-pgsqlorion-_get_started` | `original_user_query` | Success | Listed Orion tools |",
+        ].join("\n");
+        const tableAfterIntro = [
+            "The probe completed:",
+            "",
+            tableFirst,
+        ].join("\n");
+
+        for (const source of [tableFirst, tableAfterIntro]) {
+            const lines = selectChatLines(chatStateForAssistantText(source), 80, { tableMode: "sentinel" });
+            assert(lines.some((line) => line?.kind === "markdownTable"), "sentinel table should remain a block line");
+            assert(lines.every((line) => Array.isArray(line) || line?.kind === "markdownTable"), "chat lines should be run arrays or table blocks");
+        }
     });
 
     it("sentinel mode does not break non-table content", () => {
