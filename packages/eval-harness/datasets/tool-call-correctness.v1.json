@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "id": "tool-call-correctness",
+  "name": "Tool Call Correctness",
+  "description": "Core tool calling scenarios — single tool, multi-param, selection, no-tool, sequencing, unordered",
+  "version": "1.0.0",
+  "passRateFloor": 0.8,
+  "samples": [
+    {
+      "id": "single.add.basic",
+      "description": "Single tool call with integer args",
+      "input": {
+        "prompt": "What is 17 plus 25? Use the test_add tool.",
+        "systemMessage": "You have tools available. When asked to perform calculations, use the appropriate tool. Be brief and answer with just the result."
+      },
+      "expected": {
+        "toolCalls": [{ "name": "test_add", "args": { "a": 17, "b": 25 }, "match": "subset" }],
+        "response": { "containsAny": ["42"] },
+        "cms": { "stateIn": ["idle", "completed"] }
+      },
+      "tools": ["test_add"],
+      "tags": ["single-tool", "arithmetic"]
+    },
+    {
+      "id": "single.weather.multi-param",
+      "description": "Multi-parameter tool call with string and optional args",
+      "input": {
+        "prompt": "What's the weather in Tokyo? Use the test_weather tool.",
+        "systemMessage": "You have tools available. When asked about weather, use the test_weather tool. Be brief."
+      },
+      "expected": {
+        "toolCalls": [{ "name": "test_weather", "args": { "city": "Tokyo" }, "match": "subset" }],
+        "cms": { "stateIn": ["idle", "completed"] }
+      },
+      "tools": ["test_weather"],
+      "tags": ["single-tool", "multi-param"]
+    },
+    {
+      "id": "selection.multiply-not-add",
+      "description": "Tool selection — should pick multiply, not add",
+      "input": {
+        "prompt": "What is 4 times 5? Use the appropriate tool.",
+        "systemMessage": "You have math tools available: test_add for addition, test_multiply for multiplication. Use the correct one. Be brief."
+      },
+      "expected": {
+        "toolCalls": [{ "name": "test_multiply", "args": { "a": 4, "b": 5 }, "match": "subset" }],
+        "forbiddenTools": ["test_add"],
+        "response": { "containsAny": ["20"] },
+        "cms": { "stateIn": ["idle", "completed"] }
+      },
+      "tools": ["test_add", "test_multiply"],
+      "tags": ["selection", "arithmetic"]
+    },
+    {
+      "id": "selection.no-tool-with-tools",
+      "description": "Should NOT use any tool — just respond directly",
+      "input": {
+        "prompt": "Say hello to the user. Do not use any tools.",
+        "systemMessage": "You have tools available but should only use them when specifically asked to perform calculations or check weather. If the user just wants a greeting, respond directly without tools. Be brief."
+      },
+      "expected": {
+        "noToolCall": true,
+        "response": { "containsAny": ["hello", "greetings"] },
+        "cms": { "stateIn": ["idle", "completed"] }
+      },
+      "tools": ["test_add", "test_weather"],
+      "tags": ["no-tool", "negative"]
+    },
+    {
+      "id": "sequence.add-then-multiply",
+      "description": "Sequential tool calls — add first, then multiply",
+      "input": {
+        "prompt": "First add 2 and 3 using test_add, then multiply 4 and 5 using test_multiply. Do them in that exact order.",
+        "systemMessage": "You have math tools. When asked to perform multiple operations, do them in the order specified. Use test_add for addition and test_multiply for multiplication. Be brief."
+      },
+      "expected": {
+        "toolCalls": [
+          { "name": "test_add", "args": { "a": 2, "b": 3 }, "match": "subset", "order": 0 },
+          { "name": "test_multiply", "args": { "a": 4, "b": 5 }, "match": "subset", "order": 1 }
+        ],
+        "toolSequence": "strict",
+        "minCalls": 2,
+        "cms": { "stateIn": ["idle", "completed"] }
+      },
+      "tools": ["test_add", "test_multiply"],
+      "tags": ["sequencing", "multi-tool"]
+    },
+    {
+      "id": "multi.unordered-weather",
+      "description": "Multiple calls to same tool — order doesn't matter",
+      "input": {
+        "prompt": "Check the weather in both Tokyo and London using the test_weather tool for each city.",
+        "systemMessage": "You have a weather tool. When asked about multiple cities, call test_weather once for each city. Be brief."
+      },
+      "expected": {
+        "toolCalls": [
+          { "name": "test_weather", "args": { "city": "Tokyo" }, "match": "subset" },
+          { "name": "test_weather", "args": { "city": "London" }, "match": "subset" }
+        ],
+        "toolSequence": "unordered",
+        "minCalls": 2,
+        "cms": { "stateIn": ["idle", "completed"] }
+      },
+      "tools": ["test_weather"],
+      "tags": ["multi-tool", "unordered"]
+    }
+  ]
+}
