@@ -4,27 +4,81 @@ function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
 }
 
-function normalizeSessionOwner(authContext) {
-    const principal = authContext?.principal;
-    const provider = String(principal?.provider || "").trim();
-    const subject = String(principal?.subject || "").trim();
-    if (!provider || !subject) return null;
-    return {
-        provider,
-        subject,
-        email: String(principal?.email || "").trim() || null,
-        displayName: String(principal?.displayName || "").trim() || null,
-    };
+function parseOptionalDate(value, fieldName) {
+    if (!value) return undefined;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+        if (fieldName) {
+            throw new Error(`Invalid RPC parameter "${fieldName}": expected ISO date value`);
+        }
+        return undefined;
+    }
+    return parsed;
 }
 
-function requireUserPrincipal(authContext, methodName) {
-    const principal = normalizeSessionOwner(authContext);
-    if (!principal) {
-        const err = new Error(`Portal RPC '${methodName}' requires an authenticated principal.`);
-        err.code = "PORTAL_AUTH_REQUIRED";
-        throw err;
+function parseRequiredDate(value, fieldName) {
+    if (!value) {
+        throw new Error(`Invalid RPC parameter "${fieldName}": required ISO date value`);
     }
-    return principal;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+        throw new Error(`Invalid RPC parameter "${fieldName}": expected ISO date value`);
+    }
+    return parsed;
+}
+
+export function clampInt(value, fallback, min, max) {
+    const n = typeof value === "number" ? value : parseInt(value, 10);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+}
+
+export function clampLimit(value, fallback, max) {
+    return clampInt(value, fallback, 1, max);
+}
+
+export function enforceMaxWindowDays(date, maxDays, fieldName) {
+    if (date === undefined || date === null) return date;
+    const cutoff = new Date(Date.now() - maxDays * 24 * 60 * 60 * 1000);
+    if (date < cutoff) {
+        throw new Error(`Invalid RPC parameter "${fieldName}": must be within the last ${maxDays} days`);
+    }
+    return date;
+}
+
+function defaultSinceDays(date, maxDays) {
+    if (date !== undefined && date !== null) return date;
+    return new Date(Date.now() - maxDays * 24 * 60 * 60 * 1000);
+}
+
+function parseSessionPageCursor(value) {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "object") {
+        throw new Error('Invalid RPC parameter "cursor": expected object');
+    }
+
+    const updatedAt = value.updatedAt;
+    const sessionId = value.sessionId;
+    const hasUpdatedAt = updatedAt !== undefined && updatedAt !== null && String(updatedAt).trim() !== "";
+    const hasSessionId = sessionId !== undefined && sessionId !== null && String(sessionId).trim() !== "";
+
+    if (!hasUpdatedAt && !hasSessionId) {
+        throw new Error('Invalid RPC parameter "cursor": must include both "updatedAt" and "sessionId"');
+    }
+    if (hasUpdatedAt !== hasSessionId) {
+        throw new Error('Invalid RPC parameter "cursor": must include both "updatedAt" and "sessionId"');
+    }
+
+    const parsedUpdatedAt = parseRequiredDate(updatedAt, "cursor.updatedAt");
+    const parsedSessionId = String(sessionId).trim();
+    if (!parsedSessionId) {
+        throw new Error('Invalid RPC parameter "cursor.sessionId": expected non-empty string');
+    }
+
+    return {
+        updatedAt: parsedUpdatedAt.toISOString(),
+        sessionId: parsedSessionId,
+    };
 }
 
 export class PortalRuntime {
@@ -85,13 +139,18 @@ export class PortalRuntime {
         };
     }
 
-    async call(method, params = {}, authContext = null) {
+    async call(method, params = {}) {
         await this.start();
         const safeParams = normalizeParams(params);
-        const owner = normalizeSessionOwner(authContext);
         switch (method) {
             case "listSessions":
                 return this.transport.listSessions();
+            case "listSessionsPage":
+                return this.transport.listSessionsPage({
+                    limit: clampLimit(safeParams.limit, 50, 200),
+                    includeDeleted: safeParams.includeDeleted,
+                    cursor: parseSessionPageCursor(safeParams.cursor),
+                });
             case "getSession":
                 return this.transport.getSession(safeParams.sessionId);
             case "getOrchestrationStats":
@@ -103,39 +162,20 @@ export class PortalRuntime {
             case "getFleetStats":
                 return this.transport.getFleetStats({
                     includeDeleted: safeParams.includeDeleted,
-                    since: safeParams.since ? new Date(safeParams.since) : undefined,
-                });
-            case "getUserStats":
-                return this.transport.getUserStats({
-                    includeDeleted: safeParams.includeDeleted,
-                    since: safeParams.since ? new Date(safeParams.since) : undefined,
-                });
-            case "getCurrentUserProfile":
-                return this.transport.getCurrentUserProfile({
-                    principal: requireUserPrincipal(authContext, "getCurrentUserProfile"),
-                });
-            case "setCurrentUserProfileSettings":
-                return this.transport.setCurrentUserProfileSettings({
-                    principal: requireUserPrincipal(authContext, "setCurrentUserProfileSettings"),
-                    settings: safeParams.settings,
-                });
-            case "setCurrentUserGitHubCopilotKey":
-                return this.transport.setCurrentUserGitHubCopilotKey({
-                    principal: requireUserPrincipal(authContext, "setCurrentUserGitHubCopilotKey"),
-                    key: typeof safeParams.key === "string" ? safeParams.key : null,
+                    since: parseOptionalDate(safeParams.since),
                 });
             case "getSessionSkillUsage":
                 return this.transport.getSessionSkillUsage(safeParams.sessionId, {
-                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                    since: parseOptionalDate(safeParams.since),
                 });
             case "getSessionTreeSkillUsage":
                 return this.transport.getSessionTreeSkillUsage(safeParams.sessionId, {
-                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                    since: parseOptionalDate(safeParams.since),
                 });
             case "getFleetSkillUsage":
                 return this.transport.getFleetSkillUsage({
                     includeDeleted: safeParams.includeDeleted,
-                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                    since: parseOptionalDate(safeParams.since),
                 });
             case "getSessionFactsStats":
                 return this.transport.getSessionFactsStats(safeParams.sessionId);
@@ -144,23 +184,57 @@ export class PortalRuntime {
             case "getSharedFactsStats":
                 return this.transport.getSharedFactsStats();
             case "pruneDeletedSummaries":
-                return this.transport.pruneDeletedSummaries(new Date(safeParams.olderThan));
+                return this.transport.pruneDeletedSummaries(parseRequiredDate(safeParams.olderThan, "olderThan"));
+            case "getFleetObservabilityStats":
+                return this.transport.getFleetObservabilityStats({
+                    includeDeleted: safeParams.includeDeleted,
+                    since: parseOptionalDate(safeParams.since),
+                });
+            case "getDbCallMetrics":
+                return this.transport.getDbCallMetrics();
+            case "getSessionTurnMetrics":
+                return this.transport.getSessionTurnMetrics(safeParams.sessionId, {
+                    since: parseOptionalDate(safeParams.since),
+                    limit: clampLimit(safeParams.limit, 100, 500),
+                });
+            case "getFleetTurnAnalytics":
+                {
+                    const since = defaultSinceDays(parseOptionalDate(safeParams.since, "since"), 30);
+                    return this.transport.getFleetTurnAnalytics({
+                        since: enforceMaxWindowDays(since, 30, "since"),
+                        agentId: safeParams.agentId,
+                        model: safeParams.model,
+                    });
+                }
+            case "getHourlyTokenBuckets":
+                return this.transport.getHourlyTokenBuckets(
+                    enforceMaxWindowDays(parseRequiredDate(safeParams.since, "since"), 30, "since"),
+                    {
+                        agentId: safeParams.agentId,
+                        model: safeParams.model,
+                    },
+                );
+            case "getFleetDbCallMetrics":
+                return this.transport.getFleetDbCallMetrics({
+                    since: enforceMaxWindowDays(defaultSinceDays(parseOptionalDate(safeParams.since, "since"), 30), 30, "since"),
+                });
+            case "getTopEventEmitters":
+                return this.transport.getTopEventEmitters({
+                    since: enforceMaxWindowDays(parseRequiredDate(safeParams.since, "since"), 30, "since"),
+                    limit: clampLimit(safeParams.limit, 20, 100),
+                });
+            case "pruneTurnMetrics":
+                return this.transport.pruneTurnMetrics(parseRequiredDate(safeParams.olderThan, "olderThan"));
             case "getExecutionHistory":
                 return this.transport.getExecutionHistory(safeParams.sessionId, safeParams.executionId);
             case "createSession":
-                return this.transport.createSession({
-                    model: safeParams.model,
-                    reasoningEffort: safeParams.reasoningEffort,
-                    owner,
-                });
+                return this.transport.createSession({ model: safeParams.model });
             case "createSessionForAgent":
                 return this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
-                    reasoningEffort: safeParams.reasoningEffort,
                     title: safeParams.title,
                     splash: safeParams.splash,
                     initialPrompt: safeParams.initialPrompt,
-                    owner,
                 });
             case "listCreatableAgents":
                 return this.transport.listCreatableAgents();
@@ -170,8 +244,6 @@ export class PortalRuntime {
                 return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, safeParams.options);
             case "sendAnswer":
                 return this.transport.sendAnswer(safeParams.sessionId, safeParams.answer);
-            case "cancelPendingMessage":
-                return this.transport.cancelPendingMessage(safeParams.sessionId, safeParams.clientMessageIds);
             case "renameSession":
                 return this.transport.renameSession(safeParams.sessionId, safeParams.title);
             case "cancelSession":
@@ -184,10 +256,6 @@ export class PortalRuntime {
                 return this.transport.listModels();
             case "listArtifacts":
                 return this.transport.listArtifacts(safeParams.sessionId);
-            case "getArtifactMetadata":
-                return this.transport.getArtifactMetadata(safeParams.sessionId, safeParams.filename);
-            case "deleteArtifact":
-                return this.transport.deleteArtifact(safeParams.sessionId, safeParams.filename);
             case "downloadArtifact":
                 return this.transport.downloadArtifact(safeParams.sessionId, safeParams.filename);
             case "uploadArtifact":
@@ -196,7 +264,6 @@ export class PortalRuntime {
                     safeParams.filename,
                     safeParams.content,
                     safeParams.contentType,
-                    safeParams.contentEncoding,
                 );
             case "exportExecutionHistory":
                 return this.transport.exportExecutionHistory(safeParams.sessionId);
@@ -205,9 +272,17 @@ export class PortalRuntime {
             case "getDefaultModel":
                 return this.transport.getDefaultModel();
             case "getSessionEvents":
-                return this.transport.getSessionEvents(safeParams.sessionId, safeParams.afterSeq, safeParams.limit);
+                return this.transport.getSessionEvents(
+                    safeParams.sessionId,
+                    safeParams.afterSeq,
+                    clampLimit(safeParams.limit, 200, 500),
+                );
             case "getSessionEventsBefore":
-                return this.transport.getSessionEventsBefore(safeParams.sessionId, safeParams.beforeSeq, safeParams.limit);
+                return this.transport.getSessionEventsBefore(
+                    safeParams.sessionId,
+                    safeParams.beforeSeq,
+                    clampLimit(safeParams.limit, 200, 500),
+                );
             case "getLogConfig":
                 return this.transport.getLogConfig();
             case "getWorkerCount":
@@ -220,29 +295,6 @@ export class PortalRuntime {
     async downloadArtifact(sessionId, filename) {
         await this.start();
         return this.transport.downloadArtifact(sessionId, filename);
-    }
-
-    async getArtifactMetadata(sessionId, filename) {
-        await this.start();
-        if (typeof this.transport.getArtifactMetadata !== "function") return null;
-        return this.transport.getArtifactMetadata(sessionId, filename);
-    }
-
-    async downloadArtifactBinary(sessionId, filename) {
-        await this.start();
-        if (typeof this.transport.downloadArtifactBinary === "function") {
-            return this.transport.downloadArtifactBinary(sessionId, filename);
-        }
-        const content = await this.transport.downloadArtifact(sessionId, filename);
-        return {
-            filename,
-            contentType: "text/plain",
-            isBinary: false,
-            sizeBytes: Buffer.byteLength(content, "utf8"),
-            uploadedAt: new Date().toISOString(),
-            source: "agent",
-            body: Buffer.from(content, "utf8"),
-        };
     }
 
     subscribeSession(sessionId, handler) {

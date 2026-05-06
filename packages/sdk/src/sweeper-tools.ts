@@ -31,6 +31,49 @@ export function createSweeperTools(opts: {
     storeUrl?: string;
 }): Tool<any>[] {
     const { catalog, duroxideClient, factStore } = opts;
+    const RETRY_LOOP_SIGNAL_RE =
+        /retry\s*\d+\/\d+|runturn failed|turn returned error|hydrate failed|live copilot connection|model .*not (available|supported)|invalid defaultmodel|no credentialed models|cannot resolve model/i;
+
+    function toLowerText(value: unknown): string {
+        if (value == null) return "";
+        if (typeof value === "string") return value.toLowerCase();
+        try {
+            return JSON.stringify(value).toLowerCase();
+        } catch {
+            return String(value).toLowerCase();
+        }
+    }
+
+    function isStaleRetryLoop(args: {
+        session: any;
+        orchStatus: any;
+        customStatus: any;
+        cutoff: Date;
+    }): boolean {
+        const { session, orchStatus, customStatus, cutoff } = args;
+        if (session.updatedAt >= cutoff) return false;
+        if (orchStatus?.status !== "Running") return false;
+
+        const status = String(customStatus?.status ?? session.state ?? "").toLowerCase();
+        const signalText = [
+            session.lastError,
+            session.waitReason,
+            customStatus?.error,
+            customStatus?.detail,
+            customStatus?.message,
+            customStatus,
+        ].map(toLowerText).join(" ");
+
+        const hasRetrySignal = RETRY_LOOP_SIGNAL_RE.test(signalText);
+        const stateLooksStuck =
+            status === "error"
+            || status === "failed"
+            || status === "running"
+            || status === "waiting"
+            || signalText.includes("retry");
+
+        return hasRetrySignal && stateLooksStuck;
+    }
 
     // ── scan_completed_sessions ───────────────────────────────
 
@@ -51,11 +94,28 @@ export function createSweeperTools(opts: {
                     description:
                         "Include orphaned sub-agents whose parent session no longer exists. Default: true",
                 },
+                includeRetryLoops: {
+                    type: "boolean",
+                    description:
+                        "Include stale sessions stuck in repeated retry failures (for example unsupported model loops). Default: true",
+                },
+                retryLoopGraceMinutes: {
+                    type: "number",
+                    description:
+                        "Only include retry-loop sessions that have shown no progress for at least this many minutes. Default: 20",
+                },
             },
         },
-        handler: async (args: { graceMinutes?: number; includeOrphans?: boolean }) => {
+        handler: async (args: {
+            graceMinutes?: number;
+            includeOrphans?: boolean;
+            includeRetryLoops?: boolean;
+            retryLoopGraceMinutes?: number;
+        }) => {
             const graceMinutes = args.graceMinutes ?? 5;
             const includeOrphans = args.includeOrphans ?? true;
+            const includeRetryLoops = args.includeRetryLoops ?? true;
+            const retryLoopGraceMinutes = args.retryLoopGraceMinutes ?? 20;
             const results: Array<{
                 sessionId: string;
                 parentSessionId?: string;
@@ -69,6 +129,7 @@ export function createSweeperTools(opts: {
                 const allSessions = await catalog.listSessions();
                 const sessionIds = new Set(allSessions.map(s => s.sessionId));
                 const cutoff = new Date(Date.now() - graceMinutes * 60 * 1000);
+                const retryLoopCutoff = new Date(Date.now() - retryLoopGraceMinutes * 60 * 1000);
 
                 for (const session of allSessions) {
                     // Never touch system sessions
@@ -147,15 +208,95 @@ export function createSweeperTools(opts: {
                             reason: "Parent session no longer exists",
                         });
                     }
+
+                    // Check for stale retry loops (running sessions repeatedly failing without progress)
+                    if (
+                        includeRetryLoops
+                        && isStaleRetryLoop({
+                            session,
+                            orchStatus,
+                            customStatus,
+                            cutoff: retryLoopCutoff,
+                        })
+                    ) {
+                        results.push({
+                            sessionId: session.sessionId,
+                            parentSessionId: session.parentSessionId ?? undefined,
+                            status: "retry_loop",
+                            title: session.title ?? undefined,
+                            age: ageStr,
+                            reason: "Stale retry loop (repeated failures without progress)",
+                        });
+                    }
                 }
 
                 return {
                     found: results.length,
                     graceMinutes,
+                    includeRetryLoops,
+                    retryLoopGraceMinutes,
                     sessions: results,
                 };
             } catch (err: any) {
                 return { error: err.message, found: 0, sessions: [] };
+            }
+        },
+    });
+
+    // ── interrupt_stale_retry_session ────────────────────────
+
+    const interruptRetryLoopTool = defineTool("interrupt_stale_retry_session", {
+        description:
+            "Gracefully interrupt a stale retry-loop session by cancelling its orchestration " +
+            "and marking CMS state as failed. Refuses to interrupt system sessions.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                sessionId: {
+                    type: "string",
+                    description: "The session ID to interrupt",
+                },
+                reason: {
+                    type: "string",
+                    description: "Reason for interruption (logged to CMS)",
+                },
+            },
+            required: ["sessionId"] as const,
+        },
+        handler: async (args: { sessionId: string; reason?: string }) => {
+            const { sessionId } = args;
+            const reason = args.reason ?? "Interrupted stale retry loop during token containment";
+
+            try {
+                const session = await catalog.getSession(sessionId);
+                if (!session) return { ok: false, error: "Session not found" };
+                if (session.isSystem) return { ok: false, error: "Cannot interrupt system session" };
+
+                let cancelEnqueued = false;
+                try {
+                    await duroxideClient.cancelInstance(`session-${sessionId}`, reason);
+                    cancelEnqueued = true;
+                } catch {}
+
+                let cmsUpdated = false;
+                try {
+                    await catalog.updateSession(sessionId, {
+                        state: "failed",
+                        lastError: reason,
+                        waitReason: null,
+                    });
+                    cmsUpdated = true;
+                } catch {}
+
+                return {
+                    ok: true,
+                    sessionId,
+                    cancelEnqueued,
+                    cmsUpdated,
+                    reason,
+                };
+            } catch (err: any) {
+                return { ok: false, error: err.message };
             }
         },
     });
@@ -388,5 +529,5 @@ export function createSweeperTools(opts: {
         },
     });
 
-    return [scanTool, cleanupTool, pruneTool, statsTool];
+    return [scanTool, interruptRetryLoopTool, cleanupTool, pruneTool, statsTool];
 }

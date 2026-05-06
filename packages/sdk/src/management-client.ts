@@ -21,7 +21,6 @@ import type {
     SessionCommandResponse,
     SessionStatusSignal,
     SessionContextUsage,
-    SessionOwnerInfo,
 } from "./types.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
@@ -29,18 +28,24 @@ import type {
     SessionMetricSummary,
     SessionTreeStats,
     FleetStats,
-    UserStats,
     SkillUsageRow,
     SessionTreeSkillUsage,
     FleetSkillUsage,
-    UserProfile,
-    UserPrincipal,
+    TurnMetricRow,
+    FleetTurnAnalyticsRow,
+    HourlyTokenBucketRow,
+    FleetDbCallMetricRow,
+    TopEventEmitterRow,
 } from "./cms.js";
+import { DbMetricsReporter, makeProcessId, makeProcessRole } from "./db-metrics-reporter.js";
 import type { FactStore, FactsStatsRow } from "./facts-store.js";
 import { createFactStoreForUrl } from "./facts-store.js";
 import { SessionDumper } from "./session-dumper.js";
-import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort } from "./model-providers.js";
+import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor } from "./model-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
+import { globalDbMetrics } from "./db-metrics.js";
+import type { DbMetricsSnapshot } from "./db-metrics.js";
+import { estimateCostUsd } from "./model-pricing.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -137,7 +142,6 @@ export interface PilotSwarmSessionView {
     title?: string;
     agentId?: string;
     splash?: string;
-    owner?: SessionOwnerInfo;
     /** Live status from orchestration customStatus (idle, running, waiting, etc.) */
     status: PilotSwarmSessionStatus;
     /** Duroxide orchestration runtime status (Running, Completed, Failed, Terminated). */
@@ -150,7 +154,6 @@ export interface PilotSwarmSessionView {
     parentSessionId?: string;
     isSystem?: boolean;
     model?: string;
-    reasoningEffort?: string;
     error?: string;
     waitReason?: string;
     cronActive?: boolean;
@@ -171,16 +174,6 @@ export interface ModelSummary {
     modelName: string;
     description?: string;
     cost?: string;
-    supportedReasoningEfforts?: ReasoningEffort[];
-    defaultReasoningEffort?: ReasoningEffort;
-}
-
-/** Credential availability for a configured model provider. */
-export interface ModelCredentialStatus {
-    qualifiedName?: string;
-    providerId?: string;
-    providerType?: string;
-    credentialAvailable: boolean;
 }
 
 /** Status change result from watchSessionStatus. */
@@ -209,6 +202,15 @@ export interface ExecutionHistoryEvent {
     data?: string;
 }
 
+/** Paginated result of a session list call. */
+export interface SessionListPage {
+    items: PilotSwarmSessionView[];
+    nextCursor?: { updatedAt: string; sessionId: string };
+    hasMore: boolean;
+}
+
+type SessionPageParams = Parameters<SessionCatalogProvider["listSessionsPage"]>[0];
+
 /** Options for PilotSwarmManagementClient. */
 export interface PilotSwarmManagementClientOptions {
     /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
@@ -228,6 +230,41 @@ export interface PilotSwarmManagementClientOptions {
     traceWriter?: (msg: string) => void;
 }
 
+/** Fleet agent row enriched with derived observability metrics. */
+export interface EnrichedFleetAgentRow {
+    agentId:                  string | null;
+    model:                    string | null;
+    sessionCount:             number;
+    totalSnapshotSizeBytes:   number;
+    totalDehydrationCount:    number;
+    totalHydrationCount:      number;
+    totalLossyHandoffCount:   number;
+    totalTokensInput:         number;
+    totalTokensOutput:        number;
+    totalTokensCacheRead:     number;
+    totalTokensCacheWrite:    number;
+    cacheHitRatio:            number | null;
+    totalTurnCount:           number;
+    totalErrorCount:          number;
+    totalToolCallCount:       number;
+    totalToolErrorCount:      number;
+    totalTurnDurationMs:      number;
+    /** Derived: totalErrorCount / totalTurnCount, or null when totalTurnCount === 0. */
+    errorRate:                number | null;
+    /** Derived: round(totalTurnDurationMs / totalTurnCount), or null when totalTurnCount === 0. */
+    avgTurnDurationMs:        number | null;
+    /** Derived: estimated USD cost from token counts against model pricing. */
+    estimatedCostUsd:         number;
+}
+
+/** Fleet stats enriched with per-agent derived metrics. */
+export interface EnrichedFleetStats {
+    windowStart:              number | null;
+    earliestSessionCreatedAt: number | null;
+    byAgent:                  EnrichedFleetAgentRow[];
+    totals:                   FleetStats["totals"];
+}
+
 // ─── Management Client ──────────────────────────────────────────
 
 export class PilotSwarmManagementClient {
@@ -238,6 +275,7 @@ export class PilotSwarmManagementClient {
     private _modelProviders: ModelProviderRegistry | null = null;
     private _activeStatusWaitControllers = new Set<AbortController>();
     private _activeStatusWaitPromises = new Set<Promise<unknown>>();
+    private _reporter: DbMetricsReporter | null = null;
     private _started = false;
 
     constructor(options: PilotSwarmManagementClientOptions) {
@@ -250,42 +288,77 @@ export class PilotSwarmManagementClient {
         if (this._started) return;
         const store = this.config.store;
         const _trace = this.config.traceWriter ?? (() => {});
+        try {
+            // Create duroxide client
+            let provider: any;
+            if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
+            else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
+            else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+                _trace("[mgmt] connectWithSchema start...");
+                provider = await PostgresProvider.connectWithSchema(
+                    store,
+                    this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA,
+                );
+                _trace("[mgmt] connectWithSchema done");
+            } else {
+                throw new Error(`Unsupported store URL: ${store}`);
+            }
+            this._duroxideClient = new Client(provider);
 
-        // Create duroxide client
-        let provider: any;
-        if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
-        else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
-        else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            _trace("[mgmt] connectWithSchema start...");
-            provider = await PostgresProvider.connectWithSchema(
-                store,
-                this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA,
-            );
-            _trace("[mgmt] connectWithSchema done");
-        } else {
-            throw new Error(`Unsupported store URL: ${store}`);
+            // Create CMS catalog
+            if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+                _trace("[mgmt] CMS create start...");
+                this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
+                _trace("[mgmt] CMS initialize start...");
+                await this._catalog.initialize();
+                _trace("[mgmt] CMS initialize done");
+
+                this._reporter = new DbMetricsReporter({
+                    catalog:     this._catalog,
+                    metrics:     globalDbMetrics,
+                    processId:   makeProcessId(),
+                    processRole: makeProcessRole(),
+                });
+            }
+
+            _trace("[mgmt] facts create start...");
+            this._factStore = await createFactStoreForUrl(store, this.config.factsSchema);
+            _trace("[mgmt] facts initialize start...");
+            await this._factStore.initialize();
+            _trace("[mgmt] facts initialize done");
+
+            // Load model providers
+            this._modelProviders = loadModelProviders(this.config.modelProvidersPath);
+
+            this._started = true;
+
+            // Start reporter last so partial startup failures never leave a live timer running.
+            if (this._reporter) {
+                try {
+                    this._reporter.start();
+                } catch (err: any) {
+                    _trace(`[mgmt] reporter start failed (non-fatal): ${err?.message ?? String(err)}`);
+                }
+            }
+        } catch (err) {
+            // Best-effort rollback of partially initialized resources.
+            if (this._reporter) {
+                try { this._reporter.stop(); } catch {}
+                this._reporter = null;
+            }
+            if (this._factStore) {
+                try { await this._factStore.close(); } catch {}
+                this._factStore = null;
+            }
+            if (this._catalog) {
+                try { await this._catalog.close(); } catch {}
+                this._catalog = null;
+            }
+            this._duroxideClient = null;
+            this._modelProviders = null;
+            this._started = false;
+            throw err;
         }
-        this._duroxideClient = new Client(provider);
-
-        // Create CMS catalog
-        if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            _trace("[mgmt] CMS create start...");
-            this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
-            _trace("[mgmt] CMS initialize start...");
-            await this._catalog.initialize();
-            _trace("[mgmt] CMS initialize done");
-        }
-
-        _trace("[mgmt] facts create start...");
-        this._factStore = await createFactStoreForUrl(store, this.config.factsSchema);
-        _trace("[mgmt] facts initialize start...");
-        await this._factStore.initialize();
-        _trace("[mgmt] facts initialize done");
-
-        // Load model providers
-        this._modelProviders = loadModelProviders(this.config.modelProvidersPath);
-
-        this._started = true;
     }
 
     async stop(): Promise<void> {
@@ -294,6 +367,10 @@ export class PilotSwarmManagementClient {
         }
         await Promise.allSettled([...this._activeStatusWaitPromises]);
 
+        if (this._reporter) {
+            try { this._reporter.stop(); } catch {}
+            this._reporter = null;
+        }
         if (this._factStore) {
             try { await this._factStore.close(); } catch {}
             this._factStore = null;
@@ -388,7 +465,6 @@ export class PilotSwarmManagementClient {
                 title: row.title ?? undefined,
                 agentId: row.agentId ?? undefined,
                 splash: row.splash ?? undefined,
-                owner: row.owner ?? undefined,
                 status: liveStatus,
                 orchestrationStatus: undefined, // not available in CMS-only path
                 orchestrationVersion: undefined, // not available in CMS-only path
@@ -398,12 +474,46 @@ export class PilotSwarmManagementClient {
                 parentSessionId: row.parentSessionId ?? undefined,
                 isSystem: row.isSystem || undefined,
                 model: row.model ?? undefined,
-                reasoningEffort: row.reasoningEffort ?? undefined,
                 error: row.lastError ?? undefined,
                 waitReason: row.waitReason ?? undefined,
                 statusVersion: undefined,
             };
         });
+    }
+
+    /**
+     * Keyset-paginated session listing. Caller controls page size (default 50, max 200).
+     * Pass the returned `nextCursor` from one page as `params.cursor` to fetch the next.
+     * `hasMore: false` signals the last page. Stable order: `updated_at DESC, session_id DESC`.
+     */
+    async listSessionsPage(params?: SessionPageParams): Promise<SessionListPage> {
+        this._ensureStarted();
+        const page = await this._catalog!.listSessionsPage(params);
+        return {
+            items: page.items.map((row) => {
+                const status: PilotSwarmSessionStatus = (row.state as PilotSwarmSessionStatus) || "pending";
+                return {
+                    sessionId: row.sessionId,
+                    title: row.title ?? undefined,
+                    agentId: row.agentId ?? undefined,
+                    splash: row.splash ?? undefined,
+                    status,
+                    orchestrationStatus: undefined,
+                    orchestrationVersion: undefined,
+                    createdAt: row.createdAt.getTime(),
+                    updatedAt: row.updatedAt?.getTime(),
+                    iterations: row.currentIteration ?? 0,
+                    parentSessionId: row.parentSessionId ?? undefined,
+                    isSystem: row.isSystem || undefined,
+                    model: row.model ?? undefined,
+                    error: row.lastError ?? undefined,
+                    waitReason: row.waitReason ?? undefined,
+                    statusVersion: undefined,
+                };
+            }),
+            nextCursor: page.nextCursor,
+            hasMore: page.hasMore,
+        };
     }
 
     /**
@@ -530,7 +640,6 @@ export class PilotSwarmManagementClient {
             title: row.title ?? undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
-            owner: row.owner ?? undefined,
             status: liveStatus,
             orchestrationStatus: orchStatus,
             orchestrationVersion,
@@ -540,7 +649,6 @@ export class PilotSwarmManagementClient {
             parentSessionId: row.parentSessionId ?? undefined,
             isSystem: row.isSystem || undefined,
             model: row.model ?? undefined,
-            reasoningEffort: row.reasoningEffort ?? undefined,
             error: effectiveError,
             waitReason: normalizedCustomStatus.waitReason,
             cronActive,
@@ -673,6 +781,7 @@ export class PilotSwarmManagementClient {
         return this._catalog!.getSessionEvents(sessionId, afterSeq, limit);
     }
 
+    /** Get the `limit` events immediately preceding `beforeSeq` for a session (default 200, max 500). */
     async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<import("./cms.js").SessionEvent[]> {
         this._ensureStarted();
         return this._catalog!.getSessionEventsBefore(sessionId, beforeSeq, limit);
@@ -799,85 +908,6 @@ export class PilotSwarmManagementClient {
         return this._catalog!.getFleetStats(opts);
     }
 
-    async getUserStats(opts?: { includeDeleted?: boolean; since?: Date }): Promise<UserStats> {
-        this._ensureStarted();
-        const stats = await this._catalog!.getUserStats(opts);
-        const sessionIds = [...new Set(stats.users.flatMap((user) =>
-            user.byModel.flatMap((bucket) => bucket.sessionIds || []),
-        ))];
-        if (sessionIds.length === 0) return stats;
-
-        const historySizeBySessionId = new Map<string, number>();
-        await Promise.allSettled(sessionIds.map(async (sessionId) => {
-            const orchestrationStats = await this.getOrchestrationStats(sessionId);
-            const size = Number(orchestrationStats?.historySizeBytes);
-            if (Number.isFinite(size) && size > 0) {
-                historySizeBySessionId.set(sessionId, size);
-            }
-        }));
-
-        let totalOrchestrationHistorySizeBytes = 0;
-        for (const user of stats.users) {
-            let userOrchestrationSize = 0;
-            for (const bucket of user.byModel) {
-                bucket.totalOrchestrationHistorySizeBytes = (bucket.sessionIds || [])
-                    .reduce((sum, sessionId) => sum + (historySizeBySessionId.get(sessionId) || 0), 0);
-                userOrchestrationSize += bucket.totalOrchestrationHistorySizeBytes;
-            }
-            user.totalOrchestrationHistorySizeBytes = userOrchestrationSize;
-            totalOrchestrationHistorySizeBytes += userOrchestrationSize;
-        }
-        stats.totals.totalOrchestrationHistorySizeBytes = totalOrchestrationHistorySizeBytes;
-        return stats;
-    }
-
-    // ─── User Profile (Admin Console) ───────────────────────
-
-    /**
-     * Read a single user's profile (settings + key-set flag). Returns
-     * `null` when the principal has no row yet — callers should treat
-     * that as the unconfigured state.
-     *
-     * The raw GitHub Copilot key is intentionally NOT returned here.
-     * The Admin Console only needs to know whether one is set so it can
-     * render "configured" / "not configured" affordances; the worker's
-     * per-user token resolver reads the actual key directly from CMS.
-     */
-    async getUserProfile(principal: UserPrincipal): Promise<UserProfile | null> {
-        this._ensureStarted();
-        return this._catalog!.getUserProfile(principal);
-    }
-
-    /**
-     * Replace the user's `profile_settings` JSON document. Creates the
-     * user row lazily so settings can be saved before the principal has
-     * created any sessions.
-     */
-    async setUserProfileSettings(
-        principal: UserPrincipal,
-        settings: Record<string, unknown>,
-    ): Promise<UserProfile> {
-        this._ensureStarted();
-        return this._catalog!.setUserProfileSettings(principal, settings);
-    }
-
-    /**
-     * Set or clear the per-user GitHub Copilot key. Pass `null` (or an
-     * all-whitespace string) to remove the override and revert the user
-     * to the worker's env-supplied default token.
-     *
-     * Warm sessions belonging to this user will rebind to the new
-     * CopilotClient on their next `runTurn` (the SessionManager
-     * detects the token change and recycles the warm handle).
-     */
-    async setUserGitHubCopilotKey(
-        principal: UserPrincipal,
-        key: string | null,
-    ): Promise<UserProfile> {
-        this._ensureStarted();
-        return this._catalog!.setUserGitHubCopilotKey(principal, key);
-    }
-
     /**
      * Get per-session skill usage. Returns one row per (kind, name, plugin)
      * for either static skills (`skill.invoked`) or learned-knowledge reads
@@ -972,6 +1002,109 @@ export class PilotSwarmManagementClient {
         return this._catalog!.pruneDeletedSummaries(olderThan);
     }
 
+    // ─── Phase 2 Analytics ───────────────────────────────────
+
+    /**
+     * Turn-level metrics for a single session, ordered by turn_index DESC.
+     * Returns [] when running without a PostgreSQL CMS (e.g. SQLite mode).
+     */
+    async getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]> {
+        this._ensureStarted();
+        if (!this._catalog) return [];
+        return this._catalog.getSessionTurnMetrics(sessionId, opts);
+    }
+
+    /**
+     * Fleet-wide turn analytics aggregated by (agent_id, model).
+     * Optionally filter by since, agentId, and model.
+     * Returns [] when running without a PostgreSQL CMS.
+     */
+    async getFleetTurnAnalytics(opts?: { since?: Date; agentId?: string; model?: string }): Promise<FleetTurnAnalyticsRow[]> {
+        this._ensureStarted();
+        if (!this._catalog) return [];
+        return this._catalog.getFleetTurnAnalytics(opts);
+    }
+
+    /**
+     * Hourly token usage buckets fleet-wide, optionally filtered by agent and model.
+     * Useful for time-series charts in analytics UIs.
+     * Returns [] when running without a PostgreSQL CMS.
+     */
+    async getHourlyTokenBuckets(since: Date, opts?: { agentId?: string; model?: string }): Promise<HourlyTokenBucketRow[]> {
+        this._ensureStarted();
+        if (!this._catalog) return [];
+        return this._catalog.getHourlyTokenBuckets(since, opts);
+    }
+
+    /**
+     * Fleet-wide DB call metrics aggregated by method from db_call_metric_buckets.
+     * Returns per-process totals accumulated across all reporting workers since `since`.
+     * Returns [] when running without a PostgreSQL CMS.
+     */
+    async getFleetDbCallMetrics(opts?: { since?: Date }): Promise<FleetDbCallMetricRow[]> {
+        this._ensureStarted();
+        if (!this._catalog) return [];
+        return this._catalog.getFleetDbCallMetrics(opts);
+    }
+
+    /**
+     * Top (worker_node_id, event_type) pairs ranked by event count within the given window.
+     * `since` is required; max lookback 30 days. Returns default 20, max 100 rows.
+     * Returns [] when running without a PostgreSQL CMS.
+     */
+    async getTopEventEmitters(params: { since: Date; limit?: number }): Promise<TopEventEmitterRow[]> {
+        this._ensureStarted();
+        if (!this._catalog) return [];
+        return this._catalog.getTopEventEmitters(params);
+    }
+
+    /**
+     * Prune turn metric rows older than `olderThan`.
+     * Returns the number of rows deleted, or 0 when running without a PostgreSQL CMS.
+     */
+    async pruneTurnMetrics(olderThan: Date): Promise<number> {
+        this._ensureStarted();
+        if (!this._catalog) return 0;
+        return this._catalog.pruneTurnMetrics(olderThan);
+    }
+
+    /**
+     * Fleet stats enriched with per-agent derived observability metrics:
+     * errorRate, avgTurnDurationMs, and estimatedCostUsd. Raw fields are
+     * identical to getFleetStats() — this is a superset, not a replacement.
+     */
+    async getFleetObservabilityStats(
+        opts?: { includeDeleted?: boolean; since?: Date },
+    ): Promise<EnrichedFleetStats> {
+        this._ensureStarted();
+        const raw = await this._catalog!.getFleetStats(opts);
+        const byAgent: EnrichedFleetAgentRow[] = raw.byAgent.map(agent => ({
+            ...agent,
+            errorRate: agent.totalTurnCount > 0
+                ? agent.totalErrorCount / agent.totalTurnCount
+                : null,
+            avgTurnDurationMs: agent.totalTurnCount > 0
+                ? Math.round(agent.totalTurnDurationMs / agent.totalTurnCount)
+                : null,
+            estimatedCostUsd: estimateCostUsd(
+                agent.totalTokensInput,
+                agent.totalTokensOutput,
+                agent.totalTokensCacheRead,
+                agent.totalTokensCacheWrite,
+                agent.model ?? "",
+            ),
+        }));
+        return { ...raw, byAgent };
+    }
+
+    /**
+     * Per-process snapshot of DB call counts, latencies, and errors.
+     * Counters reset on process restart — not fleet-wide aggregates.
+     */
+    getDbCallMetrics(): DbMetricsSnapshot {
+        return globalDbMetrics.snapshot();
+    }
+
     /**
      * Get the KV-backed response for a command ID.
      */
@@ -1053,17 +1186,8 @@ export class PilotSwarmManagementClient {
 
     /**
      * Send a prompt message to a session's orchestration.
-     *
-     * @param options.clientMessageIds Optional list of UI-generated message ids
-     *   that contributed to this (potentially merged) prompt. The orchestration
-     *   preserves these and records them on the durable user.message event so
-     *   the client can ack/cancel by exact id rather than text match.
      */
-    async sendMessage(
-        sessionId: string,
-        prompt: string,
-        options?: { clientMessageIds?: string[] },
-    ): Promise<void> {
+    async sendMessage(sessionId: string, prompt: string): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
         if (!session) {
@@ -1086,68 +1210,17 @@ export class PilotSwarmManagementClient {
             );
         }
         const orchId = `session-${sessionId}`;
-        await this._assertOrchestrationLive(orchId, sessionId, "sendMessage");
         await this._catalog!.updateSession(sessionId, {
             state: "running",
             lastError: null,
             waitReason: null,
             lastActiveAt: new Date(),
         }).catch(() => {});
-
-        // Optional: only include clientMessageIds in the payload when present so
-        // the JSON shape stays byte-for-byte identical for callers that don't
-        // pass them. This keeps every existing frozen orchestration version
-        // happy on replay.
-        const payload: Record<string, unknown> = { prompt };
-        if (options?.clientMessageIds && options.clientMessageIds.length > 0) {
-            payload.clientMessageIds = options.clientMessageIds;
-        }
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
-            JSON.stringify(payload),
+            JSON.stringify({ prompt }),
         );
-    }
-
-    /**
-     * Defense-in-depth guard for management enqueue paths.
-     *
-     * The management client only enqueues onto the durable messages queue —
-     * it never starts an orchestration. If the orchestration was never
-     * started (or has been removed), the enqueue lands on a queue with no
-     * live instance and duroxide-pg eventually drops it as an orphan,
-     * silently breaking the session. Refuse to enqueue in that case so the
-     * caller sees an actionable error and can retry through the start-aware
-     * path (`PilotSwarmSession.send` → `_ensureOrchestrationAndSend`).
-     */
-    private async _assertOrchestrationLive(
-        orchId: string,
-        sessionId: string,
-        operation: string,
-    ): Promise<void> {
-        // Use getStatus, not getInstanceInfo: getStatus returns
-        // `{ status: "NotFound" }` for non-existent instances, while
-        // getInstanceInfo throws — and we cannot distinguish a real
-        // "not found" from a transient connection error in a thrown
-        // message reliably. With getStatus we can fail closed on
-        // NotFound and fail open on transient errors.
-        let status: string | undefined;
-        try {
-            const info = await this._duroxideClient.getStatus(orchId);
-            status = info?.status;
-        } catch {
-            // Transient duroxide query failure — fail open so legitimate
-            // enqueues are not blocked when the durable layer is briefly
-            // unavailable. The dispatcher's orphan-drop is the last-resort
-            // backstop.
-            return;
-        }
-        if (!status || status === "NotFound" || status === "Unknown") {
-            throw new Error(
-                `Cannot ${operation} for session ${sessionId.slice(0, 8)}: orchestration ${orchId} is not started (status=${status ?? "missing"}). ` +
-                `Use PilotSwarmSession.send (which starts the orchestration on the first turn) instead of the management enqueue path.`,
-            );
-        }
     }
 
     /**
@@ -1156,32 +1229,10 @@ export class PilotSwarmManagementClient {
     async sendAnswer(sessionId: string, answer: string): Promise<void> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
-        await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
             JSON.stringify({ answer, wasFreeform: true }),
-        );
-    }
-
-    /**
-     * Cancel one or more queued (durable) pending messages by their
-     * UI-generated client message ids.
-     *
-     * @internal Prefer `PilotSwarmSession.cancelPendingMessage` for in-process
-     * callers and the public client transport surface for remote callers; this
-     * method is the low-level durable enqueue both layers funnel through.
-     */
-    async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {
-        this._ensureStarted();
-        const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
-        if (ids.length === 0) return;
-        const orchId = `session-${sessionId}`;
-        await this._assertOrchestrationLive(orchId, sessionId, "cancelPendingMessage");
-        await this._duroxideClient.enqueueEvent(
-            orchId,
-            "messages",
-            JSON.stringify({ cancelPending: ids }),
         );
     }
 
@@ -1191,7 +1242,6 @@ export class PilotSwarmManagementClient {
     async sendCommand(sessionId: string, command: { cmd: string; id: string; args?: Record<string, unknown> }): Promise<void> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
-        await this._assertOrchestrationLive(orchId, sessionId, "sendCommand");
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
@@ -1213,8 +1263,6 @@ export class PilotSwarmManagementClient {
             modelName: m.modelName,
             description: m.description,
             cost: m.cost,
-            ...(m.supportedReasoningEfforts?.length ? { supportedReasoningEfforts: m.supportedReasoningEfforts } : {}),
-            ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
         }));
     }
 
@@ -1233,8 +1281,6 @@ export class PilotSwarmManagementClient {
                 modelName: m.modelName,
                 description: m.description,
                 cost: m.cost,
-                ...(m.supportedReasoningEfforts?.length ? { supportedReasoningEfforts: m.supportedReasoningEfforts } : {}),
-                ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
             })),
         }));
     }
@@ -1251,34 +1297,6 @@ export class PilotSwarmManagementClient {
      */
     normalizeModel(ref?: string): string | undefined {
         return this._modelProviders?.normalize(ref);
-    }
-
-    /**
-     * Return whether the model's provider has a process/env credential
-     * available. For GitHub providers this intentionally does not include
-     * per-user CMS keys; callers that create user-owned sessions should OR
-     * this with the relevant profile's githubCopilotKeySet flag.
-     */
-    getModelCredentialStatus(ref?: string): ModelCredentialStatus {
-        const normalized = this._modelProviders?.normalize(ref);
-        if (!this._modelProviders || !normalized) {
-            return { qualifiedName: normalized, credentialAvailable: false };
-        }
-
-        const descriptor = this._modelProviders.getDescriptor(normalized);
-        const resolved = this._modelProviders.resolve(normalized);
-        if (!descriptor || !resolved) {
-            return { qualifiedName: normalized, credentialAvailable: false };
-        }
-
-        return {
-            qualifiedName: descriptor.qualifiedName,
-            providerId: descriptor.providerId,
-            providerType: descriptor.providerType,
-            credentialAvailable: resolved.type === "github"
-                ? Boolean(resolved.githubToken)
-                : Boolean(resolved.sdkProvider?.apiKey),
-        };
     }
 
     // ─── Session Dump ────────────────────────────────────────

@@ -16,10 +16,13 @@ import type {
     CommandMessage,
     CommandResponse,
     SessionResponsePayload,
-    SessionOwnerInfo,
 } from "./types.js";
 import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
-import { PgSessionCatalogProvider } from "./cms.js";
+import {
+    buildPgConnectionConfig,
+    PgSessionCatalogProvider,
+    SESSION_EVENTS_NOTIFY_CHANNEL,
+} from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { createFactStoreForUrl } from "./facts-store.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
@@ -105,8 +108,6 @@ export class PilotSwarmClient {
         nestingLevel?: number;
         /** Agent ID to bind this session to (for policy validation and title prefixing). */
         agentId?: string;
-        /** Authenticated owner to associate with the new session. */
-        owner?: SessionOwnerInfo | null;
     }): Promise<PilotSwarmSession> {
         // ── Policy enforcement (client-side) ─────────────────
         const policy = this._sessionPolicy;
@@ -139,7 +140,6 @@ export class PilotSwarmClient {
         if (config) {
             const fullConfig: ManagedSessionConfig = {
                 model: config.model,
-                reasoningEffort: config.reasoningEffort,
                 systemMessage: config.systemMessage,
                 boundAgentName: config.boundAgentName,
                 promptLayering: config.promptLayering,
@@ -155,9 +155,7 @@ export class PilotSwarmClient {
         // CMS: write session record (state=pending, no orchestration yet)
         await this._catalog.createSession(sessionId, {
             model: config?.model,
-            reasoningEffort: config?.reasoningEffort,
             parentSessionId: config?.parentSessionId,
-            owner: config?.owner ?? null,
         });
 
         // Track parentSessionId for sub-agent orchestration input
@@ -187,13 +185,11 @@ export class PilotSwarmClient {
      */
     async createSessionForAgent(agentName: string, opts?: {
         model?: string;
-        reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
         onUserInputRequest?: UserInputHandler;
         toolNames?: string[];
         title?: string;
         splash?: string;
         initialPrompt?: string;
-        owner?: SessionOwnerInfo | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -205,13 +201,11 @@ export class PilotSwarmClient {
 
         const session = await this.createSession({
             model: opts?.model,
-            reasoningEffort: opts?.reasoningEffort,
             toolNames: opts?.toolNames,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
             boundAgentName: agentName,
             promptLayering: { kind: "app-agent" },
-            owner: opts?.owner ?? null,
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)
@@ -239,7 +233,6 @@ export class PilotSwarmClient {
      */
     async createSystemSession(config: {
         model?: string;
-        reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
         systemMessage?: string;
         toolNames?: string[];
         title?: string;
@@ -262,7 +255,6 @@ export class PilotSwarmClient {
         this.systemSessions.add(sessionId);
         const fullConfig: ManagedSessionConfig = {
             model: config.model,
-            reasoningEffort: config.reasoningEffort,
             systemMessage: config.systemMessage,
             toolNames: config.toolNames,
         };
@@ -271,7 +263,6 @@ export class PilotSwarmClient {
         // CMS: create with is_system = true
         await this._catalog.createSession(sessionId, {
             model: config.model,
-            reasoningEffort: config.reasoningEffort,
             isSystem: true,
         });
 
@@ -334,7 +325,6 @@ export class PilotSwarmClient {
             sessionId: row.sessionId,
             status: (row.state as PilotSwarmSessionStatus) ?? "pending",
             title: row.title ?? undefined,
-            owner: row.owner ?? undefined,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
             iterations: row.currentIteration,
@@ -376,23 +366,6 @@ export class PilotSwarmClient {
             } catch {}
         }
         this.activeOrchestrations.delete(sessionId);
-    }
-
-    /**
-     * Cancel one or more queued (durable) pending messages for a session by
-     * their UI-generated client message ids. Convenience wrapper around
-     * `PilotSwarmSession.cancelPendingMessage`.
-     */
-    async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {
-        const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
-        if (ids.length === 0) return;
-        if (!this.duroxideClient) return;
-        const orchestrationId = `session-${sessionId}`;
-        await this.duroxideClient.enqueueEvent(
-            orchestrationId,
-            "messages",
-            JSON.stringify({ cancelPending: ids }),
-        );
     }
 
     // ─── Lifecycle ───────────────────────────────────────────
@@ -459,7 +432,7 @@ export class PilotSwarmClient {
     private async _ensureOrchestrationAndSend(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] },
+        opts?: { bootstrap?: boolean; requiredTool?: string },
     ): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
         const _trace = this.config.traceWriter ?? (() => {});
@@ -561,9 +534,6 @@ export class PilotSwarmClient {
                 prompt,
                 ...(opts?.bootstrap ? { bootstrap: true } : {}),
                 ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
-                ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
-                    ? { clientMessageIds: opts.clientMessageIds }
-                    : {}),
             }),
         );
         trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
@@ -597,7 +567,7 @@ export class PilotSwarmClient {
     async _startTurn(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] },
+        opts?: { bootstrap?: boolean; requiredTool?: string },
     ): Promise<string> {
         return this._ensureOrchestrationAndSend(sessionId, prompt, opts);
     }
@@ -610,6 +580,16 @@ export class PilotSwarmClient {
     /** @internal */
     _getCatalog(): SessionCatalogProvider {
         return this._catalog;
+    }
+
+    /** @internal */
+    _getStoreConnectionConfig() {
+        return buildPgConnectionConfig(this.config.store);
+    }
+
+    /** @internal */
+    _supportsEventNotifications(): boolean {
+        return this.config.store.startsWith("postgres://") || this.config.store.startsWith("postgresql://");
     }
 
     /** @internal — exposed for PilotSwarmSession.wait() */
@@ -760,7 +740,6 @@ export class PilotSwarmClient {
             model: cmsRow?.model ?? undefined,
             title: cmsRow?.title ?? undefined,
             agentId: cmsRow?.agentId ?? undefined,
-            owner: cmsRow?.owner ?? undefined,
             createdAt: cmsRow?.createdAt ?? new Date(),
             updatedAt: cmsRow?.updatedAt ?? new Date(),
             iterations: customStatus.iteration ?? cmsRow?.currentIteration ?? 0,
@@ -943,12 +922,6 @@ export class PilotSwarmClient {
                 const orchStatus = await getDuroxideClient().getStatus(orchestrationId);
                 if (orchStatus.status === "Failed") throw new Error(orchStatus.error ?? "Orchestration failed");
                 if (orchStatus.status === "Completed") return orchStatus.output;
-                const currentVersion = orchStatus.customStatusVersion || 0;
-                if (currentVersion < lastSeenVersion) {
-                    lastSeenVersion = 0;
-                    lastSeenIteration = -1;
-                    this.lastSeenStatusVersion.set(orchestrationId, 0);
-                }
             }
 
             throwIfAborted(signal, `PilotSwarmClient wait aborted (${orchestrationId})`);
@@ -971,9 +944,9 @@ export class PilotSwarmClient {
  * Mirrors CopilotSession API, routes through duroxide orchestration.
  *
  * Event delivery:
- *   on(eventType, handler) — polls CMS session_events table for new events.
+ *   on(eventType, handler) — listens for CMS session_events notifications and fetches new events.
  *   on(handler)            — catch-all, receives every event type.
- *   Returns unsubscribe function. Polling starts on first subscription.
+ *   Returns unsubscribe function. Event delivery starts on first subscription.
  */
 export type SessionEventHandler = (event: SessionEvent) => void;
 
@@ -987,8 +960,11 @@ export class PilotSwarmSession {
     private handlers = new Map<string | null, Set<SessionEventHandler>>();
     private lastSeenSeq = 0;
     private pollTimer: ReturnType<typeof setInterval> | null = null;
+    private listenerClient: any = null;
+    private listenerSetupPromise: Promise<void> | null = null;
     private polling = false;
     private static POLL_INTERVAL = 500; // ms
+    private static FALLBACK_POLL_INTERVAL = 30_000; // ms
 
     /** @internal */
     constructor(sessionId: string, client: PilotSwarmClient, onUserInput?: UserInputHandler) {
@@ -1013,7 +989,7 @@ export class PilotSwarmSession {
         );
     }
 
-    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] }): Promise<void> {
+    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string }): Promise<void> {
         this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt, opts);
     }
 
@@ -1084,28 +1060,6 @@ export class PilotSwarmSession {
         }
     }
 
-    /**
-     * Cancel one or more queued (durable) pending messages by their
-     * UI-generated client message ids.
-     *
-     * Enqueues a tombstone envelope on the same durable messages queue. The
-     * orchestration drain marks the matching ids as cancelled and drops any
-     * matching prompts before they reach the LLM. Already-processed messages
-     * are unaffected (no-op). Idempotent and safe to call repeatedly.
-     */
-    async cancelPendingMessage(clientMessageIds: string[]): Promise<void> {
-        const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
-        if (ids.length === 0) return;
-        const duroxideClient = this.client._getDuroxideClient();
-        if (!duroxideClient) return;
-        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
-        await duroxideClient.enqueueEvent(
-            orchestrationId,
-            "messages",
-            JSON.stringify({ cancelPending: ids }),
-        );
-    }
-
     async abort(): Promise<void> {
         const duroxideClient = this.client._getDuroxideClient();
         const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
@@ -1133,15 +1087,102 @@ export class PilotSwarmSession {
 
     private _startPolling(): void {
         if (this.pollTimer) return;
-        this.pollTimer = setInterval(() => this._poll(), PilotSwarmSession.POLL_INTERVAL);
-        // Fire immediately too
-        this._poll();
+        this.pollTimer = setInterval(() => {
+            if (this.client._supportsEventNotifications() && !this.listenerClient && !this.listenerSetupPromise) {
+                void this._ensureListener();
+            }
+            void this._poll();
+        }, PilotSwarmSession.POLL_INTERVAL);
+        if (this.client._supportsEventNotifications()) {
+            void this._ensureListener();
+        }
+        void this._poll();
     }
 
     private _stopPolling(): void {
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
             this.pollTimer = null;
+        }
+        void this._teardownListener();
+    }
+
+    private _adjustPollInterval(): void {
+        if (!this.pollTimer) return;
+        const desired = this.listenerClient
+            ? PilotSwarmSession.FALLBACK_POLL_INTERVAL
+            : PilotSwarmSession.POLL_INTERVAL;
+        clearInterval(this.pollTimer);
+        this.pollTimer = setInterval(() => {
+            if (this.client._supportsEventNotifications() && !this.listenerClient && !this.listenerSetupPromise) {
+                void this._ensureListener();
+            }
+            void this._poll();
+        }, desired);
+    }
+
+    private async _ensureListener(): Promise<void> {
+        if (!this.client._supportsEventNotifications()) return;
+        if (this.listenerClient) return;
+        if (this.listenerSetupPromise) return this.listenerSetupPromise;
+
+        this.listenerSetupPromise = (async () => {
+            const { default: pg } = await import("pg");
+            const listener = new pg.Client(this.client._getStoreConnectionConfig());
+
+            const handleListenerReset = () => {
+                if (this.listenerClient === listener) {
+                    this.listenerClient = null;
+                }
+                if (this.listenerSetupPromise) {
+                    this.listenerSetupPromise = null;
+                }
+                this._adjustPollInterval();
+            };
+
+            listener.on("error", () => {
+                handleListenerReset();
+                try { listener.end(); } catch {}
+            });
+            listener.on("end", handleListenerReset);
+            listener.on("notification", (msg: any) => {
+                if (msg.channel !== SESSION_EVENTS_NOTIFY_CHANNEL) return;
+                try {
+                    const payload = JSON.parse(msg.payload ?? "{}");
+                    if (payload.sessionId !== this.sessionId) return;
+                } catch {
+                    return;
+                }
+                void this._poll();
+            });
+
+            try {
+                await listener.connect();
+                await listener.query(`LISTEN ${SESSION_EVENTS_NOTIFY_CHANNEL}`);
+                this.listenerClient = listener;
+                this._adjustPollInterval();
+            } catch {
+                handleListenerReset();
+                try { listener.end(); } catch {}
+            }
+        })();
+
+        try {
+            await this.listenerSetupPromise;
+        } finally {
+            this.listenerSetupPromise = null;
+        }
+    }
+
+    private async _teardownListener(): Promise<void> {
+        if (this.listenerSetupPromise) {
+            try { await this.listenerSetupPromise; } catch {}
+        }
+        const lc = this.listenerClient;
+        this.listenerClient = null;
+        this.listenerSetupPromise = null;
+        if (lc) {
+            try { await lc.end(); } catch {}
         }
     }
 

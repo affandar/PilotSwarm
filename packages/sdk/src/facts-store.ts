@@ -8,6 +8,19 @@
  */
 
 import { runFactsMigrations } from "./facts-migrator.js";
+import { globalDbMetrics } from "./db-metrics.js";
+
+async function measureDbCall<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const t0 = Date.now();
+    try {
+        const result = await fn();
+        globalDbMetrics.record(key, Date.now() - t0);
+        return result;
+    } catch (err) {
+        globalDbMetrics.record(key, Date.now() - t0, true);
+        throw err;
+    }
+}
 
 export interface FactRecord {
     key: string;
@@ -83,6 +96,18 @@ export interface FactStore {
 }
 
 const DEFAULT_SCHEMA = "pilotswarm_facts";
+const DEFAULT_DB_POOL_MAX = 10;
+const DEFAULT_PG_QUERY_TIMEOUT_MS = 15_000;
+const DEFAULT_PG_CONNECTION_TIMEOUT_MS = 5_000;
+const DEFAULT_PG_IDLE_TIMEOUT_MS = 30_000;
+
+function resolveEnvInt(varName: string, defaultVal: number, env: Record<string, string | undefined> = process.env, minVal = 0): number {
+    const raw = env[varName];
+    if (!raw) return defaultVal;
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < minVal) return defaultVal;
+    return parsed;
+}
 
 function sqlForSchema(schema: string) {
     return {
@@ -112,9 +137,13 @@ function normalizeLikePattern(pattern?: string): string | undefined {
     return pattern;
 }
 
-export async function createFactStoreForUrl(storeUrl: string, schema?: string): Promise<FactStore> {
+export async function createFactStoreForUrl(
+    storeUrl: string,
+    schema?: string,
+    env: Record<string, string | undefined> = process.env,
+): Promise<FactStore> {
     if (storeUrl.startsWith("postgres://") || storeUrl.startsWith("postgresql://")) {
-        return PgFactStore.create(storeUrl, schema);
+        return PgFactStore.create(storeUrl, schema, env);
     }
     throw new Error(
         "PilotSwarm facts require a PostgreSQL store. " +
@@ -132,9 +161,11 @@ export class PgFactStore implements FactStore {
         this.sql = sqlForSchema(schema);
     }
 
-    static readonly DEFAULT_POOL_MAX = 3;
-
-    static async create(connectionString: string, schema?: string): Promise<PgFactStore> {
+    static async create(
+        connectionString: string,
+        schema?: string,
+        env: Record<string, string | undefined> = process.env,
+    ): Promise<PgFactStore> {
         const { default: pg } = await import("pg");
 
         const parsed = new URL(connectionString);
@@ -142,14 +173,14 @@ export class PgFactStore implements FactStore {
             .includes(parsed.searchParams.get("sslmode") ?? "");
         parsed.searchParams.delete("sslmode");
 
-        const configuredPoolMax = Number.parseInt(process.env.PILOTSWARM_FACTS_PG_POOL_MAX ?? "", 10);
-        const poolMax = Number.isFinite(configuredPoolMax) && configuredPoolMax > 0
-            ? configuredPoolMax
-            : PgFactStore.DEFAULT_POOL_MAX;
-
+        const stmtTimeout = resolveEnvInt("PG_STATEMENT_TIMEOUT_MS", 0, env);
         const pool = new pg.Pool({
             connectionString: parsed.toString(),
-            max: poolMax,
+            max: resolveEnvInt("DB_POOL_MAX", DEFAULT_DB_POOL_MAX, env, 1),
+            connectionTimeoutMillis: resolveEnvInt("PG_CONNECTION_TIMEOUT_MS", DEFAULT_PG_CONNECTION_TIMEOUT_MS, env),
+            idleTimeoutMillis: resolveEnvInt("PG_IDLE_TIMEOUT_MS", DEFAULT_PG_IDLE_TIMEOUT_MS, env),
+            query_timeout: resolveEnvInt("PG_QUERY_TIMEOUT_MS", DEFAULT_PG_QUERY_TIMEOUT_MS, env),
+            ...(stmtTimeout > 0 ? { statement_timeout: stmtTimeout } : {}),
             ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
         });
 
@@ -162,120 +193,136 @@ export class PgFactStore implements FactStore {
 
     async initialize(): Promise<void> {
         if (this.initialized) return;
-        await runFactsMigrations(this.pool, this.sql.schema);
-        this.initialized = true;
+        return measureDbCall("facts.initialize", async () => {
+            await runFactsMigrations(this.pool, this.sql.schema);
+            this.initialized = true;
+        });
     }
 
     async storeFact(input: StoreFactInput): Promise<{ key: string; shared: boolean; stored: true }> {
-        const shared = input.shared === true;
-        const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
+        return measureDbCall("facts.storeFact", async () => {
+            const shared = input.shared === true;
+            const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
 
-        await this.pool.query(
-            `SELECT ${this.sql.fn.storeFact}($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [
-                scopeKey,
-                input.key,
-                JSON.stringify(input.value),
-                input.agentId ?? null,
-                input.sessionId ?? null,
+            await this.pool.query(
+                `SELECT ${this.sql.fn.storeFact}($1, $2, $3, $4, $5, $6, $7, $8)`,
+                [
+                    scopeKey,
+                    input.key,
+                    JSON.stringify(input.value),
+                    input.agentId ?? null,
+                    input.sessionId ?? null,
+                    shared,
+                    !shared,
+                    input.tags ?? [],
+                ],
+            );
+
+            return {
+                key: input.key,
                 shared,
-                !shared,
-                input.tags ?? [],
-            ],
-        );
-
-        return {
-            key: input.key,
-            shared,
-            stored: true,
-        };
+                stored: true,
+            };
+        });
     }
 
     async readFacts(
         query: ReadFactsQuery,
         access?: { readerSessionId?: string | null; grantedSessionIds?: string[]; unrestricted?: boolean },
     ): Promise<{ count: number; facts: FactRecord[] }> {
-        const readerSessionId = access?.readerSessionId ?? null;
-        const grantedSessionIds = access?.grantedSessionIds ?? [];
-        const unrestricted = access?.unrestricted === true;
-        const scope = query.scope ?? "accessible";
-        const keyPattern = normalizeLikePattern(query.keyPattern) ?? null;
-        const maxRows = query.limit ?? 50;
+        return measureDbCall("facts.readFacts", async () => {
+            const readerSessionId = access?.readerSessionId ?? null;
+            const grantedSessionIds = access?.grantedSessionIds ?? [];
+            const unrestricted = access?.unrestricted === true;
+            const scope = query.scope ?? "accessible";
+            const keyPattern = normalizeLikePattern(query.keyPattern) ?? null;
+            const maxRows = query.limit ?? 50;
 
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.readFacts}($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-            [
-                scope,
-                readerSessionId,
-                grantedSessionIds.length > 0 ? grantedSessionIds : null,
-                keyPattern,
-                query.tags && query.tags.length > 0 ? query.tags : null,
-                query.sessionId ?? null,
-                query.agentId ?? null,
-                maxRows,
-                unrestricted,
-            ],
-        );
+            const { rows } = await this.pool.query(
+                `SELECT * FROM ${this.sql.fn.readFacts}($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                [
+                    scope,
+                    readerSessionId,
+                    grantedSessionIds.length > 0 ? grantedSessionIds : null,
+                    keyPattern,
+                    query.tags && query.tags.length > 0 ? query.tags : null,
+                    query.sessionId ?? null,
+                    query.agentId ?? null,
+                    maxRows,
+                    unrestricted,
+                ],
+            );
 
-        return {
-            count: rows.length,
-            facts: rows.map((row: any) => ({
-                key: row.key,
-                value: row.value,
-                agentId: row.agent_id ?? null,
-                sessionId: row.session_id ?? null,
-                shared: row.shared === true,
-                tags: Array.isArray(row.tags) ? row.tags : [],
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            })),
-        };
+            return {
+                count: rows.length,
+                facts: rows.map((row: any) => ({
+                    key: row.key,
+                    value: row.value,
+                    agentId: row.agent_id ?? null,
+                    sessionId: row.session_id ?? null,
+                    shared: row.shared === true,
+                    tags: Array.isArray(row.tags) ? row.tags : [],
+                    createdAt: row.created_at,
+                    updatedAt: row.updated_at,
+                })),
+            };
+        });
     }
 
     async deleteFact(input: DeleteFactInput): Promise<{ key: string; shared: boolean; deleted: boolean }> {
-        const shared = input.shared === true;
-        const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
-        const { rows } = await this.pool.query(
-            `SELECT ${this.sql.fn.deleteFact}($1) AS deleted_count`,
-            [scopeKey],
-        );
-        return {
-            key: input.key,
-            shared,
-            deleted: Number(rows[0]?.deleted_count) > 0,
-        };
+        return measureDbCall("facts.deleteFact", async () => {
+            const shared = input.shared === true;
+            const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
+            const { rows } = await this.pool.query(
+                `SELECT ${this.sql.fn.deleteFact}($1) AS deleted_count`,
+                [scopeKey],
+            );
+            return {
+                key: input.key,
+                shared,
+                deleted: Number(rows[0]?.deleted_count) > 0,
+            };
+        });
     }
 
     async deleteSessionFactsForSession(sessionId: string): Promise<number> {
-        const { rows } = await this.pool.query(
-            `SELECT ${this.sql.fn.deleteSessionFacts}($1) AS deleted_count`,
-            [sessionId],
-        );
-        return Number(rows[0]?.deleted_count) || 0;
+        return measureDbCall("facts.deleteSessionFactsForSession", async () => {
+            const { rows } = await this.pool.query(
+                `SELECT ${this.sql.fn.deleteSessionFacts}($1) AS deleted_count`,
+                [sessionId],
+            );
+            return Number(rows[0]?.deleted_count) || 0;
+        });
     }
 
     async getSessionFactsStats(sessionId: string): Promise<FactsStatsRow[]> {
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.getSessionFactsStats}($1)`,
-            [sessionId],
-        );
-        return rows.map(rowToFactsStatsRow);
+        return measureDbCall("facts.getSessionFactsStats", async () => {
+            const { rows } = await this.pool.query(
+                `SELECT * FROM ${this.sql.fn.getSessionFactsStats}($1)`,
+                [sessionId],
+            );
+            return rows.map(rowToFactsStatsRow);
+        });
     }
 
     async getFactsStatsForSessions(sessionIds: string[]): Promise<FactsStatsRow[]> {
         if (!sessionIds || sessionIds.length === 0) return [];
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.getFactsStatsForSessions}($1)`,
-            [sessionIds],
-        );
-        return rows.map(rowToFactsStatsRow);
+        return measureDbCall("facts.getFactsStatsForSessions", async () => {
+            const { rows } = await this.pool.query(
+                `SELECT * FROM ${this.sql.fn.getFactsStatsForSessions}($1)`,
+                [sessionIds],
+            );
+            return rows.map(rowToFactsStatsRow);
+        });
     }
 
     async getSharedFactsStats(): Promise<FactsStatsRow[]> {
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.getSharedFactsStats}()`,
-        );
-        return rows.map(rowToFactsStatsRow);
+        return measureDbCall("facts.getSharedFactsStats", async () => {
+            const { rows } = await this.pool.query(
+                `SELECT * FROM ${this.sql.fn.getSharedFactsStats}()`,
+            );
+            return rows.map(rowToFactsStatsRow);
+        });
     }
 
     async close(): Promise<void> {

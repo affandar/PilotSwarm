@@ -1,6 +1,7 @@
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
+import { S3ArtifactStore } from "./s3-artifact-store.js";
 import { registerActivities } from "./session-proxy.js";
 import {
     DURABLE_SESSION_LATEST_VERSION,
@@ -13,9 +14,10 @@ import { loadAgentFiles, systemAgentUUID, systemChildAgentUUID } from "./agent-l
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
-import { createFactStoreForUrl, PgFactStore, type FactStore } from "./facts-store.js";
+import { createFactStoreForUrl, type FactStore } from "./facts-store.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
+import { createSloTools } from "./slo-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
@@ -98,6 +100,7 @@ export function buildSystemAgentBootstrapPayload(
  * constructor so they share the database provider and the client can
  * forward tool/hook registrations.
  */
+
 /**
  * Resolve the spawn-tree session IDs for a given session.
  *
@@ -197,6 +200,12 @@ export class PilotSwarmWorker {
                 effectiveSessionStateDir,
             );
             this.artifactStore = this.blobStore;
+        } else if (options.s3Bucket) {
+            this.artifactStore = new S3ArtifactStore({
+                bucket: options.s3Bucket,
+                region: options.s3Region,
+                keyPrefix: options.s3KeyPrefix,
+            });
         } else {
             // Local mode: use filesystem-based artifact storage
             const artifactDir = path.join(path.dirname(effectiveSessionStateDir), "artifacts");
@@ -232,6 +241,8 @@ export class PilotSwarmWorker {
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: options.turnTimeoutMs,
+                promptGuardrails: options.promptGuardrails,
+                artifactStore: this.artifactStore ?? undefined,
             },
             effectiveSessionStateDir,
         );
@@ -330,10 +341,10 @@ export class PilotSwarmWorker {
             ?? DEFAULT_ORCHESTRATION_CONCURRENCY;
         const workerConcurrency = parsePositiveInt(process.env.PILOTSWARM_WORKER_CONCURRENCY)
             ?? DEFAULT_WORKER_CONCURRENCY;
-        const cmsPoolMax = parsePositiveInt(process.env.PILOTSWARM_CMS_PG_POOL_MAX)
-            ?? PgSessionCatalogProvider.DEFAULT_POOL_MAX;
-        const factsPoolMax = parsePositiveInt(process.env.PILOTSWARM_FACTS_PG_POOL_MAX)
-            ?? PgFactStore.DEFAULT_POOL_MAX;
+        const cmsPoolMax = parsePositiveInt(process.env.PILOTSWARM_CMS_PG_POOL_MAX) ?? DEFAULT_DUROXIDE_PG_POOL_MAX;
+        const factsPoolMax = parsePositiveInt(process.env.PILOTSWARM_FACTS_PG_POOL_MAX) ?? DEFAULT_DUROXIDE_PG_POOL_MAX;
+        const cmsEnv = { ...process.env, DB_POOL_MAX: String(cmsPoolMax) };
+        const factsEnv = { ...process.env, DB_POOL_MAX: String(factsPoolMax) };
 
         if ((store.startsWith("postgres://") || store.startsWith("postgresql://")) && !parsePositiveInt(process.env.DUROXIDE_PG_POOL_MAX)) {
             process.env.DUROXIDE_PG_POOL_MAX = String(DEFAULT_DUROXIDE_PG_POOL_MAX);
@@ -344,14 +355,14 @@ export class PilotSwarmWorker {
         // Initialize CMS catalog and facts store
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
             try {
-                this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
+                this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema, cmsEnv);
                 await this._catalog.initialize();
             } catch (err) {
                 console.error("[PilotSwarmWorker] CMS initialization failed:", err);
                 this._catalog = null;
             }
         }
-        this.factStore = await createFactStoreForUrl(store, this.config.factsSchema);
+        this.factStore = await createFactStoreForUrl(store, this.config.factsSchema, factsEnv);
         await this.factStore.initialize();
         trace(
             `[worker] postgres pools: duroxidePgPoolMax=${process.env.DUROXIDE_PG_POOL_MAX ?? "(unset)"}, ` +
@@ -374,7 +385,7 @@ export class PilotSwarmWorker {
         const runtimeOptions = {
             orchestrationConcurrency,
             workerConcurrency,
-            dispatcherPollIntervalMs: 10,
+            dispatcherPollIntervalMs: 500,
             workerLockTimeoutMs: 10_000,
             logLevel: this.config.logLevel ?? "error",
             maxSessionsPerRuntime: this.config.maxSessionsPerRuntime ?? 50,
@@ -435,6 +446,12 @@ export class PilotSwarmWorker {
             this.registerTools(sweeperTools);
         }
 
+        // Auto-register SLO monitor tools if CMS is available
+        if (this._catalog) {
+            const sloTools = createSloTools(this._catalog);
+            this.registerTools(sloTools);
+        }
+
         // Auto-register artifact tools (blob storage or local filesystem)
         if (this.artifactStore) {
             const artifactTools = createArtifactTools({ blobStore: this.artifactStore });
@@ -454,11 +471,8 @@ export class PilotSwarmWorker {
             this.registerTools(rmTools);
         }
 
-        // ps_list_agents tool — exposes user-creatable agents by default.
-        // NOTE: prefixed with `ps_` to avoid collision with the Copilot SDK's
-        // built-in `list_agents` tool (introduced in @github/copilot 1.0.32),
-        // which lists live background-agent task instances rather than blueprints.
-        const listAgentsTool = defineTool("ps_list_agents", {
+        // list_agents tool — exposes user-creatable agents by default.
+        const listAgentsTool = defineTool("list_agents", {
             description:
                 "List all available agent BLUEPRINTS (definitions loaded from .agent.md files). " +
                 "By default this returns only user-creatable named agents. " +
