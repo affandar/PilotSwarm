@@ -1,0 +1,19 @@
+{
+  "version": "v1",
+  "capturedAt": "2025-01-01T00:00:00Z",
+  "description": "Starter / placeholder perf baseline. These are deliberately *loose* sentinel values intended to let BaselineComparator.compare() run without falsely flagging every observation as a regression. They are NOT measured on a known-good build — replace them with real captured values (e.g. via `BaselineComparator` after a green run) before relying on this file in CI. With tolerance=1.5 (the default), each value below sets an effective ceiling at value × 1.5; observations beyond that ceiling are flagged as regressions.",
+  "metrics": {
+    "latencyP50Ms": 30000,
+    "latencyP95Ms": 60000,
+    "costPerTrialUsd": 0.05,
+    "dbPerTurn": 2000,
+    "dbPerSpawn": 4000,
+    "dbTotalQueries": 8000,
+    "dbTotalExecTimeMs": 30000,
+    "rehydrateP95Ms": 1500,
+    "dehydrateP95Ms": 1500,
+    "peakRssMB": 1024,
+    "peakConnections": 50,
+    "concurrencyScalingFactor": 2.0
+  }
+}

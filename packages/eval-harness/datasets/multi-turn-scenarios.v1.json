@@ -1,0 +1,345 @@
+{
+  "schemaVersion": 1,
+  "id": "multi-turn-scenarios",
+  "name": "Multi-Turn Scenarios",
+  "description": "Core multi-turn trajectories — sequential calculations, context retention, tool switching, goal completion, and call budgets.",
+  "version": "1.0.0",
+  "runnable": false,
+  "passRateFloor": 0.8,
+  "samples": [
+    {
+      "id": "multi-turn.two-step-calculation",
+      "description": "Two-step calculation — add then multiply using previous result",
+      "turns": [
+        {
+          "input": {
+            "prompt": "What is 3 plus 4? Use test_add."
+          },
+          "expected": {
+            "toolCalls": [
+              {
+                "name": "test_add",
+                "args": {
+                  "a": 3,
+                  "b": 4
+                },
+                "match": "subset"
+              }
+            ],
+            "response": {
+              "containsAny": [
+                "7"
+              ]
+            }
+          }
+        },
+        {
+          "input": {
+            "prompt": "Now multiply that result by 2 using test_multiply."
+          },
+          "expected": {
+            "toolCalls": [
+              {
+                "name": "test_multiply",
+                "args": {
+                  "a": 7,
+                  "b": 2
+                },
+                "match": "subset"
+              }
+            ],
+            "response": {
+              "containsAny": [
+                "14"
+              ]
+            }
+          }
+        }
+      ],
+      "tools": [
+        "test_add",
+        "test_multiply"
+      ],
+      "tags": [
+        "multi-turn",
+        "arithmetic"
+      ],
+      "expected": {
+        "goalCompleted": true,
+        "maxTotalToolCalls": 2
+      }
+    },
+    {
+      "id": "multi-turn.context-retention",
+      "description": "Set context in turn 1, reference it in turn 2",
+      "turns": [
+        {
+          "input": {
+            "prompt": "My favorite city is Osaka. Please remember that."
+          },
+          "expected": {
+            "noToolCall": true,
+            "response": {
+              "containsAny": [
+                "Osaka"
+              ]
+            }
+          }
+        },
+        {
+          "input": {
+            "prompt": "What's the weather in my favorite city? Use test_weather."
+          },
+          "expected": {
+            "toolCalls": [
+              {
+                "name": "test_weather",
+                "args": {
+                  "city": "Osaka"
+                },
+                "match": "subset"
+              }
+            ]
+          }
+        }
+      ],
+      "tools": [
+        "test_weather"
+      ],
+      "tags": [
+        "multi-turn",
+        "context-retention"
+      ],
+      "expected": {
+        "goalCompleted": true,
+        "contextRetention": [
+          {
+            "term": "Osaka",
+            "mustAppearAfterTurn": 0,
+            "requireToolArgUse": {
+              "toolName": "test_weather",
+              "argPath": "city"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "multi-turn.tool-switch",
+      "description": "Use add in turn 1, then weather in turn 2 (switch tools)",
+      "turns": [
+        {
+          "input": {
+            "prompt": "What is 10 plus 5? Use test_add."
+          },
+          "expected": {
+            "toolCalls": [
+              {
+                "name": "test_add",
+                "args": {
+                  "a": 10,
+                  "b": 5
+                },
+                "match": "subset"
+              }
+            ],
+            "forbiddenTools": [
+              "test_weather"
+            ]
+          }
+        },
+        {
+          "input": {
+            "prompt": "Now check the weather in Paris using test_weather."
+          },
+          "expected": {
+            "toolCalls": [
+              {
+                "name": "test_weather",
+                "args": {
+                  "city": "Paris"
+                },
+                "match": "subset"
+              }
+            ],
+            "forbiddenTools": [
+              "test_add"
+            ]
+          }
+        }
+      ],
+      "tools": [
+        "test_add",
+        "test_weather"
+      ],
+      "tags": [
+        "multi-turn",
+        "tool-switch"
+      ],
+      "expected": {
+        "goalCompleted": true
+      }
+    },
+    {
+      "id": "multi-turn.no-tool-then-tool",
+      "description": "Plain response turn 1, tool call turn 2",
+      "turns": [
+        {
+          "input": {
+            "prompt": "Say hello without using any tools."
+          },
+          "expected": {
+            "noToolCall": true,
+            "response": {
+              "containsAny": [
+                "hello",
+                "hi"
+              ]
+            }
+          }
+        },
+        {
+          "input": {
+            "prompt": "Now add 1 and 2 using test_add."
+          },
+          "expected": {
+            "toolCalls": [
+              {
+                "name": "test_add",
+                "args": {
+                  "a": 1,
+                  "b": 2
+                },
+                "match": "subset"
+              }
+            ]
+          }
+        }
+      ],
+      "tools": [
+        "test_add"
+      ],
+      "tags": [
+        "multi-turn",
+        "mixed"
+      ],
+      "expected": {
+        "goalCompleted": true
+      }
+    },
+    {
+      "id": "multi-turn.call-budget",
+      "description": "Three-turn conversation with total call budget of 4",
+      "turns": [
+        {
+          "input": {
+            "prompt": "Add 1 and 2 using test_add."
+          },
+          "expected": {
+            "toolCalls": [
+              {
+                "name": "test_add",
+                "args": {
+                  "a": 1,
+                  "b": 2
+                },
+                "match": "subset"
+              }
+            ]
+          }
+        },
+        {
+          "input": {
+            "prompt": "Multiply 3 and 4 using test_multiply."
+          },
+          "expected": {
+            "toolCalls": [
+              {
+                "name": "test_multiply",
+                "args": {
+                  "a": 3,
+                  "b": 4
+                },
+                "match": "subset"
+              }
+            ]
+          }
+        },
+        {
+          "input": {
+            "prompt": "Add 5 and 6 using test_add."
+          },
+          "expected": {
+            "toolCalls": [
+              {
+                "name": "test_add",
+                "args": {
+                  "a": 5,
+                  "b": 6
+                },
+                "match": "subset"
+              }
+            ]
+          }
+        }
+      ],
+      "tools": [
+        "test_add",
+        "test_multiply"
+      ],
+      "tags": [
+        "multi-turn",
+        "budget"
+      ],
+      "expected": {
+        "maxTotalToolCalls": 4
+      }
+    },
+    {
+      "id": "multi-turn.goal-completion",
+      "description": "Two turns achieving a stated goal — lookup then summarize",
+      "turns": [
+        {
+          "input": {
+            "prompt": "Please check the weather in Berlin using test_weather."
+          },
+          "expected": {
+            "toolCalls": [
+              {
+                "name": "test_weather",
+                "args": {
+                  "city": "Berlin"
+                },
+                "match": "subset"
+              }
+            ]
+          }
+        },
+        {
+          "input": {
+            "prompt": "Summarize what you found. Do not call any tools now."
+          },
+          "expected": {
+            "noToolCall": true,
+            "response": {
+              "containsAny": [
+                "Berlin",
+                "weather"
+              ]
+            }
+          }
+        }
+      ],
+      "tools": [
+        "test_weather"
+      ],
+      "tags": [
+        "multi-turn",
+        "goal"
+      ],
+      "expected": {
+        "goalCompleted": true
+      }
+    }
+  ]
+}

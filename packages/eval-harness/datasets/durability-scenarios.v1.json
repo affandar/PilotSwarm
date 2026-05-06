@@ -1,0 +1,270 @@
+{
+  "schemaVersion": 1,
+  "id": "durability-scenarios",
+  "name": "Durability & Crash Recovery Scenarios",
+  "description": "[ILLUSTRATIVE FIXTURE — NOT LIVE-RUNNABLE] Scenarios exercising crash injection, dehydrate/hydrate, worker handoff, and durable timer behavior for the PilotSwarm runtime.",
+  "version": "1.0.0",
+  "runnable": false,
+  "passRateFloor": 0.8,
+  "samples": [
+    {
+      "id": "crash.worker-crash-mid-tool",
+      "description": "Worker crashes while a tool call is in-flight; orchestration replays and the tool re-executes after recovery.",
+      "input": {
+        "prompt": "Look up the weather in Tokyo and summarize it."
+      },
+      "expected": {
+        "toolCalls": [
+          {
+            "name": "test_weather",
+            "args": {
+              "city": "Tokyo"
+            },
+            "match": "subset"
+          }
+        ],
+        "cms": {
+          "stateIn": [
+            "idle",
+            "completed"
+          ]
+        },
+        "durability": {
+          "mustRecover": true,
+          "finalStateIn": [
+            "idle",
+            "completed"
+          ],
+          "minToolCallsAfterRecovery": 1
+        }
+      },
+      "tools": [
+        "test_weather"
+      ],
+      "tags": [
+        "crash",
+        "mid-tool"
+      ]
+    },
+    {
+      "id": "crash.worker-crash-after-turn",
+      "description": "Worker crashes after the turn finishes; session state is preserved and next turn resumes cleanly.",
+      "input": {
+        "prompt": "Add 2 and 3 using the test_add tool."
+      },
+      "expected": {
+        "toolCalls": [
+          {
+            "name": "test_add",
+            "args": {
+              "a": 2,
+              "b": 3
+            },
+            "match": "subset"
+          }
+        ],
+        "cms": {
+          "stateIn": [
+            "idle",
+            "completed"
+          ]
+        },
+        "durability": {
+          "mustRecover": true,
+          "finalStateIn": [
+            "idle",
+            "completed"
+          ]
+        }
+      },
+      "tools": [
+        "test_add"
+      ],
+      "tags": [
+        "crash",
+        "after-turn"
+      ]
+    },
+    {
+      "id": "crash.tool-timeout",
+      "description": "Tool execution hangs beyond its timeout; the runtime cancels the call and the orchestration recovers gracefully.",
+      "input": {
+        "prompt": "Call the slow_tool and report its result."
+      },
+      "expected": {
+        "cms": {
+          "stateIn": [
+            "idle",
+            "completed",
+            "errored"
+          ]
+        },
+        "durability": {
+          "mustRecover": true,
+          "finalStateIn": [
+            "idle",
+            "completed",
+            "errored"
+          ]
+        }
+      },
+      "tools": [
+        "slow_tool"
+      ],
+      "tags": [
+        "crash",
+        "tool-timeout"
+      ]
+    },
+    {
+      "id": "crash.tool-throw",
+      "description": "Tool throws an exception; runtime surfaces the error to the LLM turn and completes without corrupting session state.",
+      "input": {
+        "prompt": "Call the throwing_tool and handle the error."
+      },
+      "expected": {
+        "cms": {
+          "stateIn": [
+            "idle",
+            "completed",
+            "errored"
+          ]
+        },
+        "durability": {
+          "mustRecover": true,
+          "finalStateIn": [
+            "idle",
+            "completed",
+            "errored"
+          ]
+        }
+      },
+      "tools": [
+        "throwing_tool"
+      ],
+      "tags": [
+        "crash",
+        "tool-throw"
+      ]
+    },
+    {
+      "id": "recovery.dehydrate-hydrate",
+      "description": "Session is dehydrated to blob storage and later hydrated on a new turn; conversation state is preserved.",
+      "input": {
+        "prompt": "Remember that my favorite color is blue, then tell me what it is."
+      },
+      "expected": {
+        "response": {
+          "containsAny": [
+            "blue"
+          ]
+        },
+        "cms": {
+          "stateIn": [
+            "idle",
+            "completed"
+          ]
+        },
+        "durability": {
+          "mustRecover": true,
+          "requireDehydrated": true,
+          "requireHydrated": true,
+          "finalStateIn": [
+            "idle",
+            "completed"
+          ]
+        }
+      },
+      "tags": [
+        "dehydrate",
+        "hydrate"
+      ]
+    },
+    {
+      "id": "recovery.worker-handoff",
+      "description": "Active session migrates from one worker to another; execution continues on the new worker without data loss.",
+      "input": {
+        "prompt": "Run a multi-step task that survives worker handoff."
+      },
+      "expected": {
+        "cms": {
+          "stateIn": [
+            "idle",
+            "completed"
+          ]
+        },
+        "durability": {
+          "mustRecover": true,
+          "requireWorkerHandoff": true,
+          "minToolCallsAfterRecovery": 1,
+          "finalStateIn": [
+            "idle",
+            "completed"
+          ]
+        }
+      },
+      "tools": [
+        "test_add"
+      ],
+      "tags": [
+        "handoff",
+        "multi-worker"
+      ]
+    },
+    {
+      "id": "timer.fires-after-crash",
+      "description": "A durable timer scheduled before a crash still fires after recovery with bounded drift.",
+      "input": {
+        "prompt": "Wait 100ms then say done."
+      },
+      "expected": {
+        "response": {
+          "containsAny": [
+            "done"
+          ]
+        },
+        "cms": {
+          "stateIn": [
+            "idle",
+            "completed"
+          ]
+        },
+        "durability": {
+          "mustRecover": true,
+          "maxTimerDriftMs": 500,
+          "finalStateIn": [
+            "idle",
+            "completed"
+          ]
+        }
+      },
+      "tags": [
+        "timer",
+        "durable"
+      ]
+    },
+    {
+      "id": "timer.drift-within-tolerance",
+      "description": "Durable timer fires with drift under the configured tolerance (no crash required).",
+      "input": {
+        "prompt": "Schedule a short timer and report completion."
+      },
+      "expected": {
+        "cms": {
+          "stateIn": [
+            "idle",
+            "completed"
+          ]
+        },
+        "durability": {
+          "mustRecover": true,
+          "maxTimerDriftMs": 250
+        }
+      },
+      "tags": [
+        "timer",
+        "drift"
+      ]
+    }
+  ]
+}

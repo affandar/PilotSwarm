@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 2,
+  "variantId": "baseline",
+  "model": null,
+  "toolCallAccuracyMean": 1,
+  "instructionFollowingMean": 1,
+  "latencyMsMean": 1500,
+  "trials": 1,
+  "capturedAt": "2025-01-01T00:00:00.000Z",
+  "hasQualitySignal": true,
+  "samples": {
+    "single.add.basic": {
+      "sampleId": "single.add.basic",
+      "trials": 1,
+      "toolCallAccuracyMean": 1,
+      "instructionFollowingMean": 1,
+      "latencyMsMean": 1500,
+      "observations": [
+        {
+          "trial": 0,
+          "toolCallAccuracy": 1,
+          "instructionFollowing": 1,
+          "latencyMs": 1500,
+          "responseDigest": "b26f56882b1da1137ba71ef681e9489f48e98e0c9a070e701c9ec6aee5784079",
+          "responseLength": 17,
+          "toolCallSequence": [
+            {
+              "name": "test_add",
+              "argKeys": [
+                "a",
+                "b"
+              ],
+              "argDigest": "83d816ea93a6786514554b6cd3798e71b9450bc2cf506b3c1b390d4979289cf2"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "metadata": {
+    "kind": "synthetic-starter",
+    "note": "Schema-conforming starter baseline for default.agent.md regression tests. NOT a real LLM capture — replace with: LIVE=1 PROMPT_TESTING=1 REFRESH_GOLDEN=1 npx vitest run test/prompt-testing-live.test.ts -t regression. The synthetic-starter kind is recognized by tooling so the real-capture gate cannot silently pass against this placeholder in production."
+  }
+}

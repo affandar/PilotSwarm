@@ -1,0 +1,8 @@
+# iter16 WS8 — exclude dev artifacts and source maps from published pack
+**/*.map
+**/*.test.js
+**/*.test.d.ts
+**/*.test.js.map
+test/
+src/
+**/*.tsbuildinfo

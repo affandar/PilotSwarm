@@ -1,0 +1,45 @@
+{
+  "name": "pilotswarm-eval-harness",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "datasets",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepack": "npm run build",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:live": "bin/run-live.sh",
+    "test:live:all": "bin/run-live.sh --all",
+    "test:live:cheap": "bin/run-live.sh --cheap",
+    "test:live:perf": "bin/run-live.sh --perf",
+    "test:live:judge": "bin/run-live.sh --judge",
+    "report": "node bin/report.mjs"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.0"
+  },
+  "peerDependencies": {
+    "pilotswarm-sdk": "^0.1.18"
+  }
+}

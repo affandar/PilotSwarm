@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "valid-a",
+  "name": "Valid A",
+  "description": "First valid fixture in dir",
+  "version": "1.0.0",
+  "samples": [
+    {
+      "id": "valid-a.1",
+      "description": "a sample",
+      "input": { "prompt": "hello" },
+      "expected": { "toolCalls": [{ "name": "t" }] }
+    }
+  ]
+}

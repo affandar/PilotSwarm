@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "trajectory-valid",
+  "name": "Trajectory Valid",
+  "description": "Valid trajectory fixture for directory loading",
+  "version": "1.0.0",
+  "samples": [
+    {
+      "id": "trajectory.valid",
+      "description": "valid",
+      "turns": [
+        {
+          "input": { "prompt": "hello" },
+          "expected": { "noToolCall": true }
+        }
+      ]
+    }
+  ]
+}
