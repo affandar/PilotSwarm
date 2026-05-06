@@ -226,6 +226,15 @@ async function runStage(name, ctx) {
 
 // ───────────────────────── Main ─────────────────────────
 
+// TODO(maintainability): main() has grown to ~280 lines and now mixes
+// (a) arg parsing, (b) env composition + alias mapping (FR-022),
+// (c) mode validation (edgeMode/tlsSource matrix), (d) per-mode env
+// stubbing, and (e) the per-step dispatch loop. Extracting (b)+(c)+(d)
+// into a `composeAndValidateEnv(parsed, env)` helper that returns a
+// frozen env map would shrink main() back to a readable orchestrator
+// shell. Holding off in this PR to keep the diff scoped to behavior
+// changes; tracked as a follow-up so future contributors don't keep
+// piling onto main().
 async function main() {
   let parsed;
   try {
@@ -325,6 +334,13 @@ async function main() {
     process.exit(1);
   }
 
+  // TODO(maintainability): the two early-return mode-skip blocks below
+  // duplicate logic also encoded in the SERVICE_MODE_SKIP filter at the
+  // `all` aggregate (search for `svc === "global-infra"` further down).
+  // A single `serviceSkippedInMode(service, edgeMode, tlsSource)` helper
+  // shared by both the singleton entry and the all-aggregate filter
+  // would prevent the two from drifting. Not refactoring in this PR to
+  // keep the diff minimal; flagged so it stays on the radar.
   if (service === "global-infra" && edgeMode !== "afd") {
     log(
       "ok",
@@ -395,6 +411,16 @@ async function main() {
   // doesn't fail-closed on placeholders that the bicep simply ignores when
   // edgeMode != 'afd'. Bicep declares these params with default '' and the
   // afd-only modules are guarded with `if (edgeMode == 'afd')`.
+  //
+  // TODO(maintainability): the literal string `"unused"` is a sentinel
+  // that survives all the way into rendered bicep parameter files. It
+  // works because the receiving modules guard their use behind the same
+  // edgeMode/tlsSource gates, but a typo'd guard on either side would
+  // silently smuggle the sentinel into a real ARM API call. Replacing
+  // these with a named `MODE_STUB` constant + a render-params assertion
+  // that fails-closed when `MODE_STUB` reaches a *required* (i.e.
+  // unguarded) bicep param would surface drift loudly. Tracked as a
+  // follow-up; behaviour today is correct.
   if (edgeMode !== "afd") {
     if (!env.FRONT_DOOR_PROFILE_NAME) env.FRONT_DOOR_PROFILE_NAME = "unused";
     if (!env.FRONT_DOOR_PROFILE_RESOURCE_GROUP) env.FRONT_DOOR_PROFILE_RESOURCE_GROUP = "unused";
@@ -408,7 +434,7 @@ async function main() {
     if (!env.PRIVATE_LINK_CONFIGURATION_NAME) env.PRIVATE_LINK_CONFIGURATION_NAME = "unused";
   }
   // PORTAL_HOSTNAME is required in `private` (validated above) and unused in
-  // `afd` / `public` (bicep derives it). Stub when blank so render succeeds.
+  // `afd` (bicep derives it from the AFD endpoint). Stub when blank so render succeeds.
   if (!env.PORTAL_HOSTNAME) env.PORTAL_HOSTNAME = "unused";
 
   // Private DNS Zone params are only consumed by Portal bicep in private

@@ -1,3 +1,31 @@
+/**
+ * @file Azure Blob Storage backing for {@link SessionStateStore} +
+ * {@link ArtifactStore}.
+ *
+ * This module supports two coexisting authentication modes; the legacy
+ * mode is preserved verbatim so the in-cluster `scripts/deploy-aks.sh`
+ * flow, local Docker storage, and CI all keep working untouched.
+ *
+ * - **Connection-string (legacy, default)**: pass `AZURE_STORAGE_CONNECTION_STRING`.
+ *   `AccountName` + `AccountKey` are parsed from the conn string into a
+ *   `StorageSharedKeyCredential`, which is reused to mint short-lived
+ *   read-only SAS URLs in {@link SessionBlobStore.generateArtifactSasUrl}.
+ *
+ * - **Managed identity (opt-in, bicep-deploy flow)**: set
+ *   `PILOTSWARM_USE_MANAGED_IDENTITY=1` *and*
+ *   `AZURE_STORAGE_ACCOUNT_URL=https://<account>.blob.core.windows.net`.
+ *   The factory uses {@link DefaultAzureCredential} (workload-identity in
+ *   AKS, `az login`/env creds locally). No shared key is available, so
+ *   `generateArtifactSasUrl()` throws with
+ *   `code = "NotSupportedInManagedIdentityMode"` and callers must stream
+ *   artifacts through the worker (see TUI/portal proxy paths) rather
+ *   than handing a direct SAS URL to the client.
+ *
+ * Selection is done by {@link createSessionBlobStore}; see that function
+ * for the precedence rules. `useManagedIdentity` is *not* inferred from
+ * the absence of a connection string — it is an explicit opt-in flag so
+ * unmigrated stamps stay on the legacy path.
+ */
 import {
     BlobServiceClient,
     ContainerClient,
