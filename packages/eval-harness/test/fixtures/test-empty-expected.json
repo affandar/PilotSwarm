@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "empty-expected",
+  "name": "Empty Expected",
+  "description": "Invalid fixture with no real expectations.",
+  "version": "1.0.0",
+  "samples": [
+    {
+      "id": "empty.expected",
+      "description": "No-op sample",
+      "input": {
+        "prompt": "Do anything."
+      },
+      "expected": {}
+    }
+  ]
+}

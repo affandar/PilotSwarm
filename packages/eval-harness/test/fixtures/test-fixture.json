@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "test-fixture",
+  "name": "Test Fixture",
+  "description": "A fixture for testing the loader",
+  "version": "1.0.0",
+  "samples": [
+    {
+      "id": "test.sample.1",
+      "description": "Test sample",
+      "input": { "prompt": "Add 2 and 3" },
+      "expected": {
+        "toolCalls": [{ "name": "test_add", "args": { "a": 2, "b": 3 } }]
+      },
+      "tools": ["test_add"]
+    }
+  ]
+}

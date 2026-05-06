@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "trajectory-non-runnable",
+  "name": "Trajectory Non Runnable",
+  "description": "Non-runnable trajectory fixture for loader tests",
+  "version": "1.0.0",
+  "runnable": false,
+  "samples": [
+    {
+      "id": "trajectory.skip",
+      "description": "skip",
+      "turns": [
+        {
+          "input": { "prompt": "hello" },
+          "expected": { "noToolCall": true }
+        }
+      ]
+    }
+  ]
+}

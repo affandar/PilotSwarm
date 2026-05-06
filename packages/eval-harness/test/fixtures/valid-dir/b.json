@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "valid-b",
+  "name": "Valid B",
+  "description": "Second valid fixture in dir",
+  "version": "2.0.0",
+  "samples": [
+    {
+      "id": "valid-b.1",
+      "description": "another sample",
+      "input": { "prompt": "world" },
+      "expected": { "toolCalls": [{ "name": "u" }] }
+    }
+  ]
+}

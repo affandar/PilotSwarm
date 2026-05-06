@@ -1,0 +1,62 @@
+{
+  "providers": [
+    {
+      "id": "github-copilot",
+      "type": "github",
+      "githubToken": "env:GITHUB_TOKEN",
+      "models": [
+        {
+          "name": "gpt-5.5",
+          "description": "Top-tier GPT-5.5 (Copilot /responses endpoint). Used for LLM-as-judge in eval-harness LIVE_JUDGE runs.",
+          "cost": "high"
+        },
+        {
+          "name": "gpt-5.4",
+          "description": "Primary deterministic test model. Available on both /chat/completions and /responses.",
+          "cost": "high"
+        },
+        {
+          "name": "gpt-5.4-mini",
+          "description": "Lower-cost GPT-5.4 variant (/responses).",
+          "cost": "low"
+        },
+        {
+          "name": "gpt-5.2",
+          "description": "Fallback GPT-5.2 (/chat/completions).",
+          "cost": "medium"
+        },
+        {
+          "name": "gpt-5-mini",
+          "description": "Lowest-cost GPT-5 family.",
+          "cost": "low"
+        },
+        {
+          "name": "gpt-4.1",
+          "description": "Fallback GPT model for tests that sweep multiple GitHub Copilot models.",
+          "cost": "medium"
+        },
+        {
+          "name": "claude-opus-4.7",
+          "description": "Top-tier Claude. Cross-judge candidate against gpt-5.5.",
+          "cost": "high"
+        },
+        {
+          "name": "claude-opus-4.6",
+          "description": "High-capability Claude.",
+          "cost": "high"
+        },
+        {
+          "name": "claude-opus-4.5",
+          "description": "Stable high-capability Claude.",
+          "cost": "high"
+        },
+        {
+          "name": "claude-sonnet-4.6",
+          "description": "Fallback Claude for tests that resolve Claude variants.",
+          "cost": "medium"
+        }
+      ]
+    }
+  ],
+  "defaultModel": "github-copilot:gpt-5.5"
+}
