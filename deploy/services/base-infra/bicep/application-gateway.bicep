@@ -209,24 +209,6 @@ var defaultHttpListeners = [
       protocol: 'Http'
     }
   }
-  // Private frontend listener — required for Azure to materialise the
-  // Private Link Service backing the privateLinkConfiguration below.
-  {
-    name: 'privateHttpListener'
-    properties: {
-      frontendIPConfiguration: {
-        id: resourceId(
-          'Microsoft.Network/applicationGateways/frontendIPConfigurations',
-          applicationGatewayName,
-          'appGatewayPrivateFrontendIP'
-        )
-      }
-      frontendPort: {
-        id: resourceId('Microsoft.Network/applicationGateways/frontendPorts', applicationGatewayName, 'httpPort')
-      }
-      protocol: 'Http'
-    }
-  }
 ]
 
 var defaultRequestRoutingRules = [
@@ -258,46 +240,132 @@ var defaultRequestRoutingRules = [
       }
     }
   }
-  {
-    name: 'privateRoutingRule'
-    properties: {
-      priority: 200
-      ruleType: 'Basic'
-      httpListener: {
-        id: resourceId(
-          'Microsoft.Network/applicationGateways/httpListeners',
-          applicationGatewayName,
-          'privateHttpListener'
-        )
-      }
-      backendAddressPool: {
-        id: resourceId(
-          'Microsoft.Network/applicationGateways/backendAddressPools',
-          applicationGatewayName,
-          'defaultBackendPool'
-        )
-      }
-      backendHttpSettings: {
-        id: resourceId(
-          'Microsoft.Network/applicationGateways/backendHttpSettingsCollection',
-          applicationGatewayName,
-          'defaultBackendHttpSettings'
-        )
-      }
+]
+
+// ---------------------------------------------------------------------------
+// Private Link Service bootstrap entries.
+//
+// For Azure to materialise the hidden Private Link Service backing the
+// AppGw privateLinkConfiguration (the `_<guid>_<appGwName>_<plcName>` PLS
+// that Front Door's PE consumes), the AppGw must have at least one
+// HTTP listener bound to the private frontend IP that references the
+// privateLinkConfiguration. A privateLinkConfigurations block alone is
+// not sufficient.
+//
+// AGIC reconciles AppGw config from K8s Ingress state and *removes*
+// listeners/rules it does not own. Its naming scheme uses prefixes
+// `fl-`/`rr-`/`bp-`/`bhs-`/`fp-`. The bootstrap entries below use a
+// `psPls`-prefixed naming scheme that AGIC will not touch, and they are
+// always concat'd into the effective arrays — including the existing
+// AGIC-managed read-back path — so the private listener survives every
+// re-deploy and the hidden PLS keeps existing.
+// ---------------------------------------------------------------------------
+var psPlsBootstrapPool = {
+  name: 'psPlsBootstrapPool'
+  properties: {
+    backendAddresses: []
+  }
+}
+
+var psPlsBootstrapSettings = {
+  name: 'psPlsBootstrapSettings'
+  properties: {
+    port: 80
+    protocol: 'Http'
+    cookieBasedAffinity: 'Disabled'
+    requestTimeout: 30
+    pickHostNameFromBackendAddress: false
+  }
+}
+
+var psPlsBootstrapListener = {
+  name: 'psPlsBootstrapListener'
+  properties: {
+    frontendIPConfiguration: {
+      id: resourceId(
+        'Microsoft.Network/applicationGateways/frontendIPConfigurations',
+        applicationGatewayName,
+        'appGatewayPrivateFrontendIP'
+      )
+    }
+    frontendPort: {
+      id: resourceId('Microsoft.Network/applicationGateways/frontendPorts', applicationGatewayName, 'httpPort')
+    }
+    protocol: 'Http'
+  }
+}
+
+var psPlsBootstrapRule = {
+  name: 'psPlsBootstrapRule'
+  properties: {
+    // High priority value (low precedence) within ARM's 1-20000 range to
+    // avoid colliding with AGIC's ingress rules, which start at small
+    // numbers.
+    priority: 20000
+    ruleType: 'Basic'
+    httpListener: {
+      id: resourceId(
+        'Microsoft.Network/applicationGateways/httpListeners',
+        applicationGatewayName,
+        'psPlsBootstrapListener'
+      )
+    }
+    backendAddressPool: {
+      id: resourceId(
+        'Microsoft.Network/applicationGateways/backendAddressPools',
+        applicationGatewayName,
+        'psPlsBootstrapPool'
+      )
+    }
+    backendHttpSettings: {
+      id: resourceId(
+        'Microsoft.Network/applicationGateways/backendHttpSettingsCollection',
+        applicationGatewayName,
+        'psPlsBootstrapSettings'
+      )
     }
   }
-]
+}
 
 // ---------------------------------------------------------------------------
 // Effective values: defaults on first deploy, AGIC-managed values on
 // subsequent deploys. Behind appGwExists; bang-suffix tells Bicep the
 // conditional module's outputs are non-null in this branch.
+//
+// PLS bootstrap entries (psPls*) are always concat'd onto the effective
+// arrays — filtered first to keep the deployment idempotent — so the
+// private-FE listener that materialises the hidden PLS survives every
+// AGIC reconciliation.
 // ---------------------------------------------------------------------------
 var effectiveFrontendPorts = appGwExists ? existingAppGwConfig!.outputs.frontendPorts : defaultFrontendPorts
-var effectiveBackendAddressPools = appGwExists ? existingAppGwConfig!.outputs.backendAddressPools : defaultBackendAddressPools
-var effectiveBackendHttpSettingsCollection = appGwExists ? existingAppGwConfig!.outputs.backendHttpSettingsCollection : defaultBackendHttpSettingsCollection
-var effectiveHttpListeners = appGwExists ? existingAppGwConfig!.outputs.httpListeners : defaultHttpListeners
-var effectiveRequestRoutingRules = appGwExists ? existingAppGwConfig!.outputs.requestRoutingRules : defaultRequestRoutingRules
+var effectiveBackendAddressPools = concat(
+  filter(
+    appGwExists ? existingAppGwConfig!.outputs.backendAddressPools : defaultBackendAddressPools,
+    p => p.name != 'psPlsBootstrapPool'
+  ),
+  [psPlsBootstrapPool]
+)
+var effectiveBackendHttpSettingsCollection = concat(
+  filter(
+    appGwExists ? existingAppGwConfig!.outputs.backendHttpSettingsCollection : defaultBackendHttpSettingsCollection,
+    s => s.name != 'psPlsBootstrapSettings'
+  ),
+  [psPlsBootstrapSettings]
+)
+var effectiveHttpListeners = concat(
+  filter(
+    appGwExists ? existingAppGwConfig!.outputs.httpListeners : defaultHttpListeners,
+    l => l.name != 'psPlsBootstrapListener'
+  ),
+  [psPlsBootstrapListener]
+)
+var effectiveRequestRoutingRules = concat(
+  filter(
+    appGwExists ? existingAppGwConfig!.outputs.requestRoutingRules : defaultRequestRoutingRules,
+    r => r.name != 'psPlsBootstrapRule'
+  ),
+  [psPlsBootstrapRule]
+)
 var effectiveSslCertificates = appGwExists ? existingAppGwConfig!.outputs.sslCertificates : []
 var effectiveProbes = appGwExists ? existingAppGwConfig!.outputs.probes : []
 var effectiveUrlPathMaps = appGwExists ? existingAppGwConfig!.outputs.urlPathMaps : []
