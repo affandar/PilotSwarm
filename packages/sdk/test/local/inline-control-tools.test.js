@@ -7,6 +7,7 @@ class FakeCopilotSession {
     catchAllHandlers = [];
     scriptedToolCalls = [];
     scriptedEvents = [];
+    toolResults = [];
     assistantContent = "ok";
     aborted = false;
 
@@ -47,7 +48,8 @@ class FakeCopilotSession {
                 if (this.aborted) break;
                 const tool = this.registeredTools.find((candidate) => candidate.name === call.name);
                 if (!tool) throw new Error(`Missing fake tool: ${call.name}`);
-                await tool.handler(call.args ?? {});
+                const output = await tool.handler(call.args ?? {});
+                this.toolResults.push({ name: call.name, output });
             }
             if (!this.aborted && this.assistantContent != null) {
                 this.emit("assistant.message", { data: { content: this.assistantContent } });
@@ -121,54 +123,6 @@ describe("inline control tool execution", () => {
         }));
         expect(result.type).toBe("completed");
         expect(result.content).toBe("Spawned titled child.");
-    });
-
-    it("advertises model reasoning options through list_available_models", async () => {
-        const fakeSession = new FakeCopilotSession();
-        fakeSession.assistantContent = "checked models";
-
-        const managed = new ManagedSession("inline-list-models", fakeSession, {});
-        await managed.runTurn("list models", {
-            modelSummary: "Available models\n- github-copilot:gpt-5.5 [reasoning: medium, xhigh; default: medium]",
-        });
-
-        const listTool = fakeSession.registeredTools.find((tool) => tool.name === "list_available_models");
-        expect(listTool?.description).toContain("supported reasoning efforts");
-        const result = await listTool.handler({});
-        expect(result).toContain("github-copilot:gpt-5.5");
-        expect(result).toContain("reasoning: medium, xhigh; default: medium");
-    });
-
-    it("advertises and forwards an optional spawn_agent reasoning_effort", async () => {
-        const fakeSession = new FakeCopilotSession();
-        fakeSession.scriptedToolCalls = [
-            { name: "spawn_agent", args: { task: "reason deeply", model: "github-copilot:gpt-5.5", reasoning_effort: "xhigh" } },
-        ];
-        fakeSession.assistantContent = "Spawned reasoning child.";
-
-        const controlToolBridge = {
-            spawnAgent: vi.fn(async () => "[SYSTEM: spawned]"),
-            messageAgent: vi.fn(),
-            checkAgents: vi.fn(),
-            resolveWaitForAgents: vi.fn(),
-            listSessions: vi.fn(),
-            completeAgent: vi.fn(),
-            cancelAgent: vi.fn(),
-            deleteAgent: vi.fn(),
-        };
-
-        const managed = new ManagedSession("inline-spawn-reasoning", fakeSession, {});
-        const result = await managed.runTurn("spawn a high reasoning child", { controlToolBridge });
-
-        const spawnTool = fakeSession.registeredTools.find((tool) => tool.name === "spawn_agent");
-        expect(spawnTool?.parameters?.properties?.reasoning_effort?.enum).toEqual(["low", "medium", "high", "xhigh"]);
-        expect(controlToolBridge.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({
-            task: "reason deeply",
-            model: "github-copilot:gpt-5.5",
-            reasoning_effort: "xhigh",
-        }));
-        expect(result.type).toBe("completed");
-        expect(result.content).toBe("Spawned reasoning child.");
     });
 
     it("still suspends the turn for wait_for_agents", async () => {
@@ -269,6 +223,39 @@ describe("inline control tool execution", () => {
         expect(result.type).toBe("completed");
         expect(result.content).toBe("Handled the tool failure.");
         expect(fakeSession.aborted).toBe(false);
+    });
+
+    it("trims oversized user tool outputs before they re-enter model context", async () => {
+        const fakeSession = new FakeCopilotSession();
+        const previousCap = process.env.TURN_TOOL_OUTPUT_HARD_BUDGET_CHARS;
+        try {
+            process.env.TURN_TOOL_OUTPUT_HARD_BUDGET_CHARS = "80";
+            fakeSession.scriptedToolCalls = [
+                { name: "regular_tool", args: {} },
+            ];
+            fakeSession.assistantContent = "Tool done.";
+            const onEvent = vi.fn();
+
+            const managed = new ManagedSession("inline-tool-output-cap", fakeSession, {
+                tools: [{
+                    name: "regular_tool",
+                    description: "test tool",
+                    parameters: { type: "object", properties: {} },
+                    handler: async () => "x".repeat(300),
+                }],
+            });
+
+            const result = await managed.runTurn("run large tool output", { onEvent });
+
+            expect(result.type).toBe("completed");
+            expect(fakeSession.toolResults).toHaveLength(1);
+            expect(String(fakeSession.toolResults[0].output)).toContain("Tool output truncated");
+            expect(String(fakeSession.toolResults[0].output).length).toBeLessThanOrEqual(80);
+            expect(onEvent.mock.calls.some(([event]) => event?.eventType === "session.tool_output_truncated")).toBe(true);
+        } finally {
+            if (previousCap == null) delete process.env.TURN_TOOL_OUTPUT_HARD_BUDGET_CHARS;
+            else process.env.TURN_TOOL_OUTPUT_HARD_BUDGET_CHARS = previousCap;
+        }
     });
 
     it("suppresses the benign post-completion null-length query error when the assistant already replied", async () => {

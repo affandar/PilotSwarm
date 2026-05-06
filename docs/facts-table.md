@@ -141,16 +141,16 @@ Reads facts visible to the calling session.
 
 | Scope | Returns |
 |-------|--------|
-| `accessible` | Caller's own session facts + spawn-tree facts (every other session under the same root: ancestors, descendants, siblings, cousins) + all globally-shared facts |
-| `shared` | Only globally-shared facts |
+| `accessible` | Caller's own session facts + all shared facts |
+| `shared` | Only shared facts |
 | `session` | Only the caller's own session-scoped facts |
-| `descendants` | Same spawn-tree visibility as `accessible`, kept as an explicit family-tree view |
+| `descendants` | Caller's own session facts + shared facts + all facts from descendant sessions (children, grandchildren, etc.) |
 
 **Visibility Rules:**
 
-- Session-scoped facts are visible to every session in the same **spawn tree** — the caller's session, every ancestor on the way up to the root, and every descendant of that root (i.e. siblings and cousins, not just children/grandchildren). The `session_id` parameter is spawn-tree-aware: when a caller passes `session_id=<other>` and `<other>` belongs to the same spawn tree, that session's session-scoped facts become visible. Sessions outside the spawn tree remain inaccessible.
-- When `scope=descendants`, the handler resolves the entire spawn tree (root + all descendants of root) and includes those session IDs in the visibility set. It is functionally equivalent to `accessible` today and kept as an explicit family-tree view.
-- Lineage / spawn-tree resolution uses the CMS `parent_session_id` tree: the worker walks up to the root ancestor, then expands via the same recursive CTE the sweeper uses for cleanup.
+- The `session_id` parameter is lineage-aware. When a caller passes `session_id=<child>` and the child is a verified descendant (via the CMS `parent_session_id` tree), the child's session-scoped facts become visible. Non-descendant sessions' private facts remain inaccessible.
+- When `scope=descendants`, the handler resolves all descendant session IDs via `getDescendantSessionIds()` and includes them in the visibility set.
+- Lineage verification uses the same recursive CTE (`parent_session_id` tree) that the sweeper uses for cleanup.
 
 ### `delete_fact`
 
@@ -169,8 +169,7 @@ Deletes a fact by key.
 
 ### Session-Scoped Facts (default)
 
-- Visible to the owning session via `scope=session`, and to every session in the same spawn tree via `scope=accessible`, `scope=descendants`, or `session_id=<tree-member>`.
-- Not visible outside the spawn tree.
+- Visible only to the owning session via `scope=accessible` or `scope=session`.
 - Automatically deleted when the session is deleted (via `deleteSessionFactsForSession()`).
 - Upsert key: `session:<sessionId>:<key>`.
 
@@ -214,17 +213,17 @@ Facts tools are re-registered on every `runTurn()` call as part of the standard 
 The `default.agent.md` includes a `## Facts Table` section that instructs the LLM to use facts aggressively for durable memory. Key guidance:
 
 - Treat conversational memory as lossy — write important state to facts.
-- Session-scoped by default, use `shared=true` only for cross-spawn-tree or global knowledge.
+- Session-scoped by default, use `shared=true` only for cross-session knowledge.
 - Read relevant facts before resuming long-running or multi-agent work.
 - Respond to user "remember" / "forget" requests via facts tools immediately.
-- During multi-agent work, use `read_facts(session_id=<tree-member>)` or `scope=descendants` to pull facts from peers and descendants in the same spawn tree.
+- After sub-agents complete, use `read_facts(session_id=<child>)` or `scope=descendants` to pull their facts.
 
 ## Constraints
 
 - **PostgreSQL only.** The `createFactStoreForUrl()` factory rejects non-Postgres URLs. SQLite is not supported for facts.
 - **No SQLite fallback.** Unlike the CMS and duroxide stores which support SQLite for local development, facts are Postgres-exclusive.
 - **No hard row cap.** `readFacts` defaults to 50 rows per query. Callers can raise the `limit` parameter as needed.
-- **No cross-spawn-tree access for private facts.** A session cannot read the session-scoped facts of any session outside its own spawn tree. Within a spawn tree (everything under a common root: ancestors, descendants, siblings, cousins), session-scoped facts are visible via `scope=accessible`, `scope=descendants`, or `session_id=<other-tree-member>`. Spawn-tree membership is verified via the CMS `parent_session_id` chain.
+- **No cross-session access for private facts (except descendants).** A session cannot read an unrelated session's non-shared facts. However, parent agents can read their descendants' session-scoped facts via `scope=descendants` or by passing `session_id=<child>` (lineage verified via CMS).
 
 ## Public API Exports
 

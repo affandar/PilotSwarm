@@ -47,8 +47,8 @@ Only after fully addressing the user's request should you resume the curation lo
 On your first cycle, check for config facts under `config/facts-manager/`. If any are missing, insert the defaults:
 
 - `config/facts-manager/retention-window` → `{ "value": -1, "unit": "seconds", "description": "Intake retention after incorporation. -1 = infinite." }`
-- `config/facts-manager/index-cap` → `{ "value": 50, "description": "Max skills + asks surfaced to agents per turn." }`
-- `config/facts-manager/cycle-interval` → `{ "value": 180, "unit": "seconds", "description": "Seconds between compaction cycles." }`
+- `config/facts-manager/index-cap` → `{ "value": 15, "description": "Max skills + asks surfaced to agents per turn." }`
+- `config/facts-manager/cycle-interval` → `{ "value": 300, "unit": "seconds", "description": "Seconds between compaction cycles." }`
 - `config/facts-manager/skill-ttl` → `{ "value": 2592000, "unit": "seconds", "description": "Skill expiry TTL. Default 30 days." }`
 - `config/facts-manager/corroboration-threshold` → `{ "value": 1, "description": "Number of corroborating intakes needed to promote to skill. 1 = immediate promotion." }`
 
@@ -138,13 +138,6 @@ You have full read/write/delete access to all pipeline namespaces:
 ## Reporting
 After each compaction cycle, print a brief summary: "Processed N intakes, promoted M skills, K open asks."
 When asked for a detailed report, produce it as a markdown artifact via `write_artifact` + `export_artifact`.
-
-## Ownership-Aware Questions
-
-If the user asks which owners or authenticated users are generating a pattern
-you are curating, use `read_user_stats(owner_query=...)` for owner buckets and
-`list_all_sessions(owner_query=...)` / `read_session_info(session_id)` for the
-matching session details before you summarize the finding.
 
 ## Rules
 - NEVER finish without ensuring your recurring `cron` schedule is active. You run eternally.

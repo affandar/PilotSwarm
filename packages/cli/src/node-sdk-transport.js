@@ -9,7 +9,6 @@ import {
     PilotSwarmClient,
     PilotSwarmManagementClient,
     SessionBlobStore,
-    LOCAL_DEFAULT_USER_PRINCIPAL,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
@@ -294,22 +293,7 @@ function guessArtifactContentType(filename) {
     if (ext === ".json" || ext === ".jsonl") return "application/json";
     if (ext === ".html" || ext === ".htm") return "text/html";
     if (ext === ".csv") return "text/csv";
-    if (ext === ".yaml" || ext === ".yml") return "text/yaml";
-    if (ext === ".xml") return "application/xml";
-    if (ext === ".js" || ext === ".mjs" || ext === ".cjs") return "application/javascript";
-    if (ext === ".pdf") return "application/pdf";
-    if (ext === ".zip") return "application/zip";
-    if (ext === ".tar") return "application/x-tar";
-    if (ext === ".tgz" || ext === ".gz") return "application/gzip";
-    if (ext === ".png") return "image/png";
-    if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
-    if (ext === ".gif") return "image/gif";
-    if (ext === ".webp") return "image/webp";
-    if (ext === ".svg") return "image/svg+xml";
-    if (ext === ".xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    if (ext === ".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    if (ext === ".pptx") return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-    if (ext === ".bin") return "application/octet-stream";
+    if (ext === ".yaml" || ext === ".yml") return "application/yaml";
     return "text/plain";
 }
 
@@ -400,33 +384,20 @@ function buildTerminalSendError(sessionId, session) {
     return `Session ${sessionId.slice(0, 8)} is a terminal orchestration instance (${statusLabel}) and cannot accept new messages.`;
 }
 
-function normalizeUserPrincipal(principal) {
-    const provider = String(principal?.provider || "").trim();
-    const subject = String(principal?.subject || "").trim();
-    if (!provider || !subject) return { ...LOCAL_DEFAULT_USER_PRINCIPAL };
-    const email = String(principal?.email || "").trim();
-    const displayName = String(principal?.displayName || "").trim();
-    return {
-        provider,
-        subject,
-        email: email || null,
-        displayName: displayName || null,
-    };
-}
-
-function resolveUserPrincipalFor(transport, principal) {
-    if (principal && principal.provider && principal.subject) {
-        return normalizeUserPrincipal(principal);
-    }
-    return normalizeUserPrincipal(transport.currentUser);
-}
-
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser } = {}) {
+    constructor({ store, mode }) {
         this.store = store;
         this.mode = mode;
         this.client = null;
-        this.mgmt = new PilotSwarmManagementClient({ store });
+        this.duroxideSchema = process.env.PILOTSWARM_DUROXIDE_SCHEMA || undefined;
+        this.cmsSchema = process.env.PILOTSWARM_CMS_SCHEMA || undefined;
+        this.factsSchema = process.env.PILOTSWARM_FACTS_SCHEMA || undefined;
+        this.mgmt = new PilotSwarmManagementClient({
+            store,
+            ...(this.duroxideSchema ? { duroxideSchema: this.duroxideSchema } : {}),
+            ...(this.cmsSchema ? { cmsSchema: this.cmsSchema } : {}),
+            ...(this.factsSchema ? { factsSchema: this.factsSchema } : {}),
+        });
         this.artifactStore = createArtifactStore();
         this.sessionHandles = new Map();
         this.workers = [];
@@ -440,27 +411,6 @@ export class NodeSdkTransport {
         this.logSubscribers = new Set();
         this.logEntryCounter = 0;
         this.kubectlAvailable = null;
-        // The native TUI runs as the local user. Portal deployments override
-        // this per-RPC from the auth context inside PortalRuntime.call().
-        this.currentUser = currentUser ? normalizeUserPrincipal(currentUser) : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
-    }
-
-    /**
-     * Replace the principal that user-scoped RPCs (Admin Console,
-     * profile settings, GitHub Copilot key) attach to. Local TUI hosts
-     * may set this once at startup; portal hosts pass principals per
-     * RPC instead and never call this method.
-     */
-    setCurrentUser(principal) {
-        if (!principal || !principal.provider || !principal.subject) {
-            this.currentUser = { ...LOCAL_DEFAULT_USER_PRINCIPAL };
-            return;
-        }
-        this.currentUser = normalizeUserPrincipal(principal);
-    }
-
-    getCurrentUserPrincipal() {
-        return { ...this.currentUser };
     }
 
     async start() {
@@ -469,6 +419,9 @@ export class NodeSdkTransport {
             this.workers = await startEmbeddedWorkers({
                 count: workerCount,
                 store: this.store,
+                duroxideSchema: this.duroxideSchema,
+                cmsSchema: this.cmsSchema,
+                factsSchema: this.factsSchema,
             });
         }
         const sessionCreationMetadata = this.resolveSessionCreationMetadata();
@@ -477,6 +430,9 @@ export class NodeSdkTransport {
         this.creatableAgents = sessionCreationMetadata.creatableAgents;
         this.client = new PilotSwarmClient({
             store: this.store,
+            ...(this.duroxideSchema ? { duroxideSchema: this.duroxideSchema } : {}),
+            ...(this.cmsSchema ? { cmsSchema: this.cmsSchema } : {}),
+            ...(this.factsSchema ? { factsSchema: this.factsSchema } : {}),
             ...(this.sessionPolicy ? { sessionPolicy: this.sessionPolicy } : {}),
             ...(this.allowedAgentNames.length > 0 ? { allowedAgentNames: this.allowedAgentNames } : {}),
         });
@@ -553,20 +509,12 @@ export class NodeSdkTransport {
         };
     }
 
-    getAuthContext() {
-        return {
-            principal: null,
-            authorization: {
-                allowed: true,
-                role: null,
-                reason: "Local transport",
-                matchedGroups: [],
-            },
-        };
-    }
-
     async listSessions() {
         return this.mgmt.listSessions();
+    }
+
+    async listSessionsPage(params) {
+        return this.mgmt.listSessionsPage(params);
     }
 
     async getSession(sessionId) {
@@ -587,41 +535,6 @@ export class NodeSdkTransport {
 
     async getFleetStats(opts) {
         return this.mgmt.getFleetStats(opts);
-    }
-
-    async getUserStats(opts) {
-        return this.mgmt.getUserStats(opts);
-    }
-
-    /**
-     * Read the current user's profile (settings + ghcp key-set flag).
-     * The portal supplies `principal` from the auth context per-request;
-     * the native TUI omits it and falls back to the transport's
-     * `currentUser` (defaults to LOCAL_DEFAULT_USER_PRINCIPAL).
-     */
-    async getCurrentUserProfile({ principal } = {}) {
-        const resolved = resolveUserPrincipalFor(this, principal);
-        return this.mgmt.getUserProfile(resolved);
-    }
-
-    /**
-     * Replace the current user's profile_settings JSON document.
-     */
-    async setCurrentUserProfileSettings({ principal, settings } = {}) {
-        const resolved = resolveUserPrincipalFor(this, principal);
-        const safeSettings = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
-        return this.mgmt.setUserProfileSettings(resolved, safeSettings);
-    }
-
-    /**
-     * Set or clear the per-user GitHub Copilot key. Pass `null` (or an
-     * all-whitespace string) to clear the override and revert to the
-     * worker's env-supplied default.
-     */
-    async setCurrentUserGitHubCopilotKey({ principal, key } = {}) {
-        const resolved = resolveUserPrincipalFor(this, principal);
-        const normalized = typeof key === "string" && key.trim().length > 0 ? key : null;
-        return this.mgmt.setUserGitHubCopilotKey(resolved, normalized);
     }
 
     async getSessionSkillUsage(sessionId, opts) {
@@ -652,55 +565,61 @@ export class NodeSdkTransport {
         return this.mgmt.pruneDeletedSummaries(olderThan);
     }
 
+    async getFleetObservabilityStats(opts) {
+        return this.mgmt.getFleetObservabilityStats(opts);
+    }
+
+    getDbCallMetrics() {
+        return this.mgmt.getDbCallMetrics();
+    }
+
+    async getSessionTurnMetrics(sessionId, opts) {
+        return this.mgmt.getSessionTurnMetrics(sessionId, opts);
+    }
+
+    async getFleetTurnAnalytics(opts) {
+        return this.mgmt.getFleetTurnAnalytics(opts);
+    }
+
+    async getHourlyTokenBuckets(since, opts) {
+        return this.mgmt.getHourlyTokenBuckets(since, opts);
+    }
+
+    async getFleetDbCallMetrics(opts) {
+        return this.mgmt.getFleetDbCallMetrics(opts);
+    }
+
+    async getTopEventEmitters(params) {
+        return this.mgmt.getTopEventEmitters(params);
+    }
+
+    async pruneTurnMetrics(olderThan) {
+        return this.mgmt.pruneTurnMetrics(olderThan);
+    }
+
     async getExecutionHistory(sessionId, executionId) {
         return this.mgmt.getExecutionHistory(sessionId, executionId);
     }
 
-    async assertSessionModelCreatable({ model, owner } = {}) {
+    async createSession({ model } = {}) {
         const effectiveModel = model || this.mgmt.getDefaultModel();
-        if (!effectiveModel || typeof this.mgmt.getModelCredentialStatus !== "function") return effectiveModel;
-
-        const credentialStatus = this.mgmt.getModelCredentialStatus(effectiveModel);
-        if (credentialStatus.providerType !== "github") return effectiveModel;
-        if (credentialStatus.credentialAvailable) return effectiveModel;
-
-        const principal = owner ? normalizeUserPrincipal(owner) : resolveUserPrincipalFor(this, null);
-        const profile = principal
-            ? await this.mgmt.getUserProfile(principal).catch(() => null)
-            : null;
-        if (profile?.githubCopilotKeySet === true) return effectiveModel;
-
-        throw new Error(
-            "GitHub Copilot key not configured. Set GITHUB_TOKEN on the worker or set your per-user GitHub Copilot key in Admin before creating GitHub Copilot model sessions.",
-        );
-    }
-
-    async createSession({ model, reasoningEffort, owner } = {}) {
-        const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
-        const session = await this.client.createSession({
-            ...(effectiveModel ? { model: effectiveModel } : {}),
-            ...(reasoningEffort ? { reasoningEffort } : {}),
-            ...(owner ? { owner } : {}),
-        });
+        const session = await this.client.createSession(effectiveModel ? { model: effectiveModel } : undefined);
         this.sessionHandles.set(session.sessionId, session);
-        return { sessionId: session.sessionId, model: effectiveModel, reasoningEffort: reasoningEffort || undefined };
+        return { sessionId: session.sessionId, model: effectiveModel };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, title, splash, initialPrompt, owner } = {}) {
-        const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
+    async createSessionForAgent(agentName, { model, title, splash, initialPrompt } = {}) {
+        const effectiveModel = model || this.mgmt.getDefaultModel();
         const session = await this.client.createSessionForAgent(agentName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),
-            ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(title ? { title } : {}),
             ...(splash ? { splash } : {}),
             ...(initialPrompt ? { initialPrompt } : {}),
-            ...(owner ? { owner } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         return {
             sessionId: session.sessionId,
             model: effectiveModel,
-            reasoningEffort: reasoningEffort || undefined,
             agentName,
         };
     }
@@ -734,46 +653,24 @@ export class NodeSdkTransport {
             throw new Error(buildTerminalSendError(sessionId, session));
         }
 
-        const sendOptions = options?.clientMessageIds && Array.isArray(options.clientMessageIds) && options.clientMessageIds.length > 0
-            ? { clientMessageIds: options.clientMessageIds }
-            : undefined;
-
         if (options?.enqueueOnly) {
-            // enqueueOnly originally routed through mgmt.sendMessage to skip
-            // the wait-for-result polling, but PilotSwarmSession.send is
-            // already fire-and-forget. Routing through the session handle
-            // ensures _ensureOrchestrationAndSend starts the orchestration
-            // on the very first message — mgmt.sendMessage only enqueues
-            // and would silently produce orphan queue messages for fresh
-            // sessions.
-            const sessionHandleEnqueue = await this.getSessionHandle(sessionId);
-            await sessionHandleEnqueue.send(prompt, sendOptions);
+            await this.mgmt.sendMessage(sessionId, prompt);
             return;
         }
 
-        // IMPORTANT: do NOT silently fall back to mgmt.sendMessage on transient
-        // errors. mgmt.sendMessage only enqueues onto the durable messages
-        // queue — it never starts the orchestration. If sessionHandle.send
-        // fails (for example startOrchestrationVersioned threw transiently),
-        // falling back to a pure enqueue produces an "orphan queue message"
-        // that duroxide-pg eventually drops, leaving the CMS row in `running`
-        // state with `orchestration_id = NULL` and the UI stuck on
-        // "Working…" forever. Propagate the error so the caller can retry
-        // through the full sessionHandle.send path that owns the start.
-        const sessionHandle = await this.getSessionHandle(sessionId);
-        await sessionHandle.send(prompt);
+        try {
+            const sessionHandle = await this.getSessionHandle(sessionId);
+            await sessionHandle.send(prompt);
+        } catch (error) {
+            if (isTerminalSendError(error)) {
+                throw error;
+            }
+            await this.mgmt.sendMessage(sessionId, prompt);
+        }
     }
 
     async sendAnswer(sessionId, answer) {
         await this.mgmt.sendAnswer(sessionId, answer);
-    }
-
-    async cancelPendingMessage(sessionId, clientMessageIds) {
-        const ids = Array.isArray(clientMessageIds)
-            ? clientMessageIds.filter((id) => typeof id === "string" && id)
-            : [];
-        if (ids.length === 0) return;
-        await this.mgmt.cancelPendingMessage(sessionId, ids);
     }
 
     async renameSession(sessionId, title) {
@@ -804,32 +701,10 @@ export class NodeSdkTransport {
     async listArtifacts(sessionId) {
         if (!this.artifactStore || !sessionId) return [];
         const artifacts = await this.artifactStore.listArtifacts(sessionId);
-        return Array.isArray(artifacts)
-            ? [...artifacts].sort((left, right) => String(left?.filename || "").localeCompare(String(right?.filename || "")))
-            : [];
-    }
-
-    async getArtifactMetadata(sessionId, filename) {
-        if (!this.artifactStore || !sessionId || !filename) return null;
-        const artifacts = await this.artifactStore.listArtifacts(sessionId);
-        return (artifacts || []).find((artifact) => artifact?.filename === filename) || null;
-    }
-
-    async deleteArtifact(sessionId, filename) {
-        if (!this.artifactStore) {
-            throw new Error("Artifact store is not available for this transport.");
-        }
-        return this.artifactStore.deleteArtifact(sessionId, filename);
+        return Array.isArray(artifacts) ? [...artifacts].sort((left, right) => left.localeCompare(right)) : [];
     }
 
     async downloadArtifact(sessionId, filename) {
-        if (!this.artifactStore) {
-            throw new Error("Artifact store is not available for this transport.");
-        }
-        return this.artifactStore.downloadArtifactText(sessionId, filename);
-    }
-
-    async downloadArtifactBinary(sessionId, filename) {
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -854,7 +729,7 @@ export class NodeSdkTransport {
         }
 
         const filename = path.basename(resolvedPath);
-        const content = await fs.promises.readFile(resolvedPath);
+        const content = await fs.promises.readFile(resolvedPath, "utf8");
         const contentType = guessArtifactContentType(filename);
         await this.artifactStore.uploadArtifact(sessionId, filename, content, contentType);
 
@@ -862,33 +737,23 @@ export class NodeSdkTransport {
             sessionId,
             filename,
             resolvedPath,
-            sizeBytes: content.length,
+            sizeBytes: Buffer.byteLength(content, "utf8"),
             contentType,
         };
     }
 
-    async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename), contentEncoding = null) {
+    async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename)) {
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
         const safeSessionId = String(sessionId || "").trim();
         const safeFilename = path.basename(String(filename || "").trim());
-        let safeContent;
+        const safeContent = typeof content === "string" ? content : String(content || "");
         if (!safeSessionId) {
             throw new Error("Session id is required for artifact upload.");
         }
         if (!safeFilename) {
             throw new Error("Filename is required for artifact upload.");
-        }
-
-        if (contentEncoding === "base64") {
-            safeContent = Buffer.from(String(content || ""), "base64");
-        } else if (Buffer.isBuffer(content)) {
-            safeContent = content;
-        } else if (content instanceof Uint8Array) {
-            safeContent = Buffer.from(content);
-        } else {
-            safeContent = typeof content === "string" ? content : String(content || "");
         }
 
         await this.artifactStore.uploadArtifact(
@@ -902,9 +767,7 @@ export class NodeSdkTransport {
             sessionId: safeSessionId,
             filename: safeFilename,
             resolvedPath: safeFilename,
-            sizeBytes: Buffer.isBuffer(safeContent)
-                ? safeContent.length
-                : Buffer.byteLength(safeContent, "utf8"),
+            sizeBytes: Buffer.byteLength(safeContent, "utf8"),
             contentType: contentType || guessArtifactContentType(safeFilename),
         };
     }
@@ -922,7 +785,7 @@ export class NodeSdkTransport {
         const sessionDir = path.join(EXPORTS_DIR, String(sessionId || "").slice(0, 8));
         const localPath = path.join(sessionDir, sanitizeArtifactFilename(filename));
         await fs.promises.mkdir(sessionDir, { recursive: true });
-        await fs.promises.writeFile(localPath, content.body);
+        await fs.promises.writeFile(localPath, content, "utf8");
         return {
             localPath,
         };
@@ -984,34 +847,6 @@ export class NodeSdkTransport {
         }
 
         return { localPath: resolvedPath };
-    }
-
-    async openUrlInDefaultBrowser(targetUrl) {
-        const href = String(targetUrl || "").trim();
-        if (!href) {
-            throw new Error("URL cannot be empty.");
-        }
-
-        let parsedUrl;
-        try {
-            parsedUrl = new URL(href);
-        } catch {
-            throw new Error(`Invalid URL: ${targetUrl}`);
-        }
-
-        if (!/^https?:$/i.test(parsedUrl.protocol)) {
-            throw new Error(`Unsupported URL protocol: ${parsedUrl.protocol}`);
-        }
-
-        if (process.platform === "darwin") {
-            await spawnDetached("open", [parsedUrl.toString()]);
-        } else if (process.platform === "win32") {
-            await spawnDetached("cmd", ["/c", "start", "", parsedUrl.toString()]);
-        } else {
-            await spawnDetached("xdg-open", [parsedUrl.toString()]);
-        }
-
-        return { url: parsedUrl.toString() };
     }
 
     getModelsByProvider() {

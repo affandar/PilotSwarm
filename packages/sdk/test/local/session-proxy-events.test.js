@@ -16,9 +16,10 @@ function makeHarness(options = {}) {
     };
 
     const sessionManager = {
-        withRunTurnLock: vi.fn(async (_sessionId, _operation, fn) => await fn()),
         getOrCreate: vi.fn(async () => session),
         getModelSummary: vi.fn(() => undefined),
+        getModelRegistry: vi.fn(() => undefined),
+        getPromptGuardrails: vi.fn(() => ({ enabled: false })),
         invalidateWarmSession: vi.fn(async () => {}),
         resetSessionState: vi.fn(async () => {}),
         dehydrate: vi.fn(async () => {}),
@@ -32,6 +33,7 @@ function makeHarness(options = {}) {
             recordedEvents.push(...events);
         }),
         upsertSessionMetricSummary: vi.fn(async () => {}),
+        insertTurnMetric: vi.fn(async () => {}),
         updateSession: vi.fn(async () => {}),
     };
 
@@ -159,56 +161,6 @@ describe("session-proxy CMS prompt classification", () => {
         expect(matching[0].eventType).toBe("system.message");
     });
 
-    it("redacts SDK-emitted full system prompt echoes into concise CMS summaries", async () => {
-        const { runTurn, recordedEvents, session } = makeHarness();
-        session.runTurn = vi.fn(async (_prompt, opts) => {
-            opts?.onEvent?.({
-                eventType: "system.message",
-                data: {
-                    role: "system",
-                    content:
-                        "You are the GitHub Copilot CLI, a terminal assistant built by GitHub. " +
-                        "# Tone and style\n# Search and delegation\n# Tool usage efficiency",
-                },
-            });
-            opts?.onEvent?.({
-                eventType: "assistant.message",
-                data: { content: "ok" },
-            });
-            return { type: "completed", content: "ok", events: [] };
-        });
-
-        await runTurn(
-            { traceInfo: () => {}, isCancelled: () => false },
-            {
-                sessionId: "session-sdk-system-echo",
-                prompt: "hello",
-                config: {},
-                turnIndex: 0,
-            },
-        );
-
-        expect(recordedEvents.some((event) =>
-            event.eventType === "system.message"
-            && String(event.data?.content || "").startsWith("You are the GitHub Copilot CLI"),
-        )).toBe(false);
-        expect(recordedEvents).toContainEqual(expect.objectContaining({
-            eventType: "system.message",
-            data: expect.objectContaining({
-                content: expect.stringContaining("Copilot SDK rebuilt the full system prompt for model input"),
-            }),
-        }));
-        const summaryEvent = recordedEvents.find((event) =>
-            event.eventType === "system.message"
-            && String(event.data?.content || "").includes("Copilot SDK rebuilt the full system prompt for model input"),
-        );
-        expect(String(summaryEvent?.data?.content || "")).toContain("Snippet: You are the GitHub Copilot CLI");
-        expect(recordedEvents).toContainEqual(expect.objectContaining({
-            eventType: "assistant.message",
-            data: expect.objectContaining({ content: "ok" }),
-        }));
-    });
-
     it("recovers a lost live Copilot session by invalidating and resuming once", async () => {
         const { runTurn, recordedEvents, sessionManager } = makeHarness();
         const staleSession = {
@@ -243,7 +195,7 @@ describe("session-proxy CMS prompt classification", () => {
         );
 
         expect(result).toMatchObject({ type: "completed", content: "recovered ok" });
-        expect(sessionManager.invalidateWarmSession).toHaveBeenCalledWith("session-recover", { lockHeld: true });
+        expect(sessionManager.invalidateWarmSession).toHaveBeenCalledWith("session-recover");
         const recoveryNotice = recordedEvents.find((event) =>
             event.eventType === "system.message"
             && String(event.data?.content || "").includes("worker lost the live Copilot session"),
@@ -285,7 +237,7 @@ describe("session-proxy CMS prompt classification", () => {
         );
 
         expect(result).toMatchObject({ type: "completed", content: "recovered from transcript corruption" });
-        expect(sessionManager.resetSessionState).toHaveBeenCalledWith("session-corrupt-transcript", { lockHeld: true });
+        expect(sessionManager.resetSessionState).toHaveBeenCalledWith("session-corrupt-transcript");
         expect(sessionManager.getOrCreate).toHaveBeenNthCalledWith(
             2,
             "session-corrupt-transcript",
@@ -387,6 +339,12 @@ describe("session-proxy CMS prompt classification", () => {
                 lastError: expect.stringContaining("unrecoverable live Copilot session loss"),
             }),
         );
+        expect(catalog.insertTurnMetric).toHaveBeenCalledTimes(1);
+        expect(catalog.insertTurnMetric).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "session-fatal",
+            resultType: "error",
+            errorMessage: expect.stringContaining("unrecoverable live Copilot session loss"),
+        }));
     });
 
     it("records structured dehydration details for observability", async () => {
@@ -570,5 +528,209 @@ describe("session-proxy CMS prompt classification", () => {
         const traces = traceInfo.mock.calls.map(([message]) => String(message)).join("\n");
         expect(traces).toContain("[needsHydrationSession] session=session-needs-hydration-1 start");
         expect(traces).toContain("[needsHydrationSession] session=session-needs-hydration-1 result=true");
+    });
+});
+
+describe("session-proxy turn metric insertion", () => {
+    it("inserts one turn metric row for a normal completed turn", async () => {
+        const { runTurn, catalog } = makeHarness();
+
+        const result = await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            {
+                sessionId: "metric-completed",
+                prompt: "hello",
+                config: {},
+                turnIndex: 11,
+            },
+        );
+
+        expect(result.type).toBe("completed");
+        expect(catalog.upsertSessionMetricSummary).toHaveBeenCalledTimes(1);
+        expect(catalog.insertTurnMetric).toHaveBeenCalledTimes(1);
+        expect(catalog.insertTurnMetric).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "metric-completed",
+            turnIndex: 11,
+            resultType: "completed",
+            errorMessage: null,
+        }));
+    });
+
+    it("inserts one turn metric row for a cancelled turn", async () => {
+        vi.useFakeTimers();
+        try {
+            const { runTurn, session, catalog } = makeHarness();
+            let resolveTurn;
+            session.runTurn = vi.fn(() => new Promise((resolve) => {
+                resolveTurn = resolve;
+            }));
+
+            const runPromise = runTurn(
+                { traceInfo: () => {}, isCancelled: () => true },
+                {
+                    sessionId: "metric-cancelled",
+                    prompt: "cancel me",
+                    config: {},
+                    turnIndex: 12,
+                },
+            );
+
+            await vi.advanceTimersByTimeAsync(2_100);
+            resolveTurn({ type: "completed", content: "late", events: [] });
+            const result = await runPromise;
+
+            expect(result.type).toBe("cancelled");
+            expect(session.abort).toHaveBeenCalledTimes(1);
+            expect(catalog.insertTurnMetric).toHaveBeenCalledTimes(1);
+            expect(catalog.insertTurnMetric).toHaveBeenCalledWith(expect.objectContaining({
+                sessionId: "metric-cancelled",
+                resultType: "cancelled",
+                errorMessage: null,
+            }));
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("inserts one turn metric row for an error turn with message", async () => {
+        const { runTurn, session, catalog } = makeHarness();
+        session.runTurn = vi.fn(async () => ({ type: "error", message: "boom", events: [] }));
+
+        const result = await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            {
+                sessionId: "metric-error",
+                prompt: "explode",
+                config: {},
+                turnIndex: 13,
+            },
+        );
+
+        expect(result.type).toBe("error");
+        expect(catalog.insertTurnMetric).toHaveBeenCalledTimes(1);
+        expect(catalog.insertTurnMetric).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "metric-error",
+            resultType: "error",
+            errorMessage: "boom",
+        }));
+    });
+
+    it("does not duplicate insertTurnMetric when finalize and finally both execute", async () => {
+        const { runTurn, catalog } = makeHarness();
+
+        await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            {
+                sessionId: "metric-no-duplicate",
+                prompt: "no duplicate",
+                config: {},
+                turnIndex: 14,
+            },
+        );
+
+        expect(catalog.insertTurnMetric).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("session-proxy turn budget enforcement", () => {
+    it("fast-fails extremely oversized prompts without invoking runTurn", async () => {
+        const previousSoft = process.env.TURN_SOFT_BUDGET_CHARS;
+        const previousHard = process.env.TURN_HARD_BUDGET_CHARS;
+        try {
+            process.env.TURN_SOFT_BUDGET_CHARS = "0";
+            process.env.TURN_HARD_BUDGET_CHARS = "100";
+
+            const { runTurn, session, recordedEvents } = makeHarness();
+            session.runTurn = vi.fn(async () => ({ type: "completed", content: "should-not-run", events: [] }));
+
+            const result = await runTurn(
+                { traceInfo: () => {}, isCancelled: () => false },
+                {
+                    sessionId: "budget-fast-fail",
+                    prompt: "A".repeat(400),
+                    config: {},
+                    turnIndex: 1,
+                },
+            );
+
+            expect(result.type).toBe("completed");
+            expect(result.content).toContain("too large to process safely");
+            expect(session.runTurn).not.toHaveBeenCalled();
+            expect(recordedEvents.some((event) => event.eventType === "session.turn_budget_fast_fail")).toBe(true);
+        } finally {
+            if (previousSoft == null) delete process.env.TURN_SOFT_BUDGET_CHARS;
+            else process.env.TURN_SOFT_BUDGET_CHARS = previousSoft;
+            if (previousHard == null) delete process.env.TURN_HARD_BUDGET_CHARS;
+            else process.env.TURN_HARD_BUDGET_CHARS = previousHard;
+        }
+    });
+
+    it("applies hard prompt cap before invoking ManagedSession.runTurn", async () => {
+        const previousSoft = process.env.TURN_SOFT_BUDGET_CHARS;
+        const previousHard = process.env.TURN_HARD_BUDGET_CHARS;
+        try {
+            process.env.TURN_SOFT_BUDGET_CHARS = "0";
+            process.env.TURN_HARD_BUDGET_CHARS = "140";
+
+            const { runTurn, session, recordedEvents } = makeHarness();
+            session.runTurn = vi.fn(async (prompt) => {
+                expect(prompt.length).toBeLessThanOrEqual(140);
+                expect(prompt).toContain("Prompt truncated");
+                return { type: "completed", content: "ok", events: [] };
+            });
+
+            const result = await runTurn(
+                { traceInfo: () => {}, isCancelled: () => false },
+                {
+                    sessionId: "budget-prompt",
+                    prompt: "A".repeat(220),
+                    config: {},
+                    turnIndex: 1,
+                },
+            );
+
+            expect(result.type).toBe("completed");
+            const budgetEvents = recordedEvents.filter((event) => event.eventType === "session.turn_budget");
+            expect(budgetEvents.some((event) =>
+                event.data?.stage === "prompt" && event.data?.decision === "hard",
+            )).toBe(true);
+        } finally {
+            if (previousSoft == null) delete process.env.TURN_SOFT_BUDGET_CHARS;
+            else process.env.TURN_SOFT_BUDGET_CHARS = previousSoft;
+            if (previousHard == null) delete process.env.TURN_HARD_BUDGET_CHARS;
+            else process.env.TURN_HARD_BUDGET_CHARS = previousHard;
+        }
+    });
+
+    it("trims oversized assistant output before returning the turn result", async () => {
+        const previousCap = process.env.TURN_ASSISTANT_OUTPUT_HARD_BUDGET_CHARS;
+        try {
+            process.env.TURN_ASSISTANT_OUTPUT_HARD_BUDGET_CHARS = "110";
+            const { runTurn, session, recordedEvents } = makeHarness();
+            session.runTurn = vi.fn(async () => ({
+                type: "completed",
+                content: "B".repeat(2_000),
+                events: [],
+            }));
+
+            const result = await runTurn(
+                { traceInfo: () => {}, isCancelled: () => false },
+                {
+                    sessionId: "budget-output",
+                    prompt: "hello",
+                    config: {},
+                    turnIndex: 2,
+                },
+            );
+
+            expect(result.type).toBe("completed");
+            expect(result.content.length).toBeLessThanOrEqual(110);
+            expect(result.content).toContain("Response truncated");
+            const budgetEvents = recordedEvents.filter((event) => event.eventType === "session.turn_budget");
+            expect(budgetEvents.some((event) => event.data?.stage === "assistant_output")).toBe(true);
+        } finally {
+            if (previousCap == null) delete process.env.TURN_ASSISTANT_OUTPUT_HARD_BUDGET_CHARS;
+            else process.env.TURN_ASSISTANT_OUTPUT_HARD_BUDGET_CHARS = previousCap;
+        }
     });
 });

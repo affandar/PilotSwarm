@@ -22,6 +22,7 @@ function makeResolveHarness() {
 
     const sessionManager = {
         getModelSummary: () => undefined,
+        getModelRegistry: () => undefined,
     };
 
     registerActivities(

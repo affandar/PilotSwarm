@@ -2,16 +2,6 @@ function encodePathSegment(value) {
     return encodeURIComponent(String(value || ""));
 }
 
-function encodeBytesToBase64(bytes) {
-    const chunkSize = 0x8000;
-    let binary = "";
-    for (let index = 0; index < bytes.length; index += chunkSize) {
-        const chunk = bytes.subarray(index, index + chunkSize);
-        binary += String.fromCharCode(...chunk);
-    }
-    return btoa(binary);
-}
-
 async function readErrorMessage(response) {
     try {
         const payload = await response.json();
@@ -72,18 +62,6 @@ export class BrowserPortalTransport {
 
     getDefaultModel() {
         return this.bootstrap?.defaultModel || null;
-    }
-
-    getAuthContext() {
-        return this.bootstrap?.auth || {
-            principal: null,
-            authorization: {
-                allowed: false,
-                role: null,
-                reason: "Auth context unavailable",
-                matchedGroups: [],
-            },
-        };
     }
 
     async fetchJson(url, options = {}) {
@@ -220,6 +198,19 @@ export class BrowserPortalTransport {
         return this.rpc("listSessions");
     }
 
+    async listSessionsPage(params = {}) {
+        return this.rpc("listSessionsPage", {
+            limit: params?.limit,
+            includeDeleted: params?.includeDeleted,
+            cursor: params?.cursor
+                ? {
+                    updatedAt: params.cursor.updatedAt,
+                    sessionId: params.cursor.sessionId,
+                }
+                : undefined,
+        });
+    }
+
     async getSession(sessionId) {
         return this.rpc("getSession", { sessionId });
     }
@@ -240,29 +231,6 @@ export class BrowserPortalTransport {
         return this.rpc("getFleetStats", {
             includeDeleted: opts?.includeDeleted,
             since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
-        });
-    }
-
-    async getUserStats(opts) {
-        return this.rpc("getUserStats", {
-            includeDeleted: opts?.includeDeleted,
-            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
-        });
-    }
-
-    async getCurrentUserProfile() {
-        return this.rpc("getCurrentUserProfile", {});
-    }
-
-    async setCurrentUserProfileSettings({ settings } = {}) {
-        return this.rpc("setCurrentUserProfileSettings", {
-            settings: settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {},
-        });
-    }
-
-    async setCurrentUserGitHubCopilotKey({ key } = {}) {
-        return this.rpc("setCurrentUserGitHubCopilotKey", {
-            key: typeof key === "string" ? key : null,
         });
     }
 
@@ -305,6 +273,60 @@ export class BrowserPortalTransport {
         });
     }
 
+    async getFleetObservabilityStats(opts) {
+        return this.rpc("getFleetObservabilityStats", {
+            includeDeleted: opts?.includeDeleted,
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+        });
+    }
+
+    async getDbCallMetrics() {
+        return this.rpc("getDbCallMetrics", {});
+    }
+
+    async getSessionTurnMetrics(sessionId, opts) {
+        return this.rpc("getSessionTurnMetrics", {
+            sessionId,
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+            limit: opts?.limit,
+        });
+    }
+
+    async getFleetTurnAnalytics(opts) {
+        return this.rpc("getFleetTurnAnalytics", {
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+            agentId: opts?.agentId,
+            model: opts?.model,
+        });
+    }
+
+    async getHourlyTokenBuckets(since, opts) {
+        return this.rpc("getHourlyTokenBuckets", {
+            since: since instanceof Date ? since.toISOString() : since,
+            agentId: opts?.agentId,
+            model: opts?.model,
+        });
+    }
+
+    async getFleetDbCallMetrics(opts) {
+        return this.rpc("getFleetDbCallMetrics", {
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+        });
+    }
+
+    async getTopEventEmitters(params = {}) {
+        return this.rpc("getTopEventEmitters", {
+            since: params.since instanceof Date ? params.since.toISOString() : params.since,
+            limit: params.limit,
+        });
+    }
+
+    async pruneTurnMetrics(olderThan) {
+        return this.rpc("pruneTurnMetrics", {
+            olderThan: olderThan instanceof Date ? olderThan.toISOString() : olderThan,
+        });
+    }
+
     async getExecutionHistory(sessionId, executionId) {
         return this.rpc("getExecutionHistory", { sessionId, executionId });
     }
@@ -333,10 +355,6 @@ export class BrowserPortalTransport {
         return this.rpc("sendAnswer", { sessionId, answer });
     }
 
-    async cancelPendingMessage(sessionId, clientMessageIds) {
-        return this.rpc("cancelPendingMessage", { sessionId, clientMessageIds });
-    }
-
     async renameSession(sessionId, title) {
         return this.rpc("renameSession", { sessionId, title });
     }
@@ -361,14 +379,6 @@ export class BrowserPortalTransport {
         return this.rpc("listArtifacts", { sessionId });
     }
 
-    async getArtifactMetadata(sessionId, filename) {
-        return this.rpc("getArtifactMetadata", { sessionId, filename });
-    }
-
-    async deleteArtifact(sessionId, filename) {
-        return this.rpc("deleteArtifact", { sessionId, filename });
-    }
-
     async downloadArtifact(sessionId, filename) {
         return this.rpc("downloadArtifact", { sessionId, filename });
     }
@@ -377,13 +387,12 @@ export class BrowserPortalTransport {
         if (!file || typeof file.name !== "string") {
             throw new Error("A browser File is required for upload");
         }
-        const content = encodeBytesToBase64(new Uint8Array(await file.arrayBuffer()));
+        const content = await file.text();
         return this.rpc("uploadArtifact", {
             sessionId,
             filename: file.name,
             content,
             contentType: file.type || undefined,
-            contentEncoding: "base64",
         });
     }
 
@@ -426,19 +435,6 @@ export class BrowserPortalTransport {
             localPath: `browser-download://${sessionId}/${filename}`,
             filename,
         };
-    }
-
-    async openUrlInDefaultBrowser(targetUrl) {
-        const href = String(targetUrl || "").trim();
-        if (!href) {
-            throw new Error("URL cannot be empty.");
-        }
-        const parsedUrl = new URL(href, window.location.href);
-        if (!/^https?:$/i.test(parsedUrl.protocol)) {
-            throw new Error(`Unsupported URL protocol: ${parsedUrl.protocol}`);
-        }
-        window.open(parsedUrl.toString(), "_blank", "noopener,noreferrer");
-        return { url: parsedUrl.toString() };
     }
 
     async exportExecutionHistory(sessionId) {

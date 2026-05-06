@@ -6,32 +6,22 @@
             "githubToken": "env:GITHUB_TOKEN",
             "models": [
                 {
-                    "name": "claude-sonnet-4.6",
-                    "description": "Claude Sonnet 4.6. Balanced default for everyday coding, chat, and multi-step work in the local starter appliance.",
-                    "cost": "medium"
-                },
-                {
-                    "name": "gpt-5.4",
-                    "description": "GPT-5.4. Strong flagship GPT option for harder reasoning, planning, and coding tasks through GitHub Copilot.",
+                    "name": "gpt-4.1",
+                    "description": "GPT-4.1 via GitHub Copilot. Strong reasoning, planning, and coding tasks. 128K context.",
                     "cost": "high"
                 },
                 {
-                    "name": "gpt-5.4-mini",
-                    "description": "GPT-5.4 Mini. Faster, lighter-weight GPT option for everyday chat, drafting, and cheaper iteration in the local starter appliance.",
+                    "name": "gpt-5-mini",
+                    "description": "GPT-5 mini via GitHub Copilot. Fast, lightweight everyday model. 264K context, supports reasoning effort.",
                     "cost": "low"
                 },
                 {
-                    "name": "claude-opus-4.7",
-                    "description": "Claude Opus 4.7 (latest). Most capable Claude option for the hardest analysis and reasoning tasks in the starter appliance.",
-                    "cost": "high"
-                },
-                {
-                    "name": "claude-opus-4.6",
-                    "description": "Claude Opus 4.6. Most capable option for deeper analysis and harder tasks in the starter appliance.",
-                    "cost": "high"
+                    "name": "gpt-4o",
+                    "description": "GPT-4o via GitHub Copilot. Versatile, vision-capable. 128K context.",
+                    "cost": "medium"
                 }
             ]
         }
     ],
-    "defaultModel": "github-copilot:claude-sonnet-4.6"
+    "defaultModel": "github-copilot:gpt-5-mini"
 }
