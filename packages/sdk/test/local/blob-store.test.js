@@ -146,4 +146,40 @@ describe("SessionBlobStore", () => {
             fs.rmSync(baseDir, { recursive: true, force: true });
         }
     });
+
+    it("throws NotSupportedInManagedIdentityMode when generating a SAS URL in MI mode", () => {
+        // MI-mode invariant: when the store is constructed via the
+        // managed-identity factory branch (no shared-key credential),
+        // generateArtifactSasUrl() must refuse with a typed error so
+        // callers (TUI / portal) know to proxy the download through the
+        // worker instead of relying on a shared-key SAS. This is the
+        // contract the JSDoc on createSessionBlobStore() and on
+        // generateArtifactSasUrl() promises; locking it in a test means
+        // a future "helpful" fallback that silently mints a UDK SAS or
+        // returns a public URL would break this assertion loudly.
+        const fakeContainerClient = {
+            getBlockBlobClient() {
+                throw new Error("getBlockBlobClient should not be reached in MI-mode SAS test");
+            },
+            async *listBlobsFlat() {},
+        };
+
+        const store = new SessionBlobStore({
+            containerClient: fakeContainerClient,
+            containerName: "copilot-sessions",
+            sharedKeyCredential: null,
+            sessionStateDir: os.tmpdir(),
+        });
+
+        let caught;
+        try {
+            store.generateArtifactSasUrl("session-mi", "out.txt", 1);
+        } catch (err) {
+            caught = err;
+        }
+
+        expect(caught).toBeInstanceOf(Error);
+        expect(caught.code).toBe("NotSupportedInManagedIdentityMode");
+        expect(caught.message).toMatch(/managed-identity mode/i);
+    });
 });

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager
+    # PodSecurity baseline — cert-manager workloads (controller, webhook,
+    # cainjector) declare appropriate securityContexts in the upstream chart.
+    pod-security.kubernetes.io/enforce: baseline

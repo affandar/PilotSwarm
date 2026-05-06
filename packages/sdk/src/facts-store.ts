@@ -112,9 +112,13 @@ function normalizeLikePattern(pattern?: string): string | undefined {
     return pattern;
 }
 
-export async function createFactStoreForUrl(storeUrl: string, schema?: string): Promise<FactStore> {
+export async function createFactStoreForUrl(
+    storeUrl: string,
+    schema?: string,
+    opts: { useManagedIdentity?: boolean; aadUser?: string } = {},
+): Promise<FactStore> {
     if (storeUrl.startsWith("postgres://") || storeUrl.startsWith("postgresql://")) {
-        return PgFactStore.create(storeUrl, schema);
+        return PgFactStore.create(storeUrl, schema, opts);
     }
     throw new Error(
         "PilotSwarm facts require a PostgreSQL store. " +
@@ -134,24 +138,27 @@ export class PgFactStore implements FactStore {
 
     static readonly DEFAULT_POOL_MAX = 3;
 
-    static async create(connectionString: string, schema?: string): Promise<PgFactStore> {
+    static async create(
+        connectionString: string,
+        schema?: string,
+        opts: { useManagedIdentity?: boolean; aadUser?: string } = {},
+    ): Promise<PgFactStore> {
         const { default: pg } = await import("pg");
-
-        const parsed = new URL(connectionString);
-        const needsSsl = ["require", "prefer", "verify-ca", "verify-full"]
-            .includes(parsed.searchParams.get("sslmode") ?? "");
-        parsed.searchParams.delete("sslmode");
+        const { buildPgPoolConfig } = await import("./pg-pool-factory.js");
 
         const configuredPoolMax = Number.parseInt(process.env.PILOTSWARM_FACTS_PG_POOL_MAX ?? "", 10);
         const poolMax = Number.isFinite(configuredPoolMax) && configuredPoolMax > 0
             ? configuredPoolMax
             : PgFactStore.DEFAULT_POOL_MAX;
 
-        const pool = new pg.Pool({
-            connectionString: parsed.toString(),
+        const poolConfig = buildPgPoolConfig({
+            connectionString,
+            useManagedIdentity: opts.useManagedIdentity,
+            aadUser: opts.aadUser,
             max: poolMax,
-            ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
         });
+
+        const pool = new pg.Pool(poolConfig);
 
         pool.on("error", (err: Error) => {
             console.error("[facts] pool idle client error (non-fatal):", err.message);

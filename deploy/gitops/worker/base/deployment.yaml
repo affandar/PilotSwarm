@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: copilot-runtime-worker
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: worker
+        azure.workload.identity/use: "true"
+      annotations:
+        # SPC keys hash. Filled by the worker-replacements kustomize
+        # component from `data.SPC_KEYS_HASH` in the env ConfigMap.
+        # Forces a rolling update whenever the SecretProviderClass's
+        # projected key set changes — works around the CSI driver's
+        # async K8s Secret synthesis racing pod startup. See
+        # deploy/scripts/lib/spc-keys-hash.mjs and
+        # docs/bugreports/envfrom-secret-staleness-and-secretstore-proposal.md.
+        pilotswarm.dev/spc-keys-hash: ""
+    spec:
+      serviceAccountName: copilot-runtime-worker
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      # imagePullSecrets intentionally omitted: AKS kubelet managed identity
+      # with AcrPull role (provisioned in BaseInfra) authenticates ACR pulls.
+      tolerations:
+        - key: "kubernetes.azure.com/scalesetpriority"
+          operator: "Equal"
+          value: "spot"
+          effect: "NoSchedule"
+      initContainers:
+        - name: init-copilot-home
+          image: busybox:1.36
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          command:
+            - sh
+            - -lc
+            - mkdir -p /home/node/.copilot/session-state && chown -R 1000:1000 /home/node/.copilot
+          volumeMounts:
+            - name: copilot-home
+              mountPath: /home/node/.copilot
+      containers:
+        - name: worker
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RUST_LOG
+              value: "info"
+            - name: PS_MODEL_PROVIDERS_PATH
+              value: "/app/config/model_providers.json"
+          envFrom:
+            - configMapRef:
+                name: worker-env
+            - secretRef:
+                name: copilot-worker-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          volumeMounts:
+            - name: copilot-home
+              mountPath: /home/node/.copilot
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+            - name: model-providers
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: copilot-home
+          emptyDir: {}
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: copilot-worker-secrets
+        - name: model-providers
+          configMap:
+            name: copilot-worker-model-providers
+            items:
+              - key: model_providers.json
+                path: model_providers.json
+      restartPolicy: Always

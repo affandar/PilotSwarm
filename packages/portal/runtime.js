@@ -28,8 +28,8 @@ function requireUserPrincipal(authContext, methodName) {
 }
 
 export class PortalRuntime {
-    constructor({ store, mode }) {
-        this.transport = new NodeSdkTransport({ store, mode });
+    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
+        this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
         this.mode = mode;
         this.started = false;
         this.startPromise = null;

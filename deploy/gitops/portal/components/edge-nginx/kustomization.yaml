@@ -1,0 +1,58 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Edge mode: AKS web-app-routing addon (NGINX) on an internal Azure
+# LoadBalancer.
+#
+# Used for EDGE_MODE=private. The AKS `web-app-routing` addon installs
+# an NGINX ingress controller and creates a managed Service of type
+# LoadBalancer. BaseInfra configures that Service with the
+# `service.beta.kubernetes.io/azure-load-balancer-internal: "true"`
+# annotation so the Azure LoadBalancer is internal (private VIP only).
+# Bicep also provisions an Azure Private DNS Zone, links it to the AKS
+# VNet, and writes an A record `${HOST}` → ILB private IP.
+#
+# Compared to edge-appgw this is a substantially simpler topology — no
+# AppGw, no AGIC RBAC, no AppGw cert push to coordinate, no Private
+# Endpoint approval. It costs roughly an order of magnitude less than
+# AppGw_v2 and is the right shape for purely internal deployments.
+#
+# Patches the Ingress with NGINX-specific configuration:
+#
+#   * `ingressClassName: webapprouting.kubernetes.azure.com` — the addon-
+#     managed default NGINX ingress class on AKS.
+#   * `nginx.ingress.kubernetes.io/ssl-redirect: "true"` — equivalent to
+#     the AGIC ssl-redirect annotation; mirror-image semantics.
+#   * `nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"` — the portal
+#     pod terminates TLS in-process on port 3001 (see deployment.yaml
+#     /api/health probes with scheme: HTTPS), matching the AGIC behavior.
+#   * `nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"` and
+#     `proxy-send-timeout: "3600"` — covers long-lived `/portal-ws`
+#     connections (AGIC uses a single `request-timeout` annotation;
+#     NGINX needs read+send separately).
+#   * `tls.0.secretName: pilotswarm-portal-tls` — the real K8s Secret
+#     name that the active TLS Component (tls-akv) populates via CSI.
+#     NGINX reads cert/key directly from this Secret to terminate TLS at
+#     the LB, then re-encrypts to the pod (because backend-protocol is
+#     HTTPS).
+
+patches:
+  - target:
+      kind: Ingress
+      name: pilotswarm-portal-ingress
+    patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: pilotswarm-portal-ingress
+        annotations:
+          nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+          nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+          nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      spec:
+        ingressClassName: webapprouting.kubernetes.azure.com
+        tls:
+          - secretName: pilotswarm-portal-tls
+            hosts:
+              - __PORTAL_HOSTNAME__

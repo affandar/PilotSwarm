@@ -21,3 +21,5 @@ deploy/.portal-tls/
 .github/agents/pilotswarm-corp-aks-deployer.agent.md
 .github/skills/pilotswarm-corp-aks-deploy/
 .github/skills/pilotswarm-corp-aks-networking/
+# OSS Node deploy orchestrator: repo-local staging dir
+deploy/.tmp/

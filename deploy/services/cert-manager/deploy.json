@@ -1,0 +1,17 @@
+{
+  "$schema": "../deploy.schema.json",
+  "schemaVersion": 1,
+  "_comment": "OSS per-service deploy manifest for cert-manager. Conditional service: deploy.mjs skips this entry entirely when TLS_SOURCE != letsencrypt.",
+  "name": "cert-manager",
+  "kind": "infra",
+  "bicep": {
+    "modules": [
+      { "name": "base-infra",   "scope": "group" },
+      { "name": "cert-manager", "scope": "group" }
+    ],
+    "allModeModules": [
+      { "name": "cert-manager", "scope": "group" }
+    ]
+  },
+  "pipeline": ["bicep", "manifests"]
+}

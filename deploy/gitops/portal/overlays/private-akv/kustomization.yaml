@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace fan-out (kustomize-level). Overrides any existing
+# metadata.namespace and adds it where missing on every
+# namespaceable resource — including the overlay-generated
+# portal-env ConfigMap, which is required for nameReference
+# rewriting (envFrom.configMapRef.name -> hashed) to work.
+namespace: pilotswarm
+
+# Private path. AKS web-app-routing (NGINX) addon on an internal Azure
+# LoadBalancer; no AppGw, no AGIC, no AFD. AKV-managed cert mounted via
+# CSI and read by NGINX directly from the K8s Secret. Bicep provisions
+# an Azure Private DNS Zone, links it to the AKS VNet, and writes an
+# A record `${HOST}` → ILB private IP. Caller accesses via in-VNet
+# compute / Bastion / VPN / peered-and-zone-linked VNet.
+#
+# Covers both `TLS_SOURCE=akv` (AME-issued cert via OneCertV2-PrivateCA
+# issuer registered by Bicep) and `TLS_SOURCE=akv-selfsigned` (self-
+# signed cert auto-created by Bicep using the AKV `Self` issuer). The
+# kustomize layer is identical for both — the divergence is purely in
+# the AKV cert-policy issuer name, owned by Bicep.
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/edge-nginx
+  - ../../components/tls-akv
+  - ../../components/portal-replacements
+
+configMapGenerator:
+  - name: portal-env
+    envs:
+      - .env

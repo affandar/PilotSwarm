@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Default worker overlay. Mirrors the portal overlay shape: base + a
+# capability-component list. The `worker-replacements` component holds
+# the env-driven replacements (IMAGE, WI annotation, AKV SPC params);
+# future variants (e.g. private-egress, alt-storage backend) slot in
+# as additional components alongside it.
+
+# Namespace re-asserted at the overlay level (matches the
+# `postgresql-fleet-manager` reference pattern: see
+# `src/Deploy/PostgreSQLFleetManager/manifests/overlays/dev/kustomization.yaml`
+# in that repo). This is required so the overlay-generated `worker-env`
+# ConfigMap is created in the same namespace as the base resources,
+# which lets `nameReference` rewrite `envFrom.configMapRef.name` to
+# the hashed form.
+namespace: pilotswarm
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/worker-replacements
+
+# Fresh ConfigMap built from the rendered `.env` for this env. The
+# `.env` file is substituted in-place by stage-manifests.mjs from
+# the env map (FR-009 / FR-014). No `behavior: merge` — the base
+# intentionally has no env-derived ConfigMap.
+#
+# NOTE: name-suffix hash is intentionally enabled (kustomize default).
+# Each overlay-.env change yields a new ConfigMap name (worker-env-<hash>),
+# kustomize auto-rewrites all references (envFrom in deployment.yaml +
+# the component replacements), the Deployment spec changes, and Flux
+# rolls the pods. With `disableNameSuffixHash: true` pods would keep
+# loading stale env until a manual `kubectl rollout restart`.
+configMapGenerator:
+  - name: worker-env
+    envs:
+      - .env

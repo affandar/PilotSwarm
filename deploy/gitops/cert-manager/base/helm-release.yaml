@@ -1,0 +1,49 @@
+# cert-manager chart — exact-pinned to v1.20.2 (latest stable at adoption
+# time, 2026-04). `version: 1.20.2` is a literal version, not a semver
+# range, so Flux will NEVER auto-upgrade. To adopt a new release:
+#   1. Update this `version:` field to the new exact value.
+#   2. Verify the release notes for breaking changes.
+#   3. Test on a dev cluster (chkrawtestps).
+#   4. Promote to prod via deploy.mjs.
+#
+# `crds.enabled: true` (chart values) ships the cert-manager CRDs with
+# the chart. `install.crds: Create` / `upgrade.crds: CreateReplace` (HR
+# spec) tells helm-controller to manage CRDs through helm — needed so the
+# cert-manager-issuers Kustomization (in a separate FluxConfiguration)
+# can find Issuer/Certificate/ClusterIssuer CRDs after this HR settles.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  interval: 10m
+  chart:
+    spec:
+      chart: cert-manager
+      version: 1.20.2
+      sourceRef:
+        kind: HelmRepository
+        name: cert-manager
+        namespace: cert-manager
+      interval: 24h
+  install:
+    crds: Create
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    crds:
+      enabled: true
+    # Workload identity is only needed when an Issuer uses DNS-01 against
+    # an Azure DNS zone (private+letsencrypt path). The serviceAccount
+    # annotation is added at that point via the cert-manager-issuers
+    # Kustomization (a JSON-merge patch on this SA) — leaving the base
+    # chart values minimal here.
+    global:
+      leaderElection:
+        namespace: cert-manager

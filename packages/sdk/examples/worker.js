@@ -34,6 +34,20 @@ import os from "node:os";
 import fs from "node:fs";
 import { PilotSwarmWorker } from "pilotswarm-sdk";
 
+// Sentinel value written to KV by the bicep-deploy `seed-secrets` step
+// for optional secrets that the user didn't provide. CSI Secret Store
+// requires non-empty values, so the deploy writes this placeholder
+// instead. Strip it from process.env so downstream code (e.g. model
+// provider loaders that read `env:ANTHROPIC_API_KEY`) treats the
+// secret as truly unset. Keep in sync with
+// deploy/scripts/lib/seed-secrets.mjs::SEED_SECRETS_UNSET_SENTINEL.
+const SEED_SECRETS_UNSET_SENTINEL = "__PS_UNSET__";
+for (const k of Object.keys(process.env)) {
+    if (process.env[k] === SEED_SECRETS_UNSET_SENTINEL) {
+        delete process.env[k];
+    }
+}
+
 const logLevel = process.env.LOG_LEVEL || "info";
 const podName = process.env.POD_NAME || os.hostname();
 
@@ -80,6 +94,16 @@ const worker = new PilotSwarmWorker({
     workerNodeId: podName,
     systemMessage: SYSTEM_MESSAGE,
     pluginDirs,
+    // Bicep-deploy MI flow (set in worker-env ConfigMap by the overlay
+    // .env). Unset on the legacy `scripts/deploy-aks.sh` path, local
+    // Docker, and CI — those keep using the password URL via `store`
+    // and AZURE_STORAGE_CONNECTION_STRING for blobs.
+    useManagedIdentity: ["1", "true", "yes", "on"].includes(
+        (process.env.PILOTSWARM_USE_MANAGED_IDENTITY || "").trim().toLowerCase(),
+    ),
+    cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
+    aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
+    blobAccountUrl: process.env.AZURE_STORAGE_ACCOUNT_URL || undefined,
 });
 
 await worker.start();

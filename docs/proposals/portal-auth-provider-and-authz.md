@@ -1093,3 +1093,145 @@ That gives PilotSwarm:
 - `gcp` for Google identity-backed deployments
 
 with one authz story and a safe path from shared workspace access to per-user session isolation.
+
+---
+
+## Phase 2.5: Entra App-Roles Modernization
+
+> Scope: refinements to the **Entra provider only**, layered on after Phase 2.
+> The common authz engine, ownership model, and provider abstraction stay
+> exactly as specified above. This section is additive — it does not change
+> the role taxonomy (`admin` / `user`), it does not relitigate the email
+> allowlist (which is intentional — see "Group claim overage" risk), and it
+> does not touch non-Entra providers.
+>
+> Note: if `entra-auth-gateway.md` lands first, this work moves into the
+> gateway's middleware rather than the portal runtime; the substance is
+> unchanged.
+
+### Motivation
+
+Phases 0–2 deliver: provider-pluggable identity, normalized principals, a
+common authz engine, group-style admission control via email allowlists,
+and ownership-aware visibility for Phase 2. That stack works.
+
+What it does **not** yet take advantage of is the modern Microsoft Identity
+Platform recommendation for per-app user RBAC: **app roles**. Today the
+Entra provider can run against an app registration that has zero `appRoles`
+defined, with `appRoleAssignmentRequired=false` — i.e. any tenant user can
+sign in and the email allowlist is the only gate. The `roles` claim
+extracted by `normalize/entra.js` is plumbed through but not the primary
+authorization signal.
+
+App roles offer better ergonomics than the email-allowlist-only path for
+deployments that already have IT-managed Entra and want to delegate
+"who is an admin" to the directory.
+
+### App roles vs. security groups vs. email allowlists
+
+| Concern | Security groups (`groups` claim) | Email allowlists (today) | App roles (this section) |
+|---|---|---|---|
+| Token bloat / overage | Users in >150 groups produce `_claim_names` overage; needs Graph callback | Email is one claim, no overage | Roles are app-scoped, bounded, no overage |
+| Admin consent | `GroupMember.Read.All` org-wide read required | None beyond `User.Read` | None beyond `User.Read` |
+| Authoritative scope | Tenant-wide artifacts owned by IT, repurposed for app authz | App-managed list in env / KV | App-scoped, owned by the app team in the app reg itself |
+| Discoverability | Trace nested SGs to answer "why does Alice have admin?" | Read env var | `az ad app show` + `appRoleAssignments` |
+| Lifecycle | Group memberships outlive the app | Operator must remember to remove | Vanish with the app reg |
+| Conditional Access | Group-targeted CA OK | n/a | App-role-targeted CA is first-class |
+| Per-app isolation | One SG → many apps (cross-talk) | Per-app already | Per-app by definition |
+
+The email allowlist remains a perfectly valid choice — particularly for
+small operator-controlled deployments. App roles become attractive at scale,
+when membership management belongs to IT, or when Conditional Access policy
+needs to target the application precisely.
+
+### Where scopes fit (and don't)
+
+`oauth2PermissionScopes` answer "**what can this client app do on behalf of
+the user?**" — they are for delegated consent across clients, not for user
+RBAC.
+
+- **Use scopes when** the portal becomes an API consumed by other clients
+  (CLI, second SPA, automation). Then expose `Portal.Read`, `Portal.Manage`,
+  etc.
+- **Do not use scopes for** user-tier RBAC. That is app roles.
+- The portal SPA today acquires `${clientId}/.default` against itself —
+  adding scopes buys nothing until a second client lands.
+
+**Roles for users, scopes for clients.** They compose — a future CLI client
+could be granted `Portal.Manage` scope, *and* the calling user would still
+need an `admin` app-role assignment.
+
+### Proposed app-role definitions
+
+Define on the Entra app registration, mapped to the existing taxonomy:
+
+| App role | Maps to engine role | `allowedMemberTypes` |
+|---|---|---|
+| `Portal.Admin` | `admin` | `User` |
+| `Portal.User` | `user` | `User` |
+
+Matching is case-insensitive and trims a dotted prefix, so any role string
+ending in `.admin` (e.g. `Portal.Admin`, `pilotswarm.admin`) normalizes to
+`admin`, and `.user` to `user`. The exact role-name list stays configurable
+for installations that want a different naming scheme.
+
+### Engine changes (additive, behind a config switch)
+
+In `packages/portal/auth/authz/engine.js`:
+
+- When `principal.roles[]` is non-empty, treat it as an **authoritative
+  signal** ahead of the email allowlist. Match via the case-insensitive
+  suffix rule above.
+- When `principal.roles[]` is empty, fall back to the current email
+  allowlist behavior unchanged.
+- New optional policy field `roleNames: { admin: string[], user: string[] }`
+  for installations that want explicit role-name lists rather than the
+  suffix-strip default.
+
+In `packages/portal/auth/config.js`:
+
+- New optional env vars: `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES`,
+  `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES` (comma-separated). Empty ⇒ use
+  the suffix-strip default.
+
+No change to the `AuthorizationDecision` shape, no change to the email
+allowlist envs, no change to non-Entra providers.
+
+### Optional hardening: `appRoleAssignmentRequired=true`
+
+Once roles are assigned to all expected users, operators can flip
+`appRoleAssignmentRequired=true` on the SP. This closes the
+"any tenant user can sign in, then maybe gets denied" hole at the
+identity-provider layer instead of the portal layer. Recommended but
+opt-in — the engine works correctly in both modes.
+
+### Operational bridge: assign a security group to the app role
+
+Sites that prefer day-to-day membership in security groups can
+**assign the SG to the app role** rather than each user individually. Entra
+flattens this into a `roles` claim on the JWT — no `groups` claim, no
+`_claim_names` overage, no `GroupMember.Read.All` consent. This preserves
+IT-driven group workflows while keeping the token small and the portal's
+authz signal clean.
+
+### Rollout
+
+| Step | Change | Behavior impact |
+|---|---|---|
+| 2.5a | Define `Portal.Admin` / `Portal.User` app roles on the app reg. Leave `appRoleAssignmentRequired=false`. Engine honors `principal.roles[]` ahead of email allowlist. | Additive. Installs with no role assignments fall through to existing email allowlist. |
+| 2.5b | Operator assigns roles to expected users (or to an SG). Email allowlists may be retired or kept as break-glass. | Per-install operator action. |
+| 2.5c | Optionally flip `appRoleAssignmentRequired=true`. | Tightening; opt-in. |
+
+Each step is independently shippable.
+
+### Open questions for the implementation PR
+
+1. **Per-env vs shared app registration.** Per-env is cleaner (independent
+   lifecycle, no cross-stamp blast radius) but requires admin consent for
+   each env. A shared app reg with many SPA `redirectUris` is operationally
+   simpler but couples envs together.
+2. **Documenting the SG-to-role bridge.** Probably yes — it is the gentlest
+   migration path for IT-group-driven shops.
+3. **Conditional Access alignment.** If org policy mandates role-targeted CA,
+   that pulls forward the `appRoleAssignmentRequired=true` flip from step
+   2.5c.

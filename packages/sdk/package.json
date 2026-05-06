@@ -61,6 +61,7 @@
     "url": "https://github.com/affandar/PilotSwarm/issues"
   },
   "dependencies": {
+    "@azure/identity": "^4.13.1",
     "@azure/storage-blob": "^12.31.0",
     "@github/copilot": "^1.0.36",
     "@github/copilot-sdk": "^0.3.0",

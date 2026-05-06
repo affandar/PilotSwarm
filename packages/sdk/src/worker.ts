@@ -1,5 +1,5 @@
 import { SessionManager } from "./session-manager.js";
-import { SessionBlobStore } from "./blob-store.js";
+import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
 import { registerActivities } from "./session-proxy.js";
 import {
@@ -190,13 +190,22 @@ export class PilotSwarmWorker {
         };
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
 
-        if (options.blobConnectionString) {
-            this.blobStore = new SessionBlobStore(
-                options.blobConnectionString,
-                options.blobContainer ?? "copilot-sessions",
-                effectiveSessionStateDir,
-            );
-            this.artifactStore = this.blobStore;
+        // Pick blob backing: explicit options win, but we route through
+        // createSessionBlobStore() so the MI flag + account URL path
+        // works the same way as for env-driven callers (CLI transport).
+        const blobStore = createSessionBlobStore(
+            {
+                PILOTSWARM_USE_MANAGED_IDENTITY: options.useManagedIdentity ? "1" : undefined,
+                AZURE_STORAGE_ACCOUNT_URL: options.blobAccountUrl,
+                AZURE_STORAGE_CONNECTION_STRING: options.blobConnectionString,
+                AZURE_STORAGE_CONTAINER: options.blobContainer,
+            },
+            { sessionStateDir: effectiveSessionStateDir },
+        );
+
+        if (blobStore) {
+            this.blobStore = blobStore;
+            this.artifactStore = blobStore;
         } else {
             // Local mode: use filesystem-based artifact storage
             const artifactDir = path.join(path.dirname(effectiveSessionStateDir), "artifacts");
@@ -342,16 +351,32 @@ export class PilotSwarmWorker {
         this._provider = await this._createProvider();
 
         // Initialize CMS catalog and facts store
-        if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+        // CMS + facts can use a separate URL when running with AAD/MI
+        // (passwordless URL whose `user@` segment is the federated UAMI's
+        // display name). Defaults to `store` for the legacy
+        // connection-string path. Duroxide's PostgresProvider stays on
+        // `store` because it has no AAD token-callback hook upstream.
+        const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
+        const useMi = this.config.useManagedIdentity ?? false;
+        const aadUser = this.config.aadDbUser;
+        if (cmsFactsUrl.startsWith("postgres://") || cmsFactsUrl.startsWith("postgresql://")) {
             try {
-                this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
+                this._catalog = await PgSessionCatalogProvider.create(
+                    cmsFactsUrl,
+                    this.config.cmsSchema,
+                    { useManagedIdentity: useMi, aadUser },
+                );
                 await this._catalog.initialize();
             } catch (err) {
                 console.error("[PilotSwarmWorker] CMS initialization failed:", err);
                 this._catalog = null;
             }
         }
-        this.factStore = await createFactStoreForUrl(store, this.config.factsSchema);
+        this.factStore = await createFactStoreForUrl(
+            cmsFactsUrl,
+            this.config.factsSchema,
+            { useManagedIdentity: useMi, aadUser },
+        );
         await this.factStore.initialize();
         trace(
             `[worker] postgres pools: duroxidePgPoolMax=${process.env.DUROXIDE_PG_POOL_MAX ?? "(unset)"}, ` +

@@ -8,7 +8,7 @@ import {
     loadAgentFiles,
     PilotSwarmClient,
     PilotSwarmManagementClient,
-    SessionBlobStore,
+    createSessionBlobStore,
     LOCAL_DEFAULT_USER_PRINCIPAL,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
@@ -422,11 +422,19 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser } = {}) {
+    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
         this.store = store;
         this.mode = mode;
+        this.useManagedIdentity = useManagedIdentity;
+        this.cmsFactsDatabaseUrl = cmsFactsDatabaseUrl;
+        this.aadDbUser = aadDbUser;
         this.client = null;
-        this.mgmt = new PilotSwarmManagementClient({ store });
+        this.mgmt = new PilotSwarmManagementClient({
+            store,
+            ...(useManagedIdentity !== undefined ? { useManagedIdentity } : {}),
+            ...(cmsFactsDatabaseUrl ? { cmsFactsDatabaseUrl } : {}),
+            ...(aadDbUser ? { aadDbUser } : {}),
+        });
         this.artifactStore = createArtifactStore();
         this.sessionHandles = new Map();
         this.workers = [];
@@ -477,6 +485,9 @@ export class NodeSdkTransport {
         this.creatableAgents = sessionCreationMetadata.creatableAgents;
         this.client = new PilotSwarmClient({
             store: this.store,
+            ...(this.useManagedIdentity !== undefined ? { useManagedIdentity: this.useManagedIdentity } : {}),
+            ...(this.cmsFactsDatabaseUrl ? { cmsFactsDatabaseUrl: this.cmsFactsDatabaseUrl } : {}),
+            ...(this.aadDbUser ? { aadDbUser: this.aadDbUser } : {}),
             ...(this.sessionPolicy ? { sessionPolicy: this.sessionPolicy } : {}),
             ...(this.allowedAgentNames.length > 0 ? { allowedAgentNames: this.allowedAgentNames } : {}),
         });
@@ -1478,27 +1489,26 @@ export class NodeSdkTransport {
 }
 
 function createArtifactStore() {
-    const blobConnectionString = (process.env.AZURE_STORAGE_CONNECTION_STRING || "").trim();
-    const blobContainer = (process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions").trim() || "copilot-sessions";
     const sessionStateDir = (process.env.SESSION_STATE_DIR || "").trim() || undefined;
     const artifactDir = (process.env.ARTIFACT_DIR || "").trim() || undefined;
 
-    if (blobConnectionString) {
-        try {
-            return new SessionBlobStore(blobConnectionString, blobContainer, sessionStateDir);
-        } catch (err) {
-            // AZURE_STORAGE_CONNECTION_STRING is set but unparseable
-            // (typically a truncated or placeholder value left over in the
-            // shell — e.g. "DefaultEndpointsProtocol=https" with no
-            // AccountName/AccountKey). Halt with an actionable error
-            // instead of silently falling back to disk: silent fallback
-            // would mask blob-storage misconfiguration in production.
-            const reason = err?.message || String(err);
-            throw new Error(
-                `AZURE_STORAGE_CONNECTION_STRING is set but cannot be parsed as a valid Azure Storage connection string (reason: ${reason}). ` +
-                `Either fix the value (it must include AccountName, AccountKey, and EndpointSuffix) or unset the variable to fall back to the local filesystem artifact store.`,
-            );
-        }
+    try {
+        const blobStore = createSessionBlobStore(process.env, { sessionStateDir });
+        if (blobStore) return blobStore;
+    } catch (err) {
+        // AZURE_STORAGE_CONNECTION_STRING is set but unparseable
+        // (typically a truncated or placeholder value left over in the
+        // shell — e.g. "DefaultEndpointsProtocol=https" with no
+        // AccountName/AccountKey), or PILOTSWARM_USE_MANAGED_IDENTITY=1
+        // is set without AZURE_STORAGE_ACCOUNT_URL. Halt with an
+        // actionable error instead of silently falling back to disk:
+        // silent fallback would mask blob-storage misconfiguration in
+        // production.
+        const reason = err?.message || String(err);
+        throw new Error(
+            `Azure Blob Storage is configured but cannot be initialized (reason: ${reason}). ` +
+            `Either fix the configuration or unset AZURE_STORAGE_CONNECTION_STRING / PILOTSWARM_USE_MANAGED_IDENTITY to fall back to the local filesystem artifact store.`,
+        );
     }
 
     return new FilesystemArtifactStore(artifactDir);

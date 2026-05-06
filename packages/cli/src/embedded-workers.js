@@ -39,6 +39,19 @@ export async function startEmbeddedWorkers({ count, store }) {
                 workerNodeId: `local-${index}`,
                 systemMessage: workerModuleConfig.systemMessage || process.env._TUI_SYSTEM_MESSAGE || undefined,
                 pluginDirs,
+                // Bicep-deploy MI flow (set in worker-env ConfigMap by the
+                // overlay .env). Unset for legacy `scripts/deploy-aks.sh`,
+                // local Docker, and CI — those keep using the password
+                // URL via `store` (and AZURE_STORAGE_CONNECTION_STRING for
+                // blobs). See packages/sdk/src/pg-pool-factory.ts.
+                useManagedIdentity: ["1", "true", "yes", "on"].includes(
+                    (process.env.PILOTSWARM_USE_MANAGED_IDENTITY || "").trim().toLowerCase(),
+                ),
+                cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
+                aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
+                blobAccountUrl: process.env.AZURE_STORAGE_ACCOUNT_URL || undefined,
+                blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING || undefined,
+                blobContainer: process.env.AZURE_STORAGE_CONTAINER || undefined,
             });
 
             const workerTools = typeof workerModuleConfig.createTools === "function"
