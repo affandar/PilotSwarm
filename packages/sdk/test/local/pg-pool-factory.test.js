@@ -5,11 +5,7 @@
  * runs from the same vitest setup as the rest of the local suites.
  */
 import { describe, it, expect, afterEach } from "vitest";
-import {
-    buildPgPoolConfig,
-    readManagedIdentityFlag,
-    _setPgAadCredentialForTests,
-} from "../../dist/pg-pool-factory.js";
+import { _setPgAadCredentialForTests, buildPgPoolConfig, readManagedIdentityFlag } from "../../src/pg-pool-factory.ts";
 
 afterEach(() => {
     _setPgAadCredentialForTests(null);

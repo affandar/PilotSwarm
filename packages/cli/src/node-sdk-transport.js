@@ -8,7 +8,6 @@ import {
     loadAgentFiles,
     PilotSwarmClient,
     PilotSwarmManagementClient,
-    SessionBlobStore,
     createSessionBlobStore,
     LOCAL_DEFAULT_USER_PRINCIPAL,
 } from "pilotswarm-sdk";
