@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.1.27 — 2026-05-06
+
+### TUI / Shared UI
+
+- **Markdown table sentinel handling** — chat line grouping now keeps markdown
+  table sentinel blocks out of visible transcript text while preserving the
+  rendered table structure, preventing stray marker lines from leaking into TUI
+  and portal chat output.
+
+### Tests
+
+- Added a focused regression test for markdown table sentinel blocks in chat
+  line rendering.
+
 ## 0.1.26 — 2026-05-03
 
 ### TUI / Shared UI
