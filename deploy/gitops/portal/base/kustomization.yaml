@@ -7,7 +7,7 @@ kind: Kustomization
 # values, NO configMapGenerator, and NO replacements. All env-driven
 # wiring lives in the overlay so that the overlay's freshly-created
 # ConfigMap is the single source of truth for replacements (matches
-# the postgresql-fleet-manager reference pattern). See the worker
+# the reference deployment pattern). See the worker
 # base/kustomization.yaml for the full rationale.
 
 resources:

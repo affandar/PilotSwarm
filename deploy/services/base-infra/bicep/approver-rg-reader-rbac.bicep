@@ -6,7 +6,7 @@
 //   1. Reader on the parent RG — so `check-appgw-exists.bicep` can call
 //      `az network application-gateway show` BEFORE the AppGw exists (first
 //      deploy) and distinguish "ResourceNotFound" from "Forbidden".
-//      Tighter than fleet-manager's pattern (which grants Subscription Owner).
+//      Tighter than the reference deployment's pattern (which grants Subscription Owner).
 //
 //   2. Contributor on the Application Gateway — so per-service deployments
 //      can push KV-referenced TLS certs onto the AppGw via

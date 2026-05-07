@@ -1,9 +1,9 @@
 // ==============================================================================
 // Azure Front Door Premium profile + endpoint + security policy.
 //
-// Adapted from postgresql-fleet-manager/src/Deploy/GlobalInfra/bicep/
+// Adapted from an internal reference deployment
 // frontdoor-profile.bicep. Per-region BaseInfra rollouts add custom domains
-// and Private Link origins to the endpoint created here via EV2 shell
+// and Private Link origins to the endpoint created here via the enterprise orchestration step
 // extensions at rollout time.
 // ==============================================================================
 

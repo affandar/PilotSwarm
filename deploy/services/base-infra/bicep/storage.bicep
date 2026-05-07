@@ -7,7 +7,7 @@
 //
 // Per-deployable manifest containers (worker-manifests, portal-manifests) are
 // owned by each service's own bicep (deploy/services/worker/bicep/main.bicep,
-// deploy/services/portal/bicep/main.bicep) — matching the postgresql-fleet-manager
+// deploy/services/portal/bicep/main.bicep) — matching the reference deployment
 // playgroundservice pattern where each service provisions its own Flux source.
 //
 // The AKS kubelet UAMI is granted Storage Blob Data Reader on the **account**
@@ -36,7 +36,7 @@ param aksKubeletPrincipalId string
 @description('Principal ID of the workload-identity UAMI that the worker / portal pods federate to (CSI SPC UAMI). Granted Storage Blob Data Contributor on this account so the worker can read+write session snapshots when running with PILOTSWARM_USE_MANAGED_IDENTITY=1. Optional for back-compat with stamps that have not been re-deployed since the role assignment was added.')
 param workerWorkloadPrincipalId string = ''
 
-@description('Optional principal ID for the human/local-deploy identity that should receive Storage Blob Data Contributor on this account. When empty (the EV2 production path), no extra role assignment is created. Local `npm run deploy` populates this with the signed-in AAD user so first-time stamps can run `az storage blob upload-batch` without a separate role grant.')
+@description('Optional principal ID for the human/local-deploy identity that should receive Storage Blob Data Contributor on this account. When empty (the enterprise production path), no extra role assignment is created. Local `npm run deploy` populates this with the signed-in AAD user so first-time stamps can run `az storage blob upload-batch` without a separate role grant.')
 param localDeploymentPrincipalId string = ''
 
 @description('Principal type for localDeploymentPrincipalId. Defaults to User; set to ServicePrincipal or Group to match the principal kind.')
@@ -95,7 +95,7 @@ resource assignBlobReaderToKubelet 'Microsoft.Authorization/roleAssignments@2022
 }
 
 // Optional Storage Blob Data Contributor on the account for the local-deploy
-// principal. Skipped when localDeploymentPrincipalId is empty (the EV2
+// principal. Skipped when localDeploymentPrincipalId is empty (the enterprise path
 // production path). When set, this gives the running user data-plane access
 // at storage-account creation time so `az storage blob upload-batch` works
 // on the very first run with no propagation race afterwards.

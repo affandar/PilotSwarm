@@ -2,7 +2,7 @@
 // PilotSwarm BaseInfra — Azure Key Vault.
 //
 // Stores the 14 worker + 10 portal secrets populated out-of-band by
-// `scripts/deploy-aks.sh` (or by the EV2 shell extension in production).
+// `scripts/deploy-aks.sh` (or by the a separate enterprise orchestration step in production).
 // The CSI SPC UAMI is granted `Key Vault Secrets User` so the AKV CSI
 // provider addon can project those secrets into pods.
 // ==============================================================================
@@ -22,7 +22,7 @@ param csiPrincipalId string
 @description('Optional principal ID of the App Gateway UAMI. When set, granted Key Vault Secrets User so the AppGw control plane can pull TLS certs (KV-referenced sslCertificates).')
 param appGwPrincipalId string = ''
 
-@description('Optional principal ID for the human/local-deploy identity that should receive Key Vault Secrets Officer on this vault. When empty (the EV2 production path), no extra role assignment is created. Local `npm run deploy` populates this with the signed-in AAD user so the new `seed-secrets` step can `az keyvault secret set` without a separate manual role grant.')
+@description('Optional principal ID for the human/local-deploy identity that should receive Key Vault Secrets Officer on this vault. When empty (the enterprise production path), no extra role assignment is created. Local `npm run deploy` populates this with the signed-in AAD user so the new `seed-secrets` step can `az keyvault secret set` without a separate manual role grant.')
 param localDeploymentPrincipalId string = ''
 
 @description('Principal type for localDeploymentPrincipalId. Defaults to User; set to ServicePrincipal or Group to match the principal kind.')
@@ -84,7 +84,7 @@ resource assignKvSecretsUserToAppGw 'Microsoft.Authorization/roleAssignments@202
 }
 
 // Optional Key Vault Secrets Officer on the vault for the local-deploy
-// principal. Skipped when localDeploymentPrincipalId is empty (the EV2
+// principal. Skipped when localDeploymentPrincipalId is empty (the enterprise path
 // production path). When set, this gives the running user data-plane
 // write access to the vault at creation time so the new `seed-secrets`
 // step in deploy.mjs can populate the human-only secrets (github-token,

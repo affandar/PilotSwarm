@@ -56,7 +56,7 @@ const OUTPUT_ALIAS = {
   // deployment script. Cascades into Portal.params.template.json.
   approverIdentityResourceId: "APPROVAL_MANAGED_IDENTITY_ID",
   // Portal bicep emits the canonical AFD/AppGw/Ingress hostname as
-  // `BackendHostName` (Pascal-case for EV2 scope-binding parity). Aliased
+  // `BackendHostName` (Pascal-case for the enterprise orchestrator's scope binding parity). Aliased
   // into `PORTAL_HOSTNAME` so the manifests step's overlay `.env`
   // substitution picks up the bicep-computed value (matching FM's
   // playgroundservice pattern where the same string is the cert subject,
@@ -143,8 +143,8 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   // module can grant Storage Blob Data Contributor to the running user at
   // create time (avoids the post-hoc role-assignment + RBAC propagation race
   // that every fresh stamp would otherwise hit on the manifests upload).
-  // EV2 doesn't pass this — its principal already has the role via the
-  // ev2-deploy UAMI assignment, and the Bicep param defaults to empty.
+  // The enterprise path doesn't pass this — its principal already has the role via the
+  // enterprise deploy UAMI assignment, and the Bicep param defaults to empty.
   if (moduleName === "base-infra") {
     const localPrincipal = resolveLocalDeploymentPrincipal();
     if (localPrincipal) {
@@ -281,7 +281,7 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
 
 // Look up the AAD principal currently signed in to the Azure CLI and return
 // `{ id, type, label }` describing it, or `null` if we're not running as an
-// AAD user (e.g. service-principal logins like the EV2 deploy MID, which
+// AAD user (e.g. service-principal logins like the enterprise deploy MID, which
 // already has the role via Bicep — no extra grant needed).
 function resolveLocalDeploymentPrincipal() {
   // `az ad signed-in-user show` only succeeds for User-type logins; SPs
@@ -304,7 +304,7 @@ function resolveLocalDeploymentPrincipal() {
 }
 
 // Ensure the resource group exists before an RG-scoped deployment. Idempotent
-// (`az group create` is upsert semantics). EV2 normally provisions RGs via
+// (`az group create` is upsert semantics). The enterprise path normally provisions RGs via
 // rollout infrastructure; in the OSS path we make sure they exist here so
 // `az deployment group create` doesn't fail with ResourceGroupNotFound on a
 // fresh subscription.

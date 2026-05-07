@@ -14,11 +14,11 @@ import { ALL_SEQUENCE, ALL_MODE_MODULES, SERVICE_TO_MODULES } from "../lib/servi
 import { defaultPipelineFor, resolveSteps } from "../lib/stages.mjs";
 import { validateService, ALL_SERVICE, SERVICES } from "../lib/common.mjs";
 
-test("ALL_SEQUENCE matches EV2 services.json infraOrder + service order", () => {
-  // EV2 deploy/services/services.json: infraOrder = ["GlobalInfra","BaseInfra"], then
+test("ALL_SEQUENCE matches the enterprise services.json infraOrder + service order", () => {
+  // The enterprise path deploy/services/services.json: infraOrder = ["GlobalInfra","BaseInfra"], then
   // services Worker, Portal. The OSS aggregate mirrors that ordering and
   // appends cert-manager + cert-manager-issuers (OSS-only Let's Encrypt
-  // path; EV2 stays on the akv path and skips them via deploy.mjs).
+  // path; the enterprise path stays on the akv path and skips them via deploy.mjs).
   assert.deepEqual(ALL_SEQUENCE, [
     "global-infra",
     "base-infra",

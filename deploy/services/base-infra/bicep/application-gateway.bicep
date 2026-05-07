@@ -4,7 +4,7 @@
 //
 // The `privateLinkConfigurations` block and the private frontend IP binding
 // are adapted verbatim from
-//   postgresql-fleet-manager/src/Deploy/BaseInfra/bicep/application-gateway.bicep:270-309
+//   an internal reference deployment
 // The rest of the module is simplified: no AGIC preservation of existing
 // pools/listeners/rules (PilotSwarm rolls out from a clean state per region
 // under GitOps; AGIC repopulates these after the FluxConfig reconciles).
@@ -35,7 +35,7 @@ param wafMode string = 'Prevention'
 @description('Availability zones for the App Gateway. Empty array disables zone placement.')
 param availabilityZones array = []
 
-@description('Resource ID of the user-assigned managed identity attached to the Application Gateway. Required so the AGIC addon can hold the "Managed Identity Operator" role on this UAMI (mirrors postgresql-fleet-manager pattern).')
+@description('Resource ID of the user-assigned managed identity attached to the Application Gateway. Required so the AGIC addon can hold the "Managed Identity Operator" role on this UAMI (mirrors reference deployment pattern).')
 param userAssignedIdentityId string
 
 @description('Whether the Application Gateway already exists in this RG. When true, AGIC-managed arrays (pools, listeners, rules, probes, etc.) are read back from the existing resource and re-emitted unchanged so we do not clobber AGIC\'s runtime config. Driven by check-appgw-exists.bicep.')
@@ -134,7 +134,7 @@ resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
 }
 
 // ---------------------------------------------------------------------------
-// AGIC config preservation (postgresql-fleet-manager pattern).
+// AGIC config preservation (reference deployment pattern).
 // ---------------------------------------------------------------------------
 // AGIC dynamically manages backendAddressPools, httpListeners, requestRoutingRules,
 // probes, urlPathMaps, redirectConfigurations, rewriteRuleSets, frontendPorts,
@@ -415,7 +415,7 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2024-01-01' =
     ]
     // Private Link configuration for Front Door connectivity — must be
     // defined before frontendIPConfigurations. Adapted verbatim from
-    // postgresql-fleet-manager application-gateway.bicep:270-309.
+    // reference deployment application-gateway.bicep:270-309.
     privateLinkConfigurations: [
       {
         name: 'privateLinkConfig'

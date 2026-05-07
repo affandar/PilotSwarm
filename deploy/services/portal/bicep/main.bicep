@@ -8,7 +8,7 @@
 //
 // This module does NOT provision the portal Kubernetes workload — that is
 // reconciled by FLUX from the portal manifest blob container which IS owned
-// by this bicep (per the postgresql-fleet-manager playgroundservice pattern:
+// by this bicep (per the reference deployment pattern:
 // each service provisions its own Flux source in its own bicep).
 //
 // What this module does:
@@ -22,7 +22,7 @@
 //      in the GlobalInfra RG (via the verbatim shared module).
 //   6. Auto-approves the pending PLS connection on the AppGW side.
 //
-// Surfaces BackendHostName as an output so EV2 scope binding can fan it
+// Surfaces BackendHostName as an output so the enterprise orchestrator's scope binding can fan it
 // into overlay/.env as PORTAL_HOSTNAME (Spec FR-014).
 // ==============================================================================
 
@@ -35,20 +35,23 @@ targetScope = 'resourceGroup'
 @description('Short resource-name root, e.g. pilotswarmprod1. Must match the value used by BaseInfra so the AppGW hostname aligns.')
 param resourceName string
 
+@description('BaseInfra `resourceNamePrefix` value used to look up the CSI Secrets Provider UAMI by convention name. May differ from `resourceName` in OSS direct deploys, where Portal has its own logical name (`<prefix>-<region>-portal`) while BaseInfra resources use a shorter prefix. Downstream callers that wrap this module may pass any prefix shaped per their own environment-region-stamp convention.')
+param baseInfraResourceNamePrefix string
+
 @description('Azure region (lowercased). Used in the certificate subject to disambiguate multi-region deployments.')
 param region string
 
 @description('DNS suffix for the portal cert, e.g. pilotswarm.azure.com. Required in EDGE_MODE=afd + TLS_SOURCE=akv (used to derive resourceName.suffix as cert subject + AFD origin host). Ignored when EDGE_MODE=afd + TLS_SOURCE=letsencrypt (cert subject derives from the AppGw cloudapp.azure.com label) or when EDGE_MODE=private (caller supplies portalHostnameOverride).')
 param sslCertificateDomainSuffix string
 
-@description('Edge topology mode. afd = Front Door + Private Link to AppGw private FE (default; covers OSS via the AppGw cloudapp.azure.com DNS label and EV2 via a custom domain). private = AppGw private IP listener only, no AFD; caller must supply portalHostnameOverride and arrange DNS resolution to APP_GATEWAY_PRIVATE_IP.')
+@description('Edge topology mode. afd = Front Door + Private Link to AppGw private FE (default; covers OSS via the AppGw cloudapp.azure.com DNS label and the enterprise path via a custom domain). private = AppGw private IP listener only, no AFD; caller must supply portalHostnameOverride and arrange DNS resolution to APP_GATEWAY_PRIVATE_IP.')
 @allowed([
   'afd'
   'private'
 ])
 param edgeMode string = 'afd'
 
-@description('TLS cert source. letsencrypt = cert-manager + LE prod (cert lands in a K8s Secret managed by cert-manager; bicep skips the AKV cert deployment script). akv = AKV-registered issuer + bicep cert script (current EV2 / enterprise path; default preserves EV2 behavior when the param is not supplied). akv-selfsigned = AKV `Self` issuer + bicep cert script (OSS / dev convenience for private mode; produces a self-signed cert in AKV, no CA registration required, NOT trusted by browsers without manual trust).')
+@description('TLS cert source. letsencrypt = cert-manager + LE prod (cert lands in a K8s Secret managed by cert-manager; bicep skips the AKV cert deployment script). akv = AKV-registered issuer + bicep cert script (current enterprise path; default preserves enterprise path behavior when the param is not supplied). akv-selfsigned = AKV `Self` issuer + bicep cert script (OSS / dev convenience for private mode; produces a self-signed cert in AKV, no CA registration required, NOT trusted by browsers without manual trust).')
 @allowed([
   'letsencrypt'
   'akv'
@@ -110,7 +113,7 @@ param certScriptIdentityResourceId string
 @description('Name of the cert in AKV. Must match the SPC objectName/secretName used by the portal TLS volume (deploy/gitops/portal/base/secret-provider-class.yaml). Only consumed when tlsSource is akv.')
 param portalTlsCertName string = 'pilotswarm-portal-tls'
 
-@description('AKV issuer name (registered via akv-certificate-issuer.bicep) for tlsSource=akv. When empty (default), bicep registers and uses OneCertV2-PublicCA (afd) or OneCertV2-PrivateCA (private) per the fleet-manager pattern. Ignored when tlsSource is akv-selfsigned (uses the built-in `Self` issuer) or letsencrypt (cert-manager owns the cert).')
+@description('AKV issuer name (registered via akv-certificate-issuer.bicep) for tlsSource=akv. When empty (default), bicep registers and uses OneCertV2-PublicCA (afd) or OneCertV2-PrivateCA (private) per the reference deployment pattern. Ignored when tlsSource is akv-selfsigned (uses the built-in `Self` issuer) or letsencrypt (cert-manager owns the cert).')
 param portalTlsIssuerName string = ''
 
 // -----------------------------------------------------------------------------
@@ -177,7 +180,7 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2024-01-01' e
 }
 
 // -----------------------------------------------------------------------------
-// Portal manifest container + Flux source (owned by Portal per fleet-manager
+// Portal manifest container + Flux source (owned by Portal per reference deployment
 // playgroundservice pattern).
 // -----------------------------------------------------------------------------
 
@@ -188,6 +191,20 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing 
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' existing = {
   parent: storageAccount
   name: 'default'
+}
+
+// CSI Secrets Provider UAMI (created by BaseInfra's `uami.bicep` module). The
+// UAMI is named `${baseInfraResourceNamePrefix}-csi-mid` by convention; we
+// look it up here so its clientId can be exposed as a Portal own-package
+// output. This makes the value reachable by downstream callers (e.g.
+// higher-level deployment orchestrators that compose this bicep across
+// independent deployment boundaries and can only see each package's own
+// outputs) for Workload Identity federation in the AKS app deploy step.
+// When OSS deploys directly, `deploy-bicep.mjs` already wires
+// `csiIdentityClientId` into manifest substitution via the
+// `WORKLOAD_IDENTITY_CLIENT_ID` env alias, so this output is purely additive.
+resource csiUami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  name: '${baseInfraResourceNamePrefix}-csi-mid'
 }
 
 resource portalManifestsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
@@ -246,9 +263,9 @@ resource portalPrivateDnsZoneVnetLink 'Microsoft.Network/privateDnsZones/virtual
 // Self issuer) and for tlsSource=letsencrypt (cert-manager owns the cert,
 // AKV is not in the path).
 //
-// Pattern matches postgresql-fleet-manager: afd lands on the public CA,
+// Pattern matches reference deployment: afd lands on the public CA,
 // private lands on the private CA (e.g. AME OneCertV2-PrivateCA registered
-// for the AKV by EV2 / OneCert onboarding).
+// for the AKV by enterprise OneCert onboarding).
 // -----------------------------------------------------------------------------
 module PortalAkvIssuer '../../common/bicep/akv-certificate-issuer.bicep' = if (tlsSource == 'akv') {
   name: 'portal-akv-issuer-${dTime}'
@@ -372,7 +389,7 @@ module plApprove '../../common/bicep/approve-private-endpoint.bicep' = if (edgeM
 // Outputs
 // -----------------------------------------------------------------------------
 
-@description('AFD backend hostname / AppGW listener host / Portal Ingress host. EV2 scope-binds this into overlay/.env as PORTAL_HOSTNAME.')
+@description('AFD backend hostname / AppGW listener host / Portal Ingress host. The enterprise orchestrator scope-binds this into overlay/.env as PORTAL_HOSTNAME.')
 output BackendHostName string = certificateSubject
 
 @description('Computed PLS service id string (audit/diagnostic).')
@@ -388,3 +405,6 @@ output ApprovedPrivateEndpointCount int = edgeMode == 'afd' ? plApprove.outputs.
 
 @description('Portal manifest container name (consumed by OSS deploy script as DEPLOYMENT_STORAGE_CONTAINER_NAME via FR-022 alias).')
 output manifestsContainerName string = portalManifestsContainer.name
+
+@description('Client ID of the CSI Secrets Provider UAMI (looked up by convention name from this RG). Consumed by the AKS app-deploy step (and by downstream callers that wrap this bicep) to federate Workload Identity.')
+output csiIdentityClientId string = csiUami.properties.clientId

@@ -3,7 +3,7 @@
 //
 // Composes every per-region resource (AKS, ACR, Storage, PG Flex, AKV, UAMIs,
 // VNet, AppGW with PL config, Flux configs for worker + portal) inside a
-// single resource group. Deployed per region under EV2; the fleet-wide AFD
+// single resource group. Deployed per region under the enterprise path; the fleet-wide AFD
 // profile lives in GlobalInfra and is referenced by name/RG only (Phase 4
 // wires AFD origin + route to the AppGW private frontend).
 // ==============================================================================
@@ -26,7 +26,7 @@ param frontDoorProfileName string
 @description('Resource group that holds the fleet-wide Front Door profile.')
 param frontDoorProfileResourceGroup string
 
-@description('Suffix for the TLS certificate domain (e.g. "pilotswarm.contoso.net"). Consumed by Phase 4; surfaced here as an output so EV2 can thread it through.')
+@description('Suffix for the TLS certificate domain (e.g. "pilotswarm.contoso.net"). Consumed by Phase 4; surfaced here as an output so the enterprise path can thread it through.')
 param sslCertificateDomainSuffix string
 
 @description('ACR SKU (Basic/Standard/Premium). Dev uses Basic; prod uses Premium.')
@@ -58,14 +58,14 @@ param dTime string = utcNow()
 @maxValue(730)
 param logAnalyticsRetentionDays int = 30
 
-@description('Edge topology mode. afd = Front Door + Private Link to AppGw private FE (default; current EV2 + OSS public path). private = no AppGw, no AGIC, no AFD; AKS web-app-routing addon (NGINX) on an internal LoadBalancer instead. Caller is responsible for arranging in-VNet / VPN / Bastion access and DNS resolution (Portal bicep provisions a Private DNS Zone for this).')
+@description('Edge topology mode. afd = Front Door + Private Link to AppGw private FE (default; current enterprise + OSS public path). private = no AppGw, no AGIC, no AFD; AKS web-app-routing addon (NGINX) on an internal LoadBalancer instead. Caller is responsible for arranging in-VNet / VPN / Bastion access and DNS resolution (Portal bicep provisions a Private DNS Zone for this).')
 @allowed([
   'afd'
   'private'
 ])
 param edgeMode string = 'afd'
 
-@description('Optional principal ID (AAD object ID) for the local-deploy identity to receive Storage Blob Data Contributor on the deployment storage account. Defaults to empty for the EV2 production path. Local `npm run deploy` populates this with the signed-in AAD user.')
+@description('Optional principal ID (AAD object ID) for the local-deploy identity to receive Storage Blob Data Contributor on the deployment storage account. Defaults to empty for the enterprise production path. Local `npm run deploy` populates this with the signed-in AAD user.')
 param localDeploymentPrincipalId string = ''
 
 @description('Principal type for localDeploymentPrincipalId.')
@@ -97,17 +97,29 @@ param foundryDeployments array = []
 
 var location = toLower(region)
 
-// Names that must be globally unique and alphanumeric-only use
-// `uniqueString(resourceGroup().id)` as a suffix to keep them short and stable
-// per-RG.
-var uniqueSuffix = substring(uniqueString(resourceGroup().id), 0, 6)
+// Resource naming conventions.
+//
+// All resources are named deterministically from `resourceNamePrefix`, which
+// is expected to encode whatever uniqueness the caller needs (e.g.
+// `<env><regionShortName><stamp>`, like `pilotswarmdevwus31`). The caller is
+// responsible for ensuring the prefix is unique within its scope — e.g. each
+// (env, region, stamp) owns its own subscription/resource-group — so no
+// random hashes are needed to disambiguate names. This lets external tooling
+// (e.g. higher-level deployment orchestrators that wrap this module) compose
+// resource names by convention without runtime lookups against the
+// deployment outputs.
+//
+// `alphaPrefix` strips dashes/underscores to satisfy the alphanumeric naming
+// constraints of ACR / Storage / Key Vault. When the caller already supplies a
+// dashless `resourceNamePrefix`, this is a no-op and `alphaPrefix ==
+// resourceNamePrefix`.
 var alphaPrefix = toLower(replace(replace(resourceNamePrefix, '-', ''), '_', ''))
 
 var aksClusterName = '${resourceNamePrefix}-aks'
-var acrName = '${alphaPrefix}acr${uniqueSuffix}'
-var storageAccountName = '${alphaPrefix}sa${uniqueSuffix}'
-var postgresServerName = '${resourceNamePrefix}-pg-${uniqueSuffix}'
-var keyVaultName = '${alphaPrefix}kv${uniqueSuffix}'
+var acrName = '${alphaPrefix}acr'
+var storageAccountName = '${alphaPrefix}sa'
+var postgresServerName = '${resourceNamePrefix}-pg'
+var keyVaultName = '${alphaPrefix}kv'
 var applicationGatewayName = '${resourceNamePrefix}-appgw'
 var logAnalyticsName = '${resourceNamePrefix}-log'
 var foundryAccountName = '${resourceNamePrefix}-aif'
@@ -419,7 +431,7 @@ module AppGwPeApprovalRbac './appgw-pe-approval-rbac.bicep' = if (edgeMode == 'a
 // AGIC addon RBAC. The AGIC addon creates its own UAMI in the AKS node RG;
 // that identity (NOT the AKS control-plane UAMI) is what the AGIC pod uses,
 // so it needs explicit role grants on the AppGw + AppGw subnet + AppGw UAMI.
-// Mirrors postgresql-fleet-manager `agic-appgw-rbac` + `agic-vnet-rbac`.
+// Mirrors reference deployment patterns: `agic-vnet-rbac`.
 // Skipped in private mode — AGIC addon is not enabled (web-app-routing is).
 module AgicRbac './agic-rbac.bicep' = if (edgeMode == 'afd') {
   name: '${resourceNamePrefix}-agic-rbac-${dTime}'
@@ -437,7 +449,7 @@ module AgicRbac './agic-rbac.bicep' = if (edgeMode == 'afd') {
 // Same approver UAMI also runs the AKV cert-creation deployment script
 // (Portal/akv-ssl-certificate.bicep) so it needs Key Vault Certificates
 // Officer on the BaseInfra AKV. Reusing one deployment-script identity
-// keeps role-grant churn low and matches the postgresql-fleet-manager
+// keeps role-grant churn low and matches the reference deployment
 // `infraDeployManagedIdName` pattern.
 module KvCertOfficerRbac './kv-cert-officer-rbac.bicep' = {
   name: '${resourceNamePrefix}-kv-certofficer-rbac-${dTime}'
@@ -454,7 +466,7 @@ module KvCertOfficerRbac './kv-cert-officer-rbac.bicep' = {
 // Per-deployable Flux configurations (worker, portal) are now owned by each
 // service's own bicep (deploy/services/worker/bicep/main.bicep,
 // deploy/services/portal/bicep/main.bicep) — matching the
-// postgresql-fleet-manager playgroundservice pattern. BaseInfra installs the
+// reference deployment pattern. BaseInfra installs the
 // `microsoft.flux` extension via aks.bicep but does not configure any
 // per-service `fluxConfigurations` resources.
 //
@@ -462,7 +474,7 @@ module KvCertOfficerRbac './kv-cert-officer-rbac.bicep' = {
 // the Worker and Portal bicep main.bicep files.
 
 // ==============================================================================
-// Outputs (consumed by Phase 4 / EV2 / deploy scripts).
+// Outputs (consumed by Phase 4 / enterprise / OSS deploy scripts).
 // ==============================================================================
 
 output applicationGatewayName string = edgeMode == 'afd' ? AppGateway!.outputs.applicationGatewayName : ''
@@ -497,7 +509,7 @@ output approverIdentityResourceId string = Uami.outputs.approverIdentityResource
 // the Private DNS Zone vnet link (`aksVnetId` param). Always emitted.
 output aksVnetId string = Vnet.outputs.vnetId
 
-// Edge topology mode — echoed back so the orchestrator (deploy.mjs / EV2)
+// Edge topology mode — echoed back so the orchestrator (deploy.mjs / the enterprise path)
 // can fan it into per-service params + skip AFD origin wiring in private.
 output edgeMode string = edgeMode
 

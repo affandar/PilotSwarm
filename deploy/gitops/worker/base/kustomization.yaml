@@ -9,7 +9,7 @@ kind: Kustomization
 # resource (including the generated ConfigMaps in this base and in
 # the overlay). This matches the
 # [official kustomize `namespace:` semantics][1] and the
-# `postgresql-fleet-manager` reference pattern. It also keeps
+# `reference deployment` reference pattern. It also keeps
 # `nameReference` rewriting (volume.configMap.name → hashed name)
 # working without the namespace-mismatch trap.
 #

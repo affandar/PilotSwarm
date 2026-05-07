@@ -2,7 +2,7 @@
 //
 // docker buildx build --platform linux/amd64 --load → docker save → in-process
 // zlib gzip → <staging>/<dockerImageRepo>.tar.gz. Output filename matches
-// EV2's <repo>.tar.gz (CodeResearch Q4) so downstream tooling sees the same shape.
+// The enterprise path's <repo>.tar.gz (CodeResearch Q4) so downstream tooling sees the same shape.
 
 import { spawn } from "node:child_process";
 import { createWriteStream, existsSync } from "node:fs";

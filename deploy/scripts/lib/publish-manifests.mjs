@@ -8,7 +8,7 @@
 // Uses `az storage blob upload-batch --auth-mode login` — caller must have
 // `Storage Blob Data Contributor` (or higher) on the storage account. The
 // BaseInfra Bicep module grants that role at storage-account creation time:
-//   - EV2 production runs:  granted to the EV2 deploy UAMI (ev2-deploy-rbac.bicep)
+//   - enterprise / production runs:  granted to the enterprise deploy UAMI (enterprise-deploy-rbac.bicep)
 //   - Local `npm run deploy`: granted to the signed-in AAD user (storage.bicep
 //     conditional role assignment, driven by the `localDeploymentPrincipalId`
 //     param that deploy-bicep.mjs populates from `az ad signed-in-user`).

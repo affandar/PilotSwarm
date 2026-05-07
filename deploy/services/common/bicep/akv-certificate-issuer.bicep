@@ -1,10 +1,10 @@
 // ==============================================================================
 // AKV certificate issuer registration (idempotent).
 //
-// Adapted from postgresql-fleet-manager `BaseInfra/bicep/akv-certificate-issuer.bicep`.
+// Adapted from an internal reference deployment.
 // Registers a named CA on a Key Vault so subsequent
 // `akv-ssl-certificate.bicep` calls can issue certs against that CA instead
-// of `Self`. Use this when running under EV2 with an internal CA (e.g.
+// of `Self`. Use this when running under the enterprise path with an internal CA (e.g.
 // OneCertV2 / DigiCert). For OSS / dev the default `Self` issuer in
 // `akv-ssl-certificate.bicep` is sufficient and this module is not needed.
 // ==============================================================================

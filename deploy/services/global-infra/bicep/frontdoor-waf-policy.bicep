@@ -1,7 +1,7 @@
 // ==============================================================================
 // WAF policy for Azure Front Door Premium.
 //
-// Adapted from postgresql-fleet-manager/src/Deploy/GlobalInfra/bicep/
+// Adapted from an internal reference deployment
 // frontdoor-waf-policy.bicep. The `wafMode` is parameterized so a single
 // template backs both environments:
 //   dev  -> Detection  (log only; never block during bring-up)
@@ -24,7 +24,7 @@ param location string = 'global'
 @description('Custom WAF rules merged into properties.customRules.rules. Defaults to []. Populate via --parameters customRules=@<file.json> (e.g. corpnet allow-list rules) without checking values into source.')
 param customRules array = []
 
-@description('Managed rule sets applied to every request. Defaults to Microsoft DefaultRuleSet 2.1 + BotManager 1.1, matching the fleet-manager reference. The DefaultRuleSet exclusions cover request attributes that carry opaque structured payloads (bearer JWTs, MSAL state cookies, portal UI-state cookies) whose base64 / JSON content routinely matches OWASP SQLi/XSS rules and produces false-positive blocks. Token validation (issuer / audience / signature) happens at the portal via JWKS — there is no security benefit to scanning these.')
+@description('Managed rule sets applied to every request. Defaults to Microsoft DefaultRuleSet 2.1 + BotManager 1.1, matching the reference deployment. The DefaultRuleSet exclusions cover request attributes that carry opaque structured payloads (bearer JWTs, MSAL state cookies, portal UI-state cookies) whose base64 / JSON content routinely matches OWASP SQLi/XSS rules and produces false-positive blocks. Token validation (issuer / audience / signature) happens at the portal via JWKS — there is no security benefit to scanning these.')
 param managedRuleSets array = [
   {
     ruleSetType: 'Microsoft_DefaultRuleSet'
