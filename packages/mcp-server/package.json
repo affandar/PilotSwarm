@@ -1,0 +1,40 @@
+{
+  "name": "pilotswarm-mcp-server",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "MCP server for PilotSwarm — exposes sessions, agents, facts, and models to MCP clients.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "pilotswarm-mcp": "./dist/bin/pilotswarm-mcp.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "npm run test:unit",
+    "test:unit": "node test/unit/sendCommandAndWait.unit.mjs",
+    "test:integration": "node test/integration/smoke.live.mjs",
+    "test:integration:all": "node test/integration/smoke.live.mjs && node test/integration/tools.live.mjs && node test/integration/edge-cases.live.mjs && node test/integration/verify.live.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.12",
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "hono": "^4.12.10",
+    "pilotswarm-sdk": "^0.1.11"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
