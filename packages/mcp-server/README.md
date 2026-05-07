@@ -7,16 +7,18 @@ Exposes PilotSwarm sessions, agents, facts, and models to any MCP-compatible cli
 ### Stdio Transport (recommended for local IDEs)
 
 ```bash
-npx pilotswarm-mcp --store "$DATABASE_URL" --model-providers .model_providers.json
+npx -y -p pilotswarm-mcp-server pilotswarm-mcp --store "$DATABASE_URL" --model-providers .model_providers.json
 ```
 
 ### HTTP Transport (recommended for remote/shared access)
 
 ```bash
-PILOTSWARM_MCP_KEY=your-secret-key npx pilotswarm-mcp \
+PILOTSWARM_MCP_KEY=your-secret-key npx -y -p pilotswarm-mcp-server pilotswarm-mcp \
   --transport http --port 3100 \
   --store "$DATABASE_URL" --model-providers .model_providers.json
 ```
+
+> The package is published as `pilotswarm-mcp-server`; the executable bin is `pilotswarm-mcp`. Use `npx -p pilotswarm-mcp-server pilotswarm-mcp` (or install globally) so npm resolves the right package.
 
 > **Prerequisite:** A running PostgreSQL database and a PilotSwarm worker. The MCP server creates a `PilotSwarmClient` internally — it needs the same database the worker connects to.
 
@@ -28,7 +30,7 @@ Each client below shows both **Stdio** (local, recommended) and **HTTP** (remote
 
 > **HTTP prerequisite:** Start the HTTP server first:
 > ```bash
-> PILOTSWARM_MCP_KEY=your-secret-key npx pilotswarm-mcp \
+> PILOTSWARM_MCP_KEY=your-secret-key npx -y -p pilotswarm-mcp-server pilotswarm-mcp \
 >   --transport http --port 3100 \
 >   --store "$DATABASE_URL" --model-providers .model_providers.json
 > ```
@@ -46,6 +48,8 @@ Add to your `.mcp.json` (project root or `~/.copilot/`):
       "type": "stdio",
       "command": "npx",
       "args": [
+        "-y",
+        "-p", "pilotswarm-mcp-server",
         "pilotswarm-mcp",
         "--store", "postgresql://user:pass@localhost:5432/pilotswarm",
         "--model-providers", ".model_providers.json"
@@ -83,6 +87,8 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
     "pilotswarm": {
       "command": "npx",
       "args": [
+        "-y",
+        "-p", "pilotswarm-mcp-server",
         "pilotswarm-mcp",
         "--store", "postgresql://user:pass@localhost:5432/pilotswarm",
         "--model-providers", ".model_providers.json"
@@ -120,6 +126,8 @@ Add a `.mcp.json` in your project root:
       "type": "stdio",
       "command": "npx",
       "args": [
+        "-y",
+        "-p", "pilotswarm-mcp-server",
         "pilotswarm-mcp",
         "--store", "postgresql://user:pass@localhost:5432/pilotswarm",
         "--model-providers", ".model_providers.json"
@@ -157,6 +165,8 @@ Open **Settings → MCP** and add a server, or edit `~/.cursor/mcp.json`:
     "pilotswarm": {
       "command": "npx",
       "args": [
+        "-y",
+        "-p", "pilotswarm-mcp-server",
         "pilotswarm-mcp",
         "--store", "postgresql://user:pass@localhost:5432/pilotswarm",
         "--model-providers", ".model_providers.json"
@@ -194,6 +204,8 @@ Add `.vscode/mcp.json` to your workspace:
       "type": "stdio",
       "command": "npx",
       "args": [
+        "-y",
+        "-p", "pilotswarm-mcp-server",
         "pilotswarm-mcp",
         "--store", "postgresql://user:pass@localhost:5432/pilotswarm",
         "--model-providers", ".model_providers.json"
@@ -307,7 +319,7 @@ console.log(result);
 
 ---
 
-## Available Tools (15)
+## Available Tools (20)
 
 ### Session Management
 
@@ -320,6 +332,9 @@ console.log(result);
 | `abort_session` | Cancel a running session with an optional reason |
 | `rename_session` | Rename a session title |
 | `delete_session` | Soft-delete a session |
+| `list_sessions` | Discovery — list all sessions with status, model, agent info, and parent/child relationships |
+| `get_session_detail` | Discovery — get detailed info for a session including status, context usage, cron state, and pending questions |
+| `get_session_events` | Discovery — read the CMS event stream for a session, with `after_seq` pagination and long-poll support |
 
 ### Agent Management
 
@@ -328,6 +343,7 @@ console.log(result);
 | `spawn_agent` | Spawn a sub-agent within a session |
 | `message_agent` | Send a message to a running sub-agent |
 | `cancel_agent` | Cancel a running sub-agent with an optional reason |
+| `list_agents` | Discovery — list all sub-agents (child sessions) with name, status, model, parent, and task; filter by parent or status |
 
 ### Knowledge (Facts)
 
@@ -341,19 +357,30 @@ console.log(result);
 
 | Tool | Description |
 |------|-------------|
+| `list_models` | Discovery — list all available LLM models, optionally grouped by provider |
 | `switch_model` | Change the model for a session |
 | `send_command` | Send an arbitrary orchestration command to a session |
 
 ---
 
-## Available Resources (5)
+## Available Resources (15)
 
 | URI | Description |
 |-----|-------------|
 | `pilotswarm://sessions` | List all sessions with status |
 | `pilotswarm://sessions/{id}` | Detailed info for a specific session |
 | `pilotswarm://sessions/{id}/messages` | Chat history for a session |
+| `pilotswarm://sessions/{id}/events` | CMS event stream for a session |
+| `pilotswarm://sessions/{id}/dump` | Full session dump (config, state, messages, events) |
+| `pilotswarm://agents/{agentId}` | System-agent detail (one resource per running system agent, enumerated dynamically) |
+| `pilotswarm://agents/{agentId}/events` | Event stream for a system agent (enumerated dynamically) |
 | `pilotswarm://facts` | Query the knowledge/facts store |
+| `pilotswarm://facts/skills` | Index of skill facts |
+| `pilotswarm://facts/skills/{key}` | Detail for a specific skill fact |
+| `pilotswarm://facts/asks` | Index of ask (open-question) facts |
+| `pilotswarm://facts/asks/{key}` | Detail for a specific ask fact |
+| `pilotswarm://facts/intake` | Intake (raw) facts feed |
+| `pilotswarm://facts/intake/{keyPattern}` | Intake facts filtered by key pattern |
 | `pilotswarm://models` | Available LLM models grouped by provider |
 
 ---
