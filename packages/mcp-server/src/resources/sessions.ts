@@ -93,9 +93,7 @@ export function registerSessionResources(server: McpServer, ctx: ServerContext) 
         async (uri, variables) => {
             const id = String(variables.id);
             try {
-                const raw = await ctx.mgmt.dumpSession(id);
-                const dump = typeof raw === "string" ? JSON.parse(raw) : raw;
-                const events = dump?.events ?? [];
+                const events = await ctx.mgmt.getSessionEvents(id, undefined, 100);
                 return {
                     contents: [
                         {
