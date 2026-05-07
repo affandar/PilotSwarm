@@ -45,23 +45,47 @@ export function registerFactsTools(server: McpServer, ctx: ServerContext) {
     );
 
     // 2. read_facts — Query facts from the knowledge store
+    //
+    // Privilege boundary (see README › Security model):
+    //   `session_id`, `reader_session_id`, and `granted_session_ids` are all
+    //   caller-supplied. The MCP server has no ambient mapping from MCP client
+    //   to PilotSwarm session, so it cannot derive the right session implicitly
+    //   — any client speaking to this MCP endpoint can read facts scoped to any
+    //   session it names. Operators MUST treat MCP clients as trusted: gate the
+    //   stdio transport via process isolation and the HTTP transport via the
+    //   shared `PILOTSWARM_MCP_KEY` bearer (both already enforced upstream of
+    //   this tool). A stricter per-client privilege boundary belongs at the
+    //   transport / auth layer, not here.
     server.registerTool(
         "read_facts",
         {
             title: "Read Facts",
-            description: "Query facts from the PilotSwarm knowledge store",
+            description:
+                "Query facts from the PilotSwarm knowledge store. " +
+                "TRUST NOTE: session_id / reader_session_id / granted_session_ids are caller-supplied; " +
+                "this tool does not authenticate that the caller owns the named session. " +
+                "MCP clients connecting to this server are trusted with cross-session fact reads.",
             inputSchema: {
                 key_pattern: z.string().optional().describe("Pattern to match fact keys against"),
                 tags: z.array(z.string()).optional().describe("Filter by tags"),
-                session_id: z.string().optional().describe("Filter by session ID"),
+                session_id: z
+                    .string()
+                    .optional()
+                    .describe(
+                        "Filter by session ID. Caller-supplied and not authenticated against client identity — see tool description.",
+                    ),
                 reader_session_id: z
                     .string()
                     .optional()
-                    .describe("Session ID of the reader for access control"),
+                    .describe(
+                        "Session ID of the reader for access control. Caller-supplied; trust assumption applies.",
+                    ),
                 granted_session_ids: z
                     .array(z.string())
                     .optional()
-                    .describe("Session IDs the reader has been granted access to"),
+                    .describe(
+                        "Session IDs the reader has been granted access to. Caller-supplied; trust assumption applies.",
+                    ),
                 keys_only: z.boolean().optional().describe("If true, return only fact keys without values (default false)"),
                 limit: z.number().optional().describe("Maximum number of facts to return"),
             },

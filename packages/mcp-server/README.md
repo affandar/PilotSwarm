@@ -350,7 +350,7 @@ console.log(result);
 | Tool | Description |
 |------|-------------|
 | `store_fact` | Store a key-value fact (shared or session-scoped) |
-| `read_facts` | Query facts by key pattern, tags, or session scope |
+| `read_facts` | Query facts by key pattern, tags, or session scope (caller-trusted — see [Security model](#security-model)) |
 | `delete_fact` | Delete a fact by key |
 
 ### Model & Commands
@@ -391,6 +391,19 @@ console.log(result);
 - **HTTP** — Requires the `PILOTSWARM_MCP_KEY` environment variable. All requests must include an `Authorization: Bearer <key>` header. The server refuses to start if the key is not set.
 
 CORS is enabled for all origins, with `mcp-session-id` and `mcp-protocol-version` exposed as response headers.
+
+---
+
+## Security model
+
+The MCP server treats every connected client as trusted with the full scope of the underlying PilotSwarm deployment. Concretely:
+
+- **Authentication is at the transport, not at the tool.** Stdio mode relies on OS-level process isolation; HTTP mode relies on a single shared bearer key (`PILOTSWARM_MCP_KEY`). There is no per-client identity that the server could map to a particular PilotSwarm session.
+- **Tools that take a `session_id` accept it as caller input.** This is true of `read_facts`, `store_fact`, `delete_fact`, `message_agent`, and the session-management tools. The server does **not** verify that the calling MCP client "owns" the session it names, because it has no notion of client ownership in the first place. A client that can call the tool can scope its call to any session ID it knows or guesses.
+- **Implication for `read_facts`.** Any client authorized to talk to this MCP endpoint can read facts scoped to any session — including facts another caller wrote with `session_id` set to a different session. The `reader_session_id` and `granted_session_ids` parameters are likewise caller-supplied and exist to drive the SDK's fact-access checks; they are not themselves authenticated.
+- **What the server does enforce.** DNS-rebinding defense via the `Host` header allowlist (`--allowed-hosts`), constant-time bearer comparison, a per-process session cap (`--max-sessions`), and standard CORS headers. These protect the endpoint perimeter; they do not subdivide privilege between clients past the perimeter.
+
+If your deployment needs a stricter per-client privilege boundary (e.g. each MCP client may only read facts for sessions it owns), the right place to add it is the transport / auth layer — for example, by issuing per-client bearer keys, mapping each key to an allowed session-ID set, and enforcing that mapping in middleware before the tool dispatch. The current tool layer intentionally does not pretend to enforce a boundary it cannot see.
 
 ---
 
