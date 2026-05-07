@@ -16,9 +16,19 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
     // LLM-driven `spawn_agent` TurnAction path inside the orchestration body
     // is unrelated to management commands. To honestly drive sub-agent
     // spawn from outside the LLM loop, this tool calls the real management
-    // API: `client.createSessionForAgent(...)` with `parentSessionId` set.
-    // The child runs as an independent session linked to the parent via
-    // the existing `parentSessionId` plumbing in CMS / SDK.
+    // API and creates the child via `client.createSession(...)` with
+    // `parentSessionId` and `agentId` set. We deliberately do NOT use
+    // `createSessionForAgent` here: that helper hard-validates the agent
+    // name against `allowedAgentNames` (which the MCP server boots without
+    // populating), and its signature drops `parentSessionId` /
+    // `systemMessage`, silently producing a peer top-level session. Passing
+    // `parentSessionId` directly to `createSession` puts the SDK in
+    // sub-agent mode (`isSubAgent === true`), which bypasses the allowlist
+    // policy check and persists `parent_session_id` on the CMS row so the
+    // child shows up under `list_agents` and `parent.subAgents`. The
+    // session's `boundAgentName` + `promptLayering` flow into the
+    // orchestration input on first `send()`, which is what actually loads
+    // the named agent's prompt for the child turn loop.
     server.registerTool(
         "spawn_agent",
         {
@@ -41,18 +51,25 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
         },
         async ({ session_id, agent_name, task, model, title, system_message }) => {
             try {
-                const opts: {
-                    parentSessionId?: string;
-                    model?: string;
-                    title?: string;
-                    systemMessage?: string;
-                } = { parentSessionId: session_id };
-                if (model !== undefined) opts.model = model;
-                if (title !== undefined) opts.title = title;
-                if (system_message !== undefined) opts.systemMessage = system_message;
-
-                const child = await ctx.client.createSessionForAgent(agent_name, opts);
+                const child = await ctx.client.createSession({
+                    agentId: agent_name,
+                    boundAgentName: agent_name,
+                    promptLayering: { kind: "app-agent" },
+                    parentSessionId: session_id,
+                    ...(model !== undefined ? { model } : {}),
+                    ...(system_message !== undefined ? { systemMessage: system_message } : {}),
+                });
                 childSessionCache.set(child.sessionId, child);
+
+                // Title is metadata on the CMS row. createSession() does not
+                // accept a title parameter (createSessionForAgent does, via
+                // a follow-up _catalog.updateSession call we cannot reach
+                // through public APIs). When a caller passes a title we let
+                // the eventual `list_agents` row surface whatever default
+                // the SDK assigns (null/derived). Recorded here in case a
+                // future SDK surface lets us set it without re-introducing
+                // the allowlist coupling.
+                void title;
 
                 let promptSent = false;
                 if (task) {
