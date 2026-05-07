@@ -6,10 +6,10 @@ A multi-platform Node.js deploy driver for PilotSwarm on AKS that
 | Path | What it is | When to use |
 |---|---|---|
 | `scripts/deploy-aks.sh` | Imperative bash script targeting an existing dev cluster (`docs/deploying-to-aks.md`). | Engineer smoke loop on a one-off cluster. |
-| `deploy/services/ev2-deploy-dev.ps1` | EV2-driven GitOps deploy (Bicep + Kustomize + Flux Storage Bucket, see `docs/deploying-to-aks-ev2.md`). | Production rollouts via the internal EV2 service. |
-| **`deploy/scripts/deploy.mjs`** *(this README)* | OSS-friendly equivalent of the EV2 path, runnable from any contributor's box without EV2. | Reproducing the GitOps deploy locally; future GitHub Actions wrapper. |
+| _enterprise deployment orchestrator_ (internal-only) | Enterprise-driven GitOps deploy (Bicep + Kustomize + Flux Storage Bucket). | Production rollouts via the enterprise deployment path. |
+| **`deploy/scripts/deploy.mjs`** *(this README)* | OSS-friendly equivalent of the enterprise path, runnable from any contributor's box without the enterprise path. | Reproducing the GitOps deploy locally; future GitHub Actions wrapper. |
 
-Same outcome as the EV2 path: Bicep deployed → image pushed to ACR →
+Same outcome as the enterprise path: Bicep deployed → image pushed to ACR →
 Kustomize manifests staged with `.env` substitution → tree uploaded to
 the Flux Storage Bucket → rollout verified against the running cluster.
 
@@ -48,7 +48,7 @@ npm run deploy:new-env
 npm run deploy:new-env -- foo --subscription <id> --location westus3
 #    The scaffolder generates RESOURCE_GROUP, GLOBAL_RESOURCE_PREFIX,
 #    GLOBAL_RESOURCE_GROUP, PORTAL_RESOURCE_NAME using the same patterns
-#    EV2 uses (deploy/services/<svc>/Ev2*Deployment/serviceModel.json):
+// The enterprise path uses (the enterprise deployment manifests):
 #      RESOURCE_GROUP         = ${RESOURCE_PREFIX}-<regionShort>-rg
 #      GLOBAL_RESOURCE_PREFIX = ${RESOURCE_PREFIX}global
 #      GLOBAL_RESOURCE_GROUP  = ${GLOBAL_RESOURCE_PREFIX}
@@ -63,12 +63,12 @@ npm run deploy -- baseinfra foo --steps bicep
 ```
 
 The reserved labels `dev` and `prod` are NOT valid OSS env names — they
-are used by the EV2 path for ServiceGroup naming.
+are used by the enterprise path for ServiceGroup naming.
 
 ### First-time bring-up (`all`)
 
 For an end-to-end deploy on a fresh subscription / cluster, use the `all`
-aggregate. It runs the canonical EV2-equivalent sequence
+aggregate. It runs the canonical enterprise-equivalent sequence
 (`globalinfra → baseinfra → worker → portal`) in a single invocation,
 sharing the same env map across services so Bicep outputs (ACR login
 server, deployment storage account, etc.) cascade forward automatically:
@@ -155,7 +155,7 @@ deployment-target keys, prompts for per-stamp secrets, and writes the
 complete file under `local/<name>/env`. Subsequent edits to `template.env`
 affect only newly-scaffolded envs — never existing ones.
 
-`dev` and `prod` are reserved labels used by the EV2 path for ServiceGroup
+`dev` and `prod` are reserved labels used by the enterprise path for ServiceGroup
 naming; they are NOT valid OSS env names.
 
 Files are flat `KEY=value`, no quoting, no shell expansion.
@@ -188,13 +188,13 @@ split-step runs (e.g. `worker dev --steps manifests` without first running
 `--steps bicep` in the same process) fail fast with a clear "unresolved
 placeholder" error directing you to run a prior `--steps bicep`.
 
-## How `.env` substitution works (vs. EV2)
+## How `.env` substitution works (vs. The enterprise path)
 
-| | EV2 path | OSS path |
+| | Enterprise path | OSS path |
 |---|---|---|
 | Source | `*.Configuration.json` per service | `deploy/envs/local/<name>/env` (standalone, scaffolded from `deploy/envs/template.env`) |
-| Scope binding | EV2 RP injects subscription / region / IDs into the parameters JSON | `deploy/scripts/lib/common.mjs` resolves env file → JS Map |
-| `.env` substitution | `GenerateEnvForEv2.ps1` rewrites overlay `.env` from JSON params | `deploy/scripts/lib/substitute-env.mjs` rewrites overlay `.env` from the env map |
+| Scope binding | the enterprise orchestrator injects subscription / region / IDs into the parameters JSON | `deploy/scripts/lib/common.mjs` resolves env file → JS Map |
+| `.env` substitution | the enterprise param-substitution helper rewrites overlay `.env` from JSON params | `deploy/scripts/lib/substitute-env.mjs` rewrites overlay `.env` from the env map |
 | Per-service identity | Per-service scope binding | Shared `csiIdentity` UAMI clientId cascades from BaseInfra Bicep output → both worker and portal overlays |
 
 Both paths produce the **same rendered overlay `.env`** before upload.
@@ -384,6 +384,6 @@ hard-code the URL.
 
 ## Cross-references
 
-- EV2 / production path: [`docs/deploying-to-aks-ev2.md`](../../docs/deploying-to-aks-ev2.md)
+- Enterprise / production path: handled by an internal-only orchestrator (out of scope for this OSS repo)
 - Imperative engineer-smoke path: [`docs/deploying-to-aks.md`](../../docs/deploying-to-aks.md)
 - Spec / plan / as-built record: [`.paw/work/oss-deploy-script/`](../../.paw/work/oss-deploy-script/)

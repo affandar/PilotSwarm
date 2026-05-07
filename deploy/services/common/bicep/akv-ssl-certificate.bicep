@@ -1,7 +1,7 @@
 // ==============================================================================
 // AKV-managed SSL certificate (idempotent).
 //
-// Adapted from postgresql-fleet-manager `Common/bicep/ssl-certificate.bicep`
+// Adapted from an internal reference deployment
 // (https://github.com/.../src/Deploy/Common/bicep/ssl-certificate.bicep).
 //
 // Behaviour:
@@ -10,7 +10,7 @@
 //   * Otherwise the script generates a default policy, stamps the
 //     `CN=<certificateSubject>`, sets the issuer name (default `Self` for
 //     OSS / dev — overridable to a CA registered via
-//     `akv-certificate-issuer.bicep` for EV2 production), and creates the
+//     `akv-certificate-issuer.bicep` for enterprise / production), and creates the
 //     cert.
 //
 // The created cert is also exposed as a KV *secret* under the same name,
@@ -31,7 +31,7 @@ param certificateName string
 @description('Certificate subject (CN). Typically the portal hostname, e.g. <name>-<region>.<domainSuffix>.')
 param certificateSubject string
 
-@description('AKV issuer name. `Self` issues a self-signed cert (OSS / dev default). Override to a name registered via akv-certificate-issuer.bicep when running with a CA (EV2).')
+@description('AKV issuer name. `Self` issues a self-signed cert (OSS / dev default). Override to a name registered via akv-certificate-issuer.bicep when running with a CA (enterprise).')
 param issuerName string = 'Self'
 
 @description('Resource id of the UAMI the deployment script runs as. Must hold Key Vault Certificates Officer on `akvName`.')
@@ -42,7 +42,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
 }
 
 resource certScript 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
-  // Stable name (matches postgresql-fleet-manager pattern). The script
+  // Stable name (matches reference deployment pattern). The script
   // body is itself idempotent — `az keyvault certificate show` early-exits
   // when the cert already exists — so re-running the deployment is a
   // no-op rather than producing a fresh deploymentScript resource each

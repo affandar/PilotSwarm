@@ -3,7 +3,7 @@ targetScope = 'subscription'
 // ==============================================================================
 // PilotSwarm GlobalInfra — fleet-wide Azure Front Door Premium + WAF.
 //
-// Adapted from postgresql-fleet-manager/src/Deploy/GlobalInfra/bicep/main.bicep.
+// Adapted from an internal reference deployment
 // Creates a single global AFD Premium profile shared by every region, with a
 // WAF policy whose mode is environment-parameterized (Detection for dev so
 // false positives never block traffic during bring-up; Prevention for prod).
@@ -24,7 +24,7 @@ param resourceGroupName string
 @description('Naming prefix. Applied to every resource so fleet-wide resources stay correlated in Azure Portal searches.')
 param resourcePrefix string = 'pilotswarm'
 
-@description('WAF mode. Detection logs only; Prevention blocks. Set per-environment via EV2 Configuration.')
+@description('WAF mode. Detection logs only; Prevention blocks. Set per-environment via enterprise Configuration.')
 @allowed([
   'Detection'
   'Prevention'
@@ -111,7 +111,7 @@ module frontDoorProfile './frontdoor-profile.bicep' = {
 }
 
 // ==============================================================================
-// Outputs (consumed by BaseInfra per-region rollouts and by EV2 shell
+// Outputs (consumed by BaseInfra per-region rollouts and by the enterprise orchestration step
 // extensions that bind per-region origins to this global endpoint).
 // ==============================================================================
 

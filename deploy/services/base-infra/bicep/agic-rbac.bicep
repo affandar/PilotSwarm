@@ -7,7 +7,7 @@
 // THAT identity, not the AKS control-plane UAMI, so the addon identity needs
 // explicit role grants to manage the BYO Application Gateway.
 //
-// Mirrors postgresql-fleet-manager `agic-appgw-rbac.bicep` + `agic-vnet-rbac.bicep`
+// Mirrors reference deployment patterns: `agic-vnet-rbac.bicep`
 // combined into one module:
 //   1. Contributor on the Application Gateway — required to mutate AppGw config
 //      when Ingress objects change.

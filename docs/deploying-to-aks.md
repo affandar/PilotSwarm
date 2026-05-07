@@ -11,7 +11,7 @@ This guide walks through deploying PilotSwarm workers to AKS for production mult
 > 2. **GitOps IaC pipeline under `deploy/`** (described below in
 >    [GitOps IaC Path](#gitops-iac-path)). Bicep-managed Azure infra +
 >    Flux-driven cluster manifests, pulled from versioned blob
->    containers. Modeled on the postgresql-fleet-manager reference
+>    containers. Modeled on a known-good internal reference
 >    implementation, simplified for PilotSwarm's single-service Node.js
 >    shape. This path adds Edge Mode (AFD vs Private AppGw) and TLS
 >    Source (AKV vs Let's Encrypt) topology choices.
@@ -41,11 +41,11 @@ combinations are supported; two are blocked:
 | `EDGE_MODE` | `TLS_SOURCE`     | Edge ingress                                  | Cert source                                            | Notes                                          |
 |-------------|------------------|-----------------------------------------------|--------------------------------------------------------|------------------------------------------------|
 | `afd`       | `letsencrypt`    | AFD → AppGw (Private Link) + AGIC             | cert-manager + Let's Encrypt prod (HTTP-01)            | OSS default. Zero CA setup.                    |
-| `afd`       | `akv`            | AFD → AppGw (Private Link) + AGIC             | OneCertV2-PublicCA via AKV (registered automatically)  | EV2 default. BYO public CA.                    |
+| `afd`       | `akv`            | AFD → AppGw (Private Link) + AGIC             | OneCertV2-PublicCA via AKV (registered automatically)  | enterprise default. BYO public CA.                    |
 | `private`   | `akv`            | AKS web-app-routing addon (NGINX) + ILB       | OneCertV2-PrivateCA via AKV (registered automatically) | Enterprise / AME. No AFD, no AppGw, no AGIC.   |
 | `private`   | `akv-selfsigned` | AKS web-app-routing addon (NGINX) + ILB       | AKV `Self` issuer (auto-generated, in-place)           | No CA; private-VNet smoke tests.               |
 
-Default for OSS = `afd` + `letsencrypt`. Default for EV2 =
+Default for OSS = `afd` + `letsencrypt`. Default for the enterprise path =
 `afd` + `akv`.
 
 - **`EDGE_MODE=afd`** — Azure Front Door fronts a regional Application
@@ -120,7 +120,7 @@ these gates.
 `version: 1.20.2` exact (no semver range). To upgrade, edit that field
 in a PR — Flux will not auto-roll. The OCI HelmRepository points at
 `oci://quay.io/jetstack/charts` (official Jetstack registry) for OSS;
-EV2 stays on the AKV path so this chart source is OSS-only.
+the enterprise path stays on the AKV path so this chart source is OSS-only.
 
 ClusterIssuers live in a separate Kustomization
 (`cert-manager-issuers`) so the issuer install retries cleanly while

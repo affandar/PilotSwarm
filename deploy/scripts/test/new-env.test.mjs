@@ -34,7 +34,7 @@ const FULL_ARGS = (name = TEST_NAME) => [
   "westus3",
 ];
 
-test("deriveTargets follows EV2 naming patterns", () => {
+test("deriveTargets follows enterprise naming patterns", () => {
   const t = deriveTargets({
     name: "foo",
     subscription: "sub-id",

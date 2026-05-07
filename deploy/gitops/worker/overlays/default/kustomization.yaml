@@ -7,10 +7,8 @@ kind: Kustomization
 # future variants (e.g. private-egress, alt-storage backend) slot in
 # as additional components alongside it.
 
-# Namespace re-asserted at the overlay level (matches the
-# `postgresql-fleet-manager` reference pattern: see
-# `src/Deploy/PostgreSQLFleetManager/manifests/overlays/dev/kustomization.yaml`
-# in that repo). This is required so the overlay-generated `worker-env`
+# Namespace re-asserted at the overlay level (matches the upstream
+# reference pattern). This is required so the overlay-generated `worker-env`
 # ConfigMap is created in the same namespace as the base resources,
 # which lets `nameReference` rewrite `envFrom.configMapRef.name` to
 # the hashed form.

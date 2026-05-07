@@ -8,7 +8,7 @@
 //
 // This module does NOT provision the portal Kubernetes workload — that is
 // reconciled by FLUX from the portal manifest blob container which IS owned
-// by this bicep (per the postgresql-fleet-manager playgroundservice pattern:
+// by this bicep (per the reference deployment pattern:
 // each service provisions its own Flux source in its own bicep).
 //
 // What this module does:
@@ -22,7 +22,7 @@
 //      in the GlobalInfra RG (via the verbatim shared module).
 //   6. Auto-approves the pending PLS connection on the AppGW side.
 //
-// Surfaces BackendHostName as an output so EV2 scope binding can fan it
+// Surfaces BackendHostName as an output so the enterprise orchestrator's scope binding can fan it
 // into overlay/.env as PORTAL_HOSTNAME (Spec FR-014).
 // ==============================================================================
 
@@ -44,14 +44,14 @@ param region string
 @description('DNS suffix for the portal cert, e.g. pilotswarm.azure.com. Required in EDGE_MODE=afd + TLS_SOURCE=akv (used to derive resourceName.suffix as cert subject + AFD origin host). Ignored when EDGE_MODE=afd + TLS_SOURCE=letsencrypt (cert subject derives from the AppGw cloudapp.azure.com label) or when EDGE_MODE=private (caller supplies portalHostnameOverride).')
 param sslCertificateDomainSuffix string
 
-@description('Edge topology mode. afd = Front Door + Private Link to AppGw private FE (default; covers OSS via the AppGw cloudapp.azure.com DNS label and EV2 via a custom domain). private = AppGw private IP listener only, no AFD; caller must supply portalHostnameOverride and arrange DNS resolution to APP_GATEWAY_PRIVATE_IP.')
+@description('Edge topology mode. afd = Front Door + Private Link to AppGw private FE (default; covers OSS via the AppGw cloudapp.azure.com DNS label and the enterprise path via a custom domain). private = AppGw private IP listener only, no AFD; caller must supply portalHostnameOverride and arrange DNS resolution to APP_GATEWAY_PRIVATE_IP.')
 @allowed([
   'afd'
   'private'
 ])
 param edgeMode string = 'afd'
 
-@description('TLS cert source. letsencrypt = cert-manager + LE prod (cert lands in a K8s Secret managed by cert-manager; bicep skips the AKV cert deployment script). akv = AKV-registered issuer + bicep cert script (current EV2 / enterprise path; default preserves EV2 behavior when the param is not supplied). akv-selfsigned = AKV `Self` issuer + bicep cert script (OSS / dev convenience for private mode; produces a self-signed cert in AKV, no CA registration required, NOT trusted by browsers without manual trust).')
+@description('TLS cert source. letsencrypt = cert-manager + LE prod (cert lands in a K8s Secret managed by cert-manager; bicep skips the AKV cert deployment script). akv = AKV-registered issuer + bicep cert script (current enterprise path; default preserves enterprise path behavior when the param is not supplied). akv-selfsigned = AKV `Self` issuer + bicep cert script (OSS / dev convenience for private mode; produces a self-signed cert in AKV, no CA registration required, NOT trusted by browsers without manual trust).')
 @allowed([
   'letsencrypt'
   'akv'
@@ -113,7 +113,7 @@ param certScriptIdentityResourceId string
 @description('Name of the cert in AKV. Must match the SPC objectName/secretName used by the portal TLS volume (deploy/gitops/portal/base/secret-provider-class.yaml). Only consumed when tlsSource is akv.')
 param portalTlsCertName string = 'pilotswarm-portal-tls'
 
-@description('AKV issuer name (registered via akv-certificate-issuer.bicep) for tlsSource=akv. When empty (default), bicep registers and uses OneCertV2-PublicCA (afd) or OneCertV2-PrivateCA (private) per the fleet-manager pattern. Ignored when tlsSource is akv-selfsigned (uses the built-in `Self` issuer) or letsencrypt (cert-manager owns the cert).')
+@description('AKV issuer name (registered via akv-certificate-issuer.bicep) for tlsSource=akv. When empty (default), bicep registers and uses OneCertV2-PublicCA (afd) or OneCertV2-PrivateCA (private) per the reference deployment pattern. Ignored when tlsSource is akv-selfsigned (uses the built-in `Self` issuer) or letsencrypt (cert-manager owns the cert).')
 param portalTlsIssuerName string = ''
 
 // -----------------------------------------------------------------------------
@@ -180,7 +180,7 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2024-01-01' e
 }
 
 // -----------------------------------------------------------------------------
-// Portal manifest container + Flux source (owned by Portal per fleet-manager
+// Portal manifest container + Flux source (owned by Portal per reference deployment
 // playgroundservice pattern).
 // -----------------------------------------------------------------------------
 
@@ -263,9 +263,9 @@ resource portalPrivateDnsZoneVnetLink 'Microsoft.Network/privateDnsZones/virtual
 // Self issuer) and for tlsSource=letsencrypt (cert-manager owns the cert,
 // AKV is not in the path).
 //
-// Pattern matches postgresql-fleet-manager: afd lands on the public CA,
+// Pattern matches reference deployment: afd lands on the public CA,
 // private lands on the private CA (e.g. AME OneCertV2-PrivateCA registered
-// for the AKV by EV2 / OneCert onboarding).
+// for the AKV by enterprise OneCert onboarding).
 // -----------------------------------------------------------------------------
 module PortalAkvIssuer '../../common/bicep/akv-certificate-issuer.bicep' = if (tlsSource == 'akv') {
   name: 'portal-akv-issuer-${dTime}'
@@ -389,7 +389,7 @@ module plApprove '../../common/bicep/approve-private-endpoint.bicep' = if (edgeM
 // Outputs
 // -----------------------------------------------------------------------------
 
-@description('AFD backend hostname / AppGW listener host / Portal Ingress host. EV2 scope-binds this into overlay/.env as PORTAL_HOSTNAME.')
+@description('AFD backend hostname / AppGW listener host / Portal Ingress host. The enterprise orchestrator scope-binds this into overlay/.env as PORTAL_HOSTNAME.')
 output BackendHostName string = certificateSubject
 
 @description('Computed PLS service id string (audit/diagnostic).')

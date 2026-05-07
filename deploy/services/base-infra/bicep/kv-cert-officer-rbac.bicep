@@ -7,7 +7,7 @@
 // Vault. We grant the approver UAMI (already used for AppGW PE approval)
 // the built-in `Key Vault Certificates Officer` role on the AKV — a single
 // dedicated identity per BaseInfra keeps role-grant churn low and matches
-// the postgresql-fleet-manager `infraDeployManagedIdName` pattern.
+// the an internal reference deployment pattern.
 //
 // Lives in BaseInfra (not Portal) because the AKV is created here and the
 // role assignment must exist before Portal's deployment script runs.

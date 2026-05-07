@@ -6,7 +6,7 @@
 //
 // This module does NOT provision the worker Kubernetes workload — that is
 // reconciled by FLUX from the worker manifest blob container which IS owned
-// by this bicep (per the postgresql-fleet-manager playgroundservice pattern:
+// by this bicep (per the reference deployment pattern:
 // each service provisions its own Flux source in its own bicep).
 //
 // What this module does:

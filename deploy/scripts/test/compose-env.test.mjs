@@ -12,7 +12,7 @@ test("composes DATABASE_URL from POSTGRES_FQDN with bootstrap defaults", () => {
   composeDerivedEnv(env);
   assert.equal(
     env.DATABASE_URL,
-    "postgresql://pilotswarm:PilotSwarmEv2_BootstrapOnly!9876@ps.example.postgres.database.azure.com:5432/pilotswarm?sslmode=require",
+    "postgresql://pilotswarm:PilotSwarmDev_BootstrapOnly!9876@ps.example.postgres.database.azure.com:5432/pilotswarm?sslmode=require",
   );
 });
 

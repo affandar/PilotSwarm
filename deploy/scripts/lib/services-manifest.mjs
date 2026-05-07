@@ -6,7 +6,7 @@
 // invariant that every name in {infraOrder ∪ services} has a matching
 // deploy.json file.
 //
-// Distinct from the EV2 services.json / service.json files that live alongside
+// Distinct from the enterprise services.json / service.json files that live alongside
 // these in deploy/services/. Those will be migrated to a parent repo via
 // submodule; this loader never touches them.
 
