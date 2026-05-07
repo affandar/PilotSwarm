@@ -308,14 +308,28 @@ console.log(result);
 
 ## CLI Options
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--transport` | `stdio` | Transport mode: `stdio` or `http` |
-| `--port` | `3100` | HTTP server port (only used with `--transport http`) |
-| `--store` | `$DATABASE_URL` | PostgreSQL connection string |
-| `--model-providers` | — | Path to model providers JSON config |
-| `--plugin` | — | Plugin directory (repeatable for multiple dirs) |
-| `--log-level` | `error` | Log level |
+| Flag | Default | Env var | Description |
+|------|---------|---------|-------------|
+| `--transport` | `stdio` | — | Transport mode: `stdio` or `http` |
+| `--port` | `3100` | — | HTTP server port (only used with `--transport http`) |
+| `--host` | `127.0.0.1` | `PILOTSWARM_MCP_HOST` | Host/interface to bind the HTTP server to |
+| `--allowed-hosts` | bound host + `127.0.0.1`/`localhost`/`[::1]` on `--port` | `PILOTSWARM_MCP_ALLOWED_HOSTS` | Comma-separated `host:port` allowlist for the `Host` header (DNS-rebinding defense). Required when fronting the server with a reverse proxy or public hostname. |
+| `--max-sessions` | `256` | `PILOTSWARM_MCP_MAX_SESSIONS` | Maximum concurrent MCP sessions; new sessions beyond the cap are rejected with `503` |
+| `--session-idle-timeout-ms` | `300000` (5 min) | `PILOTSWARM_MCP_SESSION_IDLE_MS` | Close sessions whose last request was more than this many ms ago (sweeper runs every ~30s). Set to `0` to disable. Required to prevent slot-leaks from one-shot HTTP clients that disconnect without `DELETE /mcp`. |
+| `--store` | `$DATABASE_URL` | `DATABASE_URL` | PostgreSQL connection string |
+| `--model-providers` | — | — | Path to model providers JSON config |
+| `--plugin` | — | — | Plugin directory (repeatable for multiple dirs) |
+| `--log-level` | `error` | — | Log verbosity for lifecycle messages: `debug`, `info`, `warn`, `error`, or `silent` |
+
+### HTTP-only env vars
+
+| Env var | Required | Description |
+|---------|----------|-------------|
+| `PILOTSWARM_MCP_KEY` | Yes (HTTP transport) | Bearer token clients must present in `Authorization: Bearer <key>`. Server refuses to start without it. |
+| `PILOTSWARM_MCP_HOST` | No | Same as `--host` |
+| `PILOTSWARM_MCP_ALLOWED_HOSTS` | No | Same as `--allowed-hosts` |
+| `PILOTSWARM_MCP_MAX_SESSIONS` | No | Same as `--max-sessions` |
+| `PILOTSWARM_MCP_SESSION_IDLE_MS` | No | Same as `--session-idle-timeout-ms` |
 
 ---
 

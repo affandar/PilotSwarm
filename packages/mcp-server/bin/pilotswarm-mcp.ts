@@ -14,12 +14,31 @@ const { values } = parseArgs({
         host: { type: "string" },
         "allowed-hosts": { type: "string" },
         "max-sessions": { type: "string" },
+        "session-idle-timeout-ms": { type: "string" },
         store: { type: "string" },
         plugin: { type: "string", multiple: true },
         "model-providers": { type: "string" },
         "log-level": { type: "string", default: "error" },
     },
 });
+
+// Log-level wiring — gates the lifecycle messages emitted by the bin
+// (startup banner, signal handlers, shutdown). Lower tiers also include the
+// higher tiers; "silent" suppresses everything. Fatal `Error:` messages on
+// stderr before process.exit() always print regardless of level.
+const LOG_LEVELS = ["debug", "info", "warn", "error", "silent"] as const;
+type LogLevel = (typeof LOG_LEVELS)[number];
+const requestedLevel = (values["log-level"] ?? "error").toLowerCase() as LogLevel;
+const activeLevel: LogLevel = (LOG_LEVELS as readonly string[]).includes(requestedLevel)
+    ? requestedLevel
+    : "error";
+const activeLevelIdx = LOG_LEVELS.indexOf(activeLevel);
+const log = {
+    debug: (msg: string) => { if (activeLevelIdx <= 0) console.error(msg); },
+    info:  (msg: string) => { if (activeLevelIdx <= 1) console.error(msg); },
+    warn:  (msg: string) => { if (activeLevelIdx <= 2) console.error(msg); },
+    error: (msg: string) => { if (activeLevelIdx <= 3) console.error(msg); },
+};
 
 const store = values.store ?? process.env.DATABASE_URL;
 if (!store) {
@@ -39,7 +58,7 @@ if (values.transport === "stdio") {
     await server.connect(transport);
 
     const shutdown = async (signal: string) => {
-        console.error(`[pilotswarm-mcp] ${signal} received — closing stdio transport`);
+        log.info(`[pilotswarm-mcp] ${signal} received — closing stdio transport`);
         try { await transport.close?.(); } catch { /* ignore */ }
         try { await ctx.client.stop?.(); } catch { /* ignore */ }
         try { await ctx.mgmt.stop?.(); } catch { /* ignore */ }
@@ -101,11 +120,55 @@ if (values.transport === "stdio") {
     const parsedMax = parseInt(maxSessionsRaw, 10);
     const maxSessions = Number.isFinite(parsedMax) && parsedMax > 0 ? parsedMax : 256;
 
+    // session-idle-timeout-ms — close + free sessions whose last request was
+    // more than this many milliseconds ago. Required because one-shot HTTP
+    // clients (initialize + disconnect without DELETE /mcp) never trigger
+    // transport.onclose, which would otherwise leak max-sessions slots.
+    // Default: 5 minutes (300_000 ms). Set to 0 to disable the sweeper.
+    const idleTimeoutRaw =
+        values["session-idle-timeout-ms"] ??
+        process.env.PILOTSWARM_MCP_SESSION_IDLE_MS ??
+        "300000";
+    const parsedIdle = parseInt(idleTimeoutRaw, 10);
+    const sessionIdleTimeoutMs =
+        Number.isFinite(parsedIdle) && parsedIdle >= 0 ? parsedIdle : 300_000;
+    // Sweep cadence: every 30s, but never longer than the idle threshold itself
+    // (otherwise tiny test thresholds are missed entirely).
+    const sweepIntervalMs =
+        sessionIdleTimeoutMs > 0
+            ? Math.max(1_000, Math.min(30_000, Math.floor(sessionIdleTimeoutMs / 2) || 1_000))
+            : 0;
+
     const app = new Hono();
 
-    // Per-session transport+server map — McpServer.connect() is one-shot
-    // per the MCP SDK spec, so each client session gets its own pair.
-    const sessions = new Map<string, InstanceType<typeof WebStandardStreamableHTTPServerTransport>>();
+    // Per-session entry — McpServer.connect() is one-shot per the MCP SDK spec,
+    // so each client session gets its own transport+server pair. We also track
+    // lastActivityAt so the idle sweeper can reap abandoned sessions.
+    type SessionEntry = {
+        transport: InstanceType<typeof WebStandardStreamableHTTPServerTransport>;
+        lastActivityAt: number;
+    };
+    const sessions = new Map<string, SessionEntry>();
+
+    // Atomic in-flight counter for the max-sessions cap — incremented BEFORE
+    // transport construction (so concurrent bursts cannot all observe
+    // sessions.size < maxSessions and slip past the gate) and decremented on
+    // construction failure or transport close. The counter is the source of
+    // truth for cap enforcement; `sessions` is just the lookup table.
+    let inFlightSessionCount = 0;
+    const acquireSlot = (): boolean => {
+        if (inFlightSessionCount >= maxSessions) return false;
+        inFlightSessionCount++;
+        return true;
+    };
+    const releaseSlot = () => {
+        if (inFlightSessionCount > 0) inFlightSessionCount--;
+    };
+
+    const touchSession = (id: string) => {
+        const entry = sessions.get(id);
+        if (entry) entry.lastActivityAt = Date.now();
+    };
 
     // Track in-flight HTTP request handlers so SIGTERM can wait for them to drain
     // instead of severing connections mid-response.
@@ -149,16 +212,22 @@ if (values.transport === "stdio") {
         const sessionId = c.req.header("mcp-session-id");
 
         if (sessionId && sessions.has(sessionId)) {
-            const p = sessions.get(sessionId)!.handleRequest(c.req.raw);
+            touchSession(sessionId);
+            const p = sessions.get(sessionId)!.transport.handleRequest(c.req.raw);
             inFlight.add(p as Promise<unknown>);
-            try { return await p; } finally { inFlight.delete(p as Promise<unknown>); }
+            try { return await p; } finally {
+                inFlight.delete(p as Promise<unknown>);
+                touchSession(sessionId);
+            }
         }
 
         if (sessionId && !sessions.has(sessionId)) {
             return c.json({ error: "Unknown session" }, 404);
         }
 
-        if (sessions.size >= maxSessions) {
+        // Atomic cap check — increment BEFORE constructing the transport so
+        // concurrent bursts cannot all observe spare capacity simultaneously.
+        if (!acquireSlot()) {
             return c.json(
                 {
                     jsonrpc: "2.0",
@@ -172,28 +241,46 @@ if (values.transport === "stdio") {
             );
         }
 
-        // New session — create per-session server+transport pair
-        const transport = new WebStandardStreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-            onsessioninitialized: (id: string) => {
-                sessions.set(id, transport);
-            },
-        });
-        transport.onclose = () => {
-            if (transport.sessionId) sessions.delete(transport.sessionId);
-        };
-        const server = createMcpServer(ctx);
-        await server.connect(transport);
+        // New session — create per-session server+transport pair. The slot is
+        // already reserved; releaseSlot is called exactly once via
+        // transport.onclose (which fires from DELETE /mcp, the idle sweeper,
+        // shutdown, or any underlying transport-level close).
+        let transport: InstanceType<typeof WebStandardStreamableHTTPServerTransport>;
+        try {
+            transport = new WebStandardStreamableHTTPServerTransport({
+                sessionIdGenerator: () => randomUUID(),
+                onsessioninitialized: (id: string) => {
+                    sessions.set(id, { transport, lastActivityAt: Date.now() });
+                },
+            });
+            let slotReleased = false;
+            transport.onclose = () => {
+                if (transport.sessionId) sessions.delete(transport.sessionId);
+                if (!slotReleased) {
+                    slotReleased = true;
+                    releaseSlot();
+                }
+            };
+            const server = createMcpServer(ctx);
+            await server.connect(transport);
+        } catch (err) {
+            releaseSlot();
+            throw err;
+        }
         const p = transport.handleRequest(c.req.raw);
         inFlight.add(p as Promise<unknown>);
-        try { return await p; } finally { inFlight.delete(p as Promise<unknown>); }
+        try { return await p; } finally {
+            inFlight.delete(p as Promise<unknown>);
+            if (transport.sessionId) touchSession(transport.sessionId);
+        }
     });
 
     // SSE stream endpoint
     app.get("/mcp", async (c) => {
         const sessionId = c.req.header("mcp-session-id");
         if (sessionId && sessions.has(sessionId)) {
-            return sessions.get(sessionId)!.handleRequest(c.req.raw);
+            touchSession(sessionId);
+            return sessions.get(sessionId)!.transport.handleRequest(c.req.raw);
         }
         return c.json({ error: "Invalid or missing session" }, 400);
     });
@@ -204,20 +291,50 @@ if (values.transport === "stdio") {
         if (!sessionId || !sessions.has(sessionId)) {
             return c.json({ error: "Unknown session" }, 404);
         }
-        const transport = sessions.get(sessionId)!;
-        await transport.close();
+        const entry = sessions.get(sessionId)!;
+        await entry.transport.close();
         sessions.delete(sessionId);
         return c.json({ closed: true });
     });
 
+    // Idle-session sweeper — reaps sessions whose last request was more than
+    // sessionIdleTimeoutMs ago. This is the primary defense against
+    // max-sessions slot leaks from one-shot HTTP clients that disconnect
+    // without sending DELETE /mcp (transport.onclose only fires when the
+    // SDK observes an explicit transport close, which one-shot HTTP requests
+    // do not trigger).
+    let sweeperTimer: NodeJS.Timeout | null = null;
+    if (sessionIdleTimeoutMs > 0 && sweepIntervalMs > 0) {
+        sweeperTimer = setInterval(() => {
+            const cutoff = Date.now() - sessionIdleTimeoutMs;
+            // Snapshot keys to avoid mutating during iteration.
+            const expired: Array<[string, SessionEntry]> = [];
+            for (const [id, entry] of sessions) {
+                if (entry.lastActivityAt < cutoff) expired.push([id, entry]);
+            }
+            for (const [id, entry] of expired) {
+                log.debug(`[pilotswarm-mcp] sweeping idle session ${id}`);
+                sessions.delete(id);
+                // transport.close() will fire onclose, which calls releaseSlot.
+                Promise.resolve(entry.transport.close()).catch(() => { /* ignore */ });
+            }
+        }, sweepIntervalMs);
+        sweeperTimer.unref?.();
+    }
+
     const httpServer = serve({ fetch: app.fetch, port, hostname: host }, () => {
-        console.error(`PilotSwarm MCP server listening on http://${host}:${port}/mcp`);
+        log.info(`PilotSwarm MCP server listening on http://${host}:${port}/mcp`);
     });
 
     const shutdown = async (signal: string) => {
         if (shuttingDown) return;
         shuttingDown = true;
-        console.error(`[pilotswarm-mcp] ${signal} received — draining ${inFlight.size} in-flight request(s), closing ${sessions.size} session(s)`);
+        log.info(`[pilotswarm-mcp] ${signal} received — draining ${inFlight.size} in-flight request(s), closing ${sessions.size} session(s)`);
+
+        if (sweeperTimer) {
+            clearInterval(sweeperTimer);
+            sweeperTimer = null;
+        }
 
         const drainTimeoutMs = 5_000;
         await Promise.race([
@@ -225,8 +342,8 @@ if (values.transport === "stdio") {
             new Promise((r) => setTimeout(r, drainTimeoutMs)),
         ]);
 
-        for (const transport of sessions.values()) {
-            try { await transport.close(); } catch { /* ignore */ }
+        for (const entry of sessions.values()) {
+            try { await entry.transport.close(); } catch { /* ignore */ }
         }
         sessions.clear();
 
@@ -239,7 +356,7 @@ if (values.transport === "stdio") {
         try { await ctx.mgmt.stop?.(); } catch { /* ignore */ }
         try { await ctx.facts.close?.(); } catch { /* ignore */ }
 
-        console.error(`[pilotswarm-mcp] shutdown complete`);
+        log.info(`[pilotswarm-mcp] shutdown complete`);
         process.exit(0);
     };
     process.on("SIGTERM", () => void shutdown("SIGTERM"));
