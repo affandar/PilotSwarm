@@ -1,4 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+    SubscribeRequestSchema,
+    UnsubscribeRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import type { ServerContext } from "../context.js";
 
 const FACTS_PREFIXES = ["skills/%", "asks/%"] as const;
@@ -160,30 +164,23 @@ export function enableResourceSubscriptions(
         lastFactsSnapshot = currentFactsSnapshot;
     }
 
-    // Hook into MCP subscribe/unsubscribe via the low-level server
-    try {
-        lowLevel.setRequestHandler?.(
-            { method: "resources/subscribe" },
-            async (request: any) => {
-                const uri = request?.params?.uri;
-                if (uri) {
-                    subscriptions.add(uri);
-                    startPoller();
-                }
-                return {};
-            },
-        );
+    // Hook into MCP subscribe/unsubscribe via the low-level server.
+    // setRequestHandler requires the SDK's typed Zod schemas — passing a plain
+    // `{ method }` object causes the SDK to throw "Schema is missing a method
+    // literal" and silently drop the handler.
+    lowLevel.setRequestHandler(SubscribeRequestSchema, async (request: any) => {
+        const uri = request?.params?.uri;
+        if (uri) {
+            subscriptions.add(uri);
+            startPoller();
+        }
+        return {};
+    });
 
-        lowLevel.setRequestHandler?.(
-            { method: "resources/unsubscribe" },
-            async (request: any) => {
-                const uri = request?.params?.uri;
-                if (uri) subscriptions.delete(uri);
-                if (subscriptions.size === 0) stopPoller();
-                return {};
-            },
-        );
-    } catch {
-        // MCP SDK may not support subscribe handlers in this version — degrade gracefully
-    }
+    lowLevel.setRequestHandler(UnsubscribeRequestSchema, async (request: any) => {
+        const uri = request?.params?.uri;
+        if (uri) subscriptions.delete(uri);
+        if (subscriptions.size === 0) stopPoller();
+        return {};
+    });
 }
