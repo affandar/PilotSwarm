@@ -103,7 +103,17 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         },
         async ({ session_id, message }) => {
             try {
-                await ctx.mgmt.sendMessage(session_id, message);
+                // Use cached PilotSwarmSession when available; fall back to
+                // resumeSession() so a fresh session created via this MCP
+                // server's create_session (which doesn't auto-boot the
+                // orchestration unless a prompt was supplied) still works.
+                // The bare ctx.mgmt.sendMessage(...) path requires an
+                // already-live orchestration and throws otherwise — that
+                // breaks the canonical "create then send" workflow.
+                const session = sessionCache.get(session_id)
+                    ?? await ctx.client.resumeSession(session_id);
+                if (!sessionCache.has(session_id)) sessionCache.set(session_id, session);
+                await session.send(message);
                 return {
                     content: [
                         { type: "text" as const, text: JSON.stringify({ sent: true }) },
