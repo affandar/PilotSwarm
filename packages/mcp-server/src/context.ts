@@ -14,6 +14,20 @@ export interface ServerContext {
     facts: PgFactStore;
     models: ModelProviderRegistry | null;
     skills: Array<{ name: string; description: string; prompt: string }>;
+    /**
+     * Set of agentIds for sessions where `isSystem === true`, derived from
+     * `mgmt.listSessions()` at startup. Used by resource registrations and
+     * subscription filters that need to enumerate system agents without
+     * hardcoding their names.
+     */
+    systemAgentIds: Set<string>;
+    /**
+     * Re-query the management API to refresh `systemAgentIds`. Tool/resource
+     * handlers may call this when they suspect the list has drifted (e.g. a
+     * new system agent was registered after server startup). Cheap to call —
+     * shares the same listSessions() call already used elsewhere.
+     */
+    refreshSystemAgentIds(): Promise<void>;
 }
 
 export interface CreateContextOptions {
@@ -46,5 +60,21 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         }
     }
 
-    return { client, mgmt, facts, models, skills };
+    const systemAgentIds = new Set<string>();
+    async function refreshSystemAgentIds() {
+        try {
+            const sessions = await mgmt.listSessions();
+            systemAgentIds.clear();
+            for (const s of sessions as any[]) {
+                if (s?.isSystem && typeof s.agentId === "string" && s.agentId.length > 0) {
+                    systemAgentIds.add(s.agentId);
+                }
+            }
+        } catch {
+            // Best-effort — leave existing set untouched if mgmt is transiently unavailable.
+        }
+    }
+    await refreshSystemAgentIds();
+
+    return { client, mgmt, facts, models, skills, systemAgentIds, refreshSystemAgentIds };
 }

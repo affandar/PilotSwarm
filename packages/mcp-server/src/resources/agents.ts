@@ -1,8 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerContext } from "../context.js";
 
-const SYSTEM_AGENTS = ["sweeper", "resourcemgr", "facts-manager"] as const;
-
 async function resolveSystemAgent(ctx: ServerContext, agentId: string) {
     const sessions = await ctx.mgmt.listSessions();
     return sessions.find(
@@ -11,7 +9,14 @@ async function resolveSystemAgent(ctx: ServerContext, agentId: string) {
 }
 
 export function registerAgentResources(server: McpServer, ctx: ServerContext) {
-    for (const agentId of SYSTEM_AGENTS) {
+    // System-agent resource URIs are enumerated dynamically from the snapshot
+    // populated by `createContext` (via `mgmt.listSessions()`). This avoids the
+    // maintenance landmine of a hardcoded list falling out of sync with the SDK
+    // as system agents are added or renamed upstream. Resources are registered
+    // once at server boot, so any system agent that comes online later will be
+    // picked up on the next server restart — same behavior as the previous
+    // hardcoded list.
+    for (const agentId of ctx.systemAgentIds) {
         // Detail resource for each system agent
         server.registerResource(
             `agent-${agentId}`,

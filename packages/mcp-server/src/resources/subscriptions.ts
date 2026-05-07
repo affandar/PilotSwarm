@@ -1,8 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerContext } from "../context.js";
 
-const SYSTEM_AGENTS = ["sweeper", "resourcemgr", "facts-manager"];
-
 const FACTS_PREFIXES = ["skills/%", "asks/%"] as const;
 
 interface SessionSnapshot {
@@ -81,8 +79,15 @@ export function enableResourceSubscriptions(
                     } catch { /* ignore */ }
                 }
 
-                // System agent alias resources
-                if (s.isSystem && s.agentId && SYSTEM_AGENTS.includes(s.agentId)) {
+                // System agent alias resources — set populated dynamically in
+                // ServerContext from mgmt.listSessions(). If we observe a new
+                // system agent here that wasn't in the startup snapshot, fold
+                // it into the live set so subsequent change notifications fire
+                // for it too.
+                if (s.isSystem && s.agentId) {
+                    if (!ctx.systemAgentIds.has(s.agentId)) {
+                        ctx.systemAgentIds.add(s.agentId);
+                    }
                     const agentUri = `pilotswarm://agents/${s.agentId}`;
                     if (subscriptions.has(agentUri)) {
                         try {
