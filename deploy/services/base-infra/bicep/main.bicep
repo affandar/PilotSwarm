@@ -97,17 +97,29 @@ param foundryDeployments array = []
 
 var location = toLower(region)
 
-// Names that must be globally unique and alphanumeric-only use
-// `uniqueString(resourceGroup().id)` as a suffix to keep them short and stable
-// per-RG.
-var uniqueSuffix = substring(uniqueString(resourceGroup().id), 0, 6)
+// Resource naming conventions.
+//
+// All resources are named deterministically from `resourceNamePrefix`, which
+// is expected to encode whatever uniqueness the caller needs (e.g.
+// `<env><regionShortName><stamp>`, like `pilotswarmdevwus31`). The caller is
+// responsible for ensuring the prefix is unique within its scope — e.g. each
+// (env, region, stamp) owns its own subscription/resource-group — so no
+// random hashes are needed to disambiguate names. This lets external tooling
+// (e.g. higher-level deployment orchestrators that wrap this module) compose
+// resource names by convention without runtime lookups against the
+// deployment outputs.
+//
+// `alphaPrefix` strips dashes/underscores to satisfy the alphanumeric naming
+// constraints of ACR / Storage / Key Vault. When the caller already supplies a
+// dashless `resourceNamePrefix`, this is a no-op and `alphaPrefix ==
+// resourceNamePrefix`.
 var alphaPrefix = toLower(replace(replace(resourceNamePrefix, '-', ''), '_', ''))
 
 var aksClusterName = '${resourceNamePrefix}-aks'
-var acrName = '${alphaPrefix}acr${uniqueSuffix}'
-var storageAccountName = '${alphaPrefix}sa${uniqueSuffix}'
-var postgresServerName = '${resourceNamePrefix}-pg-${uniqueSuffix}'
-var keyVaultName = '${alphaPrefix}kv${uniqueSuffix}'
+var acrName = '${alphaPrefix}acr'
+var storageAccountName = '${alphaPrefix}sa'
+var postgresServerName = '${resourceNamePrefix}-pg'
+var keyVaultName = '${alphaPrefix}kv'
 var applicationGatewayName = '${resourceNamePrefix}-appgw'
 var logAnalyticsName = '${resourceNamePrefix}-log'
 var foundryAccountName = '${resourceNamePrefix}-aif'

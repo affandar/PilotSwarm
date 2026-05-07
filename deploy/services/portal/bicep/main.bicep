@@ -35,6 +35,9 @@ targetScope = 'resourceGroup'
 @description('Short resource-name root, e.g. pilotswarmprod1. Must match the value used by BaseInfra so the AppGW hostname aligns.')
 param resourceName string
 
+@description('BaseInfra `resourceNamePrefix` value used to look up the CSI Secrets Provider UAMI by convention name. May differ from `resourceName` in OSS direct deploys, where Portal has its own logical name (`<prefix>-<region>-portal`) while BaseInfra resources use a shorter prefix. Downstream callers that wrap this module may pass any prefix shaped per their own environment-region-stamp convention.')
+param baseInfraResourceNamePrefix string
+
 @description('Azure region (lowercased). Used in the certificate subject to disambiguate multi-region deployments.')
 param region string
 
@@ -188,6 +191,20 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing 
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' existing = {
   parent: storageAccount
   name: 'default'
+}
+
+// CSI Secrets Provider UAMI (created by BaseInfra's `uami.bicep` module). The
+// UAMI is named `${baseInfraResourceNamePrefix}-csi-mid` by convention; we
+// look it up here so its clientId can be exposed as a Portal own-package
+// output. This makes the value reachable by downstream callers (e.g.
+// higher-level deployment orchestrators that compose this bicep across
+// independent deployment boundaries and can only see each package's own
+// outputs) for Workload Identity federation in the AKS app deploy step.
+// When OSS deploys directly, `deploy-bicep.mjs` already wires
+// `csiIdentityClientId` into manifest substitution via the
+// `WORKLOAD_IDENTITY_CLIENT_ID` env alias, so this output is purely additive.
+resource csiUami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  name: '${baseInfraResourceNamePrefix}-csi-mid'
 }
 
 resource portalManifestsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
@@ -388,3 +405,6 @@ output ApprovedPrivateEndpointCount int = edgeMode == 'afd' ? plApprove.outputs.
 
 @description('Portal manifest container name (consumed by OSS deploy script as DEPLOYMENT_STORAGE_CONTAINER_NAME via FR-022 alias).')
 output manifestsContainerName string = portalManifestsContainer.name
+
+@description('Client ID of the CSI Secrets Provider UAMI (looked up by convention name from this RG). Consumed by the AKS app-deploy step (and by downstream callers that wrap this bicep) to federate Workload Identity.')
+output csiIdentityClientId string = csiUami.properties.clientId
