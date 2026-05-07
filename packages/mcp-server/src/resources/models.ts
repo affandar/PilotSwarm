@@ -7,7 +7,10 @@ export function registerModelsResources(server: McpServer, ctx: ServerContext) {
         "pilotswarm://models",
         {
             title: "Models List",
-            description: "Available LLM models grouped by provider",
+            description:
+                "Available LLM models grouped by provider. Each model entry exposes " +
+                "`qualified_name` (provider:model — pass to switch_model), `model_name` " +
+                "(bare id), `provider`, `description`, and `cost`.",
             mimeType: "application/json",
         },
         async () => {
@@ -24,11 +27,13 @@ export function registerModelsResources(server: McpServer, ctx: ServerContext) {
             }
 
             const byProvider = ctx.models.getModelsByProvider();
-            const data = byProvider.map((p: any) => ({
+            const data = byProvider.map((p) => ({
                 provider_id: p.providerId,
                 type: p.type,
-                models: p.models.map((m: any) => ({
-                    name: m.name,
+                models: p.models.map((m) => ({
+                    qualified_name: m.qualifiedName,
+                    model_name: m.modelName,
+                    provider: p.providerId,
                     description: m.description,
                     cost: m.cost,
                 })),
