@@ -19,7 +19,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 model: z.string().optional().describe("Model to use for the session"),
                 agent: z.string().optional().describe("Agent name to bind the session to"),
                 system_message: z.string().optional().describe("Custom system message for the session"),
-                title: z.string().optional().describe("Optional title — if omitted, PilotSwarm auto-generates one from the conversation after the first turn"),
+                title: z.string().min(1).max(512).optional().describe("Optional title — if omitted, PilotSwarm auto-generates one from the conversation after the first turn"),
                 prompt: z.string().optional().describe("Initial message to send immediately after session creation (fire-and-forget)"),
             },
         },
@@ -32,10 +32,24 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
 
                 let session;
                 if (agent) {
-                    session = await ctx.client.createSessionForAgent(agent, {
-                        model,
-                        title,
-                    });
+                    if (system_message !== undefined) {
+                        // createSessionForAgent does not forward systemMessage,
+                        // so route through createSession directly when the
+                        // caller supplied a custom system message. The
+                        // allowedAgentNames guard inside createSession still
+                        // enforces the agent allowlist.
+                        session = await ctx.client.createSession({
+                            agentId: agent,
+                            boundAgentName: agent,
+                            model,
+                            systemMessage: system_message,
+                        });
+                    } else {
+                        session = await ctx.client.createSessionForAgent(agent, {
+                            model,
+                            title,
+                        });
+                    }
                 } else {
                     session = await ctx.client.createSession({
                         model,
@@ -97,12 +111,19 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Send Message",
             description: "Send a fire-and-forget message to a PilotSwarm session",
             inputSchema: {
-                session_id: z.string().describe("The session to send the message to"),
+                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to send the message to"),
                 message: z.string().describe("The message to send"),
             },
         },
         async ({ session_id, message }) => {
             try {
+                const existing = await ctx.mgmt.getSession(session_id);
+                if (!existing) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
+                        isError: true,
+                    };
+                }
                 // Use cached PilotSwarmSession when available; fall back to
                 // resumeSession() so a fresh session created via this MCP
                 // server's create_session (which doesn't auto-boot the
@@ -136,13 +157,20 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Send and Wait",
             description: "Send a message to a PilotSwarm session and wait for the response",
             inputSchema: {
-                session_id: z.string().describe("The session to send the message to"),
+                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to send the message to"),
                 message: z.string().describe("The message to send"),
                 timeout_ms: z.number().optional().describe("Timeout in milliseconds (default 120000)"),
             },
         },
         async ({ session_id, message, timeout_ms }) => {
             try {
+                const existing = await ctx.mgmt.getSession(session_id);
+                if (!existing) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
+                        isError: true,
+                    };
+                }
                 const timeout = timeout_ms ?? 120_000;
                 // Use cached session object if available (preserves correct
                 // orchestration creation path). Fall back to resumeSession()
@@ -185,12 +213,19 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Send Answer",
             description: "Answer a pending input_required question in a PilotSwarm session",
             inputSchema: {
-                session_id: z.string().describe("The session awaiting an answer"),
+                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session awaiting an answer"),
                 answer: z.string().describe("The answer to provide"),
             },
         },
         async ({ session_id, answer }) => {
             try {
+                const existing = await ctx.mgmt.getSession(session_id);
+                if (!existing) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
+                        isError: true,
+                    };
+                }
                 await ctx.mgmt.sendAnswer(session_id, answer);
                 return {
                     content: [
@@ -214,12 +249,19 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Abort Session",
             description: "Cancel a running PilotSwarm session",
             inputSchema: {
-                session_id: z.string().describe("The session to abort"),
+                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to abort"),
                 reason: z.string().optional().describe("Optional reason for cancellation"),
             },
         },
         async ({ session_id, reason }) => {
             try {
+                const existing = await ctx.mgmt.getSession(session_id);
+                if (!existing) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
+                        isError: true,
+                    };
+                }
                 await ctx.mgmt.cancelSession(session_id, reason);
                 sessionCache.delete(session_id);
                 return {
@@ -244,12 +286,19 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Rename Session",
             description: "Rename a PilotSwarm session",
             inputSchema: {
-                session_id: z.string().describe("The session to rename"),
-                title: z.string().describe("The new title for the session"),
+                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to rename"),
+                title: z.string().min(1).max(512).describe("The new title for the session"),
             },
         },
         async ({ session_id, title }) => {
             try {
+                const existing = await ctx.mgmt.getSession(session_id);
+                if (!existing) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
+                        isError: true,
+                    };
+                }
                 await ctx.mgmt.renameSession(session_id, title);
                 return {
                     content: [
@@ -352,7 +401,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 "Get detailed information for a specific PilotSwarm session including status, context usage, cron state, and pending questions. " +
                 "Use 'include' to fetch additional data: 'status' for live orchestration status, 'response' for latest LLM response, 'dump' for full Markdown dump.",
             inputSchema: {
-                session_id: z.string().describe("The session ID to inspect"),
+                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session ID to inspect"),
                 include: z
                     .array(z.enum(["status", "response", "dump"]))
                     .optional()
@@ -364,7 +413,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 const session = await ctx.mgmt.getSession(session_id);
                 if (!session) {
                     return {
-                        content: [{ type: "text" as const, text: `Error: session ${session_id} not found` }],
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
                         isError: true,
                     };
                 }
@@ -421,11 +470,18 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Delete Session",
             description: "Delete a PilotSwarm session",
             inputSchema: {
-                session_id: z.string().describe("The session to delete"),
+                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to delete"),
             },
         },
         async ({ session_id }) => {
             try {
+                const existing = await ctx.mgmt.getSession(session_id);
+                if (!existing) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
+                        isError: true,
+                    };
+                }
                 await ctx.mgmt.deleteSession(session_id);
                 sessionCache.delete(session_id);
                 return {
@@ -452,7 +508,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 "Read the CMS event stream for a session. Supports pagination with after_seq and long-polling " +
                 "with wait=true to block until new events or a status change arrives.",
             inputSchema: {
-                session_id: z.string().describe("The session to read events for"),
+                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to read events for"),
                 after_seq: z.number().optional().describe("Return events after this CMS sequence number (for paging)"),
                 limit: z.number().optional().describe("Max events to return (default 50)"),
                 wait: z.boolean().optional().describe("If true, long-poll until new events or status change arrives"),
@@ -462,6 +518,13 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         },
         async ({ session_id, after_seq, limit, wait, wait_timeout_ms, after_version }) => {
             try {
+                const existing = await ctx.mgmt.getSession(session_id);
+                if (!existing) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
+                        isError: true,
+                    };
+                }
                 const eventLimit = limit ?? 50;
                 let statusChange: unknown = undefined;
 

@@ -58,6 +58,17 @@ export function registerSessionResources(server: McpServer, ctx: ServerContext) 
         async (uri, variables) => {
             const id = String(variables.id);
             const session = await ctx.mgmt.getSession(id);
+            if (!session) {
+                return {
+                    contents: [
+                        {
+                            uri: uri.href,
+                            text: JSON.stringify({ error: "session not found", session_id: id }, null, 2),
+                            mimeType: "application/json",
+                        },
+                    ],
+                };
+            }
             return {
                 contents: [
                     {
