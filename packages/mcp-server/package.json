@@ -16,7 +16,11 @@
   },
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "npm run test:unit",
+    "test:unit": "node test/unit/sendCommandAndWait.unit.mjs",
+    "test:integration": "node test/integration/smoke.live.mjs",
+    "test:integration:all": "node test/integration/smoke.live.mjs && node test/integration/tools.live.mjs && node test/integration/edge-cases.live.mjs && node test/integration/verify.live.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.12",

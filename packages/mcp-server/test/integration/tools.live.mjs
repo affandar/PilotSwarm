@@ -12,7 +12,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(__dirname, "../..");
+const ROOT = resolve(__dirname, "../../../..");
 
 // ── Load .env ───────────────────────────────────────────────────────────────
 const envFile = readFileSync(resolve(ROOT, ".env"), "utf-8");

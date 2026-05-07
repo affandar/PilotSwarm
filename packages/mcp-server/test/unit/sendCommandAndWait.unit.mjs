@@ -24,7 +24,7 @@ import {
     sendCommandAndWait,
     CommandRejectedError,
     CommandTimeoutError,
-} from "./dist/src/util/command.js";
+} from "../../dist/src/util/command.js";
 
 const results = [];
 
