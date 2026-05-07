@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# cert-manager base — installs the chart via Flux HelmRelease at an
+# exact-pinned version. Same shape every stamp (no per-env overlays);
+# the FluxConfiguration that points at this tree consumes `./base`
+# directly.
+
+resources:
+  - namespace.yaml
+  - flux-applier-rbac.yaml
+  - helm-repository.yaml
+  - helm-release.yaml

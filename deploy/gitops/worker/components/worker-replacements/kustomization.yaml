@@ -1,0 +1,81 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Env-driven replacements for the worker overlay.
+#
+# Sourced from the overlay-generated `worker-env` ConfigMap (each overlay's
+# `configMapGenerator` builds it from `.env`). Components run AFTER the
+# overlay's resources are loaded, so the `worker-env` ConfigMap is visible
+# by the time these replacements fire.
+#
+# Mirrors the `portal/components/portal-replacements` pattern. Future
+# worker capability variants (e.g. private-only egress, MI-vs-connstring
+# storage modes, alternative SecretProviderClass shapes) should land as
+# additional components slotted alongside this one — not by inlining
+# variant-specific replacements here.
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.IMAGE
+    targets:
+      - select:
+          kind: Deployment
+          name: copilot-runtime-worker
+        fieldPaths:
+          - spec.template.spec.containers.[name=worker].image
+
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.WORKLOAD_IDENTITY_CLIENT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+          name: copilot-worker-secrets
+        fieldPaths:
+          - spec.parameters.clientID
+      - select:
+          kind: ServiceAccount
+          name: copilot-runtime-worker
+        fieldPaths:
+          - metadata.annotations.[azure.workload.identity/client-id]
+
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.KV_NAME
+    targets:
+      - select:
+          kind: SecretProviderClass
+          name: copilot-worker-secrets
+        fieldPaths:
+          - spec.parameters.keyvaultName
+
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.AZURE_TENANT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+          name: copilot-worker-secrets
+        fieldPaths:
+          - spec.parameters.tenantId
+
+  # SPC-keys hash, sourced from the env-derived ConfigMap. See
+  # deploy/scripts/lib/spc-keys-hash.mjs for the full rationale (forces
+  # rolling update when the SecretProviderClass projected key set
+  # changes — works around envFrom binding-at-pod-start vs. CSI driver
+  # async Secret synthesis).
+  - source:
+      kind: ConfigMap
+      name: worker-env
+      fieldPath: data.SPC_KEYS_HASH
+    targets:
+      - select:
+          kind: Deployment
+          name: copilot-runtime-worker
+        fieldPaths:
+          - spec.template.metadata.annotations.[pilotswarm.dev/spc-keys-hash]

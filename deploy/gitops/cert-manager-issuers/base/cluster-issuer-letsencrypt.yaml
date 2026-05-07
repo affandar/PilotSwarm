@@ -1,0 +1,28 @@
+# Let's Encrypt production ClusterIssuer.
+#
+# `email` and the HTTP-01 ingress class are filled by the overlay's
+# kustomize replacements (driven by overlay-.env values ACME_EMAIL +
+# INGRESS_CLASS). Overlay-base split mirrors worker/portal: the base
+# ships placeholders, the overlay's freshly-generated ConfigMap is the
+# single source of truth at replacement time.
+#
+# Solver order matters: cert-manager picks the first matching solver.
+# HTTP-01 (default for `afd` mode — AppGw serves the challenge from the
+# AppGw public IP DNS label `<appgw>.<region>.cloudapp.azure.com`).
+# DNS-01 lives under `cert-manager-issuers-dns01.yaml` and is included
+# by the overlay only when the env asks for it (private+letsencrypt path
+# with an Azure DNS zone).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: REPLACED_BY_OVERLAY
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: REPLACED_BY_OVERLAY

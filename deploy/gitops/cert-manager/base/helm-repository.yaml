@@ -1,0 +1,19 @@
+# OCI HelmRepository pointing at Jetstack's official cert-manager chart
+# registry. The AKS `microsoft.flux` extension ships source-controller +
+# helm-controller by default (see deploy/services/base-infra/bicep/aks.bicep
+# microsoft.flux extension block) so HelmRepository / HelmRelease CRDs are
+# available without extra install steps.
+#
+# `type: oci` tells source-controller to treat `url` as an OCI registry
+# (no /index.yaml fetch). `interval` controls how often Flux re-pulls the
+# chart digest under the pinned version — 24h is plenty since the version
+# is exact-pinned in helm-release.yaml (no floating tag).
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  type: oci
+  interval: 24h
+  url: oci://quay.io/jetstack/charts

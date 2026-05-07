@@ -1,0 +1,44 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pilotswarm-portal-ingress
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: portal
+  # Edge-mode-agnostic, TLS-source-agnostic base. Each Component contributes
+  # the annotations and patches that match its responsibility:
+  #
+  #   components/edge-appgw   — AGIC annotations + ingressClassName +
+  #                             tls.0.secretName sentinel +
+  #                             appgw-ssl-certificate annotation +
+  #                             AGIC backend-/health-probe-hostname
+  #                             annotations sourced from PORTAL_HOSTNAME.
+  #   components/edge-nginx   — webapprouting/NGINX annotations +
+  #                             ingressClassName + tls.0.secretName=real.
+  #   components/tls-akv      — adds the AKV SPC + CSI volume on the
+  #                             Deployment. Does NOT touch the Ingress.
+  #   components/tls-letsencrypt — cert-manager annotation + overrides
+  #                             tls.0.secretName to the cert-manager-
+  #                             managed Secret name.
+  #
+  # Component order in the overlay: edge-X first, tls-X second. The
+  # tls-letsencrypt secretName patch overrides the edge default; tls-akv
+  # leaves the edge default in place.
+  annotations: {}
+spec:
+  ingressClassName: __INGRESS_CLASS__
+  tls:
+    - secretName: __TLS_SECRET_NAME__
+      hosts:
+        - __PORTAL_HOSTNAME__
+  rules:
+    - host: __PORTAL_HOSTNAME__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pilotswarm-portal
+                port:
+                  number: 3001

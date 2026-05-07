@@ -2,6 +2,298 @@
 
 This guide walks through deploying PilotSwarm workers to AKS for production multi-node operation.
 
+> **Two deployment paths.** The repo ships two side-by-side ways to deploy
+> PilotSwarm to AKS:
+>
+> 1. **Legacy `scripts/deploy-aks.sh`** (the rest of this document).
+>    Imperative bash + raw `kubectl apply` against `deploy/k8s/*.yaml`.
+>    Stable, well-trodden, and not going away.
+> 2. **GitOps IaC pipeline under `deploy/`** (described below in
+>    [GitOps IaC Path](#gitops-iac-path)). Bicep-managed Azure infra +
+>    Flux-driven cluster manifests, pulled from versioned blob
+>    containers. Modeled on the postgresql-fleet-manager reference
+>    implementation, simplified for PilotSwarm's single-service Node.js
+>    shape. This path adds Edge Mode (AFD vs Private AppGw) and TLS
+>    Source (AKV vs Let's Encrypt) topology choices.
+>
+> Choose one. They share the same Kubernetes cluster shape but stamp it
+> out via different mechanisms; running both against the same cluster
+> will fight over the same resources.
+
+## GitOps IaC Path
+
+The IaC pipeline under `deploy/` provisions Azure infra via Bicep and
+keeps cluster state in sync via Flux Kustomizations sourced from blob
+containers. Public entry points:
+
+- `deploy/scripts/new-env.mjs` — generate a per-env `.env` + bicep
+  parameter files. Picks defaults for the topology axes below.
+- `deploy/scripts/deploy.mjs` — orchestrates the per-service bicep +
+  manifest stage in `infraOrder` then `services` order from
+  `deploy/services/deploy-manifest.json`.
+- `deploy/scripts/test/*.test.mjs` — `npm run test:deploy-scripts`.
+
+### Topology Matrix
+
+The IaC path supports a `(EDGE_MODE × TLS_SOURCE)` matrix. Four
+combinations are supported; two are blocked:
+
+| `EDGE_MODE` | `TLS_SOURCE`     | Edge ingress                                  | Cert source                                            | Notes                                          |
+|-------------|------------------|-----------------------------------------------|--------------------------------------------------------|------------------------------------------------|
+| `afd`       | `letsencrypt`    | AFD → AppGw (Private Link) + AGIC             | cert-manager + Let's Encrypt prod (HTTP-01)            | OSS default. Zero CA setup.                    |
+| `afd`       | `akv`            | AFD → AppGw (Private Link) + AGIC             | OneCertV2-PublicCA via AKV (registered automatically)  | EV2 default. BYO public CA.                    |
+| `private`   | `akv`            | AKS web-app-routing addon (NGINX) + ILB       | OneCertV2-PrivateCA via AKV (registered automatically) | Enterprise / AME. No AFD, no AppGw, no AGIC.   |
+| `private`   | `akv-selfsigned` | AKS web-app-routing addon (NGINX) + ILB       | AKV `Self` issuer (auto-generated, in-place)           | No CA; private-VNet smoke tests.               |
+
+Default for OSS = `afd` + `letsencrypt`. Default for EV2 =
+`afd` + `akv`.
+
+- **`EDGE_MODE=afd`** — Azure Front Door fronts a regional Application
+  Gateway over Private Link. Public TLS terminates at AFD; AppGw is
+  reachable only via the AFD private endpoint. Use for any Internet-
+  facing deployment.
+- **`EDGE_MODE=private`** — No AFD, no AppGw, no AGIC, no GlobalInfra
+  resource group. AKS uses the [web-app-routing
+  addon](https://learn.microsoft.com/azure/aks/app-routing) (managed
+  NGINX) with an internal-only Azure Load Balancer. Reachable from
+  peered VNets / Bastion / VPN / ExpressRoute. The `globalinfra` and
+  `afd` services are skipped by `deploy.mjs`. Bicep also provisions a
+  Private DNS Zone (`PRIVATE_DNS_ZONE`) and links it to the AKS VNet;
+  `deploy.mjs` writes an A record `${HOST}.${PRIVATE_DNS_ZONE}` →
+  internal LB IP after the Portal rolls out.
+- **`TLS_SOURCE=akv`** — Portal cert is issued by an AKV cert issuer.
+  The bicep auto-registers `OneCertV2-PublicCA` (afd mode) or
+  `OneCertV2-PrivateCA` (private mode) on the Key Vault using the
+  shared `akv-certificate-issuer.bicep` module — no manual issuer
+  setup. Override with `PORTAL_TLS_ISSUER_NAME` if you have a different
+  registered CA. Cert is projected into the cluster via Secret Store
+  CSI; afd mode binds it to AppGw via the `appgw-ssl-certificate` AGIC
+  annotation, private mode mounts it directly into the NGINX-fronted
+  Portal pod's TLS secret.
+- **`TLS_SOURCE=akv-selfsigned`** *(private only)* — uses the AKV
+  built-in `Self` issuer to mint a self-signed cert. Browsers will
+  warn; only suitable for private-VNet smoke tests where you control
+  the trust store.
+- **`TLS_SOURCE=letsencrypt`** *(afd only)* — `cert-manager` is
+  installed in-cluster via Flux (HelmRelease pinned to v1.20.2 exact).
+  The `letsencrypt-prod` ClusterIssuer (HTTP-01 solver) issues a real
+  CA cert and writes it into the K8s Secret named in the Ingress
+  `tls.secretName`. AGIC imports it from there. No AKV cert, no
+  manual upload step. Requires `ACME_EMAIL` in the env.
+
+### Variant Overlays
+
+`deploy/gitops/portal/overlays/` ships three flavors, one per supported
+combo (`akv` and `akv-selfsigned` share an overlay because the only
+difference is the AKV issuer name, set by Portal bicep, not by
+kustomize):
+
+- `afd-letsencrypt/` — AFD + AppGw + AGIC + cert-manager-managed Secret.
+- `afd-akv/` — AFD + AppGw + AGIC + Secret Store CSI (AKV cert).
+- `private-akv/` — web-app-routing NGINX + ILB + Secret Store CSI
+  (AKV cert, OneCertV2-PrivateCA or `Self`).
+
+Portal bicep selects the overlay automatically:
+
+```bicep
+kustomizationPath: 'overlays/${edgeMode}-${
+  tlsSource == 'akv-selfsigned' ? 'akv' : tlsSource
+}'
+```
+
+### Skip Logic
+
+`deploy.mjs` skips entire services based on env flags:
+
+| Service                  | Skip when                                            |
+|--------------------------|------------------------------------------------------|
+| `globalinfra`, `afd`     | `EDGE_MODE != afd`                                   |
+| `cert-manager`           | `TLS_SOURCE != letsencrypt`                          |
+| `cert-manager-issuers`   | `TLS_SOURCE != letsencrypt`                          |
+
+Both single-service runs (`deploy.mjs <svc>`) and `deploy.mjs all` honor
+these gates.
+
+### cert-manager Pinning
+
+`deploy/gitops/cert-manager/base/helm-release.yaml` pins
+`version: 1.20.2` exact (no semver range). To upgrade, edit that field
+in a PR — Flux will not auto-roll. The OCI HelmRepository points at
+`oci://quay.io/jetstack/charts` (official Jetstack registry) for OSS;
+EV2 stays on the AKV path so this chart source is OSS-only.
+
+ClusterIssuers live in a separate Kustomization
+(`cert-manager-issuers`) so the issuer install retries cleanly while
+cert-manager CRDs are landing — Flux retry handles the ordering, no
+explicit `dependsOn` between the two fluxConfigurations resources.
+
+### Private Mode: NGINX + Internal LB + Private DNS
+
+In `EDGE_MODE=private` the cluster uses the AKS web-app-routing addon
+(`addonProfiles.webAppRouting`) instead of AGIC. The addon installs a
+managed NGINX ingress controller in the `app-routing-system`
+namespace; the default ingress class is
+`webapprouting.kubernetes.azure.com`.
+
+Two pieces are wired by `deploy.mjs` after Flux reconciles the Portal
+manifests, because they depend on runtime state Bicep can't observe:
+
+1. **Internal LB.** `deploy.mjs` patches the cluster-scoped
+   `nginxingresscontroller/default` CR with
+   `spec.loadBalancerAnnotations.service.beta.kubernetes.io/azure-load-balancer-internal=true`.
+   The addon controller propagates the annotation onto the underlying
+   `app-routing-system/nginx` Service, and Azure recreates the LB as
+   internal-only.
+2. **Private DNS A record.** `deploy.mjs` polls the Service for its
+   internal IP, then idempotently upserts an A record
+   `${HOST}` → internal-LB IP on the Bicep-provisioned Private DNS Zone
+   (`PRIVATE_DNS_ZONE`). Re-running the Portal deploy refreshes the
+   record if the LB IP changes.
+
+Callers reach the Portal at `https://${HOST}.${PRIVATE_DNS_ZONE}` from
+inside the AKS VNet (or any VNet linked to the same Private DNS Zone:
+peered VNets, Bastion-attached jump boxes, VPN, ExpressRoute). The
+zone is **not** publicly resolvable.
+
+### Unsupported Combinations
+
+- **`EDGE_MODE=private` with `TLS_SOURCE=letsencrypt`** — Let's Encrypt
+  HTTP-01 needs a public IP for ACME validation; private mode has none.
+  DNS-01 against an Azure Public DNS zone is not in scope (we don't
+  provision public zones). Use `TLS_SOURCE=akv` (OneCertV2-PrivateCA /
+  AME) or `TLS_SOURCE=akv-selfsigned` for private deployments.
+- **`EDGE_MODE=afd` with `TLS_SOURCE=akv-selfsigned`** — Azure Front
+  Door rejects self-signed origin certs at the TLS validation step.
+  Use `TLS_SOURCE=letsencrypt` (free, public CA) or `TLS_SOURCE=akv`
+  with a public CA (e.g. OneCertV2-PublicCA).
+
+`new-env.mjs` and `deploy.mjs` both refuse these combos at preflight.
+
+### Model Providers (LLM catalog)
+
+The IaC path mounts the worker's model catalog as a kustomize-generated
+ConfigMap (`copilot-worker-model-providers`) sourced from
+[`deploy/gitops/worker/base/model_providers.json`](../deploy/gitops/worker/base/model_providers.json),
+exposed to the runtime via `PS_MODEL_PROVIDERS_PATH=/app/config/model_providers.json`.
+This is **separate from** the legacy `scripts/deploy-aks.sh` flow,
+which bakes `deploy/config/model_providers.ghcp.json` into the image.
+
+Built-in providers in the base catalog:
+
+| Provider | Auth secret (KV → SPC) | Endpoint | When it loads |
+|---|---|---|---|
+| `ghcp` (GitHub Copilot) | `GITHUB_TOKEN` | `https://api.githubcopilot.com` | Always |
+| `anthropic` (direct) | `ANTHROPIC_API_KEY` | `https://api.anthropic.com` | When the key is set (sentinel-tolerant) |
+| `azure-foundry`, `azure-foundry-router` | `AZURE_OAI_KEY` | `__FOUNDRY_ENDPOINT__/openai/v1` | Only when `FOUNDRY_ENABLED=true` |
+
+`__FOUNDRY_ENDPOINT__` is rewritten to the live Foundry account URL
+during `--steps manifests` (from the `FOUNDRY_ENDPOINT` Bicep output).
+When Foundry is disabled, the placeholder stays in the file and the
+worker's catalog loader silently drops the Foundry providers
+(`apiKey: env:AZURE_OAI_KEY` resolves to the stripped `__PS_UNSET__`
+sentinel, i.e. undefined).
+
+#### Enabling Foundry on a stamp
+
+```bash
+npm run deploy:new-env -- <name> --foundry-enabled y
+# scaffolds deploy/envs/local/<name>/foundry-deployments.json
+# (a JSON array; the stdout banner lists common entries to copy in)
+
+# edit the JSON to your desired model deployments, then:
+npm run deploy -- --env <name>
+```
+
+`foundry.bicep` provisions one `Microsoft.CognitiveServices/accounts`
+(kind=AIServices) per stamp, each entry as a child
+`accounts/deployments`, and writes `azure-oai-key` directly to KV via
+co-located `listKeys()`. When `FOUNDRY_ENABLED=false`,
+`auto-secrets-sentinel.bicep` writes the `__PS_UNSET__` sentinel into
+the same KV secret so the SPC mount still succeeds.
+
+> **Phase 1 only.** Foundry uses key auth; Claude is direct-Anthropic.
+> Phase 2 (SDK Entra-mode for Foundry) and Phase 3 (Foundry-hosted
+> Claude) are tracked in
+> [`docs/proposals/foundry-entra-mode-auth.md`](./proposals/foundry-entra-mode-auth.md)
+> and [`docs/proposals/foundry-hosted-claude.md`](./proposals/foundry-hosted-claude.md).
+
+#### Per-stamp catalog overrides
+
+Drop a kustomize overlay patch on the
+`copilot-worker-model-providers` ConfigMap in
+`deploy/gitops/worker/overlays/<overlay>/` to diverge from the base
+catalog for one stamp. Keep `__FOUNDRY_ENDPOINT__` in the patched JSON
+to keep endpoint substitution; hard-code the URL to opt out.
+
+### Local Development
+
+Local dev outside Azure (e.g. kind, k3d, plain Docker) is **not** part
+of the IaC path. Use the legacy local scripts (`./run.sh`,
+`scripts/deploy-aks.sh`) for those scenarios. The IaC path assumes an
+Azure target.
+
+### Querying Logs (KQL)
+
+The base-infra Bicep provisions a per-stamp Log Analytics workspace
+(`<RESOURCE_PREFIX>-log`) and an AKS Container Insights Data Collection
+Rule that ships pod stdout/stderr to the workspace using the modern
+**ContainerLogV2** schema. This gives you historical, queryable logs
+that survive pod restarts — a step up from `kubectl logs`, which only
+shows the current and previous container instance.
+
+Find the workspace:
+
+```bash
+# From base-infra deployment outputs (set after `--steps bicep`):
+az deployment group show \
+  -g "$RESOURCE_GROUP" \
+  -n base-infra \
+  --query "properties.outputs.logAnalyticsWorkspaceName.value" -o tsv
+# → <RESOURCE_PREFIX>-log
+```
+
+Open the workspace in the Azure portal → **Logs**, and run KQL like:
+
+```kusto
+// Last 200 portal log lines
+ContainerLogV2
+| where PodNamespace == "pilotswarm"
+| where PodName startswith "pilotswarm-portal"
+| order by TimeGenerated desc
+| take 200
+| project TimeGenerated, PodName, ContainerName, LogMessage
+
+// Worker errors in the last 1h
+ContainerLogV2
+| where PodNamespace == "pilotswarm"
+| where PodName startswith "copilot-runtime-worker"
+| where TimeGenerated > ago(1h)
+| where LogLevel in ("error", "warn") or LogMessage contains_cs "ERROR"
+| order by TimeGenerated desc
+
+// Pod restarts / OOMKills
+KubeEvents
+| where Namespace == "pilotswarm"
+| where Reason in ("BackOff", "Failed", "OOMKilling", "Killing")
+| order by TimeGenerated desc
+| project TimeGenerated, Name, Reason, Message
+```
+
+Notes:
+
+- **Ingestion lag is ~3–10 minutes.** Tail follow-ups should still use
+  `kubectl logs -f` for live debugging; KQL is the historical view.
+- **Retention** defaults to 30 days (free tier). Tune via
+  `LOG_ANALYTICS_RETENTION_DAYS` in `deploy/envs/local/<env>/env`.
+  Up to 730 days is supported; 30+ is billed at the workspace's
+  PerGB2018 rate.
+- **ContainerLogV2** is the only schema enabled. The legacy
+  `ContainerLog` table is deprecated (retiring 2026-09-30) and is not
+  populated.
+- **Cost.** A small dev stamp typically lands at 1–3 GB/day; ingestion
+  is ~$2.30/GB after the free 5 GB/month per workspace. Use the
+  `Usage | summarize sum(Quantity) by DataType` query to monitor.
+
 ## Architecture
 
 ```

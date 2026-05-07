@@ -1,0 +1,24 @@
+{
+  "$schema": "../deploy.schema.json",
+  "schemaVersion": 1,
+  "_comment": "OSS per-service deploy manifest for portal. Read by deploy/scripts/lib/services-manifest.mjs. Distinct from the EV2 service.json sibling which will be ported to a parent repo.",
+  "name": "portal",
+  "kind": "app",
+  "bicep": {
+    "modules": [
+      { "name": "base-infra", "scope": "group" },
+      { "name": "portal",     "scope": "group" }
+    ],
+    "allModeModules": [
+      { "name": "portal", "scope": "group" }
+    ]
+  },
+  "image": {
+    "repo":       "pilotswarm-portal",
+    "dockerfile": "deploy/Dockerfile.portal",
+    "buildWorkspaces": ["packages/sdk", "packages/portal"]
+  },
+  "rollout": {
+    "deployment": "pilotswarm-portal"
+  }
+}

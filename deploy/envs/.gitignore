@@ -1,0 +1,4 @@
+# Personal/local env files for the OSS Node deploy orchestrator — never commit.
+# Each `deploy/envs/local/<name>/env` is a standalone file scaffolded from
+# deploy/envs/template.env by deploy/scripts/new-env.mjs.
+local/

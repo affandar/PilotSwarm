@@ -1,0 +1,58 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# AKV TLS path. Adds:
+#   1. A SecretProviderClass that drives Secret Store CSI to project the
+#      AKV-managed cert into a kubernetes.io/tls Secret named
+#      `pilotswarm-portal-tls`.
+#   2. A `portal-tls` CSI volume + mount on the portal Deployment so the
+#      CSI driver actually fires (mounting is required for the SPC's
+#      `secretObjects` synthesis to land).
+#   3. Patches the deployment's `portal-tls-secret` volume secretName to
+#      the K8s Secret synthesized by the SPC so the pod gets tls.crt /
+#      tls.key on disk.
+#
+# This Component is edge-agnostic. It does NOT touch the Ingress —
+# the active edge component (edge-appgw / edge-nginx) owns Ingress
+# annotations and the default tls.0.secretName. tls-letsencrypt is the
+# only TLS Component that overrides the Ingress secretName (because LE
+# writes its cert into a different Secret name `pilotswarm-portal-tls-le`
+# managed by cert-manager).
+#
+# Covers both `TLS_SOURCE=akv` (cert pre-issued in AKV; e.g. via the
+# OneCertV2-PublicCA / OneCertV2-PrivateCA issuer registered by bicep)
+# and `TLS_SOURCE=akv-selfsigned` (cert auto-created by bicep using the
+# AKV `Self` issuer). At the K8s layer the two are identical — both
+# produce a kubernetes.io/tls Secret named `pilotswarm-portal-tls`.
+
+resources:
+  - secret-provider-class-tls.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      name: pilotswarm-portal
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: pilotswarm-portal
+      spec:
+        template:
+          spec:
+            containers:
+              - name: portal
+                volumeMounts:
+                  - name: portal-tls
+                    mountPath: /mnt/portal-tls
+                    readOnly: true
+            volumes:
+              - name: portal-tls
+                csi:
+                  driver: secrets-store.csi.k8s.io
+                  readOnly: true
+                  volumeAttributes:
+                    secretProviderClass: pilotswarm-portal-tls
+              - name: portal-tls-secret
+                secret:
+                  secretName: pilotswarm-portal-tls

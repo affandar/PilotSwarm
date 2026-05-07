@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pilotswarm/deploy-manifest.schema.json",
+  "title": "PilotSwarm OSS deploy root manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "infraOrder", "services"],
+  "properties": {
+    "$schema":       { "type": "string" },
+    "_comment":      { "type": "string" },
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "infraOrder": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "uniqueItems": true,
+      "description": "Ordered list of infrastructure-kind service names brought up before any app services."
+    },
+    "services": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "uniqueItems": true,
+      "description": "App-kind service names, deployed after infraOrder."
+    },
+    "regionShort": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^[a-z0-9]+$" }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pipelineByKind": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["infra", "app"],
+          "properties": {
+            "infra": { "type": "array", "items": { "type": "string" } },
+            "app":   { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    }
+  }
+}

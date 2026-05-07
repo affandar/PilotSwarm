@@ -1,0 +1,72 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Edge mode: Application Gateway + AGIC.
+#
+# Used for EDGE_MODE=afd (the AppGw private frontend sits behind AFD via
+# Private Link, AFD is the public-facing endpoint). Patches the Ingress
+# with all AGIC-specific configuration that the base intentionally
+# omits:
+#
+#   * `ingressClassName: azure-application-gateway` — routes the Ingress
+#     to AGIC instead of any other in-cluster controller.
+#   * AGIC routing/probe annotations — `use-private-ip: "true"` binds
+#     listeners to the AppGw private FE (required for the Private Link
+#     config that AFD terminates on); `backend-protocol: "https"` matches
+#     the in-pod TLS termination on port 3001; the rest are
+#     ssl-redirect / request-timeout / health-probe path|port|hostname
+#     / backend-hostname (replaced with PORTAL_HOSTNAME below).
+#   * `appgw-ssl-certificate: pilotswarm-portal-tls` — references a TLS
+#     cert installed on the AppGw via Bicep (`appgw-add-ssl-certificate.
+#     bicep`). Combined with the `tls.0.secretName` sentinel below, this
+#     ensures AGIC binds the AppGw-managed cert to the listener and does
+#     NOT try to import a synthesized cert from a K8s Secret. Harmless
+#     when paired with tls-letsencrypt — that Component overrides
+#     `tls.0.secretName` to the real cert-manager Secret and the
+#     cert-manager.io/cluster-issuer annotation drives Ingress reconcile.
+#   * `tls.0.secretName: pilotswarm-portal-tls-appgw-ref` — an
+#     intentional sentinel that does not match any K8s Secret. tls-akv
+#     leaves this in place (the cert is on the AppGw, not in K8s);
+#     tls-letsencrypt overrides it to the real cert-manager Secret.
+
+patches:
+  - target:
+      kind: Ingress
+      name: pilotswarm-portal-ingress
+    patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: pilotswarm-portal-ingress
+        annotations:
+          appgw.ingress.kubernetes.io/use-private-ip: "true"
+          appgw.ingress.kubernetes.io/ssl-redirect: "true"
+          appgw.ingress.kubernetes.io/backend-protocol: "https"
+          appgw.ingress.kubernetes.io/request-timeout: "3600"
+          appgw.ingress.kubernetes.io/health-probe-path: "/api/health"
+          appgw.ingress.kubernetes.io/health-probe-port: "3001"
+          appgw.ingress.kubernetes.io/backend-hostname: __PORTAL_HOSTNAME__
+          appgw.ingress.kubernetes.io/health-probe-hostname: __PORTAL_HOSTNAME__
+          appgw.ingress.kubernetes.io/appgw-ssl-certificate: pilotswarm-portal-tls
+      spec:
+        ingressClassName: azure-application-gateway
+        tls:
+          - secretName: pilotswarm-portal-tls-appgw-ref
+            hosts:
+              - __PORTAL_HOSTNAME__
+
+# AGIC consumes PORTAL_HOSTNAME via two annotations the base does not
+# carry — kustomize replacements are scoped to this Component so they
+# only fire when edge-appgw is included.
+replacements:
+  - source:
+      kind: ConfigMap
+      name: portal-env
+      fieldPath: data.PORTAL_HOSTNAME
+    targets:
+      - select:
+          kind: Ingress
+          name: pilotswarm-portal-ingress
+        fieldPaths:
+          - metadata.annotations.[appgw.ingress.kubernetes.io/backend-hostname]
+          - metadata.annotations.[appgw.ingress.kubernetes.io/health-probe-hostname]

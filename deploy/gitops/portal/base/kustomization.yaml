@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base Kustomize tree for the PilotSwarm portal deployable.
+#
+# This base is intentionally inert — it contains NO env-specific
+# values, NO configMapGenerator, and NO replacements. All env-driven
+# wiring lives in the overlay so that the overlay's freshly-created
+# ConfigMap is the single source of truth for replacements (matches
+# the postgresql-fleet-manager reference pattern). See the worker
+# base/kustomization.yaml for the full rationale.
+
+resources:
+  - service-account.yaml
+  - role.yaml
+  - role-binding.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+  - secret-provider-class.yaml
+
+# Model catalog ConfigMap. The portal's PilotSwarmManagementClient
+# (initialized in NodeSdkTransport) calls loadModelProviders() at
+# start, which reads PS_MODEL_PROVIDERS_PATH. Without this catalog the
+# portal's listModels()/getModelsByProvider() return empty and the
+# "+ Model" picker stays disabled.
+#
+# Source of truth: deploy/gitops/worker/base/model_providers.json
+# stage-manifests.mjs COPIES that file into the portal staging tree at
+# base/model_providers.json before kustomize runs. Keeping a single
+# physical source prevents drift; the staged tree is still
+# self-contained for Flux. Local `kustomize build` on the source tree
+# will fail to find this file — that is intentional, all builds go
+# through deploy.mjs which runs stage-manifests first.
+#
+# Hash suffix is intentionally enabled (kustomize default): editing
+# the JSON yields a new ConfigMap name, the Deployment spec changes,
+# and Flux rolls the portal pod.
+configMapGenerator:
+  - name: pilotswarm-portal-model-providers
+    files:
+      - model_providers.json

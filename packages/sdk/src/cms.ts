@@ -491,26 +491,27 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
     static readonly DEFAULT_POOL_MAX = 3;
 
     /** Factory: create and connect a PgSessionCatalogProvider. */
-    static async create(connectionString: string, schema?: string): Promise<PgSessionCatalogProvider> {
+    static async create(
+        connectionString: string,
+        schema?: string,
+        opts: { useManagedIdentity?: boolean; aadUser?: string } = {},
+    ): Promise<PgSessionCatalogProvider> {
         const { default: pg } = await import("pg");
-
-        // pg v8 treats sslmode=require as verify-full, which rejects Azure/self-signed
-        // certs. Strip sslmode from URL and control SSL entirely via config object.
-        const parsed = new URL(connectionString);
-        const needsSsl = ["require", "prefer", "verify-ca", "verify-full"]
-            .includes(parsed.searchParams.get("sslmode") ?? "");
-        parsed.searchParams.delete("sslmode");
+        const { buildPgPoolConfig } = await import("./pg-pool-factory.js");
 
         const configuredPoolMax = Number.parseInt(process.env.PILOTSWARM_CMS_PG_POOL_MAX ?? "", 10);
         const poolMax = Number.isFinite(configuredPoolMax) && configuredPoolMax > 0
             ? configuredPoolMax
             : PgSessionCatalogProvider.DEFAULT_POOL_MAX;
 
-        const pool = new pg.Pool({
-            connectionString: parsed.toString(),
+        const poolConfig = buildPgPoolConfig({
+            connectionString,
+            useManagedIdentity: opts.useManagedIdentity,
+            aadUser: opts.aadUser,
             max: poolMax,
-            ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
         });
+
+        const pool = new pg.Pool(poolConfig);
 
         // Handle idle client errors (e.g. EADDRNOTAVAIL when the network
         // drops). Without this, pg Pool emits an unhandled 'error' event

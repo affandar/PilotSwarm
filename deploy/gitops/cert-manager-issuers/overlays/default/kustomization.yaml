@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# All resources in this overlay default to the cert-manager namespace.
+# The ClusterIssuer is cluster-scoped so kustomize ignores `namespace:`
+# for it; the only namespaced resource is the configMapGenerator output
+# below, which needs SOME namespace for Flux to apply it (otherwise the
+# kustomize-controller errors with "namespace not specified").
+namespace: cert-manager
+
+# Overlay-only ConfigMap from the rendered `.env`. Same name-suffix-hash
+# pattern as worker/portal — every change to `.env` produces a fresh
+# ConfigMap name and re-fires the replacements below.
+configMapGenerator:
+  - name: cert-manager-issuers-env
+    envs:
+      - .env
+
+# Fan out ACME_EMAIL + INGRESS_CLASS into the LE ClusterIssuer.
+replacements:
+  - source:
+      kind: ConfigMap
+      name: cert-manager-issuers-env
+      fieldPath: data.ACME_EMAIL
+    targets:
+      - select:
+          kind: ClusterIssuer
+          name: letsencrypt-prod
+        fieldPaths:
+          - spec.acme.email
+  - source:
+      kind: ConfigMap
+      name: cert-manager-issuers-env
+      fieldPath: data.INGRESS_CLASS
+    targets:
+      - select:
+          kind: ClusterIssuer
+          name: letsencrypt-prod
+        fieldPaths:
+          - spec.acme.solvers.0.http01.ingress.ingressClassName

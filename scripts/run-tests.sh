@@ -46,6 +46,9 @@ Notes:
     - Positional suite names and --suite=<name> can be mixed.
     - Suite names are substring matches against files under packages/sdk/test/local.
     - Unknown options fail fast.
+    - A full run (no suite filter) also runs the deploy-scripts tests
+      (node --test against deploy/scripts/test/*.test.mjs) before the
+      SDK suites. Set SKIP_DEPLOY_SCRIPTS_TESTS=1 to skip.
 EOF
 }
 
@@ -61,6 +64,24 @@ done
 # Build
 echo "🔨 Building TypeScript..."
 (cd "$SDK_DIR" && npm run build) || { echo "❌ Build failed"; exit 1; }
+
+# Run the deploy-scripts test suite (Node `node --test`, not vitest) when
+# no SDK suite filter is in effect. The deploy orchestrator's helpers
+# live under deploy/scripts/test/*.test.mjs and are wired through the
+# top-level "test:deploy-scripts" npm script. Per repo convention every
+# test file must be runnable from this entrypoint, so we always run them
+# as part of a full local test pass. If any --suite=<name> or positional
+# suite filter is supplied, we are scoping to specific SDK suites and
+# skip this stage so iteration loops stay fast.
+run_deploy_scripts_tests() {
+    if [ "${SKIP_DEPLOY_SCRIPTS_TESTS:-0}" = "1" ]; then
+        echo "⏭  Skipping deploy-scripts tests (SKIP_DEPLOY_SCRIPTS_TESTS=1)."
+        return 0
+    fi
+    echo "🧪 Running deploy-scripts tests (node --test)..."
+    (cd "$REPO_ROOT" && npm run --silent test:deploy-scripts) \
+        || { echo "❌ deploy-scripts tests failed"; exit 1; }
+}
 
 # Suppress duroxide Rust WARN logs in tests (AKS workers use INFO via their own env)
 export RUST_LOG="${RUST_LOG:-error}"
@@ -119,5 +140,6 @@ fi
 if [ ${#TARGET_FILES[@]} -gt 0 ]; then
     exec npx vitest "${VITEST_ARGS[@]}" "${TARGET_FILES[@]}"
 else
+    run_deploy_scripts_tests
     exec npx vitest "${VITEST_ARGS[@]}"
 fi

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## 0.1.27 — 2026-05-06
+
+### Deploy / Ops
+
+- **AKS GitOps deployment kit** — adds environment templates, Flux/Kustomize
+  bases and overlays, Azure Bicep service definitions, and an OSS Node.js
+  deploy orchestrator under `deploy/scripts/` for provisioning infrastructure,
+  publishing manifests, seeding secrets, and rolling out worker/portal services.
+- **Deployment-ready runtime wiring** — adds shared PostgreSQL pool creation,
+  blob/session-store connection option handling, and worker/client plumbing used
+  by managed AKS deployments.
+
+### TUI / Shared UI
+
+- **Markdown table sentinel handling** — chat line grouping now keeps markdown
+  table sentinel blocks out of visible transcript text while preserving the
+  rendered table structure, preventing stray marker lines from leaking into TUI
+  and portal chat output.
+
+### Tests
+
+- Added deploy-script, Bicep/rendering helper, PostgreSQL pool factory, and blob
+  store coverage for the new AKS deployment path.
+- Added a focused regression test for markdown table sentinel blocks in chat
+  line rendering.
+
 ## 0.1.26 — 2026-05-03
 
 ### TUI / Shared UI

@@ -404,6 +404,14 @@ export class PilotSwarmClient {
         const startedAt = Date.now();
         const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
 
+        // CMS + facts may use a passwordless URL (AAD/MI) while duroxide
+        // stays on the password URL. When `useManagedIdentity` is set the
+        // caller is expected to pass `cmsFactsDatabaseUrl` (a passwordless
+        // form). When unset (legacy / local), both pools reuse `store`.
+        const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
+        const useMi = this.config.useManagedIdentity ?? false;
+        const aadUser = this.config.aadDbUser;
+
         // Create duroxide client
         let provider: any;
         if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
@@ -418,16 +426,24 @@ export class PilotSwarmClient {
         this.duroxideClient = new Client(provider);
 
         // Create CMS catalog
-        if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+        if (cmsFactsUrl.startsWith("postgres://") || cmsFactsUrl.startsWith("postgresql://")) {
             trace("[client] CMS create start...");
-            this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
+            this._catalog = await PgSessionCatalogProvider.create(
+                cmsFactsUrl,
+                this.config.cmsSchema,
+                { useManagedIdentity: useMi, aadUser },
+            );
             trace("[client] CMS initialize start...");
             await this._catalog.initialize();
             trace("[client] CMS initialize done");
         }
 
         trace("[client] facts create start...");
-        this._factStore = await createFactStoreForUrl(store, this.config.factsSchema);
+        this._factStore = await createFactStoreForUrl(
+            cmsFactsUrl,
+            this.config.factsSchema,
+            { useManagedIdentity: useMi, aadUser },
+        );
         trace("[client] facts initialize start...");
         await this._factStore.initialize();
         trace("[client] facts initialize done");

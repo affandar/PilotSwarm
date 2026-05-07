@@ -1,0 +1,56 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base Kustomize tree for the copilot-runtime worker deployable.
+#
+# Resource YAMLs in this base intentionally do NOT carry
+# `metadata.namespace`. The overlay sets the kustomize-level
+# `namespace:` field, which fans the value into every namespaceable
+# resource (including the generated ConfigMaps in this base and in
+# the overlay). This matches the
+# [official kustomize `namespace:` semantics][1] and the
+# `postgresql-fleet-manager` reference pattern. It also keeps
+# `nameReference` rewriting (volume.configMap.name → hashed name)
+# working without the namespace-mismatch trap.
+#
+# [1]: https://kubectl.docs.kubernetes.io/references/kustomize/kustomization/namespace/
+#
+# Env-driven wiring (configMapGenerator from .env, replacements for
+# IMAGE / WORKLOAD_IDENTITY_CLIENT_ID / KV_NAME / AZURE_TENANT_ID)
+# lives in the overlay so the overlay's freshly-created ConfigMap is
+# the single source of truth for replacements.
+
+resources:
+  - namespace.yaml
+  - service-account.yaml
+  - deployment.yaml
+  - secret-provider-class.yaml
+
+# ConfigMap built from the in-tree GitHub Copilot SDK model catalog
+# (`model_providers.json` in this directory). This is a deliberate
+# exception to the "base is inert" rule above: the catalog is
+# **repo-level config** that is identical across every stamp in the
+# bicep-deploy path (every stamp uses the GitHub Copilot SDK, the
+# GITHUB_TOKEN is filled per-stamp from KV, and the catalog itself
+# does not vary). Keeping the file co-located with the kustomization
+# means the gitops tree is fully self-contained — `stage-manifests`
+# uploads it to the Flux Storage Bucket alongside the rest of the
+# worker overlay, and Flux's in-cluster `kustomize build` resolves it
+# without a `LoadRestrictionsNone` flag or a side-channel copy.
+#
+# Note: the starter-docker appliance uses a separate catalog at
+# `deploy/config/model_providers.local-docker.json` — that file serves
+# a different deploy path and is intentionally not shared.
+#
+# Stamps that need a different catalog (e.g. Azure OpenAI direct)
+# replace this ConfigMap via an overlay-level configMapGenerator with
+# `behavior: replace`.
+#
+# Hash suffix is intentionally enabled (kustomize default): editing
+# the JSON yields a new ConfigMap name, the Deployment spec changes,
+# and Flux rolls the worker pods. Without the hash, pods would keep
+# loading the stale catalog until a manual `kubectl rollout restart`.
+configMapGenerator:
+  - name: copilot-worker-model-providers
+    files:
+      - model_providers.json

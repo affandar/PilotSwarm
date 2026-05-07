@@ -226,6 +226,23 @@ export interface PilotSwarmManagementClientOptions {
      * If not provided, trace messages are discarded.
      */
     traceWriter?: (msg: string) => void;
+    /**
+     * Use AAD/Managed Identity for CMS + facts Postgres pools. Mirrors
+     * `PilotSwarmClientOptions.useManagedIdentity`. When `true`,
+     * `cmsFactsDatabaseUrl` (or `store`) must be a passwordless URL.
+     */
+    useManagedIdentity?: boolean;
+    /**
+     * Optional separate URL for CMS + facts pools. When unset, `store` is
+     * reused. Pair with `useManagedIdentity: true` for the passwordless
+     * AAD path.
+     */
+    cmsFactsDatabaseUrl?: string;
+    /**
+     * Override the AAD principal name used as the Postgres `user` when
+     * minting tokens. Only consulted when `useManagedIdentity` is `true`.
+     */
+    aadDbUser?: string;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -267,17 +284,31 @@ export class PilotSwarmManagementClient {
         }
         this._duroxideClient = new Client(provider);
 
+        // CMS + facts may use a passwordless URL (AAD/MI) while duroxide
+        // stays on the password URL. Mirrors PilotSwarmClient.start().
+        const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
+        const useMi = this.config.useManagedIdentity ?? false;
+        const aadUser = this.config.aadDbUser;
+
         // Create CMS catalog
-        if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+        if (cmsFactsUrl.startsWith("postgres://") || cmsFactsUrl.startsWith("postgresql://")) {
             _trace("[mgmt] CMS create start...");
-            this._catalog = await PgSessionCatalogProvider.create(store, this.config.cmsSchema);
+            this._catalog = await PgSessionCatalogProvider.create(
+                cmsFactsUrl,
+                this.config.cmsSchema,
+                { useManagedIdentity: useMi, aadUser },
+            );
             _trace("[mgmt] CMS initialize start...");
             await this._catalog.initialize();
             _trace("[mgmt] CMS initialize done");
         }
 
         _trace("[mgmt] facts create start...");
-        this._factStore = await createFactStoreForUrl(store, this.config.factsSchema);
+        this._factStore = await createFactStoreForUrl(
+            cmsFactsUrl,
+            this.config.factsSchema,
+            { useManagedIdentity: useMi, aadUser },
+        );
         _trace("[mgmt] facts initialize start...");
         await this._factStore.initialize();
         _trace("[mgmt] facts initialize done");
