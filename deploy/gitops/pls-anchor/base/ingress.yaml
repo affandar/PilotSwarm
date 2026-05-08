@@ -11,8 +11,7 @@
 # AGIC itself owns, AGIC keeps the listener alive forever, and the hidden
 # PLS persists for Front Door's PE to attach to.
 #
-# Reference: postgresql-fleet-manager
-# `src/Deploy/BaseInfra/geneva-manifests/base/pls-anchor-ingress.yaml`
+# Adapted from an internal reference deployment.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

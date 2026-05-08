@@ -48,7 +48,7 @@ npm run deploy:new-env
 npm run deploy:new-env -- foo --subscription <id> --location westus3
 #    The scaffolder generates RESOURCE_GROUP, GLOBAL_RESOURCE_PREFIX,
 #    GLOBAL_RESOURCE_GROUP, PORTAL_RESOURCE_NAME using the same patterns
-// The enterprise path uses (the enterprise deployment manifests):
+#    that the enterprise deployment manifests use:
 #      RESOURCE_GROUP         = ${RESOURCE_PREFIX}-<regionShort>-rg
 #      GLOBAL_RESOURCE_PREFIX = ${RESOURCE_PREFIX}global
 #      GLOBAL_RESOURCE_GROUP  = ${GLOBAL_RESOURCE_PREFIX}

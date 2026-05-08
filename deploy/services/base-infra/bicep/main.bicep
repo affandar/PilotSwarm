@@ -100,14 +100,25 @@ var location = toLower(region)
 // Resource naming conventions.
 //
 // All resources are named deterministically from `resourceNamePrefix`, which
-// is expected to encode whatever uniqueness the caller needs (e.g.
-// `<env><regionShortName><stamp>`, like `pilotswarmdevwus31`). The caller is
-// responsible for ensuring the prefix is unique within its scope — e.g. each
-// (env, region, stamp) owns its own subscription/resource-group — so no
-// random hashes are needed to disambiguate names. This lets external tooling
-// (e.g. higher-level deployment orchestrators that wrap this module) compose
-// resource names by convention without runtime lookups against the
-// deployment outputs.
+// the caller is expected to encode with whatever uniqueness their scope needs
+// (e.g. `<env><regionShortName><stamp>`, like `pilotswarmdevwus31`). Several
+// of the resources below — ACR, Storage Account, Key Vault, and the Postgres
+// server's public DNS name — live in **globally unique** Azure namespaces, so
+// the caller is responsible for choosing a `resourceNamePrefix` that does not
+// collide with any other tenant's resources of the same type. The `npm run
+// deploy:new-env` scaffolder enforces this in practice by deriving prefixes
+// from a per-developer env name (`ps<envname>`), and higher-level orchestrators
+// compose `<env><regionShort><stamp>` which is unique by construction. No
+// random hashes are added here so that external tooling (e.g. higher-level
+// deployment orchestrators that wrap this module) can compose resource names
+// by convention without runtime lookups against the deployment outputs.
+//
+// Length / charset constraints to keep in mind when picking the prefix:
+//   * Storage Account, Key Vault: 3–24 chars, lowercase alphanumeric only
+//     (the `alphaPrefix` strip below handles dashes/underscores; the length
+//     budget is split between prefix + the `sa`/`kv` suffix below).
+//   * ACR: 5–50 chars, lowercase alphanumeric only.
+//   * Postgres flexible-server: 3–63 chars, lowercase alphanumeric and dashes.
 //
 // `alphaPrefix` strips dashes/underscores to satisfy the alphanumeric naming
 // constraints of ACR / Storage / Key Vault. When the caller already supplies a

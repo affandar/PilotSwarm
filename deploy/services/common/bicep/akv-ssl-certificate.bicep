@@ -1,8 +1,7 @@
 // ==============================================================================
 // AKV-managed SSL certificate (idempotent).
 //
-// Adapted from an internal reference deployment
-// (https://github.com/.../src/Deploy/Common/bicep/ssl-certificate.bicep).
+// Adapted from an internal reference deployment.
 //
 // Behaviour:
 //   * If the cert already exists in Key Vault, the script is a no-op (so the

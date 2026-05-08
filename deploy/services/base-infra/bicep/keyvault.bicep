@@ -2,7 +2,7 @@
 // PilotSwarm BaseInfra — Azure Key Vault.
 //
 // Stores the 14 worker + 10 portal secrets populated out-of-band by
-// `scripts/deploy-aks.sh` (or by the a separate enterprise orchestration step in production).
+// `scripts/deploy-aks.sh` (or by a separate enterprise orchestration step in production).
 // The CSI SPC UAMI is granted `Key Vault Secrets User` so the AKV CSI
 // provider addon can project those secrets into pods.
 // ==============================================================================

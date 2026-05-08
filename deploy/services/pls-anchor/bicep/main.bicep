@@ -29,11 +29,9 @@
 //     referencing it (application-gateway.bicep).
 //   - AGIC add-on enabled on AKS (aks.bicep).
 //
-// Reference: postgresql-fleet-manager
-// `src/Deploy/BaseInfra/geneva-manifests/base/pls-anchor-{service,ingress}.yaml`
-// (FM bundles the anchor inside the geneva manifests kustomization; we package
-// it as its own service for clean separation since PilotSwarm has no Geneva
-// equivalent).
+// Adapted from an internal reference deployment, which bundles the anchor
+// inside a larger observability-manifests kustomization. PilotSwarm packages
+// it as its own infra service for clean separation.
 // ==============================================================================
 
 targetScope = 'resourceGroup'
