@@ -482,7 +482,17 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         isError: true,
                     };
                 }
-                await ctx.mgmt.deleteSession(session_id);
+                // mgmt.deleteSession routes through sendCommand and rejects
+                // with "orchestration ... is not started (status=NotFound)"
+                // for sessions whose orchestration was never registered (e.g.
+                // create_session ran while no worker was active). Fall back
+                // to client.deleteSession in that case — it soft-deletes the
+                // CMS row directly and best-effort cancels the orchestration.
+                if (existing.orchestrationStatus === "NotFound") {
+                    await ctx.client.deleteSession(session_id);
+                } else {
+                    await ctx.mgmt.deleteSession(session_id);
+                }
                 sessionCache.delete(session_id);
                 return {
                     content: [
