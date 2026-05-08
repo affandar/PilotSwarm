@@ -9,7 +9,7 @@
 //     Front Door WAF policy diagnostic logs). Kept separate from any single
 //     stamp so AFD telemetry isn't coupled to a specific region's lifecycle.
 //
-// Pattern adopted from postgresql-fleet-manager
+// Pattern adopted from reference deployment
 // (src/Deploy/BaseInfra/bicep/application-insights.bicep), simplified: no
 // AppInsights component yet — PilotSwarm Node services don't emit
 // AppInsights telemetry today. Workspace alone is sufficient for the

@@ -15,7 +15,7 @@
 //      AppGW) is wired in `appgw-pe-approval-rbac.bicep`. Created in
 //      BaseInfra so the AppGW exists before the role assignment runs.
 //   5. AppGW UAMI — attached to the Application Gateway resource itself.
-//      Mirrors postgresql-fleet-manager's `appGatewayManagedIdName`. Exists
+//      Mirrors reference deployment's `appGatewayManagedIdName`. Exists
 //      primarily so the AGIC addon identity can hold "Managed Identity
 //      Operator" on it (required by AGIC docs to mutate AppGw config that
 //      references a UAMI). Wired in `agic-rbac.bicep`.
@@ -31,7 +31,7 @@ var kubeletIdentityName = '${resourceNamePrefix}-kubelet-mid'
 var csiIdentityName = '${resourceNamePrefix}-csi-mid'
 var approverIdentityName = '${resourceNamePrefix}-pe-approver-mid'
 var aksControlPlaneIdentityName = '${resourceNamePrefix}-aks-cp-mid'
-// Application Gateway UAMI. Mirrors postgresql-fleet-manager's `appGatewayManagedIdName`
+// Application Gateway UAMI. Mirrors reference deployment's `appGatewayManagedIdName`
 // pattern. Required so the AGIC addon can call `assignUserAssignedIdentity` on the
 // AppGw (granted via the Managed Identity Operator role on this UAMI in
 // `agic-rbac.bicep`). System-assigned / addon-only identities don't satisfy

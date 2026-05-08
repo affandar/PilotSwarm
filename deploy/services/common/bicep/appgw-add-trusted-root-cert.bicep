@@ -16,7 +16,7 @@
 //   annotation. AppGw then trusts the same self-signed cert when the pod
 //   presents it.
 //
-//   In EV2 production the cert is CA-issued (Microsoft IT CA) so the chain
+//   In enterprise / production the cert is CA-issued (Microsoft IT CA) so the chain
 //   validates out of the box and this module is a deliberate no-op
 //   (cert presence is detected and the script exits early). The module is
 //   still wired in because re-running it is idempotent.

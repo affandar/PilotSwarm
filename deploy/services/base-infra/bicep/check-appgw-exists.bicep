@@ -6,7 +6,7 @@
 // `application-gateway.bicep` to drive the AGIC config-preservation
 // ternary (defaults on first deploy, existing values on subsequent deploys).
 //
-// Mirrors postgresql-fleet-manager `check-appgw-exists.bicep`. We use the
+// Mirrors an internal reference deployment. We use the
 // shared `approverIdentity` UAMI (already present in BaseInfra) granted
 // Reader on the RG by `approver-rg-reader-rbac.bicep`.
 // ==============================================================================

@@ -23,12 +23,12 @@ export function composeDerivedEnv(env) {
   // bicep-deploy path (see deploy/gitops/worker/base/secret-provider-class.yaml).
   // Embeds the deterministic bootstrap admin password from postgres.bicep.
   // The password is identical on every stamp and never reaches a real
-  // production cluster (prod uses the EV2 path, where Postgres comes with
+  // production cluster (prod uses the enterprise path, where Postgres comes with
   // AAD-only auth).
   if (!env.DATABASE_URL && env.POSTGRES_FQDN) {
     const pgUser = env.POSTGRES_ADMIN_LOGIN || "pilotswarm";
     const pgDb = env.POSTGRES_DATABASE_NAME || "pilotswarm";
-    const pgPwd = env.POSTGRES_ADMIN_PASSWORD || "PilotSwarmEv2_BootstrapOnly!9876";
+    const pgPwd = env.POSTGRES_ADMIN_PASSWORD || "PilotSwarmDev_BootstrapOnly!9876";
     env.DATABASE_URL = `postgresql://${pgUser}:${pgPwd}@${env.POSTGRES_FQDN}:5432/${pgDb}?sslmode=require`;
     log("info", `Composed DATABASE_URL for overlay from POSTGRES_FQDN.`);
   }

@@ -1,0 +1,33 @@
+# PLS anchor Ingress — tells AGIC to create a listener on the AppGw
+# private frontend IP. This is the resource that solves the chicken-and-egg
+# problem: for Azure to materialise the hidden Private Link Service backing
+# the AppGw `privateLinkConfiguration`, the AppGw must have at least one
+# httpListener bound to the private frontend IP that references the PLC.
+# A `privateLinkConfigurations` block alone is not sufficient.
+#
+# AGIC owns the httpListeners array on the AppGw and re-PUTs it on every
+# reconcile. Bicep cannot durably write a private-FE listener — AGIC
+# overwrites it. By packaging the private-FE listener as an Ingress that
+# AGIC itself owns, AGIC keeps the listener alive forever, and the hidden
+# PLS persists for Front Door's PE to attach to.
+#
+# Adapted from an internal reference deployment.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pls-anchor-ingress
+  namespace: pls-anchor-system
+  annotations:
+    kubernetes.io/ingress.class: azure/application-gateway
+    appgw.ingress.kubernetes.io/use-private-ip: "true"
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /pls-health
+            pathType: Prefix
+            backend:
+              service:
+                name: pls-anchor
+                port:
+                  number: 80

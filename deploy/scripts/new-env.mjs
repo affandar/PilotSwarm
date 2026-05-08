@@ -9,7 +9,7 @@
 //
 // Creates `deploy/envs/local/<name>/env` by copying `deploy/envs/template.env`
 // and substituting deployment-target keys using the same naming patterns
-// EV2 uses (deploy/services/<svc>/Ev2*Deployment/serviceModel.json):
+// The enterprise path uses (the enterprise deployment manifests):
 //
 //   • resourcePrefix       = ps<name>
 //   • azureResourceGroup   = ${resourcePrefix}-${regionShortName}-rg
@@ -64,7 +64,7 @@ const DEFAULT_EDGE_MODE = "afd";
 //                    edgeMode=afd. OSS public default.
 //   akv            — AKV-registered issuer (e.g. OneCertV2-PublicCA for afd,
 //                    OneCertV2-PrivateCA for private) + bicep cert deployment
-//                    script. EV2 / enterprise / AME path.
+//                    script. enterprise / closed-network path.
 //   akv-selfsigned — AKV `Self` issuer; bicep auto-creates a self-signed cert
 //                    in AKV with SAN=${HOST}.${PRIVATE_DNS_ZONE}. Only valid
 //                    with edgeMode=private. OSS private demo path; zero
@@ -299,7 +299,7 @@ export const INPUTS = [
       letsencrypt: "cert-manager + Let's Encrypt prod (HTTP-01, auto-renew, OSS public default)",
       akv:
         ctx.edgeMode === "afd"
-          ? "AKV-registered OneCertV2-PublicCA issuer + bicep cert deploy (EV2 / enterprise public)"
+          ? "AKV-registered OneCertV2-PublicCA issuer + bicep cert deploy (enterprise public)"
           : "AKV-registered OneCertV2-PrivateCA issuer + bicep cert deploy (AME / enterprise private)",
       "akv-selfsigned": "AKV `Self` issuer; bicep auto-creates a self-signed cert (OSS private demo)",
     }),
@@ -468,7 +468,7 @@ function usage() {
   return lines.join("\n");
 }
 
-// Derive deployment-target values from a small set of inputs, matching EV2
+// Derive deployment-target values from a small set of inputs, matching the enterprise path
 // serviceModel.json naming patterns. Pure function — no I/O.
 export function deriveTargets({ name, subscription, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, foundryEnabled }) {
   const prefix = `ps${name}`;
@@ -850,7 +850,7 @@ async function main() {
   }
 
   console.log("");
-  console.log(`Generated deployment targets (EV2 naming pattern):`);
+  console.log(`Generated deployment targets (enterprise naming pattern):`);
   for (const [k, v] of Object.entries(targets)) console.log(`  ${k}=${v}`);
   console.log("");
   console.log(`Next steps:`);

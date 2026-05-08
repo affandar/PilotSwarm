@@ -62,7 +62,7 @@ export function parseEnvFile(path) {
 // onto the template, so future template edits affect only newly-
 // scaffolded envs — never existing ones.
 //
-// `dev` and `prod` are reserved labels (used by the EV2 path for
+// `dev` and `prod` are reserved labels (used by the enterprise path for
 // ServiceGroup naming via `$config(environment)`); they are NOT valid
 // OSS env names.
 //

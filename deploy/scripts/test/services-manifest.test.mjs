@@ -32,6 +32,7 @@ test("real manifest loads and matches the canonical service shape", () => {
   assert.deepEqual(m.allSequence, [
     "global-infra",
     "base-infra",
+    "pls-anchor",
     "cert-manager",
     "cert-manager-issuers",
     "worker",
@@ -39,6 +40,7 @@ test("real manifest loads and matches the canonical service shape", () => {
   ]);
   assert.equal(m.services.worker.kind, "app");
   assert.equal(m.services["base-infra"].kind, "infra");
+  assert.equal(m.services["pls-anchor"].kind, "infra");
   assert.equal(m.services["cert-manager"].kind, "infra");
   assert.equal(m.services["cert-manager-issuers"].kind, "infra");
   assert.equal(m.regionShort.westus3, "wus3");
@@ -49,6 +51,7 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   assert.deepEqual(ALL_SEQUENCE, [
     "global-infra",
     "base-infra",
+    "pls-anchor",
     "cert-manager",
     "cert-manager-issuers",
     "worker",
@@ -65,6 +68,7 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   assert.deepEqual(SERVICE_TO_MODULES.portal, ["base-infra", "portal"]);
   assert.deepEqual(SERVICE_TO_MODULES["base-infra"], ["base-infra"]);
   assert.deepEqual(SERVICE_TO_MODULES["global-infra"], ["global-infra"]);
+  assert.deepEqual(SERVICE_TO_MODULES["pls-anchor"], ["base-infra", "pls-anchor"]);
   assert.deepEqual(SERVICE_TO_MODULES["cert-manager"], ["base-infra", "cert-manager"]);
   assert.deepEqual(SERVICE_TO_MODULES["cert-manager-issuers"], ["base-infra", "cert-manager-issuers"]);
 
@@ -73,6 +77,7 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   assert.equal(MODULE_SCOPE["base-infra"], "group");
   assert.equal(MODULE_SCOPE.worker, "group");
   assert.equal(MODULE_SCOPE.portal, "group");
+  assert.equal(MODULE_SCOPE["pls-anchor"], "group");
   assert.equal(MODULE_SCOPE["cert-manager"], "group");
   assert.equal(MODULE_SCOPE["cert-manager-issuers"], "group");
 

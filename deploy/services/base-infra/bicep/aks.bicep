@@ -235,7 +235,7 @@ resource assignMiOperatorToCluster 'Microsoft.Authorization/roleAssignments@2022
 
 // ---------------------------------------------------------------------------
 // Flux extension. Uses the kubelet identity for Azure Blob authentication,
-// matching the approach in the fleet-manager reference (the Flux Azure Blob
+// matching the approach in the reference deployment (the Flux Azure Blob
 // source controller does not yet support workload identity).
 // ---------------------------------------------------------------------------
 resource fluxExtension 'Microsoft.KubernetesConfiguration/extensions@2023-05-01' = {

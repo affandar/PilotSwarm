@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# pls-anchor base — the namespace + empty Service + private-FE Ingress
+# that anchor an AGIC-managed listener on the AppGw private frontend.
+# The Ingress is the durability mechanism for the hidden Private Link
+# Service that Front Door's PE attaches to. Same shape every stamp; the
+# FluxConfiguration in deploy/services/pls-anchor/bicep/main.bicep points
+# at overlays/default which simply re-exports this base.
+
+resources:
+  - namespace.yaml
+  - service.yaml
+  - ingress.yaml

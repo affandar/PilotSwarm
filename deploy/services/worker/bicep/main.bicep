@@ -6,7 +6,7 @@
 //
 // This module does NOT provision the worker Kubernetes workload — that is
 // reconciled by FLUX from the worker manifest blob container which IS owned
-// by this bicep (per the postgresql-fleet-manager playgroundservice pattern:
+// by this bicep (per the reference deployment pattern:
 // each service provisions its own Flux source in its own bicep).
 //
 // What this module does:
@@ -28,6 +28,9 @@ targetScope = 'resourceGroup'
 @description('Timestamp for unique deployment names.')
 param dTime string = utcNow()
 
+@description('BaseInfra `resourceNamePrefix` value used to look up the CSI Secrets Provider UAMI by convention name. Downstream callers that wrap this module may pass any prefix shaped per their own environment-region-stamp convention.')
+param baseInfraResourceNamePrefix string
+
 @description('BaseInfra storage account name (Flux source for worker-manifests container).')
 param storageAccountName string
 
@@ -41,6 +44,16 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing 
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' existing = {
   parent: storageAccount
   name: 'default'
+}
+
+// CSI Secrets Provider UAMI (created by BaseInfra's `uami.bicep`). Looked up
+// by convention name so its clientId can be exposed as a Worker own-package
+// output. This makes the value reachable by downstream callers (e.g.
+// higher-level deployment orchestrators that compose this bicep across
+// independent deployment boundaries and can only see each package's own
+// outputs) for Workload Identity federation in the AKS app deploy step.
+resource csiUami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  name: '${baseInfraResourceNamePrefix}-csi-mid'
 }
 
 resource workerManifestsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
@@ -64,3 +77,6 @@ module WorkerFluxConfig '../../common/bicep/flux-config.bicep' = {
 
 @description('Worker manifest container name (consumed by OSS deploy script as DEPLOYMENT_STORAGE_CONTAINER_NAME via FR-022 alias).')
 output manifestsContainerName string = workerManifestsContainer.name
+
+@description('Client ID of the CSI Secrets Provider UAMI (looked up by convention name from this RG). Consumed by the AKS app-deploy step (and by downstream callers that wrap this bicep) to federate Workload Identity.')
+output csiIdentityClientId string = csiUami.properties.clientId

@@ -3,7 +3,7 @@
 // an Azure Key Vault secret reference.
 //
 // Used when TLS terminates at the AppGw (instead of inside the Pod). Adapted
-// verbatim from postgresql-fleet-manager `Common/bicep/appgw-add-ssl-certificate.bicep`.
+// verbatim from an internal reference deployment.
 //
 // Implemented as a deployment script (not a Bicep `sslCertificates` array
 // entry) because:

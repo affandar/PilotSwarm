@@ -6,7 +6,7 @@
 // (retiring 2026-09-30), so new clusters should opt into ContainerLogV2
 // from day one.
 //
-// Ported from postgresql-fleet-manager
+// Ported from reference deployment
 // (src/Deploy/BaseInfra/bicep/aks-container-insights-dcr.bicep). No
 // PilotSwarm-specific changes — the fleet pattern is already minimal.
 //

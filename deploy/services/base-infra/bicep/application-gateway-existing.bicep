@@ -9,7 +9,7 @@
 //
 // This module exists as a separate file because Bicep doesn't allow an
 // `existing` reference to the same resource a sibling module is declaring
-// (that would produce a self-dependency). Mirrors postgresql-fleet-manager
+// (that would produce a self-dependency). Mirrors reference deployment
 // `application-gateway-existing.bicep`.
 //
 // Consumed by `application-gateway.bicep` via a ternary-with-`!` pattern,

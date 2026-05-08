@@ -4,7 +4,7 @@
 //
 // The `privateLinkConfigurations` block and the private frontend IP binding
 // are adapted verbatim from
-//   postgresql-fleet-manager/src/Deploy/BaseInfra/bicep/application-gateway.bicep:270-309
+//   an internal reference deployment
 // The rest of the module is simplified: no AGIC preservation of existing
 // pools/listeners/rules (PilotSwarm rolls out from a clean state per region
 // under GitOps; AGIC repopulates these after the FluxConfig reconciles).
@@ -35,7 +35,7 @@ param wafMode string = 'Prevention'
 @description('Availability zones for the App Gateway. Empty array disables zone placement.')
 param availabilityZones array = []
 
-@description('Resource ID of the user-assigned managed identity attached to the Application Gateway. Required so the AGIC addon can hold the "Managed Identity Operator" role on this UAMI (mirrors postgresql-fleet-manager pattern).')
+@description('Resource ID of the user-assigned managed identity attached to the Application Gateway. Required so the AGIC addon can hold the "Managed Identity Operator" role on this UAMI (mirrors reference deployment pattern).')
 param userAssignedIdentityId string
 
 @description('Whether the Application Gateway already exists in this RG. When true, AGIC-managed arrays (pools, listeners, rules, probes, etc.) are read back from the existing resource and re-emitted unchanged so we do not clobber AGIC\'s runtime config. Driven by check-appgw-exists.bicep.')
@@ -134,7 +134,7 @@ resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
 }
 
 // ---------------------------------------------------------------------------
-// AGIC config preservation (postgresql-fleet-manager pattern).
+// AGIC config preservation (reference deployment pattern).
 // ---------------------------------------------------------------------------
 // AGIC dynamically manages backendAddressPools, httpListeners, requestRoutingRules,
 // probes, urlPathMaps, redirectConfigurations, rewriteRuleSets, frontendPorts,
@@ -209,6 +209,30 @@ var defaultHttpListeners = [
       protocol: 'Http'
     }
   }
+  // Private-FE listener seeded ONLY on first deploy. For Azure to materialise
+  // the hidden Private Link Service backing the privateLinkConfiguration, the
+  // AppGw must have at least one httpListener bound to the private frontend IP
+  // referencing the PLC; the privateLinkConfigurations block alone is not
+  // sufficient. After AGIC reconciles, the durable private-FE listener is
+  // owned by AGIC (via the `pls-anchor` Ingress in pls-anchor-system —
+  // deploy/services/pls-anchor) and is preserved unchanged on subsequent
+  // bicep deploys via the `appGwExists` read-back path below.
+  {
+    name: 'privateHttpListener'
+    properties: {
+      frontendIPConfiguration: {
+        id: resourceId(
+          'Microsoft.Network/applicationGateways/frontendIPConfigurations',
+          applicationGatewayName,
+          'appGatewayPrivateFrontendIP'
+        )
+      }
+      frontendPort: {
+        id: resourceId('Microsoft.Network/applicationGateways/frontendPorts', applicationGatewayName, 'httpPort')
+      }
+      protocol: 'Http'
+    }
+  }
 ]
 
 var defaultRequestRoutingRules = [
@@ -240,132 +264,58 @@ var defaultRequestRoutingRules = [
       }
     }
   }
+  // Routing rule for the private-FE listener — required for the listener to
+  // be accepted by ARM. Only seeded on first deploy; AGIC owns the rule for
+  // the durable pls-anchor Ingress thereafter.
+  {
+    name: 'privateRoutingRule'
+    properties: {
+      priority: 200
+      ruleType: 'Basic'
+      httpListener: {
+        id: resourceId(
+          'Microsoft.Network/applicationGateways/httpListeners',
+          applicationGatewayName,
+          'privateHttpListener'
+        )
+      }
+      backendAddressPool: {
+        id: resourceId(
+          'Microsoft.Network/applicationGateways/backendAddressPools',
+          applicationGatewayName,
+          'defaultBackendPool'
+        )
+      }
+      backendHttpSettings: {
+        id: resourceId(
+          'Microsoft.Network/applicationGateways/backendHttpSettingsCollection',
+          applicationGatewayName,
+          'defaultBackendHttpSettings'
+        )
+      }
+    }
+  }
 ]
-
-// ---------------------------------------------------------------------------
-// Private Link Service bootstrap entries.
-//
-// For Azure to materialise the hidden Private Link Service backing the
-// AppGw privateLinkConfiguration (the `_<guid>_<appGwName>_<plcName>` PLS
-// that Front Door's PE consumes), the AppGw must have at least one
-// HTTP listener bound to the private frontend IP that references the
-// privateLinkConfiguration. A privateLinkConfigurations block alone is
-// not sufficient.
-//
-// AGIC reconciles AppGw config from K8s Ingress state and *removes*
-// listeners/rules it does not own. Its naming scheme uses prefixes
-// `fl-`/`rr-`/`bp-`/`bhs-`/`fp-`. The bootstrap entries below use a
-// `psPls`-prefixed naming scheme that AGIC will not touch, and they are
-// always concat'd into the effective arrays — including the existing
-// AGIC-managed read-back path — so the private listener survives every
-// re-deploy and the hidden PLS keeps existing.
-// ---------------------------------------------------------------------------
-var psPlsBootstrapPool = {
-  name: 'psPlsBootstrapPool'
-  properties: {
-    backendAddresses: []
-  }
-}
-
-var psPlsBootstrapSettings = {
-  name: 'psPlsBootstrapSettings'
-  properties: {
-    port: 80
-    protocol: 'Http'
-    cookieBasedAffinity: 'Disabled'
-    requestTimeout: 30
-    pickHostNameFromBackendAddress: false
-  }
-}
-
-var psPlsBootstrapListener = {
-  name: 'psPlsBootstrapListener'
-  properties: {
-    frontendIPConfiguration: {
-      id: resourceId(
-        'Microsoft.Network/applicationGateways/frontendIPConfigurations',
-        applicationGatewayName,
-        'appGatewayPrivateFrontendIP'
-      )
-    }
-    frontendPort: {
-      id: resourceId('Microsoft.Network/applicationGateways/frontendPorts', applicationGatewayName, 'httpPort')
-    }
-    protocol: 'Http'
-  }
-}
-
-var psPlsBootstrapRule = {
-  name: 'psPlsBootstrapRule'
-  properties: {
-    // High priority value (low precedence) within ARM's 1-20000 range to
-    // avoid colliding with AGIC's ingress rules, which start at small
-    // numbers.
-    priority: 20000
-    ruleType: 'Basic'
-    httpListener: {
-      id: resourceId(
-        'Microsoft.Network/applicationGateways/httpListeners',
-        applicationGatewayName,
-        'psPlsBootstrapListener'
-      )
-    }
-    backendAddressPool: {
-      id: resourceId(
-        'Microsoft.Network/applicationGateways/backendAddressPools',
-        applicationGatewayName,
-        'psPlsBootstrapPool'
-      )
-    }
-    backendHttpSettings: {
-      id: resourceId(
-        'Microsoft.Network/applicationGateways/backendHttpSettingsCollection',
-        applicationGatewayName,
-        'psPlsBootstrapSettings'
-      )
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Effective values: defaults on first deploy, AGIC-managed values on
 // subsequent deploys. Behind appGwExists; bang-suffix tells Bicep the
 // conditional module's outputs are non-null in this branch.
 //
-// PLS bootstrap entries (psPls*) are always concat'd onto the effective
-// arrays — filtered first to keep the deployment idempotent — so the
-// private-FE listener that materialises the hidden PLS survives every
-// AGIC reconciliation.
+// We do NOT augment the AGIC-read-back arrays in bicep. AGIC owns the
+// listeners/rules/pools and re-PUTs them on every reconcile; any entries we
+// append here would survive the bicep deploy but be wiped on AGIC's next
+// reconcile, leaving the AppGw in a flapping state. The durable private-FE
+// listener that materialises the hidden Private Link Service is anchored by
+// the `pls-anchor` Ingress in pls-anchor-system (deploy/services/pls-anchor) —
+// AGIC creates and owns that listener, so AGIC's reconcile keeps it alive
+// forever and the bicep read-back picks it up unchanged.
 // ---------------------------------------------------------------------------
 var effectiveFrontendPorts = appGwExists ? existingAppGwConfig!.outputs.frontendPorts : defaultFrontendPorts
-var effectiveBackendAddressPools = concat(
-  filter(
-    appGwExists ? existingAppGwConfig!.outputs.backendAddressPools : defaultBackendAddressPools,
-    p => p.name != 'psPlsBootstrapPool'
-  ),
-  [psPlsBootstrapPool]
-)
-var effectiveBackendHttpSettingsCollection = concat(
-  filter(
-    appGwExists ? existingAppGwConfig!.outputs.backendHttpSettingsCollection : defaultBackendHttpSettingsCollection,
-    s => s.name != 'psPlsBootstrapSettings'
-  ),
-  [psPlsBootstrapSettings]
-)
-var effectiveHttpListeners = concat(
-  filter(
-    appGwExists ? existingAppGwConfig!.outputs.httpListeners : defaultHttpListeners,
-    l => l.name != 'psPlsBootstrapListener'
-  ),
-  [psPlsBootstrapListener]
-)
-var effectiveRequestRoutingRules = concat(
-  filter(
-    appGwExists ? existingAppGwConfig!.outputs.requestRoutingRules : defaultRequestRoutingRules,
-    r => r.name != 'psPlsBootstrapRule'
-  ),
-  [psPlsBootstrapRule]
-)
+var effectiveBackendAddressPools = appGwExists ? existingAppGwConfig!.outputs.backendAddressPools : defaultBackendAddressPools
+var effectiveBackendHttpSettingsCollection = appGwExists ? existingAppGwConfig!.outputs.backendHttpSettingsCollection : defaultBackendHttpSettingsCollection
+var effectiveHttpListeners = appGwExists ? existingAppGwConfig!.outputs.httpListeners : defaultHttpListeners
+var effectiveRequestRoutingRules = appGwExists ? existingAppGwConfig!.outputs.requestRoutingRules : defaultRequestRoutingRules
 var effectiveSslCertificates = appGwExists ? existingAppGwConfig!.outputs.sslCertificates : []
 var effectiveProbes = appGwExists ? existingAppGwConfig!.outputs.probes : []
 var effectiveUrlPathMaps = appGwExists ? existingAppGwConfig!.outputs.urlPathMaps : []
@@ -415,7 +365,7 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2024-01-01' =
     ]
     // Private Link configuration for Front Door connectivity — must be
     // defined before frontendIPConfigurations. Adapted verbatim from
-    // postgresql-fleet-manager application-gateway.bicep:270-309.
+    // reference deployment application-gateway.bicep:270-309.
     privateLinkConfigurations: [
       {
         name: 'privateLinkConfig'

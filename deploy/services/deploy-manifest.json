@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "_comment": "Root manifest for the OSS Node deploy orchestrator (deploy/scripts/). Distinct from the EV2 services.json that sits alongside this file (which will be ported to a parent repo). Each entry in `services` plus each name in `infraOrder` MUST have a matching deploy/services/<name>/deploy.json file.",
 
-  "infraOrder": ["global-infra", "base-infra", "cert-manager", "cert-manager-issuers"],
+  "infraOrder": ["global-infra", "base-infra", "pls-anchor", "cert-manager", "cert-manager-issuers"],
   "services":   ["worker", "portal"],
 
   "regionShort": {

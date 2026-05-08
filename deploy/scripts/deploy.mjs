@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // OSS Node deploy orchestrator entry point (Phase 1 skeleton).
 //
-// Drives the same end-state as deploy/services/ev2-deploy-dev.ps1 (Bicep + image push +
-// Flux Storage Bucket manifest delivery + rollout verify) without any EV2 dependency.
+// Drives the same end-state as the enterprise deployment orchestrator (Bicep + image push +
+// Flux Storage Bucket manifest delivery + rollout verify) without any enterprise dependency.
 //
 // Stdlib-only Node, no shell:true, multi-platform (Windows / macOS / Linux).
 // Spec: .paw/work/oss-deploy-script/Spec.md
@@ -78,7 +78,7 @@ function parseArgs(argv) {
   if (positional.length < 2) {
     throw new Error(
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
-        "  <service>    worker | portal | baseinfra | globalinfra | cert-manager | cert-manager-issuers | all\n" +
+        "  <service>    worker | portal | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
         "Flags: --steps, --region, --image-tag, --clean, --force, --help",
     );
@@ -93,16 +93,17 @@ function parseArgs(argv) {
 function printHelp() {
   process.stdout.write(
     [
-      "OSS Node deploy orchestrator for PilotSwarm (additive to EV2 path).",
+      "OSS Node deploy orchestrator for PilotSwarm (additive to enterprise path).",
       "",
       "Usage:",
       "  npm run deploy -- <service> <env> [flags]",
       "",
-      "Services:  worker | portal | baseinfra | globalinfra | cert-manager | cert-manager-issuers | all",
+      "Services:  worker | portal | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all",
       "           ('all' runs the canonical end-to-end sequence:",
-      "            globalinfra → baseinfra → cert-manager → cert-manager-issuers → worker → portal,",
-      "            applying --steps to each as appropriate. cert-manager services",
-      "            are skipped on the akv (EV2) TLS_SOURCE path.)",
+      "            globalinfra → baseinfra → pls-anchor → cert-manager → cert-manager-issuers → worker → portal,",
+      "            applying --steps to each as appropriate. pls-anchor is skipped",
+      "            on the EDGE_MODE=private path; cert-manager services are skipped",
+      "            on the akv (enterprise) TLS_SOURCE path.)",
       "Envs:      a local env name created with `npm run deploy:new-env`",
       "",
       "Flags:",
@@ -350,7 +351,7 @@ async function main() {
   }
 
   // cert-manager + cert-manager-issuers ship the OSS Let's Encrypt path.
-  // Skip them entirely when TLS_SOURCE != letsencrypt (EV2 / akv path).
+  // Skip them entirely when TLS_SOURCE != letsencrypt (enterprise / akv path).
   if (
     (service === "cert-manager" || service === "cert-manager-issuers") &&
     tlsSource !== "letsencrypt"
@@ -358,6 +359,17 @@ async function main() {
     log(
       "ok",
       `TLS_SOURCE='${tlsSource}' — '${service}' is not provisioned in this mode (only on the OSS letsencrypt path). Nothing to do.`,
+    );
+    return;
+  }
+
+  // pls-anchor anchors the AppGw private-FE listener that materialises the
+  // hidden Private Link Service backing AFD's Private Endpoint. With no AFD
+  // (EDGE_MODE != afd) there is no AppGw / no PE / nothing to anchor — skip.
+  if (service === "pls-anchor" && edgeMode !== "afd") {
+    log(
+      "ok",
+      `EDGE_MODE='${edgeMode}' — 'pls-anchor' is not provisioned in this mode (only on the AFD edge path). Nothing to do.`,
     );
     return;
   }
@@ -401,7 +413,7 @@ async function main() {
   }
   // TLS_SOURCE=akv no longer requires a pre-set PORTAL_TLS_ISSUER_NAME —
   // Portal bicep now defaults it to OneCertV2-PublicCA (afd) or
-  // OneCertV2-PrivateCA (private) per the postgresql-fleet-manager pattern
+  // OneCertV2-PrivateCA (private) per the reference deployment pattern
   // and registers the issuer on the AKV automatically. Operators can still
   // override via env if they want a different registered CA.
   // TLS_SOURCE=akv-selfsigned uses the AKV built-in `Self` issuer; no
@@ -539,11 +551,13 @@ async function runAll({ envName, env, steps, imageTag, clean, force, edgeMode })
   // Drop globalinfra from the sequence when AFD is disabled — the service is
   // entirely AFD provisioning and would otherwise create an empty RG with no
   // resources. Mirrors the single-service short-circuit above. cert-manager
-  // + cert-manager-issuers are dropped on the akv (EV2) path for the same
+  // + cert-manager-issuers are dropped on the akv (enterprise) path for the same
   // reason — those services exist only to serve the OSS Let's Encrypt path.
   const tlsSource = (env.TLS_SOURCE || "letsencrypt").toLowerCase();
   const sequence = ALL_SEQUENCE.filter(
     (svc) => !(svc === "global-infra" && edgeMode !== "afd"),
+  ).filter(
+    (svc) => !(svc === "pls-anchor" && edgeMode !== "afd"),
   ).filter(
     (svc) =>
       !((svc === "cert-manager" || svc === "cert-manager-issuers") && tlsSource !== "letsencrypt"),

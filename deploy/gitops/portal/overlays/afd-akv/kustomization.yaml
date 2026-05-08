@@ -12,7 +12,7 @@ namespace: pilotswarm
 # (Private Link). AKV-managed cert (issued by a registered issuer such
 # as `OneCertV2-PublicCA` or the AKV `Self` issuer for OSS) is pushed to
 # the AppGw via Bicep and bound by AGIC via the
-# `appgw-ssl-certificate` annotation contributed by edge-appgw. EV2 /
+# `appgw-ssl-certificate` annotation contributed by edge-appgw. The enterprise path /
 # enterprise public path.
 
 resources:

@@ -9,7 +9,7 @@
 // the orchestrator deciding the OSS Let's Encrypt path is in use — the
 // orchestrator (deploy/scripts/deploy.mjs) skips the entire `cert-manager`
 // service entry when TLS_SOURCE != letsencrypt, so this module is never
-// invoked on the EV2 / akv path. We don't gate inside the bicep itself
+// invoked on the enterprise / akv path. We don't gate inside the bicep itself
 // because the `services` framework already provides the gate cleanly.
 //
 // Pre-requisites (delivered by BaseInfra):
