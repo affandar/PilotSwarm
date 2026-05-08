@@ -1,0 +1,17 @@
+{
+  "$schema": "../deploy.schema.json",
+  "schemaVersion": 1,
+  "_comment": "OSS per-service deploy manifest for pls-anchor. Conditional service: deploy.mjs skips this entry entirely when EDGE_MODE != afd (no AppGw, no hidden PLS to anchor).",
+  "name": "pls-anchor",
+  "kind": "infra",
+  "bicep": {
+    "modules": [
+      { "name": "base-infra",  "scope": "group" },
+      { "name": "pls-anchor",  "scope": "group" }
+    ],
+    "allModeModules": [
+      { "name": "pls-anchor", "scope": "group" }
+    ]
+  },
+  "pipeline": ["bicep", "manifests"]
+}

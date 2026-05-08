@@ -1,0 +1,10 @@
+# pls-anchor namespace.
+#
+# Hosts the empty Service + Ingress that anchor an AGIC-managed listener
+# on the AppGw private frontend IP. See ingress.yaml for the full story.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pls-anchor-system
+  labels:
+    name: pls-anchor-system

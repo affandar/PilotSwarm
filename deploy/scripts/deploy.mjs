@@ -78,7 +78,7 @@ function parseArgs(argv) {
   if (positional.length < 2) {
     throw new Error(
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
-        "  <service>    worker | portal | baseinfra | globalinfra | cert-manager | cert-manager-issuers | all\n" +
+        "  <service>    worker | portal | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
         "Flags: --steps, --region, --image-tag, --clean, --force, --help",
     );
@@ -98,11 +98,12 @@ function printHelp() {
       "Usage:",
       "  npm run deploy -- <service> <env> [flags]",
       "",
-      "Services:  worker | portal | baseinfra | globalinfra | cert-manager | cert-manager-issuers | all",
+      "Services:  worker | portal | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all",
       "           ('all' runs the canonical end-to-end sequence:",
-      "            globalinfra → baseinfra → cert-manager → cert-manager-issuers → worker → portal,",
-      "            applying --steps to each as appropriate. cert-manager services",
-      "            are skipped on the akv (enterprise) TLS_SOURCE path.)",
+      "            globalinfra → baseinfra → pls-anchor → cert-manager → cert-manager-issuers → worker → portal,",
+      "            applying --steps to each as appropriate. pls-anchor is skipped",
+      "            on the EDGE_MODE=private path; cert-manager services are skipped",
+      "            on the akv (enterprise) TLS_SOURCE path.)",
       "Envs:      a local env name created with `npm run deploy:new-env`",
       "",
       "Flags:",
@@ -362,6 +363,17 @@ async function main() {
     return;
   }
 
+  // pls-anchor anchors the AppGw private-FE listener that materialises the
+  // hidden Private Link Service backing AFD's Private Endpoint. With no AFD
+  // (EDGE_MODE != afd) there is no AppGw / no PE / nothing to anchor — skip.
+  if (service === "pls-anchor" && edgeMode !== "afd") {
+    log(
+      "ok",
+      `EDGE_MODE='${edgeMode}' — 'pls-anchor' is not provisioned in this mode (only on the AFD edge path). Nothing to do.`,
+    );
+    return;
+  }
+
   // 4b) Mode-specific pre-deploy validation.
   if (edgeMode === "private") {
     if (!env.HOST || env.HOST.trim() === "") {
@@ -544,6 +556,8 @@ async function runAll({ envName, env, steps, imageTag, clean, force, edgeMode })
   const tlsSource = (env.TLS_SOURCE || "letsencrypt").toLowerCase();
   const sequence = ALL_SEQUENCE.filter(
     (svc) => !(svc === "global-infra" && edgeMode !== "afd"),
+  ).filter(
+    (svc) => !(svc === "pls-anchor" && edgeMode !== "afd"),
   ).filter(
     (svc) =>
       !((svc === "cert-manager" || svc === "cert-manager-issuers") && tlsSource !== "letsencrypt"),
