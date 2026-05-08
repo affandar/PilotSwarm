@@ -480,29 +480,6 @@ async function main() {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  //  TEST 12: spawn_agent
-  // ════════════════════════════════════════════════════════════════════════
-  try {
-    if (!sessionId) throw new Error("No session from test 1");
-    const res = await client.callTool({ name: "spawn_agent", arguments: {
-      session_id: sessionId, task: "test task", agent_name: "test-agent",
-    }});
-    const data = parseToolResult(res);
-
-    if (data?.sent === true || data?.command === "spawn_agent" || (typeof data === "object" && !res.isError)) {
-      record(12, "spawn_agent", `✅ ${JSON.stringify(data)}`, null, STATUS.PASS, "command enqueued");
-    } else if (res.isError) {
-      record(12, "spawn_agent", `⚠️  ${String(data).slice(0,100)}`, null,
-        STATUS.EXPECTED, "command delivery needs active orchestration");
-    } else {
-      record(12, "spawn_agent", `✅ ${JSON.stringify(data)}`, null, STATUS.PASS);
-    }
-  } catch (e) {
-    record(12, "spawn_agent", `⚠️  ${e.message}`, null,
-      STATUS.EXPECTED, "command delivery needs active orchestration");
-  }
-
-  // ════════════════════════════════════════════════════════════════════════
   //  TEST 13: send_command
   // ════════════════════════════════════════════════════════════════════════
   try {
@@ -570,52 +547,6 @@ async function main() {
   } catch (e) {
     record(15, "send_answer", `⚠️  ${e.message}`, null,
       STATUS.EXPECTED, "no pending input_required question");
-  }
-
-  // ════════════════════════════════════════════════════════════════════════
-  //  TEST 16: message_agent
-  // ════════════════════════════════════════════════════════════════════════
-  try {
-    if (!sessionId) throw new Error("No session from test 1");
-    const res = await client.callTool({ name: "message_agent", arguments: {
-      session_id: sessionId, agent_id: "nonexistent-agent", message: "test msg",
-    }});
-    const data = parseToolResult(res);
-
-    if (data?.sent === true || (typeof data === "object" && !res.isError)) {
-      record(16, "message_agent", `✅ ${JSON.stringify(data)}`, null, STATUS.PASS, "command queued");
-    } else if (res.isError) {
-      record(16, "message_agent", `⚠️  ${String(data).slice(0,100)}`, null,
-        STATUS.EXPECTED, "command delivery needs active orchestration");
-    } else {
-      record(16, "message_agent", `✅ ${JSON.stringify(data)}`, null, STATUS.PASS);
-    }
-  } catch (e) {
-    record(16, "message_agent", `⚠️  ${e.message}`, null,
-      STATUS.EXPECTED, "command delivery needs active orchestration");
-  }
-
-  // ════════════════════════════════════════════════════════════════════════
-  //  TEST 17: cancel_agent
-  // ════════════════════════════════════════════════════════════════════════
-  try {
-    if (!sessionId) throw new Error("No session from test 1");
-    const res = await client.callTool({ name: "cancel_agent", arguments: {
-      session_id: sessionId, agent_id: "nonexistent-agent", reason: "test cleanup",
-    }});
-    const data = parseToolResult(res);
-
-    if (data?.cancelled === true || data?.sent === true || (typeof data === "object" && !res.isError)) {
-      record(17, "cancel_agent", `✅ ${JSON.stringify(data)}`, null, STATUS.PASS, "command queued");
-    } else if (res.isError) {
-      record(17, "cancel_agent", `⚠️  ${String(data).slice(0,100)}`, null,
-        STATUS.EXPECTED, "command delivery needs active orchestration");
-    } else {
-      record(17, "cancel_agent", `✅ ${JSON.stringify(data)}`, null, STATUS.PASS);
-    }
-  } catch (e) {
-    record(17, "cancel_agent", `⚠️  ${e.message}`, null,
-      STATUS.EXPECTED, "command delivery needs active orchestration");
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -729,7 +660,7 @@ async function main() {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  //  TEST 22: listTools — verify all 15 tools present
+  //  TEST 22: listTools — verify all 12 tools present
   // ════════════════════════════════════════════════════════════════════════
   try {
     const res = await client.listTools();
@@ -737,26 +668,25 @@ async function main() {
     const names = tools.map(t => t.name).sort();
 
     const expected = [
-      "abort_session", "cancel_agent", "create_session", "delete_fact",
-      "delete_session", "message_agent", "read_facts", "rename_session",
-      "send_and_wait", "send_answer", "send_command", "send_message",
-      "spawn_agent", "store_fact", "switch_model",
+      "abort_session", "create_session", "delete_fact", "delete_session",
+      "read_facts", "rename_session", "send_and_wait", "send_answer",
+      "send_command", "send_message", "store_fact", "switch_model",
     ].sort();
 
     const missing = expected.filter(n => !names.includes(n));
     const extra = names.filter(n => !expected.includes(n));
 
     if (missing.length === 0) {
-      record(22, "listTools — all 15 tools",
+      record(22, "listTools — all 12 tools",
         `✅ Found ${tools.length} tools${extra.length ? ` (+${extra.length} extra: ${extra.join(",")})` : ""}`,
         null, STATUS.PASS);
     } else {
-      record(22, "listTools — all 15 tools",
+      record(22, "listTools — all 12 tools",
         `❌ Missing: [${missing.join(", ")}], found: [${names.join(", ")}]`,
         null, STATUS.FAIL);
     }
   } catch (e) {
-    record(22, "listTools — all 15 tools", `❌ ${e.message}`, null, STATUS.FAIL);
+    record(22, "listTools — all 12 tools", `❌ ${e.message}`, null, STATUS.FAIL);
   }
 
   // ════════════════════════════════════════════════════════════════════════
