@@ -93,6 +93,7 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "profileSettings/apply", "portal should hydrate user UI preferences from database profile settings");
         assertIncludes(webApp, "getCurrentUserProfile()", "portal should read the current user's database-backed profile settings");
         assertIncludes(webApp, "setCurrentUserProfileSettings", "portal should persist user UI preferences to database profile settings");
+        assertIncludes(webApp, "onSelect: (event) => controller.setPromptCursor", "portal prompt selection should not restore stale textarea text after send");
         assertIncludes(webApp, "PROFILE_SETTINGS_POLL_MS = 5000", "portal should poll profile settings every 5 seconds");
         assertIncludes(webApp, "setInterval(() =>", "portal should continuously refresh remote profile settings");
         assertIncludes(webApp, "appliedProfileSettingsJsonRef.current !== settingsJson", "portal should skip profile-settings re-dispatch when payload is unchanged");

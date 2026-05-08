@@ -575,6 +575,26 @@ function buildPendingQuestionMessage(session) {
     };
 }
 
+function buildAnsweredPendingQuestionMessage(session, chat = []) {
+    const answeredQuestion = session?.answeredPendingQuestion;
+    const question = String(answeredQuestion?.question || "").trim();
+    const answer = String(answeredQuestion?.answer || "").trim();
+    if (!question || !answer) return null;
+    if (chatAlreadyContainsPendingQuestion(chat, question)) return null;
+
+    const pendingPhase = answeredQuestion.pendingPhase === "queued" ? "queued" : "pending";
+    const createdAt = Number(answeredQuestion.answeredAt || 0) || session.updatedAt || Date.now();
+    return {
+        id: `answered-question:${session.sessionId}:${question}:${createdAt}`,
+        role: "user",
+        text: `The user was asked: "${question}"\nThe user responded: "${answer}"`,
+        time: "",
+        createdAt,
+        optimistic: true,
+        pendingPhase,
+    };
+}
+
 function buildPendingOutboxMessage(sessionId, item) {
     if (!sessionId || !item?.id) return null;
     const text = String(item.text || "").trim();
@@ -811,15 +831,19 @@ export function selectActiveChat(state) {
         && !chatAlreadyContainsPendingQuestion(chat, session.pendingQuestion.question)
         ? buildPendingQuestionMessage(session)
         : null;
+    const answeredQuestionMessage = buildAnsweredPendingQuestionMessage(session, chat);
     const sessionErrorMessage = buildSessionErrorMessage(session);
 
-    if ((!history || chat.length === 0) && !pendingQuestionMessage && !sessionErrorMessage) {
+    if ((!history || chat.length === 0) && !pendingQuestionMessage && !answeredQuestionMessage && !sessionErrorMessage) {
         return createSplashCard(state.branding, session);
     }
 
     const messages = chat.length > 0 ? [...chat] : createSplashCard(state.branding, session);
     if (pendingQuestionMessage) {
         messages.push(pendingQuestionMessage);
+    }
+    if (answeredQuestionMessage) {
+        messages.push(answeredQuestionMessage);
     }
     if (sessionErrorMessage) {
         messages.push(sessionErrorMessage);

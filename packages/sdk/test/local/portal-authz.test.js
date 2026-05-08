@@ -1,5 +1,6 @@
 import { describe, it } from "vitest";
 import { assertEqual } from "../helpers/assertions.js";
+import { authenticateToken, createNoAuthUnknownPrincipal } from "../../../portal/auth/index.js";
 import { authorizePrincipal } from "../../../portal/auth/authz/engine.js";
 import { loadAuthorizationPolicy, resolveAuthProviderId } from "../../../portal/auth/config.js";
 
@@ -105,5 +106,28 @@ describe("portal authz", () => {
         assertEqual(decision.allowed, false, "denied");
         assertEqual(decision.role, null, "denied role");
         assertEqual(decision.reason, "Authenticated principal email is not in an allowed admin/user list", "not allowlisted reason");
+    });
+
+    it("maps no-auth portal requests to a stable unknown principal", async () => {
+        const originalProvider = process.env.PORTAL_AUTH_PROVIDER;
+        const originalAllowUnauthenticated = process.env.PORTAL_AUTH_ALLOW_UNAUTHENTICATED;
+        try {
+            process.env.PORTAL_AUTH_PROVIDER = "none";
+            process.env.PORTAL_AUTH_ALLOW_UNAUTHENTICATED = "true";
+
+            const auth = await authenticateToken(null, { headers: {} });
+            const expectedPrincipal = createNoAuthUnknownPrincipal();
+
+            assertEqual(auth.ok, true, "no-auth request should be allowed");
+            assertEqual(auth.principal?.provider, expectedPrincipal.provider, "stable provider");
+            assertEqual(auth.principal?.subject, expectedPrincipal.subject, "stable subject");
+            assertEqual(auth.principal?.displayName, expectedPrincipal.displayName, "display name");
+            assertEqual(auth.authorization?.role, "anonymous", "anonymous role");
+        } finally {
+            if (originalProvider == null) delete process.env.PORTAL_AUTH_PROVIDER;
+            else process.env.PORTAL_AUTH_PROVIDER = originalProvider;
+            if (originalAllowUnauthenticated == null) delete process.env.PORTAL_AUTH_ALLOW_UNAUTHENTICATED;
+            else process.env.PORTAL_AUTH_ALLOW_UNAUTHENTICATED = originalAllowUnauthenticated;
+        }
     });
 });

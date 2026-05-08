@@ -96,6 +96,12 @@ Selection precedence is:
 3. provider inference from provider-specific env vars
 4. `none`
 
+When the resolved provider is `none`, the portal still assigns a stable shared
+identity to browser users: `provider=none`, `subject=unknown`, display name
+`Unknown User`. All unauthenticated browser users in that no-auth deployment
+therefore share the same Admin Console profile, GitHub Copilot key override,
+profile settings, and session owner identity.
+
 Current authorization is Phase 1 only:
 
 - group-based allow/deny

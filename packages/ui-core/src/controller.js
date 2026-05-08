@@ -3867,8 +3867,23 @@ export class PilotSwarmUiController {
         // Pending questions still take the direct sendAnswer path — answers are
         // an orchestration-level reply, not a user message, and don't merge.
         if (answeringPendingQuestion && typeof this.transport.sendAnswer === "function") {
+            const answeredAt = Date.now();
+            const answeredPendingQuestion = {
+                ...activePendingQuestion,
+                answer: prompt,
+                answeredAt,
+                pendingPhase: "pending",
+            };
             this.setPrompt("", 0);
             this.setPromptAttachments([]);
+            this.dispatch({
+                type: "sessions/merged",
+                session: {
+                    sessionId,
+                    pendingQuestion: null,
+                    answeredPendingQuestion,
+                },
+            });
             this.dispatch({ type: "ui/status", text: "Sending answer..." });
             try {
                 await this.transport.sendAnswer(sessionId, prompt);
@@ -3876,10 +3891,9 @@ export class PilotSwarmUiController {
                     type: "sessions/merged",
                     session: {
                         sessionId,
-                        pendingQuestion: null,
                         answeredPendingQuestion: {
-                            ...activePendingQuestion,
-                            answeredAt: Date.now(),
+                            ...answeredPendingQuestion,
+                            pendingPhase: "queued",
                         },
                     },
                 });
@@ -3888,6 +3902,17 @@ export class PilotSwarmUiController {
                 this.scheduleSessionsRefresh(1000);
                 this.dispatch({ type: "ui/status", text: "Answer sent" });
             } catch (error) {
+                this.dispatch({
+                    type: "sessions/merged",
+                    session: { sessionId, answeredPendingQuestion: null },
+                });
+                this.dispatch({
+                    type: "sessions/merged",
+                    session: { sessionId, pendingQuestion: activePendingQuestion },
+                });
+                if (!String(this.getState().ui.prompt || "").trim()) {
+                    this.setPrompt(prompt, String(prompt || "").length);
+                }
                 this.dispatch({ type: "ui/status", text: error?.message || String(error) });
             }
             return;
@@ -3928,6 +3953,11 @@ export class PilotSwarmUiController {
         }
         this.dispatch({ type: "ui/prompt", prompt: nextPrompt, promptCursor: nextCursor });
         this.syncPromptReferenceBrowser();
+    }
+
+    setPromptCursor(promptCursor) {
+        const prompt = this.getState().ui.prompt || "";
+        this.setPrompt(prompt, promptCursor);
     }
 
     insertPromptText(text) {

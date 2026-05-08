@@ -2360,10 +2360,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                 : "Type a message and press Enter",
             enterKeyHint: "send",
             onFocus: () => controller.setFocus("prompt"),
-            onSelect: (event) => controller.setPrompt(
-                event.currentTarget.value,
-                event.currentTarget.selectionStart || 0,
-            ),
+            onSelect: (event) => controller.setPromptCursor(event.currentTarget.selectionStart || 0),
             onChange: (event) => controller.setPrompt(event.currentTarget.value, event.currentTarget.selectionStart || event.currentTarget.value.length),
             onKeyDown: (event) => {
                 if (event.key === "Tab" && !event.shiftKey && controller.acceptPromptReferenceAutocomplete()) {

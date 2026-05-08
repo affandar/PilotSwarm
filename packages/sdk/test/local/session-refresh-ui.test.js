@@ -1530,7 +1530,7 @@ describe("session refresh UI recovery", () => {
         assertEqual(linesText(lines).includes("Remove or downgrade recommendation item 4"), false, "sub-agent response result should not be plastered into the main chat transcript");
     });
 
-    it("does not resurrect an answered pending question from a stale session refresh", async () => {
+    it("keeps an answered pending question visible until durable history catches up", async () => {
         const sessionId = "answered-question-session";
         const pendingQuestion = {
             question: "Proceed with review pr 2069239?",
@@ -1538,9 +1538,14 @@ describe("session refresh UI recovery", () => {
             allowFreeform: true,
         };
         const sendAnswerCalls = [];
+        let resolveAnswer;
+        const answerAccepted = new Promise((resolve) => {
+            resolveAnswer = resolve;
+        });
         const { controller, store } = createController({
             sendAnswer: async (sentSessionId, answer) => {
                 sendAnswerCalls.push({ sentSessionId, answer });
+                await answerAccepted;
             },
         });
 
@@ -1558,10 +1563,27 @@ describe("session refresh UI recovery", () => {
         store.dispatch({ type: "sessions/selected", sessionId });
         controller.setPrompt("Go");
 
-        await controller.sendPrompt();
+        const sendPromise = controller.sendPrompt();
 
         assertEqual(sendAnswerCalls.length, 1, "answer should be sent through sendAnswer");
-        assertEqual(store.getState().sessions.byId[sessionId].pendingQuestion, null, "answer should clear the local pending question");
+        let session = store.getState().sessions.byId[sessionId];
+        assertEqual(session.pendingQuestion, null, "answer should clear the local pending question while sending");
+        assertEqual(session.answeredPendingQuestion.question, pendingQuestion.question, "answered marker should be visible immediately");
+        assertEqual(session.answeredPendingQuestion.answer, "Go", "answered marker should carry the submitted answer");
+        assertEqual(session.answeredPendingQuestion.pendingPhase, "pending", "in-flight answer should render as pending");
+        let chatText = linesText(selectActiveChat(store.getState()));
+        assertIncludes(chatText, pendingQuestion.question, "question should stay visible while answer submission is in flight");
+        assertIncludes(chatText, "Go", "submitted answer should stay visible while answer submission is in flight");
+
+        resolveAnswer();
+        await sendPromise;
+
+        session = store.getState().sessions.byId[sessionId];
+        assertEqual(session.pendingQuestion, null, "answer should keep the local pending question cleared after acceptance");
+        assertEqual(session.answeredPendingQuestion.pendingPhase, "queued", "accepted answer should render as queued until durable history arrives");
+        chatText = linesText(selectActiveChat(store.getState()));
+        assertIncludes(chatText, pendingQuestion.question, "question should stay visible after acceptance and before history sync");
+        assertIncludes(chatText, "Go", "submitted answer should stay visible after acceptance and before history sync");
 
         store.dispatch({
             type: "sessions/loaded",
@@ -1575,10 +1597,30 @@ describe("session refresh UI recovery", () => {
             }],
         });
 
-        const session = store.getState().sessions.byId[sessionId];
+        session = store.getState().sessions.byId[sessionId];
         assertEqual(session.pendingQuestion, null, "stale refresh should not restore the answered question");
         assertEqual(session.answeredPendingQuestion.question, pendingQuestion.question, "answered question marker should be retained for stale-refresh suppression");
-        assertEqual(linesText(selectActiveChat(store.getState())).includes(pendingQuestion.question), false, "answered question should not reappear in chat");
+        chatText = linesText(selectActiveChat(store.getState()));
+        assertIncludes(chatText, pendingQuestion.question, "stale refresh should not hide the submitted question/answer exchange");
+        assertIncludes(chatText, "Go", "stale refresh should not hide the submitted answer");
+
+        store.dispatch({
+            type: "history/set",
+            sessionId,
+            history: buildHistoryModel([{
+                seq: 1,
+                sessionId,
+                eventType: "user.message",
+                data: {
+                    content: `The user was asked: "${pendingQuestion.question}"\nThe user responded: "Go"`,
+                },
+                createdAt: new Date("2026-05-07T12:00:00.000Z"),
+            }]),
+        });
+
+        const messagesWithQuestion = selectActiveChat(store.getState()).filter((message) => String(message?.text || "").includes(pendingQuestion.question));
+        assertEqual(messagesWithQuestion.length, 1, "durable history should replace the optimistic answered question instead of duplicating it");
+        assertEqual(messagesWithQuestion[0].optimistic, undefined, "remaining answered question should be the durable transcript message");
     });
 
     it("incrementally refreshes active chat from CMS when live subscription misses events", async () => {

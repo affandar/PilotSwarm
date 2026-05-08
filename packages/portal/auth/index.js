@@ -8,7 +8,29 @@ const PROVIDERS = {
     entra: createEntraAuthProvider,
 };
 
+const NO_AUTH_UNKNOWN_PRINCIPAL = Object.freeze({
+    provider: "none",
+    subject: "unknown",
+    email: null,
+    displayName: "Unknown User",
+    groups: Object.freeze([]),
+    roles: Object.freeze(["anonymous"]),
+    rawClaims: Object.freeze({}),
+});
+
 let cachedBundle = null;
+
+export function createNoAuthUnknownPrincipal() {
+    return {
+        provider: NO_AUTH_UNKNOWN_PRINCIPAL.provider,
+        subject: NO_AUTH_UNKNOWN_PRINCIPAL.subject,
+        email: NO_AUTH_UNKNOWN_PRINCIPAL.email,
+        displayName: NO_AUTH_UNKNOWN_PRINCIPAL.displayName,
+        groups: [...NO_AUTH_UNKNOWN_PRINCIPAL.groups],
+        roles: [...NO_AUTH_UNKNOWN_PRINCIPAL.roles],
+        rawClaims: { ...NO_AUTH_UNKNOWN_PRINCIPAL.rawClaims },
+    };
+}
 
 function getProviderBundle() {
     if (cachedBundle) return cachedBundle;
@@ -121,7 +143,7 @@ export async function authenticateToken(token, req) {
     return {
         ok: true,
         status: 200,
-        principal: null,
+        principal: createNoAuthUnknownPrincipal(),
         authorization,
     };
 }
