@@ -480,6 +480,21 @@ async function main() {
   }
 
   // ════════════════════════════════════════════════════════════════════════
+  //  TEST 12: list_registered_agents
+  // ════════════════════════════════════════════════════════════════════════
+  try {
+    const res = await client.callTool({ name: "list_registered_agents", arguments: {} });
+    const data = parseToolResult(res);
+    if (typeof data?.count === "number" && Array.isArray(data?.agents)) {
+      record(12, "list_registered_agents", `✅ count=${data.count}`, null, STATUS.PASS);
+    } else {
+      record(12, "list_registered_agents", `⚠️  unexpected shape ${String(data).slice(0,100)}`, null, STATUS.EXPECTED);
+    }
+  } catch (e) {
+    record(12, "list_registered_agents", `⚠️  ${e.message}`, null, STATUS.EXPECTED);
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
   //  TEST 13: send_command
   // ════════════════════════════════════════════════════════════════════════
   try {
@@ -547,6 +562,48 @@ async function main() {
   } catch (e) {
     record(15, "send_answer", `⚠️  ${e.message}`, null,
       STATUS.EXPECTED, "no pending input_required question");
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  TEST 16: get_agent_tree
+  // ════════════════════════════════════════════════════════════════════════
+  try {
+    if (!sessionId) throw new Error("No session from test 1");
+    const res = await client.callTool({
+      name: "get_agent_tree",
+      arguments: { root_session_id: sessionId, max_depth: 3 },
+    });
+    const data = parseToolResult(res);
+    if (data?.tree?.session_id === sessionId && typeof data?.total_nodes === "number") {
+      record(16, "get_agent_tree", `✅ nodes=${data.total_nodes}`, null, STATUS.PASS);
+    } else if (res.isError) {
+      record(16, "get_agent_tree", `⚠️  ${String(data).slice(0,100)}`, null, STATUS.EXPECTED);
+    } else {
+      record(16, "get_agent_tree", `⚠️  unexpected ${JSON.stringify(data).slice(0,100)}`, null, STATUS.EXPECTED);
+    }
+  } catch (e) {
+    record(16, "get_agent_tree", `⚠️  ${e.message}`, null, STATUS.EXPECTED);
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  TEST 17: get_session_tree_stats
+  // ════════════════════════════════════════════════════════════════════════
+  try {
+    if (!sessionId) throw new Error("No session from test 1");
+    const res = await client.callTool({
+      name: "get_session_tree_stats",
+      arguments: { session_id: sessionId },
+    });
+    const data = parseToolResult(res);
+    if (data?.root_session_id === sessionId && data?.tree && typeof data.tree.session_count === "number") {
+      record(17, "get_session_tree_stats", `✅ tree_sessions=${data.tree.session_count}`, null, STATUS.PASS);
+    } else if (res.isError) {
+      record(17, "get_session_tree_stats", `⚠️  ${String(data).slice(0,100)}`, null, STATUS.EXPECTED);
+    } else {
+      record(17, "get_session_tree_stats", `⚠️  unexpected ${JSON.stringify(data).slice(0,100)}`, null, STATUS.EXPECTED);
+    }
+  } catch (e) {
+    record(17, "get_session_tree_stats", `⚠️  ${e.message}`, null, STATUS.EXPECTED);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -660,7 +717,7 @@ async function main() {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  //  TEST 22: listTools — verify all 12 tools present
+  //  TEST 22: listTools — verify all 15 tools present
   // ════════════════════════════════════════════════════════════════════════
   try {
     const res = await client.listTools();
@@ -669,6 +726,7 @@ async function main() {
 
     const expected = [
       "abort_session", "create_session", "delete_fact", "delete_session",
+      "get_agent_tree", "get_session_tree_stats", "list_registered_agents",
       "read_facts", "rename_session", "send_and_wait", "send_answer",
       "send_command", "send_message", "store_fact", "switch_model",
     ].sort();
@@ -677,16 +735,16 @@ async function main() {
     const extra = names.filter(n => !expected.includes(n));
 
     if (missing.length === 0) {
-      record(22, "listTools — all 12 tools",
+      record(22, "listTools — all 15 tools",
         `✅ Found ${tools.length} tools${extra.length ? ` (+${extra.length} extra: ${extra.join(",")})` : ""}`,
         null, STATUS.PASS);
     } else {
-      record(22, "listTools — all 12 tools",
+      record(22, "listTools — all 15 tools",
         `❌ Missing: [${missing.join(", ")}], found: [${names.join(", ")}]`,
         null, STATUS.FAIL);
     }
   } catch (e) {
-    record(22, "listTools — all 12 tools", `❌ ${e.message}`, null, STATUS.FAIL);
+    record(22, "listTools — all 15 tools", `❌ ${e.message}`, null, STATUS.FAIL);
   }
 
   // ════════════════════════════════════════════════════════════════════════

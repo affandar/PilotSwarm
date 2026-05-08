@@ -581,6 +581,7 @@ try {
     "abort_session", "rename_session", "delete_session",
     "store_fact", "read_facts", "delete_fact",
     "switch_model", "send_command",
+    "list_registered_agents", "get_agent_tree", "get_session_tree_stats",
   ];
 
   const missing = expected.filter((n) => !toolNames.includes(n));
@@ -590,7 +591,7 @@ try {
   let detail = "";
   if (missing.length) detail += `MISSING: ${missing.join(", ")}  `;
   if (extra.length) detail += `EXTRA: ${extra.join(", ")}`;
-  if (!detail) detail = "All 12 expected tools present";
+  if (!detail) detail = "All 15 expected tools present";
 
   record("EC-15", "listTools verification", missing.length === 0 ? "PASS" : "FAIL", mcpMsg, detail);
 } catch (e) {

@@ -335,73 +335,69 @@ async function main() {
     record("TOOL", "abort_session", STATUS.SKIP, "could not create session to abort");
   }
 
-  // ── 5. Agent Tools ────────────────────────────────────────────────────
-  console.log("\n─── Agent Tools ────────────────────────────────────────────\n");
+  // ── 5. Agent Inspection Tools ─────────────────────────────────────────
+  console.log("\n─── Agent Inspection Tools ────────────────────────────────\n");
 
-  // 5.1 spawn_agent
-  if (sessionId) {
-    try {
-      const res = await client.callTool({
-        name: "spawn_agent",
-        arguments: { session_id: sessionId, task: "Test task for spawned agent", agent_name: "test-agent" },
-      });
-      const data = parseToolResult(res);
-      if (data?.sent === true && data?.command === "spawn_agent") {
-        record("TOOL", "spawn_agent", STATUS.PASS, "sent: true, command: spawn_agent");
-      } else if (res.isError) {
-        record("TOOL", "spawn_agent", isExpectedError(data) ? STATUS.EXPECTED : STATUS.FAIL, String(data?.error ?? data).slice(0, 80));
-      } else {
-        record("TOOL", "spawn_agent", STATUS.EXPECTED, JSON.stringify(data).slice(0, 80));
-      }
-    } catch (err) {
-      record("TOOL", "spawn_agent", isExpectedError(err) ? STATUS.EXPECTED : STATUS.FAIL, err.message?.slice(0, 80));
+  // 5.1 list_registered_agents
+  try {
+    const res = await client.callTool({
+      name: "list_registered_agents",
+      arguments: {},
+    });
+    const data = parseToolResult(res);
+    if (typeof data?.count === "number" && Array.isArray(data?.agents)) {
+      record("TOOL", "list_registered_agents", STATUS.PASS, `count=${data.count}`);
+    } else if (res.isError) {
+      record("TOOL", "list_registered_agents", isExpectedError(data) ? STATUS.EXPECTED : STATUS.FAIL, JSON.stringify(data).slice(0, 80));
+    } else {
+      record("TOOL", "list_registered_agents", STATUS.EXPECTED, JSON.stringify(data).slice(0, 80));
     }
-  } else {
-    record("TOOL", "spawn_agent", STATUS.SKIP, "no session");
+  } catch (err) {
+    record("TOOL", "list_registered_agents", isExpectedError(err) ? STATUS.EXPECTED : STATUS.FAIL, err.message?.slice(0, 80));
   }
 
-  // 5.2 message_agent (expect error — agent doesn't exist)
+  // 5.2 get_agent_tree
   if (sessionId) {
     try {
       const res = await client.callTool({
-        name: "message_agent",
-        arguments: { session_id: sessionId, agent_id: "nonexistent-agent-id", message: "Hello agent" },
+        name: "get_agent_tree",
+        arguments: { root_session_id: sessionId, max_depth: 3 },
       });
       const data = parseToolResult(res);
-      if (res.isError) {
-        record("TOOL", "message_agent", STATUS.EXPECTED, "agent not found (expected)");
-      } else if (data?.sent === true) {
-        record("TOOL", "message_agent", STATUS.PASS, "sent: true");
+      if (data?.tree?.session_id === sessionId && typeof data?.total_nodes === "number") {
+        record("TOOL", "get_agent_tree", STATUS.PASS, `nodes=${data.total_nodes}`);
+      } else if (res.isError) {
+        record("TOOL", "get_agent_tree", isExpectedError(data) ? STATUS.EXPECTED : STATUS.FAIL, JSON.stringify(data).slice(0, 80));
       } else {
-        record("TOOL", "message_agent", STATUS.EXPECTED, JSON.stringify(data).slice(0, 80));
+        record("TOOL", "get_agent_tree", STATUS.EXPECTED, JSON.stringify(data).slice(0, 80));
       }
     } catch (err) {
-      record("TOOL", "message_agent", STATUS.EXPECTED, "agent not found: " + err.message?.slice(0, 60));
+      record("TOOL", "get_agent_tree", isExpectedError(err) ? STATUS.EXPECTED : STATUS.FAIL, err.message?.slice(0, 80));
     }
   } else {
-    record("TOOL", "message_agent", STATUS.SKIP, "no session");
+    record("TOOL", "get_agent_tree", STATUS.SKIP, "no session");
   }
 
-  // 5.3 cancel_agent (expect error — agent doesn't exist)
+  // 5.3 get_session_tree_stats
   if (sessionId) {
     try {
       const res = await client.callTool({
-        name: "cancel_agent",
-        arguments: { session_id: sessionId, agent_id: "nonexistent-agent-id", reason: "testing cancel" },
+        name: "get_session_tree_stats",
+        arguments: { session_id: sessionId },
       });
       const data = parseToolResult(res);
-      if (data?.cancelled === true) {
-        record("TOOL", "cancel_agent", STATUS.PASS, "cancelled: true");
+      if (data?.root_session_id === sessionId && data?.tree && typeof data.tree.session_count === "number") {
+        record("TOOL", "get_session_tree_stats", STATUS.PASS, `tree_sessions=${data.tree.session_count}`);
       } else if (res.isError) {
-        record("TOOL", "cancel_agent", STATUS.EXPECTED, "agent not found (expected)");
+        record("TOOL", "get_session_tree_stats", isExpectedError(data) ? STATUS.EXPECTED : STATUS.FAIL, JSON.stringify(data).slice(0, 80));
       } else {
-        record("TOOL", "cancel_agent", STATUS.EXPECTED, JSON.stringify(data).slice(0, 80));
+        record("TOOL", "get_session_tree_stats", STATUS.EXPECTED, JSON.stringify(data).slice(0, 80));
       }
     } catch (err) {
-      record("TOOL", "cancel_agent", STATUS.EXPECTED, "agent not found: " + err.message?.slice(0, 60));
+      record("TOOL", "get_session_tree_stats", isExpectedError(err) ? STATUS.EXPECTED : STATUS.FAIL, err.message?.slice(0, 80));
     }
   } else {
-    record("TOOL", "cancel_agent", STATUS.SKIP, "no session");
+    record("TOOL", "get_session_tree_stats", STATUS.SKIP, "no session");
   }
 
   // ── 6. Facts Tools ────────────────────────────────────────────────────
