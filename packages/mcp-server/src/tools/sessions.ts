@@ -80,6 +80,75 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     }
                 }
 
+                // Worker-claim guard: when a prompt was dispatched, a worker
+                // must register the orchestration within the configured
+                // timeout. Otherwise the row becomes a dead "running" record
+                // (orchestrationStatus stays NotFound) that no later
+                // sendCommand can clean up. Roll back the row and surface a
+                // clear "session could not be created" error so callers know
+                // to start a worker process.
+                const claimTimeoutMs = (() => {
+                    const raw = process.env.PILOTSWARM_MCP_WORKER_CLAIM_TIMEOUT_MS;
+                    const parsed = raw ? parseInt(raw, 10) : NaN;
+                    return Number.isFinite(parsed) && parsed > 0 ? parsed : 10_000;
+                })();
+
+                if (promptSent && claimTimeoutMs > 0) {
+                    const deadline = Date.now() + claimTimeoutMs;
+                    const pollMs = 250;
+                    // A session is "claimed" only once duroxide reports an
+                    // active orchestration. mgmt.getSession reflects CMS row
+                    // state (e.g. "Unknown") even before any worker runs, so
+                    // probe the orchestration directly via getSessionStatus.
+                    // Any non-NotFound duroxide status (Running, Completed,
+                    // Failed, Terminated, Suspended) means a worker registered
+                    // the orchestration at least once.
+                    let claimed = false;
+                    while (Date.now() < deadline) {
+                        try {
+                            const orch = await ctx.mgmt.getSessionStatus(session.sessionId);
+                            const orchStatus = orch?.orchestrationStatus;
+                            if (orchStatus && orchStatus !== "NotFound") {
+                                claimed = true;
+                                break;
+                            }
+                        } catch {
+                            // ignore transient mgmt errors and retry
+                        }
+                        await new Promise((resolve) => setTimeout(resolve, pollMs));
+                    }
+                    if (!claimed) {
+                        sessionCache.delete(session.sessionId);
+                        // Use client.deleteSession (unconditional CMS soft-delete +
+                        // best-effort orchestration cancel). mgmt.deleteSession routes
+                        // through sendCommand and rejects when orchestrationStatus is
+                        // NotFound, which is exactly the case we are cleaning up.
+                        try {
+                            await ctx.client.deleteSession(session.sessionId);
+                        } catch {
+                            // best-effort; row may linger if soft-delete also fails
+                        }
+                        return {
+                            content: [
+                                {
+                                    type: "text" as const,
+                                    text: JSON.stringify({
+                                        error: "no_worker_claimed",
+                                        created: false,
+                                        purged_session_id: session.sessionId,
+                                        message:
+                                            "Session could not be created: no PilotSwarm worker claimed the orchestration "
+                                            + `within ${claimTimeoutMs}ms. The CMS row was rolled back. `
+                                            + "Start a worker process (e.g. CLI in local mode or Web Portal) "
+                                            + "against the same DATABASE_URL, then retry.",
+                                    }),
+                                },
+                            ],
+                            isError: true,
+                        };
+                    }
+                }
+
                 return {
                     content: [
                         {
