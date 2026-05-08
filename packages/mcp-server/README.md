@@ -350,14 +350,33 @@ console.log(result);
 | `get_session_detail` | Discovery — get detailed info for a session including status, context usage, cron state, and pending questions |
 | `get_session_events` | Discovery — read the CMS event stream for a session, with `after_seq` pagination and long-poll support |
 
+### External MCP boundary
+
+The PilotSwarm MCP server is an **external surface**: it accepts tool calls from clients outside the agent's reasoning loop (Claude Desktop, custom MCP clients, ops tooling). It mutates only **top-level sessions**.
+
+**Sub-agent lifecycle is not part of the external surface.** Creating, messaging, and cancelling a sub-agent are operations whose semantics depend on the parent session's reasoning context — only the parent has the context to decide why, when, and with what task to spawn or message a child. Those operations are exposed only to the in-loop LLM via the orchestration's `spawn_agent` tool and related command handlers.
+
+External MCP clients can **inspect** the sub-agent tree freely:
+
+- `list_agents` — list direct children, filter by parent/status
+- `list_registered_agents` — read the catalog of agent definitions
+- `get_agent_tree` — recursive subtree from a root session
+- `get_session_tree_stats` — aggregated metrics across a subtree
+- `get_session_detail`, `get_session_events` — work on any session id, including child sessions
+- `pilotswarm://agents/{agentId}` resources — read-only details for *system* sub-agents (sweeper, resourcemgr, etc.); not a generic per-child resource
+
+External clients **cannot** spawn, message, or cancel a sub-agent. Calling a removed tool name returns the standard MCP "unknown tool" error.
+
+Top-level session control (`create_session`, `send_message`, `delete_session`, etc.) is unaffected by this boundary — those tools remain on the external surface.
+
 ### Agent Management
 
 | Tool | Description |
 |------|-------------|
-| `spawn_agent` | Spawn a sub-agent within a session |
-| `message_agent` | Send a message to a running sub-agent |
-| `cancel_agent` | Cancel a running sub-agent with an optional reason |
 | `list_agents` | Discovery — list all sub-agents (child sessions) with name, status, model, parent, and task; filter by parent or status |
+| `list_registered_agents` | Discovery — read PilotSwarm's catalog of registered agent definitions visible to this MCP server (name, title, description, system flag, parent constraint). Pure read; no creation affordance. |
+| `get_agent_tree` | Discovery — recursive sub-agent subtree rooted at a session id, bounded by `max_depth` (default 5). |
+| `get_session_tree_stats` | Discovery — aggregated metrics for a session and all its descendants: token totals, session count, dehydration / hydration counts, per-model breakdown, cache hit ratio. |
 
 ### Knowledge (Facts)
 
@@ -413,7 +432,7 @@ CORS is enabled for all origins, with `mcp-session-id` and `mcp-protocol-version
 The MCP server treats every connected client as trusted with the full scope of the underlying PilotSwarm deployment. Concretely:
 
 - **Authentication is at the transport, not at the tool.** Stdio mode relies on OS-level process isolation; HTTP mode relies on a single shared bearer key (`PILOTSWARM_MCP_KEY`). There is no per-client identity that the server could map to a particular PilotSwarm session.
-- **Tools that take a `session_id` accept it as caller input.** This is true of `read_facts`, `store_fact`, `delete_fact`, `message_agent`, and the session-management tools. The server does **not** verify that the calling MCP client "owns" the session it names, because it has no notion of client ownership in the first place. A client that can call the tool can scope its call to any session ID it knows or guesses.
+- **Tools that take a `session_id` accept it as caller input.** This is true of `read_facts`, `store_fact`, `delete_fact`, and the session-management tools. The server does **not** verify that the calling MCP client "owns" the session it names, because it has no notion of client ownership in the first place. A client that can call the tool can scope its call to any session ID it knows or guesses.
 - **Implication for `read_facts`.** Any client authorized to talk to this MCP endpoint can read facts scoped to any session — including facts another caller wrote with `session_id` set to a different session. The `reader_session_id` and `granted_session_ids` parameters are likewise caller-supplied and exist to drive the SDK's fact-access checks; they are not themselves authenticated.
 - **What the server does enforce.** DNS-rebinding defense via the `Host` header allowlist (`--allowed-hosts`), constant-time bearer comparison, a per-process session cap (`--max-sessions`), and standard CORS headers. These protect the endpoint perimeter; they do not subdivide privilege between clients past the perimeter.
 

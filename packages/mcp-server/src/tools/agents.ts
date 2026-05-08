@@ -6,10 +6,11 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
     // list_agents — List all sub-agents across sessions (read-only inspection).
     //
     // The external MCP surface deliberately does NOT expose action tools for
-    // sub-agents (spawn / message / cancel). Sub-agent lifecycle belongs to
-    // the parent session's reasoning loop and is reachable only via the
-    // in-loop `ps_spawn_agent` tool. See `packages/mcp-server/README.md`
-    // section "External MCP boundary" for the full rule.
+    // sub-agents — spawn_agent / message_agent / cancel_agent are reachable
+    // only from inside the parent session's reasoning loop, via the
+    // in-loop `spawn_agent` tool and related orchestration commands. See
+    // `packages/mcp-server/README.md` section "External MCP boundary" for
+    // the full rule.
     server.registerTool(
         "list_agents",
         {
