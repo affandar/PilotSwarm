@@ -47,8 +47,11 @@ Notes:
     - Suite names are substring matches against files under packages/sdk/test/local.
     - Unknown options fail fast.
     - A full run (no suite filter) also runs the deploy-scripts tests
-      (node --test against deploy/scripts/test/*.test.mjs) before the
-      SDK suites. Set SKIP_DEPLOY_SCRIPTS_TESTS=1 to skip.
+      (node --test against deploy/scripts/test/*.test.mjs) and the
+      mcp-server unit tests (node) before the SDK suites. Set
+      SKIP_DEPLOY_SCRIPTS_TESTS=1 or SKIP_MCP_SERVER_TESTS=1 to skip.
+      The mcp-server LIVE integration suite is opt-in via
+      `npm run test:mcp-server:integration` (or :all).
 EOF
 }
 
@@ -64,6 +67,11 @@ done
 # Build
 echo "🔨 Building TypeScript..."
 (cd "$SDK_DIR" && npm run build) || { echo "❌ Build failed"; exit 1; }
+
+# Build mcp-server (its tests import from packages/mcp-server/dist/...).
+# Cheap incremental tsc — only rebuilds when sources changed.
+(cd "$REPO_ROOT/packages/mcp-server" && npm run build) \
+    || { echo "❌ mcp-server build failed"; exit 1; }
 
 # Run the deploy-scripts test suite (Node `node --test`, not vitest) when
 # no SDK suite filter is in effect. The deploy orchestrator's helpers
@@ -81,6 +89,20 @@ run_deploy_scripts_tests() {
     echo "🧪 Running deploy-scripts tests (node --test)..."
     (cd "$REPO_ROOT" && npm run --silent test:deploy-scripts) \
         || { echo "❌ deploy-scripts tests failed"; exit 1; }
+}
+
+# Run the mcp-server unit suite when no SDK suite filter is in effect.
+# The mcp-server has a small pure-mock unit test (no DB, no Copilot) plus
+# LIVE integration smokes that are opt-in via test:mcp-server:integration.
+# Mirrors the deploy-scripts pattern. Set SKIP_MCP_SERVER_TESTS=1 to skip.
+run_mcp_server_tests() {
+    if [ "${SKIP_MCP_SERVER_TESTS:-0}" = "1" ]; then
+        echo "⏭  Skipping mcp-server tests (SKIP_MCP_SERVER_TESTS=1)."
+        return 0
+    fi
+    echo "🧪 Running mcp-server unit tests (node)..."
+    (cd "$REPO_ROOT" && npm run --silent test:mcp-server) \
+        || { echo "❌ mcp-server tests failed"; exit 1; }
 }
 
 # Suppress duroxide Rust WARN logs in tests (AKS workers use INFO via their own env)
@@ -141,5 +163,6 @@ if [ ${#TARGET_FILES[@]} -gt 0 ]; then
     exec npx vitest "${VITEST_ARGS[@]}" "${TARGET_FILES[@]}"
 else
     run_deploy_scripts_tests
+    run_mcp_server_tests
     exec npx vitest "${VITEST_ARGS[@]}"
 fi
