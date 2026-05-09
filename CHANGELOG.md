@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.28 — 2026-05-09
+
+### SDK / Runtime
+
+- **Duroxide 0.1.25** — bumps the SDK dependency to the release that adds
+  `PostgresProvider.connectWithEntra` and `PostgresProvider.connectWithSchemaAndEntra`
+  for passwordless Azure AD / Entra ID authentication, along with the duroxide
+  core 0.1.29 / duroxide-pg 0.1.32 / duroxide-pg-opt 0.1.28 provider stack.
+
 ## 0.1.27 — 2026-05-06
 
 ### Deploy / Ops
