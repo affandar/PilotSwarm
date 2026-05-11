@@ -34,12 +34,16 @@ test("portal hash matches sha256-12 of sorted PORTAL_SPC_KEYS", () => {
   assert.match(got, /^[0-9a-f]{12}$/);
 });
 
-test("worker and portal hashes differ", () => {
-  assert.notEqual(
-    computeSpcKeysHash({ service: "worker" }),
-    computeSpcKeysHash({ service: "portal" }),
-  );
-});
+// NOTE: previously this file asserted that worker and portal hashes
+// differ. That invariant no longer holds: after the Phase 6 split that
+// reclassified the portal auth/authz settings as ConfigMap-backed config,
+// the portal SPC projects the same 3 LLM-credential keys as the worker
+// SPC (GITHUB_TOKEN, ANTHROPIC_API_KEY, AZURE_OAI_KEY). Equal key sets
+// → equal hashes, which is correct: each Deployment annotates its own
+// pod-template with its own service's hash, so cross-service equality is
+// irrelevant. The remaining tests (per-service mirroring, order
+// invariance, addition sensitivity) still guarantee the rolling-restart
+// behavior on SPC changes.
 
 test("hash is order-invariant within a service", () => {
   // Confirm computeSpcKeysHash is robust if someone reorders the constant.

@@ -60,23 +60,13 @@ export const SEEDABLE_SECRET_KEYS = [
   // load. Stamps using Azure-hosted models via managed identity, or any
   // other non-Anthropic provider, can leave this empty.
   { env: "ANTHROPIC_API_KEY", kv: "anthropic-api-key", required: false, seedEmpty: true },
-  // Portal auth/authz config — all optional. When the operator hasn't set
-  // PORTAL_AUTH_PROVIDER (or has set it to `none`), the portal runs
-  // unauthenticated and these fields are ignored. We still seed the
-  // sentinel for every key referenced by
-  // deploy/gitops/portal/base/secret-provider-class.yaml so the CSI
-  // SecretProviderClass mount succeeds; the portal runtime
-  // (packages/portal/server.js) strips sentinel values at startup so the
-  // auth provider sees them as truly unset.
-  { env: "PORTAL_AUTH_PROVIDER", kv: "portal-auth-provider", required: false, seedEmpty: true },
-  { env: "PORTAL_AUTH_ENTRA_TENANT_ID", kv: "portal-auth-entra-tenant-id", required: false, seedEmpty: true },
-  { env: "PORTAL_AUTH_ENTRA_CLIENT_ID", kv: "portal-auth-entra-client-id", required: false, seedEmpty: true },
-  { env: "PORTAL_AUTHZ_DEFAULT_ROLE", kv: "portal-authz-default-role", required: false, seedEmpty: true },
-  { env: "PORTAL_AUTHZ_ADMIN_GROUPS", kv: "portal-authz-admin-groups", required: false, seedEmpty: true },
-  { env: "PORTAL_AUTHZ_USER_GROUPS", kv: "portal-authz-user-groups", required: false, seedEmpty: true },
-  { env: "PORTAL_AUTH_ALLOW_UNAUTHENTICATED", kv: "portal-auth-allow-unauthenticated", required: false, seedEmpty: true },
-  { env: "PORTAL_AUTH_ENTRA_ADMIN_GROUPS", kv: "portal-auth-entra-admin-groups", required: false, seedEmpty: true },
-  { env: "PORTAL_AUTH_ENTRA_USER_GROUPS", kv: "portal-auth-entra-user-groups", required: false, seedEmpty: true },
+  // Portal auth/authz config (PORTAL_AUTH_* / PORTAL_AUTHZ_*) used to live
+  // here as KV secrets. They are NOT credentials — Entra tenant/client
+  // GUIDs and group object ids are public; provider/default-role/allow-unauth
+  // are policy strings/booleans. They moved to PORTAL_CONFIG_KEYS in
+  // ./portal-config.mjs and now flow through the overlay .env →
+  // `portal-env` ConfigMap path instead of KV. The portal SPC was trimmed
+  // to the 3 genuine credentials accordingly.
 ];
 
 /**

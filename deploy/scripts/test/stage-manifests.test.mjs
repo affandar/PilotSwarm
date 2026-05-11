@@ -134,6 +134,18 @@ test("stageManifests(portal): copies worker base model_providers.json into porta
       PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgresql://u@h:5432/d?sslmode=require",
       PILOTSWARM_DB_AAD_USER: "stub",
       DATABASE_URL: "postgresql://u:p@h:5432/d?sslmode=require",
+      // Portal config keys (non-credentials). Stubbed with non-empty values
+      // so substituteOverlayEnv's fail-closed gate passes; this test cares
+      // about model_providers.json copy, not portal-config values.
+      PORTAL_AUTH_PROVIDER: "none",
+      PORTAL_AUTH_ENTRA_TENANT_ID: "00000000-0000-0000-0000-000000000000",
+      PORTAL_AUTH_ENTRA_CLIENT_ID: "00000000-0000-0000-0000-000000000000",
+      PORTAL_AUTH_ALLOW_UNAUTHENTICATED: "false",
+      PORTAL_AUTH_ENTRA_ADMIN_GROUPS: "__PS_UNSET__",
+      PORTAL_AUTH_ENTRA_USER_GROUPS: "__PS_UNSET__",
+      PORTAL_AUTHZ_DEFAULT_ROLE: "viewer",
+      PORTAL_AUTHZ_ADMIN_GROUPS: "__PS_UNSET__",
+      PORTAL_AUTHZ_USER_GROUPS: "__PS_UNSET__",
     },
     stagingDir,
   });
