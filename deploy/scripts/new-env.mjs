@@ -45,7 +45,8 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { validateLocalEnvName, envFilePath, parseEnvFile, templateEnvPath, log } from "./lib/common.mjs";
 import { loadDeployManifest } from "./lib/services-manifest.mjs";
-import { SEEDABLE_SECRET_KEYS } from "./lib/seed-secrets.mjs";
+import { SEEDABLE_SECRET_KEYS, SEED_SECRETS_UNSET_SENTINEL } from "./lib/seed-secrets.mjs";
+import { PORTAL_CONFIG_KEYS } from "./lib/portal-config.mjs";
 import { listAvailableFoundryModels } from "./lib/validate-foundry-deployments.mjs";
 
 // Common Azure regions → short name. Sourced from
@@ -563,7 +564,7 @@ export function applyOverridesToTemplate(templateText, overrides) {
   return out.join("\n");
 }
 
-export function renderLocalEnv({ name, targets, secrets, templateText }) {
+export function renderLocalEnv({ name, targets, secrets, portalConfig, templateText }) {
   const tpl = templateText ?? readFileSync(templateEnvPath(), "utf8");
 
   const header = [
@@ -617,10 +618,31 @@ export function renderLocalEnv({ name, targets, secrets, templateText }) {
     secretsBlock.push(``);
   }
 
-  return header + substituted.replace(/\s*$/, "") + "\n" + secretsBlock.join("\n");
+  // ─── Portal config (non-credential) ──────────────────────────────────────
+  // Auth/authz settings consumed by the portal at runtime. NOT seeded into
+  // Key Vault — they flow through the overlay .env → portal-env ConfigMap
+  // path. Empty values get rendered as the seed-secrets sentinel so
+  // substitute-env's fail-closed gate is satisfied; the portal runtime
+  // strips the sentinel from process.env at startup.
+  const portalConfigBlock = [
+    ``,
+    `# ─── Portal config (non-credential) ──────────────────────────────────────`,
+    `# Read by deploy/scripts/lib/portal-config.mjs and substituted into the`,
+    `# portal overlay .env. These are NOT secrets; they are projected via the`,
+    `# portal-env ConfigMap (envFrom configMapRef in deployment.yaml). Leave`,
+    `# blank to render the ${SEED_SECRETS_UNSET_SENTINEL} sentinel — the portal`,
+    `# strips sentinel values at startup so the key appears truly unset.`,
+    ``,
+  ];
+  for (const { env: key } of PORTAL_CONFIG_KEYS) {
+    const value = portalConfig?.[key] ?? "";
+    portalConfigBlock.push(`${key}=${value || SEED_SECRETS_UNSET_SENTINEL}`);
+  }
+
+  return header + substituted.replace(/\s*$/, "") + "\n" + secretsBlock.join("\n") + portalConfigBlock.join("\n") + "\n";
 }
 
-async function gatherInputs(args, existingSecrets) {
+async function gatherInputs(args, existingSecrets, existingPortalConfig) {
   const interactive = !args.name || !args.subscription || !args.location;
 
   // Resolve a single input's value for the non-interactive path: explicit
@@ -641,7 +663,11 @@ async function gatherInputs(args, existingSecrets) {
     // the file directly.
     const ctx = {};
     for (const i of INPUTS) ctx[i.argKey] = nonInteractiveValue(i, ctx);
-    return { ...ctx, secrets: { ...(existingSecrets ?? {}) } };
+    return {
+      ...ctx,
+      secrets: { ...(existingSecrets ?? {}) },
+      portalConfig: { ...(existingPortalConfig ?? {}) },
+    };
   }
 
   const rl = createInterface({ input, output });
@@ -693,7 +719,24 @@ async function gatherInputs(args, existingSecrets) {
       }
     }
 
-    return { ...ctx, secrets };
+    // Portal config (non-credentials). Same prompt UX as secrets but every
+    // key is optional — blank input renders the sentinel and the portal
+    // strips it at startup. Existing values are masked-default-preserved.
+    const portalConfig = { ...(existingPortalConfig ?? {}) };
+    console.log("");
+    console.log("Portal config (non-credentials) — press Enter to keep existing or leave unset:");
+    for (const { env: key } of PORTAL_CONFIG_KEYS) {
+      const existing = portalConfig[key] ?? "";
+      const masked = existing ? `<keep existing: ${existing}>` : "";
+      const answer = (await prompt(rl, `  ${key}`, masked)).trim();
+      if (!answer || answer === masked) {
+        if (existing) portalConfig[key] = existing;
+        continue;
+      }
+      portalConfig[key] = answer;
+    }
+
+    return { ...ctx, secrets, portalConfig };
   } finally {
     rl.close();
   }
@@ -783,6 +826,7 @@ async function main() {
   // tokens. Anything that isn't a SEEDABLE_SECRET_KEYS env var is
   // recomputed fresh from the new inputs.
   let existingSecrets = null;
+  let existingPortalConfig = null;
   if (args.name) {
     const existing = envFilePath(args.name);
     if (existsSync(existing)) {
@@ -791,10 +835,17 @@ async function main() {
       for (const { env: key } of SEEDABLE_SECRET_KEYS) {
         if (parsed[key]) existingSecrets[key] = parsed[key];
       }
+      existingPortalConfig = {};
+      for (const { env: key } of PORTAL_CONFIG_KEYS) {
+        const v = parsed[key];
+        // Skip the unset sentinel — treat as "no existing value" so the
+        // user sees an empty default rather than `<keep existing: __PS_UNSET__>`.
+        if (v && v !== SEED_SECRETS_UNSET_SENTINEL) existingPortalConfig[key] = v;
+      }
     }
   }
 
-  const inputs = await gatherInputs(args, existingSecrets);
+  const inputs = await gatherInputs(args, existingSecrets, existingPortalConfig);
   validateLocalEnvName(inputs.name);
 
   if (!inputs.location) throw new Error("location is required.");
@@ -814,7 +865,7 @@ async function main() {
   mkdirSync(dirname(dst), { recursive: true });
   writeFileSync(
     dst,
-    renderLocalEnv({ name: inputs.name, targets, secrets: inputs.secrets }),
+    renderLocalEnv({ name: inputs.name, targets, secrets: inputs.secrets, portalConfig: inputs.portalConfig }),
     "utf8",
   );
 

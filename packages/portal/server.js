@@ -57,10 +57,10 @@ export async function startServer(opts = {}) {
         process.env.WORKERS = String(workers);
     }
 
-    // Strip "__PS_UNSET__" sentinels written by deploy seed-secrets so
-    // optional env vars (like ANTHROPIC_API_KEY or PORTAL_AUTH_*) appear
-    // unset to downstream code. Mirrors the worker's behavior in
-    // packages/sdk/examples/worker.js.
+    // Strip "__PS_UNSET__" sentinels written by deploy seed-secrets and
+    // by the portal-config render path so optional env vars (like
+    // ANTHROPIC_API_KEY or AZURE_OAI_KEY) appear unset to downstream code.
+    // Mirrors the worker's behavior in packages/sdk/examples/worker.js.
     const SEED_SECRETS_UNSET_SENTINEL = "__PS_UNSET__";
     for (const [k, v] of Object.entries(process.env)) {
         if (v === SEED_SECRETS_UNSET_SENTINEL) delete process.env[k];
