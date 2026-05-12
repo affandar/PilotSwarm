@@ -23,6 +23,65 @@ export interface SessionEvent {
     workerNodeId?: string;
 }
 
+/** One row from cms_get_top_event_emitters. */
+export interface TopEventEmitterRow {
+    workerNodeId: string;
+    eventType: string;
+    eventCount: number;
+    sessionCount: number;
+    firstSeenAt: Date | null;
+    lastSeenAt: Date | null;
+}
+
+export interface InsertTurnMetricInput {
+    sessionId: string;
+    agentId: string | null;
+    model: string | null;
+    turnIndex: number;
+    startedAt: Date;
+    endedAt: Date;
+    durationMs: number;
+    tokensInput: number;
+    tokensOutput: number;
+    tokensCacheRead: number;
+    tokensCacheWrite: number;
+    toolCalls: number;
+    toolErrors: number;
+    resultType: string | null;
+    errorMessage: string | null;
+    workerNodeId: string | null;
+}
+
+export interface TurnMetricRow {
+    id: number;
+    sessionId: string;
+    agentId: string | null;
+    model: string | null;
+    turnIndex: number;
+    startedAt: Date;
+    endedAt: Date;
+    durationMs: number;
+    tokensInput: number;
+    tokensOutput: number;
+    tokensCacheRead: number;
+    tokensCacheWrite: number;
+    toolCalls: number;
+    toolErrors: number;
+    resultType: string | null;
+    errorMessage: string | null;
+    workerNodeId: string | null;
+    createdAt: Date;
+}
+
+export interface HourlyTokenBucketRow {
+    hourBucket: Date;
+    turnCount: number;
+    totalTokensInput: number;
+    totalTokensOutput: number;
+    totalTokensCacheRead: number;
+    totalTokensCacheWrite: number;
+}
+
 /** A row in the sessions table. */
 export interface SessionRow {
     sessionId: string;
@@ -343,6 +402,14 @@ export interface SessionCatalogProvider {
     /** List all non-deleted sessions, newest first. */
     listSessions(): Promise<SessionRow[]>;
 
+    /** List one bounded page of sessions, newest first. */
+    listSessionsPage(opts?: {
+        limit?: number;
+        cursorUpdatedAt?: Date | null;
+        cursorSessionId?: string | null;
+        includeDeleted?: boolean;
+    }): Promise<SessionRow[]>;
+
     /** Get a single session by ID (null if not found or deleted). */
     getSession(sessionId: string): Promise<SessionRow | null>;
 
@@ -362,6 +429,21 @@ export interface SessionCatalogProvider {
 
     /** Get events before a sequence number, ordered ascending by seq. */
     getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<SessionEvent[]>;
+
+    /** Get the highest-volume event emitters since a point in time. */
+    getTopEventEmitters(since: Date, limit?: number): Promise<TopEventEmitterRow[]>;
+
+    /** Insert one per-turn metrics row. */
+    insertTurnMetric(input: InsertTurnMetricInput): Promise<void>;
+
+    /** Get bounded per-session turn metrics, newest-first. */
+    getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]>;
+
+    /** Aggregate hourly token buckets from session turn metrics. */
+    getHourlyTokenBuckets(since: Date, opts?: { agentId?: string; model?: string }): Promise<HourlyTokenBucketRow[]>;
+
+    /** Delete turn metrics older than a cutoff and return deleted row count. */
+    pruneTurnMetrics(olderThan: Date): Promise<number>;
 
     // ── Session Metric Summaries ──────────────────────────────
 
@@ -447,12 +529,18 @@ function sqlForSchema(schema: string) {
             updateSession:              `${s}.cms_update_session`,
             softDeleteSession:          `${s}.cms_soft_delete_session`,
             listSessions:               `${s}.cms_list_sessions`,
+            listSessionsPage:           `${s}.cms_list_sessions_page`,
             getSession:                 `${s}.cms_get_session`,
             getDescendantSessionIds:    `${s}.cms_get_descendant_session_ids`,
             getLastSessionId:           `${s}.cms_get_last_session_id`,
             recordEvents:               `${s}.cms_record_events`,
             getSessionEvents:           `${s}.cms_get_session_events`,
             getSessionEventsBefore:     `${s}.cms_get_session_events_before`,
+            getTopEventEmitters:        `${s}.cms_get_top_event_emitters`,
+            insertTurnMetric:           `${s}.cms_insert_turn_metric`,
+            getSessionTurnMetrics:      `${s}.cms_get_session_turn_metrics`,
+            getHourlyTokenBuckets:      `${s}.cms_get_hourly_token_buckets`,
+            pruneTurnMetrics:           `${s}.cms_prune_turn_metrics`,
             getSessionMetricSummary:    `${s}.cms_get_session_metric_summary`,
             getSessionTreeStats:        `${s}.cms_get_session_tree_stats`,
             getSessionTreeStatsByModel: `${s}.cms_get_session_tree_stats_by_model`,
@@ -615,6 +703,24 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         return rows.map(rowToSessionRow);
     }
 
+    async listSessionsPage(opts?: {
+        limit?: number;
+        cursorUpdatedAt?: Date | null;
+        cursorSessionId?: string | null;
+        includeDeleted?: boolean;
+    }): Promise<SessionRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4)`,
+            [
+                opts?.limit ?? null,
+                opts?.cursorUpdatedAt ?? null,
+                opts?.cursorSessionId ?? null,
+                opts?.includeDeleted ?? false,
+            ],
+        );
+        return rows.map(rowToSessionRow);
+    }
+
     async getSession(sessionId: string): Promise<SessionRow | null> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.getSession}($1)`,
@@ -665,6 +771,62 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
             [sessionId, beforeSeq, effectiveLimit],
         );
         return rows.map(rowToSessionEvent);
+    }
+
+    async getTopEventEmitters(since: Date, limit?: number): Promise<TopEventEmitterRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getTopEventEmitters}($1, $2)`,
+            [since, limit ?? null],
+        );
+        return rows.map(rowToTopEventEmitterRow);
+    }
+
+    async insertTurnMetric(input: InsertTurnMetricInput): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.insertTurnMetric}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            [
+                input.sessionId,
+                input.agentId,
+                input.model,
+                input.turnIndex,
+                input.startedAt,
+                input.endedAt,
+                input.durationMs,
+                input.tokensInput,
+                input.tokensOutput,
+                input.tokensCacheRead,
+                input.tokensCacheWrite,
+                input.toolCalls,
+                input.toolErrors,
+                input.resultType,
+                input.errorMessage,
+                input.workerNodeId,
+            ],
+        );
+    }
+
+    async getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionTurnMetrics}($1, $2, $3)`,
+            [sessionId, opts?.since ?? null, opts?.limit ?? null],
+        );
+        return rows.map(rowToTurnMetricRow);
+    }
+
+    async getHourlyTokenBuckets(since: Date, opts?: { agentId?: string; model?: string }): Promise<HourlyTokenBucketRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getHourlyTokenBuckets}($1, $2, $3)`,
+            [since, opts?.agentId ?? null, opts?.model ?? null],
+        );
+        return rows.map(rowToHourlyTokenBucketRow);
+    }
+
+    async pruneTurnMetrics(olderThan: Date): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.pruneTurnMetrics}($1) AS deleted_count`,
+            [olderThan],
+        );
+        return Number(rows[0]?.deleted_count) || 0;
     }
 
     // ── Session Metric Summaries ─────────────────────────────
@@ -1117,6 +1279,52 @@ function rowToSessionEvent(row: any): SessionEvent {
         data: row.data,
         createdAt: new Date(row.created_at),
         workerNodeId: row.worker_node_id ?? undefined,
+    };
+}
+
+/** Map a PG row to TopEventEmitterRow. */
+function rowToTopEventEmitterRow(row: any): TopEventEmitterRow {
+    return {
+        workerNodeId: String(row.worker_node_id),
+        eventType: String(row.event_type),
+        eventCount: Number(row.event_count) || 0,
+        sessionCount: Number(row.session_count) || 0,
+        firstSeenAt: row.first_seen_at ? new Date(row.first_seen_at) : null,
+        lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at) : null,
+    };
+}
+
+function rowToTurnMetricRow(row: any): TurnMetricRow {
+    return {
+        id: Number(row.id),
+        sessionId: row.session_id,
+        agentId: row.agent_id ?? null,
+        model: row.model ?? null,
+        turnIndex: Number(row.turn_index) || 0,
+        startedAt: new Date(row.started_at),
+        endedAt: new Date(row.ended_at),
+        durationMs: Number(row.duration_ms) || 0,
+        tokensInput: Number(row.tokens_input) || 0,
+        tokensOutput: Number(row.tokens_output) || 0,
+        tokensCacheRead: Number(row.tokens_cache_read) || 0,
+        tokensCacheWrite: Number(row.tokens_cache_write) || 0,
+        toolCalls: Number(row.tool_calls) || 0,
+        toolErrors: Number(row.tool_errors) || 0,
+        resultType: row.result_type ?? null,
+        errorMessage: row.error_message ?? null,
+        workerNodeId: row.worker_node_id ?? null,
+        createdAt: new Date(row.created_at),
+    };
+}
+
+function rowToHourlyTokenBucketRow(row: any): HourlyTokenBucketRow {
+    return {
+        hourBucket: new Date(row.hour_bucket),
+        turnCount: Number(row.turn_count) || 0,
+        totalTokensInput: Number(row.total_tokens_input) || 0,
+        totalTokensOutput: Number(row.total_tokens_output) || 0,
+        totalTokensCacheRead: Number(row.total_tokens_cache_read) || 0,
+        totalTokensCacheWrite: Number(row.total_tokens_cache_write) || 0,
     };
 }
 
