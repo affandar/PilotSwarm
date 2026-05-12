@@ -38,7 +38,7 @@
     "docker:local:start": "bash ./scripts/docker-local-start.sh",
     "docker:local:stop": "bash ./scripts/docker-local-stop.sh",
     "docker:local:reset": "bash ./scripts/docker-local-reset.sh",
-    "worker": "node --env-file=.env.remote packages/sdk/examples/worker.js",
+    "worker": "node --env-file=.env.remote --import ./scripts/otel/register.mjs packages/sdk/examples/worker.js",
     "db:reset": "node --env-file=.env scripts/db-reset.js",
     "postinstall": "node scripts/postinstall.js"
   },
@@ -46,5 +46,15 @@
   "license": "MIT",
   "engines": {
     "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1045.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.75.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.217.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.217.0",
+    "@opentelemetry/resources": "^2.7.1",
+    "@opentelemetry/sdk-node": "^0.217.0",
+    "@opentelemetry/semantic-conventions": "^1.41.1"
   }
 }

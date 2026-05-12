@@ -11,6 +11,7 @@ import { mergePromptSections } from "./prompt-layering.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
+import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
 import os from "node:os";
 import fs from "node:fs";
 
@@ -200,6 +201,14 @@ function buildUsageSummaryUpsert(data: unknown): {
         ...(tokensCacheReadIncrement != null ? { tokensCacheReadIncrement } : {}),
         ...(tokensCacheWriteIncrement != null ? { tokensCacheWriteIncrement } : {}),
     };
+}
+
+function isFailureToolCompletion(data: unknown): boolean {
+    const eventData = normalizeEventData(data as Record<string, unknown> | undefined);
+    if (!eventData) return false;
+    return eventData.resultType === "failure"
+        || typeof eventData.error === "string"
+        || typeof eventData.errorMessage === "string";
 }
 
 async function tryReadSnapshotSizeBytes(sessionStore: SessionStateStore | null | undefined, sessionId: string): Promise<number | undefined> {
@@ -466,6 +475,32 @@ export function registerActivities(
     ): Promise<TurnResult> => {
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId}`);
 
+        const turnTelemetry = {
+            tokensInput: 0,
+            tokensOutput: 0,
+            tokensCacheRead: 0,
+            tokensCacheWrite: 0,
+            toolCalls: 0,
+            toolErrors: 0,
+            toolNames: new Set<string>(),
+            modelSummary: sessionManager.getModelSummary(),
+        };
+        const turnSpan = otelTrace.getTracer("pilotswarm-turns").startSpan("session.turn", {
+            attributes: {
+                "pilotswarm.session_id": input.sessionId,
+                "pilotswarm.turn_index": input.turnIndex ?? 0,
+                "pilotswarm.bootstrap": Boolean(input.bootstrap),
+                "pilotswarm.retry_count": input.retryCount ?? 0,
+                "pilotswarm.nesting_level": input.nestingLevel ?? 0,
+                "pilotswarm.has_parent_session": Boolean(input.parentSessionId),
+                ...(input.parentSessionId ? { "pilotswarm.parent_session_id": input.parentSessionId } : {}),
+                ...(input.requiredTool ? { "pilotswarm.required_tool": input.requiredTool } : {}),
+                ...(input.config.model ? { "pilotswarm.model": input.config.model } : {}),
+                ...(input.config.reasoningEffort ? { "pilotswarm.reasoning_effort": input.config.reasoningEffort } : {}),
+                ...(workerNodeId ? { "pilotswarm.worker_node_id": workerNodeId } : {}),
+            },
+        });
+
         const hostname = os.hostname();
         const MAX_SUB_AGENTS = 50;
         const MAX_NESTING_LEVEL = 2;
@@ -503,9 +538,10 @@ export function registerActivities(
         let inlineSdkClient: PilotSwarmClient | null = null;
         let inlineSdkClientPromise: Promise<PilotSwarmClient> | null = null;
         let cancelPoll: ReturnType<typeof setInterval> | null = null;
+        let finalTurnResult: TurnResult | null = null;
 
         try {
-            return await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
+            finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
         let session: any = null;
         let effectivePrompt = input.prompt;
         try {
@@ -1045,12 +1081,27 @@ export function registerActivities(
                     if (event.eventType === "assistant.usage") {
                         const usageUpsert = buildUsageSummaryUpsert(event.data);
                         if (usageUpsert) {
+                            turnTelemetry.tokensInput += usageUpsert.tokensInputIncrement ?? 0;
+                            turnTelemetry.tokensOutput += usageUpsert.tokensOutputIncrement ?? 0;
+                            turnTelemetry.tokensCacheRead += usageUpsert.tokensCacheReadIncrement ?? 0;
+                            turnTelemetry.tokensCacheWrite += usageUpsert.tokensCacheWriteIncrement ?? 0;
                             void cmsRetryBestEffort(
                                 `runTurn.onEvent upsertSummary usage session=${input.sessionId}`,
                                 () => catalog.upsertSessionMetricSummary(input.sessionId, usageUpsert),
                                 (msg) => activityCtx.traceInfo(msg),
                             );
                         }
+                    } else if (event.eventType === "tool.execution_start") {
+                        turnTelemetry.toolCalls += 1;
+                        const eventData = normalizeEventData(event.data as Record<string, unknown> | undefined);
+                        const toolName = typeof eventData?.toolName === "string"
+                            ? eventData.toolName
+                            : typeof eventData?.name === "string"
+                                ? eventData.name
+                                : undefined;
+                        if (toolName) turnTelemetry.toolNames.add(toolName);
+                    } else if (event.eventType === "tool.execution_complete" && isFailureToolCompletion(event.data)) {
+                        turnTelemetry.toolErrors += 1;
                     }
                     // Best-effort with one transient retry. trackEventWrite tracks
                     // the wrapped promise so the post-turn barrier waits for the
@@ -1362,6 +1413,10 @@ export function registerActivities(
 
             return result;
             }, { trace });
+            if (!finalTurnResult) {
+                throw new Error("runTurn completed without a turn result");
+            }
+            return finalTurnResult;
         } catch (err: any) {
             if (isSessionLockAcquireTimeoutError(err)) {
                 const message = err.message || String(err);
@@ -1386,10 +1441,35 @@ export function registerActivities(
                         (msg) => activityCtx.traceInfo(msg),
                     );
                 }
-                return { type: "error", message } as TurnResult;
+                finalTurnResult = { type: "error", message } as TurnResult;
+                return finalTurnResult;
             }
+            turnSpan.recordException(err);
+            turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
             throw err;
         } finally {
+            if (turnTelemetry.modelSummary) {
+                turnSpan.setAttribute("pilotswarm.model_summary", turnTelemetry.modelSummary);
+            }
+            turnSpan.setAttribute("pilotswarm.tokens_input", turnTelemetry.tokensInput);
+            turnSpan.setAttribute("pilotswarm.tokens_output", turnTelemetry.tokensOutput);
+            turnSpan.setAttribute("pilotswarm.tokens_cache_read", turnTelemetry.tokensCacheRead);
+            turnSpan.setAttribute("pilotswarm.tokens_cache_write", turnTelemetry.tokensCacheWrite);
+            turnSpan.setAttribute("pilotswarm.tool_calls", turnTelemetry.toolCalls);
+            turnSpan.setAttribute("pilotswarm.tool_errors", turnTelemetry.toolErrors);
+            if (turnTelemetry.toolNames.size > 0) {
+                turnSpan.setAttribute("pilotswarm.tool_names", Array.from(turnTelemetry.toolNames).sort().join(","));
+            }
+            if (finalTurnResult) {
+                turnSpan.setAttribute("pilotswarm.turn_result", finalTurnResult.type);
+                if (finalTurnResult.type === "error") {
+                    turnSpan.setStatus({
+                        code: SpanStatusCode.ERROR,
+                        message: (finalTurnResult as any).message || "turn failed",
+                    });
+                }
+            }
+            turnSpan.end();
             if (cancelPoll) clearInterval(cancelPoll);
             const clientToStop: PilotSwarmClient | null = inlineSdkClient;
             if (clientToStop) {
