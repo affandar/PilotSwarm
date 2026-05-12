@@ -1,3 +1,4 @@
+import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
@@ -350,12 +351,14 @@ export class PilotSwarmWorker {
 
         this._provider = await this._createProvider();
 
-        // Initialize CMS catalog and facts store
+        // Initialize CMS catalog and facts store.
         // CMS + facts can use a separate URL when running with AAD/MI
         // (passwordless URL whose `user@` segment is the federated UAMI's
         // display name). Defaults to `store` for the legacy
-        // connection-string path. Duroxide's PostgresProvider stays on
-        // `store` because it has no AAD token-callback hook upstream.
+        // connection-string path. The duroxide orchestration store
+        // (created above in `_createProvider`) honours the same MI
+        // switch via duroxide-node's native Entra path; CMS/facts go
+        // through the pg-pool factory using `DefaultAzureCredential`.
         const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
         const useMi = this.config.useManagedIdentity ?? false;
         const aadUser = this.config.aadDbUser;
@@ -901,7 +904,15 @@ export class PilotSwarmWorker {
         if (store === "sqlite::memory:") return SqliteProvider.inMemory();
         if (store.startsWith("sqlite://")) return SqliteProvider.open(store);
         if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            return PostgresProvider.connectWithSchema(store, this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA);
+            return createDuroxidePostgresProvider(
+                PostgresProvider,
+                store,
+                this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA,
+                {
+                    useManagedIdentity: this.config.useManagedIdentity ?? false,
+                    aadUser: this.config.aadDbUser,
+                },
+            );
         }
         throw new Error(`Unsupported store URL: ${store}`);
     }

@@ -38,6 +38,7 @@ import type {
 } from "./cms.js";
 import type { FactStore, FactsStatsRow } from "./facts-store.js";
 import { createFactStoreForUrl } from "./facts-store.js";
+import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
 import { SessionDumper } from "./session-dumper.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort } from "./model-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
@@ -268,27 +269,32 @@ export class PilotSwarmManagementClient {
         const store = this.config.store;
         const _trace = this.config.traceWriter ?? (() => {});
 
+        // CMS + facts may use a separate URL when running with AAD/MI
+        // (passwordless URL whose `user@` segment is the federated UAMI's
+        // display name). Mirrors PilotSwarmClient.start(). The duroxide
+        // orchestration store honours the same MI switch via
+        // duroxide-node's native Entra path.
+        const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
+        const useMi = this.config.useManagedIdentity ?? false;
+        const aadUser = this.config.aadDbUser;
+
         // Create duroxide client
         let provider: any;
         if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
         else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
         else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            _trace("[mgmt] connectWithSchema start...");
-            provider = await PostgresProvider.connectWithSchema(
+            _trace("[mgmt] duroxide provider connect start...");
+            provider = await createDuroxidePostgresProvider(
+                PostgresProvider,
                 store,
                 this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA,
+                { useManagedIdentity: useMi, aadUser },
             );
-            _trace("[mgmt] connectWithSchema done");
+            _trace("[mgmt] duroxide provider connect done");
         } else {
             throw new Error(`Unsupported store URL: ${store}`);
         }
         this._duroxideClient = new Client(provider);
-
-        // CMS + facts may use a passwordless URL (AAD/MI) while duroxide
-        // stays on the password URL. Mirrors PilotSwarmClient.start().
-        const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
-        const useMi = this.config.useManagedIdentity ?? false;
-        const aadUser = this.config.aadDbUser;
 
         // Create CMS catalog
         if (cmsFactsUrl.startsWith("postgres://") || cmsFactsUrl.startsWith("postgresql://")) {

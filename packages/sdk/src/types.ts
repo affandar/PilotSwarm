@@ -418,9 +418,11 @@ export interface PilotSwarmWorkerOptions {
      *
      * Also routes CMS + facts pools through the AAD pg-pool factory:
      * tokens are minted via `DefaultAzureCredential` and pg invokes the
-     * `password` callback on every new physical connection. Duroxide's
-     * orchestration store still uses the password URL in `store` because
-     * its `PostgresProvider` has no token-callback hook upstream.
+     * `password` callback on every new physical connection. The duroxide
+     * orchestration store goes through duroxide-node's native Entra path
+     * (`PostgresProvider.connectWithSchemaAndEntra`, available since
+     * duroxide-node 0.1.25), which resolves credentials in Rust via its
+     * own chain (WorkloadIdentity → ManagedIdentity → DeveloperTools).
      */
     useManagedIdentity?: boolean;
     /**

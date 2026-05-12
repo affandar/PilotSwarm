@@ -1,14 +1,14 @@
 /**
- * Pg pool factory — feature-switched between connection-string auth (the
- * legacy and only path until Chunk C) and Microsoft Entra (AAD) token auth
- * for the bicep-deploy flow on AKS with workload identity.
+ * Pg pool factory — feature-switched between connection-string auth and
+ * Microsoft Entra (AAD) token auth for the bicep-deploy flow on AKS with
+ * workload identity. Used by the CMS + facts pg.Pool paths.
  *
- * Chunk C scope: CMS + facts pools only. Duroxide's `PostgresProvider`
- * accepts a connection-string URL and has no token-callback hook, so it
- * keeps using the password URL (still bicep-managed, server-side AAD is
- * just enabled alongside password auth — see
- * `deploy/services/BaseInfra/bicep/postgres.bicep`). When duroxide gains
- * a token hook upstream we'll move it onto this factory too.
+ * The duroxide orchestration store has its own Entra path
+ * (`PostgresProvider.connectWithSchemaAndEntra`, available in
+ * duroxide-node >= 0.1.25) which uses duroxide's native credential chain
+ * in Rust rather than the JS `DefaultAzureCredential` used here; see
+ * `duroxide-provider-factory.ts`. URL parsing is shared between both
+ * paths via `parsePostgresUrl` / `resolveAadPostgresUser` below.
  *
  * @internal
  */
@@ -70,6 +70,77 @@ export interface PgPoolFactoryOptions {
 }
 
 /**
+ * Parsed components of a `postgres://` / `postgresql://` connection
+ * string in the shape both the pg.Pool factory and the duroxide
+ * provider factory need. Centralizes the sslmode-stripping and
+ * default-port/database behaviour so the two paths stay aligned.
+ *
+ * @internal
+ */
+export interface ParsedPgUrl {
+    host: string;
+    /** Defaults to 5432 when the URL omits a port. */
+    port: number;
+    /** Defaults to `postgres` when the URL has no pathname. */
+    database: string;
+    /** Decoded URL `user@` segment, or empty string when absent. */
+    urlUsername: string;
+    /** True when sslmode is require/prefer/verify-ca/verify-full. */
+    needsSsl: boolean;
+    /** Connection string with `sslmode` stripped from the query. */
+    sanitizedConnectionString: string;
+}
+
+/**
+ * Parse a Postgres connection string into the parts both the pg.Pool
+ * factory (for CMS/facts) and the duroxide provider factory need.
+ *
+ * @internal
+ */
+export function parsePostgresUrl(connectionString: string): ParsedPgUrl {
+    const url = new URL(connectionString);
+
+    // pg v8 treats sslmode=require as verify-full, which rejects Azure /
+    // self-signed certs. Strip sslmode from URL and control SSL via
+    // config object — same workaround the existing cms.ts / facts-store.ts
+    // pools have used since well before the MI work.
+    const needsSsl = ["require", "prefer", "verify-ca", "verify-full"]
+        .includes(url.searchParams.get("sslmode") ?? "");
+    url.searchParams.delete("sslmode");
+
+    return {
+        host: url.hostname,
+        port: url.port ? Number(url.port) : 5432,
+        database: decodeURIComponent(url.pathname.replace(/^\//, "")) || "postgres",
+        urlUsername: url.username ? decodeURIComponent(url.username) : "",
+        needsSsl,
+        sanitizedConnectionString: url.toString(),
+    };
+}
+
+/**
+ * Resolve the Postgres role to use in managed-identity mode. Prefers
+ * the caller-provided `aadUser` (typically the federated UAMI display
+ * name), falling back to the URL's `user@` segment.
+ *
+ * Throws when neither is set so misconfigurations fail loudly at
+ * startup rather than producing cryptic auth errors at first query.
+ *
+ * @internal
+ */
+export function resolveAadPostgresUser(parsed: ParsedPgUrl, aadUser?: string): string {
+    const user = aadUser ?? parsed.urlUsername;
+    if (!user) {
+        throw new Error(
+            "managed-identity mode requires a Postgres user " +
+            "(either as the URL `user@` segment or via opts.aadUser). The user " +
+            "must match the AAD principal name registered as a Postgres administrator.",
+        );
+    }
+    return user;
+}
+
+/**
  * Build a `pg.PoolConfig` honouring the MI feature switch.
  *
  * Implementation note: pg accepts `password` as either `string` or a
@@ -81,22 +152,13 @@ export interface PgPoolFactoryOptions {
  * @internal
  */
 export function buildPgPoolConfig(opts: PgPoolFactoryOptions): PoolConfig {
-    const url = new URL(opts.connectionString);
-
-    // pg v8 treats sslmode=require as verify-full, which rejects Azure /
-    // self-signed certs. Strip sslmode from URL and control SSL via
-    // config object — same workaround the existing cms.ts / facts-store.ts
-    // pools have used since well before Chunk C.
-    const needsSsl = ["require", "prefer", "verify-ca", "verify-full"]
-        .includes(url.searchParams.get("sslmode") ?? "");
-    url.searchParams.delete("sslmode");
-
-    const sslConfig = needsSsl ? { ssl: { rejectUnauthorized: false } } : {};
+    const parsed = parsePostgresUrl(opts.connectionString);
+    const sslConfig = parsed.needsSsl ? { ssl: { rejectUnauthorized: false } } : {};
     const max = opts.max ?? 3;
 
     if (!opts.useManagedIdentity) {
         return {
-            connectionString: url.toString(),
+            connectionString: parsed.sanitizedConnectionString,
             max,
             ...sslConfig,
         };
@@ -107,25 +169,13 @@ export function buildPgPoolConfig(opts: PgPoolFactoryOptions): PoolConfig {
     // because pg's `password` callback only takes effect when there is
     // no password embedded in the connectionString — pg-protocol picks
     // up an empty URL password before consulting the callback.
-    const port = url.port ? Number(url.port) : 5432;
-    const database = decodeURIComponent(url.pathname.replace(/^\//, "")) || "postgres";
-    const user = opts.aadUser
-        ?? (url.username ? decodeURIComponent(url.username) : "");
-
-    if (!user) {
-        throw new Error(
-            "buildPgPoolConfig: managed-identity mode requires a Postgres user " +
-            "(either as the URL `user@` segment or via opts.aadUser). The user " +
-            "must match the AAD principal name registered as a Postgres administrator.",
-        );
-    }
-
+    const user = resolveAadPostgresUser(parsed, opts.aadUser);
     const credential = getCredential();
 
     return {
-        host: url.hostname,
-        port,
-        database,
+        host: parsed.host,
+        port: parsed.port,
+        database: parsed.database,
         user,
         password: async () => {
             const token = await credential.getToken(POSTGRES_AAD_SCOPE);
