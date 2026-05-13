@@ -16,7 +16,23 @@ import { createTempSessionLayout } from "./temp-session-layout.js";
 
 // ─── Constants ───────────────────────────────────────────────────
 
-const DATABASE_URL = process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/pilotswarm";
+const DEFAULT_LOCAL_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/pilotswarm";
+
+function looksLocalDatabaseUrl(value) {
+    return /@(localhost|127\.0\.0\.1)(:\d+)?\//i.test(String(value || ""));
+}
+
+function resolveDatabaseUrl() {
+    if (process.env.PS_TEST_DATABASE_URL) return process.env.PS_TEST_DATABASE_URL;
+    if (process.env.TEST_DATABASE_URL) return process.env.TEST_DATABASE_URL;
+
+    const configured = process.env.DATABASE_URL;
+    if (configured && looksLocalDatabaseUrl(configured)) return configured;
+
+    return DEFAULT_LOCAL_DATABASE_URL;
+}
+
+const DATABASE_URL = resolveDatabaseUrl();
 const TIMEOUT = 180_000;
 const TEST_SCHEMA_PREFIX = "ps_test";
 
