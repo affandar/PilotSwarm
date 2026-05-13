@@ -47,9 +47,12 @@ export function composeDerivedEnv(env) {
   // AAD URL for CMS + facts pools (pg-pool-factory.ts uses an AAD token
   // callback). The `user@` segment must match the AAD principal name
   // registered as a Postgres administrator (postgres.bicep
-  // `aadAdminPrincipalName` → POSTGRES_AAD_ADMIN_PRINCIPAL_NAME). Duroxide
-  // stays on the password URL (DATABASE_URL above) because its
-  // PostgresProvider has no token-callback hook upstream.
+  // `aadAdminPrincipalName` → POSTGRES_AAD_ADMIN_PRINCIPAL_NAME). The
+  // duroxide orchestration store also honours the MI switch via
+  // duroxide-node's native Entra path (PostgresProvider
+  // .connectWithSchemaAndEntra, available since duroxide-node 0.1.25);
+  // when PILOTSWARM_USE_MANAGED_IDENTITY=1 the worker reuses the same
+  // AAD user / passwordless URL for the duroxide store too.
   if (!env.PILOTSWARM_DB_AAD_USER && env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME) {
     env.PILOTSWARM_DB_AAD_USER = env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME;
   }

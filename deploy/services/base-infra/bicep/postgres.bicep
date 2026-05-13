@@ -85,10 +85,12 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-12-01-preview'
     version: postgresVersion
     administratorLogin: administratorLogin
     administratorLoginPassword: administratorPassword
-    // Hybrid auth: AAD enabled for CMS+facts pools (token callback);
-    // password kept enabled because duroxide's PostgresProvider only
-    // accepts a password URL — it has no token-callback hook. See
-    // packages/sdk/src/pg-pool-factory.ts and the Chunk C plan.
+    // Hybrid auth: AAD enabled for CMS+facts pools (token callback) and
+    // for the duroxide orchestration store (duroxide-node >= 0.1.25
+    // native Entra path). Password kept enabled by default so the
+    // legacy `scripts/deploy-aks.sh` flow and the bicep-bootstrap admin
+    // login still work; downstream MI-only deployers can flip
+    // `passwordAuth` to 'Disabled' for full passwordless cutover.
     authConfig: {
       activeDirectoryAuth: empty(aadAdminPrincipalId) ? 'Disabled' : 'Enabled'
       passwordAuth: 'Enabled'

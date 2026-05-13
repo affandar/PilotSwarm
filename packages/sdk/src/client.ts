@@ -22,6 +22,7 @@ import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { createFactStoreForUrl } from "./facts-store.js";
+import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
@@ -404,10 +405,13 @@ export class PilotSwarmClient {
         const startedAt = Date.now();
         const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
 
-        // CMS + facts may use a passwordless URL (AAD/MI) while duroxide
-        // stays on the password URL. When `useManagedIdentity` is set the
-        // caller is expected to pass `cmsFactsDatabaseUrl` (a passwordless
-        // form). When unset (legacy / local), both pools reuse `store`.
+        // CMS + facts may use a separate URL when running with AAD/MI
+        // (passwordless URL whose `user@` segment is the federated UAMI's
+        // display name). Defaults to `store` for the legacy
+        // connection-string path. The duroxide orchestration store
+        // honours the same MI switch via duroxide-node's native Entra
+        // path; CMS/facts go through the pg-pool factory using
+        // `DefaultAzureCredential`.
         const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
         const useMi = this.config.useManagedIdentity ?? false;
         const aadUser = this.config.aadDbUser;
@@ -417,9 +421,14 @@ export class PilotSwarmClient {
         if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
         else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
         else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            trace("[client] connectWithSchema start...");
-            provider = await PostgresProvider.connectWithSchema(store, this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA);
-            trace("[client] connectWithSchema done");
+            trace("[client] duroxide provider connect start...");
+            provider = await createDuroxidePostgresProvider(
+                PostgresProvider,
+                store,
+                this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA,
+                { useManagedIdentity: useMi, aadUser },
+            );
+            trace("[client] duroxide provider connect done");
         } else {
             throw new Error(`Unsupported store URL: ${store}`);
         }

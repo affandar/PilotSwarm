@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.1.28** — Duroxide 0.1.25 with Entra ID / Azure AD passwordless authentication (`connectWithEntra`, `connectWithSchemaAndEntra`).
+> **Latest release: v0.1.29** — Passwordless duroxide orchestration store. When `useManagedIdentity: true`, the worker now routes the duroxide Postgres store through `connectWithSchemaAndEntra` (duroxide-node 0.1.25), so CMS, facts, **and** the orchestration store all authenticate via Entra ID — no more password URL gap.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

@@ -1,5 +1,7 @@
 # Single-stage: install from npm (linux binary published to registry)
-FROM node:24-slim
+# trixie-slim (Debian 13, glibc 2.41) required by duroxide-linux-x64-gnu >= 0.1.25
+# (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
+FROM node:24-trixie-slim
 
 # Install CA certificates for HTTPS
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
