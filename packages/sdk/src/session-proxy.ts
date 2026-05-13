@@ -1869,85 +1869,106 @@ export function registerActivities(
         const reason = input.reason ?? "unknown";
         const eventData = normalizeEventData(input.eventData);
         const trace = activityTrace(activityCtx, "dehydrateSession");
+        const dehydrationSpan = otelTrace.getTracer("pilotswarm-lifecycle").startSpan("session.dehydration", {
+            attributes: {
+                "pilotswarm.session_id": input.sessionId,
+                "pilotswarm.dehydration_reason": reason,
+                "pilotswarm.worker_node_id": workerNodeId,
+            },
+        });
         trace(`session=${input.sessionId} start reason=${reason}`);
 
         try {
-            await sessionManager.dehydrate(input.sessionId, reason, { trace });
-        } catch (err: any) {
-            const message = err?.message || String(err);
-            if (isMissingDehydrateSnapshotErrorMessage(message)) {
-                const sessionStoreAttemptCount = Number(err?.sessionStoreAttemptCount) || undefined;
-                const lossyHandoffData = {
-                    ...(eventData ?? {}),
-                    reason,
-                    cause: "missing_local_session_state_during_dehydrate",
-                    message:
-                        `Worker lost local Copilot session state before dehydrate completed for ${input.sessionId}. ` +
-                        "The next turn will recreate a fresh Copilot session and continue with possible data loss.",
-                    detail:
-                        "Local session files were unavailable during dehydrate, so the latest live Copilot state " +
-                        "could not be durably archived.",
-                    error: message,
-                    recoveryMode: "fresh_session_replay",
-                    nextStep: "recreate_copilot_session_on_next_turn",
-                    ...(sessionStoreAttemptCount ? { sessionStoreAttemptCount } : {}),
-                    ...(typeof err?.sessionStoreError === "string" ? { sessionStoreError: err.sessionStoreError } : {}),
-                };
-                trace(`session=${input.sessionId} lossy handoff reason=${reason} error=${message}`);
-                await recordLossyHandoffEvent(
-                    catalog,
-                    input.sessionId,
-                    workerNodeId,
-                    lossyHandoffData,
-                    (failureMessage) => activityCtx.traceInfo(`[dehydrateSession] ${failureMessage}`),
-                );
-                return { lossyHandoff: lossyHandoffData };
-            }
-            trace(`session=${input.sessionId} failed reason=${reason} error=${message}`);
-            if (catalog) {
-                const sessionStoreAttemptCount = Number(err?.sessionStoreAttemptCount) || undefined;
-                await catalog.recordEvents(input.sessionId, [{
-                    eventType: "session.error",
-                    data: {
+            try {
+                await sessionManager.dehydrate(input.sessionId, reason, { trace });
+            } catch (err: any) {
+                const message = err?.message || String(err);
+                if (isMissingDehydrateSnapshotErrorMessage(message)) {
+                    const sessionStoreAttemptCount = Number(err?.sessionStoreAttemptCount) || undefined;
+                    const lossyHandoffData = {
                         ...(eventData ?? {}),
                         reason,
-                        message,
+                        cause: "missing_local_session_state_during_dehydrate",
+                        message:
+                            `Worker lost local Copilot session state before dehydrate completed for ${input.sessionId}. ` +
+                            "The next turn will recreate a fresh Copilot session and continue with possible data loss.",
+                        detail:
+                            "Local session files were unavailable during dehydrate, so the latest live Copilot state " +
+                            "could not be durably archived.",
+                        error: message,
+                        recoveryMode: "fresh_session_replay",
+                        nextStep: "recreate_copilot_session_on_next_turn",
                         ...(sessionStoreAttemptCount ? { sessionStoreAttemptCount } : {}),
                         ...(typeof err?.sessionStoreError === "string" ? { sessionStoreError: err.sessionStoreError } : {}),
-                    },
-                }], workerNodeId).catch((catalogErr: any) => {
-                    activityCtx.traceInfo(`[dehydrateSession] CMS failure event write failed: ${catalogErr}`);
+                    };
+                    trace(`session=${input.sessionId} lossy handoff reason=${reason} error=${message}`);
+                    dehydrationSpan.setAttribute("pilotswarm.dehydration_result", "lossy_handoff");
+                    dehydrationSpan.setAttribute("pilotswarm.lossy_handoff", true);
+                    dehydrationSpan.setStatus({ code: SpanStatusCode.ERROR, message });
+                    await recordLossyHandoffEvent(
+                        catalog,
+                        input.sessionId,
+                        workerNodeId,
+                        lossyHandoffData,
+                        (failureMessage) => activityCtx.traceInfo(`[dehydrateSession] ${failureMessage}`),
+                    );
+                    return { lossyHandoff: lossyHandoffData };
+                }
+                trace(`session=${input.sessionId} failed reason=${reason} error=${message}`);
+                dehydrationSpan.setAttribute("pilotswarm.dehydration_result", "error");
+                dehydrationSpan.recordException(err);
+                dehydrationSpan.setStatus({ code: SpanStatusCode.ERROR, message });
+                if (catalog) {
+                    const sessionStoreAttemptCount = Number(err?.sessionStoreAttemptCount) || undefined;
+                    await catalog.recordEvents(input.sessionId, [{
+                        eventType: "session.error",
+                        data: {
+                            ...(eventData ?? {}),
+                            reason,
+                            message,
+                            ...(sessionStoreAttemptCount ? { sessionStoreAttemptCount } : {}),
+                            ...(typeof err?.sessionStoreError === "string" ? { sessionStoreError: err.sessionStoreError } : {}),
+                        },
+                    }], workerNodeId).catch((catalogErr: any) => {
+                        activityCtx.traceInfo(`[dehydrateSession] CMS failure event write failed: ${catalogErr}`);
+                    });
+                    await catalog.updateSession(input.sessionId, {
+                        lastError: message,
+                        lastActiveAt: new Date(),
+                    }).catch((catalogErr: any) => {
+                        activityCtx.traceInfo(`[dehydrateSession] CMS lastError update failed: ${catalogErr}`);
+                    });
+                }
+                throw err;
+            }
+
+            trace(`session=${input.sessionId} complete reason=${reason}`);
+
+            dehydrationSpan.setAttribute("pilotswarm.dehydration_result", "completed");
+            if (catalog) {
+                const snapshotSizeBytes = await tryReadSnapshotSizeBytes(_sessionStore, input.sessionId);
+                if (snapshotSizeBytes != null) {
+                    dehydrationSpan.setAttribute("pilotswarm.snapshot_size_bytes", snapshotSizeBytes);
+                }
+                await catalog.upsertSessionMetricSummary(input.sessionId, {
+                    ...(snapshotSizeBytes != null ? { snapshotSizeBytes } : {}),
+                    dehydrationCountIncrement: 1,
+                    lastDehydratedAt: true,
+                }).catch((err: any) => {
+                    activityCtx.traceInfo(`[dehydrateSession] CMS summary update failed: ${err}`);
                 });
-                await catalog.updateSession(input.sessionId, {
-                    lastError: message,
-                    lastActiveAt: new Date(),
-                }).catch((catalogErr: any) => {
-                    activityCtx.traceInfo(`[dehydrateSession] CMS lastError update failed: ${catalogErr}`);
+                await catalog.recordEvents(input.sessionId, [{
+                    eventType: "session.dehydrated",
+                    data: {
+                        reason,
+                        ...(eventData ?? {}),
+                    },
+                }], workerNodeId).catch((err: any) => {
+                    activityCtx.traceInfo(`[dehydrateSession] CMS success event write failed: ${err}`);
                 });
             }
-            throw err;
-        }
-
-        trace(`session=${input.sessionId} complete reason=${reason}`);
-
-        if (catalog) {
-            const snapshotSizeBytes = await tryReadSnapshotSizeBytes(_sessionStore, input.sessionId);
-            await catalog.upsertSessionMetricSummary(input.sessionId, {
-                ...(snapshotSizeBytes != null ? { snapshotSizeBytes } : {}),
-                dehydrationCountIncrement: 1,
-                lastDehydratedAt: true,
-            }).catch((err: any) => {
-                activityCtx.traceInfo(`[dehydrateSession] CMS summary update failed: ${err}`);
-            });
-            await catalog.recordEvents(input.sessionId, [{
-                eventType: "session.dehydrated",
-                data: {
-                    reason,
-                    ...(eventData ?? {}),
-                },
-            }], workerNodeId).catch((err: any) => {
-                activityCtx.traceInfo(`[dehydrateSession] CMS success event write failed: ${err}`);
-            });
+        } finally {
+            dehydrationSpan.end();
         }
     });
 
@@ -1973,33 +1994,47 @@ export function registerActivities(
         input: { sessionId: string },
     ): Promise<void> => {
         const trace = activityTrace(activityCtx, "hydrateSession");
+        const hydrationSpan = otelTrace.getTracer("pilotswarm-lifecycle").startSpan("session.hydration", {
+            attributes: {
+                "pilotswarm.session_id": input.sessionId,
+                "pilotswarm.worker_node_id": workerNodeId,
+            },
+        });
         trace(`session=${input.sessionId} start`);
         try {
-            await sessionManager.hydrate(input.sessionId, { trace });
-        } catch (error: unknown) {
-            trace(`session=${input.sessionId} failed error=${errorMessage(error)}`);
-            throw error;
-        }
-        trace(`session=${input.sessionId} complete`);
-        if (catalog) {
-            // Best-effort: metric summary and the session.hydrated event are
-            // observability only. Never block hydrate on CMS hiccups.
-            await cmsRetryBestEffort(
-                `hydrateSession.upsertSummary session=${input.sessionId}`,
-                () => catalog!.upsertSessionMetricSummary(input.sessionId, {
-                    hydrationCountIncrement: 1,
-                    lastHydratedAt: true,
-                }),
-                (msg) => activityCtx.traceInfo(msg),
-            );
-            await cmsRetryBestEffort(
-                `hydrateSession.recordEvents session=${input.sessionId}`,
-                () => catalog!.recordEvents(input.sessionId, [{
-                    eventType: "session.hydrated",
-                    data: {},
-                }], workerNodeId),
-                (msg) => activityCtx.traceInfo(msg),
-            );
+            try {
+                await sessionManager.hydrate(input.sessionId, { trace });
+            } catch (error: unknown) {
+                trace(`session=${input.sessionId} failed error=${errorMessage(error)}`);
+                hydrationSpan.setAttribute("pilotswarm.hydration_result", "error");
+                hydrationSpan.recordException(error as Error);
+                hydrationSpan.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage(error) });
+                throw error;
+            }
+            trace(`session=${input.sessionId} complete`);
+            hydrationSpan.setAttribute("pilotswarm.hydration_result", "completed");
+            if (catalog) {
+                // Best-effort: metric summary and the session.hydrated event are
+                // observability only. Never block hydrate on CMS hiccups.
+                await cmsRetryBestEffort(
+                    `hydrateSession.upsertSummary session=${input.sessionId}`,
+                    () => catalog!.upsertSessionMetricSummary(input.sessionId, {
+                        hydrationCountIncrement: 1,
+                        lastHydratedAt: true,
+                    }),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+                await cmsRetryBestEffort(
+                    `hydrateSession.recordEvents session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.hydrated",
+                        data: {},
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
+        } finally {
+            hydrationSpan.end();
         }
     });
 
