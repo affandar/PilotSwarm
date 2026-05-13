@@ -6,10 +6,16 @@
 
 ### SDK / Runtime
 
+- Bumped `duroxide` dependency from `^0.1.25` to `^0.1.26`. Duroxide 0.1.26
+  picks up `duroxide-pg` 0.1.33 / `duroxide-pg-opt` 0.1.29, which switch
+  `reqwest` to `default-features = false` + `native-tls`. Without this, the
+  AAD token-acquisition HTTPS call inside the orchestration store failed with
+  a TLS handshake error in containers using musl/OpenSSL, making the
+  `useManagedIdentity: true` path below unusable in practice.
 - **Passwordless duroxide orchestration store** — when configured with
   `useManagedIdentity: true`, the worker, client, and management client now all
   route the duroxide Postgres store through `PostgresProvider.connectWithSchemaAndEntra`
-  (added in duroxide-node 0.1.25) instead of `connectWithSchema`. CMS, facts,
+  (added in duroxide-node 0.1.25) instead of `connectWithSchema`.CMS, facts,
   **and** the orchestration store now authenticate via Microsoft Entra ID — no
   password URL gap. The legacy password-in-URL path (`useManagedIdentity` unset
   or `false`) is unchanged, so the existing `deploy-aks.sh` flow continues to
