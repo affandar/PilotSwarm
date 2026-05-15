@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+## 0.1.29 — 2026-05-12
+
+### SDK / Runtime
+
+- Bumped `duroxide` dependency from `^0.1.25` to `^0.1.26`. Duroxide 0.1.26
+  picks up `duroxide-pg` 0.1.33 / `duroxide-pg-opt` 0.1.29, which switch
+  `reqwest` to `default-features = false` + `native-tls`. Without this, the
+  AAD token-acquisition HTTPS call inside the orchestration store failed with
+  a TLS handshake error in containers using musl/OpenSSL, making the
+  `useManagedIdentity: true` path below unusable in practice.
+- **Passwordless duroxide orchestration store** — when configured with
+  `useManagedIdentity: true`, the worker, client, and management client now all
+  route the duroxide Postgres store through `PostgresProvider.connectWithSchemaAndEntra`
+  (added in duroxide-node 0.1.25) instead of `connectWithSchema`.CMS, facts,
+  **and** the orchestration store now authenticate via Microsoft Entra ID — no
+  password URL gap. The legacy password-in-URL path (`useManagedIdentity` unset
+  or `false`) is unchanged, so the existing `deploy-aks.sh` flow continues to
+  work without changes. URL parsing and AAD user resolution are shared with the
+  CMS/facts pg-pool factory via the new `parsePostgresUrl` /
+  `resolveAadPostgresUser` helpers. This closes the last gap blocking
+  pure-Entra cutover on AKS — the password store argument,
+  `passwordAuth: 'Enabled'` Bicep flag, and `postgres-admin-password` Key
+  Vault secret can now be dropped by downstream deployers.
+
+### Docs
+
+- Updated `README.md`, `deploy/scripts/README.md`, `deploy/envs/template.env`,
+  the worker + portal overlay `.env` files, the `postgres.bicep` auth comment,
+  and the `compose-env.mjs` rationale to reflect that the duroxide store now
+  honours the MI switch (no more "no token-callback hook upstream" caveat).
+
+### Tests
+
+- Added unit coverage for the new `duroxide-provider-factory` (legacy vs MI
+  routing, URL parsing defaults, missing-user error path) and refactored
+  `pg-pool-factory` to share parsing with it (existing tests unchanged).
+
 ## 0.1.28 — 2026-05-09
 
 ### SDK / Runtime

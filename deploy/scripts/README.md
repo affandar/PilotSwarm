@@ -284,7 +284,7 @@ The bicep-deploy path enables MI mode by setting these in the overlay
 | `AZURE_STORAGE_ACCOUNT_URL=https://<acct>.blob.core.windows.net/` | Worker constructs `BlobServiceClient(accountUrl, DefaultAzureCredential)`. SAS generation throws `NotSupportedInManagedIdentityMode` — artifact downloads must proxy through the worker. |
 | `PILOTSWARM_CMS_FACTS_DATABASE_URL=postgresql://<aad-user>@<fqdn>:5432/<db>?sslmode=require` | Passwordless URL for CMS + facts pools. The factory installs an AAD token callback (`https://ossrdbms-aad.database.windows.net/.default`). |
 | `PILOTSWARM_DB_AAD_USER=<csi-uami-display-name>` | Postgres AAD admin role name = CSI UAMI display name. Used to build `aadUser` in the factory. |
-| `DATABASE_URL=postgresql://<bootstrap-pwd-user>:<pwd>@<fqdn>:5432/<db>` | **Still password-based.** Used only by duroxide, whose `JsPostgresProvider.connect()` has no token-callback hook. CMS+facts ignore it in MI mode. |
+| `DATABASE_URL=postgresql://<bootstrap-pwd-user>:<pwd>@<fqdn>:5432/<db>` | Password URL kept available for the legacy `scripts/deploy-aks.sh` flow and as a fallback when MI is not configured. In MI mode the duroxide store ignores any password in this URL and authenticates via duroxide-node's native Entra path (`PostgresProvider.connectWithSchemaAndEntra`, duroxide-node ≥ 0.1.25). |
 
 `deploy.mjs` composes `AZURE_STORAGE_ACCOUNT_URL` from the
 `BLOB_CONTAINER_ENDPOINT` Bicep output, and composes
@@ -303,19 +303,27 @@ The bicep-deploy path enables MI mode by setting these in the overlay
 Both reuse the same CSI UAMI federated to the worker's KSA, so a single
 identity covers KV → SPC, blob, and Postgres access.
 
-### Hybrid Postgres rationale
+### Postgres auth rationale
 
-Duroxide's `JsPostgresProvider.connect(databaseUrl)` only accepts a URL
-string and has no token-callback hook upstream. The deploy path takes
-the **hybrid** approach until a duroxide PR lands:
+In MI mode all three Postgres consumers — CMS, facts, and the duroxide
+orchestration store — authenticate to Azure Database for PostgreSQL
+Flexible Server via Microsoft Entra ID:
 
-- **CMS + facts** → AAD via `pg-pool-factory.ts` (`buildPgPoolConfig`)
-- **Duroxide store** → password URL (`DATABASE_URL`), bicep-managed,
-  rotated like any other bootstrap admin password
+- **CMS + facts** → AAD via `pg-pool-factory.ts` (`buildPgPoolConfig`),
+  using `DefaultAzureCredential` and pg's `password` callback.
+- **Duroxide store** → AAD via `duroxide-provider-factory.ts`
+  (`createDuroxidePostgresProvider`), which calls duroxide-node's
+  `PostgresProvider.connectWithSchemaAndEntra`. Duroxide resolves its
+  credential chain in Rust (WorkloadIdentity → ManagedIdentity →
+  DeveloperTools).
 
-Per `Duroxide Bugs` in `.github/copilot-instructions.md`, this is a
-deliberate, user-approved compromise — not a workaround that should
-spread elsewhere.
+`DATABASE_URL` (password URL) is kept alongside for the legacy
+`scripts/deploy-aks.sh` flow; in MI mode the duroxide store ignores any
+embedded password. Fully passwordless deployments may flip
+`passwordAuth: 'Disabled'` on the Bicep `postgres.bicep` module and
+drop the bootstrap admin password from Key Vault and the
+SecretProviderClass once their deploy path is on duroxide-node ≥ 0.1.25
+(pilotswarm-sdk ≥ 0.1.29).
 
 ## Model providers (LLM catalog)
 
