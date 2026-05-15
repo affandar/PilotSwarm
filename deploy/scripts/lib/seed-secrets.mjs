@@ -51,8 +51,12 @@ import { log, run } from "./common.mjs";
 export const SEED_SECRETS_UNSET_SENTINEL = "__PS_UNSET__";
 
 export const SEEDABLE_SECRET_KEYS = [
-  // GitHub Copilot SDK token. Always required by the worker.
-  { env: "GITHUB_TOKEN", kv: "github-token", required: true },
+  // GitHub Copilot SDK token. Optional with seedEmpty: a stamp without
+  // a worker-level token still deploys cleanly; users supply their own
+  // PAT via the Admin panel (per-user GitHub Copilot key), and the SDK
+  // throws a clear actionable error if nobody has done so before a
+  // github-copilot:* session is created.
+  { env: "GITHUB_TOKEN", kv: "github-token", required: false, seedEmpty: true },
   // Anthropic API key — optional, matches legacy `scripts/deploy-aks.sh`
   // semantics (`${ANTHROPIC_API_KEY:+...}`). When blank, we still write
   // an empty-string secret to KV so the SPC mount succeeds; the runtime
