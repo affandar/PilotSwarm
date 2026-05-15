@@ -134,7 +134,7 @@ Flags:
 | `build` | `docker build` the service image and `docker save` to a tarball under `deploy/.tmp/<svc>-<env>/`. | worker, portal |
 | `push` | `oras cp` the tarball into the per-region ACR (no Docker daemon push). | worker, portal |
 | `bicep` | Render `deploy/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. | per-service module list |
-| `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/.env`), validate they are non-empty, and `az keyvault secret set` each into the env's KV. SPC mounts them into the worker pod. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra |
+| `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/.env`), `az keyvault secret set` each into the env's KV (writing `__PS_UNSET__` for any left blank). SPC mounts them into the worker pod; the runtime strips sentinel values at startup. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra |
 | `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>-<env>/`, then `az storage blob upload-batch` the **unrendered** Kustomize tree to the Flux Storage Bucket. Flux reconciles the cluster from there. Worker / cert-manager / cert-manager-issuers each use a single `overlays/default` overlay (per-env values flow in via the staged `.env`); Portal overlays are keyed by `${EDGE_MODE}-${TLS_SOURCE}` (`overlays/afd-letsencrypt`, `overlays/afd-akv`, `overlays/private-akv` — `akv-selfsigned` shares the `private-akv` overlay). | worker, portal |
 | `rollout` | `flux reconcile kustomization <svc>-<svc> -n flux-system --with-source` (forces the Bucket source to re-pull the just-uploaded blobs and the Kustomization to apply that revision), then `kubectl rollout status deployment/<svc>` in `NAMESPACE`, then verifies live `image` ends with the expected tag. | worker, portal |
 
@@ -254,11 +254,11 @@ runtime cannot bootstrap on its own.
 `npm run deploy:new-env` prompts for the two seedable secrets and appends
 them to `deploy/envs/local/<name>/.env` (gitignored — the entire
 `deploy/envs/local/` directory is excluded by
-`deploy/envs/.gitignore`). Required keys:
+`deploy/envs/.gitignore`). Seedable keys:
 
 | Key | Why it's a secret | How it's used |
 |---|---|---|
-| `GITHUB_TOKEN` | Human-issued PAT, cannot be created at deploy time | Synced to KV → mounted into worker pod via SPC as `github-token` |
+| `GITHUB_TOKEN` | Optional. Human-issued PAT, cannot be created at deploy time. When blank, the deploy writes the `__PS_UNSET__` sentinel into KV; users supply their own per-user GitHub Copilot key via the Admin panel instead. | Synced to KV → mounted into worker pod via SPC as `github-token` |
 | `ANTHROPIC_API_KEY` | Vendor-issued API key | Synced to KV → mounted as `anthropic-api-key` |
 
 Everything else that used to live in K8s secrets is now either:
@@ -346,7 +346,7 @@ The base catalog supplies three classes of providers:
 
 | Provider | Auth | Source of secret/endpoint |
 |---|---|---|
-| `ghcp` (GitHub Copilot) | `GITHUB_TOKEN` (KV → SPC) | Static endpoint `https://api.githubcopilot.com` |
+| `ghcp` (GitHub Copilot) | `GITHUB_TOKEN` (KV → SPC, optional, sentinel-tolerant; per-user PAT via Admin overrides) | Static endpoint `https://api.githubcopilot.com` |
 | `anthropic` (direct) | `ANTHROPIC_API_KEY` (KV → SPC, optional, sentinel-tolerant) | Static endpoint `https://api.anthropic.com` |
 | `azure-foundry`, `azure-foundry-router` | `AZURE_OAI_KEY` (KV → SPC) | `__FOUNDRY_ENDPOINT__` placeholder, substituted at staging from the `FOUNDRY_ENDPOINT` Bicep output |
 
