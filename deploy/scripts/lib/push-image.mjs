@@ -29,7 +29,7 @@ export async function pushImage({ service, envName, imageTag, env, stagingDir: s
     throw new Error(
       "ACR_NAME and ACR_LOGIN_SERVER must be set in the env map.\n" +
         "Either run --steps bicep first (BaseInfra outputs populate them), or seed them\n" +
-        "in deploy/envs/local/<env>/env (FR-021).",
+        "in deploy/envs/local/<env>/.env (FR-021).",
     );
   }
 

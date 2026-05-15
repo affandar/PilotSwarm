@@ -49,7 +49,7 @@ export function substituteOverlayEnv({ srcPath, dstPath, envMap }) {
     const list = [...unresolved].sort().join(", ");
     throw new Error(
       `Unresolved overlay .env keys in ${srcPath}: ${list}. ` +
-        `Set them in deploy/envs/local/<env>/env, or run a prior ` +
+        `Set them in deploy/envs/local/<env>/.env, or run a prior ` +
         `--steps bicep so FR-022 alias map populates them.`,
     );
   }

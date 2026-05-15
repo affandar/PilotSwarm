@@ -55,7 +55,7 @@ export function parseEnvFile(path) {
 // ───────────────────────── Env name policy ─────────────────────────
 //
 // Every deploy targets a personal/local env at
-// `deploy/envs/local/<name>/env`. Local env files are STANDALONE: they
+// `deploy/envs/local/<name>/.env`. Local env files are STANDALONE: they
 // are seeded from `deploy/envs/template.env` at scaffold time
 // (deploy/scripts/new-env.mjs) and from that point on are a complete,
 // frozen record of the deployment target. There is NO runtime cascade
@@ -90,12 +90,12 @@ export function validateLocalEnvName(name) {
 }
 
 // Resolve the env file path for an env name. Always
-// `deploy/envs/local/<name>/env` — there are no canonical OSS env files
+// `deploy/envs/local/<name>/.env` — there are no canonical OSS env files
 // to deploy from anymore. The template at `deploy/envs/template.env` is
 // only consumed by the scaffolder (new-env.mjs).
 export function envFilePath(envName) {
   validateLocalEnvName(envName);
-  return join(REPO_ROOT, "deploy", "envs", "local", envName, "env");
+  return join(REPO_ROOT, "deploy", "envs", "local", envName, ".env");
 }
 
 // Path to the scaffolder template. Read by new-env.mjs at scaffold time.
@@ -104,7 +104,7 @@ export function templateEnvPath() {
 }
 
 // Load env map for a given local env name. Reads
-// `deploy/envs/local/<name>/env` standalone — no cascade onto the
+// `deploy/envs/local/<name>/.env` standalone — no cascade onto the
 // template (that file is only used at scaffold time).
 //
 // process.env values override file values key-by-key (so a contributor can
@@ -278,7 +278,7 @@ export function assertCli(name, hint, versionArgs = ["--version"]) {
 export function assertSubscription(expected) {
   if (!expected) {
     throw new Error(
-      "SUBSCRIPTION_ID is empty in the env map. Set it in your local env file (deploy/envs/local/<env>/env).",
+      "SUBSCRIPTION_ID is empty in the env map. Set it in your local env file (deploy/envs/local/<env>/.env).",
     );
   }
   const r = run("az", ["account", "show", "--query", "id", "-o", "tsv"], { capture: true });
