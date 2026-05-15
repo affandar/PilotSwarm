@@ -2,7 +2,7 @@
 // auth/authz behavior at runtime.
 //
 // These keys flow through the same generic env path as every other deploy
-// value: prompted by new-env, written into deploy/envs/local/<env>/env,
+// value: prompted by new-env, written into deploy/envs/local/<env>/.env,
 // merged by loadEnv into the in-memory env map, substituted into the
 // portal overlay .env by substitute-env.mjs, and projected into the pod
 // via the overlay-generated `portal-env` ConfigMap (envFrom configMapRef).

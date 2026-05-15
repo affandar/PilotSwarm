@@ -1,13 +1,13 @@
 // Seed-secrets stage for the OSS Node deploy orchestrator.
 //
 // Reads the already-merged env map (deploy/envs/<base>.env +
-// deploy/envs/local/<env>/env, with process.env overrides) and writes the
+// deploy/envs/local/<env>/.env, with process.env overrides) and writes the
 // human-only secrets into the per-stamp Key Vault via
 // `az keyvault secret set`. Idempotent: re-running just overwrites.
 //
 // What lives in the env map: see deploy/scripts/lib/common.mjs::loadEnv.
 // new-env.mjs interactively prompts for the required secrets and writes
-// them into deploy/envs/local/<env>/env (gitignored). There is no separate
+// them into deploy/envs/local/<env>/.env (gitignored). There is no separate
 // secrets.env file.
 //
 // Secret-name mapping is mechanical:
@@ -127,7 +127,7 @@ export async function seedSecrets({ envName, env }) {
     throw new Error(
       `seed-secrets: required key(s) missing or empty for env '${envName}': ${missingRequired.join(", ")}\n` +
       `These are populated by new-env. Run \`npm run deploy:new-env -- ${envName} --force\` to be re-prompted, ` +
-      `or edit deploy/envs/local/${envName}/env directly and re-run: ` +
+      `or edit deploy/envs/local/${envName}/.env directly and re-run: ` +
       `npm run deploy -- base-infra ${envName} --steps seed-secrets`,
     );
   }

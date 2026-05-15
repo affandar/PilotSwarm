@@ -21,7 +21,7 @@ const LOCAL_DIR = join(ENV_DIR, "local");
 
 // Use a deterministic test name; clean up before/after.
 const TEST_NAME = "tstenv";
-const TEST_FILE = join(LOCAL_DIR, TEST_NAME, "env");
+const TEST_FILE = join(LOCAL_DIR, TEST_NAME, ".env");
 
 function cleanup() {
   const dir = join(LOCAL_DIR, TEST_NAME);
@@ -46,8 +46,8 @@ test("validateLocalEnvName rejects reserved names", () => {
   }
 });
 
-test("envFilePath resolves local names to deploy/envs/local/<name>/env", () => {
-  assert.equal(envFilePath("foo"), join(ENV_DIR, "local", "foo", "env"));
+test("envFilePath resolves local names to deploy/envs/local/<name>/.env", () => {
+  assert.equal(envFilePath("foo"), join(ENV_DIR, "local", "foo", ".env"));
 });
 
 test("envFilePath rejects reserved names", () => {

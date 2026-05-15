@@ -14,7 +14,7 @@ import { REPO_ROOT } from "../lib/common.mjs";
 const SCRIPT = join(REPO_ROOT, "deploy", "scripts", "new-env.mjs");
 const LOCAL_DIR = join(REPO_ROOT, "deploy", "envs", "local");
 const TEST_NAME = "scafftst";
-const TEST_FILE = join(LOCAL_DIR, TEST_NAME, "env");
+const TEST_FILE = join(LOCAL_DIR, TEST_NAME, ".env");
 
 function cleanup() {
   const d = join(LOCAL_DIR, TEST_NAME);
@@ -73,7 +73,7 @@ test("renderLocalEnv produces expected substitutions", () => {
   assert.match(out, /^TLS_SOURCE=letsencrypt$/m);
 });
 
-test("scaffolder creates local/<name>/env (happy path)", () => {
+test("scaffolder creates local/<name>/.env (happy path)", () => {
   cleanup();
   try {
     const r = runScript(FULL_ARGS());

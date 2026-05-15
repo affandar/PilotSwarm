@@ -25,7 +25,7 @@ export async function publishManifests({ service, envName, env, stagedServiceRoo
   if (!account) {
     throw new Error(
       "DEPLOYMENT_STORAGE_ACCOUNT_NAME must be set " +
-        "(seed in deploy/envs/local/<env>/env or run --steps bicep first).",
+        "(seed in deploy/envs/local/<env>/.env or run --steps bicep first).",
     );
   }
   // Container name is derived from the service name, not from

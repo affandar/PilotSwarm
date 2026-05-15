@@ -39,7 +39,7 @@ export function renderParams({ module, templatePath, envMap, outDir }) {
     const list = [...missing].sort().join(", ");
     throw new Error(
       `Bicep params template ${templatePath} has unresolved placeholders: ${list}. ` +
-        `Set them in deploy/envs/local/<env>/env and re-run.`,
+        `Set them in deploy/envs/local/<env>/.env and re-run.`,
     );
   }
 

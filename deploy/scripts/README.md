@@ -30,7 +30,7 @@ needs, so `--steps bicep` works without `oras` / `docker` installed.
 There are two ways to point this script at a target subscription / cluster:
 
 Every deploy targets a personal local env at
-`deploy/envs/local/<name>/env`, scaffolded by `npm run deploy:new-env`
+`deploy/envs/local/<name>/.env`, scaffolded by `npm run deploy:new-env`
 from `deploy/envs/template.env`. The local file is standalone — no
 runtime cascade — so editing the template never retroactively changes
 existing envs.
@@ -134,7 +134,7 @@ Flags:
 | `build` | `docker build` the service image and `docker save` to a tarball under `deploy/.tmp/<svc>-<env>/`. | worker, portal |
 | `push` | `oras cp` the tarball into the per-region ACR (no Docker daemon push). | worker, portal |
 | `bicep` | Render `deploy/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. | per-service module list |
-| `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/env`), validate they are non-empty, and `az keyvault secret set` each into the env's KV. SPC mounts them into the worker pod. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra |
+| `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/.env`), validate they are non-empty, and `az keyvault secret set` each into the env's KV. SPC mounts them into the worker pod. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra |
 | `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>-<env>/`, then `az storage blob upload-batch` the **unrendered** Kustomize tree to the Flux Storage Bucket. Flux reconciles the cluster from there. Worker / cert-manager / cert-manager-issuers each use a single `overlays/default` overlay (per-env values flow in via the staged `.env`); Portal overlays are keyed by `${EDGE_MODE}-${TLS_SOURCE}` (`overlays/afd-letsencrypt`, `overlays/afd-akv`, `overlays/private-akv` — `akv-selfsigned` shares the `private-akv` overlay). | worker, portal |
 | `rollout` | `flux reconcile kustomization <svc>-<svc> -n flux-system --with-source` (forces the Bucket source to re-pull the just-uploaded blobs and the Kustomization to apply that revision), then `kubectl rollout status deployment/<svc>` in `NAMESPACE`, then verifies live `image` ends with the expected tag. | worker, portal |
 
@@ -144,7 +144,7 @@ out).
 
 ## Env-file schema
 
-Every deploy targets a personal local env at `deploy/envs/local/<name>/env`
+Every deploy targets a personal local env at `deploy/envs/local/<name>/.env`
 (the entire `local/` directory is gitignored). Local env files are
 **standalone** — `deploy.mjs` reads them directly with no runtime cascade
 onto a shared base file.
@@ -152,7 +152,7 @@ onto a shared base file.
 `deploy/envs/template.env` is a checked-in template consumed only by the
 scaffolder (`npm run deploy:new-env`): it copies the template, substitutes
 deployment-target keys, prompts for per-stamp secrets, and writes the
-complete file under `local/<name>/env`. Subsequent edits to `template.env`
+complete file under `local/<name>/.env`. Subsequent edits to `template.env`
 affect only newly-scaffolded envs — never existing ones.
 
 `dev` and `prod` are reserved labels used by the enterprise path for ServiceGroup
@@ -192,7 +192,7 @@ placeholder" error directing you to run a prior `--steps bicep`.
 
 | | Enterprise path | OSS path |
 |---|---|---|
-| Source | `*.Configuration.json` per service | `deploy/envs/local/<name>/env` (standalone, scaffolded from `deploy/envs/template.env`) |
+| Source | `*.Configuration.json` per service | `deploy/envs/local/<name>/.env` (standalone, scaffolded from `deploy/envs/template.env`) |
 | Scope binding | the enterprise orchestrator injects subscription / region / IDs into the parameters JSON | `deploy/scripts/lib/common.mjs` resolves env file → JS Map |
 | `.env` substitution | the enterprise param-substitution helper rewrites overlay `.env` from JSON params | `deploy/scripts/lib/substitute-env.mjs` rewrites overlay `.env` from the env map |
 | Per-service identity | Per-service scope binding | Shared `csiIdentity` UAMI clientId cascades from BaseInfra Bicep output → both worker and portal overlays |
@@ -252,7 +252,7 @@ runtime cannot bootstrap on its own.
 ### Per-env secrets file
 
 `npm run deploy:new-env` prompts for the two seedable secrets and appends
-them to `deploy/envs/local/<name>/env` (gitignored — the entire
+them to `deploy/envs/local/<name>/.env` (gitignored — the entire
 `deploy/envs/local/` directory is excluded by
 `deploy/envs/.gitignore`). Required keys:
 

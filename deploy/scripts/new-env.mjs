@@ -7,7 +7,7 @@
 //
 // (Equivalent direct invocation: `node deploy/scripts/new-env.mjs ...`)
 //
-// Creates `deploy/envs/local/<name>/env` by copying `deploy/envs/template.env`
+// Creates `deploy/envs/local/<name>/.env` by copying `deploy/envs/template.env`
 // and substituting deployment-target keys using the same naming patterns
 // The enterprise path uses (the enterprise deployment manifests):
 //
@@ -445,7 +445,7 @@ function usage() {
   const lines = [
     "Usage: npm run deploy:new-env -- [<name>] [options]",
     "",
-    "Creates a personal local env at deploy/envs/local/<name>/env.",
+    "Creates a personal local env at deploy/envs/local/<name>/.env.",
     "<name> must match /^[a-z][a-z0-9]{0,11}$/ and not be a reserved name (dev, prod).",
     "Any flag not provided is prompted for interactively.",
     "",
