@@ -1,6 +1,8 @@
 import { diag, DiagConsoleLogger, DiagLogLevel, trace } from "@opentelemetry/api";
 import { NodeSDK } from "@opentelemetry/sdk-node";
+import { metrics as sdkMetrics } from "@opentelemetry/sdk-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import {
     getNodeAutoInstrumentations,
     getResourceDetectors,
@@ -10,6 +12,7 @@ const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 const headers = process.env.OTEL_EXPORTER_OTLP_HEADERS;
 const serviceName = process.env.OTEL_SERVICE_NAME || "pilotswarm-service";
 const logLevel = (process.env.OTEL_LOG_LEVEL || "").trim().toLowerCase();
+const metricExportIntervalMs = Number.parseInt(process.env.OTEL_METRIC_EXPORT_INTERVAL || "", 10);
 
 function parseHeaderString(headerString) {
     return Object.fromEntries(
@@ -41,10 +44,21 @@ if (!endpoint || !headers) {
         url: withOtlpPath(endpoint, "/v1/traces"),
         headers: parseHeaderString(headers),
     });
+    const metricExporter = new OTLPMetricExporter({
+        url: withOtlpPath(endpoint, "/v1/metrics"),
+        headers: parseHeaderString(headers),
+    });
+    const metricReader = new sdkMetrics.PeriodicExportingMetricReader({
+        exporter: metricExporter,
+        exportIntervalMillis: Number.isFinite(metricExportIntervalMs) && metricExportIntervalMs > 0
+            ? metricExportIntervalMs
+            : 30_000,
+    });
 
     const sdk = new NodeSDK({
         instrumentations: getNodeAutoInstrumentations(),
         resourceDetectors: getResourceDetectors(),
+        metricReaders: [metricReader],
         traceExporter,
         serviceName,
     });
