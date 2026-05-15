@@ -16,6 +16,7 @@ import { createArtifactTools } from "./artifact-tools.js";
 import { createFactStoreForUrl, PgFactStore, type FactStore } from "./facts-store.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
+import { registerStuckActivitiesMetric, type StuckActivitiesMetricsHandle } from "./stuck-activities-metrics.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
@@ -154,6 +155,7 @@ export class PilotSwarmWorker {
     private factStore: FactStore | null = null;
     private runtime: any = null;
     private _provider: any = null;
+    private _stuckActivitiesMetrics: StuckActivitiesMetricsHandle | null = null;
     private _catalog: SessionCatalogProvider | null = null;
     private _started = false;
     /** Worker-level tool registry — name → Tool. */
@@ -349,6 +351,11 @@ export class PilotSwarmWorker {
         }
 
         this._provider = await this._createProvider();
+        this._stuckActivitiesMetrics = await registerStuckActivitiesMetric({
+            storeUrl: store,
+            duroxideSchema: this.config.duroxideSchema,
+            workerNodeId: this.config.workerNodeId,
+        });
 
         // Initialize CMS catalog and facts store
         // CMS + facts can use a separate URL when running with AAD/MI
@@ -567,6 +574,10 @@ export class PilotSwarmWorker {
                 : 5000;
             await this.runtime.shutdown(shutdownTimeoutMs);
             this.runtime = null;
+        }
+        if (this._stuckActivitiesMetrics) {
+            try { await this._stuckActivitiesMetrics.shutdown(); } catch {}
+            this._stuckActivitiesMetrics = null;
         }
         await this.sessionManager.shutdown();
         if (this._catalog) {
