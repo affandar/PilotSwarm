@@ -424,10 +424,17 @@ export interface SessionCatalogProvider {
     /** Record a batch of events for a session. */
     recordEvents(sessionId: string, events: { eventType: string; data: unknown }[], workerNodeId?: string): Promise<void>;
 
-    /** Get events for a session, optionally after a sequence number. */
+    /**
+     * Get a provider-capped page of events for a session, ordered ascending by seq.
+     * Without afterSeq this returns the latest page; with afterSeq it returns the next forward page.
+     * Use getSessionEventsBefore() paging to drain complete history.
+     */
     getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<SessionEvent[]>;
 
-    /** Get events before a sequence number, ordered ascending by seq. */
+    /**
+     * Get a provider-capped older page before a sequence number, ordered ascending by seq.
+     * Call repeatedly with the oldest returned seq to drain complete history.
+     */
     getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<SessionEvent[]>;
 
     /** Get the highest-volume event emitters since a point in time. */

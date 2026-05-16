@@ -1809,7 +1809,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_get_session_events(
     p_limit      INT
 ) RETURNS SETOF ${s}.session_events AS $$
 DECLARE
-    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 200), 500));
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 1000), 1000));
 BEGIN
     IF p_after_seq IS NOT NULL AND p_after_seq > 0 THEN
         RETURN QUERY
@@ -1834,7 +1834,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_get_session_events_before(
     p_limit       INT
 ) RETURNS SETOF ${s}.session_events AS $$
 DECLARE
-    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 200), 500));
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 1000), 1000));
 BEGIN
     RETURN QUERY
     SELECT * FROM (

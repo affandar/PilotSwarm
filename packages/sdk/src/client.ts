@@ -1144,10 +1144,10 @@ export class PilotSwarmSession {
         await this.client.deleteSession(this.sessionId);
     }
 
-    /** Get all persisted events for this session from CMS. */
-        async getMessages(limit?: number): Promise<SessionEvent[]> {
+    /** Get a provider-capped latest page of persisted events from CMS. Use event paging to drain complete history. */
+    async getMessages(limit?: number): Promise<SessionEvent[]> {
         const catalog = this.client._getCatalog();
-            return catalog.getSessionEvents(this.sessionId, undefined, limit);
+        return catalog.getSessionEvents(this.sessionId, undefined, limit);
     }
 
     async getInfo(): Promise<PilotSwarmSessionInfo> {

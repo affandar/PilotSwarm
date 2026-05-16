@@ -82,7 +82,7 @@ describe("CMS read bounds", () => {
                    'history.' || ((gs - 1) % 3)::text,
                    jsonb_build_object('index', gs - 1, 'prefix', 'history'),
                    'worker-a'
-                 FROM generate_series(1, 520) AS gs`,
+                 FROM generate_series(1, 1020) AS gs`,
                 [sessionId],
             );
 
@@ -92,8 +92,8 @@ describe("CMS read bounds", () => {
                  FROM "${env.cmsSchema}".cms_get_session_events($1, $2, $3)`,
                 [sessionId, null, 10_000],
             );
-            assertEqual(latest.length, 500, "getSessionEvents should clamp to 500 rows");
-            assert(latest[0].seq < latest[latest.length - 1].seq, "Latest events should be returned in ascending seq order");
+            assertEqual(latest.length, 1000, "getSessionEvents should clamp to 1000 rows");
+            assert(Number(latest[0].seq) < Number(latest[latest.length - 1].seq), "Latest events should be returned in ascending seq order");
         } finally {
             await catalog.close();
         }
@@ -116,7 +116,7 @@ describe("CMS read bounds", () => {
                    'history.' || ((gs - 1) % 3)::text,
                    jsonb_build_object('index', gs - 1, 'prefix', 'history'),
                    'worker-a'
-                 FROM generate_series(1, 520) AS gs`,
+                 FROM generate_series(1, 1020) AS gs`,
                 [sessionId],
             );
 
@@ -135,8 +135,8 @@ describe("CMS read bounds", () => {
                 [sessionId, beforeCursor, 10_000],
             );
             assertGreaterOrEqual(older.length, 1, "Expected at least one older event page");
-            assert(older.length <= 500, "getSessionEventsBefore should clamp to 500 rows");
-            assert(older[0].seq < older[older.length - 1].seq, "Older events should be returned in ascending seq order");
+            assertEqual(older.length, 1000, "getSessionEventsBefore should clamp to 1000 rows");
+            assert(Number(older[0].seq) < Number(older[older.length - 1].seq), "Older events should be returned in ascending seq order");
         } finally {
             await catalog.close();
         }
