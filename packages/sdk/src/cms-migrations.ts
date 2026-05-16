@@ -75,6 +75,16 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "session_reasoning_effort_read_views",
             sql: migration_0012_session_reasoning_effort_read_views(schema),
         },
+        {
+            version: "0013",
+            name: "bounded_session_reads_and_emitters",
+            sql: migration_0013_bounded_session_reads_and_emitters(schema),
+        },
+        {
+            version: "0014",
+            name: "turn_metrics_foundations",
+            sql: migration_0014_turn_metrics_foundations(schema),
+        },
     ];
 }
 
@@ -1752,6 +1762,277 @@ BEGIN
     LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
     LEFT JOIN ${s}.users u ON u.user_id = so.user_id
     WHERE sess.session_id = p_session_id AND sess.deleted_at IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0013: Bounded Session Reads And Emitters ──────────
+
+function migration_0013_bounded_session_reads_and_emitters(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0013_bounded_session_reads_and_emitters:
+--   Adds keyset-paginated session listing, bounded event-emitter diagnostics,
+--   and SQL-side caps for session event history reads.
+
+-- ── cms_list_sessions_page ───────────────────────────────────────
+-- Keyset-paginated session listing ordered by updated_at DESC, session_id DESC.
+-- Callers can request limit+1 rows later to compute hasMore without a count query.
+CREATE OR REPLACE FUNCTION ${s}.cms_list_sessions_page(
+    p_limit             INT         DEFAULT 51,
+    p_cursor_updated_at TIMESTAMPTZ DEFAULT NULL,
+    p_cursor_session_id TEXT        DEFAULT NULL,
+    p_include_deleted   BOOL        DEFAULT FALSE
+) RETURNS SETOF ${s}.sessions AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 51), 201));
+BEGIN
+    RETURN QUERY
+    SELECT * FROM ${s}.sessions s
+    WHERE
+        (p_include_deleted OR s.deleted_at IS NULL)
+        AND (
+            p_cursor_updated_at IS NULL
+            OR s.updated_at < p_cursor_updated_at
+            OR (s.updated_at = p_cursor_updated_at AND s.session_id < p_cursor_session_id)
+        )
+    ORDER BY s.updated_at DESC, s.session_id DESC
+    LIMIT v_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_session_events (bounded) ─────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_events(
+    p_session_id TEXT,
+    p_after_seq  BIGINT,
+    p_limit      INT
+) RETURNS SETOF ${s}.session_events AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 1000), 1000));
+BEGIN
+    IF p_after_seq IS NOT NULL AND p_after_seq > 0 THEN
+        RETURN QUERY
+        SELECT * FROM ${s}.session_events
+        WHERE session_id = p_session_id AND seq > p_after_seq
+        ORDER BY seq ASC LIMIT v_limit;
+    ELSE
+        RETURN QUERY
+        SELECT * FROM (
+            SELECT * FROM ${s}.session_events
+            WHERE session_id = p_session_id
+            ORDER BY seq DESC LIMIT v_limit
+        ) t ORDER BY seq ASC;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_session_events_before (bounded) ──────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_events_before(
+    p_session_id  TEXT,
+    p_before_seq  BIGINT,
+    p_limit       INT
+) RETURNS SETOF ${s}.session_events AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 1000), 1000));
+BEGIN
+    RETURN QUERY
+    SELECT * FROM (
+        SELECT * FROM ${s}.session_events
+        WHERE session_id = p_session_id AND seq < p_before_seq
+        ORDER BY seq DESC LIMIT v_limit
+    ) t ORDER BY seq ASC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_top_event_emitters ───────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_get_top_event_emitters(
+    p_since TIMESTAMPTZ,
+    p_limit INT
+) RETURNS TABLE (
+    worker_node_id TEXT,
+    event_type     TEXT,
+    event_count    BIGINT,
+    session_count  BIGINT,
+    first_seen_at  TIMESTAMPTZ,
+    last_seen_at   TIMESTAMPTZ
+) AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 20), 100));
+BEGIN
+    RETURN QUERY
+    SELECT
+        se.worker_node_id,
+        se.event_type,
+        COUNT(*)::BIGINT                      AS event_count,
+        COUNT(DISTINCT se.session_id)::BIGINT AS session_count,
+        MIN(se.created_at)                    AS first_seen_at,
+        MAX(se.created_at)                    AS last_seen_at
+    FROM ${s}.session_events se
+    WHERE se.worker_node_id IS NOT NULL
+      AND se.created_at >= COALESCE(p_since, now() - INTERVAL '24 hours')
+    GROUP BY se.worker_node_id, se.event_type
+    ORDER BY event_count DESC, last_seen_at DESC
+    LIMIT v_limit;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0014: Turn Metrics Foundations ───────────────────
+
+function migration_0014_turn_metrics_foundations(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0014_turn_metrics_foundations:
+--   Adds per-turn analytics storage and bounded turn-metrics read functions.
+
+CREATE TABLE IF NOT EXISTS ${s}.session_turn_metrics (
+    id                  BIGSERIAL PRIMARY KEY,
+    session_id          TEXT        NOT NULL,
+    agent_id            TEXT,
+    model               TEXT,
+    turn_index          INTEGER     NOT NULL,
+    started_at          TIMESTAMPTZ NOT NULL,
+    ended_at            TIMESTAMPTZ NOT NULL,
+    duration_ms         INTEGER     NOT NULL CHECK (duration_ms >= 0),
+    tokens_input        BIGINT      NOT NULL DEFAULT 0,
+    tokens_output       BIGINT      NOT NULL DEFAULT 0,
+    tokens_cache_read   BIGINT      NOT NULL DEFAULT 0,
+    tokens_cache_write  BIGINT      NOT NULL DEFAULT 0,
+    tool_calls          INTEGER     NOT NULL DEFAULT 0,
+    tool_errors         INTEGER     NOT NULL DEFAULT 0,
+    result_type         TEXT,
+    error_message       TEXT,
+    worker_node_id      TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (ended_at >= started_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_turn_metrics_session_idx
+    ON ${s}.session_turn_metrics(session_id, turn_index DESC);
+CREATE INDEX IF NOT EXISTS idx_${schema}_turn_metrics_started
+    ON ${s}.session_turn_metrics(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_${schema}_turn_metrics_agent_started
+    ON ${s}.session_turn_metrics(agent_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_${schema}_turn_metrics_model_started
+    ON ${s}.session_turn_metrics(model, started_at DESC);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_insert_turn_metric(
+    p_session_id         TEXT,
+    p_agent_id           TEXT,
+    p_model              TEXT,
+    p_turn_index         INTEGER,
+    p_started_at         TIMESTAMPTZ,
+    p_ended_at           TIMESTAMPTZ,
+    p_duration_ms        INTEGER,
+    p_tokens_input       BIGINT,
+    p_tokens_output      BIGINT,
+    p_tokens_cache_read  BIGINT,
+    p_tokens_cache_write BIGINT,
+    p_tool_calls         INTEGER,
+    p_tool_errors        INTEGER,
+    p_result_type        TEXT,
+    p_error_message      TEXT,
+    p_worker_node_id     TEXT
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.session_turn_metrics (
+        session_id, agent_id, model, turn_index,
+        started_at, ended_at, duration_ms,
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
+        tool_calls, tool_errors, result_type, error_message, worker_node_id
+    ) VALUES (
+        p_session_id, p_agent_id, p_model, p_turn_index,
+        p_started_at, p_ended_at, p_duration_ms,
+        p_tokens_input, p_tokens_output, p_tokens_cache_read, p_tokens_cache_write,
+        p_tool_calls, p_tool_errors, p_result_type, p_error_message, p_worker_node_id
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_turn_metrics(
+    p_session_id TEXT,
+    p_since      TIMESTAMPTZ DEFAULT NULL,
+    p_limit      INT         DEFAULT 200
+) RETURNS TABLE (
+    id                  BIGINT,
+    session_id          TEXT,
+    agent_id            TEXT,
+    model               TEXT,
+    turn_index          INT,
+    started_at          TIMESTAMPTZ,
+    ended_at            TIMESTAMPTZ,
+    duration_ms         INT,
+    tokens_input        BIGINT,
+    tokens_output       BIGINT,
+    tokens_cache_read   BIGINT,
+    tokens_cache_write  BIGINT,
+    tool_calls          INT,
+    tool_errors         INT,
+    result_type         TEXT,
+    error_message       TEXT,
+    worker_node_id      TEXT,
+    created_at          TIMESTAMPTZ
+) AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 200), 500));
+BEGIN
+    RETURN QUERY
+    SELECT
+        t.id, t.session_id, t.agent_id, t.model, t.turn_index,
+        t.started_at, t.ended_at, t.duration_ms,
+        t.tokens_input, t.tokens_output, t.tokens_cache_read, t.tokens_cache_write,
+        t.tool_calls, t.tool_errors, t.result_type, t.error_message,
+        t.worker_node_id, t.created_at
+    FROM ${s}.session_turn_metrics t
+    WHERE t.session_id = p_session_id
+      AND (p_since IS NULL OR t.started_at >= p_since)
+    ORDER BY t.turn_index DESC, t.id DESC
+    LIMIT v_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_hourly_token_buckets(
+    p_since    TIMESTAMPTZ,
+    p_agent_id TEXT DEFAULT NULL,
+    p_model    TEXT DEFAULT NULL
+) RETURNS TABLE (
+    hour_bucket              TIMESTAMPTZ,
+    turn_count               BIGINT,
+    total_tokens_input       BIGINT,
+    total_tokens_output      BIGINT,
+    total_tokens_cache_read  BIGINT,
+    total_tokens_cache_write BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        date_trunc('hour', t.started_at)                AS hour_bucket,
+        COUNT(*)::bigint                                AS turn_count,
+        COALESCE(SUM(t.tokens_input), 0)::bigint        AS total_tokens_input,
+        COALESCE(SUM(t.tokens_output), 0)::bigint       AS total_tokens_output,
+        COALESCE(SUM(t.tokens_cache_read), 0)::bigint   AS total_tokens_cache_read,
+        COALESCE(SUM(t.tokens_cache_write), 0)::bigint  AS total_tokens_cache_write
+    FROM ${s}.session_turn_metrics t
+    WHERE t.started_at >= p_since
+      AND (p_agent_id IS NULL OR t.agent_id = p_agent_id)
+      AND (p_model IS NULL OR t.model = p_model)
+    GROUP BY date_trunc('hour', t.started_at)
+    ORDER BY hour_bucket DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_prune_turn_metrics(
+    p_older_than TIMESTAMPTZ
+) RETURNS INT AS $$
+DECLARE
+    v_deleted INT;
+BEGIN
+    DELETE FROM ${s}.session_turn_metrics
+    WHERE started_at < p_older_than;
+    GET DIAGNOSTICS v_deleted = ROW_COUNT;
+    RETURN v_deleted;
 END;
 $$ LANGUAGE plpgsql;
 `;
