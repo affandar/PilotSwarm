@@ -24,7 +24,7 @@ import type {
     SessionOwnerInfo,
     SessionSummaryState,
 } from "./types.js";
-import type { SessionCatalogProvider, SessionRow } from "./cms.js";
+import type { SessionCatalogProvider, SessionRow, TopEventEmitterRow } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type {
     SessionMetricSummary,
@@ -65,6 +65,22 @@ const MAX_SESSION_TITLE_LENGTH = 60;
 const SESSION_COMMAND_SETTLE_TIMEOUT_MS = 65_000;
 const SESSION_STATE_POLL_MS = 500;
 const DEFAULT_SYSTEM_AGENT_DEHYDRATE_THRESHOLD = 30;
+const DEFAULT_SESSION_PAGE_LIMIT = 50;
+const MAX_SESSION_PAGE_LIMIT = 200;
+const DEFAULT_TOP_EVENT_EMITTER_LIMIT = 20;
+const MAX_TOP_EVENT_EMITTER_LIMIT = 100;
+
+function clampInteger(value: number | undefined, defaultValue: number, min: number, max: number): number {
+    if (value == null) return defaultValue;
+    if (!Number.isFinite(value)) return defaultValue;
+    return Math.max(min, Math.min(Math.trunc(value), max));
+}
+
+function assertValidDate(value: Date, label: string): void {
+    if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+        throw new Error(`${label} must be a valid Date`);
+    }
+}
 
 function isTerminalOrchestrationStatus(status?: string | null): boolean {
     return status === "Completed" || status === "Failed" || status === "Terminated";
@@ -250,6 +266,26 @@ export interface PilotSwarmSessionView {
     contextUsage?: SessionContextUsage;
     /** customStatusVersion for change tracking. */
     statusVersion?: number;
+}
+
+/** Cursor for keyset-paginated session listing. */
+export interface SessionPageCursor {
+    updatedAt: number;
+    sessionId: string;
+}
+
+/** Options for bounded management session listing. */
+export interface ListSessionsPageOptions {
+    limit?: number;
+    cursor?: SessionPageCursor | null;
+    includeDeleted?: boolean;
+}
+
+/** One bounded page of management session views. */
+export interface PilotSwarmSessionPage {
+    sessions: PilotSwarmSessionView[];
+    hasMore: boolean;
+    nextCursor?: SessionPageCursor;
 }
 
 /** Model summary for UI display. */
@@ -578,6 +614,46 @@ export class PilotSwarmManagementClient {
         const cmsSessions = await this._catalog!.listSessions();
 
         return cmsSessions.map(sessionViewFromCmsRow);
+    }
+
+    /**
+     * List one bounded page of sessions with merged CMS state.
+     *
+     * Uses CMS keyset pagination. For real-time status of a single session,
+     * use getSession() which still reads duroxide runtime state.
+     */
+    async listSessionsPage(opts: ListSessionsPageOptions = {}): Promise<PilotSwarmSessionPage> {
+        this._ensureStarted();
+
+        const limit = clampInteger(opts.limit, DEFAULT_SESSION_PAGE_LIMIT, 1, MAX_SESSION_PAGE_LIMIT);
+        const cursor = opts.cursor ?? null;
+        let cursorUpdatedAt: Date | null = null;
+        let cursorSessionId: string | null = null;
+
+        if (cursor) {
+            cursorUpdatedAt = new Date(cursor.updatedAt);
+            assertValidDate(cursorUpdatedAt, "cursor.updatedAt");
+            cursorSessionId = String(cursor.sessionId || "").trim();
+            if (!cursorSessionId) throw new Error("cursor.sessionId must be a non-empty string");
+        }
+
+        const rows = await this._catalog!.listSessionsPage({
+            limit: limit + 1,
+            cursorUpdatedAt,
+            cursorSessionId,
+            includeDeleted: opts.includeDeleted,
+        });
+        const visibleRows = rows.slice(0, limit);
+        const hasMore = rows.length > limit;
+        const last = visibleRows[visibleRows.length - 1];
+
+        return {
+            sessions: visibleRows.map(sessionViewFromCmsRow),
+            hasMore,
+            ...(hasMore && last
+                ? { nextCursor: { updatedAt: last.updatedAt.getTime(), sessionId: last.sessionId } }
+                : {}),
+        };
     }
 
     /**
@@ -1115,6 +1191,16 @@ export class PilotSwarmManagementClient {
     async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<import("./cms.js").SessionEvent[]> {
         this._ensureStarted();
         return this._catalog!.getSessionEventsBefore(sessionId, beforeSeq, limit);
+    }
+
+    /**
+     * Get bounded event-emitter diagnostics for noisy worker/event buckets.
+     */
+    async getTopEventEmitters(opts: { since: Date; limit?: number }): Promise<TopEventEmitterRow[]> {
+        this._ensureStarted();
+        assertValidDate(opts.since, "since");
+        const limit = clampInteger(opts.limit, DEFAULT_TOP_EVENT_EMITTER_LIMIT, 1, MAX_TOP_EVENT_EMITTER_LIMIT);
+        return this._catalog!.getTopEventEmitters(opts.since, limit);
     }
 
     // ─── Status Watching ─────────────────────────────────────
