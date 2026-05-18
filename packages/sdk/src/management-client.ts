@@ -23,7 +23,7 @@ import type {
     SessionContextUsage,
     SessionOwnerInfo,
 } from "./types.js";
-import type { SessionCatalogProvider } from "./cms.js";
+import type { SessionCatalogProvider, SessionRow, TopEventEmitterRow } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type {
     SessionMetricSummary,
@@ -53,6 +53,22 @@ const STATUS_WAIT_SLICE_MS = 10_000;
 const MAX_SESSION_TITLE_LENGTH = 60;
 const SESSION_COMMAND_SETTLE_TIMEOUT_MS = 65_000;
 const SESSION_STATE_POLL_MS = 500;
+const DEFAULT_SESSION_PAGE_LIMIT = 50;
+const MAX_SESSION_PAGE_LIMIT = 200;
+const DEFAULT_TOP_EVENT_EMITTER_LIMIT = 20;
+const MAX_TOP_EVENT_EMITTER_LIMIT = 100;
+
+function clampInteger(value: number | undefined, defaultValue: number, min: number, max: number): number {
+    if (value == null) return defaultValue;
+    if (!Number.isFinite(value)) return defaultValue;
+    return Math.max(min, Math.min(Math.trunc(value), max));
+}
+
+function assertValidDate(value: Date, label: string): void {
+    if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+        throw new Error(`${label} must be a valid Date`);
+    }
+}
 
 function isTerminalOrchestrationStatus(status?: string | null): boolean {
     return status === "Completed" || status === "Failed" || status === "Terminated";
@@ -164,6 +180,26 @@ export interface PilotSwarmSessionView {
     statusVersion?: number;
 }
 
+/** Cursor for keyset-paginated session listing. */
+export interface SessionPageCursor {
+    updatedAt: number;
+    sessionId: string;
+}
+
+/** Options for bounded management session listing. */
+export interface ListSessionsPageOptions {
+    limit?: number;
+    cursor?: SessionPageCursor | null;
+    includeDeleted?: boolean;
+}
+
+/** One bounded page of management session views. */
+export interface PilotSwarmSessionPage {
+    sessions: PilotSwarmSessionView[];
+    hasMore: boolean;
+    nextCursor?: SessionPageCursor;
+}
+
 /** Model summary for UI display. */
 export interface ModelSummary {
     qualifiedName: string;
@@ -244,6 +280,32 @@ export interface PilotSwarmManagementClientOptions {
      * minting tokens. Only consulted when `useManagedIdentity` is `true`.
      */
     aadDbUser?: string;
+}
+
+function cmsRowToManagementView(row: SessionRow): PilotSwarmSessionView {
+    const liveStatus: PilotSwarmSessionStatus =
+        (row.state as PilotSwarmSessionStatus) || "pending";
+
+    return {
+        sessionId: row.sessionId,
+        title: row.title ?? undefined,
+        agentId: row.agentId ?? undefined,
+        splash: row.splash ?? undefined,
+        owner: row.owner ?? undefined,
+        status: liveStatus,
+        orchestrationStatus: undefined,
+        orchestrationVersion: undefined,
+        createdAt: row.createdAt.getTime(),
+        updatedAt: row.updatedAt?.getTime(),
+        iterations: row.currentIteration ?? 0,
+        parentSessionId: row.parentSessionId ?? undefined,
+        isSystem: row.isSystem || undefined,
+        model: row.model ?? undefined,
+        reasoningEffort: row.reasoningEffort ?? undefined,
+        error: row.lastError ?? undefined,
+        waitReason: row.waitReason ?? undefined,
+        statusVersion: undefined,
+    };
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -416,31 +478,47 @@ export class PilotSwarmManagementClient {
         // Single CMS query — no duroxide fan-out
         const cmsSessions = await this._catalog!.listSessions();
 
-        return cmsSessions.map((row) => {
-            const liveStatus: PilotSwarmSessionStatus =
-                (row.state as PilotSwarmSessionStatus) || "pending";
+        return cmsSessions.map(cmsRowToManagementView);
+    }
 
-            return {
-                sessionId: row.sessionId,
-                title: row.title ?? undefined,
-                agentId: row.agentId ?? undefined,
-                splash: row.splash ?? undefined,
-                owner: row.owner ?? undefined,
-                status: liveStatus,
-                orchestrationStatus: undefined, // not available in CMS-only path
-                orchestrationVersion: undefined, // not available in CMS-only path
-                createdAt: row.createdAt.getTime(),
-                updatedAt: row.updatedAt?.getTime(),
-                iterations: row.currentIteration ?? 0,
-                parentSessionId: row.parentSessionId ?? undefined,
-                isSystem: row.isSystem || undefined,
-                model: row.model ?? undefined,
-                reasoningEffort: row.reasoningEffort ?? undefined,
-                error: row.lastError ?? undefined,
-                waitReason: row.waitReason ?? undefined,
-                statusVersion: undefined,
-            };
+    /**
+     * List one bounded page of sessions with merged CMS state.
+     *
+     * Uses CMS keyset pagination. For real-time status of a single session,
+     * use getSession() which still reads duroxide runtime state.
+     */
+    async listSessionsPage(opts: ListSessionsPageOptions = {}): Promise<PilotSwarmSessionPage> {
+        this._ensureStarted();
+
+        const limit = clampInteger(opts.limit, DEFAULT_SESSION_PAGE_LIMIT, 1, MAX_SESSION_PAGE_LIMIT);
+        const cursor = opts.cursor ?? null;
+        let cursorUpdatedAt: Date | null = null;
+        let cursorSessionId: string | null = null;
+
+        if (cursor) {
+            cursorUpdatedAt = new Date(cursor.updatedAt);
+            assertValidDate(cursorUpdatedAt, "cursor.updatedAt");
+            cursorSessionId = String(cursor.sessionId || "").trim();
+            if (!cursorSessionId) throw new Error("cursor.sessionId must be a non-empty string");
+        }
+
+        const rows = await this._catalog!.listSessionsPage({
+            limit: limit + 1,
+            cursorUpdatedAt,
+            cursorSessionId,
+            includeDeleted: opts.includeDeleted,
         });
+        const visibleRows = rows.slice(0, limit);
+        const hasMore = rows.length > limit;
+        const last = visibleRows[visibleRows.length - 1];
+
+        return {
+            sessions: visibleRows.map(cmsRowToManagementView),
+            hasMore,
+            ...(hasMore && last
+                ? { nextCursor: { updatedAt: last.updatedAt.getTime(), sessionId: last.sessionId } }
+                : {}),
+        };
     }
 
     /**
@@ -718,6 +796,16 @@ export class PilotSwarmManagementClient {
     async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<import("./cms.js").SessionEvent[]> {
         this._ensureStarted();
         return this._catalog!.getSessionEventsBefore(sessionId, beforeSeq, limit);
+    }
+
+    /**
+     * Get bounded event-emitter diagnostics for noisy worker/event buckets.
+     */
+    async getTopEventEmitters(opts: { since: Date; limit?: number }): Promise<TopEventEmitterRow[]> {
+        this._ensureStarted();
+        assertValidDate(opts.since, "since");
+        const limit = clampInteger(opts.limit, DEFAULT_TOP_EVENT_EMITTER_LIMIT, 1, MAX_TOP_EVENT_EMITTER_LIMIT);
+        return this._catalog!.getTopEventEmitters(opts.since, limit);
     }
 
     // ─── Status Watching ─────────────────────────────────────

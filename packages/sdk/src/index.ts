@@ -23,6 +23,9 @@ export { PilotSwarmWorker } from "./worker.js";
 export { PilotSwarmManagementClient } from "./management-client.js";
 export type {
     PilotSwarmSessionView,
+    SessionPageCursor,
+    ListSessionsPageOptions,
+    PilotSwarmSessionPage,
     ModelSummary,
     SessionStatusChange,
     SessionOrchestrationStats,
@@ -35,7 +38,7 @@ export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
 export { PgFactStore, createFactStoreForUrl } from "./facts-store.js";
 export { PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
-export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, UserProfile, UserPrincipal } from "./cms.js";
+export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, TopEventEmitterRow, InsertTurnMetricInput, TurnMetricRow, HourlyTokenBucketRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, UserProfile, UserPrincipal } from "./cms.js";
 export type {
     FactStore,
     FactRecord,
