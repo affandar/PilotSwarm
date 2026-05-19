@@ -48,6 +48,99 @@ function linesText(lines) {
 }
 
 describe("session refresh UI recovery", () => {
+    it("loads sessions through bounded pages when the transport supports paging", async () => {
+        const calls = [];
+        const { controller, store } = createController({
+            listSessions: async () => {
+                throw new Error("broad listSessions should not be used when paging is available");
+            },
+            listSessionsPage: async (opts) => {
+                calls.push(opts);
+                if (!opts?.cursor) {
+                    return {
+                        sessions: [{ sessionId: "page-one", title: "Page One", status: "idle", createdAt: 1, updatedAt: 2 }],
+                        hasMore: true,
+                        nextCursor: { updatedAt: 2, sessionId: "page-one" },
+                    };
+                }
+                return {
+                    sessions: [{ sessionId: "page-two", title: "Page Two", status: "idle", createdAt: 3, updatedAt: 4 }],
+                    hasMore: false,
+                };
+            },
+        });
+
+        await controller.refreshSessions();
+
+        assertEqual(calls.length, 2, "refresh should follow nextCursor while more pages exist");
+        assertEqual(calls[0].limit, 200, "refresh should request bounded max-size pages");
+        assertEqual(calls[1].cursor.sessionId, "page-one", "refresh should pass the prior page cursor");
+        const sessionIds = Object.keys(store.getState().sessions.byId);
+        assert(sessionIds.includes("page-one"), "first page session should be loaded");
+        assert(sessionIds.includes("page-two"), "second page session should be loaded");
+    });
+
+    it("caps paged session refresh after five pages", async () => {
+        let calls = 0;
+        const { controller, store } = createController({
+            listSessionsPage: async (opts) => {
+                calls += 1;
+                const id = `page-${calls}`;
+                return {
+                    sessions: [{ sessionId: id, title: id, status: "idle", createdAt: calls, updatedAt: calls }],
+                    hasMore: true,
+                    nextCursor: { updatedAt: calls, sessionId: id },
+                };
+            },
+        });
+
+        await controller.refreshSessions();
+
+        assertEqual(calls, 5, "refresh should stop after the configured page cap");
+        assertEqual(Object.keys(store.getState().sessions.byId).length, 5, "refresh should load only capped pages");
+    });
+
+    it("keeps the active session visible when it falls outside the paged window", async () => {
+        const { controller, store } = createController({
+            listSessionsPage: async () => ({
+                sessions: [{ sessionId: "newest", title: "Newest", status: "idle", createdAt: 10, updatedAt: 11 }],
+                hasMore: false,
+            }),
+            getSession: async (sessionId) => ({
+                sessionId,
+                title: "Active Outside Page",
+                status: "running",
+                createdAt: 1,
+                updatedAt: 2,
+            }),
+        });
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{ sessionId: "active-old", title: "Old Active", status: "running", createdAt: 1, updatedAt: 2 }],
+        });
+
+        await controller.refreshSessions();
+
+        const sessions = store.getState().sessions.byId;
+        assert(sessions.newest, "paged session should be loaded");
+        assert(sessions["active-old"], "active session outside paged window should be preserved");
+    });
+
+    it("falls back to broad listSessions when paged reads are unavailable", async () => {
+        let broadCalls = 0;
+        const { controller, store } = createController({
+            listSessions: async () => {
+                broadCalls += 1;
+                return [{ sessionId: "legacy", title: "Legacy", status: "idle", createdAt: 1, updatedAt: 2 }];
+            },
+        });
+
+        await controller.refreshSessions();
+
+        assertEqual(broadCalls, 1, "legacy transports should still use listSessions");
+        assert(store.getState().sessions.byId.legacy, "legacy broad session should be loaded");
+    });
+
     it("clears the stale session refresh failed banner after a later successful refresh", async () => {
         const { controller, store } = createController();
 

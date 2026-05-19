@@ -248,6 +248,14 @@ export class BrowserPortalTransport {
         return this.rpc("listChildOutcomes", { parentSessionId });
     }
 
+    async listSessionsPage(opts = {}) {
+        return this.rpc("listSessionsPage", {
+            limit: opts?.limit,
+            cursor: opts?.cursor ?? null,
+            includeDeleted: opts?.includeDeleted,
+        });
+    }
+
     async getSession(sessionId) {
         return this.rpc("getSession", { sessionId });
     }
@@ -275,6 +283,13 @@ export class BrowserPortalTransport {
         return this.rpc("getUserStats", {
             includeDeleted: opts?.includeDeleted,
             since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+        });
+    }
+
+    async getTopEventEmitters(opts = {}) {
+        return this.rpc("getTopEventEmitters", {
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+            limit: opts?.limit,
         });
     }
 
