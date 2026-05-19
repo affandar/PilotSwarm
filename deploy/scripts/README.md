@@ -123,6 +123,11 @@ Flags:
   --clean             Wipe deploy/.tmp/<service>-<env>/ before running
   --force             Ignore deploy markers; redeploy every Bicep module even
                       if its template + rendered params are unchanged
+  --force-module <m>  Force-redeploy a single named Bicep module (e.g. portal,
+                      pls-anchor). Repeatable. Lighter-touch than --force when
+                      only one module needs to retry past its deploy marker
+                      (e.g. recover from an out-of-band Bicep tweak or RBAC
+                      propagation race).
   --help, -h
 ```
 
@@ -226,18 +231,68 @@ literal `${VAR}` placeholders. The `bicep` step:
 
 ## Tests
 
-Stdlib-only unit tests cover the two trickiest pieces of the orchestrator:
-the fail-closed `.env` substitution rules and the FR-022 Bicep-output
-alias map.
+Stdlib-only unit tests cover the orchestrator's trickiest pieces (overlay
+substitution rules, FR-022 Bicep-output alias map, deploy-marker hashing,
+manifest publish atomicity, private-endpoint approval, drift detection on
+common bicep modules, and Dockerfile lockfile enforcement).
 
 ```sh
 npm run test:deploy-scripts
 ```
 
 Test files live at `deploy/scripts/test/*.test.mjs` and run with the
-built-in Node test runner (no new dependencies).
+built-in Node test runner (no new dependencies). The suite is gated on PRs
+and pushes to `main` by `.github/workflows/deploy-scripts-tests.yml`
+whenever `deploy/scripts/**`, `deploy/services/**/deploy.json`,
+`deploy/services/**/bicep/**`, the worker/portal Dockerfiles, the root
+package manifest/lockfile, or that workflow itself changes.
 
-## Secrets & identity (bicep-deploy path only)
+### Per-module redeploy controls
+
+A module in a service's `deploy.json` can opt into per-deploy rerun by
+setting `alwaysRedeploy: true` on its `modules[]` (and `allModeModules[]`)
+entry. The deploy-marker hash check is bypassed for that module on every
+invocation. Use this for modules whose post-conditions must re-execute
+even when inputs are unchanged (deployment scripts, role assignments
+sensitive to RBAC propagation, private-endpoint approval). The portal
+service is the canonical consumer.
+
+A drift check in `services-manifest.test.mjs` fails CI if any
+`common/*.bicep` transitively referenced from a service's `main.bicep`
+contains a `Microsoft.Resources/deploymentScripts` without a
+`forceUpdateTag:` binding and the owning service's top-level module is
+not marked `alwaysRedeploy: true`. The fix is either: (a) add
+`alwaysRedeploy: true` in the service's `deploy.json`, or (b) add
+`forceUpdateTag: utcNow()` (or a `utcNow()`-bound parameter) to the
+deployment-script resource.
+
+For one-off operator overrides, `--force-module <name>` on the deploy
+orchestrator forces a single named module past its deploy marker for the
+current invocation. Repeatable; lighter-touch than `--force` which
+bypasses markers for every module.
+
+### Manual verification protocol — private-endpoint approval
+
+After landing the FR-015 hardening of
+`deploy/services/common/bicep/approve-private-endpoint.bicep`, two
+operator-driven checks should be run against a real AFD-fronted stamp:
+
+1. **Idempotency**: re-run the deploy against an environment whose AFD
+   private-endpoint is already Approved. The bicep deployment-script
+   should exit 0 quickly via the idempotency pre-check (no polling), and
+   the deployment marker should advance because the portal module is
+   `alwaysRedeploy: true`.
+2. **Minimum-role compatibility**: deploy from an identity holding only
+   the documented minimum role assignment on the Application Gateway
+   (Network Contributor scoped to the AppGw, no broader Reader). The
+   `list_pe_connections` retry helper should not be exercised on the
+   happy path; if it is, stderr will surface the underlying `az` error
+   instead of being misclassified as "no pending connections".
+
+If either check fails, the regression tests in `approve-pe.test.mjs`
+should be extended to cover the new failure mode before re-attempting.
+
+## Secrets &amp; identity (bicep-deploy path only)
 
 This deploy path uses **managed identity for Azure resources** and keeps a
 single gitignored env file holding only the two human-only secrets the
