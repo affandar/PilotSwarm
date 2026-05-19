@@ -31,6 +31,7 @@ import { publishManifests } from "./lib/publish-manifests.mjs";
 import { waitRollout } from "./lib/wait-rollout.mjs";
 import { seedSecrets } from "./lib/seed-secrets.mjs";
 import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
+import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
 
@@ -374,42 +375,22 @@ async function main() {
     return;
   }
 
-  // 4b) Mode-specific pre-deploy validation.
-  if (edgeMode === "private") {
-    if (!env.HOST || env.HOST.trim() === "") {
-      log(
-        "err",
-        `EDGE_MODE='private' requires HOST to be set (DNS label inside the private zone, e.g. 'portal'). ` +
-          `Re-run \`npm run deploy:new-env -- ${envName} --force\` and supply the host when prompted.`,
-      );
-      process.exit(1);
-    }
-    if (!env.PRIVATE_DNS_ZONE || env.PRIVATE_DNS_ZONE.trim() === "") {
-      log(
-        "err",
-        `EDGE_MODE='private' requires PRIVATE_DNS_ZONE to be set (Azure Private DNS Zone name, e.g. 'pilotswarm.internal'). ` +
-          `Re-run \`npm run deploy:new-env -- ${envName} --force\` and supply the zone when prompted.`,
-      );
-      process.exit(1);
-    }
-    if (!env.PORTAL_HOSTNAME || env.PORTAL_HOSTNAME.trim() === "") {
-      log(
-        "err",
-        `EDGE_MODE='private' requires PORTAL_HOSTNAME to be set (typically '\${HOST}.\${PRIVATE_DNS_ZONE}'; new-env composes this for you). ` +
-          `Re-run \`npm run deploy:new-env -- ${envName} --force\`.`,
-      );
-      process.exit(1);
-    }
-  }
-  if (tlsSource === "letsencrypt") {
-    if (!env.ACME_EMAIL || env.ACME_EMAIL.trim() === "" || !env.ACME_EMAIL.includes("@")) {
-      log(
-        "err",
-        `TLS_SOURCE='letsencrypt' requires ACME_EMAIL to be set (Let's Encrypt registration / renewal-failure notices). ` +
-          `Re-run \`npm run deploy:new-env -- ${envName} --force\` and supply a valid email when prompted.`,
-      );
-      process.exit(1);
-    }
+  // 4b) Contract-driven pre-deploy validation. Single source of truth:
+  // deploy/scripts/lib/overlay-contracts.mjs. The contract table owns
+  // which keys are required per (EDGE_MODE × TLS_SOURCE) and which
+  // off-path keys get auto-stubbed to `unused`. Adding a new overlay key
+  // is a one-line change in overlay-contracts.mjs — deploy.mjs picks it
+  // up automatically.
+  const missingRequired = validateRequiredEnv({ edgeMode, tlsSource, env });
+  if (missingRequired.length > 0) {
+    log(
+      "err",
+      `EDGE_MODE='${edgeMode}' TLS_SOURCE='${tlsSource}' requires ${missingRequired.join(", ")} to be set ` +
+        `(per overlay contract in deploy/scripts/lib/overlay-contracts.mjs). ` +
+        `Re-run \`npm run deploy:new-env -- ${envName} --force\` and supply values when prompted, ` +
+        `or hand-edit deploy/envs/local/${envName}/.env.`,
+    );
+    process.exit(1);
   }
   // TLS_SOURCE=akv no longer requires a pre-set PORTAL_TLS_ISSUER_NAME —
   // Portal bicep now defaults it to OneCertV2-PublicCA (afd) or
@@ -419,10 +400,10 @@ async function main() {
   // TLS_SOURCE=akv-selfsigned uses the AKV built-in `Self` issuer; no
   // CA registration required.
 
-  // 4c) Stub FRONT_DOOR_* + PORTAL_HOSTNAME for non-afd modes so render-params
-  // doesn't fail-closed on placeholders that the bicep simply ignores when
-  // edgeMode != 'afd'. Bicep declares these params with default '' and the
-  // afd-only modules are guarded with `if (edgeMode == 'afd')`.
+  // 4c) Stub `unused`-sentinel values for params that are required by
+  // Bicep templates / kustomize overlays but irrelevant on the active
+  // edge / tls path. Driven by the contract table so adding a new off-
+  // path key is a one-line change in overlay-contracts.mjs.
   //
   // TODO(maintainability): the literal string `"unused"` is a sentinel
   // that survives all the way into rendered bicep parameter files. It
@@ -433,28 +414,17 @@ async function main() {
   // that fails-closed when `MODE_STUB` reaches a *required* (i.e.
   // unguarded) bicep param would surface drift loudly. Tracked as a
   // follow-up; behaviour today is correct.
-  if (edgeMode !== "afd") {
-    if (!env.FRONT_DOOR_PROFILE_NAME) env.FRONT_DOOR_PROFILE_NAME = "unused";
-    if (!env.FRONT_DOOR_PROFILE_RESOURCE_GROUP) env.FRONT_DOOR_PROFILE_RESOURCE_GROUP = "unused";
-    if (!env.FRONT_DOOR_ENDPOINT_NAME) env.FRONT_DOOR_ENDPOINT_NAME = "unused";
-    // BaseInfra outputs APPLICATION_GATEWAY_NAME / PRIVATE_LINK_CONFIGURATION_NAME
-    // as '' in private mode; render-params is fail-closed on empty strings,
-    // so stub them so the Portal params template renders without error.
-    // The Portal bicep ignores both inputs when edgeMode != 'afd' (the
-    // applicationGateway 'existing' reference is itself afd-conditional).
-    if (!env.APPLICATION_GATEWAY_NAME) env.APPLICATION_GATEWAY_NAME = "unused";
-    if (!env.PRIVATE_LINK_CONFIGURATION_NAME) env.PRIVATE_LINK_CONFIGURATION_NAME = "unused";
-  }
-  // PORTAL_HOSTNAME is required in `private` (validated above) and unused in
-  // `afd` (bicep derives it from the AFD endpoint). Stub when blank so render succeeds.
+  applyStubKeys({ edgeMode, tlsSource, env });
+  // PORTAL_HOSTNAME is required in `private` (validated via the contract
+  // through HOST + PRIVATE_DNS_ZONE, which compose to the FQDN) and unused
+  // in `afd` (bicep derives it from the AFD endpoint). Stub when blank so
+  // render-params succeeds. Kept inline because it is a bicep param, not
+  // an overlay-selector key.
   if (!env.PORTAL_HOSTNAME) env.PORTAL_HOSTNAME = "unused";
-
-  // Private DNS Zone params are only consumed by Portal bicep in private
-  // mode (resources are conditional on edgeMode=='private'). In afd mode
-  // both fields are unused — stub so render-params doesn't fail-closed.
-  if (edgeMode !== "private") {
-    if (!env.PRIVATE_DNS_ZONE) env.PRIVATE_DNS_ZONE = "unused";
-    if (!env.AKS_VNET_ID) env.AKS_VNET_ID = "unused";
+  // PORTAL_TLS_ISSUER_NAME stub — kept inline (not in contract) because
+  // it's a bicep param, not an overlay key.
+  if (!env.PORTAL_TLS_ISSUER_NAME || String(env.PORTAL_TLS_ISSUER_NAME).trim() === "") {
+    env.PORTAL_TLS_ISSUER_NAME = "unused";
   }
 
   assertCli("git", "https://git-scm.com/downloads");

@@ -82,15 +82,33 @@ test("portal: private + akv-selfsigned collapses to private-akv (shared overlay)
   assert.equal(got, "private-akv");
 });
 
-test("portal: defaults (no EDGE_MODE / TLS_SOURCE) → afd-letsencrypt", () => {
-  // Mirrors deploy.mjs validation defaults so a fresh dev env that
-  // forgets to set the new keys still resolves to a real overlay.
-  const got = resolveOverlayName({
-    service: "portal",
-    envName: "dev",
-    env: {},
-  });
-  assert.equal(got, "afd-letsencrypt");
+test("portal: throws when EDGE_MODE / TLS_SOURCE are absent (FR-001)", () => {
+  // The previous silent default (afd-letsencrypt) was a footgun — operators
+  // got an unexpected overlay when they forgot to scaffold the env. The
+  // contract gate now hard-fails with both selector names mentioned.
+  assert.throws(
+    () => resolveOverlayName({ service: "portal", envName: "dev", env: {} }),
+    (err) => {
+      assert.match(err.message, /EDGE_MODE/);
+      assert.match(err.message, /TLS_SOURCE/);
+      assert.match(err.message, /overlay-contracts\.mjs/);
+      return true;
+    },
+  );
+});
+
+test("portal: throws when only EDGE_MODE is set", () => {
+  assert.throws(
+    () => resolveOverlayName({ service: "portal", envName: "dev", env: { EDGE_MODE: "afd" } }),
+    /TLS_SOURCE/,
+  );
+});
+
+test("portal: throws when only TLS_SOURCE is set", () => {
+  assert.throws(
+    () => resolveOverlayName({ service: "portal", envName: "dev", env: { TLS_SOURCE: "letsencrypt" } }),
+    /EDGE_MODE/,
+  );
 });
 
 test("portal: case-insensitive on EDGE_MODE / TLS_SOURCE", () => {

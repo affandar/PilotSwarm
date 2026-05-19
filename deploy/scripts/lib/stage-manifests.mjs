@@ -129,8 +129,29 @@ function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
 // `kustomizationPath` for each service. Exported for testability.
 export function resolveOverlayName({ service, envName, env }) {
   if (service === "portal") {
-    const edgeMode = (env.EDGE_MODE || "afd").toLowerCase();
-    const rawTls = (env.TLS_SOURCE || "letsencrypt").toLowerCase();
+    // Hard-fail when EDGE_MODE or TLS_SOURCE is missing from the env Map.
+    // The silent default was a footgun — operators got an unexpected
+    // overlay when they forgot to scaffold the env. The pre-deploy
+    // contract gate in deploy.mjs (overlay-contracts validateRequiredEnv)
+    // catches the same class of error for the deploy path, but stage-
+    // manifests can also be called from rendering paths that bypass
+    // deploy (e.g. CI scaffolds), so we keep an independent guard here.
+    // See deploy/scripts/lib/overlay-contracts.mjs for the per-overlay
+    // roster of inputs.
+    if (!env.EDGE_MODE || !env.TLS_SOURCE) {
+      const missing = [
+        !env.EDGE_MODE ? "EDGE_MODE" : null,
+        !env.TLS_SOURCE ? "TLS_SOURCE" : null,
+      ].filter(Boolean).join(", ");
+      throw new Error(
+        `[stage-manifests] ${missing} must be set in deploy/envs/local/${envName}/.env ` +
+          `for the portal overlay. The previous silent default ` +
+          `(EDGE_MODE=afd, TLS_SOURCE=letsencrypt) has been removed ` +
+          `(see deploy/scripts/lib/overlay-contracts.mjs for the per-overlay roster).`,
+      );
+    }
+    const edgeMode = env.EDGE_MODE.toLowerCase();
+    const rawTls = env.TLS_SOURCE.toLowerCase();
     // akv-selfsigned shares the private-akv overlay (the only delta is
     // the AKV issuer name, set by Portal bicep — kustomize sees nothing
     // different). Keep this in lock-step with Portal/bicep/main.bicep

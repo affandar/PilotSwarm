@@ -44,6 +44,10 @@ param region string
 @description('DNS suffix for the portal cert, e.g. pilotswarm.azure.com. Required in EDGE_MODE=afd + TLS_SOURCE=akv (used to derive resourceName.suffix as cert subject + AFD origin host). Ignored when EDGE_MODE=afd + TLS_SOURCE=letsencrypt (cert subject derives from the AppGw cloudapp.azure.com label) or when EDGE_MODE=private (caller supplies portalHostnameOverride).')
 param sslCertificateDomainSuffix string
 
+// Edge / TLS overlay defaults. JS-side authoritative source of truth is
+// deploy/scripts/lib/overlay-contracts.mjs (DEFAULT_EDGE_MODE,
+// DEFAULT_TLS_SOURCE). When changing the defaults below, also update that
+// file so the deploy-script validators agree with bicep param defaults.
 @description('Edge topology mode. afd = Front Door + Private Link to AppGw private FE (default; covers OSS via the AppGw cloudapp.azure.com DNS label and the enterprise path via a custom domain). private = AppGw private IP listener only, no AFD; caller must supply portalHostnameOverride and arrange DNS resolution to APP_GATEWAY_PRIVATE_IP.')
 @allowed([
   'afd'
@@ -51,13 +55,13 @@ param sslCertificateDomainSuffix string
 ])
 param edgeMode string = 'afd'
 
-@description('TLS cert source. letsencrypt = cert-manager + LE prod (cert lands in a K8s Secret managed by cert-manager; bicep skips the AKV cert deployment script). akv = AKV-registered issuer + bicep cert script (current enterprise path; default preserves enterprise path behavior when the param is not supplied). akv-selfsigned = AKV `Self` issuer + bicep cert script (OSS / dev convenience for private mode; produces a self-signed cert in AKV, no CA registration required, NOT trusted by browsers without manual trust).')
+@description('TLS cert source. letsencrypt = cert-manager + LE prod (cert lands in a K8s Secret managed by cert-manager; bicep skips the AKV cert deployment script). akv = AKV-registered issuer + bicep cert script (current enterprise path). akv-selfsigned = AKV `Self` issuer + bicep cert script (OSS / dev convenience for private mode; produces a self-signed cert in AKV, no CA registration required, NOT trusted by browsers without manual trust). Default matches the JS-side SoT (deploy/scripts/lib/overlay-contracts.mjs DEFAULT_TLS_SOURCE = letsencrypt). Raw-bicep deploys that previously relied on the akv default must now pass tlsSource=akv explicitly.')
 @allowed([
   'letsencrypt'
   'akv'
   'akv-selfsigned'
 ])
-param tlsSource string = 'akv'
+param tlsSource string = 'letsencrypt'
 
 @description('Caller-supplied portal hostname (short label, no domain). Required in EDGE_MODE=private; ignored in afd (bicep derives from the AppGw DNS label for letsencrypt and from resourceName+sslCertificateDomainSuffix for akv). In private mode the FQDN is composed as <portalHostnameOverride>.<privateDnsZoneName>.')
 param portalHostnameOverride string = ''
