@@ -382,17 +382,16 @@ module plApprove '../../common/bicep/approve-private-endpoint.bicep' = if (edgeM
     applicationGatewayResourceGroup: resourceGroup().name
     managedIdentityId: approvalManagedIdentityId
     dTime: dTime
+    // The AppGw PLS in this stack is single-purpose: it only ever serves
+    // AFD's managed PE. AFD sets a stable connection description that we
+    // match on here. An earlier port also added a substring filter on
+    // `privateEndpoint.id` (MF-3, waldemort c9e946c) intended as a second
+    // wall, but AFD-managed PEs carry no customer-side identifier in
+    // their id — any substring that would actually match is itself
+    // Microsoft-internal (e.g. `eafd-Prod-<region>`) and so adds no real
+    // discrimination over the description filter while introducing
+    // deploy-time fragility. Reverted in PR #31 follow-up.
     requestMessageFilter: 'Front Door Private Link request for the service'
-    // MF-3 from waldemort c9e946c (PAW Review PR #7): an additional
-    // fail-closed discriminator beyond requestMessageFilter. We pass the
-    // AFD profile resource ID; the script substring-matches it against
-    // each pending PE's `properties.privateEndpoint.id`. In practice
-    // AFD-created PEs live in an AFD-managed RG whose name embeds the
-    // profile GUID, so the profile resourceId substring is a reasonable
-    // signal. If ≥2 pending connections match the substring, the script
-    // refuses to bulk-approve (avoid auto-approving an unrelated
-    // requester when the substring is too coarse).
-    expectedRequesterResourceId: resourceId(frontDoorProfileResourceGroup, 'Microsoft.Cdn/profiles', frontDoorProfileName)
   }
   dependsOn: [
     afdOrigin
