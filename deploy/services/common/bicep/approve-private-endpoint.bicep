@@ -41,6 +41,9 @@ param dTime string
 @description('Optional: Filter by request message prefix to approve only specific connections')
 param requestMessageFilter string = ''
 
+@description('Optional: only approve pending PE connections whose `properties.privateEndpoint.id` contains this substring (e.g. the AFD profile resource ID). When set and ≥2 pending connections match, the script fails-closed rather than approving any of them. When empty, the substring guard is disabled and every pending connection is approved — the legacy behaviour. Ported from waldemort c9e946c (PAW Review PR #7, MF-3).')
+param expectedRequesterResourceId string = ''
+
 // Deployment script to approve pending private endpoint connections
 // Note: Deployment scripts are meant to run once per deployment, so unique naming is intentional
 #disable-next-line use-stable-resource-identifiers
@@ -72,6 +75,10 @@ resource approvePrivateEndpoint 'Microsoft.Resources/deploymentScripts@2023-08-0
         name: 'REQUEST_MESSAGE_FILTER'
         value: requestMessageFilter
       }
+      {
+        name: 'EXPECTED_REQUESTER_RESOURCE_ID'
+        value: expectedRequesterResourceId
+      }
     ]
     scriptContent: '''
       #!/bin/bash
@@ -83,21 +90,66 @@ resource approvePrivateEndpoint 'Microsoft.Resources/deploymentScripts@2023-08-0
       echo "Application Gateway: $APP_GATEWAY_NAME"
       echo "Resource Group: $APP_GATEWAY_RG"
       echo "Request Message Filter: ${REQUEST_MESSAGE_FILTER:-'(none - approve all)'}"
+      echo "Expected Requester Resource ID: ${EXPECTED_REQUESTER_RESOURCE_ID:-'(none - match all pending)'}"
       echo ""
-      
+
+      # Retry-wrapped `az network private-endpoint-connection list`. Ported
+      # from waldemort c9e946c (PAW Review PR #7, SF-1 + IMPROVE-1): the
+      # prior script swallowed `az` errors with `2>/dev/null || echo "[]"`,
+      # masking auth / RBAC / RG failures as the legitimate "no pending
+      # connections" case. We now surface stderr, keep the exit code, and
+      # retry up to 3 times with exponential backoff (1s/2s/4s) so transient
+      # RBAC propagation does not cause flaky deploys. On exhaustion we exit
+      # non-zero so the bicep deployment fails loudly.
+      list_pe_connections() {
+        local attempts=3
+        local backoffs=(1 2 4)
+        local i=0
+        local out=""
+        while [ $i -lt $attempts ]; do
+          if out=$(az network private-endpoint-connection list \
+                    --name "$APP_GATEWAY_NAME" \
+                    --resource-group "$APP_GATEWAY_RG" \
+                    --type Microsoft.Network/applicationGateways \
+                    -o json); then
+            echo "$out"
+            return 0
+          fi
+          if [ $i -lt $((attempts - 1)) ]; then
+            echo "  [retry] PE-list attempt $((i + 1))/$attempts failed; sleeping ${backoffs[$i]}s..." >&2
+            sleep "${backoffs[$i]}"
+          fi
+          i=$((i + 1))
+        done
+        echo "ERROR: az network private-endpoint-connection list failed after $attempts attempts (auth / RBAC propagation / RG missing). Aborting." >&2
+        return 1
+      }
+
+      # Match-pending helper. Filters CONNECTIONS by:
+      #   - status == "Pending"
+      #   - AND privateEndpoint.id substring-matches $EXPECTED_REQUESTER_RESOURCE_ID
+      #     when that env is non-empty (waldemort c9e946c, MF-3). When the
+      #     env is empty the substring check is skipped, preserving legacy
+      #     behaviour (match every Pending).
+      filter_pending() {
+        local conns="$1"
+        if [ -n "$EXPECTED_REQUESTER_RESOURCE_ID" ]; then
+          echo "$conns" | jq --arg req "$EXPECTED_REQUESTER_RESOURCE_ID" \
+            '[.[] | select(.properties.privateLinkServiceConnectionState.status == "Pending") | select(.properties.privateEndpoint.id | contains($req))]'
+        else
+          echo "$conns" | jq '[.[] | select(.properties.privateLinkServiceConnectionState.status == "Pending")]'
+        fi
+      }
+
       # List all pending private endpoint connections
       echo "Checking for pending private endpoint connections..."
-      CONNECTIONS=$(az network private-endpoint-connection list \
-        --name "$APP_GATEWAY_NAME" \
-        --resource-group "$APP_GATEWAY_RG" \
-        --type Microsoft.Network/applicationGateways \
-        -o json 2>/dev/null || echo "[]")
-      
+      CONNECTIONS=$(list_pe_connections)
+
       # Filter for pending connections
-      PENDING_CONNECTIONS=$(echo "$CONNECTIONS" | jq '[.[] | select(.properties.privateLinkServiceConnectionState.status == "Pending")]')
+      PENDING_CONNECTIONS=$(filter_pending "$CONNECTIONS")
       CONNECTION_COUNT=$(echo "$PENDING_CONNECTIONS" | jq 'length')
       echo "Found $CONNECTION_COUNT pending connection(s)"
-      
+
       if [ "$CONNECTION_COUNT" -eq 0 ] || [ "$CONNECTION_COUNT" = "null" ]; then
         echo "No pending connections to approve"
         # Write output as JSON
@@ -106,7 +158,20 @@ resource approvePrivateEndpoint 'Microsoft.Resources/deploymentScripts@2023-08-0
 EOF
         exit 0
       fi
-      
+
+      # MF-3 fail-closed: when EXPECTED_REQUESTER_RESOURCE_ID is set and ≥2
+      # matches exist after the substring filter, refuse to approve any of
+      # them. Multiple matches means the discriminator is too coarse and
+      # approving everything would risk auto-approving an unrelated requester
+      # whose privateEndpoint.id happens to share the substring.
+      if [ -n "$EXPECTED_REQUESTER_RESOURCE_ID" ] && [ "$CONNECTION_COUNT" -gt 1 ]; then
+        PENDING_COUNT=$CONNECTION_COUNT
+        echo "ERROR: $PENDING_COUNT pending PE connections matched EXPECTED_REQUESTER_RESOURCE_ID='$EXPECTED_REQUESTER_RESOURCE_ID'." >&2
+        echo "       Refusing to bulk-approve. Tighten the discriminator (use a more specific resource ID) and re-run." >&2
+        echo "$PENDING_CONNECTIONS" | jq -r '.[] | "  match: \(.name) (privateEndpoint.id=\(.properties.privateEndpoint.id))"' >&2
+        exit 1
+      fi
+
       # Approve each pending connection
       APPROVED_COUNT=0
       APPROVED_CONNECTIONS="[]"
@@ -137,14 +202,16 @@ EOF
         echo "  ✓ Approved"
       done
       
-      # Re-count approved (connections that are now Approved)
-      FINAL_CONNECTIONS=$(az network private-endpoint-connection list \
-        --name "$APP_GATEWAY_NAME" \
-        --resource-group "$APP_GATEWAY_RG" \
-        --type Microsoft.Network/applicationGateways \
-        -o json 2>/dev/null || echo "[]")
-      
-      APPROVED_LIST=$(echo "$FINAL_CONNECTIONS" | jq '[.[] | select(.properties.privateLinkServiceConnectionState.status == "Approved") | .name]')
+      # Re-count approved (connections that are now Approved). Uses the
+      # retry-wrapped lister and respects the optional requester filter.
+      FINAL_CONNECTIONS=$(list_pe_connections)
+
+      if [ -n "$EXPECTED_REQUESTER_RESOURCE_ID" ]; then
+        APPROVED_LIST=$(echo "$FINAL_CONNECTIONS" | jq --arg req "$EXPECTED_REQUESTER_RESOURCE_ID" \
+          '[.[] | select(.properties.privateLinkServiceConnectionState.status == "Approved") | select(.properties.privateEndpoint.id | contains($req)) | .name]')
+      else
+        APPROVED_LIST=$(echo "$FINAL_CONNECTIONS" | jq '[.[] | select(.properties.privateLinkServiceConnectionState.status == "Approved") | .name]')
+      fi
       APPROVED_COUNT=$(echo "$APPROVED_LIST" | jq 'length')
       
       echo ""
