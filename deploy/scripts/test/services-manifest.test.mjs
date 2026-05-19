@@ -345,8 +345,7 @@ test("loader cross-checks kind against infraOrder/services placement", () => {
 
 
 
-// alwaysRedeploy boolean validator (modules + allModeModules). Ported from
-// waldemort dbe20ca (PAW Review PR #7).
+// alwaysRedeploy boolean validator (modules + allModeModules).
 test("validateServiceManifest accepts modules[].alwaysRedeploy: true", () => {
   const svc = {
     schemaVersion: 1,
@@ -414,8 +413,7 @@ test("MODULE_ALWAYS_REDEPLOY projection matches the real manifest's alwaysRedepl
 // main.bicep AND containing a Microsoft.Resources/deploymentScripts without a
 // forceUpdateTag binding must be owned by a top-level module with
 // alwaysRedeploy: true. Regex-based scanner (no AST); promote to a full parser
-// only when 3+ services consume the same common bicep file. Ported from
-// waldemort 5db51c4 (PAW Review PR #7, R-E drift scanner).
+// only when 3+ services consume the same common bicep file.
 test("drift: rerunnable common/*.bicep deploymentScripts are owned by alwaysRedeploy:true modules", async () => {
   const { readFileSync, existsSync } = await import("node:fs");
   const { dirname, resolve, join: pJoin } = await import("node:path");

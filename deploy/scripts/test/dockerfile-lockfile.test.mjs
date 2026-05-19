@@ -1,8 +1,6 @@
 // Regression test for FR-010 + FR-011 (SC-006): the portal and worker image
 // builds must use the lockfile-enforcing install mode (`npm ci`) so rebuilds
-// from a given source revision are byte-reproducible. Ported from the
-// reproducibility audit in waldemort fb34fc7 (PAW Review PR #7,
-// final-review blocker).
+// from a given source revision are byte-reproducible.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

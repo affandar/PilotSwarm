@@ -384,13 +384,13 @@ module plApprove '../../common/bicep/approve-private-endpoint.bicep' = if (edgeM
     dTime: dTime
     // The AppGw PLS in this stack is single-purpose: it only ever serves
     // AFD's managed PE. AFD sets a stable connection description that we
-    // match on here. An earlier port also added a substring filter on
-    // `privateEndpoint.id` (MF-3, waldemort c9e946c) intended as a second
-    // wall, but AFD-managed PEs carry no customer-side identifier in
-    // their id — any substring that would actually match is itself
-    // Microsoft-internal (e.g. `eafd-Prod-<region>`) and so adds no real
-    // discrimination over the description filter while introducing
-    // deploy-time fragility. Reverted in PR #31 follow-up.
+    // match on here. An earlier iteration also added a substring filter on
+    // `privateEndpoint.id` (MF-3) intended as a second wall, but
+    // AFD-managed PEs carry no customer-side identifier in their id — any
+    // substring that would actually match is itself Microsoft-internal
+    // (e.g. `eafd-Prod-<region>`) and so adds no real discrimination over
+    // the description filter while introducing deploy-time fragility.
+    // Reverted in PR #31 follow-up.
     requestMessageFilter: 'Front Door Private Link request for the service'
   }
   dependsOn: [

@@ -103,8 +103,7 @@ export function validateServiceManifest(obj, path) {
       // role assignments with RBAC propagation races, PE approval that
       // depends on out-of-band PLS state). The flag is surfaced through
       // `service-info.mjs` as `MODULE_ALWAYS_REDEPLOY` and consumed in
-      // `deploy-bicep.mjs:deployOne()`. Ported from waldemort dbe20ca
-      // (PAW Review PR #7).
+      // `deploy-bicep.mjs:deployOne()`.
       if (m.alwaysRedeploy !== undefined && typeof m.alwaysRedeploy !== "boolean") {
         errs.push(`${path}: bicep.${label}[].alwaysRedeploy must be a boolean when set`);
       }

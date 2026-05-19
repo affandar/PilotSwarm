@@ -85,14 +85,14 @@ resource approvePrivateEndpoint 'Microsoft.Resources/deploymentScripts@2023-08-0
       echo "Request Message Filter: ${REQUEST_MESSAGE_FILTER:-'(none - approve all)'}"
       echo ""
 
-      # Retry-wrapped `az network private-endpoint-connection list`. Ported
-      # from waldemort c9e946c (PAW Review PR #7, SF-1 + IMPROVE-1): the
-      # prior script swallowed `az` errors with `2>/dev/null || echo "[]"`,
-      # masking auth / RBAC / RG failures as the legitimate "no pending
-      # connections" case. We now surface stderr, keep the exit code, and
-      # retry up to 3 times with exponential backoff (1s/2s/4s) so transient
-      # RBAC propagation does not cause flaky deploys. On exhaustion we exit
-      # non-zero so the bicep deployment fails loudly.
+      # Retry-wrapped `az network private-endpoint-connection list`
+      # (SF-1 + IMPROVE-1): the prior script swallowed `az` errors with
+      # `2>/dev/null || echo "[]"`, masking auth / RBAC / RG failures as the
+      # legitimate "no pending connections" case. We now surface stderr,
+      # keep the exit code, and retry up to 3 times with exponential backoff
+      # (1s/2s/4s) so transient RBAC propagation does not cause flaky
+      # deploys. On exhaustion we exit non-zero so the bicep deployment
+      # fails loudly.
       list_pe_connections() {
         local attempts=3
         local backoffs=(1 2 4)
@@ -119,15 +119,15 @@ resource approvePrivateEndpoint 'Microsoft.Resources/deploymentScripts@2023-08-0
 
       # Match-pending helper. Filters CONNECTIONS to status == "Pending".
       # The narrower discriminator (description == REQUEST_MESSAGE_FILTER) is
-      # applied in the approval loop below. An earlier port added an
+      # applied in the approval loop below. An earlier iteration added an
       # `EXPECTED_REQUESTER_RESOURCE_ID` substring filter on
-      # privateEndpoint.id (MF-3, ported from waldemort c9e946c). It was
-      # reverted in PR #31 follow-up: the only consumer in this repo is the
-      # AFD wiring (single-purpose AppGw PLS), AFD-managed PE ids contain
-      # no customer-side identifier, and any substring we could pass is
-      # itself Microsoft-internal (e.g. `eafd-Prod-`) — i.e. no better than
-      # the description filter we already apply, while adding deploy-time
-      # fragility if Microsoft renames their managed namespace.
+      # privateEndpoint.id (MF-3). It was reverted in PR #31 follow-up: the
+      # only consumer in this repo is the AFD wiring (single-purpose AppGw
+      # PLS), AFD-managed PE ids contain no customer-side identifier, and
+      # any substring we could pass is itself Microsoft-internal
+      # (e.g. `eafd-Prod-`) — i.e. no better than the description filter we
+      # already apply, while adding deploy-time fragility if Microsoft
+      # renames their managed namespace.
       filter_pending() {
         local conns="$1"
         echo "$conns" | jq '[.[] | select(.properties.privateLinkServiceConnectionState.status == "Pending")]'

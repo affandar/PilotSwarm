@@ -54,7 +54,7 @@ export const MODULE_SCOPE = (() => {
 // Module → boolean: `true` if any service's deploy.json marks the module
 // with `alwaysRedeploy: true` on either `modules` or `allModeModules`.
 // Consumed by `deploy-bicep.mjs:deployOne()` to bypass the deploy-marker
-// hash check. Ported from waldemort dbe20ca (PAW Review PR #7).
+// hash check.
 export const MODULE_ALWAYS_REDEPLOY = (() => {
   const out = {};
   for (const svc of Object.values(_m.services)) {

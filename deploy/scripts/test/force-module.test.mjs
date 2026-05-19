@@ -1,5 +1,4 @@
 // Tests for the `--force-module <name>` CLI flag on deploy.mjs.
-// Ported from waldemort dbe20ca (PAW Review PR #7).
 //
 // Two layers of coverage:
 //   1. --help smoke: the flag stays documented in printHelp().

@@ -23,3 +23,8 @@ deploy/.portal-tls/
 .github/skills/pilotswarm-corp-aks-networking/
 # OSS Node deploy orchestrator: repo-local staging dir
 deploy/.tmp/
+
+# Local-only review/PR artifacts (do not commit)
+.paw/
+.pr-*.diff
+.pr-*.txt

@@ -1,12 +1,20 @@
 // Regression tests for deploy/services/common/bicep/approve-private-endpoint.bicep.
 //
-// Originally ported from waldemort c9e946c (PAW Review PR #7, Change Set D)
-// with both SF-1 (silent-failure removal) and MF-3 (substring-filter
-// hardening). MF-3 was reverted in PR #31 follow-up — the only consumer
-// in this repo is the AFD path, and AFD-managed PE ids carry no
-// customer-side identifier that a substring filter could meaningfully
-// pin to. This test file retains the SF-1 + retry-wrapper guards and
-// adds a regression guard that ensures MF-3 is not silently re-added.
+// Two related hardenings are covered:
+//   * SF-1 (silent-failure removal): the prior auto-approval script swallowed
+//     `az` errors with `2>/dev/null || echo "[]"`, masking auth / RBAC / RG
+//     failures as the legitimate "no pending connections" case. The current
+//     script surfaces stderr, keeps the exit code, and retries via a
+//     `list_pe_connections` wrapper.
+//   * MF-3 (substring-filter) was considered as a second discriminator on
+//     `privateEndpoint.id` and then reverted in PR #31 follow-up — the only
+//     consumer is the AFD path, and AFD-managed PE ids carry no customer-side
+//     identifier that a substring filter could meaningfully pin to. The
+//     description filter (`requestMessageFilter`) is sufficient for that
+//     single-purpose AppGw PLS.
+//
+// This file retains the SF-1 + retry-wrapper guards and adds a regression
+// guard that ensures MF-3 is not silently re-added.
 //
 // We don't run `bash -n` here because the bicep file embeds the bash
 // inside a `scriptContent: '''...'''` literal, and the test harness

@@ -123,8 +123,7 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   // Per-module bypass paths. `alwaysRedeploy: true` on the module entry
   // (deploy.json) sets MODULE_ALWAYS_REDEPLOY; the operator can also pass
   // `--force-module <name>` (collected into forceSet) to force a single
-  // module without rebuilding everything via `--force`. Ported from
-  // waldemort dbe20ca (PAW Review PR #7).
+  // module without rebuilding everything via `--force`.
   const effectiveForce =
     force === true ||
     MODULE_ALWAYS_REDEPLOY[moduleName] === true ||
