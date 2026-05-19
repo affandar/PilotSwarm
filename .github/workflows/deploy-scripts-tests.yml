@@ -12,8 +12,9 @@ on:
   pull_request:
     paths:
       - "deploy/scripts/**"
-      - "deploy/services/**/deploy.json"
-      - "deploy/services/**/bicep/**"
+      - "deploy/services/**"
+      - "deploy/gitops/**"
+      - "deploy/envs/template.env"
       - "deploy/Dockerfile.portal"
       - "deploy/Dockerfile.worker"
       - "package.json"
@@ -24,8 +25,9 @@ on:
       - main
     paths:
       - "deploy/scripts/**"
-      - "deploy/services/**/deploy.json"
-      - "deploy/services/**/bicep/**"
+      - "deploy/services/**"
+      - "deploy/gitops/**"
+      - "deploy/envs/template.env"
       - "deploy/Dockerfile.portal"
       - "deploy/Dockerfile.worker"
       - "package.json"

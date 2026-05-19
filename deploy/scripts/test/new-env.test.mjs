@@ -169,6 +169,48 @@ test("scaffolder accepts explicit --region-short for unknown location", () => {
   }
 });
 
+test("scaffolder warns about empty operator-required keys (FR-003 warn-and-continue)", () => {
+  // afd-letsencrypt overlay requires ACME_EMAIL. FULL_ARGS provides
+  // --subscription and --location but not --acme-email, so the scaffolder
+  // must warn (not throw) and still write the .env. Authoritative hard-gate
+  // is deploy.mjs:validateRequiredEnv at deploy time.
+  cleanup();
+  try {
+    const r = runScript(FULL_ARGS());
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const out = `${r.stdout}\n${r.stderr}`;
+    assert.match(
+      out,
+      /empty required keys[^]*ACME_EMAIL/,
+      `expected ACME_EMAIL warning in scaffolder output:\n${out}`,
+    );
+    assert.match(
+      out,
+      /Hand-edit deploy\/envs\/local\/scafftst\/\.env/,
+      `expected fix-it hint pointing at the .env path:\n${out}`,
+    );
+    assert.ok(existsSync(TEST_FILE), "scaffolder must still write .env after warn");
+  } finally {
+    cleanup();
+  }
+});
+
+test("scaffolder does NOT warn when operator-required keys are provided", () => {
+  cleanup();
+  try {
+    const r = runScript([...FULL_ARGS(), "--acme-email", "ops@example.com"]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const out = `${r.stdout}\n${r.stderr}`;
+    assert.doesNotMatch(
+      out,
+      /empty required keys/,
+      `did not expect empty-keys warning when ACME_EMAIL is set:\n${out}`,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("scaffolder shows usage with --help", () => {
   const r = runScript(["--help"]);
   assert.equal(r.status, 0);

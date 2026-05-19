@@ -57,9 +57,13 @@ function parseArgs(argv) {
     } else if (a === "--force") {
       flags.force = true;
     } else if (a.startsWith("--force-module=")) {
-      flags.forceModules.push(a.slice("--force-module=".length));
+      const value = a.slice("--force-module=".length);
+      if (!value) throw new Error("--force-module requires a module name (got empty value)");
+      flags.forceModules.push(value);
     } else if (a === "--force-module") {
-      flags.forceModules.push(args[++i]);
+      const value = args[++i];
+      if (!value) throw new Error("--force-module requires a module name (e.g. --force-module portal)");
+      flags.forceModules.push(value);
     } else if (a.startsWith("--steps=")) {
       flags.steps = a.slice("--steps=".length);
     } else if (a === "--steps") {
