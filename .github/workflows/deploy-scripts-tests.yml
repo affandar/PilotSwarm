@@ -1,0 +1,59 @@
+name: "Deploy scripts tests"
+
+# Runs the deploy-tooling regression suite (`npm run test:deploy-scripts`) on
+# PRs and pushes that touch deploy-tooling code, tests, or this workflow.
+# Gates merges on the deploy-scripts test suite (including the FR-009 drift
+# check and the FR-010/FR-011 Dockerfile lockfile-enforcement test) so a
+# regression in the deploy pipeline is caught before it lands on `main`.
+#
+# Spec: FR-017, SC-011.
+
+on:
+  pull_request:
+    paths:
+      - "deploy/scripts/**"
+      - "deploy/services/**/deploy.json"
+      - "deploy/services/**/bicep/**"
+      - "deploy/Dockerfile.portal"
+      - "deploy/Dockerfile.worker"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/deploy-scripts-tests.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "deploy/scripts/**"
+      - "deploy/services/**/deploy.json"
+      - "deploy/services/**/bicep/**"
+      - "deploy/Dockerfile.portal"
+      - "deploy/Dockerfile.worker"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/deploy-scripts-tests.yml"
+
+concurrency:
+  group: deploy-scripts-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: deploy-scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          # No npm cache: the deploy-scripts suite is stdlib-only and does
+          # not need workspace dependencies installed.
+
+      - name: Run deploy-scripts tests
+        run: npm run test:deploy-scripts
