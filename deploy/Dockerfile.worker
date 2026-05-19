@@ -13,7 +13,9 @@ COPY package.json package-lock.json ./
 COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/cli/package.json ./packages/cli/
 COPY scripts/postinstall.js ./scripts/
-RUN npm install --omit=dev --force
+# `npm ci` enforces the committed package-lock.json so worker image rebuilds
+# from this SHA are byte-reproducible. Matches deploy/Dockerfile.starter.
+RUN npm ci --omit=dev --force
 
 # Copy built SDK dist + bundled plugins, worker script, and app plugins
 COPY packages/sdk/dist/ ./packages/sdk/dist/
