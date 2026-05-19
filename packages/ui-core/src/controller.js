@@ -43,12 +43,34 @@ const FLEET_STATS_REFRESH_MS = 30_000;
 const FLEET_STATS_DEFAULT_WINDOW_DAYS = 30;
 const SESSION_REFRESH_FAILED_STATUS = "Session refresh failed";
 const AUTO_HISTORY_SCROLL_PAGE_COUNT = 3;
+const SESSION_REFRESH_PAGE_LIMIT = 200;
+const SESSION_REFRESH_MAX_PAGES = 5;
 const FULLSCREENABLE_PANES = new Set([
     FOCUS_REGIONS.SESSIONS,
     FOCUS_REGIONS.CHAT,
     FOCUS_REGIONS.INSPECTOR,
     FOCUS_REGIONS.ACTIVITY,
 ]);
+
+async function loadSessionCatalogPageWindow(transport) {
+    if (typeof transport.listSessionsPage !== "function") {
+        return transport.listSessions();
+    }
+
+    const sessions = [];
+    let cursor = null;
+    for (let pageIndex = 0; pageIndex < SESSION_REFRESH_MAX_PAGES; pageIndex += 1) {
+        const page = await transport.listSessionsPage({
+            limit: SESSION_REFRESH_PAGE_LIMIT,
+            cursor,
+        });
+        const pageSessions = Array.isArray(page?.sessions) ? page.sessions : [];
+        sessions.push(...pageSessions);
+        if (!page?.hasMore || !page?.nextCursor) break;
+        cursor = page.nextCursor;
+    }
+    return sessions;
+}
 
 function groupModelsByProvider(models = []) {
     const groups = [];
@@ -1533,7 +1555,7 @@ export class PilotSwarmUiController {
         const recoveringConnection = !preRefreshState.connection.connected || Boolean(preRefreshState.connection.error);
         const shouldClearRefreshFailureBanner = preRefreshState.ui.statusText === SESSION_REFRESH_FAILED_STATUS;
         const previousActive = this.getState().sessions.activeSessionId;
-        let sessions = await this.transport.listSessions();
+        let sessions = await loadSessionCatalogPageWindow(this.transport);
         const active = previousActive;
         if (
             active

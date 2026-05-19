@@ -580,6 +580,10 @@ export class NodeSdkTransport {
         return this.mgmt.listSessions();
     }
 
+    async listSessionsPage(opts) {
+        return this.mgmt.listSessionsPage(opts);
+    }
+
     async getSession(sessionId) {
         return this.mgmt.getSession(sessionId);
     }
@@ -602,6 +606,10 @@ export class NodeSdkTransport {
 
     async getUserStats(opts) {
         return this.mgmt.getUserStats(opts);
+    }
+
+    async getTopEventEmitters(opts) {
+        return this.mgmt.getTopEventEmitters(opts);
     }
 
     /**
