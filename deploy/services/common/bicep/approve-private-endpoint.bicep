@@ -1,17 +1,16 @@
 // ==============================================================================
 // Auto-Approve Private Endpoint Connection from Front Door to Application Gateway
 // Runs as a deployment script after Front Door origin is created
-// 
+//
 // Usage:
 //   module ApprovePrivateEndpoint '../../common/bicep/approve-private-endpoint.bicep' = {
-//     name: 'approve-pe-${dTime}'
+//     name: 'approve-pe'
 //     scope: az.resourceGroup(applicationGatewayResourceGroup)
 //     params: {
 //       location: location
 //       applicationGatewayName: applicationGatewayName
 //       applicationGatewayResourceGroup: applicationGatewayResourceGroup
 //       managedIdentityId: MyManagedIdentity.id
-//       dTime: dTime
 //     }
 //     dependsOn: [
 //       FrontDoorOriginRoute  // Ensure origin is created first
@@ -35,17 +34,22 @@ param applicationGatewayResourceGroup string
 @description('Managed identity resource ID for running the deployment script')
 param managedIdentityId string
 
-@description('Current timestamp for unique deployment naming')
-param dTime string
-
 @description('Optional: Filter by request message prefix to approve only specific connections')
 param requestMessageFilter string = ''
 
-// Deployment script to approve pending private endpoint connections
-// Note: Deployment scripts are meant to run once per deployment, so unique naming is intentional
-#disable-next-line use-stable-resource-identifiers
+// Deployment script to approve pending private endpoint connections.
+//
+// Stable resource name (no per-deploy suffix). The script body is itself
+// idempotent — when no Pending connections are found, it exits 0 with
+// `approvedCount: 0` — and `Microsoft.Resources/deploymentScripts` will not
+// re-execute when its template/params are unchanged between deploys. This
+// matches the pattern used by `akv-ssl-certificate.bicep` and avoids
+// littering the resource group with one orphaned deploymentScript per
+// deploy. If a re-run is genuinely needed (e.g. operator suspects a
+// race), the deploy orchestrator's `--force-module portal` flag forces
+// the bicep deploy past its marker.
 resource approvePrivateEndpoint 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
-  name: 'approve-pe-${applicationGatewayName}-${substring(uniqueString(dTime), 0, 6)}'
+  name: 'approve-pe-${applicationGatewayName}'
   location: location
   kind: 'AzureCLI'
   identity: {

@@ -233,8 +233,8 @@ literal `${VAR}` placeholders. The `bicep` step:
 
 Stdlib-only unit tests cover the orchestrator's trickiest pieces (overlay
 substitution rules, FR-022 Bicep-output alias map, deploy-marker hashing,
-manifest publish atomicity, private-endpoint approval, drift detection on
-common bicep modules, and Dockerfile lockfile enforcement).
+manifest publish atomicity, private-endpoint approval, and Dockerfile
+lockfile enforcement).
 
 ```sh
 npm run test:deploy-scripts
@@ -249,23 +249,6 @@ package manifest/lockfile, or that workflow itself changes.
 
 ### Per-module redeploy controls
 
-A module in a service's `deploy.json` can opt into per-deploy rerun by
-setting `alwaysRedeploy: true` on its `modules[]` (and `allModeModules[]`)
-entry. The deploy-marker hash check is bypassed for that module on every
-invocation. Use this for modules whose post-conditions must re-execute
-even when inputs are unchanged (deployment scripts, role assignments
-sensitive to RBAC propagation, private-endpoint approval). The portal
-service is the canonical consumer.
-
-A drift check in `services-manifest.test.mjs` fails CI if any
-`common/*.bicep` transitively referenced from a service's `main.bicep`
-contains a `Microsoft.Resources/deploymentScripts` without a
-`forceUpdateTag:` binding and the owning service's top-level module is
-not marked `alwaysRedeploy: true`. The fix is either: (a) add
-`alwaysRedeploy: true` in the service's `deploy.json`, or (b) add
-`forceUpdateTag: utcNow()` (or a `utcNow()`-bound parameter) to the
-deployment-script resource.
-
 For one-off operator overrides, `--force-module <name>` on the deploy
 orchestrator forces a single named module past its deploy marker for the
 current invocation. Repeatable; lighter-touch than `--force` which
@@ -279,9 +262,10 @@ operator-driven checks should be run against a real AFD-fronted stamp:
 
 1. **Idempotency**: re-run the deploy against an environment whose AFD
    private-endpoint is already Approved. The bicep deployment-script
-   should exit 0 quickly via the idempotency pre-check (no polling), and
-   the deployment marker should advance because the portal module is
-   `alwaysRedeploy: true`.
+   should exit 0 quickly via the idempotency pre-check (no polling). The
+   portal module's deploy-marker matches on unchanged inputs, so the
+   normal deploy is a no-op skip; use `--force-module portal` to actually
+   re-run the approval bicep when verifying this.
 2. **Minimum-role compatibility**: deploy from an identity holding only
    the documented minimum role assignment on the Application Gateway
    (Network Contributor scoped to the AppGw, no broader Reader). The

@@ -381,7 +381,6 @@ module plApprove '../../common/bicep/approve-private-endpoint.bicep' = if (edgeM
     applicationGatewayName: applicationGatewayName
     applicationGatewayResourceGroup: resourceGroup().name
     managedIdentityId: approvalManagedIdentityId
-    dTime: dTime
     // The AppGw PLS in this stack is single-purpose: it only ever serves
     // AFD's managed PE. AFD sets a stable connection description that we
     // match on here. An earlier iteration also added a substring filter on

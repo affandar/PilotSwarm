@@ -7,10 +7,10 @@
   "bicep": {
     "modules": [
       { "name": "base-infra", "scope": "group" },
-      { "name": "portal",     "scope": "group", "alwaysRedeploy": true }
+      { "name": "portal",     "scope": "group" }
     ],
     "allModeModules": [
-      { "name": "portal", "scope": "group", "alwaysRedeploy": true }
+      { "name": "portal", "scope": "group" }
     ]
   },
   "image": {

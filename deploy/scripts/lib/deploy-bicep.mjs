@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { run, runJson, log, REPO_ROOT } from "./common.mjs";
 import { renderParams } from "./render-params.mjs";
-import { SERVICE_TO_MODULES, MODULE_SCOPE, MODULE_ALWAYS_REDEPLOY } from "./service-info.mjs";
+import { SERVICE_TO_MODULES, MODULE_SCOPE } from "./service-info.mjs";
 import { saveCache } from "./bicep-outputs-cache.mjs";
 import {
   computeTemplateHash,
@@ -120,13 +120,11 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   // bypass `az deployment create` entirely. Bypass with `--force`.
   const templateHash = computeTemplateHash(moduleName);
   const paramsHash = computeParamsHash(renderedPath);
-  // Per-module bypass paths. `alwaysRedeploy: true` on the module entry
-  // (deploy.json) sets MODULE_ALWAYS_REDEPLOY; the operator can also pass
-  // `--force-module <name>` (collected into forceSet) to force a single
-  // module without rebuilding everything via `--force`.
+  // Per-module bypass: the operator can pass `--force-module <name>`
+  // (collected into forceSet) to force a single module past its marker
+  // without rebuilding everything via `--force`.
   const effectiveForce =
     force === true ||
-    MODULE_ALWAYS_REDEPLOY[moduleName] === true ||
     (forceSet && forceSet.has(moduleName));
   const decision = shouldSkipDeploy({ envName, moduleName, templateHash, paramsHash, force: effectiveForce });
   if (decision.skip) {
@@ -138,9 +136,8 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   }
   if (decision.reason !== "no marker") {
     let why = decision.reason;
-    if (effectiveForce && !force) {
-      if (forceSet && forceSet.has(moduleName)) why = `--force-module=${moduleName}`;
-      else if (MODULE_ALWAYS_REDEPLOY[moduleName]) why = "alwaysRedeploy=true";
+    if (effectiveForce && !force && forceSet && forceSet.has(moduleName)) {
+      why = `--force-module=${moduleName}`;
     }
     log("info", `[${moduleName}] redeploying (${why})`);
   }
