@@ -31,6 +31,7 @@ import { publishManifests } from "./lib/publish-manifests.mjs";
 import { waitRollout } from "./lib/wait-rollout.mjs";
 import { seedSecrets } from "./lib/seed-secrets.mjs";
 import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
+import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
 
@@ -43,6 +44,7 @@ function parseArgs(argv) {
     imageTag: null,
     clean: false,
     force: false,
+    forceModules: [],
     help: false,
   };
 
@@ -54,6 +56,14 @@ function parseArgs(argv) {
       flags.clean = true;
     } else if (a === "--force") {
       flags.force = true;
+    } else if (a.startsWith("--force-module=")) {
+      const value = a.slice("--force-module=".length);
+      if (!value) throw new Error("--force-module requires a module name (got empty value)");
+      flags.forceModules.push(value);
+    } else if (a === "--force-module") {
+      const value = args[++i];
+      if (!value) throw new Error("--force-module requires a module name (e.g. --force-module portal)");
+      flags.forceModules.push(value);
     } else if (a.startsWith("--steps=")) {
       flags.steps = a.slice("--steps=".length);
     } else if (a === "--steps") {
@@ -115,6 +125,10 @@ function printHelp() {
       "  --clean             Wipe deploy/.tmp/<service>-<env>/ before running.",
       "  --force             Ignore deploy markers; redeploy every Bicep module even if",
       "                      its template + rendered params are unchanged since last success.",
+      "  --force-module <m>  Force-redeploy a single named Bicep module (e.g. portal,",
+      "                      pls-anchor). Repeatable. Lighter-touch than --force when only",
+      "                      one module needs to retry past its deploy marker (e.g. recover",
+      "                      from an out-of-band Bicep tweak or RBAC propagation race).",
       "  --help, -h          Show this help.",
       "",
       "Spec: .paw/work/oss-deploy-script/Spec.md",
@@ -167,6 +181,7 @@ async function runStage(name, ctx) {
         stagingDir: ctx.stagingDir,
         moduleListOverride: ctx.moduleListOverride,
         force: ctx.force,
+        forceModules: ctx.forceModules,
       });
       // Re-run composition: a fresh `all` run starts with an empty outputs
       // cache, so the startup pass at line ~258 had nothing to compose.
@@ -250,7 +265,7 @@ async function main() {
     return;
   }
 
-  const { service, envName, steps, region, imageTag, clean, force } = parsed;
+  const { service, envName, steps, region, imageTag, clean, force, forceModules } = parsed;
 
   // 1) Validate inputs (accepts the virtual `all` aggregate)
   validateService(service);
@@ -374,42 +389,22 @@ async function main() {
     return;
   }
 
-  // 4b) Mode-specific pre-deploy validation.
-  if (edgeMode === "private") {
-    if (!env.HOST || env.HOST.trim() === "") {
-      log(
-        "err",
-        `EDGE_MODE='private' requires HOST to be set (DNS label inside the private zone, e.g. 'portal'). ` +
-          `Re-run \`npm run deploy:new-env -- ${envName} --force\` and supply the host when prompted.`,
-      );
-      process.exit(1);
-    }
-    if (!env.PRIVATE_DNS_ZONE || env.PRIVATE_DNS_ZONE.trim() === "") {
-      log(
-        "err",
-        `EDGE_MODE='private' requires PRIVATE_DNS_ZONE to be set (Azure Private DNS Zone name, e.g. 'pilotswarm.internal'). ` +
-          `Re-run \`npm run deploy:new-env -- ${envName} --force\` and supply the zone when prompted.`,
-      );
-      process.exit(1);
-    }
-    if (!env.PORTAL_HOSTNAME || env.PORTAL_HOSTNAME.trim() === "") {
-      log(
-        "err",
-        `EDGE_MODE='private' requires PORTAL_HOSTNAME to be set (typically '\${HOST}.\${PRIVATE_DNS_ZONE}'; new-env composes this for you). ` +
-          `Re-run \`npm run deploy:new-env -- ${envName} --force\`.`,
-      );
-      process.exit(1);
-    }
-  }
-  if (tlsSource === "letsencrypt") {
-    if (!env.ACME_EMAIL || env.ACME_EMAIL.trim() === "" || !env.ACME_EMAIL.includes("@")) {
-      log(
-        "err",
-        `TLS_SOURCE='letsencrypt' requires ACME_EMAIL to be set (Let's Encrypt registration / renewal-failure notices). ` +
-          `Re-run \`npm run deploy:new-env -- ${envName} --force\` and supply a valid email when prompted.`,
-      );
-      process.exit(1);
-    }
+  // 4b) Contract-driven pre-deploy validation. Single source of truth:
+  // deploy/scripts/lib/overlay-contracts.mjs. The contract table owns
+  // which keys are required per (EDGE_MODE × TLS_SOURCE) and which
+  // off-path keys get auto-stubbed to `unused`. Adding a new overlay key
+  // is a one-line change in overlay-contracts.mjs — deploy.mjs picks it
+  // up automatically.
+  const missingRequired = validateRequiredEnv({ edgeMode, tlsSource, env });
+  if (missingRequired.length > 0) {
+    log(
+      "err",
+      `EDGE_MODE='${edgeMode}' TLS_SOURCE='${tlsSource}' requires ${missingRequired.join(", ")} to be set ` +
+        `(per overlay contract in deploy/scripts/lib/overlay-contracts.mjs). ` +
+        `Re-run \`npm run deploy:new-env -- ${envName} --force\` and supply values when prompted, ` +
+        `or hand-edit deploy/envs/local/${envName}/.env.`,
+    );
+    process.exit(1);
   }
   // TLS_SOURCE=akv no longer requires a pre-set PORTAL_TLS_ISSUER_NAME —
   // Portal bicep now defaults it to OneCertV2-PublicCA (afd) or
@@ -419,10 +414,10 @@ async function main() {
   // TLS_SOURCE=akv-selfsigned uses the AKV built-in `Self` issuer; no
   // CA registration required.
 
-  // 4c) Stub FRONT_DOOR_* + PORTAL_HOSTNAME for non-afd modes so render-params
-  // doesn't fail-closed on placeholders that the bicep simply ignores when
-  // edgeMode != 'afd'. Bicep declares these params with default '' and the
-  // afd-only modules are guarded with `if (edgeMode == 'afd')`.
+  // 4c) Stub `unused`-sentinel values for params that are required by
+  // Bicep templates / kustomize overlays but irrelevant on the active
+  // edge / tls path. Driven by the contract table so adding a new off-
+  // path key is a one-line change in overlay-contracts.mjs.
   //
   // TODO(maintainability): the literal string `"unused"` is a sentinel
   // that survives all the way into rendered bicep parameter files. It
@@ -433,28 +428,17 @@ async function main() {
   // that fails-closed when `MODE_STUB` reaches a *required* (i.e.
   // unguarded) bicep param would surface drift loudly. Tracked as a
   // follow-up; behaviour today is correct.
-  if (edgeMode !== "afd") {
-    if (!env.FRONT_DOOR_PROFILE_NAME) env.FRONT_DOOR_PROFILE_NAME = "unused";
-    if (!env.FRONT_DOOR_PROFILE_RESOURCE_GROUP) env.FRONT_DOOR_PROFILE_RESOURCE_GROUP = "unused";
-    if (!env.FRONT_DOOR_ENDPOINT_NAME) env.FRONT_DOOR_ENDPOINT_NAME = "unused";
-    // BaseInfra outputs APPLICATION_GATEWAY_NAME / PRIVATE_LINK_CONFIGURATION_NAME
-    // as '' in private mode; render-params is fail-closed on empty strings,
-    // so stub them so the Portal params template renders without error.
-    // The Portal bicep ignores both inputs when edgeMode != 'afd' (the
-    // applicationGateway 'existing' reference is itself afd-conditional).
-    if (!env.APPLICATION_GATEWAY_NAME) env.APPLICATION_GATEWAY_NAME = "unused";
-    if (!env.PRIVATE_LINK_CONFIGURATION_NAME) env.PRIVATE_LINK_CONFIGURATION_NAME = "unused";
-  }
-  // PORTAL_HOSTNAME is required in `private` (validated above) and unused in
-  // `afd` (bicep derives it from the AFD endpoint). Stub when blank so render succeeds.
+  applyStubKeys({ edgeMode, tlsSource, env });
+  // PORTAL_HOSTNAME is required in `private` (validated via the contract
+  // through HOST + PRIVATE_DNS_ZONE, which compose to the FQDN) and unused
+  // in `afd` (bicep derives it from the AFD endpoint). Stub when blank so
+  // render-params succeeds. Kept inline because it is a bicep param, not
+  // an overlay-selector key.
   if (!env.PORTAL_HOSTNAME) env.PORTAL_HOSTNAME = "unused";
-
-  // Private DNS Zone params are only consumed by Portal bicep in private
-  // mode (resources are conditional on edgeMode=='private'). In afd mode
-  // both fields are unused — stub so render-params doesn't fail-closed.
-  if (edgeMode !== "private") {
-    if (!env.PRIVATE_DNS_ZONE) env.PRIVATE_DNS_ZONE = "unused";
-    if (!env.AKS_VNET_ID) env.AKS_VNET_ID = "unused";
+  // PORTAL_TLS_ISSUER_NAME stub — kept inline (not in contract) because
+  // it's a bicep param, not an overlay key.
+  if (!env.PORTAL_TLS_ISSUER_NAME || String(env.PORTAL_TLS_ISSUER_NAME).trim() === "") {
+    env.PORTAL_TLS_ISSUER_NAME = "unused";
   }
 
   assertCli("git", "https://git-scm.com/downloads");
@@ -470,7 +454,7 @@ async function main() {
 
   // 7) Branch: `all` aggregates over the canonical sequence; otherwise single service.
   if (service === "all") {
-    await runAll({ envName, env, steps, imageTag: resolvedTag, clean, force, edgeMode });
+    await runAll({ envName, env, steps, imageTag: resolvedTag, clean, force, forceModules, edgeMode });
   } else {
     await runOneService({
       service,
@@ -480,6 +464,7 @@ async function main() {
       imageTag: resolvedTag,
       clean,
       force,
+      forceModules,
       moduleListOverride: null,
     });
   }
@@ -489,7 +474,7 @@ async function main() {
 
 // Single-service execution path. Used directly for explicit `<service> <env>`
 // invocations and as the per-service step inside `runAll`.
-async function runOneService({ service, envName, env, steps, imageTag, clean, force, moduleListOverride }) {
+async function runOneService({ service, envName, env, steps, imageTag, clean, force, forceModules, moduleListOverride }) {
   if (clean) {
     const { rmSync } = await import("node:fs");
     const dir = stagingDir(service, envName);
@@ -525,6 +510,7 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
     stagingDir: stage,
     moduleListOverride,
     force,
+    forceModules,
   };
 
   for (const step of effectiveSteps) {
@@ -547,7 +533,7 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
 // server, deployment storage account) cascade forward. Each service deploys
 // only its own Bicep module (ALL_MODE_MODULES) — dependencies were deployed
 // by an earlier item in the same invocation.
-async function runAll({ envName, env, steps, imageTag, clean, force, edgeMode }) {
+async function runAll({ envName, env, steps, imageTag, clean, force, forceModules, edgeMode }) {
   // Drop globalinfra from the sequence when AFD is disabled — the service is
   // entirely AFD provisioning and would otherwise create an empty RG with no
   // resources. Mirrors the single-service short-circuit above. cert-manager
@@ -572,6 +558,7 @@ async function runAll({ envName, env, steps, imageTag, clean, force, edgeMode })
       imageTag,
       clean,
       force,
+      forceModules,
       moduleListOverride: ALL_MODE_MODULES[svc],
     });
   }

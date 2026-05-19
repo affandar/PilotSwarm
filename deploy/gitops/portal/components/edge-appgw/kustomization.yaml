@@ -47,7 +47,7 @@ patches:
           appgw.ingress.kubernetes.io/health-probe-port: "3001"
           appgw.ingress.kubernetes.io/backend-hostname: __PORTAL_HOSTNAME__
           appgw.ingress.kubernetes.io/health-probe-hostname: __PORTAL_HOSTNAME__
-          appgw.ingress.kubernetes.io/appgw-ssl-certificate: pilotswarm-portal-tls
+          appgw.ingress.kubernetes.io/appgw-ssl-certificate: __PORTAL_TLS_CERT_NAME__
       spec:
         ingressClassName: azure-application-gateway
         tls:

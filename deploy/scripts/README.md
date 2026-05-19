@@ -123,6 +123,11 @@ Flags:
   --clean             Wipe deploy/.tmp/<service>-<env>/ before running
   --force             Ignore deploy markers; redeploy every Bicep module even
                       if its template + rendered params are unchanged
+  --force-module <m>  Force-redeploy a single named Bicep module (e.g. portal,
+                      pls-anchor). Repeatable. Lighter-touch than --force when
+                      only one module needs to retry past its deploy marker
+                      (e.g. recover from an out-of-band Bicep tweak or RBAC
+                      propagation race).
   --help, -h
 ```
 
@@ -226,18 +231,92 @@ literal `${VAR}` placeholders. The `bicep` step:
 
 ## Tests
 
-Stdlib-only unit tests cover the two trickiest pieces of the orchestrator:
-the fail-closed `.env` substitution rules and the FR-022 Bicep-output
-alias map.
+Stdlib-only unit tests cover the orchestrator's trickiest pieces (overlay
+substitution rules, FR-022 Bicep-output alias map, deploy-marker hashing,
+manifest publish atomicity, private-endpoint approval, and Dockerfile
+lockfile enforcement).
 
 ```sh
 npm run test:deploy-scripts
 ```
 
 Test files live at `deploy/scripts/test/*.test.mjs` and run with the
-built-in Node test runner (no new dependencies).
+built-in Node test runner (no new dependencies). The suite is gated on PRs
+and pushes to `main` by `.github/workflows/deploy-scripts-tests.yml`
+whenever `deploy/scripts/**`, `deploy/services/**/deploy.json`,
+`deploy/services/**/bicep/**`, the worker/portal Dockerfiles, the root
+package manifest/lockfile, or that workflow itself changes.
 
-## Secrets & identity (bicep-deploy path only)
+### Per-module redeploy controls
+
+For one-off operator overrides, `--force-module <name>` on the deploy
+orchestrator forces a single named module past its deploy marker for the
+current invocation. Repeatable; lighter-touch than `--force` which
+bypasses markers for every module.
+
+### Manual verification protocol — private-endpoint approval
+
+After landing the FR-015 hardening of
+`deploy/services/common/bicep/approve-private-endpoint.bicep`, two
+operator-driven checks should be run against a real AFD-fronted stamp:
+
+1. **Idempotency**: re-run the deploy against an environment whose AFD
+   private-endpoint is already Approved. The bicep deployment-script
+   should exit 0 quickly via the idempotency pre-check (no polling). The
+   portal module's deploy-marker matches on unchanged inputs, so the
+   normal deploy is a no-op skip; use `--force-module portal` to actually
+   re-run the approval bicep when verifying this.
+2. **Minimum-role compatibility**: deploy from an identity holding only
+   the documented minimum role assignment on the Application Gateway
+   (Network Contributor scoped to the AppGw, no broader Reader). The
+   `list_pe_connections` retry helper should not be exercised on the
+   happy path; if it is, stderr will surface the underlying `az` error
+   instead of being misclassified as "no pending connections".
+
+If either check fails, the regression tests in `approve-pe.test.mjs`
+should be extended to cover the new failure mode before re-attempting.
+
+#### Note: AFD post-approval propagation delay
+
+Approving the PE on the AppGw is necessary but **not sufficient** for the
+AFD endpoint to start serving traffic. AFD does not continuously poll the
+PE connection state — it only re-evaluates Private Link wiring as part
+of each origin **deployment cycle**. If the PE is approved after AFD's
+most recent cycle completed, AFD will not pick up the approval until its
+next organic cycle, which the FAQ documents at
+[**"up to 20 minutes" for a single configuration update**][afd-faq]
+(back-to-back changes can extend to ~40 min). The Private Link how-to
+adds: ["it can take a few minutes for the connection to be
+established"][afd-pl-appgw] after approval. In practice we see
+**15–30 minutes** end-to-end.
+
+During that window the AFD endpoint returns AFD's default 404 HTML page
+(consistent ~260 KB body, identical for `/`, `/api/health`, etc., with
+an `x-azure-ref` response header). The AFD origin's
+`sharedPrivateLinkResource.deploymentStatus` may also show `NotStarted`:
+that field is a [documented read-only AFD edge-propagation state][afd-state-spec]
+(values: `NotStarted`, `InProgress`, `Succeeded`, `Failed`), separate
+from `provisioningState`, and it can persist as `NotStarted` even after
+the endpoint becomes reachable — so it is not a reliable health signal.
+
+Operator guidance:
+
+- Confirm the PE on the AppGw shows `status=Approved,
+  provisioningState=Succeeded`. If yes, the deploy did its job — wait.
+- Re-test the AFD endpoint with `curl -i https://$AFD_HOSTNAME/api/health`
+  after 15–30 minutes. A small-body `200` (no `x-azure-ref` header)
+  confirms AFD has propagated.
+- If still 404 after ~30 minutes, a no-op
+  `az afd origin update … --enable-private-link true …` PUT against the
+  origin re-triggers AFD's deployment cycle, which re-evaluates the
+  now-Approved PE state. Re-running the bicep with `--force-module portal`
+  is roughly equivalent.
+
+[afd-faq]: https://learn.microsoft.com/en-us/azure/frontdoor/front-door-faq
+[afd-pl-appgw]: https://learn.microsoft.com/en-us/azure/frontdoor/how-to-enable-private-link-application-gateway
+[afd-state-spec]: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/cdn/resource-manager/Microsoft.Cdn/Cdn/stable/2024-09-01/afdx.json
+
+## Secrets &amp; identity (bicep-deploy path only)
 
 This deploy path uses **managed identity for Azure resources** and keeps a
 single gitignored env file holding only the two human-only secrets the

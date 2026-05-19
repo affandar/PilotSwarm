@@ -63,6 +63,29 @@ const PLACEHOLDER_FILES = {
         { placeholder: "__FOUNDRY_ENDPOINT__", envKey: "FOUNDRY_ENDPOINT" },
       ],
     },
+    // FR-013: Substitute the portal TLS cert name into the tls-akv +
+    // edge-appgw components. Source of truth is the `portalTlsCertName`
+    // bicep param → FR-022 OUTPUT_ALIAS (`portalTlsCertName: "PORTAL_TLS_CERT_NAME"`)
+    // → env map. Defaulted to `pilotswarm-portal-tls` in stageManifests()
+    // below for kustomize-build-only paths that never invoke bicep.
+    {
+      relPath: "components/tls-akv/secret-provider-class-tls.yaml",
+      tokens: [
+        { placeholder: "__PORTAL_TLS_CERT_NAME__", envKey: "PORTAL_TLS_CERT_NAME" },
+      ],
+    },
+    {
+      relPath: "components/tls-akv/kustomization.yaml",
+      tokens: [
+        { placeholder: "__PORTAL_TLS_CERT_NAME__", envKey: "PORTAL_TLS_CERT_NAME" },
+      ],
+    },
+    {
+      relPath: "components/edge-appgw/kustomization.yaml",
+      tokens: [
+        { placeholder: "__PORTAL_TLS_CERT_NAME__", envKey: "PORTAL_TLS_CERT_NAME" },
+      ],
+    },
   ],
 };
 
@@ -106,8 +129,29 @@ function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
 // `kustomizationPath` for each service. Exported for testability.
 export function resolveOverlayName({ service, envName, env }) {
   if (service === "portal") {
-    const edgeMode = (env.EDGE_MODE || "afd").toLowerCase();
-    const rawTls = (env.TLS_SOURCE || "letsencrypt").toLowerCase();
+    // Hard-fail when EDGE_MODE or TLS_SOURCE is missing from the env Map.
+    // The silent default was a footgun — operators got an unexpected
+    // overlay when they forgot to scaffold the env. The pre-deploy
+    // contract gate in deploy.mjs (overlay-contracts validateRequiredEnv)
+    // catches the same class of error for the deploy path, but stage-
+    // manifests can also be called from rendering paths that bypass
+    // deploy (e.g. CI scaffolds), so we keep an independent guard here.
+    // See deploy/scripts/lib/overlay-contracts.mjs for the per-overlay
+    // roster of inputs.
+    if (!env.EDGE_MODE || !env.TLS_SOURCE) {
+      const missing = [
+        !env.EDGE_MODE ? "EDGE_MODE" : null,
+        !env.TLS_SOURCE ? "TLS_SOURCE" : null,
+      ].filter(Boolean).join(", ");
+      throw new Error(
+        `[stage-manifests] ${missing} must be set in deploy/envs/local/${envName}/.env ` +
+          `for the portal overlay. The previous silent default ` +
+          `(EDGE_MODE=afd, TLS_SOURCE=letsencrypt) has been removed ` +
+          `(see deploy/scripts/lib/overlay-contracts.mjs for the per-overlay roster).`,
+      );
+    }
+    const edgeMode = env.EDGE_MODE.toLowerCase();
+    const rawTls = env.TLS_SOURCE.toLowerCase();
     // akv-selfsigned shares the private-akv overlay (the only delta is
     // the AKV issuer name, set by Portal bicep — kustomize sees nothing
     // different). Keep this in lock-step with Portal/bicep/main.bicep
@@ -182,6 +226,15 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   // deploy/scripts/lib/spc-keys-hash.mjs for the full rationale.
   if (service === "worker" || service === "portal") {
     env.SPC_KEYS_HASH = computeSpcKeysHash({ service });
+  }
+
+  // FR-013: Default PORTAL_TLS_CERT_NAME so kustomize-build-only paths
+  // (gitops-build tests, local renders, deploys that skip --steps=bicep)
+  // still produce a coherent SPC + Ingress. Production deploys override
+  // this from the portal bicep `portalTlsCertName` param via FR-022
+  // OUTPUT_ALIAS (`portalTlsCertName: "PORTAL_TLS_CERT_NAME"`).
+  if (service === "portal" && !env.PORTAL_TLS_CERT_NAME) {
+    env.PORTAL_TLS_CERT_NAME = "pilotswarm-portal-tls";
   }
 
   // The cp above already produced a copy at overlayDst; we now overwrite it

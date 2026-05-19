@@ -70,9 +70,15 @@ const OUTPUT_ALIAS = {
   // manifest-staging time. See deploy/services/base-infra/bicep/foundry.bicep.
   foundryEndpoint: "FOUNDRY_ENDPOINT",
   foundryAccountName: "FOUNDRY_ACCOUNT_NAME",
+  // FR-013: Portal TLS cert name plumbed from the `portalTlsCertName` bicep
+  // parameter to stage-manifests.mjs, which substitutes the
+  // `__PORTAL_TLS_CERT_NAME__` token in components/tls-akv/* and
+  // components/edge-appgw/kustomization.yaml in place of the previously-
+  // hardcoded `pilotswarm-portal-tls` literal.
+  portalTlsCertName: "PORTAL_TLS_CERT_NAME",
 };
 
-export async function deployBicep({ service, envName, env, region, stagingDir, moduleListOverride, force }) {
+export async function deployBicep({ service, envName, env, region, stagingDir, moduleListOverride, force, forceModules }) {
   const modules = moduleListOverride ?? SERVICE_TO_MODULES[service];
   if (!modules || modules.length === 0) {
     log("info", `No Bicep modules for service '${service}'; skipping.`);
@@ -81,13 +87,14 @@ export async function deployBicep({ service, envName, env, region, stagingDir, m
 
   if (!existsSync(stagingDir)) mkdirSync(stagingDir, { recursive: true });
 
+  const forceSet = new Set(Array.isArray(forceModules) ? forceModules : []);
   for (const moduleName of modules) {
-    await deployOne({ moduleName, service, envName, env, region, stagingDir, force });
+    await deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet });
   }
   return env;
 }
 
-async function deployOne({ moduleName, service, envName, env, region, stagingDir, force }) {
+async function deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet }) {
   const scope = MODULE_SCOPE[moduleName];
   if (!scope) throw new Error(`Unknown Bicep scope for module '${moduleName}'`);
   const paramsRel = moduleParamsTemplate(moduleName);
@@ -113,7 +120,13 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   // bypass `az deployment create` entirely. Bypass with `--force`.
   const templateHash = computeTemplateHash(moduleName);
   const paramsHash = computeParamsHash(renderedPath);
-  const decision = shouldSkipDeploy({ envName, moduleName, templateHash, paramsHash, force });
+  // Per-module bypass: the operator can pass `--force-module <name>`
+  // (collected into forceSet) to force a single module past its marker
+  // without rebuilding everything via `--force`.
+  const effectiveForce =
+    force === true ||
+    (forceSet && forceSet.has(moduleName));
+  const decision = shouldSkipDeploy({ envName, moduleName, templateHash, paramsHash, force: effectiveForce });
   if (decision.skip) {
     log(
       "info",
@@ -122,7 +135,11 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
     return;
   }
   if (decision.reason !== "no marker") {
-    log("info", `[${moduleName}] redeploying (${decision.reason})`);
+    let why = decision.reason;
+    if (effectiveForce && !force && forceSet && forceSet.has(moduleName)) {
+      why = `--force-module=${moduleName}`;
+    }
+    log("info", `[${moduleName}] redeploying (${why})`);
   }
 
   // 2) Run az deployment <scope> create.

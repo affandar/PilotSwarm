@@ -22,8 +22,12 @@ COPY packages/ui-core/package.json ./packages/ui-core/
 COPY packages/ui-react/package.json ./packages/ui-react/
 COPY scripts/postinstall.js ./scripts/
 
-# Install all deps including devDeps (Vite build happens in-image)
-RUN npm install --force
+# Install all deps including devDeps (Vite build happens in-image). `npm ci`
+# refuses to drift from the committed package-lock.json so the image is
+# byte-reproducible from this SHA. Matches the deploy/Dockerfile.starter
+# pattern (the third in-repo image-build flow). `--force` preserves the
+# peer-dep tolerance the legacy `npm install` flow relied on.
+RUN npm ci --force
 
 # Copy built SDK dist + plugins
 COPY packages/sdk/dist/ ./packages/sdk/dist/

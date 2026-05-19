@@ -98,6 +98,24 @@ test("pipelineForService respects defaults by kind", () => {
   assert.deepEqual(defaultPipelineForKind("infra", m.root), ["bicep"]);
 });
 
+test("default app pipeline orders push before manifests (FR-014 regression)", () => {
+  // FR-014: consumers (Flux) must not see new manifests until the image has been
+  // pushed to ACR. The canonical app pipeline must therefore place `push`
+  // strictly before `manifests`.
+  const m = loadDeployManifest();
+  for (const svc of ["worker", "portal"]) {
+    const pipeline = pipelineForService(m.services[svc], m.root);
+    const pushIdx = pipeline.indexOf("push");
+    const manifestsIdx = pipeline.indexOf("manifests");
+    assert.ok(pushIdx >= 0, `${svc} pipeline must contain 'push'`);
+    assert.ok(manifestsIdx >= 0, `${svc} pipeline must contain 'manifests'`);
+    assert.ok(
+      pushIdx < manifestsIdx,
+      `${svc} pipeline must place 'push' before 'manifests' (got ${pipeline.join(",")})`,
+    );
+  }
+});
+
 test("modulesFor returns single-mode vs all-mode views", () => {
   const m = loadDeployManifest();
   assert.deepEqual(
@@ -170,6 +188,90 @@ test("validateServiceManifest enforces required fields and cross-rules", () => {
   );
 });
 
+test("validateServiceManifest rejects rollout missing namespace (FR-012)", () => {
+  const errs = validateServiceManifest(
+    {
+      schemaVersion: 1, name: "x", kind: "app",
+      bicep: { modules: [{ name: "x", scope: "group" }] },
+      image: { repo: "x", dockerfile: "x" },
+      rollout: { deployment: "x-dep" },
+    },
+    "x/deploy.json",
+  );
+  assert.ok(
+    errs.some((e) => /rollout\.namespace must be a non-empty string/.test(e)),
+    `expected namespace error, got: ${errs.join("; ")}`,
+  );
+});
+
+test("validateServiceManifest rejects rollout with empty-string namespace (FR-012)", () => {
+  const errs = validateServiceManifest(
+    {
+      schemaVersion: 1, name: "x", kind: "app",
+      bicep: { modules: [{ name: "x", scope: "group" }] },
+      image: { repo: "x", dockerfile: "x" },
+      rollout: { deployment: "x-dep", namespace: "" },
+    },
+    "x/deploy.json",
+  );
+  assert.ok(
+    errs.some((e) => /rollout\.namespace must be a non-empty string/.test(e)),
+  );
+});
+
+test("validateServiceManifest accepts rollout with deployment + namespace (FR-012)", () => {
+  const errs = validateServiceManifest(
+    {
+      schemaVersion: 1, name: "x", kind: "app",
+      bicep: { modules: [{ name: "x", scope: "group" }] },
+      image: { repo: "x", dockerfile: "x" },
+      rollout: { deployment: "x-dep", namespace: "x-ns" },
+    },
+    "x/deploy.json",
+  );
+  assert.equal(errs.length, 0, `expected no errors, got: ${errs.join("; ")}`);
+});
+
+test("validateServiceManifest rejects plural rollouts field outright (FR-012)", () => {
+  const errs = validateServiceManifest(
+    {
+      schemaVersion: 1, name: "x", kind: "app",
+      bicep: { modules: [{ name: "x", scope: "group" }] },
+      image: { repo: "x", dockerfile: "x" },
+      rollout: { deployment: "x-dep", namespace: "x-ns" },
+      rollouts: [{ kind: "Deployment", name: "y" }],
+    },
+    "x/deploy.json",
+  );
+  assert.ok(
+    errs.some((e) => /'rollouts' is not supported/.test(e) && /single 'rollout'/.test(e)),
+    `expected plural-rejection error directing to singular, got: ${errs.join("; ")}`,
+  );
+});
+
+test("validateServiceManifest rejects plural rollouts even without singular present (FR-012)", () => {
+  const errs = validateServiceManifest(
+    {
+      schemaVersion: 1, name: "x", kind: "app",
+      bicep: { modules: [{ name: "x", scope: "group" }] },
+      image: { repo: "x", dockerfile: "x" },
+      rollouts: [{ kind: "Deployment", name: "y" }],
+    },
+    "x/deploy.json",
+  );
+  assert.ok(errs.some((e) => /'rollouts' is not supported/.test(e)));
+});
+
+test("real portal and worker manifests declare rollout.namespace (FR-012)", () => {
+  const m = loadDeployManifest();
+  for (const svc of ["portal", "worker"]) {
+    const r = m.services[svc]?.rollout;
+    assert.ok(r, `${svc} should have a rollout block`);
+    assert.equal(typeof r.namespace, "string");
+    assert.ok(r.namespace.length > 0, `${svc} rollout.namespace must be non-empty`);
+  }
+});
+
 // ───────────────────────── Loader (synthetic dir) ─────────────────────────
 
 function makeFakeServicesDir() {
@@ -239,4 +341,3 @@ test("loader cross-checks kind against infraOrder/services placement", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
-

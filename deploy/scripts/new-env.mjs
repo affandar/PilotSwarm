@@ -48,6 +48,14 @@ import { loadDeployManifest } from "./lib/services-manifest.mjs";
 import { SEEDABLE_SECRET_KEYS, SEED_SECRETS_UNSET_SENTINEL } from "./lib/seed-secrets.mjs";
 import { PORTAL_CONFIG_KEYS } from "./lib/portal-config.mjs";
 import { listAvailableFoundryModels } from "./lib/validate-foundry-deployments.mjs";
+import {
+  EDGE_MODES as CONTRACT_EDGE_MODES,
+  TLS_SOURCES as CONTRACT_TLS_SOURCES,
+  DEFAULT_EDGE_MODE as CONTRACT_DEFAULT_EDGE_MODE,
+  DEFAULT_TLS_SOURCE as CONTRACT_DEFAULT_TLS_SOURCE,
+  validateRequiredEnv,
+  applyStubKeys,
+} from "./lib/overlay-contracts.mjs";
 
 // Common Azure regions → short name. Sourced from
 // deploy/services/deploy-manifest.json `regionShort`. Unknown regions prompt
@@ -57,8 +65,12 @@ function regionShortFor(location) {
   return m.regionShort[location.toLowerCase()] ?? null;
 }
 
-const EDGE_MODES = ["afd", "private"];
-const DEFAULT_EDGE_MODE = "afd";
+// EDGE_MODES / DEFAULT_EDGE_MODE / TLS_SOURCES / DEFAULT_TLS_SOURCE are
+// re-exported from the overlay-contracts single source of truth
+// (deploy/scripts/lib/overlay-contracts.mjs). The local aliases below
+// keep the existing call sites readable.
+const EDGE_MODES = CONTRACT_EDGE_MODES;
+const DEFAULT_EDGE_MODE = CONTRACT_DEFAULT_EDGE_MODE;
 
 // CA cert source.
 //   letsencrypt    — cert-manager + LE prod ACME (HTTP-01). Only valid with
@@ -70,8 +82,8 @@ const DEFAULT_EDGE_MODE = "afd";
 //                    in AKV with SAN=${HOST}.${PRIVATE_DNS_ZONE}. Only valid
 //                    with edgeMode=private. OSS private demo path; zero
 //                    external dependencies.
-const TLS_SOURCES = ["letsencrypt", "akv", "akv-selfsigned"];
-const DEFAULT_TLS_SOURCE = "letsencrypt";
+const TLS_SOURCES = CONTRACT_TLS_SOURCES;
+const DEFAULT_TLS_SOURCE = CONTRACT_DEFAULT_TLS_SOURCE;
 
 // Combos blocked at validation time. Mirrors the Portal bicep `@allowed`
 // invariants: letsencrypt requires a public IP for HTTP-01 (afd only);
@@ -855,6 +867,28 @@ async function main() {
   assertSupportedCombo(inputs.edgeMode, inputs.tlsSource);
 
   const targets = deriveTargets(inputs);
+
+  // Contract-driven scaffold-time validation (warn-and-continue). The
+  // .env is meant to be hand-edited after scaffold, so we warn here
+  // rather than throw — deploy.mjs validateRequiredEnv is the authoritative
+  // hard gate. See deploy/scripts/lib/overlay-contracts.mjs for the
+  // per-overlay roster of required keys. We also apply stubKeys so the
+  // scaffolded .env carries valid `unused` sentinels for off-path keys,
+  // matching what deploy.mjs would seed.
+  applyStubKeys({ edgeMode: targets.EDGE_MODE, tlsSource: targets.TLS_SOURCE, env: targets });
+  const missingRequired = validateRequiredEnv({
+    edgeMode: targets.EDGE_MODE,
+    tlsSource: targets.TLS_SOURCE,
+    env: targets,
+  });
+  if (missingRequired.length > 0) {
+    log(
+      "warn",
+      `Overlay '${targets.EDGE_MODE}-${targets.TLS_SOURCE}' has empty required keys: ${missingRequired.join(", ")}. ` +
+        `Hand-edit deploy/envs/local/${inputs.name}/.env to fill them in before running deploy. ` +
+        `See deploy/scripts/lib/overlay-contracts.mjs for the per-overlay roster.`,
+    );
+  }
 
   const dst = envFilePath(inputs.name);
   if (existsSync(dst) && !args.force) {

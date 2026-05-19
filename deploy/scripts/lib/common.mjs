@@ -197,6 +197,57 @@ function quoteForCmd(s) {
   return s;
 }
 
+// Redact known-sensitive flag values from CLI args before they appear in
+// error messages or logs. We preserve the flag itself so the error stays
+// debuggable; only the value is replaced with `***`. Both `--flag=value`
+// and `--flag value` shapes are handled. Returned as a new array; input
+// is not mutated. Patterns use anchored end-of-string ($) so a short-form
+// secret flag (e.g. `-p`) does NOT over-mask a longer flag whose name
+// happens to begin with the same letter (e.g. `--port`, `--profile`).
+const SENSITIVE_FLAG_PATTERNS = [
+  /^--?password$/i,
+  /^-p$/, // az login -p, az ad sp create-for-rbac -p
+  /^--?token$/i,
+  /^--?secret$/i,
+  /^--?client-secret$/i,
+  /^--?admin-password$/i,
+  /^--?account-key$/i,
+  /^--?sas-token$/i,
+  /^--?connection-string$/i,
+  /^--?value$/i, // az keyvault secret set --value <secret>
+  /^--?sp$/i, // azcopy / az login
+];
+
+function isSensitiveFlag(flag) {
+  const bareFlag = flag.split("=", 1)[0];
+  return SENSITIVE_FLAG_PATTERNS.some((re) => re.test(bareFlag));
+}
+
+export function redactArgs(args) {
+  if (!Array.isArray(args)) return args;
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (typeof a !== "string") {
+      out.push(a);
+      continue;
+    }
+    if (a.includes("=") && isSensitiveFlag(a)) {
+      const eq = a.indexOf("=");
+      out.push(`${a.slice(0, eq)}=***`);
+      continue;
+    }
+    if (isSensitiveFlag(a) && i + 1 < args.length) {
+      out.push(a);
+      out.push("***");
+      i++;
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
 export function run(name, args, opts = {}) {
   const { capture = false, cwd, env, allowFail = false } = opts;
   const cli = resolveCli(name);
@@ -230,9 +281,10 @@ export function run(name, args, opts = {}) {
     throw new Error(`Failed to spawn ${name}: ${result.error.message}`);
   }
   if (result.status !== 0 && !allowFail) {
+    const safeArgs = redactArgs(args).join(" ");
     const msg = capture
-      ? `${name} ${args.join(" ")} exited ${result.status}\n${result.stderr ?? ""}`
-      : `${name} ${args.join(" ")} exited ${result.status}`;
+      ? `${name} ${safeArgs} exited ${result.status}\n${result.stderr ?? ""}`
+      : `${name} ${safeArgs} exited ${result.status}`;
     throw new Error(msg);
   }
   return {
@@ -252,7 +304,7 @@ export function runJson(name, args) {
     return JSON.parse(stdout);
   } catch (e) {
     throw new Error(
-      `${name} ${args.join(" ")} produced non-JSON output:\n${stdout.slice(0, 400)}\n` +
+      `${name} ${redactArgs(args).join(" ")} produced non-JSON output:\n${stdout.slice(0, 400)}\n` +
         `Parse error: ${e.message}`,
     );
   }
