@@ -51,6 +51,21 @@ export const MODULE_SCOPE = (() => {
   return scope;
 })();
 
+// Module → boolean: `true` if any service's deploy.json marks the module
+// with `alwaysRedeploy: true` on either `modules` or `allModeModules`.
+// Consumed by `deploy-bicep.mjs:deployOne()` to bypass the deploy-marker
+// hash check. Ported from waldemort dbe20ca (PAW Review PR #7).
+export const MODULE_ALWAYS_REDEPLOY = (() => {
+  const out = {};
+  for (const svc of Object.values(_m.services)) {
+    const all = [...svc.bicep.modules, ...(svc.bicep.allModeModules ?? [])];
+    for (const m of all) {
+      if (m.alwaysRedeploy === true) out[m.name] = true;
+    }
+  }
+  return out;
+})();
+
 // Canonical end-to-end bring-up sequence for `deploy.mjs all <env>`. Comes
 // straight from the manifest's infraOrder + services.
 export const ALL_SEQUENCE = [..._m.allSequence];

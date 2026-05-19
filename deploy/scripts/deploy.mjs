@@ -44,6 +44,7 @@ function parseArgs(argv) {
     imageTag: null,
     clean: false,
     force: false,
+    forceModules: [],
     help: false,
   };
 
@@ -55,6 +56,10 @@ function parseArgs(argv) {
       flags.clean = true;
     } else if (a === "--force") {
       flags.force = true;
+    } else if (a.startsWith("--force-module=")) {
+      flags.forceModules.push(a.slice("--force-module=".length));
+    } else if (a === "--force-module") {
+      flags.forceModules.push(args[++i]);
     } else if (a.startsWith("--steps=")) {
       flags.steps = a.slice("--steps=".length);
     } else if (a === "--steps") {
@@ -116,6 +121,10 @@ function printHelp() {
       "  --clean             Wipe deploy/.tmp/<service>-<env>/ before running.",
       "  --force             Ignore deploy markers; redeploy every Bicep module even if",
       "                      its template + rendered params are unchanged since last success.",
+      "  --force-module <m>  Force-redeploy a single named Bicep module (e.g. portal,",
+      "                      pls-anchor). Repeatable. Lighter-touch than --force when only",
+      "                      one module needs to retry past its deploy marker (e.g. recover",
+      "                      from an out-of-band Bicep tweak or RBAC propagation race).",
       "  --help, -h          Show this help.",
       "",
       "Spec: .paw/work/oss-deploy-script/Spec.md",
@@ -168,6 +177,7 @@ async function runStage(name, ctx) {
         stagingDir: ctx.stagingDir,
         moduleListOverride: ctx.moduleListOverride,
         force: ctx.force,
+        forceModules: ctx.forceModules,
       });
       // Re-run composition: a fresh `all` run starts with an empty outputs
       // cache, so the startup pass at line ~258 had nothing to compose.
@@ -251,7 +261,7 @@ async function main() {
     return;
   }
 
-  const { service, envName, steps, region, imageTag, clean, force } = parsed;
+  const { service, envName, steps, region, imageTag, clean, force, forceModules } = parsed;
 
   // 1) Validate inputs (accepts the virtual `all` aggregate)
   validateService(service);
@@ -440,7 +450,7 @@ async function main() {
 
   // 7) Branch: `all` aggregates over the canonical sequence; otherwise single service.
   if (service === "all") {
-    await runAll({ envName, env, steps, imageTag: resolvedTag, clean, force, edgeMode });
+    await runAll({ envName, env, steps, imageTag: resolvedTag, clean, force, forceModules, edgeMode });
   } else {
     await runOneService({
       service,
@@ -450,6 +460,7 @@ async function main() {
       imageTag: resolvedTag,
       clean,
       force,
+      forceModules,
       moduleListOverride: null,
     });
   }
@@ -459,7 +470,7 @@ async function main() {
 
 // Single-service execution path. Used directly for explicit `<service> <env>`
 // invocations and as the per-service step inside `runAll`.
-async function runOneService({ service, envName, env, steps, imageTag, clean, force, moduleListOverride }) {
+async function runOneService({ service, envName, env, steps, imageTag, clean, force, forceModules, moduleListOverride }) {
   if (clean) {
     const { rmSync } = await import("node:fs");
     const dir = stagingDir(service, envName);
@@ -495,6 +506,7 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
     stagingDir: stage,
     moduleListOverride,
     force,
+    forceModules,
   };
 
   for (const step of effectiveSteps) {
@@ -517,7 +529,7 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
 // server, deployment storage account) cascade forward. Each service deploys
 // only its own Bicep module (ALL_MODE_MODULES) — dependencies were deployed
 // by an earlier item in the same invocation.
-async function runAll({ envName, env, steps, imageTag, clean, force, edgeMode }) {
+async function runAll({ envName, env, steps, imageTag, clean, force, forceModules, edgeMode }) {
   // Drop globalinfra from the sequence when AFD is disabled — the service is
   // entirely AFD provisioning and would otherwise create an empty RG with no
   // resources. Mirrors the single-service short-circuit above. cert-manager
@@ -542,6 +554,7 @@ async function runAll({ envName, env, steps, imageTag, clean, force, edgeMode })
       imageTag,
       clean,
       force,
+      forceModules,
       moduleListOverride: ALL_MODE_MODULES[svc],
     });
   }

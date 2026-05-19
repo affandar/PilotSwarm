@@ -97,6 +97,17 @@ export function validateServiceManifest(obj, path) {
       if (!VALID_SCOPES.has(m.scope)) {
         errs.push(`${path}: bicep.${label}[].scope must be 'sub' or 'group'`);
       }
+      // Per-module `alwaysRedeploy: true` flag bypasses the deploy-marker
+      // hash check for this module on every invocation. Used for modules
+      // that have effects the marker cannot detect (deployment scripts,
+      // role assignments with RBAC propagation races, PE approval that
+      // depends on out-of-band PLS state). The flag is surfaced through
+      // `service-info.mjs` as `MODULE_ALWAYS_REDEPLOY` and consumed in
+      // `deploy-bicep.mjs:deployOne()`. Ported from waldemort dbe20ca
+      // (PAW Review PR #7).
+      if (m.alwaysRedeploy !== undefined && typeof m.alwaysRedeploy !== "boolean") {
+        errs.push(`${path}: bicep.${label}[].alwaysRedeploy must be a boolean when set`);
+      }
     }
   };
   if (!obj.bicep || typeof obj.bicep !== "object") {
