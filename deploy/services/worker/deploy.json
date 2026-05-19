@@ -19,6 +19,7 @@
     "buildWorkspaces": ["packages/sdk"]
   },
   "rollout": {
-    "deployment": "copilot-runtime-worker"
+    "deployment": "copilot-runtime-worker",
+    "namespace": "pilotswarm"
   }
 }

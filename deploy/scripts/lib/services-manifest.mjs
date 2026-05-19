@@ -128,9 +128,19 @@ export function validateServiceManifest(obj, path) {
   }
   if (obj.rollout !== undefined) {
     if (!obj.rollout || typeof obj.rollout !== "object") errs.push(`${path}: 'rollout' must be an object`);
-    else if (typeof obj.rollout.deployment !== "string") {
-      errs.push(`${path}: rollout.deployment must be a string`);
+    else {
+      if (typeof obj.rollout.deployment !== "string") {
+        errs.push(`${path}: rollout.deployment must be a string`);
+      }
+      if (typeof obj.rollout.namespace !== "string" || obj.rollout.namespace.length === 0) {
+        errs.push(`${path}: rollout.namespace must be a non-empty string`);
+      }
     }
+  }
+  if (obj.rollouts !== undefined) {
+    errs.push(
+      `${path}: 'rollouts' is not supported in this code base; declare a single 'rollout' object instead`,
+    );
   }
   if (obj.pipeline !== undefined) {
     if (!Array.isArray(obj.pipeline)) errs.push(`${path}: 'pipeline' must be an array`);
