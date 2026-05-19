@@ -125,7 +125,14 @@ resource serviceRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2024-02-01' = 
       id: originGroup.id
     }
     ruleSets: []
+    // Accept both Http and Https so that `httpsRedirect: 'Enabled'`
+    // actually fires. AFD's redirect only applies to inbound HTTP that
+    // matches a route; if `supportedProtocols` is HTTPS-only, plain-HTTP
+    // requests fall through to a 404 instead of being redirected to
+    // HTTPS. `forwardingProtocol: 'HttpsOnly'` keeps every origin call
+    // on HTTPS regardless of the inbound protocol.
     supportedProtocols: [
+      'Http'
       'Https'
     ]
     patternsToMatch: [
