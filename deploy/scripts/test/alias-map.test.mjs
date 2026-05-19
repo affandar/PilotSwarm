@@ -79,3 +79,11 @@ test("Foundry endpoint output aliases to FOUNDRY_ENDPOINT", () => {
     "FOUNDRY_ACCOUNT_NAME",
   );
 });
+
+test("FR-013: portalTlsCertName output aliases to PORTAL_TLS_CERT_NAME", () => {
+  assert.equal(
+    OUTPUT_ALIAS.portalTlsCertName,
+    "PORTAL_TLS_CERT_NAME",
+    "portal main.bicep emits portalTlsCertName; manifests substitution uses __PORTAL_TLS_CERT_NAME__ in components/tls-akv/* and components/edge-appgw/kustomization.yaml",
+  );
+});

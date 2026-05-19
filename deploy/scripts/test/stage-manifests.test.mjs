@@ -161,3 +161,84 @@ test("stageManifests(portal): copies worker base model_providers.json into porta
   );
   assert.equal(portalContent, workerCatalog, "portal staged catalog must byte-match worker base catalog");
 });
+
+// ─── FR-013: PORTAL_TLS_CERT_NAME placeholder substitution ───
+
+function makePortalEnv(extra = {}) {
+  return {
+    EDGE_MODE: "afd",
+    TLS_SOURCE: "akv",
+    FOUNDRY_ENDPOINT: "",
+    SPC_KEYS_HASH: "placeholder",
+    IMAGE: "stub.azurecr.io/p:t",
+    NAMESPACE: "pilotswarm",
+    KV_NAME: "stub-kv",
+    WORKLOAD_IDENTITY_CLIENT_ID: "00000000-0000-0000-0000-000000000000",
+    AZURE_TENANT_ID: "00000000-0000-0000-0000-000000000000",
+    PORTAL_HOSTNAME: "stub.example.com",
+    PILOTSWARM_USE_MANAGED_IDENTITY: "1",
+    AZURE_STORAGE_ACCOUNT_URL: "https://stub.blob.core.windows.net/",
+    PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgresql://u@h:5432/d?sslmode=require",
+    PILOTSWARM_DB_AAD_USER: "stub",
+    DATABASE_URL: "postgresql://u:p@h:5432/d?sslmode=require",
+    PORTAL_AUTH_PROVIDER: "none",
+    PORTAL_AUTH_ENTRA_TENANT_ID: "00000000-0000-0000-0000-000000000000",
+    PORTAL_AUTH_ENTRA_CLIENT_ID: "00000000-0000-0000-0000-000000000000",
+    PORTAL_AUTH_ALLOW_UNAUTHENTICATED: "false",
+    PORTAL_AUTH_ENTRA_ADMIN_GROUPS: "__PS_UNSET__",
+    PORTAL_AUTH_ENTRA_USER_GROUPS: "__PS_UNSET__",
+    PORTAL_AUTHZ_DEFAULT_ROLE: "viewer",
+    PORTAL_AUTHZ_ADMIN_GROUPS: "__PS_UNSET__",
+    PORTAL_AUTHZ_USER_GROUPS: "__PS_UNSET__",
+    ...extra,
+  };
+}
+
+test("stageManifests(portal): PORTAL_TLS_CERT_NAME override propagates to tls-akv + edge-appgw (FR-013)", () => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-tls-override-"));
+  const stagedRoot = stageManifests({
+    service: "portal",
+    envName: "dev",
+    env: makePortalEnv({ PORTAL_TLS_CERT_NAME: "custom-tls-cert" }),
+    stagingDir,
+  });
+  const spcPath = join(stagedRoot, "components", "tls-akv", "secret-provider-class-tls.yaml");
+  const tlsAkvKust = join(stagedRoot, "components", "tls-akv", "kustomization.yaml");
+  const edgeAppgwKust = join(stagedRoot, "components", "edge-appgw", "kustomization.yaml");
+  for (const p of [spcPath, tlsAkvKust, edgeAppgwKust]) {
+    assert.ok(existsSync(p), `expected staged file at ${p}`);
+    const body = readFileSync(p, "utf8");
+    assert.ok(
+      !body.includes("__PORTAL_TLS_CERT_NAME__"),
+      `staged file ${p} still contains the placeholder; substitution did not run`,
+    );
+    assert.ok(
+      body.includes("custom-tls-cert"),
+      `staged file ${p} does not contain the override value`,
+    );
+  }
+});
+
+test("stageManifests(portal): PORTAL_TLS_CERT_NAME defaults to pilotswarm-portal-tls when unset (FR-013)", () => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-tls-default-"));
+  const env = makePortalEnv();
+  delete env.PORTAL_TLS_CERT_NAME;
+  const stagedRoot = stageManifests({
+    service: "portal",
+    envName: "dev",
+    env,
+    stagingDir,
+  });
+  const spcPath = join(stagedRoot, "components", "tls-akv", "secret-provider-class-tls.yaml");
+  const body = readFileSync(spcPath, "utf8");
+  assert.ok(
+    !body.includes("__PORTAL_TLS_CERT_NAME__"),
+    "staged SPC still contains the placeholder; default substitution did not run",
+  );
+  assert.ok(
+    body.includes("pilotswarm-portal-tls"),
+    "staged SPC does not contain the documented default value",
+  );
+  // Defaulting is observable via the env map being mutated.
+  assert.equal(env.PORTAL_TLS_CERT_NAME, "pilotswarm-portal-tls");
+});

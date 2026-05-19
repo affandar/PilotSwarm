@@ -70,6 +70,12 @@ const OUTPUT_ALIAS = {
   // manifest-staging time. See deploy/services/base-infra/bicep/foundry.bicep.
   foundryEndpoint: "FOUNDRY_ENDPOINT",
   foundryAccountName: "FOUNDRY_ACCOUNT_NAME",
+  // FR-013: Portal TLS cert name plumbed from the `portalTlsCertName` bicep
+  // parameter to stage-manifests.mjs, which substitutes the
+  // `__PORTAL_TLS_CERT_NAME__` token in components/tls-akv/* and
+  // components/edge-appgw/kustomization.yaml in place of the previously-
+  // hardcoded `pilotswarm-portal-tls` literal.
+  portalTlsCertName: "PORTAL_TLS_CERT_NAME",
 };
 
 export async function deployBicep({ service, envName, env, region, stagingDir, moduleListOverride, force }) {

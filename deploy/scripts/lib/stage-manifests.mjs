@@ -63,6 +63,29 @@ const PLACEHOLDER_FILES = {
         { placeholder: "__FOUNDRY_ENDPOINT__", envKey: "FOUNDRY_ENDPOINT" },
       ],
     },
+    // FR-013: Substitute the portal TLS cert name into the tls-akv +
+    // edge-appgw components. Source of truth is the `portalTlsCertName`
+    // bicep param → FR-022 OUTPUT_ALIAS (`portalTlsCertName: "PORTAL_TLS_CERT_NAME"`)
+    // → env map. Defaulted to `pilotswarm-portal-tls` in stageManifests()
+    // below for kustomize-build-only paths that never invoke bicep.
+    {
+      relPath: "components/tls-akv/secret-provider-class-tls.yaml",
+      tokens: [
+        { placeholder: "__PORTAL_TLS_CERT_NAME__", envKey: "PORTAL_TLS_CERT_NAME" },
+      ],
+    },
+    {
+      relPath: "components/tls-akv/kustomization.yaml",
+      tokens: [
+        { placeholder: "__PORTAL_TLS_CERT_NAME__", envKey: "PORTAL_TLS_CERT_NAME" },
+      ],
+    },
+    {
+      relPath: "components/edge-appgw/kustomization.yaml",
+      tokens: [
+        { placeholder: "__PORTAL_TLS_CERT_NAME__", envKey: "PORTAL_TLS_CERT_NAME" },
+      ],
+    },
   ],
 };
 
@@ -182,6 +205,15 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   // deploy/scripts/lib/spc-keys-hash.mjs for the full rationale.
   if (service === "worker" || service === "portal") {
     env.SPC_KEYS_HASH = computeSpcKeysHash({ service });
+  }
+
+  // FR-013: Default PORTAL_TLS_CERT_NAME so kustomize-build-only paths
+  // (gitops-build tests, local renders, deploys that skip --steps=bicep)
+  // still produce a coherent SPC + Ingress. Production deploys override
+  // this from the portal bicep `portalTlsCertName` param via FR-022
+  // OUTPUT_ALIAS (`portalTlsCertName: "PORTAL_TLS_CERT_NAME"`).
+  if (service === "portal" && !env.PORTAL_TLS_CERT_NAME) {
+    env.PORTAL_TLS_CERT_NAME = "pilotswarm-portal-tls";
   }
 
   // The cp above already produced a copy at overlayDst; we now overwrite it

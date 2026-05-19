@@ -4,7 +4,10 @@ kind: Component
 # AKV TLS path. Adds:
 #   1. A SecretProviderClass that drives Secret Store CSI to project the
 #      AKV-managed cert into a kubernetes.io/tls Secret named
-#      `pilotswarm-portal-tls`.
+#      `__PORTAL_TLS_CERT_NAME__` (defaults to `pilotswarm-portal-tls`;
+#      override via the portal bicep `portalTlsCertName` param, which
+#      flows through FR-022 OUTPUT_ALIAS into stage-manifests.mjs's
+#      placeholder substitution — FR-013).
 #   2. A `portal-tls` CSI volume + mount on the portal Deployment so the
 #      CSI driver actually fires (mounting is required for the SPC's
 #      `secretObjects` synthesis to land).
@@ -23,7 +26,7 @@ kind: Component
 # OneCertV2-PublicCA / OneCertV2-PrivateCA issuer registered by bicep)
 # and `TLS_SOURCE=akv-selfsigned` (cert auto-created by bicep using the
 # AKV `Self` issuer). At the K8s layer the two are identical — both
-# produce a kubernetes.io/tls Secret named `pilotswarm-portal-tls`.
+# produce a kubernetes.io/tls Secret named `__PORTAL_TLS_CERT_NAME__`.
 
 resources:
   - secret-provider-class-tls.yaml
@@ -52,7 +55,7 @@ patches:
                   driver: secrets-store.csi.k8s.io
                   readOnly: true
                   volumeAttributes:
-                    secretProviderClass: pilotswarm-portal-tls
+                    secretProviderClass: __PORTAL_TLS_CERT_NAME__
               - name: portal-tls-secret
                 secret:
-                  secretName: pilotswarm-portal-tls
+                  secretName: __PORTAL_TLS_CERT_NAME__

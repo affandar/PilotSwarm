@@ -406,5 +406,8 @@ output ApprovedPrivateEndpointCount int = edgeMode == 'afd' ? plApprove.outputs.
 @description('Portal manifest container name (consumed by OSS deploy script as DEPLOYMENT_STORAGE_CONTAINER_NAME via FR-022 alias).')
 output manifestsContainerName string = portalManifestsContainer.name
 
+@description('Portal TLS cert name (mirror of the portalTlsCertName parameter). Aliased via FR-022 to PORTAL_TLS_CERT_NAME so stage-manifests.mjs can substitute the value into components/tls-akv/* and components/edge-appgw/kustomization.yaml in place of the previously-hardcoded `pilotswarm-portal-tls` literal (FR-013).')
+output portalTlsCertName string = portalTlsCertName
+
 @description('Client ID of the CSI Secrets Provider UAMI (looked up by convention name from this RG). Consumed by the AKS app-deploy step (and by downstream callers that wrap this bicep) to federate Workload Identity.')
 output csiIdentityClientId string = csiUami.properties.clientId
