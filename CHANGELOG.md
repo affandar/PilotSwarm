@@ -2,10 +2,25 @@
 
 ## Unreleased
 
+## 0.1.31 — 2026-05-20
+
+### Docker
+
+- Fixed the starter Docker image runtime by moving it to the same Debian trixie
+  base used by the portal/worker images so the current duroxide native module
+  can load against glibc 2.41. The starter now uses trixie's default embedded
+  PostgreSQL 17; existing `pilotswarm-data` volumes initialized by PostgreSQL 15
+  must be recreated or migrated before reuse.
+
 ### CI / Release
 
 - Switched npm publishing to GitHub Actions Trusted Publisher/OIDC so future
   releases publish without an `NPM_TOKEN` repository secret.
+
+### Packages / Docker
+
+- Bumped published workspace packages to `0.1.31` and refreshed the Docker
+  quickstart's pinned starter-image references to `0.1.31`.
 
 ## 0.1.30 — 2026-05-20
 

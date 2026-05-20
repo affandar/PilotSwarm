@@ -27,7 +27,7 @@ Silicon.
 If you want the exact released build instead of the moving `latest` tag, pull the versioned image:
 
 ```bash
-docker pull affandar/pilotswarm-starter:0.1.30
+docker pull affandar/pilotswarm-starter:0.1.31
 ```
 
 ---
@@ -56,6 +56,16 @@ That is the simplest mode:
 - SSH TUI exposed at port `2222`
 - embedded PostgreSQL enabled automatically
 - local filestore used automatically
+
+The current starter image uses embedded PostgreSQL 17. If you previously ran an
+older starter image with the same `pilotswarm-data` volume, the old PostgreSQL
+15 data directory will not start under PostgreSQL 17. For a clean quickstart,
+remove the old container and volume before rerunning Docker:
+
+```bash
+docker rm -f pilotswarm-starter
+docker volume rm pilotswarm-data
+```
 
 Open the portal:
 

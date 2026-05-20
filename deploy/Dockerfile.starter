@@ -1,4 +1,5 @@
-FROM node:24-bookworm-slim
+# trixie-slim (Debian 13, glibc 2.41) required by duroxide-linux-*-gnu >= 0.1.25
+FROM node:24-trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_UPDATE_NOTIFIER=false
