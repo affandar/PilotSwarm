@@ -1,0 +1,55 @@
+{
+  "name": "pilotswarm-eval-harness",
+  "version": "0.1.0",
+  "private": false,
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "run-eval": "./bin/run-eval.sh"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/**/*",
+    "bin/**/*",
+    "docs/QUICKSTART.md",
+    "docs/SCHEMA.md",
+    "docs/PLUGINS.md",
+    "docs/DOWNSTREAM-GUIDE.md",
+    "docs/TROUBLESHOOTING.md",
+    "scenarios/**/*",
+    "runs/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "npm run clean && tsc",
+    "prepack": "npm run build",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^0.3.0",
+    "pg": "^8.18.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.0"
+  },
+  "peerDependencies": {
+    "pilotswarm-sdk": "^0.1.29"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

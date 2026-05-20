@@ -1,0 +1,474 @@
+import { randomBytes } from "node:crypto";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { evaluateChecks } from "./check-runner.js";
+import { effectiveTimeoutMs } from "./effective-config.js";
+import { requiredIsolation, type IsolationMode } from "./isolation.js";
+import { loadPromptOverride } from "./prompt-loading.js";
+import {
+  resolveCreateEnv,
+  resolveSdk,
+  safeSchemaLabel,
+  selectedSdkTools,
+  type LiveDriverDeps
+} from "../drivers/live.js";
+import {
+  mergeToolCalls,
+  normalizeCmsEvents,
+  promptForScenario,
+  promptsForScenario,
+  selectedModel,
+  stripProviderPrefix,
+  toolCallsFromCmsEvents
+} from "../drivers/observations.js";
+import { tools } from "../registry.js";
+import type { ObservedResult, ObservedToolCall, RunConfig, Scenario, ScenarioResult } from "../types.js";
+
+type AnyCtor = new (options: Record<string, unknown>) => any;
+
+type ManagedLiveSdk = {
+  WorkerCtor: AnyCtor;
+  ClientCtor: AnyCtor;
+  defineTool: (name: string, config: Record<string, unknown>) => unknown;
+};
+
+type ManagedLiveEnv = {
+  store: string;
+  duroxideSchema: string;
+  cmsSchema: string;
+  factsSchema: string;
+  sessionStateDir: string;
+  cleanup?: () => Promise<void>;
+};
+
+type ManagedLiveRuntime = {
+  env: ManagedLiveEnv;
+  workers: any[];
+  client: any;
+  sdk: ManagedLiveSdk;
+  workerCount: number;
+  replaceWorker: (index: number, sessionId: string, sessionConfig: Record<string, unknown>, sdkTools: unknown[]) => Promise<void>;
+  close: () => Promise<void>;
+};
+
+export type ManagedLiveRunnerDeps = LiveDriverDeps;
+
+export async function runManagedLiveScenarios(
+  scenarios: Scenario[],
+  config: RunConfig,
+  deps: ManagedLiveRunnerDeps = {},
+): Promise<ScenarioResult[]> {
+  if (scenarios.length === 0) return [];
+  if (!deps.WorkerCtor && !process.env.GITHUB_TOKEN) {
+    throw new Error("GITHUB_TOKEN is required for managed live evals.");
+  }
+
+  const concurrency = Math.max(1, config.defaults?.concurrent ?? 1);
+  const configuredIsolation = config.defaults?.isolation ?? "shared-worker";
+  const sharedScenarios = scenarios.filter((scenario) => requiredIsolation(scenario, configuredIsolation) === "shared-worker");
+  const sharedRuntime = sharedScenarios.length
+    ? await createManagedLiveRuntime("eval_live_shared", config, deps, concurrency)
+    : undefined;
+  const results = new Array<ScenarioResult>(scenarios.length);
+
+  try {
+    await mapLimit(scenarios.map((scenario, index) => ({ scenario, index })), concurrency, async ({ scenario, index }) => {
+      const isolation = requiredIsolation(scenario, configuredIsolation);
+      if (isolation === "shared-worker") {
+        if (!sharedRuntime) throw new Error("Shared live runtime was not initialized.");
+        results[index] = await runManagedLiveScenarioWithChecks(scenario, config, sharedRuntime, isolation);
+        return;
+      }
+
+      const runtime = await createManagedLiveRuntime(`eval_live_${safeSchemaLabel(scenario.id)}`, config, deps, 1, scenario);
+      try {
+        results[index] = await runManagedLiveScenarioWithChecks(scenario, config, runtime, isolation);
+      } finally {
+        await runtime.close();
+      }
+    });
+  } finally {
+    await sharedRuntime?.close();
+  }
+
+  return results;
+}
+
+async function createManagedLiveRuntime(
+  label: string,
+  config: RunConfig,
+  deps: ManagedLiveRunnerDeps,
+  workerCount: number,
+  scenario?: Scenario,
+): Promise<ManagedLiveRuntime> {
+  const [sdk, createEnv] = await Promise.all([
+    resolveSdk(deps),
+    resolveCreateEnv(deps.createEnv),
+  ]);
+  const env = createEnv(label);
+  const globalTools = await selectedSdkTools([...tools.keys()], sdk.defineTool, []);
+  const customAgents = await customAgentsForScenario(config, scenario);
+  const createWorker = () => {
+    const worker = new sdk.WorkerCtor({
+      store: env.store,
+      githubToken: process.env.GITHUB_TOKEN,
+      duroxideSchema: env.duroxideSchema,
+      cmsSchema: env.cmsSchema,
+      factsSchema: env.factsSchema,
+      sessionStateDir: env.sessionStateDir,
+      workerNodeId: `eval-${randomBytes(4).toString("hex")}`,
+      disableManagementAgents: config.worker?.disableManagementAgents ?? true,
+      pluginDirs: resolveWorkerPaths(config, config.worker?.pluginDirs),
+      customAgents,
+      skillDirectories: resolveWorkerPaths(config, config.worker?.skillDirectories),
+      logLevel: process.env.DUROXIDE_LOG_LEVEL || "error",
+    });
+    if (globalTools.sdkTools.length > 0) worker.registerTools?.(globalTools.sdkTools);
+    return worker;
+  };
+  const workers = Array.from({ length: workerCount }, () => createWorker());
+
+  for (const worker of workers) await worker.start();
+
+  const client = new sdk.ClientCtor({
+    store: env.store,
+    duroxideSchema: env.duroxideSchema,
+    cmsSchema: env.cmsSchema,
+    factsSchema: env.factsSchema,
+    dehydrateThreshold: 0,
+  });
+  await client.start();
+
+  return {
+    env,
+    workers,
+    client,
+    sdk,
+    workerCount,
+    async replaceWorker(index, sessionId, sessionConfig, sdkTools) {
+      const current = workers[index];
+      await current?.stop?.();
+      const replacement = createWorker();
+      await replacement.start();
+      replacement.setSessionConfig?.(sessionId, { ...sessionConfig, tools: sdkTools });
+      workers[index] = replacement;
+    },
+    async close() {
+      await client?.stop?.();
+      for (const worker of [...workers].reverse()) await worker?.stop?.();
+      await env.cleanup?.();
+    },
+  };
+}
+
+function resolveWorkerPaths(config: RunConfig, paths?: string[]): string[] | undefined {
+  if (!paths) return undefined;
+  const baseDir = config.configPath ? dirname(config.configPath) : process.cwd();
+  return paths.map((path) => isAbsolute(path) ? path : resolve(baseDir, path));
+}
+
+async function customAgentsForScenario(config: RunConfig, scenario?: Scenario): Promise<unknown[] | undefined> {
+  const configuredAgents = config.worker?.customAgents ?? [];
+  const promptOverrides = Object.entries(scenario?.promptOverrides ?? {});
+  if (promptOverrides.length === 0) return config.worker?.customAgents;
+
+  const scenarioAgents = await Promise.all(promptOverrides.map(async ([name, entry]) => {
+    const prompt = await loadPromptOverride(entry, scenario?.filePath);
+    return {
+      name,
+      prompt,
+      ...(entry.frontmatter
+        ? {
+          ...(entry.frontmatter.description ? { description: entry.frontmatter.description } : {}),
+          tools: entry.frontmatter.tools ?? null,
+        }
+        : {}),
+    };
+  }));
+  const scenarioAgentNames = new Set(scenarioAgents.map((agent) => agent.name));
+  return [
+    ...configuredAgents.filter((agent) => {
+      const name = typeof agent.name === "string" ? agent.name : undefined;
+      return !name || !scenarioAgentNames.has(name);
+    }),
+    ...scenarioAgents,
+  ];
+}
+
+async function runManagedLiveScenarioWithChecks(
+  scenario: Scenario,
+  config: RunConfig,
+  runtime: ManagedLiveRuntime,
+  isolation: IsolationMode,
+): Promise<ScenarioResult> {
+  const observed = await runManagedLiveScenario(scenario, config, runtime, isolation);
+  const checks = await evaluateChecks(scenario, observed, config);
+  const passed = !observed.errored && checks.every((check) => check.skipped || (check.pass && !check.errored));
+  const failureMessage = passed
+    ? undefined
+    : (observed.errored ? observed.metadata?.reason as string | undefined : undefined)
+      ?? checks.find((check) => !check.pass || check.errored)?.message
+      ?? "scenario failed";
+
+  return {
+    scenarioId: scenario.id,
+    kind: scenario.kind,
+    passed,
+    gated: true,
+    failureMessage,
+    observed,
+    checks,
+    infraError: Boolean(observed.errored),
+    metadata: {
+      driver: "live",
+      isolation,
+      managedWorkerCount: runtime.workerCount,
+      ...(observed.metadata?.chaos ? { chaos: observed.metadata.chaos } : {}),
+      ...scenarioResultMetadata(scenario),
+    },
+  };
+}
+
+function scenarioResultMetadata(scenario: Scenario): Record<string, unknown> {
+  const evalCell = scenario.metadata?.evalCell;
+  return evalCell && typeof evalCell === "object"
+    ? { ...(evalCell as Record<string, unknown>), evalCell }
+    : {};
+}
+
+async function runManagedLiveScenario(
+  scenario: Scenario,
+  config: RunConfig,
+  runtime: ManagedLiveRuntime,
+  isolation: IsolationMode,
+): Promise<ObservedResult> {
+  const startedAt = Date.now();
+  const handlerToolCalls: ObservedToolCall[] = [];
+  const turnResponses: string[] = [];
+  let sessionId = "";
+  let session: any;
+  let turnIndex = 0;
+  let chaos: ChaosController | undefined;
+
+  try {
+    assertSupportedLiveChaos(scenario);
+    const localChaos = createChaosController(scenario, runtime);
+    chaos = localChaos;
+    const { sdkTools, toolNames } = await selectedSdkTools(
+      scenario.tools ?? [],
+      runtime.sdk.defineTool,
+      handlerToolCalls,
+      {
+        turnIndex: () => turnIndex,
+        afterToolCall: (call, count) => localChaos.afterToolCall(call, count),
+      },
+    );
+    const sessionConfig = sessionConfigForScenario(scenario, config, toolNames);
+    localChaos.setSessionContext(() => sessionId, sessionConfig, sdkTools);
+    session = await runtime.client.createSession(sessionConfig);
+    sessionId = session.sessionId;
+    for (const worker of runtime.workers) {
+      worker.setSessionConfig?.(sessionId, { ...sessionConfig, tools: sdkTools });
+    }
+
+    const timeoutMs = effectiveTimeoutMs(scenario, config);
+    const prompts = promptsForScenario(scenario);
+    for (let index = 0; index < prompts.length; index += 1) {
+      turnIndex = index;
+      await localChaos.beforeTurn(prompts[index]);
+      const response = await session.sendAndWait(prompts[index], timeoutMs);
+      turnResponses.push(String(response ?? ""));
+    }
+    await localChaos.flush();
+
+    const [info, messages] = await Promise.all([
+      session.getInfo?.().catch(() => undefined),
+      session.getMessages?.(2000).catch(() => []) ?? [],
+    ]);
+    const cmsEvents = normalizeCmsEvents(messages);
+    const cmsToolCalls = toolCallsFromCmsEvents(cmsEvents);
+
+    return {
+      scenarioId: scenario.id,
+      finalResponse: turnResponses.at(-1) ?? "",
+      toolCalls: mergeToolCalls(cmsToolCalls, handlerToolCalls),
+      cmsEvents,
+      latencyMs: Date.now() - startedAt,
+      costUsd: 0,
+      tokensIn: promptForScenario(scenario).split(/\s+/).filter(Boolean).length,
+      tokensOut: turnResponses.join("\n").split(/\s+/).filter(Boolean).length,
+      terminalState: info?.status ?? info?.state ?? "completed",
+      errored: false,
+      metadata: {
+        driver: "live",
+        managed: true,
+        isolation,
+        sessionId,
+        turnResponses,
+        workerCount: runtime.workerCount,
+        ...(localChaos.metadata() ? { chaos: localChaos.metadata() } : {}),
+      },
+    };
+  } catch (error) {
+    await chaos?.cancel();
+    const [info, messages] = session
+      ? await Promise.all([
+        session.getInfo?.().catch(() => undefined),
+        session.getMessages?.(2000).catch(() => []) ?? [],
+      ])
+      : [undefined, []];
+    const cmsEvents = normalizeCmsEvents(messages);
+    const chaosMetadata = chaos?.metadata();
+    return {
+      scenarioId: scenario.id,
+      finalResponse: turnResponses.at(-1) ?? "",
+      toolCalls: mergeToolCalls(toolCallsFromCmsEvents(cmsEvents), handlerToolCalls),
+      cmsEvents,
+      latencyMs: Date.now() - startedAt,
+      costUsd: 0,
+      tokensIn: promptForScenario(scenario).split(/\s+/).filter(Boolean).length,
+      tokensOut: turnResponses.join("\n").split(/\s+/).filter(Boolean).length,
+      terminalState: info?.status ?? info?.state ?? "error",
+      errored: true,
+      metadata: {
+        driver: "live",
+        managed: true,
+        isolation,
+        sessionId,
+        reason: error instanceof Error ? error.message : String(error),
+        ...(chaosMetadata
+          ? { chaos: chaosMetadata }
+          : scenario.chaos
+            ? { chaos: { injected: false, type: scenario.chaos.type, injectAt: scenario.chaos.injectAt } }
+            : {}),
+      },
+    };
+  }
+}
+
+type ChaosController = {
+  setSessionContext: (sessionId: () => string, sessionConfig: Record<string, unknown>, sdkTools: unknown[]) => void;
+  beforeTurn: (prompt: string) => Promise<void>;
+  afterToolCall: (call: ObservedToolCall, count: number) => Promise<void>;
+  flush: () => Promise<void>;
+  cancel: () => Promise<void>;
+  metadata: () => Record<string, unknown> | undefined;
+};
+
+function assertSupportedLiveChaos(scenario: Scenario): void {
+  if (!scenario.chaos) return;
+  if (scenario.chaos.type !== "worker-restart") {
+    throw new Error(`Live chaos type "${scenario.chaos.type}" is not supported by the managed eval runner.`);
+  }
+  const injectAt = scenario.chaos.injectAt;
+  const supported = injectAt === "during-wait"
+    || /^after-tool-call-\d+$/.test(injectAt);
+  if (!supported) throw new Error(`Live chaos injection point "${injectAt}" is not supported by the managed eval runner.`);
+}
+
+function createChaosController(scenario: Scenario, runtime: ManagedLiveRuntime): ChaosController {
+  const chaos = scenario.chaos;
+  let sessionId: (() => string) | undefined;
+  let sessionConfig: Record<string, unknown> | undefined;
+  let sdkTools: unknown[] | undefined;
+  let injected = false;
+  let cancelled = false;
+  const events: Array<Record<string, unknown>> = [];
+  const pending: Promise<void>[] = [];
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+
+  async function inject(trigger: string): Promise<void> {
+    if (!chaos || injected || cancelled) return;
+    const id = sessionId?.();
+    if (!id || !sessionConfig || !sdkTools) {
+      if (chaos.onTargetMissing === "best-effort" || chaos.onTargetMissing === "skip") return;
+      throw new Error(`Chaos target missing for ${scenario.id} at ${trigger}.`);
+    }
+    injected = true;
+    events.push({ trigger, action: "replace-worker" });
+    await runtime.replaceWorker(0, id, sessionConfig, sdkTools);
+  }
+
+  return {
+    setSessionContext(getSessionId, nextSessionConfig, nextSdkTools) {
+      sessionId = getSessionId;
+      sessionConfig = nextSessionConfig;
+      sdkTools = nextSdkTools;
+    },
+    async beforeTurn(prompt) {
+      if (!chaos || injected || cancelled) return;
+      if (chaos.injectAt === "during-wait" && /\bwait\b/i.test(prompt)) {
+        const delayMs = typeof chaos.params?.delayMs === "number" ? chaos.params.delayMs : 250;
+        pending.push(new Promise<void>((resolve) => {
+          const handle = setTimeout(() => {
+            timers.delete(handle);
+            if (cancelled) { resolve(); return; }
+            inject("during-wait").then(resolve, (error: unknown) => {
+              events.push({
+                trigger: "during-wait",
+                action: "error",
+                reason: error instanceof Error ? error.message : String(error),
+              });
+              resolve();
+            });
+          }, delayMs);
+          timers.add(handle);
+        }));
+      }
+    },
+    async afterToolCall(_call, count) {
+      if (!chaos || injected || cancelled) return;
+      const match = /^after-tool-call-(\d+)$/.exec(chaos.injectAt);
+      if (match && count >= Number(match[1])) await inject(chaos.injectAt);
+    },
+    async flush() {
+      await Promise.allSettled(pending);
+    },
+    async cancel() {
+      cancelled = true;
+      for (const handle of timers) clearTimeout(handle);
+      timers.clear();
+      await Promise.allSettled(pending);
+    },
+    metadata() {
+      if (!chaos) return undefined;
+      return {
+        injected,
+        type: chaos.type,
+        injectAt: chaos.injectAt,
+        action: "replace-worker",
+        events,
+      };
+    },
+  };
+}
+
+function sessionConfigForScenario(scenario: Scenario, config: RunConfig, toolNames: string[]): Record<string, unknown> {
+  const sessionConfig: Record<string, unknown> = {};
+  if (toolNames.length > 0) sessionConfig.toolNames = toolNames;
+  if (scenario.systemMessage) sessionConfig.systemMessage = scenario.systemMessage;
+  const model = selectedModel(scenario, config);
+  if (model) sessionConfig.model = stripProviderPrefix(model);
+  if (scenario.kind === "durable-trajectory") sessionConfig.waitThreshold = 0;
+  if (scenario.agent && scenario.agent !== "default") {
+    sessionConfig.agentId = scenario.agent;
+    sessionConfig.boundAgentName = scenario.agent;
+    sessionConfig.promptLayering = { kind: "app-agent" };
+  }
+  return sessionConfig;
+}
+
+async function mapLimit<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const workerCount = Math.min(limit, items.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      await fn(items[index]);
+    }
+  }));
+}
