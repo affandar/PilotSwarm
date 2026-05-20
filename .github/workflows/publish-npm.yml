@@ -46,8 +46,6 @@ jobs:
 
       - name: Publish SDK
         working-directory: packages/sdk
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ "${NPM_DRY_RUN}" = "true" ]; then
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
@@ -83,8 +81,6 @@ jobs:
 
       - name: Publish CLI
         working-directory: packages/cli
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ "${NPM_DRY_RUN}" = "true" ]; then
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
@@ -120,8 +116,6 @@ jobs:
 
       - name: Publish Web
         working-directory: packages/portal
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ "${NPM_DRY_RUN}" = "true" ]; then
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
