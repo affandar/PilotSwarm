@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "smoke",
+  "description": "App-local eval smoke run.",
+  "scenarios": "./scenarios.jsonl",
+  "defaults": {
+    "driver": "live",
+    "trials": 1,
+    "timeoutMs": 900000
+  },
+  "filters": {
+    "includeTags": ["smoke"]
+  },
+  "worker": {
+    "customAgents": [
+      {
+        "name": "incident-conductor",
+        "description": "App-local incident triage conductor used by the smoke eval template.",
+        "prompt": "You triage incidents for the app. Use the registered incident tools, identify the current owner, summarize impact, and name the next action.",
+        "tools": ["incident_lookup"]
+      }
+    ]
+  },
+  "reporters": ["console", "markdown", "jsonl"],
+  "llmJudge": {
+    "enabled": true,
+    "provider": "copilot",
+    "judgeModel": "gpt-5.4",
+    "applyTo": "all",
+    "defaultCheck": {
+      "rubric": "Evaluate whether the observed PilotSwarm execution satisfies the app scenario description, deterministic checks, tool calls, CMS/session evidence, and terminal state.",
+      "budgetUsd": 0.02
+    },
+    "totalBudgetUsd": 0.5,
+    "onMissingProvider": "error"
+  },
+  "output": { "reportsDir": ".eval-results/smoke" }
+}

@@ -6,21 +6,22 @@ They are not active in this repository. Copy them into the target repository you
 
 ## Included Agents
 
-- `pilotswarm-cli-builder` — scaffolds plugin-driven CLI/TUI apps built on the shipped PilotSwarm UI
-- `pilotswarm-portal-builder` — scaffolds browser-portal customization, portal branding, and auth add-on wiring
-- `pilotswarm-sdk-builder` — scaffolds SDK-first apps and services built around `PilotSwarmClient` and `PilotSwarmWorker`
-- `pilotswarm-azure-deployer` — prepares PilotSwarm-based apps for Azure / AKS deployment, including env templates, manifests, and worker observability
+- `pilotswarm-cli-builder` - scaffolds plugin-driven CLI/TUI apps built on the shipped PilotSwarm UI
+- `pilotswarm-portal-builder` - scaffolds browser-portal customization, portal branding, and auth add-on wiring
+- `pilotswarm-sdk-builder` - scaffolds SDK-first apps and services built around `PilotSwarmClient` and `PilotSwarmWorker`
+- `pilotswarm-azure-deployer` - prepares PilotSwarm-based apps for Azure / AKS deployment, including env templates, manifests, and worker observability
 
 ## Included Skills (split for focused retrieval)
 
-- `pilotswarm-cli-builder` — CLI/TUI scaffold guidance, env files, launcher scripts
-- `pilotswarm-portal-builder` — portal branding, `plugin.json.portal`, auth add-ons, and deployment wiring
-- `pilotswarm-sdk-builder` — SDK app scaffold guidance, client/worker split, tests
-- `pilotswarm-duroxide-versioning` — durable orchestration versioning, continue-as-new upgrades, compatibility rules
-- `pilotswarm-azure-deployer` — deployment workflow, manifests, env checklist, `RUST_LOG` observability
-- `pilotswarm-aks-identity` — cross-cluster AKS access, Workload Identity, kubectl patterns
-- `pilotswarm-azure-lessons` — RBAC conditional access workaround, PostgreSQL region restrictions, Key Vault + CSI
-- `pilotswarm-three-tier` — dedicated worker-cluster topology for long-running or dehydration-resistant jobs
+- `pilotswarm-cli-builder` - CLI/TUI scaffold guidance, env files, launcher scripts
+- `pilotswarm-portal-builder` - portal branding, `plugin.json.portal`, auth add-ons, and deployment wiring
+- `pilotswarm-sdk-builder` - SDK app scaffold guidance, client/worker split, tests
+- `pilotswarm-duroxide-versioning` - durable orchestration versioning, continue-as-new upgrades, compatibility rules
+- `pilotswarm-azure-deployer` - deployment workflow, manifests, env checklist, `RUST_LOG` observability
+- `pilotswarm-aks-identity` - cross-cluster AKS access, Workload Identity, kubectl patterns
+- `pilotswarm-azure-lessons` - RBAC conditional access workaround, PostgreSQL region restrictions, Key Vault + CSI
+- `pilotswarm-three-tier` - dedicated worker-cluster topology for long-running or dehydration-resistant jobs
+- `eval-harness` - scenario JSON, eval plugin, and smoke-run template for downstream app evals
 
 These templates assume apps consume:
 
@@ -32,6 +33,7 @@ from npm:
 ```bash
 npm install pilotswarm-sdk
 npm install pilotswarm-cli
+npm install pilotswarm-eval-harness
 ```
 
 and that PilotSwarm's built-in framework and management plugins are embedded in those packages while app `default.agent.md` files act as app-wide overlays.
@@ -47,6 +49,13 @@ The CLI builder template also assumes runnable scaffolds should:
 - generate checked-in launcher and cleanup scripts
 - make those scripts executable
 - verify direct script execution rather than only relying on `node script.js`
+
+Eval-harness builder guidance assumes the implemented hierarchy is Run config -> manifest -> scenario config. Default bundled runs are live, `--fake` is the explicit preflight path, manifests only select scenarios and add tags, and downstream smoke examples should use:
+
+```bash
+npm exec run-eval -- --config=eval/runs/smoke/config.json --fake --require=eval/eval-plugins.js
+npm exec run-eval -- --config=eval/runs/smoke/config.json --require=eval/eval-plugins.js
+```
 
 ## Install Into Another Repo
 
@@ -74,7 +83,9 @@ Copy these folders into the target repository:
     │   └── SKILL.md
     ├── pilotswarm-three-tier/
     │   └── SKILL.md
-    └── pilotswarm-azure-lessons/
+    ├── pilotswarm-azure-lessons/
+    │   └── SKILL.md
+    └── eval-harness/
         └── SKILL.md
 ```
 
@@ -106,6 +117,10 @@ cp -R templates/builder-agents/skills/* .github/skills/
   `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
 - DevOps sample:
   `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+- Eval harness downstream guide:
+  `https://github.com/affandar/pilotswarm/blob/main/packages/eval-harness/docs/DOWNSTREAM-GUIDE.md`
+- Eval harness quickstart:
+  `https://github.com/affandar/pilotswarm/blob/main/packages/eval-harness/docs/QUICKSTART.md`
 
 ## Maintenance Rule
 

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "kind": "single-turn",
+  "id": "incident.triage.basic",
+  "description": "Agent triages a checkout incident and names an owner.",
+  "agent": "incident-conductor",
+  "tools": ["incident_lookup"],
+  "tags": ["smoke"],
+  "input": {
+    "prompt": "Incident INC-123 has checkout errors. Look it up and triage it."
+  },
+  "checks": [
+    { "type": "incident-owner-present" },
+    { "type": "goal-completed" }
+  ],
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. Owner: checkout on-call. Next action: inspect payment gateway errors.",
+      "toolCalls": [{ "name": "incident_lookup", "args": { "id": "INC-123" }, "result": { "severity": "sev2" } }]
+    }
+  }
+}
