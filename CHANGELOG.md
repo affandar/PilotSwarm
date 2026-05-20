@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+## 0.1.30 — 2026-05-20
+
+### SDK / Runtime
+
+- **Base infrastructure state** — added durable CMS support and management APIs
+  for session summary state, profile settings, session groups, pinned sessions,
+  collapsed-session ids, owner-aware grouping, and management views. The CMS
+  migration set now includes reviewable diffs through `0020_diff.md`, and the
+  client/runtime surfaces round-trip the new state through public management
+  APIs instead of portal-local caches.
+- **Wall-clock scheduling** — added `cron_at` support for IANA-timezone wall
+  clock schedules alongside interval cron, including stored-procedure state,
+  orchestration dispatch, worker/tool wiring, and tests for scheduled wake-ups.
+- **Cross-session coordination** — added durable `send_session_message` /
+  `reply_session_message` flows, session-message events, transcript rendering,
+  and child-notification policy handling so parent/child and peer sessions can
+  exchange request/reply cards without relying on ad-hoc transcript text.
+- **Prompt and agent layering** — added prompt-layer loading/version metadata,
+  agent-versioning guidance, builder-template version expectations, and prompt
+  hardening for durable timers, child contracts, facts, and summary table
+  parity.
+- **Copilot SDK refresh** — bumped the runtime to `@github/copilot` `^1.0.50`
+  and `@github/copilot-sdk` `^1.0.0-beta.4`; the tool-name collision regression
+  continues to pass with the updated built-in tool surface.
+
+### Portal / TUI / Shared UI
+
+- **Session groups, restore, and pinning polish** — the shared UI now restores
+  active nested/grouped sessions across refreshes, auto-expands ancestors of the
+  restored active session, prunes non-pinnable pins, ignores stale pins in row
+  ordering, and keeps portal/native behavior aligned for top-level-only pins and
+  move-to-group workflows.
+- **Mobile portal fixes** — the top toolbar stays to two rows with live status on
+  the right side of row two, focus-mode session lists are horizontally pannable
+  for long titles, and summary/group views remain read-only without prompt
+  chrome.
+- **Summary/table rendering** — session summaries and group details render
+  markdown tables as web-native tables, including summary text that arrives with
+  escaped newline sequences, while preserving wrapped chat/table behavior in
+  narrow panes.
+- **Portal runtime preferences** — profile settings now round-trip through the
+  portal runtime and transport so theme, filters, pins, collapsed rows, active
+  session, pane splits, and chat/summary mode persist across browser/mobile
+  clients.
+
+### Docs / Templates
+
+- Updated canonical docs for session creation policy, system reference,
+  keybindings, portal/TUI user guides, SDK agent building, facts, and agent
+  contracts.
+- Added proposal and bug-report docs for agent-layer versioning, wall-clock
+  cron, child-contract notification policy, blank assistant replay handling,
+  no-op child updates, and wait-boundary leakage.
+- Updated builder-agent templates and skills so generated agent prompts include
+  explicit versioning expectations and current PilotSwarm coordination behavior.
+
+### Packages / Docker
+
+- Published package versions are bumped to `0.1.30` for `pilotswarm-sdk`,
+  `pilotswarm-cli`, and `pilotswarm-web`, with workspace dependency ranges and
+  lockfile entries updated together.
+- Refreshed the Docker quickstart versioned starter-image pull command to
+  `affandar/pilotswarm-starter:0.1.30`; the starter Docker publish workflow
+  remains wired to GitHub Release publication for `v0.1.30`, `0.1.30`, and
+  `latest` tags.
+
+### Tests
+
+- Added and updated local coverage for base infrastructure state, cron-at
+  scheduling, cross-session messaging, child notifications, prompt layers,
+  system session restart, inline control tools, portal browser contracts,
+  confirmation modals, session refresh behavior, history-pane UI, grouped
+  sessions, and Copilot SDK tool-name collisions.
+- Full-suite testing was run outside this release-agent turn by the user; this
+  release pass still ran build and packaging checks before publish.
+
 ## 0.1.29 — 2026-05-12
 
 ### SDK / Runtime

@@ -22,8 +22,9 @@ import type {
     SessionStatusSignal,
     SessionContextUsage,
     SessionOwnerInfo,
+    SessionSummaryState,
 } from "./types.js";
-import type { SessionCatalogProvider } from "./cms.js";
+import type { SessionCatalogProvider, SessionRow } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type {
     SessionMetricSummary,
@@ -35,6 +36,8 @@ import type {
     FleetSkillUsage,
     UserProfile,
     UserPrincipal,
+    SessionGroupRow,
+    ChildOutcomeRow,
 } from "./cms.js";
 import type { FactStore, FactsStatsRow } from "./facts-store.js";
 import { createFactStoreForUrl } from "./facts-store.js";
@@ -42,6 +45,14 @@ import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
 import { SessionDumper } from "./session-dumper.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort } from "./model-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
+import type { AgentConfig } from "./agent-loader.js";
+import {
+    loadSystemAgentConfigs,
+    resolveSystemAgentSessionPlans,
+    startSystemAgents,
+    type SystemAgentStartResult,
+    type SystemAgentSessionPlan,
+} from "./system-agents.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -53,6 +64,7 @@ const STATUS_WAIT_SLICE_MS = 10_000;
 const MAX_SESSION_TITLE_LENGTH = 60;
 const SESSION_COMMAND_SETTLE_TIMEOUT_MS = 65_000;
 const SESSION_STATE_POLL_MS = 500;
+const DEFAULT_SYSTEM_AGENT_DEHYDRATE_THRESHOLD = 30;
 
 function isTerminalOrchestrationStatus(status?: string | null): boolean {
     return status === "Completed" || status === "Failed" || status === "Terminated";
@@ -78,6 +90,11 @@ function stripRunningCompaction(contextUsage?: SessionContextUsage): SessionCont
 function isIgnorableCancelError(error: unknown): boolean {
     const message = String((error as any)?.message || error || "");
     return /instance is terminal|already (?:completed|terminated|cancelled)|not found|no such instance|missing/i.test(message);
+}
+
+function isIgnorableRestartCommandError(error: unknown): boolean {
+    const message = String((error as any)?.message || error || "");
+    return isIgnorableCancelError(error) || /not started|status=(?:missing|notfound|unknown)/i.test(message);
 }
 
 function createAbortError(message: string, reason?: unknown): Error {
@@ -130,6 +147,68 @@ function buildLifecycleCommandId(prefix: string): string {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function ownerKeyForOwner(owner: SessionOwnerInfo | null | undefined): string | null {
+    const provider = String(owner?.provider || "").trim();
+    const subject = String(owner?.subject || "").trim();
+    return provider && subject ? `${provider}\u0001${subject}` : null;
+}
+
+function ownerLabel(owner: SessionOwnerInfo | null | undefined): string {
+    return String(owner?.displayName || owner?.email || "").trim() || "unowned";
+}
+
+export type SystemSessionRestartDisposition = "complete" | "terminate" | "hard_delete" | "hardDelete";
+
+export interface RestartSystemSessionOptions {
+    disposition: SystemSessionRestartDisposition;
+    reason?: string;
+    timeoutMs?: number;
+}
+
+export interface RestartSystemSessionResult {
+    agentId: string;
+    agentName: string;
+    sessionId: string;
+    disposition: "complete" | "terminate" | "hard_delete";
+    previousSessionExisted: boolean;
+    startResults: SystemAgentStartResult[];
+}
+
+function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisposition): "complete" | "terminate" | "hard_delete" {
+    if (disposition === "complete") return "complete";
+    if (disposition === "terminate") return "terminate";
+    if (disposition === "hard_delete" || disposition === "hardDelete") return "hard_delete";
+    throw new Error(`Unsupported system session restart disposition: ${String(disposition)}`);
+}
+
+function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
+    const liveStatus: PilotSwarmSessionStatus = (row.state as PilotSwarmSessionStatus) || "pending";
+    return {
+        sessionId: row.sessionId,
+        title: row.title ?? undefined,
+        agentId: row.agentId ?? undefined,
+        splash: row.splash ?? undefined,
+        owner: row.owner ?? undefined,
+        status: liveStatus,
+        orchestrationStatus: undefined,
+        orchestrationVersion: undefined,
+        createdAt: row.createdAt.getTime(),
+        updatedAt: row.updatedAt?.getTime(),
+        iterations: row.currentIteration ?? 0,
+        parentSessionId: row.parentSessionId ?? undefined,
+        groupId: row.groupId ?? undefined,
+        isSystem: row.isSystem || undefined,
+        model: row.model ?? undefined,
+        reasoningEffort: row.reasoningEffort ?? undefined,
+        shortSummary: row.shortSummary ?? undefined,
+        summaryState: row.summaryState ?? undefined,
+        summaryUpdatedAt: row.summaryUpdatedAt?.getTime(),
+        error: row.lastError ?? undefined,
+        waitReason: row.waitReason ?? undefined,
+        statusVersion: undefined,
+    };
+}
+
 // ─── Types ───────────────────────────────────────────────────────
 
 /** Merged view of a session for management UIs. */
@@ -149,14 +228,23 @@ export interface PilotSwarmSessionView {
     updatedAt?: number;
     iterations?: number;
     parentSessionId?: string;
+    groupId?: string;
     isSystem?: boolean;
     model?: string;
     reasoningEffort?: string;
+    shortSummary?: string;
+    summaryState?: SessionSummaryState;
+    summaryUpdatedAt?: number;
     error?: string;
     waitReason?: string;
     cronActive?: boolean;
     cronInterval?: number;
     cronReason?: string;
+    cronKind?: "interval" | "wall-clock";
+    cronNextFireAt?: number;
+    cronTimezone?: string;
+    cronMaxFires?: number;
+    cronFiresCompleted?: number;
     pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean };
     result?: string;
     contextUsage?: SessionContextUsage;
@@ -222,6 +310,16 @@ export interface PilotSwarmManagementClientOptions {
     factsSchema?: string;
     /** Path to model_providers.json. Auto-discovers if not set. */
     modelProvidersPath?: string;
+    /** App plugin dirs used to discover app-defined system agents for restart operations. */
+    pluginDirs?: string[];
+    /** Disable bundled PilotSwarm management agents when discovering restartable system agents. */
+    disableManagementAgents?: boolean;
+    /** Direct system-agent definitions for restart operations. Mostly useful for tests/embedded hosts. */
+    systemAgents?: AgentConfig[];
+    /** Whether restarted system-agent orchestrations should enable blob-backed dehydration. */
+    blobEnabled?: boolean;
+    /** Dehydrate threshold passed to restarted system-agent orchestrations. Defaults to 30. */
+    waitThreshold?: number;
     /**
      * Optional trace callback for startup diagnostics.
      * If not provided, trace messages are discarded.
@@ -254,6 +352,7 @@ export class PilotSwarmManagementClient {
     private _factStore: FactStore | null = null;
     private _duroxideClient: any = null;
     private _modelProviders: ModelProviderRegistry | null = null;
+    private _systemAgents: AgentConfig[] = [];
     private _activeStatusWaitControllers = new Set<AbortController>();
     private _activeStatusWaitPromises = new Set<Promise<unknown>>();
     private _started = false;
@@ -321,6 +420,11 @@ export class PilotSwarmManagementClient {
 
         // Load model providers
         this._modelProviders = loadModelProviders(this.config.modelProvidersPath);
+        this._systemAgents = loadSystemAgentConfigs({
+            pluginDirs: this.config.pluginDirs,
+            disableManagementAgents: this.config.disableManagementAgents,
+            systemAgents: this.config.systemAgents,
+        });
 
         this._started = true;
     }
@@ -399,6 +503,63 @@ export class PilotSwarmManagementClient {
         } catch {}
     }
 
+    private _getSystemAgentPlans(): SystemAgentSessionPlan[] {
+        return resolveSystemAgentSessionPlans(this._systemAgents);
+    }
+
+    private _resolveSystemAgentPlan(agentIdOrSessionId: string): SystemAgentSessionPlan {
+        const target = String(agentIdOrSessionId || "").trim();
+        if (!target) throw new Error("System agent id or session id is required");
+        const plans = this._getSystemAgentPlans();
+        const plan = plans.find((candidate) =>
+            candidate.agent.id === target ||
+            candidate.agent.name === target ||
+            candidate.sessionId === target ||
+            `session-${candidate.sessionId}` === target);
+        if (!plan) {
+            throw new Error(
+                `System agent "${target}" is not known to this management client. ` +
+                `Configure pluginDirs/systemAgents so the client can recreate the system session.`,
+            );
+        }
+        return plan;
+    }
+
+    private async _archiveSystemSessionForRestart(
+        sessionId: string,
+        state: "completed" | "cancelled" | "failed",
+        reason: string,
+    ): Promise<void> {
+        await this._catalog!.archiveSystemSessionForRestart(
+            sessionId,
+            state,
+            state === "completed" ? null : reason,
+        );
+
+        if (this._factStore) {
+            try {
+                await this._factStore.deleteSessionFactsForSession(sessionId);
+            } catch (err) {
+                console.error(`[PilotSwarmManagementClient] system-session fact cleanup failed for ${sessionId}:`, err);
+            }
+        }
+    }
+
+    private async _deleteSystemOrchestrationInstance(sessionId: string): Promise<void> {
+        try {
+            await this._duroxideClient.deleteInstance(`session-${sessionId}`, true);
+        } catch {}
+    }
+
+    private async _terminateSystemOrchestrationInstance(sessionId: string, reason: string): Promise<void> {
+        try {
+            await this._duroxideClient.cancelInstance(`session-${sessionId}`, reason);
+        } catch (err) {
+            if (!isIgnorableCancelError(err)) throw err;
+        }
+        await this._deleteSystemOrchestrationInstance(sessionId);
+    }
+
     // ─── Session Listing ─────────────────────────────────────
 
     /**
@@ -416,31 +577,7 @@ export class PilotSwarmManagementClient {
         // Single CMS query — no duroxide fan-out
         const cmsSessions = await this._catalog!.listSessions();
 
-        return cmsSessions.map((row) => {
-            const liveStatus: PilotSwarmSessionStatus =
-                (row.state as PilotSwarmSessionStatus) || "pending";
-
-            return {
-                sessionId: row.sessionId,
-                title: row.title ?? undefined,
-                agentId: row.agentId ?? undefined,
-                splash: row.splash ?? undefined,
-                owner: row.owner ?? undefined,
-                status: liveStatus,
-                orchestrationStatus: undefined, // not available in CMS-only path
-                orchestrationVersion: undefined, // not available in CMS-only path
-                createdAt: row.createdAt.getTime(),
-                updatedAt: row.updatedAt?.getTime(),
-                iterations: row.currentIteration ?? 0,
-                parentSessionId: row.parentSessionId ?? undefined,
-                isSystem: row.isSystem || undefined,
-                model: row.model ?? undefined,
-                reasoningEffort: row.reasoningEffort ?? undefined,
-                error: row.lastError ?? undefined,
-                waitReason: row.waitReason ?? undefined,
-                statusVersion: undefined,
-            };
-        });
+        return cmsSessions.map(sessionViewFromCmsRow);
     }
 
     /**
@@ -492,10 +629,30 @@ export class PilotSwarmManagementClient {
         const rawCronInterval = typeof customStatus.cronInterval === "number" ? customStatus.cronInterval : undefined;
         const cronActive = terminalOrchestration ? false : rawCronActive;
         const cronInterval = terminalOrchestration ? undefined : rawCronInterval;
+        const cronKind = cronActive && (customStatus.cronKind === "wall-clock" || customStatus.cronKind === "interval")
+            ? customStatus.cronKind
+            : undefined;
+        const cronNextFireAt = cronActive && typeof customStatus.cronNextFireAt === "number"
+            ? customStatus.cronNextFireAt
+            : undefined;
+        const cronTimezone = cronActive && typeof customStatus.cronTimezone === "string"
+            ? customStatus.cronTimezone
+            : undefined;
+        const cronMaxFires = cronActive && typeof customStatus.cronMaxFires === "number"
+            ? customStatus.cronMaxFires
+            : undefined;
+        const cronFiresCompleted = cronActive && typeof customStatus.cronFiresCompleted === "number"
+            ? customStatus.cronFiresCompleted
+            : undefined;
         const normalizedCustomStatus = {
             ...customStatus,
             cronActive,
             cronInterval,
+            cronKind,
+            cronNextFireAt,
+            cronTimezone,
+            cronMaxFires,
+            cronFiresCompleted,
             contextUsage: customStatus?.contextUsage,
         };
         const normalizedContextUsage = terminalOrchestration
@@ -575,13 +732,22 @@ export class PilotSwarmManagementClient {
             updatedAt: row.updatedAt?.getTime(),
             iterations: customStatus.iteration ?? row.currentIteration ?? 0,
             parentSessionId: row.parentSessionId ?? undefined,
+            groupId: row.groupId ?? undefined,
             isSystem: row.isSystem || undefined,
             model: row.model ?? undefined,
             reasoningEffort: row.reasoningEffort ?? undefined,
+            shortSummary: row.shortSummary ?? undefined,
+            summaryState: row.summaryState ?? undefined,
+            summaryUpdatedAt: row.summaryUpdatedAt?.getTime(),
             error: effectiveError,
             waitReason: normalizedCustomStatus.waitReason,
             cronActive,
             cronInterval,
+            cronKind,
+            cronNextFireAt,
+            cronTimezone,
+            cronMaxFires,
+            cronFiresCompleted,
             cronReason: cronActive && typeof normalizedCustomStatus.cronReason === "string"
                 ? normalizedCustomStatus.cronReason
                 : undefined,
@@ -608,7 +774,156 @@ export class PilotSwarmManagementClient {
         };
     }
 
+    // ─── Child Contracts / Outcomes ────────────────────────
+
+    async getChildOutcome(childSessionId: string): Promise<ChildOutcomeRow | null> {
+        this._ensureStarted();
+        return this._catalog!.getChildOutcome(childSessionId);
+    }
+
+    async listChildOutcomes(parentSessionId: string): Promise<ChildOutcomeRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listChildOutcomes(parentSessionId);
+    }
+
+    // ─── Session Groups ─────────────────────────────────────
+
+    async createSessionGroup(input: {
+        groupId?: string;
+        title: string;
+        description?: string | null;
+        owner?: SessionOwnerInfo | null;
+        metadata?: Record<string, unknown>;
+    }): Promise<SessionGroupRow> {
+        this._ensureStarted();
+        const groupId = input.groupId ?? crypto.randomUUID();
+        await this._catalog!.createSessionGroup({
+            groupId,
+            title: input.title,
+            description: input.description ?? null,
+            owner: input.owner ?? null,
+            metadata: input.metadata ?? {},
+        });
+        const created = (await this._catalog!.listSessionGroups()).find((group) => group.groupId === groupId);
+        if (!created) throw new Error(`Session group ${groupId} was not created.`);
+        return created;
+    }
+
+    async listSessionGroups(): Promise<SessionGroupRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listSessionGroups();
+    }
+
+    async listGroupSessions(groupId: string): Promise<PilotSwarmSessionView[]> {
+        this._ensureStarted();
+        const rows = await this._catalog!.listGroupSessions(groupId);
+        return rows.map(sessionViewFromCmsRow);
+    }
+
+    async updateSessionGroup(groupId: string, patch: { title?: string; description?: string | null; metadataPatch?: Record<string, unknown> }): Promise<SessionGroupRow> {
+        this._ensureStarted();
+        await this._catalog!.updateSessionGroup(groupId, patch);
+        const updated = (await this._catalog!.listSessionGroups()).find((group) => group.groupId === groupId);
+        if (!updated) throw new Error(`Session group ${groupId} was not found.`);
+        return updated;
+    }
+
+    async moveSessionsToGroup(groupId: string | null, sessionIds: string[]): Promise<void> {
+        this._ensureStarted();
+        const normalizedGroupId = groupId == null ? null : String(groupId || "").trim();
+        let targetGroup: SessionGroupRow | null = null;
+        if (normalizedGroupId) {
+            targetGroup = (await this._catalog!.listSessionGroups()).find((candidate) => candidate.groupId === normalizedGroupId) ?? null;
+            if (!targetGroup) throw new Error(`Session group ${normalizedGroupId} was not found.`);
+        }
+
+        const uniqueIds = Array.from(new Set((Array.isArray(sessionIds) ? sessionIds : []).map((id) => String(id || "").trim()).filter(Boolean)));
+        const movableSessions: SessionRow[] = [];
+        for (const sessionId of uniqueIds) {
+            const session = await this._catalog!.getSession(sessionId);
+            if (!session || session.isSystem) continue;
+            movableSessions.push(session);
+        }
+
+        if (targetGroup) {
+            const groupOwnerKey = ownerKeyForOwner(targetGroup.owner);
+            const sessionOwnerKeys = new Set(movableSessions.map((session) => ownerKeyForOwner(session.owner) || ""));
+            const canAdoptOwner = !groupOwnerKey
+                && (targetGroup.memberCount ?? 0) === 0
+                && sessionOwnerKeys.size === 1
+                && Boolean(sessionOwnerKeys.values().next().value);
+            const mismatch = canAdoptOwner
+                ? null
+                : movableSessions.find((session) => ownerKeyForOwner(session.owner) !== groupOwnerKey);
+            if (mismatch) {
+                throw new Error(
+                    `Cannot move session ${mismatch.sessionId.slice(0, 8)} owned by ${ownerLabel(mismatch.owner)} ` +
+                    `into group ${targetGroup.title || targetGroup.groupId} owned by ${ownerLabel(targetGroup.owner)}.`,
+                );
+            }
+        }
+
+        for (const session of movableSessions) {
+            await this._catalog!.updateSession(session.sessionId, { groupId: normalizedGroupId || null });
+        }
+    }
+
+    async assignSessionsToGroup(groupId: string, sessionIds: string[]): Promise<void> {
+        await this.moveSessionsToGroup(groupId, sessionIds);
+    }
+
+    async completeSessionGroup(groupId: string, options?: { reason?: string }): Promise<void> {
+        this._ensureStarted();
+        void groupId;
+        void options;
+        throw new Error("Session groups are containers only; complete sessions individually.");
+    }
+
+    async cancelSessionGroup(groupId: string, reason?: string): Promise<void> {
+        this._ensureStarted();
+        void groupId;
+        void reason;
+        throw new Error("Session groups are containers only; cancel sessions individually.");
+    }
+
+    async deleteSessionGroup(groupId: string, reason?: string): Promise<void> {
+        this._ensureStarted();
+        const members = await this._catalog!.listGroupSessions(groupId);
+        void reason;
+        if (members.length > 0) {
+            throw new Error(`Cannot delete session group ${groupId}; move ${members.length} member session(s) out first.`);
+        }
+        const deleted = await this._catalog!.deleteSessionGroup(groupId);
+        if (!deleted) {
+            throw new Error(`Cannot delete session group ${groupId}; member sessions remain.`);
+        }
+    }
+
     // ─── Session Actions ─────────────────────────────────────
+
+    async completeSession(sessionId: string, reason?: string): Promise<void> {
+        this._ensureStarted();
+        const session = await this.getSession(sessionId);
+        if (!session) return;
+        if (session.isSystem) {
+            throw new Error("Cannot complete system session");
+        }
+        if (session.status === "completed") return;
+        if (session.status === "cancelled" || session.status === "failed") return;
+
+        const doneReason = reason ?? "Completed by management client";
+        await this.sendCommand(sessionId, {
+            cmd: "done",
+            id: buildLifecycleCommandId("done"),
+            args: { reason: doneReason },
+        });
+
+        await this._waitForSession(
+            sessionId,
+            (current) => current != null && (current.status === "completed" || current.status === "failed" || current.status === "cancelled"),
+            SESSION_COMMAND_SETTLE_TIMEOUT_MS,
+        );
+    }
 
     /**
      * Rename a session. Updates the title in CMS.
@@ -677,7 +992,10 @@ export class PilotSwarmManagementClient {
         const deleteReason = reason ?? "Deleted by management client";
 
         if (
-            session.status === "completed"
+            session.status === "pending"
+            || session.orchestrationStatus === "Unknown"
+            || session.orchestrationStatus == null
+            || session.status === "completed"
             || session.status === "failed"
             || session.status === "cancelled"
             || isTerminalOrchestrationStatus(session.orchestrationStatus)
@@ -697,6 +1015,85 @@ export class PilotSwarmManagementClient {
             (current) => current == null,
             SESSION_COMMAND_SETTLE_TIMEOUT_MS,
         );
+    }
+
+    async restartSystemSession(
+        agentIdOrSessionId: string,
+        options: RestartSystemSessionOptions,
+    ): Promise<RestartSystemSessionResult> {
+        this._ensureStarted();
+        if (!options?.disposition) {
+            throw new Error("restartSystemSession requires a disposition: complete, terminate, or hard_delete");
+        }
+
+        const disposition = normalizeSystemRestartDisposition(options.disposition);
+        const plan = this._resolveSystemAgentPlan(agentIdOrSessionId);
+        const sessionId = plan.sessionId;
+        const reason = options.reason ?? `Restarting system session ${plan.agent.id}`;
+        const existingRow = await this._catalog!.getSession(sessionId);
+        const previousSessionExisted = Boolean(existingRow);
+
+        if (existingRow && !existingRow.isSystem) {
+            throw new Error(`Session ${sessionId.slice(0, 8)} exists but is not a system session`);
+        }
+
+        if (existingRow) {
+            if (disposition === "complete") {
+                const view = await this.getSession(sessionId).catch(() => null);
+                if (view && view.status !== "completed" && view.status !== "failed" && view.status !== "cancelled") {
+                    try {
+                        await this.sendCommand(sessionId, {
+                            cmd: "done",
+                            id: buildLifecycleCommandId("done-system-restart"),
+                            args: { reason },
+                        });
+                        await this._waitForSession(
+                            sessionId,
+                            (current) => current != null && (current.status === "completed" || current.status === "failed" || current.status === "cancelled"),
+                            options.timeoutMs ?? SESSION_COMMAND_SETTLE_TIMEOUT_MS,
+                        );
+                    } catch (err) {
+                        if (!isIgnorableRestartCommandError(err)) throw err;
+                    }
+                }
+                await this._deleteSystemOrchestrationInstance(sessionId);
+                await this._archiveSystemSessionForRestart(sessionId, "completed", reason);
+            } else if (disposition === "terminate") {
+                await this._terminateSystemOrchestrationInstance(sessionId, reason);
+                await this._archiveSystemSessionForRestart(sessionId, "cancelled", `Terminated for restart: ${reason}`);
+            } else {
+                await this._deleteSystemOrchestrationInstance(sessionId);
+                await this._archiveSystemSessionForRestart(sessionId, "failed", `Hard-deleted for restart: ${reason}`);
+            }
+        }
+
+        const defaultModel = this._modelProviders?.defaultModel ?? existingRow?.model;
+        if (!defaultModel) {
+            throw new Error("Cannot restart system session without a configured default model");
+        }
+
+        const startResults = await startSystemAgents({
+            catalog: this._catalog!,
+            duroxideClient: this._duroxideClient,
+            agents: this._systemAgents,
+            defaultModel,
+            blobEnabled: this.config.blobEnabled,
+            dehydrateThreshold: this.config.waitThreshold ?? DEFAULT_SYSTEM_AGENT_DEHYDRATE_THRESHOLD,
+            agentId: plan.agent.id,
+        });
+        const newSession = await this.getSession(sessionId).catch(() => null);
+        if (!newSession) {
+            throw new Error(`System session ${plan.agent.id} was not recreated`);
+        }
+
+        return {
+            agentId: plan.agent.id,
+            agentName: plan.agent.name,
+            sessionId,
+            disposition,
+            previousSessionExisted,
+            startResults,
+        };
     }
 
     // ─── Session Events ──────────────────────────────────────

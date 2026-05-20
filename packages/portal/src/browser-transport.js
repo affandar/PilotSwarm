@@ -220,6 +220,34 @@ export class BrowserPortalTransport {
         return this.rpc("listSessions");
     }
 
+    async listSessionGroups() {
+        return this.rpc("listSessionGroups");
+    }
+
+    async createSessionGroup(input) {
+        return this.rpc("createSessionGroup", { input });
+    }
+
+    async updateSessionGroup(groupId, patch) {
+        return this.rpc("updateSessionGroup", { groupId, patch });
+    }
+
+    async assignSessionsToGroup(groupId, sessionIds) {
+        return this.rpc("assignSessionsToGroup", { groupId, sessionIds });
+    }
+
+    async moveSessionsToGroup(groupId, sessionIds) {
+        return this.rpc("moveSessionsToGroup", { groupId: groupId ?? null, sessionIds });
+    }
+
+    async getChildOutcome(childSessionId) {
+        return this.rpc("getChildOutcome", { childSessionId });
+    }
+
+    async listChildOutcomes(parentSessionId) {
+        return this.rpc("listChildOutcomes", { parentSessionId });
+    }
+
     async getSession(sessionId) {
         return this.rpc("getSession", { sessionId });
     }
@@ -345,12 +373,28 @@ export class BrowserPortalTransport {
         return this.rpc("cancelSession", { sessionId });
     }
 
+    async cancelSessionGroup(groupId, reason) {
+        return this.rpc("cancelSessionGroup", { groupId, reason });
+    }
+
     async completeSession(sessionId, reason) {
         return this.rpc("completeSession", { sessionId, reason });
     }
 
+    async completeSessionGroup(groupId, options = {}) {
+        return this.rpc("completeSessionGroup", { groupId, options });
+    }
+
     async deleteSession(sessionId) {
         return this.rpc("deleteSession", { sessionId });
+    }
+
+    async restartSystemSession(agentIdOrSessionId, options = {}) {
+        return this.rpc("restartSystemSession", { agentIdOrSessionId, options });
+    }
+
+    async deleteSessionGroup(groupId) {
+        return this.rpc("deleteSessionGroup", { groupId });
     }
 
     async listModels() {

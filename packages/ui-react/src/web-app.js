@@ -30,6 +30,8 @@ import {
     selectReasoningEffortPickerModal,
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
+    selectSessionGroupNameModal,
+    selectSessionGroupPickerModal,
     selectSessionOwnerFilterModal,
     selectSessionRows,
     selectStatusBar,
@@ -125,7 +127,40 @@ function normalizeProfileSettings(settings) {
     if (hasOwn(candidate, "pinnedSessionIds")) {
         normalized.pinnedSessionIds = normalizeStoredPinnedSessionIds(candidate.pinnedSessionIds);
     }
+    if (hasOwn(candidate, "collapsedSessionIds")) {
+        normalized.collapsedSessionIds = normalizeStoredCollapsedSessionIdsToArray(candidate.collapsedSessionIds);
+    }
+    if (hasOwn(candidate, "activeSessionId")) {
+        const id = candidate.activeSessionId == null ? null : String(candidate.activeSessionId).trim();
+        normalized.activeSessionId = id || null;
+    }
+    if (candidate.chatViewMode === "summary" || candidate.chatViewMode === "transcript") {
+        normalized.chatViewMode = candidate.chatViewMode;
+    }
     return normalized;
+}
+
+function normalizeStoredCollapsedSessionIdsToArray(value) {
+    if (value instanceof Set) {
+        const out = [];
+        for (const entry of value) {
+            const id = String(entry || "").trim();
+            if (id) out.push(id);
+        }
+        out.sort();
+        return out;
+    }
+    if (!Array.isArray(value)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const entry of value) {
+        const id = String(entry || "").trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+    }
+    out.sort();
+    return out;
 }
 
 function hasOwn(value, key) {
@@ -142,6 +177,9 @@ function profileSettingsFromViewState(state) {
             activityPaneAdjust: state.activityPaneAdjust,
         },
         pinnedSessionIds: state.pinnedIds,
+        collapsedSessionIds: state.collapsedSessionIds,
+        activeSessionId: state.activeSessionId,
+        chatViewMode: state.chatViewMode,
     });
 }
 
@@ -151,12 +189,22 @@ function buildDefaultProfileSettingsFromState(state) {
         sessionOwnerFilter: state?.sessions?.ownerFilter,
         layoutAdjustments: state?.ui?.layout,
         pinnedSessionIds: state?.sessions?.pinnedIds,
+        collapsedSessionIds: state?.sessions?.collapsedIds,
+        activeSessionId: state?.sessions?.activeSessionId,
+        chatViewMode: state?.ui?.chatViewMode,
     });
 }
 
 function materializeProfileSettings(remoteSettings, defaults) {
     const normalizedRemote = normalizeProfileSettings(remoteSettings);
     const normalizedDefaults = normalizeProfileSettings(defaults);
+    // For chatViewMode specifically, do NOT fall back to defaults when the
+    // remote profile lacks the field. The poll runs every few seconds; if
+    // we synthesized a default here, every poll where the server hasn't
+    // yet persisted the user's toggle would clobber the local choice and
+    // snap the chat pane back from Summary to Chat. Leaving chatViewMode
+    // off the materialized settings causes the `profileSettings/apply`
+    // reducer's `hasChatViewMode` guard to preserve the current value.
     return normalizeProfileSettings({
         themeId: hasOwn(normalizedRemote, "themeId")
             ? normalizedRemote.themeId
@@ -170,6 +218,15 @@ function materializeProfileSettings(remoteSettings, defaults) {
         pinnedSessionIds: hasOwn(normalizedRemote, "pinnedSessionIds")
             ? normalizedRemote.pinnedSessionIds
             : normalizedDefaults.pinnedSessionIds,
+        ...(hasOwn(normalizedRemote, "collapsedSessionIds")
+            ? { collapsedSessionIds: normalizedRemote.collapsedSessionIds }
+            : {}),
+        ...(hasOwn(normalizedRemote, "activeSessionId")
+            ? { activeSessionId: normalizedRemote.activeSessionId }
+            : {}),
+        ...(hasOwn(normalizedRemote, "chatViewMode")
+            ? { chatViewMode: normalizedRemote.chatViewMode }
+            : {}),
     });
 }
 
@@ -222,6 +279,13 @@ function getPortalInspectorContentWidth(paneWidth, inspectorTab) {
 
 function normalizeLines(lines) {
     const normalized = [];
+
+    const decodeEscapedNewlines = (value) => {
+        const text = String(value || "");
+        if (!text.includes("\\n") || text.includes("\n")) return text;
+        return text.replace(/\\n/g, "\n");
+    };
+
     for (const line of lines || []) {
         if (line?.kind === "markup") {
             for (const parsedLine of parseTerminalMarkupRuns(line.value || "")) {
@@ -235,8 +299,47 @@ function normalizeLines(lines) {
             normalized.push(line);
             continue;
         }
+        if (line?.kind === "runs") {
+            const runs = Array.isArray(line.runs) ? line.runs : [];
+            if (runs.length === 1) {
+                const onlyRun = runs[0] || {};
+                const decodedText = decodeEscapedNewlines(onlyRun.text || "");
+                if (decodedText.includes("\n")) {
+                    const fragments = decodedText.split("\n");
+                    for (const fragment of fragments) {
+                        normalized.push({
+                            kind: "runs",
+                            runs: [{ ...onlyRun, text: fragment }],
+                        });
+                    }
+                    continue;
+                }
+                normalized.push({ kind: "runs", runs: [{ ...onlyRun, text: decodedText }] });
+                continue;
+            }
+            normalized.push({
+                kind: "runs",
+                runs: runs.map((run) => ({
+                    ...run,
+                    text: decodeEscapedNewlines(run?.text || ""),
+                })),
+            });
+            continue;
+        }
         if (Array.isArray(line)) {
             normalized.push({ kind: "runs", runs: line });
+            continue;
+        }
+        if (line && typeof line === "object" && typeof line.text === "string") {
+            const decodedText = decodeEscapedNewlines(line.text);
+            if (decodedText.includes("\n")) {
+                const fragments = decodedText.split("\n");
+                for (const fragment of fragments) {
+                    normalized.push({ kind: "text", ...line, text: fragment });
+                }
+                continue;
+            }
+            normalized.push({ kind: "text", ...line, text: decodedText });
             continue;
         }
         normalized.push({ kind: "text", ...line });
@@ -1465,19 +1568,35 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
     const canPinActiveSession = Boolean(
         activeSession
         && !activeSession.isSystem
-        && !activeSession.parentSessionId,
+        && (activeSession.isGroup || (!activeSession.parentSessionId && !activeSession.groupId)),
     );
     const isActivePinned = Boolean(
         activeSession
         && Array.isArray(viewState.pinnedIds)
         && viewState.pinnedIds.includes(activeSession.sessionId),
     );
+    const activeGroupCanDelete = Boolean(activeSession?.isGroup && Number(activeSession.memberCount || 0) === 0);
     const canTerminate = isBulkSelection
         ? Array.isArray(viewState.selectedIds) && viewState.selectedIds.some((id) => {
             const s = viewState.sessionsById[id];
-            return s && !s.isSystem;
+            return s && !s.isSystem && !s.isGroup;
         })
-        : canRenameActiveSession;
+        : activeSession?.isGroup ? true : Boolean(activeSession);
+    const activeSessionActionLabel = activeSession?.isGroup
+        ? "Delete"
+        : isBulkSelection
+            ? `Terminate (${selectedCount})`
+            : activeSession?.isSystem
+                ? "Restart"
+                : "Terminate";
+    const hasExplicitSelection = selectedCount > 0;
+    const groupableIds = hasExplicitSelection
+        ? viewState.selectedIds.filter((id) => {
+            const session = viewState.sessionsById[id];
+            return session && !session.isSystem && !session.isGroup && !session.parentSessionId;
+        })
+        : (activeSession && !activeSession.isSystem && !activeSession.isGroup && !activeSession.parentSessionId ? [activeSession.sessionId] : []);
+    const canMoveToGroup = groupableIds.length > 0;
     const combinedPanelClassName = `ps-session-pane${panelClassName ? ` ${panelClassName}` : ""}`;
     const setSessionButtonRef = React.useCallback((sessionId, node) => {
         if (!sessionId) return;
@@ -1509,7 +1628,7 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
             ? React.createElement("span", {
                 className: "ps-mini-button-label",
                 style: { padding: "0 6px", fontSize: "12px", opacity: 0.85 },
-                title: "Multiple sessions selected. Only Cancel is available; click Clear to exit.",
+                title: "Multiple sessions selected. Move to group or cancel selected sessions; click Clear to exit.",
             }, `${selectedCount} selected`)
             : null,
         isBulkSelection
@@ -1533,6 +1652,15 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
         React.createElement("button", {
             type: "button",
             className: "ps-mini-button",
+            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MOVE_TO_GROUP).catch(() => {}),
+            disabled: !canMoveToGroup,
+            title: canMoveToGroup
+                ? (groupableIds.length > 1 ? `Move ${groupableIds.length} selected sessions to a group` : "Move this session to a group")
+                : "Select a top-level non-system session to move to a group",
+        }, groupableIds.length > 1 ? `Group (${groupableIds.length})` : "Group"),
+        React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_RENAME_SESSION).catch(() => {}),
             disabled: !canRenameActiveSession || isBulkSelection,
             title: isBulkSelection ? "Disabled while multiple sessions are selected" : undefined,
@@ -1540,12 +1668,16 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
         React.createElement("button", {
             type: "button",
             className: "ps-mini-button",
-            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_TERMINATE_PICKER).catch(() => {}),
+            onClick: () => controller.handleCommand(activeSession?.isGroup ? UI_COMMANDS.DELETE_SESSION : UI_COMMANDS.OPEN_TERMINATE_PICKER).catch(() => {}),
             disabled: !canTerminate,
             title: isBulkSelection
                 ? `Terminate ${selectedCount} selected sessions (Mark Completed, Cancel, or Delete)`
-                : "Mark Completed, Cancel, or Delete the active session",
-        }, isBulkSelection ? `Terminate (${selectedCount})` : "Terminate"),
+                : activeSession?.isGroup
+                    ? activeGroupCanDelete ? "Delete this empty group" : "Show why this group cannot be deleted yet"
+                    : activeSession?.isSystem
+                        ? "Restart this system session; choose complete, terminate, or hard delete disposition"
+                        : "Mark Completed, Cancel, or Delete the active session",
+        }, activeSessionActionLabel),
         actions);
 
     return React.createElement(Panel, {
@@ -1648,6 +1780,8 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
             sessionsById: state.sessions.byId,
             sessionsFlat: state.sessions.flat,
             inspectorTab: state.ui.inspectorTab,
+            chatViewMode: state.ui.chatViewMode || "transcript",
+            activeSessionIsGroup: Boolean(activeSessionId && state.sessions.byId[activeSessionId]?.isGroup),
             focused: state.ui.focusRegion === "chat",
             scroll: state.ui.scroll.chat,
             contentWidth,
@@ -1673,6 +1807,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         },
         ui: {
             inspectorTab: viewState.inspectorTab,
+            chatViewMode: viewState.chatViewMode,
         },
     }), [
         viewState.activeHistory,
@@ -1680,6 +1815,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         viewState.activeOutbox,
         viewState.branding,
         viewState.connection,
+        viewState.chatViewMode,
         viewState.inspectorTab,
         viewState.sessionsById,
         viewState.sessionsFlat,
@@ -1706,6 +1842,9 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         controller,
         title: mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
         titleRight: mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
+        // Chat/Summary toggling lives on the top toolbar so the pane chrome
+        // stays clean. The toolbar button is disabled for group sessions.
+        actions: null,
         color: chrome.color,
         focused: viewState.focused,
         lines,
@@ -2062,7 +2201,7 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         allowWideColumns: mobile,
     }), [mobile, selectorState, viewState.contentWidth]);
 
-    if (viewState.inspectorTab === "files") {
+    if (viewState.inspectorTab === "files" && !inspector.disabled) {
         return React.createElement(FilesPane, { controller, focused: viewState.focused, mobile });
     }
 
@@ -2448,7 +2587,9 @@ function buildPortalKeybindingSections({ canUpload, canOpenLocally }) {
             items: [
                 ["j / k", "Move or scroll the focused pane"],
                 ["Ctrl+U / Ctrl+D", "Page up/down"],
+                ["Ctrl+G", "Move selected session(s) to a group"],
                 ["g / G", "Jump top/bottom"],
+                ["s", "Toggle chat summary"],
                 ["m", "Cycle inspector tabs"],
                 ["p", "Focus prompt"],
                 ["Esc", "Focus sessions"],
@@ -2537,52 +2678,96 @@ function PromptOverlay({ controller, open, onClose }) {
 function Toolbar({ controller, mobile, onToggleLegend, onOpenPrompt, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
     const status = useControllerSelector(controller, (state) => selectStatusBar(state), shallowEqualObject);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
+    const chatView = useControllerSelector(controller, (state) => ({
+        mode: state.ui.chatViewMode || "transcript",
+        activeSessionIsGroup: Boolean(state.sessions.activeSessionId && state.sessions.byId[state.sessions.activeSessionId]?.isGroup),
+    }), shallowEqualObject);
+    const promptDisabled = chatView.activeSessionIsGroup || chatView.mode === "summary";
 
-    return React.createElement("div", { className: `ps-toolbar${mobile ? " is-mobile" : ""}` },
-        React.createElement("div", { className: "ps-toolbar-actions" },
-            React.createElement("button", {
-            type: "button",
-            className: "ps-toolbar-button",
+    const buttonDefs = [
+        {
+            key: "new",
+            label: "New",
             onClick: () => controller.handleCommand(UI_COMMANDS.NEW_SESSION).catch(() => {}),
-        }, "New"),
-            React.createElement("button", {
-            type: "button",
-            className: "ps-toolbar-button",
+        },
+        {
+            key: "model",
+            label: mobile ? "Model" : "New + Model",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
-        }, mobile ? "Model" : "New + Model"),
-            React.createElement("button", {
-            type: "button",
-            className: "ps-toolbar-button",
+        },
+        {
+            key: "prompt",
+            label: "Prompt",
             onClick: onOpenPrompt,
-        }, "Prompt"),
-            React.createElement("button", {
-            type: "button",
-            className: "ps-toolbar-button",
+            disabled: promptDisabled,
+            title: promptDisabled ? "Prompt is hidden for read-only summary and group views" : "Open prompt composer",
+        },
+        {
+            key: "filter",
+            label: "Filter",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}),
-        }, "Filter"),
-            React.createElement("button", {
-            type: "button",
-            className: "ps-toolbar-button",
+        },
+        {
+            key: "theme",
+            label: "Theme",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {}),
-        }, "Theme"),
-            onToggleChatFocus ? React.createElement("button", {
-            type: "button",
-            className: `ps-toolbar-button${chatFocusMode ? " is-active" : ""}`,
+        },
+        {
+            key: "summary",
+            label: chatView.mode === "summary" ? "Chat" : "Summary",
+            onClick: () => controller.setChatViewMode(chatView.mode === "summary" ? "transcript" : "summary"),
+            disabled: chatView.activeSessionIsGroup,
+            title: chatView.activeSessionIsGroup ? "Groups show group details" : "Toggle Chat / Summary view",
+            active: chatView.mode === "summary",
+        },
+        ...(onToggleChatFocus ? [{
+            key: "focus",
+            label: mobile
+                ? (chatFocusMode ? "Exit Focus" : "Focus")
+                : (chatFocusMode ? "Exit Focus" : "Chat Focus"),
             onClick: onToggleChatFocus,
             disabled: chatFocusDisabled,
-        }, mobile
-            ? (chatFocusMode ? "Exit Focus" : "Focus")
-            : (chatFocusMode ? "Exit Focus" : "Chat Focus")) : null,
-            React.createElement("button", {
-            type: "button",
-            className: `ps-toolbar-button${adminVisible ? " is-active" : ""}`,
+            active: chatFocusMode,
+        }] : []),
+        {
+            key: "admin",
+            label: adminVisible ? "Close Admin" : "Admin",
             onClick: () => controller.handleCommand(adminVisible ? UI_COMMANDS.CLOSE_ADMIN_CONSOLE : UI_COMMANDS.OPEN_ADMIN_CONSOLE).catch(() => {}),
-        }, adminVisible ? "Close Admin" : "Admin"),
-            React.createElement("button", {
-            type: "button",
-            className: "ps-toolbar-button",
+            active: adminVisible,
+        },
+        {
+            key: "keys",
+            label: "Keys",
             onClick: onToggleLegend,
-        }, "Keys")),
+        },
+    ];
+
+    const renderButton = (def) => React.createElement("button", {
+        key: def.key,
+        type: "button",
+        className: `ps-toolbar-button${def.active ? " is-active" : ""}`,
+        onClick: def.onClick,
+        disabled: Boolean(def.disabled),
+        title: def.title,
+    }, def.label);
+
+    if (mobile) {
+        const firstRowButtons = buttonDefs.slice(0, 4);
+        const secondRowButtons = buttonDefs.slice(4);
+
+        return React.createElement("div", { className: "ps-toolbar is-mobile" },
+            React.createElement("div", { className: "ps-toolbar-row ps-toolbar-row-primary" },
+                firstRowButtons.map(renderButton)),
+            React.createElement("div", { className: "ps-toolbar-row ps-toolbar-row-secondary" },
+                React.createElement("div", { className: "ps-toolbar-row-actions" }, secondRowButtons.map(renderButton)),
+                status.left
+                    ? React.createElement("div", { className: "ps-toolbar-status" }, status.left)
+                    : null),
+        );
+    }
+
+    return React.createElement("div", { className: "ps-toolbar" },
+        React.createElement("div", { className: "ps-toolbar-actions" }, buttonDefs.map(renderButton)),
         status.left
             ? React.createElement("div", { className: "ps-toolbar-status" }, status.left)
             : null,
@@ -2832,6 +3017,8 @@ function ModalLayer({ controller }) {
         modelPicker: selectModelPickerModal(state),
         reasoningEffortPicker: selectReasoningEffortPickerModal(state),
         sessionAgentPicker: selectSessionAgentPickerModal(state),
+        sessionGroupPicker: selectSessionGroupPickerModal(state),
+        sessionGroupName: selectSessionGroupNameModal(state),
         artifactPicker: selectArtifactPickerModal(state),
         logFilter: selectLogFilterModal(state),
         filesFilter: selectFilesFilterModal(state),
@@ -2846,6 +3033,7 @@ function ModalLayer({ controller }) {
     }), shallowEqualObject);
     const modal = modalState.rawModal;
     const renameInputRef = React.useRef(null);
+    const groupNameInputRef = React.useRef(null);
     const listModalRef = React.useRef(null);
 
     React.useEffect(() => {
@@ -2863,12 +3051,27 @@ function ModalLayer({ controller }) {
     }, [modal?.type, modalState.renameSession?.cursorIndex, modalState.renameSession?.value]);
 
     React.useEffect(() => {
+        if (modal?.type !== "sessionGroupName" || !modalState.sessionGroupName) return;
+        const inputNode = groupNameInputRef.current;
+        if (!inputNode) return;
+        if (document.activeElement !== inputNode) {
+            try {
+                inputNode.focus({ preventScroll: true });
+            } catch {
+                inputNode.focus();
+            }
+        }
+        inputNode.setSelectionRange(modalState.sessionGroupName.cursorIndex, modalState.sessionGroupName.cursorIndex);
+    }, [modal?.type, modalState.sessionGroupName?.cursorIndex, modalState.sessionGroupName?.value]);
+
+    React.useEffect(() => {
         if (!modal) return;
         if (![
             "themePicker",
             "modelPicker",
             "reasoningEffortPicker",
             "sessionAgentPicker",
+            "sessionGroupPicker",
             "artifactPicker",
             "sessionOwnerFilter",
             "logFilter",
@@ -2891,6 +3094,7 @@ function ModalLayer({ controller }) {
         modalState.modelPicker?.selectedRowIndex,
         modalState.reasoningEffortPicker?.selectedRowIndex,
         modalState.sessionAgentPicker?.selectedRowIndex,
+        modalState.sessionGroupPicker?.selectedRowIndex,
         modalState.artifactPicker?.selectedRowIndex,
         modalState.sessionOwnerFilter?.selectedRowIndex,
         modalState.logFilter?.selectedRowIndex,
@@ -2968,7 +3172,8 @@ function ModalLayer({ controller }) {
     };
 
     if (modal.type === "confirm" && modalState.confirm) {
-        const isDestructive = modal.action === "deleteSession";
+        const isAlert = Boolean(modal.alert);
+        const isDestructive = !isAlert && modal.action === "deleteSession";
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
@@ -2979,7 +3184,7 @@ function ModalLayer({ controller }) {
                     React.createElement("p", { style: { color: "#94a3b8", margin: 0 } }, modalState.confirm.message),
                 ),
                 React.createElement("div", { className: "ps-modal-footer" },
-                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
+                    isAlert ? null : React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
                     React.createElement("button", {
                         type: "button",
                         className: `ps-modal-button ${isDestructive ? "is-danger" : "is-primary"}`,
@@ -2998,6 +3203,9 @@ function ModalLayer({ controller }) {
     }
     if (modal.type === "sessionAgentPicker" && modalState.sessionAgentPicker) {
         return renderListModal(modalState.sessionAgentPicker, "Create Session");
+    }
+    if (modal.type === "sessionGroupPicker" && modalState.sessionGroupPicker) {
+        return renderListModal(modalState.sessionGroupPicker, "Move");
     }
     if (modal.type === "artifactPicker" && modalState.artifactPicker) {
         return renderListModal(modalState.artifactPicker, modalState.artifactPicker.confirmLabel || "Open / Download");
@@ -3069,12 +3277,48 @@ function ModalLayer({ controller }) {
                     }, "Save")),
             ));
     }
+    if (modal.type === "sessionGroupName" && modalState.sessionGroupName) {
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title" }, modalState.sessionGroupName.title),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                ),
+                React.createElement("input", {
+                    ref: groupNameInputRef,
+                    className: "ps-modal-input",
+                    value: modalState.sessionGroupName.value,
+                    placeholder: modalState.sessionGroupName.placeholder,
+                    onChange: (event) => controller.setSessionGroupNameValue(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length),
+                    onKeyDown: (event) => {
+                        if (event.key === "Enter") {
+                            event.preventDefault();
+                            controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
+                        }
+                    },
+                    autoFocus: true,
+                }),
+                React.createElement("div", { className: "ps-modal-details" },
+                    normalizeLines(modalState.sessionGroupName.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
+                ),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button is-primary",
+                        onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
+                    }, "Create and Move")),
+            ));
+    }
     if (modal.type === "terminatePicker") {
         const isBulk = Number(modal.bulkCount) > 1;
+        const isSystemRestart = Boolean(modal.systemRestart);
         const sessionLabel = String(modal.sessionTitle || "").trim() || "this session";
         const bulkCount = Number(modal.bulkCount) || 0;
         const bodyText = isBulk
             ? `What should happen to the ${bulkCount} selected sessions? Choose an action; you'll be asked to confirm.`
+            : isSystemRestart
+                ? `How should "${sessionLabel}" be restarted? Choose a disposition; you'll be asked to confirm.`
             : `What should happen to "${sessionLabel}"? Choose an action; you'll be asked to confirm.`;
         const pick = (action) => () => {
             controller.pickTerminateAction(action).catch(() => {});
@@ -3096,19 +3340,19 @@ function ModalLayer({ controller }) {
                         className: "ps-modal-button is-primary",
                         style: { width: "100%", justifyContent: "flex-start" },
                         onClick: pick("complete"),
-                    }, isBulk ? `Mark ${bulkCount} Completed` : "Mark Completed"),
+                    }, isBulk ? `Mark ${bulkCount} Completed` : isSystemRestart ? "Complete & Restart" : "Mark Completed"),
                     React.createElement("button", {
                         type: "button",
                         className: "ps-modal-button",
                         style: { width: "100%", justifyContent: "flex-start" },
                         onClick: pick("cancel"),
-                    }, isBulk ? `Cancel ${bulkCount} Sessions` : "Cancel Session"),
+                    }, isBulk ? `Cancel ${bulkCount} Sessions` : isSystemRestart ? "Terminate & Restart" : "Cancel Session"),
                     React.createElement("button", {
                         type: "button",
                         className: "ps-modal-button is-danger",
                         style: { width: "100%", justifyContent: "flex-start" },
                         onClick: pick("delete"),
-                    }, isBulk ? `Delete ${bulkCount} Sessions` : "Delete Session"),
+                    }, isBulk ? `Hard Delete ${bulkCount} Sessions` : isSystemRestart ? "Hard Delete & Restart" : "Delete Session"),
                 ),
                 React.createElement("div", { className: "ps-modal-footer" },
                     React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Close")),
@@ -3302,6 +3546,11 @@ function useKeyboardShortcuts(
                 controller.handleCommand(UI_COMMANDS.REFRESH).catch(() => {});
                 return;
             }
+            if (focusRegion === "chat" && event.key === "s" && isPlainShortcut) {
+                event.preventDefault();
+                controller.handleCommand(UI_COMMANDS.TOGGLE_CHAT_VIEW).catch(() => {});
+                return;
+            }
             if (event.key === "n" && isPlainShortcut) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.NEW_SESSION).catch(() => {});
@@ -3446,6 +3695,11 @@ function useKeyboardShortcuts(
             if (focusRegion === "sessions" && (event.key === "ArrowDown" || event.key === "j")) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN).catch(() => {});
+                return;
+            }
+            if (focusRegion === "sessions" && event.ctrlKey && event.key.toLowerCase() === "g" && !event.metaKey && !event.altKey) {
+                event.preventDefault();
+                controller.handleCommand(UI_COMMANDS.OPEN_MOVE_TO_GROUP).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && (event.key === "PageUp" || (event.ctrlKey && event.key.toLowerCase() === "u"))) {
@@ -3655,7 +3909,14 @@ export function PilotSwarmWebApp({ controller }) {
         themeId: rootState.ui.themeId,
         ownerFilter: rootState.sessions.ownerFilter,
         pinnedIds: rootState.sessions.pinnedIds,
+        // Pass the live Set reference here so shallow-equal sees the same
+        // identity across renders (a fresh array would break memoization).
+        // Conversion to a sorted array happens inside `normalizeProfileSettings`.
+        collapsedSessionIds: rootState.sessions.collapsedIds,
+        activeSessionId: rootState.sessions.activeSessionId || null,
         promptRows: getStatePromptRows(rootState),
+        chatViewMode: rootState.ui.chatViewMode || "transcript",
+        activeSessionIsGroup: Boolean(rootState.sessions.activeSessionId && rootState.sessions.byId[rootState.sessions.activeSessionId]?.isGroup),
         paneAdjust: rootState.ui.layout?.paneAdjust ?? 0,
         sessionPaneAdjust: rootState.ui.layout?.sessionPaneAdjust ?? 0,
         activityPaneAdjust: rootState.ui.layout?.activityPaneAdjust ?? 0,
@@ -3677,10 +3938,13 @@ export function PilotSwarmWebApp({ controller }) {
     const mobile = (viewport.width || window.innerWidth || 0) < MOBILE_BREAKPOINT;
     const canUploadArtifacts = supportsBrowserFileUploads(controller) || supportsPathArtifactUploads(controller);
     const canOpenLocally = supportsLocalFileOpen(controller);
+    const readOnlyChatPane = state.activeSessionIsGroup || state.chatViewMode === "summary";
+    const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
     const openPromptOverlay = React.useCallback(() => {
+        if (readOnlyChatPane) return;
         controller.handleCommand(UI_COMMANDS.FOCUS_PROMPT).catch(() => {});
         setShowPromptOverlay(true);
-    }, [controller]);
+    }, [controller, readOnlyChatPane]);
     const closePromptOverlay = React.useCallback(() => {
         setShowPromptOverlay(false);
     }, []);
@@ -3735,7 +3999,14 @@ export function PilotSwarmWebApp({ controller }) {
                     defaultProfileSettingsRef.current,
                 );
                 const settingsJson = JSON.stringify(settings);
-                const hasPendingLocalWrite = Boolean(profileSettingsSaveTimerRef.current) || profileSettingsSaveInFlightRef.current;
+                const currentSettingsBeforeApply = profileSettingsFromViewState(controller.getState());
+                const currentSettingsBeforeApplyJson = JSON.stringify(currentSettingsBeforeApply);
+                const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
+                    && lastProfileSettingsJsonRef.current != null
+                    && currentSettingsBeforeApplyJson !== lastProfileSettingsJsonRef.current;
+                const hasPendingLocalWrite = Boolean(profileSettingsSaveTimerRef.current)
+                    || profileSettingsSaveInFlightRef.current
+                    || hasUnpersistedLocalChange;
                 if (!hasPendingLocalWrite && appliedProfileSettingsJsonRef.current !== settingsJson) {
                     controller.dispatch({ type: "profileSettings/apply", settings });
                     appliedProfileSettingsJsonRef.current = settingsJson;
@@ -3790,7 +4061,7 @@ export function PilotSwarmWebApp({ controller }) {
                 });
         }, 400);
         return undefined;
-    }, [controller, state.activityPaneAdjust, state.ownerFilter, state.paneAdjust, state.pinnedIds, state.sessionPaneAdjust, state.themeId]);
+    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.chatViewMode, state.collapsedSessionIds, state.ownerFilter, state.paneAdjust, state.pinnedIds, state.sessionPaneAdjust, state.themeId]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
@@ -3813,9 +4084,15 @@ export function PilotSwarmWebApp({ controller }) {
         }
     }, [controller, state.inspectorTab]);
 
+    React.useEffect(() => {
+        if (readOnlyChatPane && showPromptOverlay) {
+            setShowPromptOverlay(false);
+        }
+    }, [readOnlyChatPane, showPromptOverlay]);
+
     const layout = React.useMemo(
-        () => computeLegacyLayout(gridViewport, state.paneAdjust, state.promptRows, state.sessionPaneAdjust, state.activityPaneAdjust),
-        [gridViewport, state.activityPaneAdjust, state.paneAdjust, state.promptRows, state.sessionPaneAdjust],
+        () => computeLegacyLayout(gridViewport, state.paneAdjust, effectivePromptRows, state.sessionPaneAdjust, state.activityPaneAdjust),
+        [gridViewport, state.activityPaneAdjust, state.paneAdjust, effectivePromptRows, state.sessionPaneAdjust],
     );
     const filesFullscreenActive = state.filesFullscreen && state.inspectorTab === "files";
 
@@ -3952,7 +4229,7 @@ export function PilotSwarmWebApp({ controller }) {
         // the prompt is only useful in the Main pane. Hiding it gives
         // the inspector roughly 5 more lines of vertical real estate on
         // a phone.
-        (mobile && !chatFocusMode && (mobilePane === "inspector" || mobilePane === "activity"))
+        (readOnlyChatPane || (mobile && !chatFocusMode && (mobilePane === "inspector" || mobilePane === "activity")))
             ? null
             : React.createElement("div", { className: "ps-footer-shell" },
                 React.createElement(PromptComposer, { controller, mobile, active: !showPromptOverlay })),

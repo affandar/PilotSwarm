@@ -68,7 +68,37 @@ Why it matters:
 - available models can differ across environments and deployments
 - prompt-only model recall is not reliable enough
 
-## 6. Prompt-Only Rules Need Runtime Backstops
+## 6. Recurring Timers Have Two Shapes
+
+Contract:
+
+- use `cron(seconds=N, reason="...")` for fixed-interval recurring work
+- use `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules
+- do not implement wall-clock schedules by waking every N minutes to inspect the current time
+- either `cron(action="cancel")` or `cron_at(action="cancel")` clears the active recurring schedule
+
+Why it matters:
+
+- calendar schedules should spend one LLM turn per intended fire, not one turn per no-op clock check
+- timezone and DST semantics belong in runtime-owned scheduling, not prompt math
+
+## 7. Child Wake Policy Is Contract Data
+
+Contract:
+
+- `contract` is a named argument on `spawn_agent`; there is no separate contract tool
+- `spawn_agent(..., contract={ wakeOn: "any" | "material_change" | "completion" })` controls autonomous parent wake-ups
+- contracts may also include compact `purpose`, `successCriteria`, `expectedFacts`, `expectedArtifacts`, and `validationMode` fields when required outputs matter
+- missing or invalid `wakeOn` defaults to `material_change`
+- `message_agent(..., contract_patch={ wakeOn: "..." })` can change the policy while a child is running
+- explicit reads such as `check_agents` and `wait_for_agents` still show quiet heartbeat status
+
+Why it matters:
+
+- watcher children should not spend parent LLM turns for clear no-op heartbeats
+- material changes, terminal states, and unknown updates remain visible conservatively
+
+## 8. Prompt-Only Rules Need Runtime Backstops
 
 Contract:
 
@@ -79,7 +109,7 @@ Examples:
 
 - normalize mistaken named-agent spawns where safe
 
-## 7. Long Waits May Migrate Unless Affinity Is Preserved
+## 9. Long Waits May Migrate Unless Affinity Is Preserved
 
 Contract:
 
@@ -94,7 +124,7 @@ Why it matters:
 - reject invalid sub-agent model overrides
 - preserve orchestration behavior even if prompt wording drifts
 
-## 7. Artifact Rules Should Be Visible And Durable
+## 10. Artifact Rules Should Be Visible And Durable
 
 Contract:
 
@@ -106,7 +136,37 @@ Why it matters:
 - artifact links are how durable outputs move back to the user
 - losing the export step produces confusing “the file exists somewhere” behavior
 
-## 8. Change Procedure
+## 11. Session Summary State Is Structured
+
+Contract:
+
+- agents call `update_session_summary` automatically after first meaningful work and after notable changes
+- no-op timer wakes, cron heartbeats, and unchanged checks should not rewrite summary state
+- `summary_state` is a JSON object, not a string
+- the required shape is `{ schemaVersion: 1, updatedAt, intent, summary, state, openQuestions, blockers, nextActions, links, structureChangeLog }`
+- missing optional arrays may be normalized to `[]`, but tool descriptions and prompts should show the full shape
+
+Why it matters:
+
+- session lists, search, and the Summary tab depend on durable summary state
+- smaller models need an explicit object shape to avoid passing a short string
+
+## 12. Cross-Session Request/Response Uses Reply Tooling
+
+Contract:
+
+- `send_session_message(..., expects_response=true)` queues an asynchronous request into the target session
+- the target session must call `reply_session_message(request_id=..., session_id=<sender>, body=...)` to return the answer
+- answering only in the target session's own chat transcript does not deliver a response to the sender
+- request and response protocol prompts are durable transcript items and should render as dedicated session request/reply cards in shared UI surfaces
+- ordinary sessions cannot wake system sessions through cross-session messages
+
+Why it matters:
+
+- cross-session coordination should be auditable and durable
+- the sender needs a structured response event, not an answer stranded in another transcript
+
+## 13. Change Procedure
 
 If you change one of these contracts, update:
 

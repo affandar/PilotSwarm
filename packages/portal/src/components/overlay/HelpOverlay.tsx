@@ -40,6 +40,7 @@ export default function HelpOverlay({ onClose }: HelpOverlayProps) {
           <Section title="Chat">
             <Row keys="j / k" action="Scroll up/down" />
             <Row keys="g / G" action="Top / Bottom" />
+            <Row keys="s" action="Toggle summary" />
             <Row keys="e" action="Load more history" />
             <Row keys="a" action="Artifact picker" />
             <Row keys="u" action="Dump to Markdown" />

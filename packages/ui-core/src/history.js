@@ -20,6 +20,24 @@ function normalizeMessageText(text) {
     return String(text || "").replace(/\r\n/g, "\n").trim();
 }
 
+function formatCronTimestamp(value) {
+    if (!value) return "";
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    try {
+        return date.toLocaleString(undefined, {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+            timeZoneName: "short",
+        }).replace(/,\s*/g, " ").replace(/\s+/g, " ").trim();
+    } catch {
+        return date.toISOString().replace(/\.000Z$/, "Z");
+    }
+}
+
 const REHYDRATION_NOTICE_PREFIX_RE = /^The session was dehydrated and has been rehydrated on a new worker(?: \([^)]+\))?\./i;
 const REHYDRATION_NOTICE_FULL_RE = /^The session was dehydrated and has been rehydrated on a new worker(?: \([^)]+\))?\.\s*The LLM conversation history is preserved\.?/i;
 
@@ -166,6 +184,7 @@ function isInternalSystemLikeText(text) {
 
     return /^\[SYSTEM:/i.test(normalized)
         || /^\[CHILD_UPDATE\b/i.test(normalized)
+        || /^\[SESSION_MESSAGE(?:_RESPONSE)?\b/i.test(normalized)
         || /^Buffered child updates arrived /i.test(normalized)
         || /^There is an active recurring schedule every /i.test(normalized)
         || /^It remains active automatically after this turn completes/i.test(normalized)
@@ -181,6 +200,99 @@ function isInternalSystemLikeText(text) {
         || /^The runtime is replaying this turn after a worker restart/i.test(normalized)
         || /^The runtime detected missing Copilot session state for /i.test(normalized)
         || /^(spawn_agent|message_agent|check_agents|wait_for_agents|complete_agent|cancel_agent|delete_agent) failed/i.test(normalized);
+}
+
+function isSessionMessageText(text) {
+    return /^\[SESSION_MESSAGE(?:_RESPONSE)?\b/i.test(normalizeMessageText(text));
+}
+
+function parseSessionMessageHeaderField(header, key) {
+    const source = String(header || "");
+    const marker = `${key}=`;
+    const start = source.indexOf(marker);
+    if (start < 0) return "";
+    const rest = source.slice(start + marker.length);
+    const nextMarkers = [
+        " request_id=",
+        " from=",
+        " subject=",
+        " reason=",
+        " expects_response=",
+        " expires_at=",
+        " verdict=",
+    ];
+    let end = rest.length;
+    for (const nextMarker of nextMarkers) {
+        const index = rest.indexOf(nextMarker);
+        if (index >= 0) end = Math.min(end, index);
+    }
+    return rest.slice(0, end).trim();
+}
+
+function buildSessionMessageChatCard(event, text) {
+    const source = normalizeMessageText(text);
+    if (!source) return null;
+
+    const requestMatch = /^\[SESSION_MESSAGE\s+([^\]]+)\]\n?/i.exec(source);
+    if (requestMatch) {
+        const header = requestMatch[1];
+        const bodyMarker = "\nRequest body:\n";
+        const bodyIndex = source.indexOf(bodyMarker);
+        const body = bodyIndex >= 0
+            ? source.slice(bodyIndex + bodyMarker.length).trim()
+            : source.slice(requestMatch[0].length).trim();
+        const requestId = parseSessionMessageHeaderField(header, "request_id");
+        const from = parseSessionMessageHeaderField(header, "from");
+        const subject = parseSessionMessageHeaderField(header, "subject");
+        const expectsResponse = /\bexpects_response=true\b/i.test(header);
+        const lines = [
+            from ? `From: session-${shortSessionId(from)}` : "",
+            requestId ? `Request ID: ${requestId}` : "",
+            subject ? `Subject: ${subject}` : "",
+            expectsResponse ? "Response: required" : "Response: not required",
+            "",
+            body,
+        ].filter((line, index) => index === 4 || String(line || "").trim());
+        return {
+            id: `${event.sessionId}:${event.seq}`,
+            role: "system",
+            text: lines.join("\n"),
+            time: formatTimestamp(event.createdAt),
+            createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+            cardTitle: expectsResponse ? "Session Request" : "Session Message",
+            cardTitleColor: "cyan",
+            cardBorderColor: "cyan",
+        };
+    }
+
+    const responseMatch = /^\[SESSION_MESSAGE_RESPONSE\s+([^\]]+)\]\n?/i.exec(source);
+    if (responseMatch) {
+        const header = responseMatch[1];
+        const replyIntroRe = /^This is the requested cross-session response\.[^\n]*\n\n?/i;
+        const body = source.slice(responseMatch[0].length).trim().replace(replyIntroRe, "").trim();
+        const requestId = parseSessionMessageHeaderField(header, "request_id");
+        const from = parseSessionMessageHeaderField(header, "from");
+        const verdict = parseSessionMessageHeaderField(header, "verdict") || "answered";
+        const lines = [
+            from ? `From: session-${shortSessionId(from)}` : "",
+            requestId ? `Request ID: ${requestId}` : "",
+            verdict ? `Verdict: ${verdict}` : "",
+            "",
+            body,
+        ].filter((line, index) => index === 3 || String(line || "").trim());
+        return {
+            id: `${event.sessionId}:${event.seq}`,
+            role: "system",
+            text: lines.join("\n"),
+            time: formatTimestamp(event.createdAt),
+            createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+            cardTitle: "Session Reply",
+            cardTitleColor: "green",
+            cardBorderColor: "green",
+        };
+    }
+
+    return null;
 }
 
 function deriveChatRole(event, fallbackRole, text) {
@@ -232,7 +344,11 @@ export function dedupeChatMessages(chat = []) {
 }
 
 function buildChatMessage(event, role) {
-    const text = extractVisibleChatText(messageTextFromEvent(event), role);
+    const rawText = messageTextFromEvent(event);
+    const sessionMessageCard = buildSessionMessageChatCard(event, rawText);
+    if (sessionMessageCard) return sessionMessageCard;
+
+    const text = extractVisibleChatText(rawText, role);
     if (!hasVisibleMessageText(text)) return null;
     return {
         id: `${event.sessionId}:${event.seq}`,
@@ -244,13 +360,13 @@ function buildChatMessage(event, role) {
 }
 
 function shouldRenderSystemMessageAsActivity(event) {
-    // We never surface system.message events in the chat pane. The chat
-    // pane is reserved for the user/assistant dialogue. System messages
-    // include the per-turn system prompt sent to the LLM (which is large,
-    // repetitive, and operator-noise) plus internal rehydration notices.
-    // The full content remains in CMS — the agent-tuner reads them via
-    // `read_agent_events` filtered to `event_types: ["system.message"]`.
-    return event?.eventType === "system.message";
+    // Most system.message events stay out of the chat pane. They include the
+    // per-turn system prompt sent to the LLM plus internal rehydration notices,
+    // and the full content remains in CMS for diagnostics. Cross-session
+    // request/reply protocol prompts are the exception because they are the
+    // durable user-visible communication channel between sessions.
+    if (event?.eventType !== "system.message") return false;
+    return !isSessionMessageText(messageTextFromEvent(event));
 }
 
 function buildEmbeddedSystemNoticeActivityItems(event, role) {
@@ -568,6 +684,16 @@ function formatActivity(event) {
             );
             break;
 
+        case "session.cron_at_scheduled":
+        case "session.cron_at_started":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[cron]",
+                "magenta",
+                `scheduled${event?.data?.nextFireAt ? ` ${formatCronTimestamp(event.data.nextFireAt)}` : ""}${event?.data?.reason ? ` reason=${JSON.stringify(event.data.reason)}` : ""}`,
+            );
+            break;
+
         case "session.cron_fired":
             runs = buildLabeledActivityRuns(
                 time,
@@ -577,12 +703,31 @@ function formatActivity(event) {
             );
             break;
 
+        case "session.cron_at_fired":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[cron]",
+                "magenta",
+                `fired${event?.data?.scheduledAt ? ` ${formatCronTimestamp(event.data.scheduledAt)}` : ""}${event?.data?.reason ? ` reason=${JSON.stringify(event.data.reason)}` : ""}`,
+            );
+            break;
+
         case "session.cron_cancelled":
+        case "session.cron_at_cancelled":
             runs = buildLabeledActivityRuns(
                 time,
                 "[cron]",
                 "magenta",
                 `cancelled${event?.data?.reason ? ` reason=${JSON.stringify(event.data.reason)}` : ""}`,
+            );
+            break;
+
+        case "session.cron_at_completed":
+            runs = buildLabeledActivityRuns(
+                time,
+                "[cron]",
+                "magenta",
+                `completed${event?.data?.reason ? ` reason=${JSON.stringify(event.data.reason)}` : ""}`,
             );
             break;
 

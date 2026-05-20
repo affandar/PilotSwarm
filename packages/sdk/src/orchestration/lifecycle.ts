@@ -8,6 +8,7 @@ import type {
     SessionStatusSignal,
     TurnAction,
 } from "../types.js";
+import { describeCronAt } from "../cron-at.js";
 import {
     COMMAND_VERSION_KEY,
     RESPONSE_LATEST_KEY,
@@ -45,9 +46,20 @@ export function publishStatus(
         ...(state.lastResponseVersion > 0 ? { responseVersion: state.lastResponseVersion } : {}),
         ...(state.lastCommandVersion > 0 ? { commandVersion: state.lastCommandVersion } : {}),
         ...(state.lastCommandId ? { commandId: state.lastCommandId } : {}),
-        ...(state.cronSchedule
+        ...(state.cronAtSchedule
             ? {
                 cronActive: true,
+                cronKind: "wall-clock",
+                cronReason: state.cronAtSchedule.reason,
+                cronNextFireAt: state.cronAtSchedule.nextFireAtMs,
+                cronTimezone: state.cronAtSchedule.tz,
+                cronMaxFires: state.cronAtSchedule.maxFires,
+                cronFiresCompleted: state.cronAtSchedule.firesCompleted,
+            }
+            : state.cronSchedule
+            ? {
+                cronActive: true,
+                cronKind: "interval",
                 cronInterval: state.cronSchedule.intervalSeconds,
                 cronReason: state.cronSchedule.reason,
             }
@@ -224,10 +236,12 @@ export function applyCronAction(
     if (action.action === "cancel") {
         runtime.ctx.traceInfo("[orch] cron cancelled");
         runtime.state.cronSchedule = undefined;
+        runtime.state.cronAtSchedule = undefined;
         return;
     }
 
     ensureTaskContext(runtime, sourcePrompt);
+    runtime.state.cronAtSchedule = undefined;
     runtime.state.cronSchedule = {
         intervalSeconds: action.intervalSeconds,
         reason: action.reason,
@@ -235,15 +249,59 @@ export function applyCronAction(
     runtime.ctx.traceInfo(`[orch] cron scheduled: every ${action.intervalSeconds}s (${action.reason})`);
 }
 
-export function drainLeadingQueuedCronActions(runtime: DurableSessionRuntime, sourcePrompt?: string): void {
-    while (runtime.state.pendingToolActions[0]?.type === "cron") {
-        applyCronAction(
-            runtime,
-            runtime.state.pendingToolActions.shift() as Extract<TurnAction, { type: "cron" }>,
-            sourcePrompt,
-        );
+export function* applyCronAtAction(
+    runtime: DurableSessionRuntime,
+    action: Extract<TurnAction, { type: "cron_at" }>,
+    sourcePrompt?: string,
+): Generator<any, void, any> {
+    runtime.state.interruptedCronTimer = null;
+    if (action.action === "cancel") {
+        runtime.ctx.traceInfo("[orch] cron_at cancelled");
+        runtime.state.cronAtSchedule = undefined;
+        runtime.state.cronSchedule = undefined;
+        yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+            eventType: "session.cron_at_cancelled",
+            data: {},
+        }]);
+        return;
+    }
+
+    ensureTaskContext(runtime, sourcePrompt);
+    const afterUtcMs: number = yield runtime.ctx.utcNow();
+    const nextFire = yield runtime.manager.computeCronAtNextFire(action.schedule, afterUtcMs, action.schedule.lastOccurrenceKey);
+    runtime.state.cronSchedule = undefined;
+    runtime.state.cronAtSchedule = {
+        ...action.schedule,
+        firesCompleted: action.schedule.firesCompleted ?? 0,
+        nextFireAtMs: nextFire.nextFireAtMs,
+        nextOccurrenceKey: nextFire.occurrenceKey,
+    };
+    runtime.ctx.traceInfo(
+        `[orch] cron_at scheduled: ${describeCronAt(runtime.state.cronAtSchedule)} (${runtime.state.cronAtSchedule.reason})`,
+    );
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.cron_at_scheduled",
+        data: {
+            ...runtime.state.cronAtSchedule,
+            nextFireAt: new Date(nextFire.nextFireAtMs).toISOString(),
+            localTime: nextFire.localTime,
+            skippedOccurrences: nextFire.skippedOccurrences,
+        },
+    }]);
+}
+
+export function* drainLeadingQueuedScheduleActions(runtime: DurableSessionRuntime, sourcePrompt?: string): Generator<any, void, any> {
+    while (runtime.state.pendingToolActions[0]?.type === "cron" || runtime.state.pendingToolActions[0]?.type === "cron_at") {
+        const action = runtime.state.pendingToolActions.shift()!;
+        if (action.type === "cron") {
+            applyCronAction(runtime, action as Extract<TurnAction, { type: "cron" }>, sourcePrompt);
+        } else {
+            yield* applyCronAtAction(runtime, action as Extract<TurnAction, { type: "cron_at" }>, sourcePrompt);
+        }
     }
 }
+
+export const drainLeadingQueuedCronActions = drainLeadingQueuedScheduleActions;
 
 // ─── Cancellation tombstone helpers ─────────────────────────
 
@@ -384,6 +442,7 @@ export function buildContinueInput(
         taskContext: state.taskContext,
         baseSystemMessage: options.baseSystemMessage,
         ...(state.cronSchedule ? { cronSchedule: state.cronSchedule } : {}),
+        ...(state.cronAtSchedule ? { cronAtSchedule: state.cronAtSchedule } : {}),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),
         ...(carriedSystemPrompt ? { systemPrompt: carriedSystemPrompt } : {}),
         ...(promptForInput ? { prompt: promptForInput } : {}),
@@ -439,7 +498,7 @@ export function* versionedContinueAsNew(
     if (state.activeTimer) {
         const now: number = yield runtime.ctx.utcNow();
         const remainingMs = Math.max(0, state.activeTimer.deadlineMs - now);
-        canInput.activeTimerState = {
+        (canInput as any).activeTimerState = {
             remainingMs,
             reason: state.activeTimer.reason,
             type: state.activeTimer.type,

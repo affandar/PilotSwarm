@@ -315,6 +315,102 @@ describe("history pane UI behavior", () => {
         assertEqual(history.chat.some((message) => message.text.includes("Latest steady-state sample recorded.")), true);
     });
 
+    it("renders cross-session requests and replies as dedicated chat cards", () => {
+        const sessionId = "session-12345678";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "idle",
+            title: "Joke Receiver",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                eventType: "system.message",
+                data: {
+                    content: [
+                        "[SESSION_MESSAGE request_id=2891e5d6-d60d-46b9-bae4-69ad24bb6ee4 from=17331007-c3d2-44eb-8a9c-e3f6a5e0edb3 subject=What joke it told expects_response=true]",
+                        "Receiver instructions:",
+                        "- This request expects a response.",
+                        "",
+                        "Request body:",
+                        "Please tell me the joke you sent.",
+                    ].join("\n"),
+                },
+                createdAt: new Date("2026-05-18T19:13:50.000Z"),
+            },
+            {
+                seq: 2,
+                sessionId,
+                eventType: "system.message",
+                data: {
+                    content: [
+                        "[SESSION_MESSAGE_RESPONSE request_id=2891e5d6-d60d-46b9-bae4-69ad24bb6ee4 from=17331007-c3d2-44eb-8a9c-e3f6a5e0edb3 verdict=answered]",
+                        "This is the requested cross-session response. Incorporate it into your work; do not ask the target again unless the answer is incomplete.",
+                        "",
+                        "Why did the calendar apply for a job? It wanted to make its days count.",
+                    ].join("\n"),
+                },
+                createdAt: new Date("2026-05-18T19:14:21.000Z"),
+            },
+        ]));
+
+        const messages = state.history.bySessionId.get(sessionId).chat;
+        assertEqual(messages[0]?.cardTitle, "Session Request", "incoming cross-session requests should be typed cards");
+        assertEqual(messages[1]?.cardTitle, "Session Reply", "cross-session replies should be typed cards");
+        const text = flattenChatLines(selectChatLines(state, 120));
+
+        assertIncludes(text, "SESSION REQUEST", "request card title should render in chat");
+        assertIncludes(text, "SESSION REPLY", "reply card title should render in chat");
+        assertIncludes(text, "Please tell me the joke you sent.", "receiver should see the request body in a card");
+        assertIncludes(text, "Why did the calendar apply for a job?", "sender should see the reply body in a card");
+        assert(!text.includes("[SESSION_MESSAGE"), "raw session-message protocol headers should not leak into chat");
+    });
+
+    it("renders cron_at wake-ups as cron activity in the sequence diagram", () => {
+        const sessionId = "session-cronat-seq";
+        const state = createInitialState({ mode: "local" });
+        state.sessions.byId[sessionId] = {
+            sessionId,
+            status: "running",
+            title: "Daily News Summary",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        };
+        state.sessions.activeSessionId = sessionId;
+        state.sessions.flat = [{ sessionId, depth: 0 }];
+        state.ui.inspectorTab = "sequence";
+        state.history.bySessionId.set(sessionId, buildHistoryModel([
+            {
+                seq: 1,
+                sessionId,
+                workerNodeId: "worker-orch-abc123",
+                eventType: "session.cron_at_started",
+                data: { nextFireAt: "2026-05-20T02:07:00.000Z", reason: "daily financial news" },
+                createdAt: new Date("2026-05-18T19:05:23.000Z"),
+            },
+            {
+                seq: 2,
+                sessionId,
+                workerNodeId: "worker-orch-abc123",
+                eventType: "session.cron_at_fired",
+                data: { scheduledAt: "2026-05-20T02:07:00.000Z", reason: "daily financial news" },
+                createdAt: new Date("2026-05-18T19:07:00.000Z"),
+            },
+        ]));
+
+        const inspector = selectInspector(state, { width: 120 });
+        const text = flattenChatLines([...(inspector.stickyLines || []), ...(inspector.lines || [])]);
+
+        assertIncludes(text, "cron", "cron_at wake-ups should render as cron sequence activity");
+        assertIncludes(text, "cron fired", "cron_at fired events should have a visible wake-up indicator");
+        assert(!text.includes("cron_at"), "sequence diagram should hide the internal cron_at tool name");
+    });
+
     it("routes rehydration notices out of chat and into activity", () => {
         const sessionId = "session-12345678";
         const state = createInitialState({ mode: "local" });

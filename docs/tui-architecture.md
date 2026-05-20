@@ -109,6 +109,25 @@ packages/cli/src/index.js
 management client ──► ui-core controller ──► store ──► selectors ──► rendered panes
 ```
 
+Session groups are loaded through the management client alongside sessions and
+adapted into synthetic shared UI rows with IDs shaped like `group:<groupId>`.
+The shared tree nests top-level grouped sessions under these `🗂` rows while
+keeping real parent/child lineage intact. Selecting a group opens a group detail
+view instead of a transcript. Groups are pure containers: sessions are moved in
+or out through the move-to-group picker, and group deletion only succeeds after
+all member sessions have been moved out. Groups use the same normalized owner
+model as sessions (`users` plus a group-owner link), owner filters apply to
+group rows, legacy ownerless groups can derive filter/display ownership from
+their member sessions, and sessions can only move into groups with a matching owner. Root
+session ordering keeps system
+sessions first, then pinned groups, pinned single sessions, unpinned groups, and
+then unpinned sessions. A fresh page/app load seeds the stable order inside each
+band and group from session last-updated time, newest first; live refreshes then
+keep that row order static so timestamp updates do not reshuffle the visible
+list. If the user has no stored selection/expansion profile yet, the main
+PilotSwarm system session is selected and all expandable group/parent rows start
+collapsed.
+
 ### Chat/history flow
 
 ```text
@@ -120,6 +139,10 @@ CMS events + live status + local optimistic state
                     ▼
                chat/activity panes
 ```
+
+The chat pane can render either the durable transcript or a structured session
+summary card. The mode is shared state in `ui-core`; the native TUI toggles it
+with `s` while the portal exposes the same choice as a compact segmented control.
 
 ### Terminal interaction flow
 

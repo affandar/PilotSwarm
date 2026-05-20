@@ -155,10 +155,12 @@ Current overlap to preserve unless intentionally changed:
 - `n` opens a new-session flow; in apps with named creatable agents it should open the agent picker rather than blindly creating a generic session
 - `Shift+N` opens the model picker, and model selection should flow into the same new-session/agent-picker path
 - `f` in the sessions pane opens the session owner filter
+- `Ctrl+G` in the sessions pane opens the move-to-group picker for the selected top-level non-system sessions, or for the active top-level non-system session when multi-select is off
 - `t` in the sessions pane opens the rename-title dialog
-- `P` in the sessions pane pins or unpins the active top-level session (system + child sessions cannot be pinned)
-- `V` in the sessions pane toggles multi-select; `Space` toggles selection on the active row; `c` then cancels the entire selection in one confirmation; `Esc` exits select mode
+- `P` in the sessions pane pins or unpins the active top-level session (system sessions, child sub-agent sessions, and sessions contained in a group cannot be pinned; if a pinned session is moved into a group its pin is dropped automatically)
+- `V` in the sessions pane toggles multi-select; `Space` toggles selection on the active row; `c` cancels, `d` completes, and `D` hard-deletes the selected non-system non-group sessions in one confirmation; `Ctrl+G` moves selected top-level non-system sessions to a group; `Esc` exits select mode. The portal `Terminate (n)` action opens the three-disposition picker for Complete, Cancel, and Hard Delete.
 - `t` in the logs inspector toggles log tailing
+- `s` in the chat pane toggles between the transcript and the current session summary view
 - `Ctrl+A` in the prompt opens the attach-file dialog
 - `x` in the files inspector deletes the selected artifact after confirmation
 - `o` in the files inspector opens the selected file in the OS default app
@@ -187,7 +189,19 @@ For the native TUI files inspector, keep the standard outer inspector shell as t
 
 Pane headers in the shared UI should stay compact. Keep title text data plain; the portal may use a slim card header, while the TUI should render pane titles without a highlighted header background. When a pane narrows, prefer dropping low-priority title metadata such as session ids or recent-window labels before squeezing content.
 
+Session rows should show interval cron as `[cron <duration>]` and wall-clock cron as `[cron <next client-local time>]`; do not expose the internal `cron_at` tool name in row badges. The sequence and activity panes should render wall-clock `cron_at` lifecycle events with the same visible `cron` label and magenta styling as interval cron, including a visible wake-up indicator when `session.cron_at_fired` arrives.
+
+Session row status icons should avoid rapid flicker: when a row's visual status changes, keep rendering the previous icon/color until the new row visual status has stayed stable for at least 5 seconds.
+
+Cross-session `[SESSION_MESSAGE ...]` and `[SESSION_MESSAGE_RESPONSE ...]` protocol prompts are product-visible transcript items. Render them as dedicated session request/reply cards in the shared chat transcript, not collapsed activity-only system notices.
+
 Named-agent session titles should be displayed with the user-assigned title or uniquifier first, then the agent type, then the agent/persona metadata (for example `M61 Conductor · R2D Train Watcher · Mad-Eye Moody`). Keep this ordering consistent in session rows and chat pane headers so narrow/mobile views expose the useful title first.
+
+System sessions render with the machinery marker `⚙` in yellow. Leave one text space after the marker in title-bearing rows/headers; the terminal renderer already gives this symbol enough visual width.
+
+System session actions are restart actions. Done prompts for `Complete & Restart`, Cancel prompts for `Terminate & Restart`, and Delete prompts for `Hard Delete & Restart`; all route through `restartSystemSession`. In the portal Sessions pane, the ordinary `Terminate` button becomes `Restart` for system sessions and opens a disposition picker with those three restart choices.
+
+Session groups are shared TUI/portal pure-container rows, not fake agent sessions and not bulk-operation sessions. Render them as top-level `🗂` rows that can be pinned independently and open a group details view instead of a chat transcript. Session ordering bands are: system sessions first, pinned groups, pinned single sessions, unpinned groups, then unpinned sessions. On fresh page/app load, seed the stable row order inside each band and inside groups from session last-updated time, most recent first; after that, preserve the stable row order during live refreshes so timestamp updates do not churn the visible list. Sessions inside a group are not pinnable; child rows sort by the stable order alone. The timestamp shown at the end of a session row is the session's last-updated time, rendered in the client's local timezone via `formatDisplayDateTime` (no hard-coded zone). When no stored selection/expansion config exists, default to the main PilotSwarm system session selected and all groups/parent sessions collapsed; persist exact `activeSessionId` and `collapsedSessionIds` in portal `users.profile_settings` and native TUI user config. Leave two text spaces after the marker so terminal renderers do not crowd the title. Sessions move into or out of groups through the move-to-group picker (`[New Group]`, existing groups, `[No Group]`). Groups use the same normalized owner model as sessions, participate in the owner filter, derive owner/filter display from member sessions for legacy ownerless groups, and can only contain sessions with the same owner. When a group is selected, inspector and activity panes should show a generic prompt to select a session for details. Group cancel/complete actions are not available; group deletion is allowed only when all sessions have been moved out.
 
 Use the `pilotswarm-tui` agent/skill for TUI-specific work. Treat it as the canonical short-form memory for the current TUI design choices and maintenance preferences.
 
@@ -206,6 +220,25 @@ If you add or change PilotSwarm features that affect app builders, keep the foll
 - the builder-facing CLI/SDK docs those templates reference
 
 Treat these templates as a maintained product surface. Do not leave them stale when builder-relevant behavior changes.
+
+## Agent Versioning
+
+Authored PilotSwarm `.agent.md` files use explicit frontmatter versioning:
+
+```yaml
+schemaVersion: 1
+version: 1.0.0
+```
+
+Use the `agent-versioning` skill when creating or editing agent prompts, embedded agents, or builder templates that generate agents. PilotSwarm-authored agents and templates use SemVer for `version`; app authors may use any non-empty string, but SemVer is recommended.
+
+When you change a PilotSwarm-authored `.agent.md` prompt, tool expectation, workflow guidance, frontmatter metadata, output contract, or child-contract guidance, bump its `version` appropriately:
+
+- patch for wording clarifications or typo fixes that should not materially change behavior
+- minor for new capabilities, tools, examples, or backwards-compatible workflow guidance
+- major for changed role semantics, removed expectations, or incompatible output/contract changes
+
+When changing builder templates that create or edit app agents, update both the template agents and their skills so generated app `.agent.md` files include `schemaVersion: 1` and a `version`, and so edits to existing agent files bump the version string according to the app's chosen versioning style.
 
 ## Significant Feature Rollouts
 

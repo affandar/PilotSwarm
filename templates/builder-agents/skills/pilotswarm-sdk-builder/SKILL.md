@@ -40,6 +40,7 @@ my-sdk-app/
 1. Run a guided intake before scaffolding.
 2. Separate plugin content from runtime code.
 3. Treat `plugin/agents/default.agent.md` as the app-wide default overlay, not as a replacement for PilotSwarm's embedded framework base. It is **not** a selectable session agent — PilotSwarm excludes it at all three layers (worker, client, TUI). Do not name any other agent file `default`.
+4. Every generated `.agent.md` must include `schemaVersion: 1` and a `version` string. Use `version: 1.0.0` for new agents by default. When editing an existing agent, bump its `version` according to the app's versioning style; prefer SemVer when the app uses it.
 4. Define tools with `defineTool()` in worker-side code.
 5. Register tool handlers on the worker.
 6. Reference those handlers from sessions via `toolNames`.
@@ -50,7 +51,8 @@ my-sdk-app/
 11. Add a checked-in cleanup script that drops database schemas and removes session state (handles both local and remote modes).
 12. Add a local example or test that exercises the intended app flow.
 13. When agents need durable structured memory or cross-agent shared state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`). They are available to every agent session by default, including system agents, and should be treated as the primary memory mechanism instead of inventing a one-off app-specific table.
-14. When agents need recurring autonomous work (monitoring, polling, periodic cleanup), use the durable `cron` tool: `cron(seconds=N, reason="...")` to start, `cron(action="cancel")` to stop. Cron schedules survive process restarts and worker failovers. Prefer cron over `wait` loops for periodic tasks.
+14. When agents need recurring autonomous work, use durable timers: `cron(seconds=N, reason="...")` for fixed intervals, `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules, and `cron(action="cancel")` / `cron_at(action="cancel")` to stop. Do not build wall-clock jobs by waking every N minutes to check the clock.
+15. When generated agents spawn long-running children, teach them to set `contract.wakeOn`: `any` for short-lived/high-signal children, `material_change` for watchers, and `completion` for done/blocked/error-only flows.
 15. Agents can read their context usage (current tokens, token limit) from the session status `contextUsage` field. Use this for agents that need to manage context window budgets or trigger compaction.
 16. When the scaffold needs downloadable files, keep using `write_artifact` / `export_artifact`; for binary files, require `contentType` plus `encoding: "base64"` and document that browser hosts download non-text artifacts instead of previewing them inline.
 

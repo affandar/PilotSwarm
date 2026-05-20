@@ -42,7 +42,8 @@ my-app/
 2. Run a guided intake before scaffolding.
 3. Create `plugin/plugin.json` when the user wants app branding.
 4. Put prompts and personas in `plugin/agents/*.agent.md`.
-5. Treat `plugin/agents/default.agent.md` as the app-wide default overlay under PilotSwarm's embedded framework base. It is **not** a selectable session agent — PilotSwarm excludes it from the agent picker, the client rejects `createSession` calls with `agentId: "default"`, and the worker never adds it to `allowedAgentNames`. Do not name any other agent file `default`.
+5. Every generated `.agent.md` must include `schemaVersion: 1` and a `version` string. Use `version: 1.0.0` for new agents by default. When editing an existing agent, bump its `version` according to the app's versioning style; prefer SemVer when the app uses it.
+6. Treat `plugin/agents/default.agent.md` as the app-wide default overlay under PilotSwarm's embedded framework base. It is **not** a selectable session agent — PilotSwarm excludes it from the agent picker, the client rejects `createSession` calls with `agentId: "default"`, and the worker never adds it to `allowedAgentNames`. Do not name any other agent file `default`.
 6. Put reusable domain knowledge in `plugin/skills/*/SKILL.md`.
 7. Put runtime tool handlers in `worker-module.js`.
 8. Add `session-policy.json` if the user does not want generic sessions. The policy is enforced in both local and remote modes — the TUI reads it from the plugin directory even when there are no embedded workers.
@@ -52,7 +53,8 @@ my-app/
 12. Make generated scripts executable and verify the executable bit.
 13. Add a README with local run instructions.
 14. When agents need durable structured memory or shared coordination state, use PilotSwarm's built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) as the primary memory layer. They are available to every agent session by default, including system agents, so do not build a separate fact table unless the app truly requires it.
-15. When agents need recurring autonomous work (monitoring, polling, periodic cleanup), use the durable `cron` tool: `cron(seconds=N, reason="...")` to start, `cron(action="cancel")` to stop. Cron schedules survive process restarts and worker failovers. Prefer cron over `wait` loops for periodic tasks.
+15. When agents need recurring autonomous work, use durable timers: `cron(seconds=N, reason="...")` for fixed intervals, `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules, and `cron(action="cancel")` / `cron_at(action="cancel")` to stop. Do not build wall-clock jobs by waking every N minutes to check the clock.
+16. When generated agents spawn long-running children, teach them to set `contract.wakeOn`: `any` for short-lived/high-signal children, `material_change` for watchers, and `completion` for done/blocked/error-only flows.
 16. Agents can read their context usage (current tokens, token limit) from the session status. The TUI displays this in the status bar. Use this for agents that need to manage context window budgets or trigger compaction.
 17. If the app relies on downloadable files, document the shipped files inspector behavior: binary artifacts download intact, browser previews are download-only for non-text files, and the shared files browser supports download/delete/open flows.
 

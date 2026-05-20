@@ -1,6 +1,6 @@
 {
   "name": "pilotswarm-sdk",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
   "type": "module",
   "main": "./dist/index.js",
@@ -20,12 +20,13 @@
     "test:local:multi-worker": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/multi-worker.test.js",
     "test:local:commands": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/commands-*.test.js",
     "test:local:management": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/management.test.js",
+    "test:local:cross-session": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cross-session-messaging.test.js",
     "test:local:sub-agents": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sub-agents/*.test.js",
     "test:local:kv-transport": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/kv-transport.test.js",
     "test:local:cms": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cms-*.test.js",
     "test:local:contracts": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/contracts.test.js",
     "test:local:chaos": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/chaos.test.js",
-    "test:local:system-agents": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/system-agents.test.js",
+    "test:local:system-agents": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/system-agents.test.js test/local/system-session-restart.test.js",
     "test:local:session-policy": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/session-policy-*.test.js",
     "test:local:reliability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/reliability-*.test.js",
     "test:local:knowledge-pipeline": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/knowledge-pipeline.test.js test/local/facts.test.js",
@@ -63,8 +64,8 @@
   "dependencies": {
     "@azure/identity": "^4.13.1",
     "@azure/storage-blob": "^12.31.0",
-    "@github/copilot": "^1.0.36",
-    "@github/copilot-sdk": "^0.3.0",
+    "@github/copilot": "^1.0.50",
+    "@github/copilot-sdk": "^1.0.0-beta.4",
     "duroxide": "^0.1.26",
     "file-type": "^20.5.0",
     "pg": "^8.18.0"

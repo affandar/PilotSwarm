@@ -37,6 +37,7 @@ deploy/
 4. Configure database and blob storage explicitly.
 5. Write manifests, model-catalog/env guidance, and rollout instructions that match the actual app layout.
 6. Call out reset/versioning constraints when orchestration behavior changes.
+7. If deployment work edits `plugin/agents/*.agent.md`, preserve `schemaVersion: 1` and bump the agent `version` according to the app's versioning style. Packaging-only changes should preserve existing agent versions.
 
 ## Environment And Azure Resource Checklist
 

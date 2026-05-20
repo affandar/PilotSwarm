@@ -306,6 +306,56 @@ describe("session-proxy CMS prompt classification", () => {
         expect(recoveryNotice).toBeTruthy();
     });
 
+    it("recovers a null-content transcript rejection by resetting stored session state and replaying once", async () => {
+        const { runTurn, recordedEvents, sessionManager } = makeHarness();
+        const staleSession = {
+            abort: vi.fn(),
+            runTurn: vi.fn(async () => ({
+                type: "error",
+                message: "Execution failed: 400 Invalid value for 'content': expected a string, got null.",
+            })),
+        };
+        const recoveredSession = {
+            abort: vi.fn(),
+            runTurn: vi.fn(async (prompt) => {
+                expect(prompt).toContain("live Copilot transcript became inconsistent");
+                expect(prompt).toContain("continue carefully");
+                expect(prompt).toContain("continue the timer workflow");
+                return { type: "completed", content: "recovered from null content", events: [] };
+            }),
+        };
+        sessionManager.getOrCreate = vi
+            .fn()
+            .mockResolvedValueOnce(staleSession)
+            .mockResolvedValueOnce(recoveredSession);
+
+        const result = await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            {
+                sessionId: "session-null-content-transcript",
+                prompt: "continue the timer workflow",
+                config: {},
+                turnIndex: 4,
+            },
+        );
+
+        expect(result).toMatchObject({ type: "completed", content: "recovered from null content" });
+        expect(sessionManager.resetSessionState).toHaveBeenCalledWith("session-null-content-transcript", { lockHeld: true });
+        expect(sessionManager.getOrCreate).toHaveBeenNthCalledWith(
+            2,
+            "session-null-content-transcript",
+            expect.any(Object),
+            expect.objectContaining({ turnIndex: 0 }),
+        );
+        expect(recordedEvents).toContainEqual(expect.objectContaining({
+            eventType: "session.lossy_handoff",
+            data: expect.objectContaining({
+                cause: "corrupted_tool_call_transcript_during_run_turn",
+                recoveryMode: "fresh_session_replay",
+            }),
+        }));
+    });
+
     it("replays the turn from a fresh Copilot session when resumable state is missing", async () => {
         const { runTurn, sessionManager, recordedEvents } = makeHarness();
         const recoveredSession = {

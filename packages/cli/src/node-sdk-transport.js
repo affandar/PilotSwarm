@@ -428,12 +428,15 @@ export class NodeSdkTransport {
         this.useManagedIdentity = useManagedIdentity;
         this.cmsFactsDatabaseUrl = cmsFactsDatabaseUrl;
         this.aadDbUser = aadDbUser;
+        this.pluginDirs = getPluginDirsFromEnv();
         this.client = null;
         this.mgmt = new PilotSwarmManagementClient({
             store,
             ...(useManagedIdentity !== undefined ? { useManagedIdentity } : {}),
             ...(cmsFactsDatabaseUrl ? { cmsFactsDatabaseUrl } : {}),
             ...(aadDbUser ? { aadDbUser } : {}),
+            pluginDirs: this.pluginDirs,
+            blobEnabled: Boolean(process.env.AZURE_STORAGE_ACCOUNT_URL || process.env.AZURE_STORAGE_CONNECTION_STRING),
         });
         this.artifactStore = createArtifactStore();
         this.sessionHandles = new Map();
@@ -580,6 +583,34 @@ export class NodeSdkTransport {
         return this.mgmt.listSessions();
     }
 
+    async listSessionGroups() {
+        return this.mgmt.listSessionGroups();
+    }
+
+    async createSessionGroup(input) {
+        return this.mgmt.createSessionGroup(input || {});
+    }
+
+    async updateSessionGroup(groupId, patch) {
+        return this.mgmt.updateSessionGroup(groupId, patch || {});
+    }
+
+    async assignSessionsToGroup(groupId, sessionIds) {
+        return this.mgmt.assignSessionsToGroup(groupId, sessionIds || []);
+    }
+
+    async moveSessionsToGroup(groupId, sessionIds) {
+        return this.mgmt.moveSessionsToGroup(groupId ?? null, sessionIds || []);
+    }
+
+    async getChildOutcome(childSessionId) {
+        return this.mgmt.getChildOutcome(childSessionId);
+    }
+
+    async listChildOutcomes(parentSessionId) {
+        return this.mgmt.listChildOutcomes(parentSessionId);
+    }
+
     async getSession(sessionId) {
         return this.mgmt.getSession(sessionId);
     }
@@ -686,18 +717,19 @@ export class NodeSdkTransport {
         );
     }
 
-    async createSession({ model, reasoningEffort, owner } = {}) {
+    async createSession({ model, reasoningEffort, owner, groupId } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSession({
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(owner ? { owner } : {}),
+            ...(groupId ? { groupId } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         return { sessionId: session.sessionId, model: effectiveModel, reasoningEffort: reasoningEffort || undefined };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, title, splash, initialPrompt, owner } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, title, splash, initialPrompt, owner, groupId } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSessionForAgent(agentName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),
@@ -706,6 +738,7 @@ export class NodeSdkTransport {
             ...(splash ? { splash } : {}),
             ...(initialPrompt ? { initialPrompt } : {}),
             ...(owner ? { owner } : {}),
+            ...(groupId ? { groupId } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         return {
@@ -795,6 +828,10 @@ export class NodeSdkTransport {
         await this.mgmt.cancelSession(sessionId);
     }
 
+    async cancelSessionGroup(groupId, reason) {
+        await this.mgmt.cancelSessionGroup(groupId, reason);
+    }
+
     async completeSession(sessionId, reason = "Completed by user") {
         await this.mgmt.sendCommand(sessionId, {
             cmd: "done",
@@ -803,9 +840,21 @@ export class NodeSdkTransport {
         });
     }
 
+    async completeSessionGroup(groupId, options = {}) {
+        await this.mgmt.completeSessionGroup(groupId, options);
+    }
+
     async deleteSession(sessionId) {
         await this.mgmt.deleteSession(sessionId);
         this.sessionHandles.delete(sessionId);
+    }
+
+    async restartSystemSession(agentIdOrSessionId, options) {
+        return this.mgmt.restartSystemSession(agentIdOrSessionId, options || {});
+    }
+
+    async deleteSessionGroup(groupId) {
+        await this.mgmt.deleteSessionGroup(groupId);
     }
 
     async listModels() {

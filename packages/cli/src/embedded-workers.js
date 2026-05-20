@@ -1,17 +1,14 @@
-import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
 import { PilotSwarmWorker } from "pilotswarm-sdk";
+import { getPluginDirsFromEnv } from "./plugin-config.js";
 
 export async function startEmbeddedWorkers({ count, store }) {
     const workers = [];
     if (!count || count <= 0) return workers;
 
-    const defaultPluginDir = path.resolve(process.cwd(), "packages/cli/plugins");
-    const pluginDirs = process.env.PLUGIN_DIRS
-        ? process.env.PLUGIN_DIRS.split(",").map((value) => value.trim()).filter(Boolean)
-        : (fs.existsSync(defaultPluginDir) ? [defaultPluginDir] : []);
+    const pluginDirs = getPluginDirsFromEnv();
 
     let workerModuleConfig = {};
     if (process.env._TUI_WORKER_MODULE) {

@@ -3,9 +3,12 @@ import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
 import { selectSessionRows } from "./selectors.js";
+import { systemSessionSortOrder } from "./system-titles.js";
 import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
+    normalizeStoredActiveSessionId,
+    normalizeStoredCollapsedSessionIds,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
 } from "./state.js";
@@ -26,6 +29,8 @@ function cloneSelectedIds(selectedIds) {
     return Array.isArray(selectedIds) ? [...selectedIds] : [];
 }
 
+const ROW_VISUAL_STATUS_HOLD_MS = 5000;
+
 function pruneIdList(ids, byId) {
     const out = [];
     const seen = new Set();
@@ -36,6 +41,82 @@ function pruneIdList(ids, byId) {
         out.push(id);
     }
     return out;
+}
+
+function isPinnableSession(session) {
+    return Boolean(
+        session
+        && !session.isSystem
+        && (session.isGroup || (!session.parentSessionId && !session.groupId)),
+    );
+}
+
+function prunePinnedIds(ids, byId) {
+    return pruneIdList(ids, byId).filter((sessionId) => isPinnableSession(byId[sessionId]));
+}
+
+function collectCollapsibleSessionIds(sessions = []) {
+    const byId = new Set((sessions || []).map((session) => session?.sessionId).filter(Boolean));
+    const collapsibleIds = new Set();
+    for (const session of sessions || []) {
+        if (!session?.sessionId) continue;
+        if (session.isGroup) collapsibleIds.add(session.sessionId);
+        const parentSessionId = session.parentSessionId;
+        if (parentSessionId && byId.has(parentSessionId)) {
+            collapsibleIds.add(parentSessionId);
+        }
+    }
+    return collapsibleIds;
+}
+
+function pruneCollapsedIds(collapsedIds, byId) {
+    const collapsibleIds = collectCollapsibleSessionIds(Object.values(byId || {}));
+    const out = new Set();
+    for (const id of collapsedIds || []) {
+        if (collapsibleIds.has(id)) out.add(id);
+    }
+    return out;
+}
+
+function collectSessionAncestorIds(sessionId, byId) {
+    const ancestors = [];
+    const seen = new Set([sessionId]);
+    let session = byId?.[sessionId] || null;
+
+    while (session) {
+        let parentId = null;
+        if (session.parentSessionId && byId?.[session.parentSessionId]) {
+            parentId = session.parentSessionId;
+        } else if (!session.isGroup && session.groupId && byId?.[`group:${session.groupId}`]) {
+            parentId = `group:${session.groupId}`;
+        }
+
+        if (!parentId || seen.has(parentId)) break;
+        ancestors.push(parentId);
+        seen.add(parentId);
+        session = byId[parentId] || null;
+    }
+
+    return ancestors;
+}
+
+function reconcileCollapsedIdsForActiveSession(collapsedIds, byId, activeSessionId) {
+    const next = pruneCollapsedIds(collapsedIds, byId);
+    if (!activeSessionId || !byId?.[activeSessionId]) return next;
+    for (const ancestorId of collectSessionAncestorIds(activeSessionId, byId)) {
+        next.delete(ancestorId);
+    }
+    return next;
+}
+
+function setsEqual(left, right) {
+    if (left === right) return true;
+    if (!(left instanceof Set) || !(right instanceof Set)) return false;
+    if (left.size !== right.size) return false;
+    for (const value of left) {
+        if (!right.has(value)) return false;
+    }
+    return true;
 }
 
 function cloneOrderById(orderById) {
@@ -125,6 +206,81 @@ function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
     return merged;
 }
 
+function computeRawSessionVisualStatus(session) {
+    if (!session) return "unknown";
+    const status = session.status || "unknown";
+    if (
+        session.cronActive === true
+        && (status === "waiting" || status === "idle" || status === "unknown")
+    ) {
+        return "cron_waiting";
+    }
+    return status;
+}
+
+function mergeSessionRowVisualStatus(previousSession, nextSession, nowMs) {
+    if (!nextSession?.sessionId || nextSession.isGroup) return nextSession;
+
+    const desiredStatus = computeRawSessionVisualStatus(nextSession);
+    const previousDisplayStatus = previousSession?.rowVisualStatus
+        || computeRawSessionVisualStatus(previousSession || nextSession);
+
+    if (!previousSession) {
+        if (nextSession.rowVisualStatus === desiredStatus
+            && nextSession.rowVisualStatusCandidate == null
+            && nextSession.rowVisualStatusCandidateSince == null) {
+            return nextSession;
+        }
+        return {
+            ...nextSession,
+            rowVisualStatus: desiredStatus,
+            rowVisualStatusCandidate: undefined,
+            rowVisualStatusCandidateSince: undefined,
+        };
+    }
+
+    if (desiredStatus === previousDisplayStatus) {
+        if (nextSession.rowVisualStatus === desiredStatus
+            && nextSession.rowVisualStatusCandidate == null
+            && nextSession.rowVisualStatusCandidateSince == null) {
+            return nextSession;
+        }
+        return {
+            ...nextSession,
+            rowVisualStatus: desiredStatus,
+            rowVisualStatusCandidate: undefined,
+            rowVisualStatusCandidateSince: undefined,
+        };
+    }
+
+    const previousCandidate = previousSession.rowVisualStatusCandidate;
+    const candidateSince = previousCandidate === desiredStatus
+        ? Number(previousSession.rowVisualStatusCandidateSince) || nowMs
+        : nowMs;
+
+    if (nowMs - candidateSince >= ROW_VISUAL_STATUS_HOLD_MS) {
+        return {
+            ...nextSession,
+            rowVisualStatus: desiredStatus,
+            rowVisualStatusCandidate: undefined,
+            rowVisualStatusCandidateSince: undefined,
+        };
+    }
+
+    if (nextSession.rowVisualStatus === previousDisplayStatus
+        && nextSession.rowVisualStatusCandidate === desiredStatus
+        && Number(nextSession.rowVisualStatusCandidateSince) === candidateSince) {
+        return nextSession;
+    }
+
+    return {
+        ...nextSession,
+        rowVisualStatus: previousDisplayStatus,
+        rowVisualStatusCandidate: desiredStatus,
+        rowVisualStatusCandidateSince: candidateSince,
+    };
+}
+
 function normalizedPendingQuestionText(pendingQuestion) {
     return String(pendingQuestion?.question || "").trim();
 }
@@ -136,8 +292,24 @@ function isAnsweredPendingQuestion(previousSession, pendingQuestion) {
 }
 
 function pickDefaultActiveSessionId(sessions = []) {
-    const firstNonSystem = (sessions || []).find((session) => session?.sessionId && !session.isSystem);
-    return firstNonSystem?.sessionId || null;
+    const mainSystem = (sessions || []).find((session) => session?.sessionId && session.isSystem && systemSessionSortOrder(session) === 0);
+    if (mainSystem?.sessionId) return mainSystem.sessionId;
+    const firstSession = (sessions || []).find((session) => session?.sessionId);
+    return firstSession?.sessionId || null;
+}
+
+function collectDefaultCollapsedSessionIds(sessions = []) {
+    const byId = new Set((sessions || []).map((session) => session?.sessionId).filter(Boolean));
+    const collapsedIds = new Set();
+    for (const session of sessions || []) {
+        if (!session?.sessionId) continue;
+        if (session.isGroup) collapsedIds.add(session.sessionId);
+        const parentSessionId = session.parentSessionId;
+        if (parentSessionId && byId.has(parentSessionId)) {
+            collapsedIds.add(parentSessionId);
+        }
+    }
+    return collapsedIds;
 }
 
 function hasSessionVisibilityFilter(sessions = {}) {
@@ -150,6 +322,9 @@ function resolveVisibleActiveSessionId(state, fallbackSessions = []) {
     const visibleRows = selectSessionRows(state);
     const currentSessionId = state.sessions?.activeSessionId || null;
     if (currentSessionId && visibleRows.some((row) => row.sessionId === currentSessionId)) {
+        return currentSessionId;
+    }
+    if (currentSessionId && state.sessions?.byId?.[currentSessionId] && !hasSessionVisibilityFilter(state.sessions)) {
         return currentSessionId;
     }
     if (hasSessionVisibilityFilter(state.sessions)) {
@@ -191,9 +366,18 @@ function applyVisibleSessionSelection(state, nextSessions) {
         sessions: nextSessions,
     };
     const nextActiveSessionId = resolveVisibleActiveSessionId(nextState, Object.values(nextSessions.byId || {}));
+    const nextCollapsedIds = reconcileCollapsedIdsForActiveSession(nextSessions.collapsedIds, nextSessions.byId, nextActiveSessionId);
+    const collapsedChanged = !setsEqual(nextCollapsedIds, nextSessions.collapsedIds);
+    const reconciledSessions = collapsedChanged
+        ? {
+            ...nextSessions,
+            collapsedIds: nextCollapsedIds,
+            flat: buildSessionTree(Object.values(nextSessions.byId || {}), nextCollapsedIds, nextSessions.orderById, nextSessions.pinnedIds),
+        }
+        : nextSessions;
     return {
         sessions: {
-            ...nextSessions,
+            ...reconciledSessions,
             activeSessionId: nextActiveSessionId,
         },
         ui: updateUiForSessionSelection(state, nextActiveSessionId),
@@ -208,6 +392,31 @@ function assignStableSessionOrder(previousOrderById = {}, nextOrderOrdinal = 0, 
         const sessionId = session?.sessionId;
         if (!sessionId) continue;
         if (typeof orderById[sessionId] === "number") continue;
+        orderById[sessionId] = orderOrdinal;
+        orderOrdinal += 1;
+    }
+
+    return {
+        orderById,
+        nextOrderOrdinal: orderOrdinal,
+    };
+}
+
+function assignInitialSessionOrder(sessions = [], pinnedIds = []) {
+    const expandedFlat = buildSessionTree(sessions, new Set(), {}, pinnedIds);
+    const orderById = {};
+    let orderOrdinal = 0;
+
+    for (const entry of expandedFlat) {
+        const sessionId = entry?.sessionId;
+        if (!sessionId || typeof orderById[sessionId] === "number") continue;
+        orderById[sessionId] = orderOrdinal;
+        orderOrdinal += 1;
+    }
+
+    for (const session of sessions || []) {
+        const sessionId = session?.sessionId;
+        if (!sessionId || typeof orderById[sessionId] === "number") continue;
         orderById[sessionId] = orderOrdinal;
         orderOrdinal += 1;
     }
@@ -302,7 +511,12 @@ export function appReducer(state, action) {
                 && settings.themeId.trim();
             const hasOwnerFilter = Object.prototype.hasOwnProperty.call(settings, "sessionOwnerFilter");
             const hasLayout = Object.prototype.hasOwnProperty.call(settings, "layoutAdjustments");
+            const hasChatViewMode = Object.prototype.hasOwnProperty.call(settings, "chatViewMode")
+                && (settings.chatViewMode === "summary" || settings.chatViewMode === "transcript");
             const hasPins = Object.prototype.hasOwnProperty.call(settings, "pinnedSessionIds");
+            const hasCollapsed = Object.prototype.hasOwnProperty.call(settings, "collapsedSessionIds");
+            const hasActive = Object.prototype.hasOwnProperty.call(settings, "activeSessionId");
+            const hasLoadedSessions = Object.keys(state.sessions.byId || {}).length > 0;
             const nextLayout = hasLayout
                 ? {
                     ...(state.ui.layout || {}),
@@ -310,8 +524,18 @@ export function appReducer(state, action) {
                 }
                 : state.ui.layout;
             const nextPinnedIds = hasPins
-                ? normalizeStoredPinnedSessionIds(settings.pinnedSessionIds)
+                ? (hasLoadedSessions
+                    ? prunePinnedIds(normalizeStoredPinnedSessionIds(settings.pinnedSessionIds), state.sessions.byId)
+                    : normalizeStoredPinnedSessionIds(settings.pinnedSessionIds))
                 : state.sessions.pinnedIds;
+            const nextCollapsedIds = hasCollapsed
+                ? (hasLoadedSessions
+                    ? pruneCollapsedIds(normalizeStoredCollapsedSessionIds(settings.collapsedSessionIds), state.sessions.byId)
+                    : normalizeStoredCollapsedSessionIds(settings.collapsedSessionIds))
+                : state.sessions.collapsedIds;
+            const nextActiveSessionId = hasActive
+                ? normalizeStoredActiveSessionId(settings.activeSessionId)
+                : state.sessions.activeSessionId;
             const nextSessions = {
                 ...state.sessions,
                 ...(hasOwnerFilter
@@ -321,11 +545,14 @@ export function appReducer(state, action) {
                     }
                     : {}),
                 pinnedIds: nextPinnedIds,
-                flat: hasPins
-                    ? buildSessionTree(Object.values(state.sessions.byId), state.sessions.collapsedIds, state.sessions.orderById, nextPinnedIds)
+                collapsedIds: nextCollapsedIds,
+                collapsedIdsExplicit: hasCollapsed ? true : state.sessions.collapsedIdsExplicit,
+                activeSessionId: nextActiveSessionId,
+                flat: (hasPins || hasCollapsed)
+                    ? buildSessionTree(Object.values(state.sessions.byId), nextCollapsedIds, state.sessions.orderById, nextPinnedIds)
                     : state.sessions.flat,
             };
-            const selection = hasOwnerFilter || hasPins
+            const selection = hasLoadedSessions && (hasOwnerFilter || hasPins || hasCollapsed || hasActive)
                 ? applyVisibleSessionSelection(state, nextSessions)
                 : { sessions: nextSessions, ui: state.ui };
             return {
@@ -334,10 +561,27 @@ export function appReducer(state, action) {
                 ui: {
                     ...selection.ui,
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
+                    chatViewMode: hasChatViewMode ? settings.chatViewMode : selection.ui.chatViewMode,
                     layout: nextLayout,
                 },
             };
         }
+
+        case "ui/chatViewMode":
+            if (action.mode !== "summary" && action.mode !== "transcript") {
+                return state;
+            }
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    chatViewMode: action.mode,
+                    scroll: {
+                        ...state.ui.scroll,
+                        chat: 0,
+                    },
+                },
+            };
 
         case "ui/modal":
             return {
@@ -570,15 +814,21 @@ export function appReducer(state, action) {
         case "sessions/loaded": {
             const byId = {};
             let anyChanged = false;
+            const nowMs = Date.now();
             for (const session of action.sessions) {
                 const previous = state.sessions.byId[session.sessionId];
-                const merged = mergeDefinedSessionFields(previous, session);
+                const merged = mergeSessionRowVisualStatus(
+                    previous,
+                    mergeDefinedSessionFields(previous, session),
+                    nowMs,
+                );
                 byId[session.sessionId] = merged;
                 if (!anyChanged && merged !== previous) anyChanged = true;
             }
             if (
                 state.sessions.activeSessionId
                 && state.sessions.byId[state.sessions.activeSessionId]
+                && !state.sessions.byId[state.sessions.activeSessionId]?.isGroup
                 && !byId[state.sessions.activeSessionId]
             ) {
                 byId[state.sessions.activeSessionId] = {
@@ -597,40 +847,41 @@ export function appReducer(state, action) {
             }
             if (!anyChanged) return state;
             const mergedSessions = Object.values(byId);
+            const hasExistingOrder = Object.keys(state.sessions.orderById || {}).length > 0;
+            const initialCollapsedIds = collectDefaultCollapsedSessionIds(mergedSessions);
+            const previousCollapsedIdsExplicit = Boolean(state.sessions.collapsedIdsExplicit);
             const {
                 orderById,
                 nextOrderOrdinal,
-            } = assignStableSessionOrder(
-                state.sessions.orderById,
-                state.sessions.nextOrderOrdinal,
-                mergedSessions,
-            );
-            const collapsedIds = cloneCollapsedIds(state.sessions.collapsedIds);
-            const previousParentIds = new Set(
-                Object.values(state.sessions.byId)
-                    .map((session) => session.parentSessionId)
-                    .filter((sessionId) => Boolean(sessionId)),
-            );
-            const parentIds = new Set(
-                mergedSessions
-                    .map((session) => session.parentSessionId)
-                    .filter((sessionId) => Boolean(sessionId)),
-            );
-            for (const sessionId of parentIds) {
-                if (!previousParentIds.has(sessionId)) {
-                    collapsedIds.add(sessionId);
+            } = hasExistingOrder
+                ? assignStableSessionOrder(
+                    state.sessions.orderById,
+                    state.sessions.nextOrderOrdinal,
+                    mergedSessions,
+                )
+                : assignInitialSessionOrder(mergedSessions, state.sessions.pinnedIds);
+            const collapsedIds = previousCollapsedIdsExplicit
+                ? cloneCollapsedIds(state.sessions.collapsedIds)
+                : initialCollapsedIds;
+            if (previousCollapsedIdsExplicit) {
+                const previousDefaultCollapsedIds = collectDefaultCollapsedSessionIds(Object.values(state.sessions.byId));
+                for (const sessionId of initialCollapsedIds) {
+                    if (!previousDefaultCollapsedIds.has(sessionId)) {
+                        collapsedIds.add(sessionId);
+                    }
                 }
             }
             // Drop pins/selection for sessions that no longer exist; only
-            // keep pins on top-level rows (children cannot be pinned).
-            const survivingPins = pruneIdList(state.sessions.pinnedIds, byId)
-                .filter((sessionId) => !byId[sessionId]?.parentSessionId);
+            // keep pins on top-level rows (groups and ungrouped top-level
+            // sessions). Sessions inside containers lose their pins.
+            const survivingPins = prunePinnedIds(state.sessions.pinnedIds, byId);
             const survivingSelected = pruneIdList(state.sessions.selectedIds, byId);
             const flat = buildSessionTree(mergedSessions, collapsedIds, orderById, survivingPins);
             const nextSessions = {
                 ...state.sessions,
                 byId,
                 collapsedIds,
+                collapsedIdsExplicit: previousCollapsedIdsExplicit,
                 pinnedIds: survivingPins,
                 selectedIds: survivingSelected,
                 selectMode: state.sessions.selectMode && survivingSelected.length > 0,
@@ -650,12 +901,17 @@ export function appReducer(state, action) {
         case "sessions/merged": {
             if (!action.session?.sessionId) return state;
             const previousSession = state.sessions.byId[action.session.sessionId];
-            const mergedSession = mergeDefinedSessionFields(previousSession, action.session);
+            const mergedSession = mergeSessionRowVisualStatus(
+                previousSession,
+                mergeDefinedSessionFields(previousSession, action.session),
+                Date.now(),
+            );
             if (mergedSession === previousSession) return state;
             const byId = {
                 ...state.sessions.byId,
                 [action.session.sessionId]: mergedSession,
             };
+            const survivingPins = prunePinnedIds(state.sessions.pinnedIds, byId);
             const {
                 orderById,
                 nextOrderOrdinal,
@@ -667,7 +923,8 @@ export function appReducer(state, action) {
             const nextSessions = {
                 ...state.sessions,
                 byId,
-                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById, state.sessions.pinnedIds),
+                pinnedIds: survivingPins,
+                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById, survivingPins),
                 activeSessionId: state.sessions.activeSessionId,
                 orderById,
                 nextOrderOrdinal,
@@ -729,6 +986,7 @@ export function appReducer(state, action) {
                 sessions: {
                     ...state.sessions,
                     collapsedIds,
+                    collapsedIdsExplicit: true,
                     flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds),
                 },
             };
@@ -742,6 +1000,7 @@ export function appReducer(state, action) {
                 sessions: {
                     ...state.sessions,
                     collapsedIds,
+                    collapsedIdsExplicit: true,
                     flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds),
                 },
             };
@@ -751,9 +1010,9 @@ export function appReducer(state, action) {
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
             const session = state.sessions.byId[sessionId];
-            // Pinning is a TOP-LEVEL-only concept. System sessions and child
-            // sessions cannot be pinned.
-            if (!session || session.isSystem || session.parentSessionId) return state;
+            // Pinning is a TOP-LEVEL-only concept. Groups and ungrouped
+            // top-level sessions can be pinned; contained sessions cannot.
+            if (!isPinnableSession(session)) return state;
             const current = clonePinnedIds(state.sessions.pinnedIds);
             const existingIndex = current.indexOf(sessionId);
             const nextPinned = existingIndex >= 0
@@ -790,8 +1049,8 @@ export function appReducer(state, action) {
             const session = sessionId ? state.sessions.byId[sessionId] : null;
             if (!session) return state;
             // System sessions (PilotSwarm, Sweeper, Resource Manager, etc.)
-            // are managed by the worker and cannot be bulk-terminated.
-            if (session.isSystem) return state;
+            // and synthetic group rows use dedicated action paths.
+            if (session.isSystem || session.isGroup) return state;
             const current = cloneSelectedIds(state.sessions.selectedIds);
             const existingIndex = current.indexOf(sessionId);
             const nextSelected = existingIndex >= 0
@@ -809,9 +1068,9 @@ export function appReducer(state, action) {
 
         case "sessions/selectSet": {
             const ids = Array.isArray(action.sessionIds) ? action.sessionIds : [];
-            // System sessions are not selectable for bulk operations.
+            // System sessions and group rows are not selectable for bulk operations.
             const next = pruneIdList(ids, state.sessions.byId)
-                .filter((id) => !state.sessions.byId[id]?.isSystem);
+                .filter((id) => !state.sessions.byId[id]?.isSystem && !state.sessions.byId[id]?.isGroup);
             return {
                 ...state,
                 sessions: {

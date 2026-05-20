@@ -13,19 +13,19 @@ This skill deploys `pilotswarm` only. Do not roll the same change into downstrea
 
 ## Canonical Targets
 
-- Kubernetes context: `toygres-aks`
+- Kubernetes context: `waldemort-aks`
 - Namespace: `copilot-runtime`
 - Worker deployment: `copilot-runtime-worker`
 - Portal deployment: `pilotswarm-portal`
-- Worker image: `toygresaksacr.azurecr.io/copilot-runtime-worker:latest`
-- Portal image: `toygresaksacr.azurecr.io/pilotswarm-portal:latest`
-- ACR: `toygresaksacr`
-- Resource group: `adar-pg`
-- Node resource group: `MC_adar-pg_toygres-aks_westus3`
-- Portal DNS: `pilotswarm-portal.westus3.cloudapp.azure.com`
-- Portal LB IP: `4.249.58.118` (app-routing nginx)
-- Postgres server: `adarflexpgai.postgres.database.azure.com`
-- Location: `westus3`
+- Worker image: `pilotswarmacr.azurecr.io/copilot-runtime-worker:latest`
+- Portal image: `pilotswarmacr.azurecr.io/pilotswarm-portal:latest`
+- ACR: `pilotswarmacr`
+- Resource group: `waldemort-rg`
+- Portal DNS: `pilotswarm-portal.westus3.cloudapp.azure.com` (verify against `deploy/k8s/portal-ingress.yaml`)
+- Postgres server: `pilotswarm-pg.postgres.database.azure.com` (verify against `.env.remote` `DATABASE_URL`)
+- Location: `westus2` (AKS); portal DNS label uses `westus3` — keep in sync with the ingress manifest
+
+Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.sh` sources `.env.remote` after parsing the environment, so the `.env.remote` value wins. Set `ACR_NAME` in `.env.remote` if you need to override the default.
 
 ## Canonical Files
 
@@ -57,9 +57,9 @@ This skill deploys `pilotswarm` only. Do not roll the same change into downstrea
 - After a destructive reset, healthy workers will immediately recreate the built-in system sessions. Verify the fresh root `PilotSwarm Agent` instead of expecting the catalog to stay empty.
 - The AKS rollout needs a valid `acr-pull` registry secret wired into the worker and portal deployments. ACR tokens expire — if pods show `ErrImagePull` / `401 Unauthorized`, refresh the `acr-pull` secret:
   ```bash
-  ACR_TOKEN=$(az acr login --name toygresaksacr --expose-token --query accessToken -o tsv) && \
+  ACR_TOKEN=$(az acr login --name pilotswarmacr --expose-token --query accessToken -o tsv) && \
   kubectl create secret docker-registry acr-pull -n copilot-runtime \
-    --docker-server=toygresaksacr.azurecr.io \
+    --docker-server=pilotswarmacr.azurecr.io \
     --docker-username=00000000-0000-0000-0000-000000000000 \
     --docker-password="$ACR_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
   ```
@@ -107,14 +107,14 @@ This skill deploys `pilotswarm` only. Do not roll the same change into downstrea
      ```
    - Login to ACR:
      ```bash
-     az acr login --name toygresaksacr
+     az acr login --name pilotswarmacr
      ```
    - Build and push the image:
      ```bash
      docker buildx build \
          --platform linux/amd64 \
          -f deploy/Dockerfile.worker \
-         -t toygresaksacr.azurecr.io/copilot-runtime-worker:latest \
+         -t pilotswarmacr.azurecr.io/copilot-runtime-worker:latest \
          --push .
      ```
    - Apply namespace/deployment manifests and restart the deployment.

@@ -6,6 +6,7 @@ import { buildHistoryModel } from "../../../ui-core/src/history.js";
 import { appReducer } from "../../../ui-core/src/reducer.js";
 import {
     selectActiveChat,
+    selectActivityPane,
     selectChatLines,
     selectChatPaneChrome,
     selectOutboxOverlayLines,
@@ -14,6 +15,7 @@ import {
     selectReasoningEffortPickerModal,
     selectSessionOwnerFilterModal,
     selectSessionRows,
+    selectStatusBar,
     selectVisibleSessionRows,
 } from "../../../ui-core/src/selectors.js";
 import { createInitialState } from "../../../ui-core/src/state.js";
@@ -81,7 +83,7 @@ describe("session refresh UI recovery", () => {
         assertEqual(state.ui.statusText, "Prompt sent", "refresh success should not overwrite unrelated status text");
     });
 
-    it("prefers a non-system session as the default active selection", async () => {
+    it("prefers the main PilotSwarm system session as the default active selection", async () => {
         const { store } = createController();
 
         store.dispatch({
@@ -109,12 +111,12 @@ describe("session refresh UI recovery", () => {
 
         assertEqual(
             store.getState().sessions.activeSessionId,
-            "user-session",
-            "initial selection should prefer a non-system session over the PilotSwarm root",
+            "system-root",
+            "initial selection should prefer the PilotSwarm root",
         );
     });
 
-    it("keeps the active selection empty when only system sessions are present", async () => {
+    it("selects the main PilotSwarm system session when only system sessions are present", async () => {
         const { store } = createController();
 
         store.dispatch({
@@ -132,8 +134,8 @@ describe("session refresh UI recovery", () => {
 
         assertEqual(
             store.getState().sessions.activeSessionId,
-            null,
-            "initial selection should stay empty when only system sessions exist",
+            "system-root",
+            "initial selection should use the PilotSwarm root when only system sessions exist",
         );
     });
 
@@ -170,10 +172,12 @@ describe("session refresh UI recovery", () => {
 
         const rows = selectVisibleSessionRows(store.getState(), 8);
         const rootRow = rows[0]?.runs?.map((run) => run.text).join("") || "";
+        assert(rootRow.startsWith("⚙ Waldemort"), "system session row should use one visible space after the gear marker");
         assertIncludes(rootRow, "Waldemort", "legacy root row should use the current branding title");
         assert(!rootRow.includes("PilotSwarm"), "legacy root row should not leak the old PilotSwarm title");
 
         const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
+        assert(chromeTitle.startsWith("⚙ Waldemort"), "system chat chrome should use one visible space after the gear marker");
         assertIncludes(chromeTitle, "Waldemort", "chat chrome should use the branded system title");
         assert(!chromeTitle.includes("PilotSwarm"), "chat chrome should not leak the old PilotSwarm title");
 
@@ -220,6 +224,66 @@ describe("session refresh UI recovery", () => {
         const chromeRight = (chrome.titleRight || []).map((run) => run.text).join("");
         assertEqual(chromeTitle.includes("[sending]"), false, "chat chrome should no longer append the live status to the main title text");
         assertIncludes(chromeRight, "Sending", "chat chrome should show a sending status on the right side while the optimistic turn is in flight");
+    });
+
+    it("keeps recoverable transport warnings stable across running detail refreshes", async () => {
+        const errorText = "Activity `runTurn` JS execution failed: GenericFailure, Error: Connection is closed. (Live Copilot connection lost; retry 1/3 in 15s.)";
+        const detailResponses = [
+            {
+                sessionId: "retry-session",
+                title: "Retry Session",
+                status: "running",
+                orchestrationStatus: "Running",
+                updatedAt: 2,
+            },
+            {
+                sessionId: "retry-session",
+                title: "Retry Session",
+                status: "idle",
+                orchestrationStatus: "Running",
+                updatedAt: 3,
+            },
+        ];
+        const { controller, store } = createController({
+            getSession: async () => detailResponses.shift(),
+        });
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "retry-session",
+                title: "Retry Session",
+                status: "error",
+                orchestrationStatus: "Running",
+                error: errorText,
+                createdAt: 1,
+                updatedAt: 1,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "retry-session" });
+
+        const beforeWarning = selectActiveChat(store.getState()).find((message) => message.cardTitle === "Warning");
+        assert(beforeWarning, "recoverable transport error should render as a warning card");
+        assertIncludes(beforeWarning?.text, "Connection is closed", "warning should include the transport error");
+
+        await controller.syncSessionDetail("retry-session");
+
+        const duringRetrySession = store.getState().sessions.byId["retry-session"];
+        assertEqual(duringRetrySession.status, "running", "detail refresh should still accept the live running status");
+        assertEqual(duringRetrySession.error, errorText, "recoverable transport warning should survive running refreshes");
+        const duringRetryWarning = selectActiveChat(store.getState()).find((message) => message.cardTitle === "Warning");
+        assert(duringRetryWarning, "warning should not disappear while retry is still running");
+        assertEqual(duringRetryWarning?.id, beforeWarning?.id, "warning card id should stay stable while the same retry warning is active");
+
+        await controller.syncSessionDetail("retry-session");
+
+        const afterRecoverySession = store.getState().sessions.byId["retry-session"];
+        assertEqual(afterRecoverySession.error, null, "non-running refresh should clear the stale recoverable warning");
+        assertEqual(
+            selectActiveChat(store.getState()).some((message) => message.cardTitle === "Warning"),
+            false,
+            "warning card should disappear after the retry cycle recovers",
+        );
     });
 
     it("shows agent-prefixed session titles with the uniquifier first", () => {
@@ -269,6 +333,148 @@ describe("session refresh UI recovery", () => {
         assertIncludes(rowText, "M61 Conductor · R2D Train Watcher · Mad-Eye Moody", "session row should normalize the previous suffix display shape");
         assert(!rowText.includes("R2D Train Watcher: M61 Conductor · Mad-Eye Moody"), "session row should not keep the previous type-first display shape");
         assertIncludes(chromeTitle, "M61 Conductor · R2D Train Watcher · Mad-Eye Moody", "chat header should normalize the previous suffix display shape");
+    });
+
+    it("shows wall-clock cron schedules with a client-local cron badge", () => {
+        const { store } = createController();
+        const nextFire = Date.UTC(2026, 4, 20, 2, 7, 0);
+        const expected = new Date(nextFire).toLocaleString(undefined, {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+            timeZoneName: "short",
+        }).replace(/,\s*/g, " ").replace(/\s+/g, " ").trim();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "cron-at-session",
+                title: "Changed daily summary time",
+                status: "cron_waiting",
+                cronActive: true,
+                cronKind: "wall-clock",
+                cronNextFireAt: nextFire,
+                cronTimezone: "America/Los_Angeles",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+
+        const rowText = selectSessionRows(store.getState())[0]?.text || "";
+        assertIncludes(rowText, `[cron ${expected}]`, "wall-clock cron rows should use the unified cron badge with client-local time");
+        assert(!rowText.includes("cron_at"), "wall-clock cron rows should not expose the internal cron_at tool name");
+    });
+
+    it("keeps the waiting icon stable when a same-age detail refresh reports idle", async () => {
+        let detailStatus = {
+            sessionId: "timer-joke-session",
+            title: "Joke sender",
+            status: "idle",
+            createdAt: 1,
+            updatedAt: 100,
+        };
+        const { controller, store } = createController({
+            getSession: async () => detailStatus,
+        });
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "timer-joke-session",
+                title: "Joke sender",
+                status: "waiting",
+                waitReason: "deliver joke later",
+                createdAt: 1,
+                updatedAt: 100,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "timer-joke-session" });
+        store.dispatch({ type: "ui/chatViewMode", mode: "summary" });
+
+        await controller.syncSessionDetail("timer-joke-session");
+        let rowText = selectSessionRows(store.getState())[0]?.text || "";
+        let summaryText = linesText(selectChatLines(store.getState(), 120));
+        assertIncludes(rowText, "~ Joke sender", "same-age idle detail should not clear the visible wait icon");
+        assertIncludes(summaryText, "Status: waiting", "same-age idle detail should not flicker the summary status to idle");
+
+        const originalNow = Date.now;
+        let nowMs = 1_000;
+        Date.now = () => nowMs;
+        try {
+            detailStatus = {
+                ...detailStatus,
+                updatedAt: 200,
+            };
+            await controller.syncSessionDetail("timer-joke-session");
+            rowText = selectSessionRows(store.getState())[0]?.text || "";
+            summaryText = linesText(selectChatLines(store.getState(), 120));
+            assertIncludes(rowText, "~ Joke sender", "newer idle detail should keep the wait icon for the 5s anti-flicker hold");
+            assertIncludes(summaryText, "Status: idle", "newer idle detail should clear the summary waiting status immediately");
+
+            nowMs += 5_000;
+            await controller.syncSessionDetail("timer-joke-session");
+            rowText = selectSessionRows(store.getState())[0]?.text || "";
+            assert(!rowText.includes("~ Joke sender"), "newer idle detail should clear the wait icon after the 5s hold");
+        } finally {
+            Date.now = originalNow;
+        }
+    });
+
+    it("keeps cron row metadata stable when a same-age detail refresh omits cron fields", async () => {
+        let detailStatus = {
+            sessionId: "cron-joke-session",
+            title: "Joke cron",
+            status: "idle",
+            cronActive: false,
+            createdAt: 1,
+            updatedAt: 100,
+        };
+        const { controller, store } = createController({
+            getSession: async () => detailStatus,
+        });
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "cron-joke-session",
+                title: "Joke cron",
+                status: "idle",
+                cronActive: true,
+                cronKind: "interval",
+                cronInterval: 300,
+                cronReason: "tell another joke",
+                createdAt: 1,
+                updatedAt: 100,
+            }],
+        });
+
+        await controller.syncSessionDetail("cron-joke-session");
+        let rowText = selectSessionRows(store.getState())[0]?.text || "";
+        assertIncludes(rowText, "~ Joke cron", "same-age detail should keep the cron wait icon");
+        assertIncludes(rowText, "[cron 5m 0s]", "same-age detail should keep the cron badge");
+
+        const originalNow = Date.now;
+        let nowMs = 1_000;
+        Date.now = () => nowMs;
+        try {
+            detailStatus = {
+                ...detailStatus,
+                updatedAt: 200,
+            };
+            await controller.syncSessionDetail("cron-joke-session");
+            rowText = selectSessionRows(store.getState())[0]?.text || "";
+            assertIncludes(rowText, "~ Joke cron", "newer non-cron detail should keep the cron wait icon for the 5s anti-flicker hold");
+            assert(!rowText.includes("[cron 5m 0s]"), "newer non-cron detail should clear the cron badge immediately");
+
+            nowMs += 5_000;
+            await controller.syncSessionDetail("cron-joke-session");
+            rowText = selectSessionRows(store.getState())[0]?.text || "";
+            assert(!rowText.includes("~ Joke cron"), "newer non-cron detail should clear the cron wait icon after the 5s hold");
+        } finally {
+            Date.now = originalNow;
+        }
     });
 
     it("does not split normal colon titles when no agent prefix is present", () => {
@@ -364,6 +570,188 @@ describe("session refresh UI recovery", () => {
             })
             .join("\n");
         assertIncludes(statsText, "gpt-5.5:xhigh", "session stats should append reasoning effort to the model label");
+    });
+
+    it("renders session summary as plain structured chat-pane content", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "summary-session",
+                title: "Summary Session",
+                status: "running",
+                shortSummary: "A compact summary.",
+                summaryUpdatedAt: 2000,
+                summaryState: {
+                    intent: "Inspect structured summaries",
+                    summary: "Collected structured state for display.",
+                    state: {
+                        status: "complete",
+                        progress: ["Collected evidence", "Prepared report"],
+                        result: { verdict: "pass" },
+                    },
+                    blockers: ["None"],
+                    openQuestions: [],
+                    nextActions: ["Ship it"],
+                },
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "summary-session" });
+        store.dispatch({ type: "ui/chatViewMode", mode: "summary" });
+
+        const chat = selectActiveChat(store.getState());
+        assertEqual(chat.length, 1, "summary mode should render one summary message");
+        assertEqual(chat[0]?.noChrome, true, "summary should render without card chrome");
+        assertEqual(Boolean(chat[0]?.cardTitle), false, "summary should not be a message card");
+
+        const rendered = linesText(selectChatLines(store.getState(), 80));
+        assertIncludes(rendered, "Summary Session", "summary pane should include the session title");
+        assertIncludes(rendered, "State", "summary pane should include the structured state section");
+        assertIncludes(rendered, "Collected evidence", "summary pane should render array state items as readable bullets");
+        assertIncludes(rendered, "verdict", "summary pane should render object state keys");
+        assertEqual(rendered.includes("Session Summary"), false, "summary pane should not render a card title");
+
+        const chrome = selectChatPaneChrome(store.getState());
+        assertEqual(chrome.titleRight, null, "summary mode should suppress transient live-progress labels");
+        assertEqual(chrome.animateTitleRight, false, "summary mode should not animate the chat title");
+    });
+
+    it("renders summary from the reduced native TUI chat selector state", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "native-summary-session",
+                title: "Native Summary Session",
+                status: "idle",
+                shortSummary: "Native summary text.",
+                summaryUpdatedAt: 2000,
+                summaryState: {
+                    intent: "Verify native selector",
+                    summary: "Native summary text.",
+                    state: { status: "complete" },
+                },
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "native-summary-session" });
+        store.dispatch({ type: "ui/chatViewMode", mode: "summary" });
+        store.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.CHAT });
+
+        const rootState = store.getState();
+        const reducedNativeState = {
+            branding: rootState.branding,
+            connection: rootState.connection,
+            ui: { chatViewMode: rootState.ui.chatViewMode },
+            sessions: {
+                activeSessionId: rootState.sessions.activeSessionId,
+                byId: {
+                    [rootState.sessions.activeSessionId]: rootState.sessions.byId[rootState.sessions.activeSessionId],
+                },
+            },
+            history: { bySessionId: new Map() },
+        };
+
+        const rendered = linesText(selectChatLines(reducedNativeState, 80));
+        assertIncludes(rendered, "Native Summary Session", "native reduced state should render the summary view title");
+        assertIncludes(rendered, "Native summary text.", "native reduced state should render summary content");
+        assertEqual(rendered.includes("Start interacting with this session"), false, "native summary view should not fall back to transcript/splash content");
+
+        const status = selectStatusBar(rootState);
+        assertIncludes(status.right, "s transcript", "chat status hint should advertise toggling back from summary first");
+    });
+
+    it("renders group details as plain markdown tables instead of a system card", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [
+                {
+                    sessionId: "group:group-1",
+                    groupId: "group-1",
+                    title: "Release Group",
+                    isGroup: true,
+                    memberCount: 1,
+                    runningCount: 0,
+                    waitingCount: 0,
+                    completedCount: 1,
+                    failedCount: 0,
+                    cancelledCount: 0,
+                    createdAt: 1,
+                    updatedAt: 2,
+                },
+                {
+                    sessionId: "member-session",
+                    groupId: "group-1",
+                    title: "Member Session",
+                    status: "completed",
+                    shortSummary: "Done",
+                    createdAt: 3,
+                    updatedAt: 4,
+                },
+            ],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "group:group-1" });
+
+        const chat = selectActiveChat(store.getState());
+        assertEqual(chat.length, 1, "group view should render one details message");
+        assertEqual(chat[0]?.noChrome, true, "group details should render without card chrome");
+        assertEqual(Boolean(chat[0]?.cardTitle), false, "group details should not be a system card");
+        assertIncludes(chat[0]?.text || "", "| Metric | Count |", "group details should be backed by a metric markdown table");
+        assertIncludes(chat[0]?.text || "", "| Session | Status | Summary |", "group details should be backed by a members markdown table");
+
+        const rendered = linesText(selectChatLines(store.getState(), 80));
+        assertIncludes(rendered, "Metric", "group details should include a metric table");
+        assertIncludes(rendered, "Session", "group details should include a members table");
+        assertIncludes(rendered, "Member Session", "group details should include member rows");
+        assertEqual(rendered.includes("Session Group"), false, "group details should not render a system-card title");
+    });
+
+    it("disables inspector and activity panes for selected groups", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [
+                {
+                    sessionId: "group:group-1",
+                    groupId: "group-1",
+                    title: "Release Group",
+                    isGroup: true,
+                    memberCount: 1,
+                    createdAt: 1,
+                    updatedAt: 2,
+                },
+                {
+                    sessionId: "member-session",
+                    groupId: "group-1",
+                    title: "Member Session",
+                    status: "running",
+                    createdAt: 3,
+                    updatedAt: 4,
+                },
+            ],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "group:group-1" });
+        store.dispatch({ type: "ui/inspectorTab", tab: "sequence" });
+
+        const inspector = selectInspector(store.getState(), { width: 80 });
+        const activity = selectActivityPane(store.getState());
+        const inspectorText = linesText(inspector.lines);
+        const activityText = linesText(activity.lines);
+
+        assertEqual(inspector.disabled, true, "group inspector should be disabled");
+        assertEqual(activity.disabled, true, "group activity pane should be disabled");
+        assertIncludes(inspectorText, "Select a session to see details.", "group inspector should ask for a session selection");
+        assertIncludes(activityText, "Select a session to see details.", "group activity pane should ask for a session selection");
+        assertEqual(inspectorText.includes("No events yet"), false, "group inspector should not show sequence empty-state text");
+        assertEqual(activityText.includes("No activity yet"), false, "group activity pane should not show session activity empty-state text");
     });
 
     it("merges multiple concurrent sends into a single durable enqueue", async () => {
@@ -773,6 +1161,214 @@ describe("session refresh UI recovery", () => {
         assert(renderedRows.some((row) => row.includes("(?) Legacy Work")), "owner metadata should also mark unowned rows in the session list");
     });
 
+    it("renders owner markers for groups without reintroducing idle dots", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [
+                {
+                    sessionId: "group:group-1",
+                    groupId: "group-1",
+                    title: "Release Group",
+                    isGroup: true,
+                    memberCount: 1,
+                    createdAt: 1,
+                    updatedAt: 2,
+                },
+                {
+                    sessionId: "owned-session",
+                    title: "Owned Work",
+                    status: "idle",
+                    createdAt: 3,
+                    updatedAt: 4,
+                    owner: {
+                        provider: "test",
+                        subject: "user-1",
+                        email: "affan@example.com",
+                        displayName: "Affan Dar",
+                    },
+                },
+                {
+                    sessionId: "idle-session",
+                    title: "Idle Work",
+                    status: "idle",
+                    createdAt: 5,
+                    updatedAt: 6,
+                },
+            ],
+        });
+
+        const renderedRows = selectVisibleSessionRows(store.getState(), 8)
+            .map((row) => row.runs.map((run) => run.text).join(""));
+        const groupRow = renderedRows.find((row) => row.includes("Release Group")) || "";
+        const idleRow = renderedRows.find((row) => row.includes("Idle Work")) || "";
+        assertIncludes(groupRow, "🗂  (?) Release Group", "group row should show the group badge and owner prefix");
+        assertEqual(idleRow.includes(". Idle Work"), false, "idle rows should not render a dot status glyph");
+    });
+
+    it("orders pinned groups, pinned sessions, and unpinned groups in the shared session tree", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [
+                {
+                    sessionId: "loose-a",
+                    title: "Loose A",
+                    status: "idle",
+                    createdAt: 1,
+                    updatedAt: 1,
+                },
+                {
+                    sessionId: "group:unpinned",
+                    groupId: "unpinned",
+                    title: "Unpinned Group",
+                    isGroup: true,
+                    memberCount: 0,
+                    createdAt: 2,
+                    updatedAt: 2,
+                },
+                {
+                    sessionId: "pinned-session",
+                    title: "Pinned Session",
+                    status: "idle",
+                    createdAt: 3,
+                    updatedAt: 3,
+                },
+                {
+                    sessionId: "group:pinned",
+                    groupId: "pinned",
+                    title: "Pinned Group",
+                    isGroup: true,
+                    memberCount: 0,
+                    createdAt: 4,
+                    updatedAt: 4,
+                },
+                {
+                    sessionId: "loose-b",
+                    title: "Loose B",
+                    status: "idle",
+                    createdAt: 5,
+                    updatedAt: 5,
+                },
+                {
+                    sessionId: "system-session",
+                    title: "PilotSwarm",
+                    status: "idle",
+                    isSystem: true,
+                    createdAt: 6,
+                    updatedAt: 6,
+                },
+            ],
+        });
+        store.dispatch({ type: "sessions/pinToggle", sessionId: "pinned-session" });
+        store.dispatch({ type: "sessions/pinToggle", sessionId: "group:pinned" });
+
+        const rows = selectSessionRows(store.getState()).map((row) => row.sessionId);
+        assertEqual(
+            JSON.stringify(rows),
+            JSON.stringify(["system-session", "group:pinned", "pinned-session", "group:unpinned", "loose-b", "loose-a"]),
+            "session tree should rank system, pinned groups, pinned sessions, unpinned groups, then timestamp-seeded remaining sessions",
+        );
+    });
+
+    it("removes stale group rows and clears group membership on full refresh", async () => {
+        const { controller, store } = createController({
+            listSessions: async () => [{
+                sessionId: "moved-session",
+                title: "Moved Session",
+                status: "idle",
+                createdAt: 3,
+                updatedAt: 4,
+            }],
+            listSessionGroups: async () => [],
+        });
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [
+                {
+                    sessionId: "group:old-group",
+                    groupId: "old-group",
+                    title: "Old Group",
+                    isGroup: true,
+                    memberCount: 1,
+                    createdAt: 1,
+                    updatedAt: 2,
+                },
+                {
+                    sessionId: "moved-session",
+                    title: "Moved Session",
+                    status: "idle",
+                    groupId: "old-group",
+                    createdAt: 3,
+                    updatedAt: 4,
+                },
+            ],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "group:old-group" });
+
+        await controller.refreshSessions();
+
+        const state = store.getState();
+        assertEqual(state.sessions.byId["group:old-group"], undefined, "missing group rows should not survive full refresh");
+        assertEqual(state.sessions.byId["moved-session"].groupId, null, "full refresh should clear stale groupId values");
+        assertEqual(state.sessions.activeSessionId, "moved-session", "selection should move from removed group to visible session");
+        const renderedRows = selectVisibleSessionRows(state, 8).map((row) => row.runs.map((run) => run.text).join(""));
+        assertEqual(renderedRows.some((row) => row.includes("Old Group")), false, "removed group should disappear from visible rows");
+        assertEqual(renderedRows.some((row) => row.startsWith("└")), false, "ungrouped session should no longer render as a group child");
+    });
+
+    it("uses live member counts for group summaries", async () => {
+        const { controller, store } = createController({
+            listSessions: async () => [
+                { sessionId: "session-a", title: "Session A", status: "idle", groupId: "group-1", createdAt: 1, updatedAt: 2 },
+                { sessionId: "session-b", title: "Session B", status: "idle", groupId: "group-1", createdAt: 3, updatedAt: 4 },
+            ],
+            listSessionGroups: async () => [{
+                groupId: "group-1",
+                title: "Release Group",
+                description: "1 grouped session",
+                memberCount: 2,
+                runningCount: 2,
+                waitingCount: 0,
+                completedCount: 0,
+                failedCount: 0,
+                cancelledCount: 0,
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+
+        await controller.refreshSessions();
+
+        const group = store.getState().sessions.byId["group:group-1"];
+        assertEqual(group.shortSummary, "2 grouped sessions", "group summary should use the latest aggregate count");
+    });
+
+    it("advertises Ctrl+G move-to-group in sessions-pane status hints", () => {
+        const { store } = createController();
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [
+                { sessionId: "session-a", title: "Session A", status: "idle", createdAt: 1, updatedAt: 2 },
+                { sessionId: "session-b", title: "Session B", status: "idle", createdAt: 3, updatedAt: 4 },
+            ],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "session-a" });
+        store.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.SESSIONS });
+
+        let status = selectStatusBar(store.getState());
+        assertIncludes(status.right, "ctrl-g move group", "sessions status hint should advertise move-to-group");
+
+        store.dispatch({ type: "sessions/selectSet", sessionIds: ["session-a", "session-b"] });
+        status = selectStatusBar(store.getState());
+        assertIncludes(status.right, "ctrl-g group", "select-mode status hint should advertise moving selected sessions");
+        assertIncludes(status.right, "D hard delete", "select-mode status hint should advertise bulk hard delete");
+    });
+
     it("defaults session owner filtering to system plus me and exposes unowned as a separate entry", async () => {
         const owner = {
             provider: "test",
@@ -850,6 +1446,69 @@ describe("session refresh UI recovery", () => {
 
             const expandedRows = selectSessionRows(store.getState()).map((row) => row.sessionId);
             assert(expandedRows.includes("unowned-session"), "toggling unowned should include unowned sessions");
+        } finally {
+            await controller.stop();
+        }
+    });
+
+    it("includes owned session groups in session owner filtering", async () => {
+        const owner = {
+            provider: "test",
+            subject: "me",
+            email: "me@example.com",
+            displayName: "Me User",
+        };
+        const otherOwner = {
+            provider: "test",
+            subject: "other",
+            email: "other@example.com",
+            displayName: "Other User",
+        };
+        const { controller, store } = createController({
+            getAuthContext: () => ({
+                principal: owner,
+                authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] },
+            }),
+            listSessions: async () => [
+                {
+                    sessionId: "legacy-member",
+                    title: "Legacy Member",
+                    status: "idle",
+                    groupId: "legacy-group",
+                    owner,
+                    createdAt: 7,
+                    updatedAt: 8,
+                },
+            ],
+            listSessionGroups: async () => [
+                { groupId: "mine-group", title: "Mine Group", owner, memberCount: 0, createdAt: 1, updatedAt: 2 },
+                { groupId: "other-group", title: "Other Group", owner: otherOwner, memberCount: 0, createdAt: 3, updatedAt: 4 },
+                { groupId: "unowned-group", title: "Unowned Group", memberCount: 0, createdAt: 5, updatedAt: 6 },
+                { groupId: "legacy-group", title: "Legacy Group", memberCount: 1, createdAt: 7, updatedAt: 8 },
+            ],
+        });
+
+        try {
+            await controller.start();
+
+            const rows = selectSessionRows(store.getState()).map((row) => row.sessionId);
+            assert(rows.includes("group:mine-group"), "default owner filter should include current user's groups");
+            assert(rows.includes("group:legacy-group"), "default owner filter should include groups with current-user members");
+            assert(!rows.includes("group:other-group"), "default owner filter should exclude other users' groups");
+            assert(!rows.includes("group:unowned-group"), "default owner filter should exclude unowned groups");
+
+            const rowText = selectSessionRows(store.getState())
+                .filter((row) => row.sessionId === "group:mine-group" || row.sessionId === "group:legacy-group")
+                .map((row) => row.text)
+                .join("\n");
+            assertIncludes(rowText, "(mu) Mine Group", "owned group rows should show the same owner initials prefix as sessions");
+            assertIncludes(rowText, "(mu) Legacy Group", "groups should derive owner initials from their member sessions");
+
+            controller.openSessionOwnerFilter();
+            const modalText = selectSessionOwnerFilterModal(store.getState()).rows
+                .map((row) => row.map((run) => run.text).join(""))
+                .join("\n");
+            assertIncludes(modalText, "Other User", "filter modal should discover owners from group rows");
         } finally {
             await controller.stop();
         }

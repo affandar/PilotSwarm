@@ -132,11 +132,15 @@ between them quickly.
    activity, and inspector all re-render for the active session.
 3. Drag the divider between Sessions and Chat to resize the split.
 4. **Pin** a session via its row menu (or the pin icon in the header
-   when selected). Pinned sessions sort to the top.
+   when selected). Pinned groups sort above pinned single sessions; pinned
+   single sessions sort above unpinned groups.
 5. **Multi-select** — there's typically a checkbox toggle or a "select
    mode" button at the top of the Sessions pane. Activate it, click
    sessions to select, then use the toolbar action **Cancel selected**.
    System sessions are skipped automatically.
+6. **Group** one or more non-system sessions from the Sessions pane
+   header. Selecting the `🗂` row opens a read-only details view with
+   metric and member tables; it is not a chat transcript.
 
 **What just happened:**
 
@@ -493,9 +497,11 @@ as your app's portal.
 | Cycle inspector tabs | Click the tab; on mobile, swipe |
 | Rename session | Row menu → Rename |
 | Pin session | Row menu → Pin |
+| Group sessions | Select one or more non-system sessions, then click **Group** / **Group (n)** in the Sessions pane header |
 | Cancel session | Row menu → Cancel |
 | Multi-select | Toolbar toggle, click rows, then **Cancel selected** |
 | Filter sessions | Filter input in Sessions pane header |
+| Toggle session summary | Click **Summary** / **Chat** in the top toolbar; Summary is read-only and hides the prompt box |
 | Open Admin Console | Admin / settings menu |
 
 For keyboard shortcuts inside the portal (when supported), check the

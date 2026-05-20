@@ -239,6 +239,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         const isCtrlU = matchesCtrlKey("u", "\u0015");
         const isCtrlD = matchesCtrlKey("d", "\u0004");
         const isCtrlE = matchesCtrlKey("e", "\u0005");
+        const isCtrlG = matchesCtrlKey("g", "\u0007");
         const isCtrlJ = matchesCtrlKey("j", "\n");
         const isCtrlA = matchesCtrlKey("a", "\u0001");
         const isShiftN = input === "N" || (key.shift && key.name === "n");
@@ -351,7 +352,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 return;
             }
-            if (modal.type === "renameSession" || modal.type === "artifactUpload") {
+            if (modal.type === "renameSession" || modal.type === "artifactUpload" || modal.type === "sessionGroupName") {
                 if (key.escape) {
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
                     return;
@@ -362,31 +363,37 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 if (key.leftArrow) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursor(-1);
+                    else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursor(-1);
                     else controller.moveArtifactUploadCursor(-1);
                     return;
                 }
                 if (key.rightArrow) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursor(1);
+                    else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursor(1);
                     else controller.moveArtifactUploadCursor(1);
                     return;
                 }
                 if (key.home) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursorToBoundary("start");
+                    else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursorToBoundary("start");
                     else controller.moveArtifactUploadCursorToBoundary("start");
                     return;
                 }
                 if (key.end) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursorToBoundary("end");
+                    else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursorToBoundary("end");
                     else controller.moveArtifactUploadCursorToBoundary("end");
                     return;
                 }
                 if (key.backspace || key.delete) {
                     if (modal.type === "renameSession") controller.deleteRenameSessionChar();
+                    else if (modal.type === "sessionGroupName") controller.deleteSessionGroupNameChar();
                     else controller.deleteArtifactUploadChar();
                     return;
                 }
                 if (!key.ctrl && !key.meta && input) {
                     if (modal.type === "renameSession") controller.insertRenameSessionText(input);
+                    else if (modal.type === "sessionGroupName") controller.insertSessionGroupNameText(input);
                     else controller.insertArtifactUploadText(input);
                 }
                 return;
@@ -745,6 +752,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
 
         if (focus === "sessions") {
+            if (isCtrlG) {
+                controller.handleCommand(UI_COMMANDS.OPEN_MOVE_TO_GROUP).catch(() => {});
+                return;
+            }
             if (key.upArrow || input === "k") {
                 controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP).catch(() => {});
                 return;
@@ -788,6 +799,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
 
         if (focus === "chat" || focus === "inspector" || focus === "activity") {
+            if (focus === "chat" && plainShortcut && input === "s") {
+                controller.handleCommand(UI_COMMANDS.TOGGLE_CHAT_VIEW).catch(() => {});
+                return;
+            }
             if (key.upArrow || input === "k") {
                 controller.handleCommand(UI_COMMANDS.SCROLL_UP).catch(() => {});
                 return;

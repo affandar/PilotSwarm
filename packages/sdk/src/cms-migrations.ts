@@ -85,6 +85,36 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "turn_metrics_foundations",
             sql: migration_0014_turn_metrics_foundations(schema),
         },
+        {
+            version: "0015",
+            name: "base_infra_state",
+            sql: migration_0015_base_infra_state(schema),
+        },
+        {
+            version: "0016",
+            name: "base_infra_state_compat_fixes",
+            sql: migration_0016_base_infra_state_compat_fixes(schema),
+        },
+        {
+            version: "0017",
+            name: "system_session_restart_archive",
+            sql: migration_0017_system_session_restart_archive(schema),
+        },
+        {
+            version: "0018",
+            name: "session_group_assignment_update",
+            sql: migration_0018_session_group_assignment_update(schema),
+        },
+        {
+            version: "0019",
+            name: "session_group_owner_enforcement",
+            sql: migration_0019_session_group_owner_enforcement(schema),
+        },
+        {
+            version: "0020",
+            name: "session_group_owner_adoption",
+            sql: migration_0020_session_group_owner_adoption(schema),
+        },
     ];
 }
 
@@ -2033,6 +2063,1044 @@ BEGIN
     WHERE started_at < p_older_than;
     GET DIAGNOSTICS v_deleted = ROW_COUNT;
     RETURN v_deleted;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0015: Base Infrastructure State ─────────────────
+
+function migration_0015_base_infra_state(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0015_base_infra_state:
+--   Adds additive state for session groups, live summaries, and child outcomes.
+
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS group_id TEXT;
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS short_summary TEXT;
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS summary_state JSONB;
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS summary_updated_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_sessions_group_id
+    ON ${s}.sessions(group_id)
+    WHERE deleted_at IS NULL AND group_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS ${s}.session_groups (
+    group_id    TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    description TEXT,
+    owner       JSONB,
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ${s}.session_child_outcomes (
+    child_session_id  TEXT PRIMARY KEY,
+    parent_session_id TEXT NOT NULL,
+    contract_json     JSONB,
+    result_json       JSONB,
+    verdict           TEXT,
+    summary           TEXT,
+    completed_at      TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_child_outcomes_parent
+    ON ${s}.session_child_outcomes(parent_session_id);
+
+-- ── cms_create_session (group-aware overload) ───────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_create_session(
+    p_session_id        TEXT,
+    p_model             TEXT,
+    p_reasoning_effort  TEXT,
+    p_parent_session_id TEXT,
+    p_is_system         BOOLEAN,
+    p_agent_id          TEXT,
+    p_splash            TEXT,
+    p_group_id          TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_reasoning_effort TEXT := NULLIF(BTRIM(p_reasoning_effort), '');
+    v_group_id TEXT := NULLIF(BTRIM(p_group_id), '');
+BEGIN
+    IF v_group_id IS NULL AND p_parent_session_id IS NOT NULL THEN
+        SELECT group_id INTO v_group_id
+        FROM ${s}.sessions
+        WHERE session_id = p_parent_session_id;
+    END IF;
+
+    INSERT INTO ${s}.sessions
+        (session_id, model, reasoning_effort, parent_session_id, is_system, agent_id, splash, group_id)
+    VALUES
+        (p_session_id, p_model, v_reasoning_effort, p_parent_session_id, p_is_system, p_agent_id, p_splash, v_group_id)
+    ON CONFLICT (session_id) DO UPDATE
+    SET model             = EXCLUDED.model,
+        reasoning_effort  = EXCLUDED.reasoning_effort,
+        parent_session_id = EXCLUDED.parent_session_id,
+        is_system         = EXCLUDED.is_system,
+        agent_id          = EXCLUDED.agent_id,
+        splash            = EXCLUDED.splash,
+        group_id          = EXCLUDED.group_id,
+        deleted_at        = NULL,
+        updated_at        = now(),
+        state             = 'pending',
+        orchestration_id  = NULL,
+        last_error        = NULL,
+        last_active_at    = NULL,
+        current_iteration = 0,
+        wait_reason       = NULL,
+        title_locked      = FALSE
+    WHERE ${s}.sessions.deleted_at IS NOT NULL;
+
+    INSERT INTO ${s}.session_metric_summaries
+        (session_id, agent_id, model, reasoning_effort, parent_session_id)
+    VALUES
+        (p_session_id, p_agent_id, p_model, v_reasoning_effort, p_parent_session_id)
+    ON CONFLICT (session_id) DO UPDATE
+    SET agent_id          = COALESCE(${s}.session_metric_summaries.agent_id, EXCLUDED.agent_id),
+        model             = COALESCE(${s}.session_metric_summaries.model, EXCLUDED.model),
+        reasoning_effort  = COALESCE(${s}.session_metric_summaries.reasoning_effort, EXCLUDED.reasoning_effort),
+        parent_session_id = COALESCE(${s}.session_metric_summaries.parent_session_id, EXCLUDED.parent_session_id),
+        updated_at        = now();
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_update_session_summary ─────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session_summary(
+    p_session_id     TEXT,
+    p_summary_state  JSONB,
+    p_short_summary  TEXT DEFAULT NULL
+) RETURNS VOID AS $$
+DECLARE
+    v_short_summary TEXT := NULLIF(BTRIM(p_short_summary), '');
+BEGIN
+    IF p_summary_state IS NULL OR jsonb_typeof(p_summary_state) <> 'object' THEN
+        RAISE EXCEPTION 'summary_state must be a JSON object';
+    END IF;
+
+    UPDATE ${s}.sessions
+    SET summary_state = p_summary_state,
+        short_summary = COALESCE(v_short_summary, NULLIF(BTRIM(p_summary_state->>'summary'), '')),
+        summary_updated_at = now(),
+        updated_at = now()
+    WHERE session_id = p_session_id
+      AND deleted_at IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── owner/reasoning/summary-aware read procedures ───────────────
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions();
+CREATE FUNCTION ${s}.cms_list_sessions()
+RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        sess.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.deleted_at IS NULL
+    ORDER BY COALESCE(sess.summary_updated_at, sess.updated_at) DESC, sess.session_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS ${s}.cms_get_session(TEXT);
+CREATE FUNCTION ${s}.cms_get_session(
+    p_session_id TEXT
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        sess.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.session_id = p_session_id AND sess.deleted_at IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── session group procedures ───────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_create_session_group(
+    p_group_id    TEXT,
+    p_title       TEXT,
+    p_description TEXT DEFAULT NULL,
+    p_owner       JSONB DEFAULT NULL,
+    p_metadata    JSONB DEFAULT '{}'::jsonb
+) RETURNS VOID AS $$
+BEGIN
+    IF NULLIF(BTRIM(p_group_id), '') IS NULL THEN
+        RAISE EXCEPTION 'group_id is required';
+    END IF;
+    IF NULLIF(BTRIM(p_title), '') IS NULL THEN
+        RAISE EXCEPTION 'title is required';
+    END IF;
+
+    INSERT INTO ${s}.session_groups (group_id, title, description, owner, metadata)
+    VALUES (p_group_id, BTRIM(p_title), p_description, p_owner, COALESCE(p_metadata, '{}'::jsonb))
+    ON CONFLICT (group_id) DO NOTHING;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session_group(
+    p_group_id TEXT,
+    p_patch    JSONB
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.session_groups
+    SET title = CASE WHEN p_patch ? 'title' THEN NULLIF(BTRIM(p_patch->>'title'), '') ELSE title END,
+        description = CASE WHEN p_patch ? 'description' THEN p_patch->>'description' ELSE description END,
+        metadata = CASE WHEN p_patch ? 'metadataPatch' THEN metadata || COALESCE(p_patch->'metadataPatch', '{}'::jsonb) ELSE metadata END,
+        updated_at = now()
+    WHERE group_id = p_group_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_session_groups()
+RETURNS TABLE (
+    group_id                  TEXT,
+    title                     TEXT,
+    description               TEXT,
+    owner                     JSONB,
+    metadata                  JSONB,
+    member_count              INT,
+    running_count             INT,
+    waiting_count             INT,
+    completed_count           INT,
+    failed_count              INT,
+    cancelled_count           INT,
+    latest_activity_at        TIMESTAMPTZ,
+    latest_summary_updated_at TIMESTAMPTZ,
+    created_at                TIMESTAMPTZ,
+    updated_at                TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        g.group_id,
+        g.title,
+        g.description,
+        g.owner,
+        g.metadata,
+        COUNT(sess.session_id)::INT AS member_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state IN ('running', 'idle', 'pending'))::INT AS running_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state IN ('waiting', 'input_required'))::INT AS waiting_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state = 'completed')::INT AS completed_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state IN ('failed', 'error'))::INT AS failed_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state = 'cancelled')::INT AS cancelled_count,
+        MAX(COALESCE(sess.last_active_at, sess.updated_at)) AS latest_activity_at,
+        MAX(sess.summary_updated_at) AS latest_summary_updated_at,
+        g.created_at,
+        g.updated_at
+    FROM ${s}.session_groups g
+    LEFT JOIN ${s}.sessions sess ON sess.group_id = g.group_id AND sess.deleted_at IS NULL
+    GROUP BY g.group_id, g.title, g.description, g.owner, g.metadata, g.created_at, g.updated_at
+    ORDER BY MAX(sess.summary_updated_at) DESC NULLS LAST, g.updated_at DESC, g.group_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_group_sessions(
+    p_group_id TEXT
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT * FROM ${s}.cms_list_sessions() s
+    WHERE s.group_id = p_group_id
+    ORDER BY COALESCE(s.summary_updated_at, s.updated_at) DESC, s.session_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_delete_session_group(
+    p_group_id TEXT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_member_count INT;
+BEGIN
+    SELECT COUNT(*)::INT INTO v_member_count
+    FROM ${s}.sessions
+    WHERE group_id = p_group_id AND deleted_at IS NULL;
+
+    IF v_member_count > 0 THEN
+        RETURN FALSE;
+    END IF;
+
+    DELETE FROM ${s}.session_groups WHERE group_id = p_group_id;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── child outcome procedures ───────────────────────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_upsert_child_outcome(
+    p_child_session_id  TEXT,
+    p_parent_session_id TEXT,
+    p_contract_json     JSONB DEFAULT NULL,
+    p_result_json       JSONB DEFAULT NULL,
+    p_verdict           TEXT DEFAULT NULL,
+    p_summary           TEXT DEFAULT NULL,
+    p_completed_at      TIMESTAMPTZ DEFAULT NULL
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.session_child_outcomes (
+        child_session_id, parent_session_id, contract_json, result_json,
+        verdict, summary, completed_at
+    ) VALUES (
+        p_child_session_id, p_parent_session_id, p_contract_json, p_result_json,
+        p_verdict, p_summary, p_completed_at
+    )
+    ON CONFLICT (child_session_id) DO UPDATE
+    SET parent_session_id = EXCLUDED.parent_session_id,
+        contract_json = COALESCE(EXCLUDED.contract_json, ${s}.session_child_outcomes.contract_json),
+        result_json = COALESCE(EXCLUDED.result_json, ${s}.session_child_outcomes.result_json),
+        verdict = COALESCE(EXCLUDED.verdict, ${s}.session_child_outcomes.verdict),
+        summary = COALESCE(EXCLUDED.summary, ${s}.session_child_outcomes.summary),
+        completed_at = COALESCE(EXCLUDED.completed_at, ${s}.session_child_outcomes.completed_at),
+        updated_at = now();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_child_outcome(
+    p_child_session_id TEXT
+) RETURNS SETOF ${s}.session_child_outcomes AS $$
+BEGIN
+    RETURN QUERY
+    SELECT * FROM ${s}.session_child_outcomes
+    WHERE child_session_id = p_child_session_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_child_outcomes(
+    p_parent_session_id TEXT
+) RETURNS SETOF ${s}.session_child_outcomes AS $$
+BEGIN
+    RETURN QUERY
+    SELECT * FROM ${s}.session_child_outcomes
+    WHERE parent_session_id = p_parent_session_id
+    ORDER BY updated_at DESC, child_session_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0016: Base Infra State Compatibility Fixes ───────
+
+function migration_0016_base_infra_state_compat_fixes(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0016_base_infra_state_compat_fixes: applies post-0015 procedure fixes
+-- for schemas that already recorded migration 0015.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_create_session(
+    p_session_id        TEXT,
+    p_model             TEXT,
+    p_reasoning_effort  TEXT,
+    p_parent_session_id TEXT,
+    p_is_system         BOOLEAN,
+    p_agent_id          TEXT,
+    p_splash            TEXT
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM ${s}.cms_create_session(
+        p_session_id,
+        p_model,
+        p_reasoning_effort,
+        p_parent_session_id,
+        p_is_system,
+        p_agent_id,
+        p_splash,
+        NULL::TEXT
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session_summary(
+    p_session_id     TEXT,
+    p_summary_state  JSONB,
+    p_short_summary  TEXT DEFAULT NULL
+) RETURNS VOID AS $$
+DECLARE
+    v_short_summary TEXT := NULLIF(BTRIM(regexp_replace(COALESCE(p_short_summary, ''), '\\s+', ' ', 'g')), '');
+BEGIN
+    IF p_summary_state IS NULL OR jsonb_typeof(p_summary_state) <> 'object' THEN
+        RAISE EXCEPTION 'summary_state must be a JSON object';
+    END IF;
+
+    UPDATE ${s}.sessions
+    SET summary_state = p_summary_state,
+        short_summary = LEFT(COALESCE(v_short_summary, NULLIF(BTRIM(regexp_replace(COALESCE(p_summary_state->>'summary', ''), '\\s+', ' ', 'g')), '')), 240),
+        summary_updated_at = now(),
+        updated_at = now()
+    WHERE session_id = p_session_id
+      AND deleted_at IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions();
+CREATE FUNCTION ${s}.cms_list_sessions()
+RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        sess.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.deleted_at IS NULL
+    ORDER BY sess.updated_at DESC, sess.session_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_create_session_group(
+    p_group_id    TEXT,
+    p_title       TEXT,
+    p_description TEXT DEFAULT NULL,
+    p_owner       JSONB DEFAULT NULL,
+    p_metadata    JSONB DEFAULT '{}'::jsonb
+) RETURNS VOID AS $$
+BEGIN
+    IF NULLIF(BTRIM(p_group_id), '') IS NULL THEN
+        RAISE EXCEPTION 'group_id is required';
+    END IF;
+    IF NULLIF(BTRIM(p_title), '') IS NULL THEN
+        RAISE EXCEPTION 'title is required';
+    END IF;
+
+    INSERT INTO ${s}.session_groups (group_id, title, description, owner, metadata)
+    VALUES (p_group_id, BTRIM(p_title), p_description, p_owner, COALESCE(p_metadata, '{}'::jsonb));
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_group_sessions(
+    p_group_id TEXT
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT * FROM ${s}.cms_list_sessions() s
+    WHERE s.group_id = p_group_id
+    ORDER BY s.updated_at DESC, s.session_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0017: System Session Restart Archive ──────────────
+
+function migration_0017_system_session_restart_archive(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0017_system_session_restart_archive: privileged archive/reset for deterministic system-session restarts.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_archive_system_session_for_restart(
+    p_session_id TEXT,
+    p_state      TEXT,
+    p_last_error TEXT DEFAULT NULL
+) RETURNS VOID AS $$
+DECLARE
+    v_is_system BOOLEAN;
+BEGIN
+    SELECT is_system INTO v_is_system
+    FROM ${s}.sessions
+    WHERE session_id = p_session_id
+      AND deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RETURN;
+    END IF;
+
+    IF NOT v_is_system THEN
+        RAISE EXCEPTION 'Cannot archive non-system session for system restart';
+    END IF;
+
+    IF p_state NOT IN ('completed', 'cancelled', 'failed') THEN
+        RAISE EXCEPTION 'Invalid system restart archive state: %', p_state;
+    END IF;
+
+    DELETE FROM ${s}.session_events
+    WHERE session_id = p_session_id;
+
+    DELETE FROM ${s}.session_turn_metrics
+    WHERE session_id = p_session_id;
+
+    DELETE FROM ${s}.session_metric_summaries
+    WHERE session_id = p_session_id;
+
+    DELETE FROM ${s}.session_child_outcomes
+    WHERE child_session_id = p_session_id
+       OR parent_session_id = p_session_id;
+
+    UPDATE ${s}.sessions
+    SET state             = p_state,
+        last_error        = p_last_error,
+        wait_reason       = NULL,
+        orchestration_id  = NULL,
+        last_active_at    = NULL,
+        current_iteration = 0,
+        short_summary     = NULL,
+        summary_state     = NULL,
+        summary_updated_at = NULL,
+        deleted_at        = now(),
+        updated_at        = now()
+    WHERE session_id = p_session_id;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0018: Session Group Assignment Update ─────────────
+
+function migration_0018_session_group_assignment_update(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0018_session_group_assignment_update: allow management/UI to assign sessions to groups.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session(
+    p_session_id TEXT,
+    p_updates    JSONB
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.sessions SET
+        orchestration_id  = CASE WHEN p_updates ? 'orchestrationId'  THEN (p_updates->>'orchestrationId')                         ELSE orchestration_id  END,
+        title             = CASE WHEN p_updates ? 'title'            THEN (p_updates->>'title')                                    ELSE title             END,
+        title_locked      = CASE WHEN p_updates ? 'titleLocked'     THEN (p_updates->>'titleLocked')::BOOLEAN                     ELSE title_locked      END,
+        state             = CASE WHEN p_updates ? 'state'           THEN (p_updates->>'state')                                     ELSE state             END,
+        model             = CASE WHEN p_updates ? 'model'           THEN (p_updates->>'model')                                     ELSE model             END,
+        reasoning_effort  = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '')          ELSE reasoning_effort  END,
+        last_active_at    = CASE WHEN p_updates ? 'lastActiveAt'    THEN (p_updates->>'lastActiveAt')::TIMESTAMPTZ                 ELSE last_active_at    END,
+        current_iteration = CASE WHEN p_updates ? 'currentIteration' THEN (p_updates->>'currentIteration')::INT                   ELSE current_iteration END,
+        last_error        = CASE WHEN p_updates ? 'lastError'       THEN (p_updates->>'lastError')                                 ELSE last_error        END,
+        wait_reason       = CASE WHEN p_updates ? 'waitReason'      THEN (p_updates->>'waitReason')                                ELSE wait_reason       END,
+        is_system         = CASE WHEN p_updates ? 'isSystem'        THEN (p_updates->>'isSystem')::BOOLEAN                         ELSE is_system         END,
+        agent_id          = CASE WHEN p_updates ? 'agentId'         THEN (p_updates->>'agentId')                                   ELSE agent_id          END,
+        splash            = CASE WHEN p_updates ? 'splash'          THEN (p_updates->>'splash')                                    ELSE splash            END,
+        group_id          = CASE WHEN p_updates ? 'groupId'         THEN NULLIF(BTRIM(p_updates->>'groupId'), '')                  ELSE group_id          END,
+        updated_at        = now()
+    WHERE session_id = p_session_id;
+
+    UPDATE ${s}.session_metric_summaries
+    SET model = CASE WHEN p_updates ? 'model' THEN (p_updates->>'model') ELSE model END,
+        reasoning_effort = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '') ELSE reasoning_effort END,
+        updated_at = CASE WHEN p_updates ? 'model' OR p_updates ? 'reasoningEffort' THEN now() ELSE updated_at END
+    WHERE session_id = p_session_id
+      AND (p_updates ? 'model' OR p_updates ? 'reasoningEffort');
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0019: Session Group Owner Enforcement ────────────
+
+function migration_0019_session_group_owner_enforcement(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0019_session_group_owner_enforcement: give groups the same normalized owner schema as sessions.
+
+CREATE TABLE IF NOT EXISTS ${s}.session_group_owners (
+    group_id    TEXT PRIMARY KEY REFERENCES ${s}.session_groups(group_id) ON DELETE CASCADE,
+    user_id     BIGINT NOT NULL REFERENCES ${s}.users(user_id),
+    assigned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_session_group_owners_user
+    ON ${s}.session_group_owners(user_id);
+
+INSERT INTO ${s}.users (provider, subject, email, display_name)
+SELECT DISTINCT
+    NULLIF(BTRIM(g.owner->>'provider'), ''),
+    NULLIF(BTRIM(g.owner->>'subject'), ''),
+    NULLIF(BTRIM(g.owner->>'email'), ''),
+    NULLIF(BTRIM(g.owner->>'displayName'), '')
+FROM ${s}.session_groups g
+WHERE g.owner IS NOT NULL
+  AND NULLIF(BTRIM(g.owner->>'provider'), '') IS NOT NULL
+  AND NULLIF(BTRIM(g.owner->>'subject'), '') IS NOT NULL
+ON CONFLICT (provider, subject) DO NOTHING;
+
+INSERT INTO ${s}.session_group_owners (group_id, user_id)
+SELECT g.group_id, u.user_id
+FROM ${s}.session_groups g
+JOIN ${s}.users u
+  ON u.provider = NULLIF(BTRIM(g.owner->>'provider'), '')
+ AND u.subject = NULLIF(BTRIM(g.owner->>'subject'), '')
+WHERE g.owner IS NOT NULL
+  AND NULLIF(BTRIM(g.owner->>'provider'), '') IS NOT NULL
+  AND NULLIF(BTRIM(g.owner->>'subject'), '') IS NOT NULL
+ON CONFLICT (group_id) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_set_session_group_owner(
+    p_group_id      TEXT,
+    p_provider      TEXT,
+    p_subject       TEXT,
+    p_email         TEXT,
+    p_display_name  TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_user_id BIGINT;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM ${s}.session_groups WHERE group_id = p_group_id) THEN
+        RETURN;
+    END IF;
+
+    v_user_id := ${s}.cms_register_user(p_provider, p_subject, p_email, p_display_name);
+
+    INSERT INTO ${s}.session_group_owners (group_id, user_id)
+    VALUES (p_group_id, v_user_id)
+    ON CONFLICT (group_id) DO NOTHING;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_create_session_group(
+    p_group_id    TEXT,
+    p_title       TEXT,
+    p_description TEXT DEFAULT NULL,
+    p_owner       JSONB DEFAULT NULL,
+    p_metadata    JSONB DEFAULT '{}'::jsonb
+) RETURNS VOID AS $$
+BEGIN
+    IF NULLIF(BTRIM(p_group_id), '') IS NULL THEN
+        RAISE EXCEPTION 'group_id is required';
+    END IF;
+    IF NULLIF(BTRIM(p_title), '') IS NULL THEN
+        RAISE EXCEPTION 'title is required';
+    END IF;
+
+    INSERT INTO ${s}.session_groups (group_id, title, description, metadata)
+    VALUES (p_group_id, BTRIM(p_title), p_description, COALESCE(p_metadata, '{}'::jsonb));
+
+    IF p_owner IS NOT NULL
+       AND NULLIF(BTRIM(p_owner->>'provider'), '') IS NOT NULL
+       AND NULLIF(BTRIM(p_owner->>'subject'), '') IS NOT NULL THEN
+        PERFORM ${s}.cms_set_session_group_owner(
+            p_group_id,
+            p_owner->>'provider',
+            p_owner->>'subject',
+            p_owner->>'email',
+            p_owner->>'displayName'
+        );
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_session_groups()
+RETURNS TABLE (
+    group_id                  TEXT,
+    title                     TEXT,
+    description               TEXT,
+    owner                     JSONB,
+    metadata                  JSONB,
+    member_count              INT,
+    running_count             INT,
+    waiting_count             INT,
+    completed_count           INT,
+    failed_count              INT,
+    cancelled_count           INT,
+    latest_activity_at        TIMESTAMPTZ,
+    latest_summary_updated_at TIMESTAMPTZ,
+    created_at                TIMESTAMPTZ,
+    updated_at                TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        g.group_id,
+        g.title,
+        g.description,
+        CASE WHEN u.user_id IS NULL THEN NULL ELSE jsonb_build_object(
+            'provider', u.provider,
+            'subject', u.subject,
+            'email', u.email,
+            'displayName', u.display_name
+        ) END AS owner,
+        g.metadata,
+        COUNT(sess.session_id)::INT AS member_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state IN ('running', 'idle', 'pending'))::INT AS running_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state IN ('waiting', 'input_required'))::INT AS waiting_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state = 'completed')::INT AS completed_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state IN ('failed', 'error'))::INT AS failed_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state = 'cancelled')::INT AS cancelled_count,
+        MAX(COALESCE(sess.last_active_at, sess.updated_at)) AS latest_activity_at,
+        MAX(sess.summary_updated_at) AS latest_summary_updated_at,
+        g.created_at,
+        g.updated_at
+    FROM ${s}.session_groups g
+    LEFT JOIN ${s}.session_group_owners go ON go.group_id = g.group_id
+    LEFT JOIN ${s}.users u ON u.user_id = go.user_id
+    LEFT JOIN ${s}.sessions sess ON sess.group_id = g.group_id AND sess.deleted_at IS NULL
+    GROUP BY g.group_id, g.title, g.description, u.user_id, u.provider, u.subject, u.email, u.display_name, g.metadata, g.created_at, g.updated_at
+    ORDER BY MAX(sess.summary_updated_at) DESC NULLS LAST, g.updated_at DESC, g.group_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_assign_session_group(
+    p_session_id TEXT,
+    p_group_id   TEXT DEFAULT NULL
+) RETURNS VOID AS $$
+DECLARE
+    v_group_id TEXT := NULLIF(BTRIM(p_group_id), '');
+    v_is_system BOOLEAN;
+    v_session_owner_provider TEXT;
+    v_session_owner_subject TEXT;
+    v_group_owner_provider TEXT;
+    v_group_owner_subject TEXT;
+BEGIN
+    SELECT sess.is_system, u.provider, u.subject
+    INTO v_is_system, v_session_owner_provider, v_session_owner_subject
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.session_id = p_session_id
+      AND sess.deleted_at IS NULL;
+
+    IF NOT FOUND OR v_is_system THEN
+        RETURN;
+    END IF;
+
+    IF v_group_id IS NOT NULL THEN
+        SELECT u.provider, u.subject
+        INTO v_group_owner_provider, v_group_owner_subject
+        FROM ${s}.session_groups g
+        LEFT JOIN ${s}.session_group_owners go ON go.group_id = g.group_id
+        LEFT JOIN ${s}.users u ON u.user_id = go.user_id
+        WHERE g.group_id = v_group_id;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Session group % was not found', v_group_id;
+        END IF;
+
+        IF v_session_owner_provider IS DISTINCT FROM v_group_owner_provider
+           OR v_session_owner_subject IS DISTINCT FROM v_group_owner_subject THEN
+            RAISE EXCEPTION 'Session % owner does not match session group % owner', p_session_id, v_group_id;
+        END IF;
+    END IF;
+
+    UPDATE ${s}.sessions
+    SET group_id = v_group_id,
+        updated_at = now()
+    WHERE session_id = p_session_id
+      AND deleted_at IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session(
+    p_session_id TEXT,
+    p_updates    JSONB
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.sessions SET
+        orchestration_id  = CASE WHEN p_updates ? 'orchestrationId'  THEN (p_updates->>'orchestrationId')                         ELSE orchestration_id  END,
+        title             = CASE WHEN p_updates ? 'title'            THEN (p_updates->>'title')                                    ELSE title             END,
+        title_locked      = CASE WHEN p_updates ? 'titleLocked'     THEN (p_updates->>'titleLocked')::BOOLEAN                     ELSE title_locked      END,
+        state             = CASE WHEN p_updates ? 'state'           THEN (p_updates->>'state')                                     ELSE state             END,
+        model             = CASE WHEN p_updates ? 'model'           THEN (p_updates->>'model')                                     ELSE model             END,
+        reasoning_effort  = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '')          ELSE reasoning_effort  END,
+        last_active_at    = CASE WHEN p_updates ? 'lastActiveAt'    THEN (p_updates->>'lastActiveAt')::TIMESTAMPTZ                 ELSE last_active_at    END,
+        current_iteration = CASE WHEN p_updates ? 'currentIteration' THEN (p_updates->>'currentIteration')::INT                   ELSE current_iteration END,
+        last_error        = CASE WHEN p_updates ? 'lastError'       THEN (p_updates->>'lastError')                                 ELSE last_error        END,
+        wait_reason       = CASE WHEN p_updates ? 'waitReason'      THEN (p_updates->>'waitReason')                                ELSE wait_reason       END,
+        is_system         = CASE WHEN p_updates ? 'isSystem'        THEN (p_updates->>'isSystem')::BOOLEAN                         ELSE is_system         END,
+        agent_id          = CASE WHEN p_updates ? 'agentId'         THEN (p_updates->>'agentId')                                   ELSE agent_id          END,
+        splash            = CASE WHEN p_updates ? 'splash'          THEN (p_updates->>'splash')                                    ELSE splash            END,
+        updated_at        = now()
+    WHERE session_id = p_session_id;
+
+    IF p_updates ? 'groupId' THEN
+        PERFORM ${s}.cms_assign_session_group(p_session_id, p_updates->>'groupId');
+    END IF;
+
+    UPDATE ${s}.session_metric_summaries
+    SET model = CASE WHEN p_updates ? 'model' THEN (p_updates->>'model') ELSE model END,
+        reasoning_effort = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '') ELSE reasoning_effort END,
+        updated_at = CASE WHEN p_updates ? 'model' OR p_updates ? 'reasoningEffort' THEN now() ELSE updated_at END
+    WHERE session_id = p_session_id
+      AND (p_updates ? 'model' OR p_updates ? 'reasoningEffort');
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0020: Session Group Owner Adoption ───────────────
+
+function migration_0020_session_group_owner_adoption(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0020_session_group_owner_adoption: let empty unowned groups adopt the first moved session owner.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_assign_session_group(
+    p_session_id TEXT,
+    p_group_id   TEXT DEFAULT NULL
+) RETURNS VOID AS $$
+DECLARE
+    v_group_id TEXT := NULLIF(BTRIM(p_group_id), '');
+    v_is_system BOOLEAN;
+    v_session_owner_user_id BIGINT;
+    v_session_owner_provider TEXT;
+    v_session_owner_subject TEXT;
+    v_group_owner_provider TEXT;
+    v_group_owner_subject TEXT;
+    v_group_member_count INT;
+BEGIN
+    SELECT sess.is_system, u.user_id, u.provider, u.subject
+    INTO v_is_system, v_session_owner_user_id, v_session_owner_provider, v_session_owner_subject
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.session_id = p_session_id
+      AND sess.deleted_at IS NULL;
+
+    IF NOT FOUND OR v_is_system THEN
+        RETURN;
+    END IF;
+
+    IF v_group_id IS NOT NULL THEN
+        SELECT u.provider, u.subject
+        INTO v_group_owner_provider, v_group_owner_subject
+        FROM ${s}.session_groups g
+        LEFT JOIN ${s}.session_group_owners go ON go.group_id = g.group_id
+        LEFT JOIN ${s}.users u ON u.user_id = go.user_id
+        WHERE g.group_id = v_group_id;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Session group % was not found', v_group_id;
+        END IF;
+
+        IF v_group_owner_provider IS NULL
+           AND v_group_owner_subject IS NULL
+           AND v_session_owner_user_id IS NOT NULL THEN
+            SELECT COUNT(*)::INT INTO v_group_member_count
+            FROM ${s}.sessions
+            WHERE group_id = v_group_id
+              AND deleted_at IS NULL;
+
+            IF COALESCE(v_group_member_count, 0) = 0 THEN
+                INSERT INTO ${s}.session_group_owners (group_id, user_id)
+                VALUES (v_group_id, v_session_owner_user_id)
+                ON CONFLICT (group_id) DO NOTHING;
+
+                v_group_owner_provider := v_session_owner_provider;
+                v_group_owner_subject := v_session_owner_subject;
+            END IF;
+        END IF;
+
+        IF v_session_owner_provider IS DISTINCT FROM v_group_owner_provider
+           OR v_session_owner_subject IS DISTINCT FROM v_group_owner_subject THEN
+            RAISE EXCEPTION 'Session % owner does not match session group % owner', p_session_id, v_group_id;
+        END IF;
+    END IF;
+
+    UPDATE ${s}.sessions
+    SET group_id = v_group_id,
+        updated_at = now()
+    WHERE session_id = p_session_id
+      AND deleted_at IS NULL;
 END;
 $$ LANGUAGE plpgsql;
 `;

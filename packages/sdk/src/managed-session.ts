@@ -25,35 +25,117 @@ const DEFAULT_WAIT_TOOL_DESCRIPTION =
     "Long waits may resume on a different worker unless you set " +
     "`preserveWorkerAffinity: true` for node-local work.";
 
-function normalizeAssistantToolCallMessageContent(messages: any): number {
+const SESSION_SUMMARY_STATE_SCHEMA = {
+    type: "object",
+    additionalProperties: true,
+    required: ["schemaVersion", "updatedAt", "intent", "summary", "state", "openQuestions", "blockers", "nextActions", "links", "structureChangeLog"],
+    properties: {
+        schemaVersion: { type: "number", enum: [1], description: "Always 1." },
+        updatedAt: { type: "string", description: "Current ISO timestamp for this summary update." },
+        intent: { type: "string", description: "What this session is trying to accomplish." },
+        summary: { type: "string", description: "Concise durable summary of meaningful progress, current state, blockers, and outcome." },
+        state: { type: "object", description: "Compact machine-readable state for the session; use {} if there is no structured state yet." },
+        openQuestions: { type: "array", items: { type: "string" }, description: "Open questions that affect future work; [] if none." },
+        blockers: { type: "array", items: { type: "string" }, description: "Current blockers; [] if none." },
+        nextActions: { type: "array", items: { type: "string" }, description: "Concrete next actions; [] if none." },
+        links: { type: "array", items: { type: "string" }, description: "Important URLs, artifact links, fact keys, or session ids; [] if none." },
+        structureChangeLog: { type: "array", items: { type: "string" }, description: "Notable changes to the work structure, schedule, delegates, or scope; [] if none." },
+        domain: { type: "string", description: "Optional domain label such as finance, ops, research, or support." },
+    },
+} as const;
+
+const SESSION_SUMMARY_STATE_TEMPLATE =
+    "Use summary_state={schemaVersion:1,updatedAt:<ISO timestamp>,intent:<string>,summary:<string>,state:{},openQuestions:[],blockers:[],nextActions:[],links:[],structureChangeLog:[]}.";
+
+function hasAssistantToolCalls(message: any): boolean {
+    return Array.isArray(message?.tool_calls) && message.tool_calls.length > 0;
+}
+
+function isBlankAssistantContent(content: unknown): boolean {
+    if (content == null) return true;
+    if (typeof content === "string") return content.trim().length === 0;
+    if (Array.isArray(content)) return content.length === 0;
+    return false;
+}
+
+function sanitizeMessageContent(message: any): number {
+    if (!message || typeof message !== "object") return 0;
+    if (message.content == null) {
+        message.content = "";
+        return 1;
+    }
+    if (!Array.isArray(message.content)) return 0;
+
+    let normalized = 0;
+    const parts = message.content.filter((part: any) => part != null);
+    if (parts.length !== message.content.length) normalized += 1;
+    for (const part of parts) {
+        if (!part || typeof part !== "object") continue;
+        if (Object.prototype.hasOwnProperty.call(part, "text") && part.text == null) {
+            part.text = "";
+            normalized += 1;
+        }
+    }
+    if (normalized > 0) message.content = parts;
+    return normalized;
+}
+
+function sanitizeCopilotMessagesForReplay(messages: any): number {
     if (!Array.isArray(messages)) return 0;
     let normalized = 0;
-    for (const message of messages) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
         if (!message || typeof message !== "object") continue;
-        if (message.role !== "assistant") continue;
-        if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) continue;
-        if (message.content != null) continue;
+        if (message.role === "assistant" && !hasAssistantToolCalls(message) && isBlankAssistantContent(message.content)) {
+            messages.splice(index, 1);
+            normalized += 1;
+            continue;
+        }
 
         // Azure OpenAI rejects assistant tool-call messages when content is
         // null. The Copilot runtime may persist tool-only assistant turns in
         // that shape, so coerce them to the semantically-equivalent empty
         // string before sending the next turn.
-        message.content = "";
-        normalized += 1;
+        normalized += sanitizeMessageContent(message);
     }
     return normalized;
 }
 
 function normalizeCopilotSessionMessageHistory(session: any): number {
     let normalized = 0;
-    normalized += normalizeAssistantToolCallMessageContent(session?._chatMessages);
-    normalized += normalizeAssistantToolCallMessageContent(session?._systemContextMessages);
+    normalized += sanitizeCopilotMessagesForReplay(session?._chatMessages);
+    normalized += sanitizeCopilotMessagesForReplay(session?._systemContextMessages);
     return normalized;
+}
+
+function isEmptyAssistantTranscriptEvent(eventType: string, eventData: unknown): boolean {
+    if (eventType !== "assistant.message") return false;
+    if (!eventData || typeof eventData !== "object") return true;
+    const data = eventData as Record<string, unknown>;
+    const content = data.content ?? data.text ?? data.message;
+    if (!isBlankAssistantContent(content)) return false;
+    return !hasAssistantToolCalls(data) && data.toolCalls == null && data.reasoning == null;
+}
+
+function extractAssistantMessageContent(event: any): string | undefined {
+    const content = event?.data?.content ?? event?.data?.text ?? event?.data?.message;
+    return typeof content === "string" && content.trim() ? content : undefined;
 }
 
 function acknowledgeTurnBoundary(action: string): string {
     return `[SYSTEM: ${action} acknowledged. The runtime will suspend at the end of this turn. ` +
         `Finish any remaining tool results for the current step, then stop.]`;
+}
+
+const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set(["wait", "input_required", "wait_for_agents", "list_sessions", "check_agents"]);
+
+function hasTerminalTurnBoundary(turnState: TurnState): boolean {
+    return turnState.pendingActions.some((action) => TERMINAL_TURN_BOUNDARY_ACTIONS.has(action.type));
+}
+
+function blockedAfterTurnBoundary(toolName: string): string {
+    return `[SYSTEM: ${toolName} was not executed because a previous control tool already scheduled this turn to suspend. ` +
+        `Stop now; the runtime will resume with the control-tool result.]`;
 }
 
 function failureToolResult(error: unknown) {
@@ -186,6 +268,31 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
+        const cronAtTool = defineTool("cron_at", {
+            description:
+                "Declare a recurring wall-clock schedule owned by the orchestration. " +
+                "Use this for calendar-anchored work like 'run nightly at 02:00 UTC' or 'fire Mondays at 09:00 America/New_York'. " +
+                "Do NOT implement wall-clock schedules by polling every N minutes with cron(seconds=...) and checking the clock - that wastes tokens and turns. " +
+                "For fixed-interval work like 'every 60 seconds', keep using cron(seconds, reason). " +
+                "Recurrence is inferred from the fields you provide: minute (hourly), minute+hour (daily), minute+hour+day_of_week (weekly), minute+hour+day_of_month (monthly). " +
+                "Pass max_fires=1 for a single one-shot scheduled-at-time action. " +
+                "Cancel with action='cancel'.",
+            parameters: {
+                type: "object",
+                properties: {
+                    minute: { type: "number", description: "Wall-clock minute 0-59. Required when setting a schedule." },
+                    hour: { type: "number", description: "Wall-clock hour 0-23. Omit for hourly recurrence." },
+                    day_of_week: { type: "number", description: "0-6 with Sunday=0. Weekly recurrence; requires hour. Cannot combine with day_of_month." },
+                    day_of_month: { type: "number", description: "1-31. Monthly recurrence; requires hour. Months without that day are skipped (no 'last day' semantics in v1)." },
+                    tz: { type: "string", description: "IANA timezone (required). Examples: 'UTC', 'America/Los_Angeles'." },
+                    max_fires: { type: "number", description: "Optional positive integer cap on total fires. Use 1 for a one-shot scheduled action." },
+                    reason: { type: "string", description: "What to do on each wake-up. Required when setting a schedule." },
+                    action: { type: "string", enum: ["cancel"], description: "Use action='cancel' to clear the active recurring schedule (works for either cron or cron_at)." },
+                },
+            },
+            handler: async () => "stub",
+        });
+
         const askUserTool = defineTool("ask_user", {
             // Defensive override: the Copilot SDK exposes an `ask_user` MCP
             // prompt and may surface it as a built-in tool in some configs.
@@ -231,7 +338,66 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [waitTool, waitOnWorkerTool, cronTool, askUserTool, listModelsTool];
+        const updateSessionSummaryTool = defineTool("update_session_summary", {
+            description:
+                "Update this session's short live summary for session lists, discovery, and the Summary tab. " +
+                "Call it automatically after first meaningful work and after each notable update: changed intent, tangible progress toward the user's goal, received cross-session replies, delivered outputs, blockers, open questions, next actions, key links, schedule/delegate changes, or terminal state. " +
+                "Keep it concise and scannable; use compact bullets or short Markdown tables for structured progress, comparisons, rankings, decisions, or result sets instead of prose blobs. " +
+                "Do not paste long transcripts, raw logs, or bulky JSON into summary fields. " +
+                "Do not call it for no-op heartbeats, timer wakes, or unchanged cron cycles. " +
+                "Do not pass a string for summary_state. " + SESSION_SUMMARY_STATE_TEMPLATE,
+            parameters: {
+                type: "object",
+                properties: {
+                    summary_state: {
+                        ...SESSION_SUMMARY_STATE_SCHEMA,
+                        description: "Structured live summary state. Must be an object, not a string. Missing arrays should be [].",
+                    },
+                    short_summary: { type: "string", description: "Optional concise summary for session lists. If omitted, summary_state.summary is used." },
+                },
+                required: ["summary_state"],
+            },
+            handler: async () => "stub",
+        });
+
+        const sendSessionMessageTool = defineTool("send_session_message", {
+            description:
+                "Send an auditable asynchronous request to another PilotSwarm session. Use list_sessions first to find the target session id. " +
+                "Set expects_response=true when you need an answer back. The target must answer with reply_session_message; its normal chat transcript is not the response channel.",
+            parameters: {
+                type: "object",
+                properties: {
+                    session_id: { type: "string", description: "Target session id." },
+                    subject: { type: "string", description: "Short request subject." },
+                    body: { type: "string", description: "Request body, concise and self-contained." },
+                    reason: { type: "string", enum: ["help", "guidance", "fact-request", "status-request", "handoff"], description: "Optional request reason." },
+                    expects_response: { type: "boolean", description: "Whether a response is expected." },
+                    expires_at: { type: "string", description: "Optional ISO timestamp after which the request is stale." },
+                },
+                required: ["session_id", "subject", "body"],
+            },
+            handler: async () => "stub",
+        });
+
+        const replySessionMessageTool = defineTool("reply_session_message", {
+            description:
+                "Reply to a cross-session request previously received from another PilotSwarm session. " +
+                "Use this whenever a [SESSION_MESSAGE ... expects_response=true] prompt asks you for an answer. " +
+                "Do not only write the answer in your own chat; the sender receives it only if this tool is called.",
+            parameters: {
+                type: "object",
+                properties: {
+                    request_id: { type: "string", description: "Request id being answered." },
+                    session_id: { type: "string", description: "Session id that should receive the reply." },
+                    verdict: { type: "string", enum: ["answered", "declined", "blocked", "stale"], description: "Reply outcome." },
+                    body: { type: "string", description: "Reply body." },
+                },
+                required: ["request_id", "session_id", "body"],
+            },
+            handler: async () => "stub",
+        });
+
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, listModelsTool, updateSessionSummaryTool, sendSessionMessageTool, replySessionMessageTool];
     }
 
     /**
@@ -287,6 +453,14 @@ export class ManagedSession {
                         items: { type: "string" },
                         description: "Optional list of tool names the sub-agent should have access to. If omitted, inherits the parent's tools.",
                     },
+                    title: {
+                        type: "string",
+                        description: "Optional session title for the spawned sub-agent. Omit it to let the agent definition or later title summarization decide the name.",
+                    },
+                    contract: {
+                        type: "object",
+                        description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update, 'material_change' (default) to suppress no-op heartbeats, or 'completion' for terminal updates only.",
+                    },
                 },
             },
             handler: async () => "stub",
@@ -301,6 +475,7 @@ export class ManagedSession {
                 properties: {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     message: { type: "string", description: "The message to send to the sub-agent" },
+                    contract_patch: { type: "object", description: "Optional structured patch to the child contract for follow-up work. Use 'wakeOn' here to update the parent wake policy for this child mid-flight (e.g. quiet a chatty watcher with wakeOn='material_change' or wake it up with 'any')." },
                 },
                 required: ["agent_id", "message"],
             },
@@ -348,7 +523,7 @@ export class ManagedSession {
                 properties: {
                     include_system: {
                         type: "boolean",
-                        description: "Include system sessions. Default true.",
+                        description: "Include system sessions. Default false.",
                     },
                     owner_query: {
                         type: "string",
@@ -359,6 +534,16 @@ export class ManagedSession {
                         enum: ["user", "system", "unowned"],
                         description: "Optional owner bucket filter. Use only when explicitly requested.",
                     },
+                    query: { type: "string", description: "Optional text search over title, agent id, owner, and summary fields." },
+                    session_id: { type: "string", description: "Optional exact session id lookup." },
+                    agent_id: { type: "string", description: "Optional exact named-agent id filter." },
+                    state: { type: "string", description: "Optional lifecycle state filter." },
+                    parent_session_id: { type: "string", description: "Optional direct parent session id filter." },
+                    group_id: { type: "string", description: "Optional group id filter. Use the literal string 'null' for ungrouped sessions." },
+                    include_children: { type: "boolean", description: "Include child sessions. Default false." },
+                    updated_since: { type: "string", description: "Optional ISO timestamp; include sessions updated since this time." },
+                    summary_updated_since: { type: "string", description: "Optional ISO timestamp; include sessions whose summary changed since this time." },
+                    limit: { type: "number", description: "Maximum rows to return. Default 50, max 100." },
                 },
             },
             handler: async () => "stub",
@@ -382,6 +567,10 @@ export class ManagedSession {
                 type: "object",
                 properties: {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+                    result: {
+                        type: "object",
+                        description: "Optional structured completion result with verdict, summary, output references, blockers, and next actions.",
+                    },
                 },
                 required: ["agent_id"],
             },
@@ -398,6 +587,10 @@ export class ManagedSession {
                 properties: {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     reason: { type: "string", description: "Optional reason for cancellation" },
+                    partial_result: {
+                        type: "object",
+                        description: "Optional structured partial result for cancelled, blocked, or timed-out work.",
+                    },
                 },
                 required: ["agent_id"],
             },
@@ -464,6 +657,7 @@ export class ManagedSession {
                 required: ["seconds"],
             },
             handler: async (args: { seconds: number; reason?: string; preserveWorkerAffinity?: boolean }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait");
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
@@ -507,6 +701,7 @@ export class ManagedSession {
                 required: ["seconds"],
             },
             handler: async (args: { seconds: number; reason?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait_on_worker");
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
@@ -592,6 +787,84 @@ export class ManagedSession {
             },
         });
 
+        const cronAtTool = defineTool("cron_at", {
+            description:
+                "Declare a recurring wall-clock schedule owned by the orchestration. " +
+                "Use this for calendar-anchored work like 'run nightly at 02:00 UTC' or 'fire Mondays at 09:00 America/New_York'. " +
+                "Do NOT implement wall-clock schedules by polling every N minutes with cron(seconds=...) and checking the clock - that wastes tokens and turns. " +
+                "For fixed-interval work like 'every 60 seconds', keep using cron(seconds, reason). " +
+                "Pass max_fires=1 for a single one-shot scheduled-at-time action. " +
+                "Cancel with action='cancel'.",
+            parameters: {
+                type: "object",
+                properties: {
+                    minute: { type: "number", description: "Wall-clock minute 0-59. Required when setting a schedule." },
+                    hour: { type: "number", description: "Wall-clock hour 0-23. Omit for hourly recurrence." },
+                    day_of_week: { type: "number", description: "0-6 with Sunday=0. Weekly recurrence; requires hour. Cannot combine with day_of_month." },
+                    day_of_month: { type: "number", description: "1-31. Monthly recurrence; requires hour. Months without that day are skipped (no 'last day' semantics in v1)." },
+                    tz: { type: "string", description: "IANA timezone (required). Examples: 'UTC', 'America/Los_Angeles'." },
+                    max_fires: { type: "number", description: "Optional positive integer cap on total fires. Use 1 for a one-shot scheduled action." },
+                    reason: { type: "string", description: "What to do on each wake-up. Required when setting a schedule." },
+                    action: { type: "string", enum: ["cancel"], description: "Use action='cancel' to clear the active recurring schedule (works for either cron or cron_at)." },
+                },
+            },
+            handler: async (args: {
+                minute?: number;
+                hour?: number;
+                day_of_week?: number;
+                day_of_month?: number;
+                tz?: string;
+                max_fires?: number;
+                reason?: string;
+                action?: "cancel";
+            }) => {
+                if (args.action === "cancel") {
+                    turnState.queuedActions.push({ type: "cron_at", action: "cancel" });
+                    // Also surface cron cancellation so a single 'cancel' call clears whichever
+                    // schedule kind is active. The orchestration treats this as idempotent.
+                    turnState.queuedActions.push({ type: "cron", action: "cancel" });
+                    return JSON.stringify({ status: "cancelled" });
+                }
+                const { normalizeCronAtInput, computeCronAtNextFire } = await import("./cron-at.js");
+                const normalized = normalizeCronAtInput({
+                    minute: args.minute,
+                    hour: args.hour,
+                    day_of_week: args.day_of_week,
+                    day_of_month: args.day_of_month,
+                    tz: args.tz,
+                    max_fires: args.max_fires,
+                    reason: args.reason,
+                });
+                if (!normalized.ok) {
+                    return `Error: ${normalized.error}`;
+                }
+                const schedule = normalized.schedule;
+                // Precompute the nextFireAt as a best-effort answer for the LLM. The orchestration
+                // will recompute (and record) the authoritative next-fire via a durable activity.
+                let preview: { nextFireAtMs?: number; localTime?: string } = {};
+                try {
+                    const r = computeCronAtNextFire(schedule, Date.now());
+                    preview = { nextFireAtMs: r.nextFireAtMs, localTime: r.localTime };
+                } catch {
+                    // ignore; orchestration will compute the authoritative result
+                }
+                turnState.queuedActions.push({
+                    type: "cron_at",
+                    action: "set",
+                    schedule,
+                });
+                return JSON.stringify({
+                    status: "scheduled",
+                    kind: "wall-clock",
+                    nextFireAt: preview.nextFireAtMs ? new Date(preview.nextFireAtMs).toISOString() : undefined,
+                    localTime: preview.localTime,
+                    tz: schedule.tz,
+                    reason: schedule.reason,
+                    ...(schedule.maxFires !== undefined ? { maxFires: schedule.maxFires } : {}),
+                });
+            },
+        });
+
         const askUserTool = defineTool("ask_user", {
             // Keep in sync with systemToolDefs() — defensive override.
             overridesBuiltInTool: true,
@@ -615,6 +888,7 @@ export class ManagedSession {
                 required: ["question"],
             },
             handler: async (args: { question: string; choices?: string[]; allowFreeform?: boolean }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("ask_user");
                 if (opts?.onEvent) {
                     try {
                         opts.onEvent({
@@ -654,6 +928,78 @@ export class ManagedSession {
             },
             handler: async () => {
                 return opts?.modelSummary || "No model providers configured.";
+            },
+        });
+
+        const updateSessionSummaryTool = defineTool("update_session_summary", {
+            description:
+                "Update this session's short live summary for session lists, discovery, and the Summary tab. " +
+                "Call it automatically after first meaningful work and after each notable update: changed intent, tangible progress toward the user's goal, received cross-session replies, delivered outputs, blockers, open questions, next actions, key links, schedule/delegate changes, or terminal state. " +
+                "Keep it concise and scannable; use compact bullets or short Markdown tables for structured progress, comparisons, rankings, decisions, or result sets instead of prose blobs. " +
+                "Do not paste long transcripts, raw logs, or bulky JSON into summary fields. " +
+                "Do not call it for no-op heartbeats, timer wakes, or unchanged cron cycles. " +
+                "Do not pass a string for summary_state. " + SESSION_SUMMARY_STATE_TEMPLATE,
+            parameters: {
+                type: "object",
+                properties: {
+                    summary_state: {
+                        ...SESSION_SUMMARY_STATE_SCHEMA,
+                        description: "Structured live summary state. Must be an object, not a string. Missing arrays should be [].",
+                    },
+                    short_summary: { type: "string", description: "Optional concise summary for session lists. If omitted, summary_state.summary is used." },
+                },
+                required: ["summary_state"],
+            },
+            handler: async (args: { summary_state: any; short_summary?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_session_summary");
+                if (!controlBridge) return "Error: update_session_summary is unavailable in this session.";
+                return await controlBridge.updateSessionSummary(args);
+            },
+        });
+
+        const sendSessionMessageTool = defineTool("send_session_message", {
+            description:
+                "Send an auditable asynchronous request to another PilotSwarm session. Use list_sessions first to find the target session id. " +
+                "Keep the body concise and include relevant fact/artifact links instead of transcripts. " +
+                "Set expects_response=true when you need an answer back. The target must answer with reply_session_message; its normal chat transcript is not the response channel.",
+            parameters: {
+                type: "object",
+                properties: {
+                    session_id: { type: "string", description: "Target session id." },
+                    subject: { type: "string", description: "Short request subject." },
+                    body: { type: "string", description: "Request body, concise and self-contained." },
+                    reason: { type: "string", enum: ["help", "guidance", "fact-request", "status-request", "handoff"], description: "Optional request reason." },
+                    expects_response: { type: "boolean", description: "Whether a response is expected." },
+                    expires_at: { type: "string", description: "Optional ISO timestamp after which the request is stale." },
+                },
+                required: ["session_id", "subject", "body"],
+            },
+            handler: async (args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("send_session_message");
+                if (!controlBridge) return "Error: send_session_message is unavailable in this session.";
+                return await controlBridge.sendSessionMessage(args);
+            },
+        });
+
+        const replySessionMessageTool = defineTool("reply_session_message", {
+            description:
+                "Reply to a cross-session request previously received from another PilotSwarm session. " +
+                "Use this whenever a [SESSION_MESSAGE ... expects_response=true] prompt asks you for an answer. " +
+                "Do not only write the answer in your own chat; the sender receives it only if this tool is called.",
+            parameters: {
+                type: "object",
+                properties: {
+                    request_id: { type: "string", description: "Request id being answered." },
+                    session_id: { type: "string", description: "Session id that should receive the reply." },
+                    verdict: { type: "string", enum: ["answered", "declined", "blocked", "stale"], description: "Reply outcome." },
+                    body: { type: "string", description: "Reply body." },
+                },
+                required: ["request_id", "session_id", "body"],
+            },
+            handler: async (args: { request_id: string; session_id: string; body: string; verdict?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("reply_session_message");
+                if (!controlBridge) return "Error: reply_session_message is unavailable in this session.";
+                return await controlBridge.replySessionMessage(args);
             },
         });
 
@@ -704,9 +1050,14 @@ export class ManagedSession {
                         type: "string",
                         description: "Optional session title for the spawned sub-agent. Omit it to let the agent definition or later title summarization decide the name.",
                     },
+                    contract: {
+                        type: "object",
+                        description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update, 'material_change' (default) to suppress no-op heartbeats, or 'completion' for terminal updates only.",
+                    },
                 },
             },
-            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; system_message?: string; tool_names?: string[]; title?: string }) => {
+            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; system_message?: string; tool_names?: string[]; title?: string; contract?: Record<string, unknown> }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_agent");
                 if (!args.agent_name && !args.task) {
                     return "Error: either agent_name or task is required.";
                 }
@@ -726,6 +1077,7 @@ export class ManagedSession {
                     toolNames: args.tool_names,
                     agentName: args.agent_name,
                     title: typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined,
+                    contract: args.contract,
                 });
                 return acknowledgeTurnBoundary("spawn_agent");
             },
@@ -741,10 +1093,12 @@ export class ManagedSession {
                 properties: {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     message: { type: "string", description: "The message to send to the sub-agent" },
+                    contract_patch: { type: "object", description: "Optional structured patch to the child contract for follow-up work. Use 'wakeOn' here to update the parent wake policy for this child mid-flight (e.g. quiet a chatty watcher with wakeOn='material_change' or wake it up with 'any')." },
                 },
                 required: ["agent_id", "message"],
             },
-            handler: async (args: { agent_id: string; message: string }) => {
+            handler: async (args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("message_agent");
                 if (controlBridge) {
                     return await controlBridge.messageAgent(args);
                 }
@@ -752,6 +1106,7 @@ export class ManagedSession {
                     type: "message_agent",
                     agentId: args.agent_id,
                     message: args.message,
+                    contractPatch: args.contract_patch,
                 });
                 return acknowledgeTurnBoundary("message_agent");
             },
@@ -767,6 +1122,7 @@ export class ManagedSession {
                 properties: {},
             },
             handler: async () => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("check_agents");
                 if (controlBridge) {
                     return await controlBridge.checkAgents();
                 }
@@ -791,6 +1147,7 @@ export class ManagedSession {
                 },
             },
             handler: async (args: { agent_ids?: string[] }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait_for_agents");
                 if (controlBridge) {
                     const resolvedAgentIds = await controlBridge.resolveWaitForAgents(args.agent_ids);
                     const normalizedAgentIds = Array.isArray(resolvedAgentIds)
@@ -823,7 +1180,7 @@ export class ManagedSession {
                 properties: {
                     include_system: {
                         type: "boolean",
-                        description: "Include system sessions. Default true.",
+                        description: "Include system sessions. Default false.",
                     },
                     owner_query: {
                         type: "string",
@@ -834,13 +1191,34 @@ export class ManagedSession {
                         enum: ["user", "system", "unowned"],
                         description: "Optional owner bucket filter. Use only when explicitly requested.",
                     },
+                    query: { type: "string", description: "Optional text search over title, agent id, owner, and summary fields." },
+                    session_id: { type: "string", description: "Optional exact session id lookup." },
+                    agent_id: { type: "string", description: "Optional exact named-agent id filter." },
+                    state: { type: "string", description: "Optional lifecycle state filter." },
+                    parent_session_id: { type: "string", description: "Optional direct parent session id filter." },
+                    group_id: { type: "string", description: "Optional group id filter. Use the literal string 'null' for ungrouped sessions." },
+                    include_children: { type: "boolean", description: "Include child sessions. Default false." },
+                    updated_since: { type: "string", description: "Optional ISO timestamp; include sessions updated since this time." },
+                    summary_updated_since: { type: "string", description: "Optional ISO timestamp; include sessions whose summary changed since this time." },
+                    limit: { type: "number", description: "Maximum rows to return. Default 50, max 100." },
                 },
             },
             handler: async (args: {
                 include_system?: boolean;
                 owner_query?: string;
                 owner_kind?: string;
+                query?: string;
+                session_id?: string;
+                agent_id?: string;
+                state?: string;
+                parent_session_id?: string;
+                group_id?: string;
+                include_children?: boolean;
+                updated_since?: string;
+                summary_updated_since?: string;
+                limit?: number;
             }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("list_sessions");
                 if (controlBridge) {
                     return await controlBridge.listSessions(args);
                 }
@@ -849,6 +1227,16 @@ export class ManagedSession {
                     includeSystem: args.include_system,
                     ownerQuery: args.owner_query,
                     ownerKind: args.owner_kind,
+                    query: args.query,
+                    sessionId: args.session_id,
+                    agentId: args.agent_id,
+                    state: args.state,
+                    parentSessionId: args.parent_session_id,
+                    groupId: args.group_id,
+                    includeChildren: args.include_children,
+                    updatedSince: args.updated_since,
+                    summaryUpdatedSince: args.summary_updated_since,
+                    limit: args.limit,
                 });
                 return acknowledgeTurnBoundary("list_sessions");
             },
@@ -863,14 +1251,19 @@ export class ManagedSession {
                 type: "object",
                 properties: {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
+                    result: {
+                        type: "object",
+                        description: "Optional structured completion result with verdict, summary, output references, blockers, and next actions.",
+                    },
                 },
                 required: ["agent_id"],
             },
-            handler: async (args: { agent_id: string }) => {
+            handler: async (args: { agent_id: string; result?: Record<string, unknown> }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("complete_agent");
                 if (controlBridge) {
                     return await controlBridge.completeAgent(args);
                 }
-                turnState.pendingActions.push({ type: "complete_agent", agentId: args.agent_id });
+                turnState.pendingActions.push({ type: "complete_agent", agentId: args.agent_id, result: args.result });
                 return acknowledgeTurnBoundary("complete_agent");
             },
         });
@@ -885,14 +1278,19 @@ export class ManagedSession {
                 properties: {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     reason: { type: "string", description: "Optional reason for cancellation" },
+                    partial_result: {
+                        type: "object",
+                        description: "Optional structured partial result for cancelled, blocked, or timed-out work.",
+                    },
                 },
                 required: ["agent_id"],
             },
-            handler: async (args: { agent_id: string; reason?: string }) => {
+            handler: async (args: { agent_id: string; reason?: string; partial_result?: Record<string, unknown> }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("cancel_agent");
                 if (controlBridge) {
                     return await controlBridge.cancelAgent(args);
                 }
-                turnState.pendingActions.push({ type: "cancel_agent", agentId: args.agent_id, reason: args.reason });
+                turnState.pendingActions.push({ type: "cancel_agent", agentId: args.agent_id, reason: args.reason, partialResult: args.partial_result });
                 return acknowledgeTurnBoundary("cancel_agent");
             },
         });
@@ -911,6 +1309,7 @@ export class ManagedSession {
                 required: ["agent_id"],
             },
             handler: async (args: { agent_id: string; reason?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("delete_agent");
                 if (controlBridge) {
                     return await controlBridge.deleteAgent(args);
                 }
@@ -919,7 +1318,7 @@ export class ManagedSession {
             },
         });
 
-        const SYSTEM_TOOL_NAMES = new Set(["wait", "wait_on_worker", "cron", "ask_user", "list_available_models", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+        const SYSTEM_TOOL_NAMES = new Set(["wait", "wait_on_worker", "cron", "ask_user", "list_available_models", "update_session_summary", "send_session_message", "reply_session_message", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -939,6 +1338,7 @@ export class ManagedSession {
             .map(t => ({
                 ...t,
                 handler: async (args: any, invocation: any) => {
+                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary((t as any).name ?? "tool");
                     const augmented = { ...invocation, durableSessionId };
                     try {
                         return await (t as any).handler(args, augmented);
@@ -948,21 +1348,36 @@ export class ManagedSession {
                 },
             }));
 
-        const allTools: Tool<any>[] = [
-            ...wrappedUserTools,
+        const isReadOnlyTuner = this.config.agentIdentity === "agent-tuner";
+        const mutatingSystemToolNames = new Set(["update_session_summary", "send_session_message", "reply_session_message"]);
+        const systemToolsForTurn: Tool<any>[] = [
             waitTool,
             waitOnWorkerTool,
             cronTool,
+            cronAtTool,
             askUserTool,
             listModelsTool,
-            spawnAgentTool,
-            messageAgentTool,
-            checkAgentsTool,
-            waitForAgentsTool,
-            listSessionsTool,
-            completeAgentTool,
-            cancelAgentTool,
-            deleteAgentTool,
+            updateSessionSummaryTool,
+            sendSessionMessageTool,
+            replySessionMessageTool,
+        ].filter((tool: any) => !isReadOnlyTuner || !mutatingSystemToolNames.has(tool.name));
+        const subAgentToolsForTurn = isReadOnlyTuner
+            ? [checkAgentsTool, listSessionsTool]
+            : [
+                spawnAgentTool,
+                messageAgentTool,
+                checkAgentsTool,
+                waitForAgentsTool,
+                listSessionsTool,
+                completeAgentTool,
+                cancelAgentTool,
+                deleteAgentTool,
+            ];
+
+        const allTools: Tool<any>[] = [
+            ...wrappedUserTools,
+            ...systemToolsForTurn,
+            ...subAgentToolsForTurn,
         ];
 
         // Re-register tools for this turn (may have changed)
@@ -1119,6 +1534,9 @@ export class ManagedSession {
                         deferredSessionError = captured;
                         return;
                     }
+                    if (isEmptyAssistantTranscriptEvent(eventType, eventData)) {
+                        return;
+                    }
 
                     // Track turn boundaries so we can stamp turn_end with a
                     // durationMs and the streaming counters.
@@ -1184,7 +1602,7 @@ export class ManagedSession {
             // Capture the final assistant message
             unsubscribers.push(
                 this.copilotSession.on("assistant.message", (event: any) => {
-                    finalContent = event.data?.content ?? finalContent;
+                    finalContent = extractAssistantMessageContent(event) ?? finalContent;
                     publishReasoningSnapshot("assistant.message", true);
                 }),
             );

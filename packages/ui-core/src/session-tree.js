@@ -30,10 +30,32 @@ function buildStableOrderMap(orderSource = []) {
     return order;
 }
 
+function isTreePinnableSession(session) {
+    return Boolean(
+        session
+        && !session.isSystem
+        && (session.isGroup || (!session.parentSessionId && !session.groupId)),
+    );
+}
+
+function isPinnedSession(session, pinnedIds) {
+    return Boolean(isTreePinnableSession(session) && pinnedIds && pinnedIds.has(session.sessionId));
+}
+
 function rankSessionBand(session, pinnedIds) {
     if (session.isSystem) return 0;
-    if (pinnedIds && pinnedIds.has(session.sessionId)) return 1;
-    return 2;
+    if (session.isGroup && isPinnedSession(session, pinnedIds)) return 1;
+    if (isPinnedSession(session, pinnedIds)) return 2;
+    if (session.isGroup) return 3;
+    return 4;
+}
+
+function summaryTimestamp(session) {
+    const raw = session?.updatedAt
+        ?? session?.summaryUpdatedAt
+        ?? session?.latestSummaryUpdatedAt;
+    const value = typeof raw === "number" ? raw : Date.parse(raw || "");
+    return Number.isFinite(value) ? value : 0;
 }
 
 function sortSessions(a, b, stableOrderMap, pinnedIds) {
@@ -53,6 +75,12 @@ function sortSessions(a, b, stableOrderMap, pinnedIds) {
         && aPreviousOrder !== bPreviousOrder
     ) {
         return aPreviousOrder - bPreviousOrder;
+    }
+
+    const aSummaryAt = summaryTimestamp(a);
+    const bSummaryAt = summaryTimestamp(b);
+    if (aSummaryAt > 0 && bSummaryAt > 0 && aSummaryAt !== bSummaryAt) {
+        return bSummaryAt - aSummaryAt;
     }
 
     const createdDiff = (b.createdAt || 0) - (a.createdAt || 0);
@@ -79,20 +107,28 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
     }
 
     for (const session of sessions) {
-        const parentId = session.parentSessionId;
+        const groupParentId = !session.isGroup && session.groupId && !session.parentSessionId && byId.has(`group:${session.groupId}`)
+            ? `group:${session.groupId}`
+            : null;
+        const parentId = session.parentSessionId || groupParentId;
         if (!parentId || !byId.has(parentId)) continue;
         if (!children.has(parentId)) children.set(parentId, []);
         children.get(parentId).push(session);
     }
 
     for (const childList of children.values()) {
-        // Children are never re-banded by pin — pinning is a top-level concept.
-        // Pass an empty Set so child ordering stays stable regardless of pins.
-        childList.sort((a, b) => sortSessions(a, b, stableOrderMap, null));
+        // Pins are a top-level concept. If a previously pinned session moves
+        // into a group, the reducer prunes the pin and the tree ignores any
+        // stale pin while ordering children.
+        childList.sort((a, b) => sortSessions(a, b, stableOrderMap, pinSet));
     }
 
     const roots = sessions
-        .filter((session) => !session.parentSessionId || !byId.has(session.parentSessionId))
+        .filter((session) => {
+            if (session.parentSessionId && byId.has(session.parentSessionId)) return false;
+            if (!session.isGroup && session.groupId && !session.parentSessionId && byId.has(`group:${session.groupId}`)) return false;
+            return true;
+        })
         .sort((a, b) => sortSessions(a, b, stableOrderMap, pinSet));
 
     const flat = [];

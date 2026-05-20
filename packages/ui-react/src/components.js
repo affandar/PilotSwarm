@@ -22,6 +22,8 @@ import {
     selectReasoningEffortPickerModal,
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
+    selectSessionGroupNameModal,
+    selectSessionGroupPickerModal,
     selectSessionOwnerFilterModal,
     selectStatusBar,
     selectThemePickerModal,
@@ -316,6 +318,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             branding: state.branding,
             connectionError: state.connection.error,
             connectionMode: state.connection.mode,
+            chatViewMode: state.ui.chatViewMode || "transcript",
             chatScroll: state.ui.scroll.chat,
             focused: state.ui.focusRegion === "chat",
         };
@@ -332,6 +335,9 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
                 error: chatView.connectionError,
                 mode: chatView.connectionMode,
             },
+            ui: {
+                chatViewMode: chatView.chatViewMode,
+            },
             sessions: {
                 activeSessionId: chatView.activeSessionId,
                 byId: buildSingleSessionMap(chatView.activeSessionId, chatView.activeSession),
@@ -345,6 +351,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         chatView.activeSessionId,
         chatView.activeSession,
         chatView.branding,
+        chatView.chatViewMode,
         chatView.connectionError,
         chatView.connectionMode,
     ]);
@@ -863,6 +870,7 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         workersOnline: state.connection.workersOnline,
         focusRegion: state.ui.focusRegion,
         inspectorTab: state.ui.inspectorTab,
+        chatViewMode: state.ui.chatViewMode || "transcript",
         fullscreenPane: state.ui.fullscreenPane || null,
         logsAvailable: state.logs.available,
         logsTailing: state.logs.tailing,
@@ -872,6 +880,8 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         modal: state.ui.modal,
         activeSessionId: state.sessions.activeSessionId,
         activeSession: state.sessions.activeSessionId ? state.sessions.byId[state.sessions.activeSessionId] || null : null,
+        selectedIds: state.sessions.selectedIds,
+        selectMode: state.sessions.selectMode,
     }), shallowEqualObject);
     const selectorState = React.useMemo(() => ({
         connection: {
@@ -882,6 +892,7 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         ui: {
             focusRegion: statusState.focusRegion,
             inspectorTab: statusState.inspectorTab,
+            chatViewMode: statusState.chatViewMode,
             fullscreenPane: statusState.fullscreenPane,
             statusText: statusState.statusText,
             modal: statusState.modal,
@@ -895,6 +906,8 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         },
         sessions: {
             activeSessionId: statusState.activeSessionId,
+            selectedIds: statusState.selectedIds,
+            selectMode: statusState.selectMode,
             byId: statusState.activeSessionId && statusState.activeSession
                 ? { [statusState.activeSessionId]: statusState.activeSession }
                 : {},
@@ -1074,6 +1087,124 @@ function SessionAgentPickerModalContainer({ controller }) {
         },
     }), shallowEqualObject);
     return React.createElement(SessionAgentPickerModal, { state });
+}
+
+function SessionGroupPickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectSessionGroupPickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(50, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 14, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(7, Math.min(9, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No groups available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Move Details",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function SessionGroupPickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(SessionGroupPickerModal, { state });
+}
+
+function SessionGroupNameModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectSessionGroupNameModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(5, Math.min(6, (modal.detailsLines?.length || 0) + 2, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(6, Math.min(7, (viewport.height || 40) - detailsHeight - 8));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: 3,
+                lines: [[
+                    { text: "> ", color: "cyan", bold: true },
+                    { text: modal.value || modal.placeholder || "", color: modal.value ? "white" : "gray" },
+                ]],
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: "Preview",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Help",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function SessionGroupNameModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(SessionGroupNameModal, { state });
 }
 
 function SessionOwnerFilterModal({ state }) {
@@ -1846,6 +1977,8 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
         React.createElement(ThemePickerModalContainer, { controller }),
         React.createElement(SessionAgentPickerModalContainer, { controller }),
+        React.createElement(SessionGroupPickerModalContainer, { controller }),
+        React.createElement(SessionGroupNameModalContainer, { controller }),
         React.createElement(SessionOwnerFilterModalContainer, { controller }),
         React.createElement(LogFilterModalContainer, { controller }),
         React.createElement(FilesFilterModalContainer, { controller }),

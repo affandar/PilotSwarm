@@ -91,8 +91,26 @@ export function normalizeStoredPinnedSessionIds(value) {
     return out;
 }
 
-export function createInitialState({ mode = "local", branding = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null } = {}) {
+export function normalizeStoredCollapsedSessionIds(value) {
+    if (!Array.isArray(value)) return new Set();
+    const out = new Set();
+    for (const entry of value) {
+        const id = String(entry || "").trim();
+        if (!id) continue;
+        out.add(id);
+    }
+    return out;
+}
+
+export function normalizeStoredActiveSessionId(value) {
+    if (value == null) return null;
+    const id = String(value).trim();
+    return id ? id : null;
+}
+
+export function createInitialState({ mode = "local", branding = null, themeId = null, chatViewMode = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null } = {}) {
     const hasStoredSessionOwnerFilter = sessionOwnerFilter != null;
+    const hasStoredCollapsedSessionIds = collapsedSessionIds != null;
     const initialLayoutAdjustments = normalizeStoredLayoutAdjustments(layoutAdjustments);
     return {
         branding: branding || {
@@ -106,6 +124,7 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         ui: {
             focusRegion: FOCUS_REGIONS.SESSIONS,
             inspectorTab: INSPECTOR_TABS[0],
+            chatViewMode: chatViewMode === "summary" ? "summary" : "transcript",
             statsViewMode: "session",
             prompt: "",
             promptCursor: 0,
@@ -141,8 +160,9 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         sessions: {
             byId: {},
             flat: [],
-            activeSessionId: null,
-            collapsedIds: new Set(),
+            activeSessionId: normalizeStoredActiveSessionId(activeSessionId),
+            collapsedIds: normalizeStoredCollapsedSessionIds(collapsedSessionIds),
+            collapsedIdsExplicit: hasStoredCollapsedSessionIds,
             pinnedIds: normalizeStoredPinnedSessionIds(pinnedSessionIds),
             selectedIds: [],
             selectMode: false,

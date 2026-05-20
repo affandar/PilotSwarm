@@ -211,6 +211,7 @@ The worker supplies the actual agent definitions and tool handlers. The client o
 ### `*.agent.md`
 
 - frontmatter declares metadata
+- frontmatter should include `schemaVersion: 1` and a `version` string; new agents should usually start at `version: 1.0.0`
 - body is the agent prompt
 - `tools` is a filter, not a tool implementation
 
@@ -233,6 +234,36 @@ If an agent wants to choose a different model for a sub-agent:
 1. call `list_available_models`
 2. use only an exact returned `provider:model` value
 3. never guess or shorten the name
+
+### Durable timers
+
+Use `cron(seconds=N, reason="...")` for fixed recurring intervals and `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules. Do not build wall-clock jobs as wake-and-check polling loops. When a cron wake-up resumes an agent, it should perform the scheduled work described by the reason before responding.
+
+### Child contracts
+
+Use the named `contract` argument on `spawn_agent`; there is no separate contract tool. Include it only when required outputs or wake policy matter:
+
+```text
+spawn_agent(
+  task="Scan market data and store the durable finding",
+  contract={
+    "purpose": "Market scan",
+    "successCriteria": ["source-backed summary", "durable result fact"],
+    "expectedFacts": [{ "key": "result/market-scan", "required": true }],
+    "expectedArtifacts": [],
+    "validationMode": "warn",
+    "wakeOn": "material_change"
+  }
+)
+```
+
+Use `contract.wakeOn` when spawning long-running children: `any` for high-signal short-lived work, `material_change` for watchers, and `completion` when only terminal/blocked/error updates should wake the parent. Use `message_agent(..., contract_patch={ wakeOn: "..." })` to adjust the policy later.
+
+### Cross-session request/response
+
+Use `send_session_message(..., expects_response=true)` to ask another session for help. The target session must call `reply_session_message(request_id=..., session_id=<sender>, body=...)`; answering only in its own transcript does not deliver a response back to the sender.
+
+Shared UI surfaces render cross-session requests and replies as dedicated transcript cards so both sender and receiver can see the durable request/response context.
 
 ## Common Mistakes
 

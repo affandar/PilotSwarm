@@ -28,6 +28,9 @@ export type {
     SessionOrchestrationStats,
     ExecutionHistoryEvent,
     PilotSwarmManagementClientOptions,
+    RestartSystemSessionOptions,
+    RestartSystemSessionResult,
+    SystemSessionRestartDisposition,
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
@@ -97,6 +100,47 @@ export { loadModelProviders, ModelProviderRegistry } from "./model-providers.js"
 export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider, ReasoningEffort } from "./model-providers.js";
 export { composeSystemPrompt, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 export type { PromptLayeringKind } from "./prompt-layering.js";
+export {
+    buildSchemaIdentifier,
+    renderPromptLayerManifest,
+    buildPromptLayersEventPayload,
+} from "./prompt-layers.js";
+export type {
+    PromptLayerDescriptor,
+    PromptLayerKind,
+    PromptLayerType,
+    PromptLayersEventPayload,
+} from "./prompt-layers.js";
+export {
+    normalizeWakeOn,
+    readWakeOn,
+    classifyChildUpdate,
+    shouldWakeParentForChildUpdate,
+    shouldWakeParentForChildDigest,
+    isHeartbeatText,
+    DEFAULT_CHILD_WAKE_POLICY,
+} from "./child-notifications.js";
+export type {
+    ChildWakePolicy,
+    ChildUpdateClassification,
+    ChildUpdateSnapshot,
+    ParentWakeDecisionInput,
+    ParentWakeDecision,
+} from "./child-notifications.js";
+export {
+    normalizeCronAtInput,
+    computeCronAtNextFire,
+    classifyRecurrence,
+    isValidTimezone,
+    describeCronAt,
+} from "./cron-at.js";
+export type {
+    CronAtSchedule,
+    CronAtInput,
+    CronAtNextFire,
+    CronAtNormalizeResult,
+    CronAtRecurrence,
+} from "./cron-at.js";
 
 // Debug utilities
 export { SessionDumper } from "./session-dumper.js";

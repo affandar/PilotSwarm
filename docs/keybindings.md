@@ -33,6 +33,7 @@ These keys work whenever focus is not in the prompt editor.
 | `k` / `↑` | Move selection up |
 | `Ctrl+D` / `PageDown` | Page down |
 | `Ctrl+U` / `PageUp` | Page up |
+| `Ctrl+G` | Move the selected top-level non-system session(s) to a group; the picker includes `[New Group]` and `[No Group]` |
 | `f` | Open the session owner filter |
 | `+` / `=` | Expand the selected parent session |
 | `-` | Collapse the selected session |
@@ -53,6 +54,7 @@ These keys work whenever focus is not in the prompt editor.
 | `Ctrl+U` / `PageUp` | Page up |
 | `g` | Jump to top |
 | `G` | Jump to bottom |
+| `s` | Toggle chat transcript / session summary (chat pane only) |
 | `e` | Expand older chat history (chat pane only) |
 | mouse wheel | Scroll the focused pane |
 | drag with mouse | Select text and copy it to the clipboard |

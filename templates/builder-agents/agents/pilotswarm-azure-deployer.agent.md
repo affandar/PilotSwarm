@@ -1,4 +1,6 @@
 ---
+schemaVersion: 1
+version: 1.0.0
 name: pilotswarm-azure-deployer
 description: "Use when packaging and deploying a PilotSwarm-based app to Azure or AKS. Prepares remote worker and portal packaging, configuration, manifests, rollout guidance, and optional Entra auth setup."
 ---
@@ -55,6 +57,7 @@ Only proceed after the user confirms.
 ## Always Consult
 
 - the installed `pilotswarm-azure-deployer` skill
+- the installed `pilotswarm-agent-versioning` skill when deployment work creates or edits app `plugin/agents/*.agent.md`
 - the installed `pilotswarm-aks-identity` skill (for cross-cluster AKS access)
 - the installed `pilotswarm-azure-lessons` skill (for Azure workarounds)
 - the installed `pilotswarm-three-tier` skill (when the user chooses three-tier topology)
@@ -77,6 +80,7 @@ Only proceed after the user confirms.
 - for Entra, document redirect URI registration, `PORTAL_AUTH_ENTRA_TENANT_ID`, `PORTAL_AUTH_ENTRA_CLIENT_ID`, and any ingress/host dependencies explicitly
 - when secret values contain shell-significant delimiters such as semicolons in Azure Storage connection strings, prefer `kubectl create secret generic ... --from-env-file=...` or explicit quoting instead of `source .env.remote` followed by `--from-literal`
 - **never reuse or modify existing Azure resources without explicit user approval** — when provisioning fails and an existing resource could be shared (e.g. creating a database on an existing server, reusing a storage account), present the situation and wait for confirmation before proceeding
+- when deployment work edits app `plugin/agents/*.agent.md` files, preserve `schemaVersion` and update `version` according to the app's versioning style; packaging-only changes must not silently rewrite agent versions
 
 ## Portal Guidance
 

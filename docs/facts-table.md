@@ -55,6 +55,11 @@ The facts table provides this as a first-class, always-available tool for every 
 | `PilotSwarmClient` | Creates its own `PgFactStore` for client-side cleanup (e.g., `deleteSession` removes session facts). |
 | `cleanup_session` (sweeper) | Deletes session-scoped facts for the root session and all descendants during cleanup. |
 
+Shared facts whose keys start with `intake/` also wake the Facts Manager after
+the write commits. Session-scoped `intake/*` facts and shared non-intake facts do
+not enqueue a wake-up; the 6-hour Facts Manager maintenance cron is the fallback
+for missed or unavailable reactive wake-ups.
+
 ## Database Schema
 
 ### Table: `{schema}.facts`

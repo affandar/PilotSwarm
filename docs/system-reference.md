@@ -141,8 +141,9 @@ The orchestration's main loop dispatches on `result.type`:
 | `completed` | LLM finished, has response | Go idle, or arm the active cron schedule before waiting |
 | `wait` | LLM called `wait(seconds, reason, preserveWorkerAffinity?)` | One-shot durable wait; short waits may stay in-process |
 | `cron` | LLM called `cron(seconds, reason)` or `cron(action="cancel")` | Set/update/cancel recurring durable wake-up owned by orchestration |
+| `cron_at` | LLM called `cron_at(minute, hour?, day_of_week?, day_of_month?, tz, reason)` or `cron_at(action="cancel")` | Set/update/cancel wall-clock recurring durable wake-up owned by orchestration |
 | `input_required` | LLM called `ask_user(question)` | Wait for user answer, race with grace period |
-| `spawn_agent` | LLM called `spawn_agent(task)` | Create child session + orchestration |
+| `spawn_agent` | LLM called `spawn_agent(task, contract?)` or `spawn_agent(agent_name, contract?)` | Create child session + orchestration; optional contract is stored as child outcome metadata |
 | `message_agent` | LLM called `message_agent(id, msg)` | Forward to child orchestration |
 | `check_agents` | LLM called `check_agents()` | Return sub-agent status JSON |
 | `wait_for_agents` | LLM called `wait_for_agents(ids)` | Block on child completions |
@@ -182,6 +183,19 @@ Related session-view fields exposed through `PilotSwarmSessionInfo`, `PilotSwarm
 
 - `cronActive` / `cronInterval` / `cronReason`
 - `contextUsage` (token limit, current tokens, utilization, and latest compaction snapshot)
+- `groupId` (session group membership, when assigned or moved through management APIs)
+- `shortSummary` / `summaryState` / `summaryUpdatedAt` (agent-maintained live summary state)
+
+### Base Coordination State
+
+PilotSwarm stores base coordination metadata in CMS without changing existing session lifecycle states:
+
+- `sessions.group_id` links a session to one visual management group; child sessions inherit the nearest ancestor group.
+- `session_groups` stores group title, owner, metadata, and aggregate list counts. Groups are pure containers, not orchestrations or bulk-action sessions.
+- `sessions.short_summary`, `sessions.summary_state`, and `sessions.summary_updated_at` hold the agent-maintained live summary state.
+- `session_child_outcomes` stores the current child contract/result row plus JSON revision history for parent/child coordination.
+
+Management APIs include `createSessionGroup`, `updateSessionGroup`, `listSessionGroups`, `listGroupSessions`, `moveSessionsToGroup`, `deleteSessionGroup`, `updateSessionSummary`, `sendSessionMessage`, and `replySessionMessage`. Group deletion only succeeds after all member sessions have been moved out.
 
 ### PilotSwarmSessionStatus — Session State Machine
 
@@ -249,7 +263,7 @@ ManagedSession injects these tools into every `CopilotSession.send()` call. They
 
 | Tool | Parameters | Behavior |
 |------|-----------|----------|
-| `spawn_agent` | task: string, model?: string, system_message?: string, tool_names?: string[], agent_name?: string | **Aborts turn.** Returns `{ type: "spawn_agent" }`. Orchestration creates child. |
+| `spawn_agent` | task?: string, agent_name?: string, model?: string, reasoning_effort?: string, system_message?: string, tool_names?: string[], title?: string, contract?: object | **Aborts turn.** Returns `{ type: "spawn_agent" }`. Orchestration creates child. `contract` is a named argument for expected facts/artifacts, success criteria, validation mode, and `wakeOn`; there is no separate contract tool. |
 | `message_agent` | agent_id: string, message: string | **Aborts turn.** Returns `{ type: "message_agent" }`. |
 | `check_agents` | — | **Aborts turn.** Returns `{ type: "check_agents" }`. |
 | `wait_for_agents` | agent_ids?: string[] | **Aborts turn.** Returns `{ type: "wait_for_agents" }`. |
@@ -493,10 +507,10 @@ You are a maintenance agent. Your job is to...
 
 | Agent | Purpose | Tools | Behavior |
 |-------|---------|-------|----------|
-| `pilotswarm` | Master orchestrator | Cluster stats, facts, and sub-agent controls | Spawns `sweeper`, `resourcemgr`, and `facts-manager` on startup |
-| `sweeper` | Session cleanup | scan/cleanup/prune tools | Permanent system agent. Uses `cron(seconds=1800, ...)` |
-| `resourcemgr` | Infrastructure monitor | compute/storage/database/runtime tools | Permanent system agent. Uses `cron(seconds=600, ...)` |
-| `facts-manager` | Shared operational knowledge curator | facts + artifact tools | Permanent system agent. Uses `cron()` based on `config/facts-manager/cycle-interval` defaulting to 180 seconds |
+| `pilotswarm` | Master orchestrator | Cluster stats, facts, and sub-agent controls | Worker-managed root system session. No recurring supervision cron; wakes from operator prompts or runtime stimuli. |
+| `sweeper` | Session cleanup | scan/cleanup/prune tools | Permanent system agent. Uses low-frequency maintenance `cron(seconds=21600, reason="scan for stale sessions and prune orchestration history")`. |
+| `resourcemgr` | Infrastructure monitor | compute/storage/database/runtime tools | Permanent system agent. No recurring monitoring cron; wakes from operator prompts or runtime stimuli. |
+| `facts-manager` | Shared operational knowledge curator | facts + artifact tools | Permanent system agent. Reacts to shared `intake/*` writes and keeps low-frequency `cron(seconds=21600, reason="facts-manager maintenance")`. |
 
 ### Skill Format (`SKILL.md`)
 
@@ -645,6 +659,7 @@ ENTRYPOINT ["node", "examples/worker.js"]
 | `getSessionStatus(id)` | Raw live orchestration status + parsed custom status |
 | `waitForStatusChange(id, afterVersion, ...)` | Block until custom status advances |
 | `deleteSession(id)` | Soft-delete + cancel orchestration |
+| `restartSystemSession(agentOrSessionId, { disposition })` | Privileged system-agent reset: `complete`, `terminate`, or `hard_delete` the current deterministic system session, archive it, clear transcript/metrics/session-scoped facts, and start a fresh replacement |
 | `renameSession(id, title)` | Update session title in CMS |
 | `listModels()` / `getModelsByProvider()` | List configured models after env filtering |
 | `getDefaultModel()` | Read the configured default model |
@@ -731,6 +746,21 @@ If the wait depends on node-local state, the agent can instead call `wait_on_wor
 7. if the timer fires, orchestration continueAsNew() with a synthetic system wake-up prompt
 8. the next completed turn re-arms cron automatically until the agent calls cron(action="cancel")
 ```
+
+### Scenario D2: Wall-Clock Cron Wake-Up
+
+```
+1. LLM calls cron_at(minute: 0, hour: 2, tz: "UTC", reason: "nightly audit")
+2. managedSession returns a queued { type: "cron_at", action: "set", schedule }
+3. orchestration records the next-fire calculation through computeCronAtNextFire()
+4. orchestration stores cronAtSchedule with nextFireAtMs / nextOccurrenceKey
+5. orchestration waits until that UTC instant instead of waking repeatedly to check the clock
+6. on timer fire, orchestration emits session.cron_at_fired and runs a synthetic wall-clock wake-up prompt
+7. the agent must perform the scheduled work described by the schedule reason, not merely acknowledge that the schedule resumed
+8. the next completed turn computes and arms the next matching wall-clock instant until cron_at(action="cancel") or max_fires is reached
+```
+
+Shared UI surfaces display wall-clock cron as `cron` with the next fire in the client's local timezone. The internal `cron_at` tool name remains visible in tool/debug data, but session-row badges and sequence/activity wake-up markers use the unified cron label.
 
 ### Scenario E: Sub-Agent Spawn
 

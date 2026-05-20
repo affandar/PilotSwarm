@@ -16,6 +16,7 @@ They are not active in this repository. Copy them into the target repository you
 - `pilotswarm-cli-builder` — CLI/TUI scaffold guidance, env files, launcher scripts
 - `pilotswarm-portal-builder` — portal branding, `plugin.json.portal`, auth add-ons, and deployment wiring
 - `pilotswarm-sdk-builder` — SDK app scaffold guidance, client/worker split, tests
+- `pilotswarm-agent-versioning` — `.agent.md` schema/version frontmatter and version bump guidance
 - `pilotswarm-duroxide-versioning` — durable orchestration versioning, continue-as-new upgrades, compatibility rules
 - `pilotswarm-azure-deployer` — deployment workflow, manifests, env checklist, `RUST_LOG` observability
 - `pilotswarm-aks-identity` — cross-cluster AKS access, Workload Identity, kubectl patterns
@@ -39,6 +40,10 @@ and that PilotSwarm's built-in framework and management plugins are embedded in 
 If the target app needs a custom model catalog, check in `.model_providers.example.json`, create a local gitignored `.model_providers.json` from it, and keep actual credentials in `.env` / `.env.remote`. Runnable scaffolds should copy and adapt PilotSwarm's own example files, set up both `.env` and `.model_providers.json` from those corresponding examples, and add the real files to `.gitignore`.
 
 PilotSwarm includes built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) on workers, and they are available to every agent session by default, including system agents. Use them for durable structured memory and shared cross-agent state instead of inventing an app-specific facts table unless the app truly needs one.
+
+Every generated app `.agent.md` should include `schemaVersion: 1` and a `version` string. Use `version: 1.0.0` for new agents by default, prefer SemVer for app convenience, and bump the version string when changing an existing agent's prompt behavior, tool expectations, workflow guidance, metadata, output shape, or child-contract expectations.
+
+Generated agents should use `cron(seconds=N, reason="...")` for fixed-interval recurring work and `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules. Do not teach agents to wake every N minutes just to check whether a calendar time has arrived. For long-running child sessions, include `contract.wakeOn` guidance so watcher children default to `material_change` instead of waking parents for no-op heartbeats.
 
 Artifact workflows should assume the shared `write_artifact` / `export_artifact` path now handles both text and binary outputs. Builder guidance should preserve `contentType` plus base64 encoding for binary files and explain that the browser portal downloads binary artifacts rather than previewing them inline.
 
@@ -65,6 +70,8 @@ Copy these folders into the target repository:
     ├── pilotswarm-portal-builder/
     │   └── SKILL.md
     ├── pilotswarm-sdk-builder/
+    │   └── SKILL.md
+    ├── pilotswarm-agent-versioning/
     │   └── SKILL.md
     ├── pilotswarm-duroxide-versioning/
     │   └── SKILL.md

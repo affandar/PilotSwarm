@@ -2,8 +2,9 @@ import { describe, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { PortalRuntime } from "../../../portal/runtime.js";
 import { isScrollViewportAtBottom, mergeBoxTableCellFragments } from "../../../ui-react/src/web-app.js";
-import { assert, assertIncludes } from "../helpers/assertions.js";
+import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../..");
@@ -23,6 +24,36 @@ describe("portal browser contracts", () => {
         assert(isScrollViewportAtBottom({ scrollHeight: 1000, clientHeight: 200, scrollTop: 800 }), "an exact bottom scroll position should be bottom-pinned");
         assert(isScrollViewportAtBottom({ scrollHeight: 1000, clientHeight: 200, scrollTop: 799.75 }), "fractional browser scroll noise should still count as bottom-pinned");
         assert(!isScrollViewportAtBottom({ scrollHeight: 1000, clientHeight: 200, scrollTop: 799 }), "scrolling up by a visible pixel should disable bottom-pinning");
+    });
+
+    it("derives group owners from selected session rows when browser payloads are incomplete", async () => {
+        const selectedOwner = {
+            provider: "entra",
+            subject: "selected-user",
+            email: "selected@example.com",
+            displayName: "Selected User",
+        };
+        const authOwner = {
+            provider: "entra",
+            subject: "auth-user",
+            email: "auth@example.com",
+            displayName: "Auth User",
+        };
+        const runtime = new PortalRuntime({ mode: "remote" });
+        runtime.transport = {
+            getSession: async () => ({
+                sessionId: "session-a",
+                owner: selectedOwner,
+            }),
+        };
+
+        const resolved = await runtime.resolveSessionGroupOwner({
+            owner: { displayName: "Selected User" },
+            sessionIds: ["session-a"],
+        }, authOwner);
+
+        assertEqual(resolved.provider, selectedOwner.provider, "selected session owner provider should win");
+        assertEqual(resolved.subject, selectedOwner.subject, "selected session owner subject should win");
     });
 
     it("supports browser-native artifact uploads through the portal transport", () => {

@@ -12,11 +12,12 @@ import {
     refreshTrackedSubAgents,
 } from "./agents.js";
 import {
+    applyCronAtAction,
     applyCronAction,
     continueInput,
     continueInputWithPrompt,
     dehydrateForNextTurn,
-    drainLeadingQueuedCronActions,
+    drainLeadingQueuedScheduleActions,
     ensureTaskContext,
     maybeCheckpoint,
     maybeSummarize,
@@ -25,6 +26,8 @@ import {
     wrapWithResumeContext,
     writeLatestResponse,
 } from "./lifecycle.js";
+import { describeCronAt } from "../cron-at.js";
+import { shouldWakeParentForChildUpdate } from "../child-notifications.js";
 import {
     INTERNAL_SYSTEM_TURN_PROMPT,
     MAX_RETRIES,
@@ -349,7 +352,7 @@ export function* processPrompt(
         state.pendingToolActions.push(...(result as any).queuedActions);
         ctx.traceInfo(`[orch] queued ${(result as any).queuedActions.length} extra action(s) from turn`);
     }
-    drainLeadingQueuedCronActions(runtime, prompt);
+    yield* drainLeadingQueuedScheduleActions(runtime, prompt);
 
     yield* handleTurnResult(runtime, result, prompt);
 }
@@ -423,14 +426,25 @@ export function* handleTurnResult(
             });
 
             if (options.parentSessionId) {
-                try {
-                    yield runtime.manager.sendToSession(options.parentSessionId,
-                        `[CHILD_UPDATE from=${runtime.input.sessionId} type=completed iter=${state.iteration}]\n${result.content.slice(0, 2000)}`);
-                } catch (err: any) {
-                    ctx.traceInfo(`[orch] sendToSession(parent) failed: ${err.message} (non-fatal)`);
+                const wakeDecision = shouldWakeParentForChildUpdate({
+                    update: { kind: "completed", summary: result.content },
+                    contract: state.config.childContract,
+                });
+                if (wakeDecision.wake) {
+                    try {
+                        yield runtime.manager.sendToSession(options.parentSessionId,
+                            `[CHILD_UPDATE from=${runtime.input.sessionId} type=completed iter=${state.iteration}]\n${result.content.slice(0, 2000)}`);
+                    } catch (err: any) {
+                        ctx.traceInfo(`[orch] sendToSession(parent) failed: ${err.message} (non-fatal)`);
+                    }
+                } else {
+                    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                        eventType: "session.child_update_suppressed",
+                        data: { direction: "child_to_parent", updateType: "completed", ...wakeDecision },
+                    }]);
                 }
 
-                if (runtime.input.isSystem && !state.cronSchedule) {
+                if (runtime.input.isSystem && !state.cronSchedule && !state.cronAtSchedule) {
                     ctx.traceInfo(`[orch] system sub-agent completed turn, continuing loop`);
                     yield* maybeCheckpoint(runtime);
                     return;
@@ -440,7 +454,7 @@ export function* handleTurnResult(
             // Forgotten-timer safety net
             {
                 const runningAgents = state.subAgents.filter(a => a.status === "running");
-                if (runningAgents.length > 0 && !runtime.input.forgottenTimerNudged && !state.cronSchedule) {
+                if (runningAgents.length > 0 && !runtime.input.forgottenTimerNudged && !state.cronSchedule && !state.cronAtSchedule) {
                     const names = runningAgents.map(a => a.task?.slice(0, 40) || a.orchId).join(", ");
                     ctx.traceInfo(`[orch] forgotten-timer safety: ${runningAgents.length} agents still running, nudging LLM`);
                     yield* versionedContinueAsNew(runtime, continueInputWithPrompt(runtime,
@@ -550,6 +564,68 @@ export function* handleTurnResult(
                 return;
             }
 
+            if (state.cronAtSchedule) {
+                const activeCronAt = { ...state.cronAtSchedule };
+                if (activeCronAt.maxFires !== undefined && activeCronAt.firesCompleted >= activeCronAt.maxFires) {
+                    state.cronAtSchedule = undefined;
+                    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                        eventType: "session.cron_at_completed",
+                        data: { reason: activeCronAt.reason, firesCompleted: activeCronAt.firesCompleted, maxFires: activeCronAt.maxFires },
+                    }]);
+                    return;
+                }
+
+                const nowMs: number = yield ctx.utcNow();
+                let nextFireAtMs = activeCronAt.nextFireAtMs;
+                let nextOccurrenceKey = activeCronAt.nextOccurrenceKey;
+                if (!nextFireAtMs || !nextOccurrenceKey) {
+                    const nextFire = yield runtime.manager.computeCronAtNextFire(activeCronAt, nowMs, activeCronAt.lastOccurrenceKey);
+                    nextFireAtMs = nextFire.nextFireAtMs;
+                    nextOccurrenceKey = nextFire.occurrenceKey;
+                    state.cronAtSchedule = {
+                        ...activeCronAt,
+                        nextFireAtMs,
+                        nextOccurrenceKey,
+                    };
+                }
+                if (nextFireAtMs === undefined || !nextOccurrenceKey) {
+                    throw new Error("cron_at next-fire computation did not return a fire time");
+                }
+
+                const waitMs = Math.max(0, nextFireAtMs - nowMs);
+                const waitSeconds = Math.max(0, Math.ceil(waitMs / 1000));
+                const cronAtPlan = planWaitHandling({
+                    blobEnabled: state.blobEnabled,
+                    seconds: waitSeconds,
+                    dehydrateThreshold: options.dehydrateThreshold,
+                });
+                if (cronAtPlan.shouldDehydrate) {
+                    yield* dehydrateForNextTurn(runtime, "cron_at", cronAtPlan.resetAffinityOnDehydrate);
+                }
+                yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                    eventType: "session.cron_at_started",
+                    data: {
+                        ...state.cronAtSchedule,
+                        nextFireAt: new Date(nextFireAtMs).toISOString(),
+                    },
+                }]);
+                publishStatus(runtime, "waiting", {
+                    waitSeconds,
+                    waitReason: activeCronAt.reason,
+                    waitStartedAt: nowMs,
+                });
+                if (!cronAtPlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
+
+                state.activeTimer = {
+                    deadlineMs: nowMs + waitMs,
+                    originalDurationMs: waitMs,
+                    reason: activeCronAt.reason,
+                    type: "cron_at",
+                    shouldRehydrate: cronAtPlan.shouldDehydrate,
+                };
+                return;
+            }
+
             if (!state.blobEnabled || options.idleTimeout < 0) {
                 yield* maybeCheckpoint(runtime);
                 return;
@@ -571,19 +647,34 @@ export function* handleTurnResult(
             applyCronAction(runtime, result, sourcePrompt);
             return;
 
+        case "cron_at":
+            yield* applyCronAtAction(runtime, result, sourcePrompt);
+            return;
+
         case "wait": {
             state.interruptedWaitTimer = null;
             ensureTaskContext(runtime, sourcePrompt);
 
             if (options.parentSessionId) {
-                try {
-                    const notifyContent = result.content
-                        ? result.content.slice(0, 2000)
-                        : `[wait: ${result.reason} (${result.seconds}s)]`;
-                    yield runtime.manager.sendToSession(options.parentSessionId,
-                        `[CHILD_UPDATE from=${runtime.input.sessionId} type=wait iter=${state.iteration}]\n${notifyContent}`);
-                } catch (err: any) {
-                    ctx.traceInfo(`[orch] sendToSession(parent) wait failed: ${err.message} (non-fatal)`);
+                const notifyContent = result.content
+                    ? result.content.slice(0, 2000)
+                    : `[wait: ${result.reason} (${result.seconds}s)]`;
+                const wakeDecision = shouldWakeParentForChildUpdate({
+                    update: { kind: "wait", summary: notifyContent },
+                    contract: state.config.childContract,
+                });
+                if (wakeDecision.wake) {
+                    try {
+                        yield runtime.manager.sendToSession(options.parentSessionId,
+                            `[CHILD_UPDATE from=${runtime.input.sessionId} type=wait iter=${state.iteration}]\n${notifyContent}`);
+                    } catch (err: any) {
+                        ctx.traceInfo(`[orch] sendToSession(parent) wait failed: ${err.message} (non-fatal)`);
+                    }
+                } else {
+                    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                        eventType: "session.child_update_suppressed",
+                        data: { direction: "child_to_parent", updateType: "wait", ...wakeDecision },
+                    }]);
                 }
             }
 
@@ -771,6 +862,60 @@ export function* processTimer(
                 );
             } else {
                 yield* processPrompt(runtime, cronPrompt, true);
+            }
+            return;
+        }
+        case "cron_at": {
+            const activeCronAt = state.cronAtSchedule;
+            if (!activeCronAt) {
+                ctx.traceInfo("[orch] cron_at timer fired but no active cronAtSchedule exists");
+                return;
+            }
+            const scheduledAtMs = activeCronAt.nextFireAtMs ?? timer.deadlineMs;
+            const occurrenceKey = activeCronAt.nextOccurrenceKey;
+            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                eventType: "session.cron_at_fired",
+                data: {
+                    scheduledAt: new Date(scheduledAtMs).toISOString(),
+                    occurrenceKey,
+                    tz: activeCronAt.tz,
+                    minute: activeCronAt.minute,
+                    hour: activeCronAt.hour,
+                    dayOfWeek: activeCronAt.dayOfWeek,
+                    dayOfMonth: activeCronAt.dayOfMonth,
+                    firesCompleted: activeCronAt.firesCompleted + 1,
+                },
+            }]);
+            const firedSchedule = {
+                ...activeCronAt,
+                firesCompleted: activeCronAt.firesCompleted + 1,
+                ...(occurrenceKey ? { lastOccurrenceKey: occurrenceKey } : {}),
+                nextFireAtMs: undefined,
+                nextOccurrenceKey: undefined,
+            };
+            const finalFire = firedSchedule.maxFires !== undefined && firedSchedule.firesCompleted >= firedSchedule.maxFires;
+            state.cronAtSchedule = finalFire ? undefined : firedSchedule;
+            if (finalFire) {
+                yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                    eventType: "session.cron_at_completed",
+                    data: { reason: firedSchedule.reason, firesCompleted: firedSchedule.firesCompleted, maxFires: firedSchedule.maxFires },
+                }]);
+            }
+            const description = describeCronAt(activeCronAt);
+            const cronAtPrompt =
+                `[SYSTEM: Scheduled wall-clock cron wake-up for "${activeCronAt.reason}". ` +
+                `Schedule: ${description}. Scheduled fire: ${new Date(scheduledAtMs).toISOString()}. ` +
+                `Resume your recurring task now.]`;
+            if (timer.shouldRehydrate) {
+                yield* processPrompt(
+                    runtime,
+                    wrapWithResumeContext(runtime, "Resume your recurring task.",
+                        `Scheduled wall-clock cron wake-up for "${activeCronAt.reason}". ` +
+                        `Schedule: ${description}. Scheduled fire: ${new Date(scheduledAtMs).toISOString()}.`),
+                    true,
+                );
+            } else {
+                yield* processPrompt(runtime, cronAtPrompt, true);
             }
             return;
         }

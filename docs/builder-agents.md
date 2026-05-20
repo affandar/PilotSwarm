@@ -17,6 +17,7 @@ That folder is intentionally non-active. Nothing there is loaded into this repos
 - `pilotswarm-cli-builder`
 - `pilotswarm-portal-builder`
 - `pilotswarm-sdk-builder`
+- `pilotswarm-agent-versioning`
 - `pilotswarm-azure-deployer`
 
 ## Included Skills
@@ -24,6 +25,7 @@ That folder is intentionally non-active. Nothing there is loaded into this repos
 - `pilotswarm-cli-builder`
 - `pilotswarm-portal-builder`
 - `pilotswarm-sdk-builder`
+- `pilotswarm-agent-versioning`
 - `pilotswarm-azure-deployer`
 - `pilotswarm-aks-identity`
 - `pilotswarm-azure-lessons`
@@ -82,6 +84,9 @@ Builder templates should assume:
 - app `default.agent.md` files are overlays layered under the embedded PilotSwarm framework base
 - if an app needs a custom model catalog, check in `.model_providers.example.json`, create a local gitignored `.model_providers.json` from it, and keep provider keys in `.env` / `.env.remote`
 - builder templates should scaffold both `.env.example` and `.model_providers.example.json` from PilotSwarm's own example-file shape, then create local `.env` / `.model_providers.json` copies and add those real files to `.gitignore`
+- every generated app `.agent.md` should include `schemaVersion: 1` and a `version` string; new agents should default to `version: 1.0.0`, and edits to existing agents should bump the version string according to the app's versioning style
+- generated recurring agents should use `cron(seconds=N, reason="...")` for fixed intervals and `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules; do not build wall-clock jobs with wake-and-check polling loops
+- generated delegation flows should document `contract.wakeOn` for child sessions: `any` for chatty short-lived work, `material_change` for watchers, and `completion` for done/blocked/error-only children
 - Azure deployment guidance should prefer `kubectl create secret generic ... --from-env-file=...` when semicolon-bearing values such as Azure Storage connection strings are involved
 - builder guidance should treat `write_artifact` / `export_artifact` as the canonical text-and-binary artifact path, using `contentType` plus base64 encoding for binary files and documenting download-only browser behavior for non-text previews
 

@@ -10,6 +10,9 @@ const RESERVED_READ_PREFIXES = ["intake/"];
 const RESERVED_DELETE_PREFIXES = ["intake/", "skills/", "asks/", "config/facts-manager/"];
 
 function checkNamespaceWrite(key: string, agentIdentity?: string): string | null {
+    if (agentIdentity === TUNER_AGENT_ID) {
+        return "Error: agent-tuner sessions are read-only and cannot store facts.";
+    }
     for (const prefix of RESERVED_WRITE_PREFIXES) {
         if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved for the Facts Manager. ` +
@@ -25,7 +28,7 @@ function checkNamespaceRead(keyPattern: string | undefined, agentIdentity?: stri
     const normalized = keyPattern.replace(/\*/g, "%");
     for (const prefix of RESERVED_READ_PREFIXES) {
         if ((normalized.startsWith(prefix) || normalized.startsWith(prefix.replace("/", "/%"))) &&
-            agentIdentity !== FACTS_MANAGER_AGENT_ID) {
+            agentIdentity !== FACTS_MANAGER_AGENT_ID && agentIdentity !== TUNER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is not readable by task agents. ` +
                 `Read curated skills from 'skills/' or open asks from 'asks/' instead.`;
         }
@@ -34,6 +37,9 @@ function checkNamespaceRead(keyPattern: string | undefined, agentIdentity?: stri
 }
 
 function checkNamespaceDelete(key: string, agentIdentity?: string): string | null {
+    if (agentIdentity === TUNER_AGENT_ID) {
+        return "Error: agent-tuner sessions are read-only and cannot delete facts.";
+    }
     for (const prefix of RESERVED_DELETE_PREFIXES) {
         if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved. Only the Facts Manager can delete from it.`;
@@ -54,8 +60,24 @@ export function createFactTools(opts: {
      * skill-usage stats. Errors are swallowed; tool behavior is unaffected.
      */
     recordEvent?: (sessionId: string, eventType: string, data: unknown) => Promise<void>;
+    /** Optional hook invoked after a successful shared intake/* write. */
+    onSharedIntakeFactStored?: (input: { key: string; sourceSessionId: string | null; agentId: string | null }) => Promise<void>;
 }): Tool<any>[] {
-    const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent } = opts;
+    const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent, onSharedIntakeFactStored } = opts;
+
+    const filterReservedReadFacts = (result: any) => {
+        if (agentIdentity === FACTS_MANAGER_AGENT_ID || agentIdentity === TUNER_AGENT_ID) return result;
+        if (!result || !Array.isArray(result.facts)) return result;
+        const facts = result.facts.filter((fact: any) => {
+            const key = String(fact?.key || "");
+            return !RESERVED_READ_PREFIXES.some((prefix) => key.startsWith(prefix));
+        });
+        return {
+            ...result,
+            facts,
+            count: facts.length,
+        };
+    };
 
     const storeTool = defineTool("store_fact", {
         description:
@@ -99,6 +121,13 @@ export function createFactTools(opts: {
                 sessionId: ctx?.sessionId ?? null,
                 agentId: ctx?.agentId ?? null,
             });
+            if (result.shared && args.key.startsWith("intake/") && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
+                await onSharedIntakeFactStored?.({
+                    key: args.key,
+                    sourceSessionId: ctx?.sessionId ?? null,
+                    agentId: ctx?.agentId ?? null,
+                }).catch(() => {});
+            }
             return {
                 ...result,
                 scope: result.shared ? "shared" : "session",
@@ -235,7 +264,7 @@ export function createFactTools(opts: {
                         }).catch(() => { /* swallow — best-effort */ });
                     }
                 }
-                return result;
+                return filterReservedReadFacts(result);
             });
         },
     });

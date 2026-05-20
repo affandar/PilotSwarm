@@ -89,6 +89,57 @@ async function testFactToolsStoreReadDelete(env) {
     }
 }
 
+async function testSharedIntakeHook(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+    const intakeWrites = [];
+
+    try {
+        const [storeFact, readFacts] = createFactTools({
+            factStore,
+            onSharedIntakeFactStored: async (input) => {
+                intakeWrites.push(input);
+            },
+        });
+
+        await storeFact.handler(
+            { key: "intake/build/linker/session-a", value: { outcome: "observation" }, shared: true },
+            { sessionId: "session-a", agentId: "builder" },
+        );
+        await storeFact.handler(
+            { key: "intake/build/private", value: { outcome: "observation" }, shared: false },
+            { sessionId: "session-a", agentId: "builder" },
+        );
+        await storeFact.handler(
+            { key: "notes/build/linker", value: { outcome: "observation" }, shared: true },
+            { sessionId: "session-a", agentId: "builder" },
+        );
+
+        assertEqual(intakeWrites.length, 1, "Only shared intake facts should trigger the hook");
+        assertEqual(intakeWrites[0].key, "intake/build/linker/session-a", "Hook should include intake key");
+        assertEqual(intakeWrites[0].sourceSessionId, "session-a", "Hook should include source session");
+
+        const broadSharedRead = await readFacts.handler(
+            { scope: "shared" },
+            { sessionId: "session-a" },
+        );
+        assertEqual(broadSharedRead.count, 1, "task-agent broad shared reads should exclude reserved intake facts");
+        assertEqual(broadSharedRead.facts[0].key, "notes/build/linker", "non-reserved shared fact should remain readable");
+
+        const [, factsManagerRead] = createFactTools({
+            factStore,
+            agentIdentity: "facts-manager",
+        });
+        const managerRead = await factsManagerRead.handler(
+            { scope: "shared", key_pattern: "intake/%" },
+            { sessionId: "facts-manager" },
+        );
+        assertEqual(managerRead.count, 1, "facts-manager should read reserved intake facts");
+    } finally {
+        await factStore.close();
+    }
+}
+
 async function testDeleteSessionCleansSessionFacts(env) {
     const worker = new PilotSwarmWorker({
         store: env.store,
@@ -618,17 +669,17 @@ async function testTunerUnrestrictedReads(env) {
         console.log("  tuner pattern read total:", tunerAll.count, "rows");
         assertEqual(tunerAll.count, 4, "tuner pattern read sees every fact in the schema");
 
-        // Namespace WRITE gate is still active for tuner (sanity).
+        // Tuner is read-only and cannot write facts at all.
         const [tunerStore] = createFactTools({
             factStore,
             agentIdentity: "agent-tuner",
         });
         const writeBlocked = await tunerStore.handler(
-            { key: "skills/should-not-write", value: { v: 0 } },
+            { key: "notes/should-not-write", value: { v: 0 } },
             { sessionId: tunerSession, agentId: "agent-tuner" },
         );
-        assert(writeBlocked.error, "tuner write to skills/ namespace must still be blocked");
-        assert(/reserved for the Facts Manager/.test(writeBlocked.error), "tuner sees the standard reservation error");
+        assert(writeBlocked.error, "tuner writes must be blocked");
+        assert(/read-only/.test(writeBlocked.error), "tuner sees read-only write error");
     } finally {
         await factStore.close();
     }
@@ -639,6 +690,10 @@ describe("Level 3/4: Facts", () => {
 
     it("facts tools store, read, and delete with shared/session semantics", { timeout: TIMEOUT }, async () => {
         await testFactToolsStoreReadDelete(getEnv());
+    });
+
+    it("shared intake writes trigger the facts-manager hook", { timeout: TIMEOUT }, async () => {
+        await testSharedIntakeHook(getEnv());
     });
 
     it("deleteSession removes session facts but keeps shared facts", { timeout: TIMEOUT }, async () => {

@@ -11,7 +11,7 @@ export interface ActiveTimer {
     deadlineMs: number;
     originalDurationMs: number;
     reason: string;
-    type: "wait" | "cron" | "idle" | "agent-poll" | "input-grace";
+    type: "wait" | "cron" | "cron_at" | "idle" | "agent-poll" | "input-grace";
     shouldRehydrate?: boolean;
     waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
     content?: string;
@@ -26,6 +26,7 @@ export type PendingShutdownState = NonNullable<OrchestrationInput["pendingShutdo
 export type PendingChildDigest = NonNullable<OrchestrationInput["pendingChildDigest"]>;
 export type PendingInputQuestion = NonNullable<OrchestrationInput["pendingInputQuestion"]>;
 export type CronSchedule = NonNullable<OrchestrationInput["cronSchedule"]>;
+export type CronAtSchedule = NonNullable<OrchestrationInput["cronAtSchedule"]>;
 
 export interface InterruptedWaitTimer {
     remainingSec: number;
@@ -67,6 +68,7 @@ export interface DurableSessionState {
 
     taskContext?: string;
     cronSchedule?: CronSchedule;
+    cronAtSchedule?: CronAtSchedule;
     nextSummarizeAt: number;
 
     contextUsage?: SessionContextUsage;
@@ -198,6 +200,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
         taskContext: input.taskContext,
         cronSchedule: input.cronSchedule ? { ...input.cronSchedule } : undefined,
+        cronAtSchedule: input.cronAtSchedule ? { ...input.cronAtSchedule } : undefined,
         nextSummarizeAt: input.nextSummarizeAt ?? 0,
 
         contextUsage: cloneContextUsage(input.contextUsage),

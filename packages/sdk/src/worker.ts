@@ -4,13 +4,13 @@ import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
 import { registerActivities } from "./session-proxy.js";
 import {
-    DURABLE_SESSION_LATEST_VERSION,
     DURABLE_SESSION_ORCHESTRATION_NAME,
     DURABLE_SESSION_ORCHESTRATION_REGISTRY,
 } from "./orchestration-registry.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { SessionCatalogProvider } from "./cms.js";
-import { loadAgentFiles, systemAgentUUID, systemChildAgentUUID } from "./agent-loader.js";
+import { loadAgentFiles } from "./agent-loader.js";
+import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
@@ -18,9 +18,10 @@ import { createFactStoreForUrl, PgFactStore, type FactStore } from "./facts-stor
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
+import { buildSchemaIdentifier } from "./prompt-layers.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
-import type { PilotSwarmWorkerOptions, ManagedSessionConfig, OrchestrationInput, SerializableSessionConfig } from "./types.js";
+import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -46,46 +47,7 @@ function parsePositiveInt(raw: unknown): number | undefined {
     return Math.floor(normalized);
 }
 
-export function buildSystemAgentBootstrapPayload(
-    agent: AgentConfig,
-    defaultModel: string,
-    opts: {
-        sessionId: string;
-        blobEnabled?: boolean;
-        dehydrateThreshold: number;
-        parentSessionId?: string;
-    },
-): {
-    serializableConfig: SerializableSessionConfig;
-    input: OrchestrationInput;
-} {
-    const serializableConfig: SerializableSessionConfig = {
-        model: defaultModel,
-        boundAgentName: agent.name,
-        agentIdentity: agent.id,
-        promptLayering: {
-            kind: agent.promptLayerKind ?? (agent.namespace === "pilotswarm" ? "pilotswarm-system-agent" : "app-system-agent"),
-        },
-        toolNames: agent.tools ?? undefined,
-    };
-
-    const input: OrchestrationInput = {
-        sessionId: opts.sessionId,
-        config: serializableConfig,
-        sourceOrchestrationVersion: DURABLE_SESSION_LATEST_VERSION,
-        iteration: 0,
-        ...(agent.initialPrompt ? { prompt: agent.initialPrompt, bootstrapPrompt: true } : {}),
-        blobEnabled: opts.blobEnabled,
-        dehydrateThreshold: opts.dehydrateThreshold,
-        idleTimeout: -1,
-        inputGracePeriod: -1,
-        isSystem: true,
-        agentId: agent.id,
-        ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId } : {}),
-    };
-
-    return { serializableConfig, input };
-}
+export { buildSystemAgentBootstrapPayload } from "./system-agents.js";
 
 /**
  * PilotSwarmWorker — runs activities and orchestrations.
@@ -180,7 +142,11 @@ export class PilotSwarmWorker {
     /** System agents loaded from plugins — started automatically on worker start. */
     private _loadedSystemAgents: AgentConfig[] = [];
     /** Prompt lookup used for direct named/system sessions. */
-    private _agentPromptLookup: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = {};
+    private _agentPromptLookup: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; descriptor?: import("./prompt-layers.js").PromptLayerDescriptor }> = {};
+    /** Descriptor for the PilotSwarm framework base layer (from system default.agent.md). */
+    private _frameworkBaseDescriptor: import("./prompt-layers.js").PromptLayerDescriptor | null = null;
+    /** Descriptor for the app default layer (from app default.agent.md or inline config). */
+    private _appDefaultDescriptor: import("./prompt-layers.js").PromptLayerDescriptor | null = null;
     /** Session creation policy loaded from session-policy.json. */
     private _sessionPolicy: import("./types.js").SessionPolicy | null = null;
 
@@ -236,6 +202,8 @@ export class PilotSwarmWorker {
                 appDefaultToolNames: this._appDefaultToolNames,
                 systemMessage: this._frameworkBasePrompt ?? undefined,
                 agentPromptLookup: this._agentPromptLookup,
+                frameworkBaseDescriptor: this._frameworkBaseDescriptor ?? undefined,
+                appDefaultDescriptor: this._appDefaultDescriptor ?? undefined,
                 skillDirectories: this._loadedSkillDirs,
                 customAgents: this._loadedAgents,
                 mcpServers: this._loadedMcpServers,
@@ -648,9 +616,11 @@ export class PilotSwarmWorker {
         if (this.config.customAgents?.length) {
             for (const agent of this.config.customAgents) {
                 this._rawLoadedAgents.push({ ...agent, promptLayerKind: "app-agent" });
+                const descriptor = this._buildLayerDescriptor(agent as any, "app", "inline");
                 this._agentPromptLookup[agent.name] = {
                     prompt: agent.prompt,
                     kind: "app-agent",
+                    descriptor,
                 };
             }
         }
@@ -688,6 +658,47 @@ export class PilotSwarmWorker {
     /**
      * Load agents, skills, MCP config, and session policy from a single plugin directory.
      */
+    /**
+     * Build a `PromptLayerDescriptor` from an authored agent config.
+     *
+     * Source of truth is the .agent.md frontmatter (`schemaVersion`, `version`,
+     * `name`, `system`). Missing frontmatter falls back to safe defaults
+     * (`schemaVersion=1`, `version="0.0.0"`).
+     */
+    private _buildLayerDescriptor(
+        agent: { name: string; namespace?: string; system?: boolean; schemaVersion?: number; version?: string; sourcePath?: string },
+        layer: "system" | "management" | "app",
+        namespace: string,
+    ): import("./prompt-layers.js").PromptLayerDescriptor {
+        const isInline = namespace === "inline";
+        const isSystemAuthored = !isInline && (layer === "system" || layer === "management" || Boolean(agent.system));
+        const layerKind: import("./prompt-layers.js").PromptLayerKind =
+            agent.name === "default"
+                ? (layer === "system" ? "pilotswarm_base" : "app_base")
+                : "agent";
+        const schemaVersion = isInline && agent.schemaVersion === undefined
+            ? "inline"
+            : agent.schemaVersion === undefined
+                ? "legacy"
+                : buildSchemaIdentifier(agent.schemaVersion);
+        const version = isInline && !agent.version
+            ? "inline"
+            : (agent.version && agent.version.trim()) || "unversioned";
+        const ns = namespace || agent.namespace || "unknown";
+        return {
+            layerKind,
+            layerId: `${ns}:${agent.name}`,
+            name: agent.name,
+            schemaVersion,
+            version,
+            type: isSystemAuthored ? "system" : "app",
+            ...(agent.sourcePath ? { source: agent.sourcePath } : {}),
+        };
+    }
+
+    /**
+     * Load agents, skills, MCP config, and session policy from a single plugin directory.
+     */
     private _loadPluginDir(absDir: string, layer: "system" | "management" | "app"): void {
         if (!fs.existsSync(absDir)) return;
 
@@ -713,19 +724,23 @@ export class PilotSwarmWorker {
             const agents = loadAgentFiles(agentsDir);
             for (const agent of agents) {
                 agent.namespace = namespace;
+                const descriptor = this._buildLayerDescriptor(agent, layer, namespace);
                 if (agent.name === "default") {
                     if (layer === "system") {
                         this._frameworkBasePrompt = agent.prompt;
                         this._frameworkBaseToolNames = agent.tools ?? [];
+                        this._frameworkBaseDescriptor = descriptor;
                     } else if (layer === "app") {
                         this._appDefaultPrompt = agent.prompt;
                         this._appDefaultToolNames = agent.tools ?? [];
+                        this._appDefaultDescriptor = descriptor;
                     }
                 } else if (agent.system) {
                     agent.promptLayerKind = layer === "management" ? "pilotswarm-system-agent" : "app-system-agent";
                     this._agentPromptLookup[agent.name] = {
                         prompt: agent.prompt,
                         kind: agent.promptLayerKind,
+                        descriptor,
                     };
                     this._loadedSystemAgents.push(agent);
                 } else {
@@ -733,6 +748,7 @@ export class PilotSwarmWorker {
                     this._agentPromptLookup[agent.name] = {
                         prompt: agent.prompt,
                         kind: "app-agent",
+                        descriptor,
                     };
                     this._rawLoadedAgents.push(agent);
                 }
@@ -777,126 +793,16 @@ export class PilotSwarmWorker {
                 "Implicit fallback model selection is disabled.",
             );
         }
-
-        const systemAgentsById = new Map(
-            this._loadedSystemAgents
-                .filter((agent): agent is AgentConfig & { id: string } => Boolean(agent.id))
-                .map(agent => [agent.id, agent]),
-        );
-        const sessionIdCache = new Map<string, string>();
-        const depthCache = new Map<string, number>();
-        const resolvingSessionIds = new Set<string>();
-
-        const resolveSystemSessionId = (agent: AgentConfig & { id: string }): string => {
-            const cached = sessionIdCache.get(agent.id);
-            if (cached) return cached;
-            if (resolvingSessionIds.has(agent.id)) {
-                throw new Error(`Cyclic system-agent parent graph detected at "${agent.id}"`);
-            }
-            resolvingSessionIds.add(agent.id);
-            const sessionId = agent.parent
-                ? systemChildAgentUUID(
-                    systemAgentsById.get(agent.parent)
-                        ? resolveSystemSessionId(systemAgentsById.get(agent.parent)!)
-                        : systemAgentUUID(agent.parent),
-                    agent.id,
-                )
-                : systemAgentUUID(agent.id);
-            resolvingSessionIds.delete(agent.id);
-            sessionIdCache.set(agent.id, sessionId);
-            return sessionId;
-        };
-
-        const resolveDepth = (agent: AgentConfig & { id: string }): number => {
-            const cached = depthCache.get(agent.id);
-            if (cached != null) return cached;
-            const depth = agent.parent && systemAgentsById.get(agent.parent)
-                ? resolveDepth(systemAgentsById.get(agent.parent)!) + 1
-                : 0;
-            depthCache.set(agent.id, depth);
-            return depth;
-        };
-
-        const orderedAgents = this._loadedSystemAgents
-            .filter((agent): agent is AgentConfig & { id: string } => Boolean(agent.id))
-            .sort((a, b) => resolveDepth(a) - resolveDepth(b));
-
-        for (const agent of orderedAgents) {
-            if (!agent.id) continue;
-
-            const sessionId = resolveSystemSessionId(agent);
-            const orchestrationId = `session-${sessionId}`;
-            const parentSessionId = agent.parent
-                ? (systemAgentsById.get(agent.parent)
-                    ? resolveSystemSessionId(systemAgentsById.get(agent.parent)!)
-                    : systemAgentUUID(agent.parent))
-                : undefined;
-
-            try {
-                // Check if this system agent's session already exists in CMS
-                let existingRow = null;
-                try {
-                    existingRow = await this._catalog.getSession(sessionId);
-                } catch { /* not found */ }
-
-                if (existingRow) {
-                    if (existingRow.model && existingRow.model !== defaultModel) {
-                        console.warn(
-                            `[PilotSwarmWorker] System agent ${agent.name} is reusing persisted session ${sessionId.slice(0, 8)} ` +
-                            `with model ${existingRow.model}, while configured defaultModel is ${defaultModel}. ` +
-                            `Reset the system session if you want it recreated under the configured default.`,
-                        );
-                    }
-                    // Already created — nothing to do. The orchestration is either
-                    // running or will be picked up by the runtime.
-                    continue;
-                }
-
-                const { input } = buildSystemAgentBootstrapPayload(agent, defaultModel, {
-                    sessionId,
-                    blobEnabled: this.blobEnabled,
-                    dehydrateThreshold: this.config.waitThreshold,
-                    ...(parentSessionId ? { parentSessionId } : {}),
-                });
-
-                // Create CMS entry (root agents have no parent)
-                await this._catalog.createSession(sessionId, {
-                    model: defaultModel,
-                    ...(parentSessionId ? { parentSessionId } : {}),
-                    isSystem: true,
-                    agentId: agent.id,
-                    splash: agent.splash ?? undefined,
-                });
-                // Set title immediately — prefer explicit title, fallback to capitalized name + "Agent"
-                const title = agent.title ?? (agent.name.charAt(0).toUpperCase() + agent.name.slice(1) + " Agent");
-                await this._catalog.updateSession(sessionId, { title });
-
-                // Start the duroxide orchestration
-                await duroxideClient.startOrchestrationVersioned(
-                    orchestrationId,
-                    DURABLE_SESSION_ORCHESTRATION_NAME,
-                    input,
-                    DURABLE_SESSION_LATEST_VERSION,
-                );
-
-                // Update CMS with orchestration ID
-                await this._catalog.updateSession(sessionId, {
-                    orchestrationId,
-                    state: "running",
-                    lastActiveAt: new Date(),
-                });
-
-                // Use stderr so background startup logs do not corrupt the TUI's stdout.
-                console.error(`[PilotSwarmWorker] System agent started: ${agent.name} (${sessionId.slice(0, 8)})`);
-            } catch (err: any) {
-                // Likely already exists (race with another worker) — not an error
-                if (err.message?.includes("already exists") || err.message?.includes("duplicate")) {
-                    continue;
-                }
-                console.warn(`[PilotSwarmWorker] System agent ${agent.name} start failed: ${err.message}`);
-            }
-        }
-
+        await startSystemAgents({
+            catalog: this._catalog,
+            duroxideClient,
+            agents: this._loadedSystemAgents,
+            defaultModel,
+            blobEnabled: this.blobEnabled,
+            dehydrateThreshold: this.config.waitThreshold,
+            log: (message) => console.error(message),
+            warn: (message) => console.warn(message),
+        });
     }
 
     private async _createProvider(): Promise<any> {

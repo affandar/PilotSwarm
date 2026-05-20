@@ -5,6 +5,8 @@ import type {
     SystemPromptSection,
 } from "@github/copilot-sdk";
 import type { SerializableSessionConfig } from "./types.js";
+import type { PromptLayerDescriptor } from "./prompt-layers.js";
+import { renderPromptLayerManifest } from "./prompt-layers.js";
 
 export type PromptLayeringKind = NonNullable<SerializableSessionConfig["promptLayering"]>["kind"];
 
@@ -14,6 +16,8 @@ export interface ComposeSystemPromptOptions {
     activeAgentPrompt?: string | null;
     runtimeContext?: string | null;
     includeAppDefault?: boolean;
+    /** Optional authored layer descriptors. When present, a layer manifest is rendered above the framework header. */
+    layerManifest?: ReadonlyArray<PromptLayerDescriptor> | null;
 }
 
 export interface ComposeStructuredSystemMessageOptions extends ComposeSystemPromptOptions {
@@ -75,9 +79,17 @@ export function buildPromptLayerSections(
     const activeAgentPrompt = normalizeSection(options.activeAgentPrompt);
     const runtimeContext = normalizeSection(options.runtimeContext);
     const lastInstructions = mergePromptSections([activeAgentPrompt, runtimeContext]);
+    const manifest = options.layerManifest && options.layerManifest.length > 0
+        ? renderPromptLayerManifest(options.layerManifest)
+        : undefined;
 
     if (frameworkBase) {
-        sections.custom_instructions = { action: "replace", content: frameworkBase };
+        // Prepend the manifest above the framework base so the model sees the
+        // authored layer stack at the top of the highest-priority section.
+        const content = manifest ? `${manifest}\n\n${frameworkBase}` : frameworkBase;
+        sections.custom_instructions = { action: "replace", content };
+    } else if (manifest) {
+        sections.custom_instructions = { action: "replace", content: manifest };
     }
     if (appDefault) {
         sections.guidelines = { action: "append", content: appDefault };
@@ -115,7 +127,13 @@ export function composeSystemPrompt(options: ComposeSystemPromptOptions): string
     const appDefault = options.includeAppDefault === false ? undefined : normalizeSection(options.appDefault);
     const activeAgentPrompt = normalizeSection(options.activeAgentPrompt);
     const runtimeContext = normalizeSection(options.runtimeContext);
+    const manifest = options.layerManifest && options.layerManifest.length > 0
+        ? renderPromptLayerManifest(options.layerManifest)
+        : undefined;
 
+    if (manifest) {
+        sections.push(manifest);
+    }
     if (frameworkBase) {
         sections.push(`${FRAMEWORK_HEADER}\n\n${frameworkBase}`);
     }

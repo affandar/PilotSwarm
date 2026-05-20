@@ -26,6 +26,7 @@ import {
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { normalizeArtifactEntries } from "./state.js";
+import { isRecoverableTransportErrorText } from "./session-errors.js";
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
@@ -84,6 +85,16 @@ function getSessionVisualStatus(session) {
     return status;
 }
 
+function getSessionSummaryStatusLabel(session) {
+    const status = getSessionVisualStatus(session);
+    if (!status || status === "unknown") return "";
+    return status === "cron_waiting" ? "waiting" : status;
+}
+
+function getSessionRowVisualStatus(session) {
+    return session?.rowVisualStatus || getSessionVisualStatus(session);
+}
+
 function isTerminalOrchestrationStatus(status) {
     return status === "Completed" || status === "Failed" || status === "Terminated";
 }
@@ -92,6 +103,7 @@ function getSessionErrorVisualKind(session) {
     const status = getSessionVisualStatus(session);
     if (session?.orchestrationStatus === "Failed" || status === "failed") return "failed";
     if (status === "error") return "warning";
+    if (status === "running" && isRecoverableTransportErrorText(session?.error) && !isTerminalOrchestrationStatus(session?.orchestrationStatus)) return "warning";
     return null;
 }
 
@@ -114,8 +126,27 @@ function getSessionVisualKind(session, mode = "local") {
     return status;
 }
 
+function getSessionRowVisualKind(session, mode = "local") {
+    const errorKind = getSessionErrorVisualKind(session);
+    if (errorKind) return errorKind;
+
+    const status = getSessionRowVisualStatus(session);
+    if (
+        mode === "remote"
+        && isTerminalOrchestrationStatus(session?.orchestrationStatus)
+        && status !== "cron_waiting"
+        && status !== "waiting"
+        && status !== "input_required"
+    ) {
+        if (session?.orchestrationStatus === "Completed") return "completed";
+        if (session?.orchestrationStatus === "Terminated") return "terminated";
+    }
+    if (status === "terminated") return "terminated";
+    return status;
+}
+
 function sessionStatusColor(session, mode = "local") {
-    switch (getSessionVisualKind(session, mode)) {
+    switch (getSessionRowVisualKind(session, mode)) {
         case "running": return "green";
         case "cron_waiting": return "yellow";
         case "waiting": return "yellow";
@@ -131,7 +162,7 @@ function sessionStatusColor(session, mode = "local") {
 }
 
 function sessionStatusIcon(session, mode = "local") {
-    switch (getSessionVisualKind(session, mode)) {
+    switch (getSessionRowVisualKind(session, mode)) {
         case "running": return "*";
         case "cron_waiting": return "~";
         case "waiting": return "~";
@@ -140,7 +171,7 @@ function sessionStatusIcon(session, mode = "local") {
         case "warning": return "!";
         case "failed":
         case "terminated": return "x";
-        case "idle": return ".";
+        case "idle": return "";
         default: return "";
     }
 }
@@ -184,6 +215,27 @@ function buildSessionListTitle(session, brandingTitle, decorateOwners = false) {
     if (!decorateOwners || session?.isSystem) return title;
     const prefix = session?.owner ? ownerInitials(session.owner) : "?";
     return `(${prefix}) ${title}`;
+}
+
+function groupMemberSessions(group, byId = {}) {
+    if (!group?.isGroup || !group?.groupId) return [];
+    return Object.values(byId || {}).filter((session) => (
+        session
+        && !session.isGroup
+        && !session.parentSessionId
+        && session.groupId === group.groupId
+    ));
+}
+
+function effectiveSessionOwner(session, byId = {}) {
+    if (!session?.isGroup) return session?.owner ?? null;
+    if (session.owner) return session.owner;
+    const ownersByKey = new Map();
+    for (const member of groupMemberSessions(session, byId)) {
+        const key = ownerKeyForOwner(member?.owner);
+        if (key && !ownersByKey.has(key)) ownersByKey.set(key, member.owner);
+    }
+    return ownersByKey.size === 1 ? ownersByKey.values().next().value : null;
 }
 
 function normalizeAgentTitleComparable(value) {
@@ -263,10 +315,10 @@ function buildSessionTitle(session, brandingTitle) {
     return title.includes(shortId) ? title : `${title} (${shortId})`;
 }
 
-function matchesOwnerFilterDirect(session, ownerFilter = {}, auth = {}) {
+function matchesOwnerFilterDirect(session, ownerFilter = {}, auth = {}, ownerOverride = undefined) {
     if (!ownerFilter || ownerFilter.all === true) return true;
     if (session?.isSystem) return ownerFilter.includeSystem === true;
-    const ownerKey = ownerKeyForOwner(session?.owner);
+    const ownerKey = ownerKeyForOwner(ownerOverride !== undefined ? ownerOverride : session?.owner);
     if (!ownerKey) return ownerFilter.includeUnowned === true;
     const currentUserKey = ownerKeyForOwner(auth?.principal);
     if (ownerFilter.includeMe && currentUserKey && ownerKey === currentUserKey) return true;
@@ -283,8 +335,12 @@ function matchesOwnerFilterDirect(session, ownerFilter = {}, auth = {}) {
  * showed.
  */
 function matchesOwnerFilter(session, ownerFilter = {}, auth = {}, byId = null) {
-    if (matchesOwnerFilterDirect(session, ownerFilter, auth)) return true;
+    const effectiveOwner = effectiveSessionOwner(session, byId || {});
+    if (matchesOwnerFilterDirect(session, ownerFilter, auth, effectiveOwner)) return true;
     if (!byId) return false;
+    if (session?.isGroup) {
+        return groupMemberSessions(session, byId).some((member) => matchesOwnerFilter(member, ownerFilter, auth, byId));
+    }
     let current = session;
     let hops = 0;
     while (current?.parentSessionId && hops < 16) {
@@ -381,7 +437,31 @@ function getCollapseBadge(sessionId, entry, totalDescendantCounts, visibleDescen
     return { text: `[+${badgeCount}]`, color: "cyan" };
 }
 
+function formatCronTimestampForClient(value) {
+    if (!value) return "scheduled";
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return "scheduled";
+    try {
+        return date.toLocaleString(undefined, {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+            timeZoneName: "short",
+        }).replace(/,\s*/g, " ").replace(/\s+/g, " ").trim();
+    } catch {
+        return date.toISOString().replace(/\.000Z$/, "Z");
+    }
+}
+
 function getCronBadge(session) {
+    if (session?.cronActive === true && session?.cronKind === "wall-clock") {
+        return {
+            text: `[cron ${formatCronTimestampForClient(session.cronNextFireAt)}]`,
+            color: "magenta",
+        };
+    }
     if (!(session?.cronActive === true && typeof session?.cronInterval === "number")) {
         return null;
     }
@@ -389,6 +469,14 @@ function getCronBadge(session) {
         text: `[cron ${formatHumanDurationSeconds(session.cronInterval)}]`,
         color: "magenta",
     };
+}
+
+function canPinSessionRow(session) {
+    return Boolean(
+        session
+        && !session.isSystem
+        && (session.isGroup || (!session.parentSessionId && !session.groupId)),
+    );
 }
 
 function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visibleDescendantCounts) {
@@ -416,8 +504,24 @@ function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visib
         });
     }
 
-    if (session?.isSystem) {
-        runs.push({ text: "≈ ", color: "yellow", bold: true });
+    // Pin column always renders first on top-level non-system rows so
+    // pinned/unpinned groups and sessions line up vertically — pinned rows get
+    // the 📌 glyph, unpinned rows get a width-matched spacer. Children and
+    // system rows skip the column.
+    if (entry.depth === 0 && canPinSessionRow(session)) {
+        if (isPinned && !session?.isSystem) {
+            runs.push({ text: "📌 ", color: "yellow" });
+        } else {
+            // 📌 plus a trailing space measures ~3 cells in a typical
+            // monospace terminal/portal; keep the spacer the same width.
+            runs.push({ text: "   ", color: "gray" });
+        }
+    }
+
+    if (session?.isGroup) {
+        runs.push({ text: "🗂  ", color: "cyan", bold: true });
+    } else if (session?.isSystem) {
+        runs.push({ text: "⚙ ", color: "yellow", bold: true });
     } else {
         const icon = sessionStatusIcon(session, mode);
         runs.push({
@@ -426,19 +530,37 @@ function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visib
         });
     }
 
-    if (isPinned && !session?.isSystem) {
-        runs.push({ text: "📌 ", color: "yellow" });
-    }
-
-    const mainColor = session?.isSystem ? "yellow" : sessionStatusColor(session, mode);
+    const mainColor = session?.isGroup ? "cyan" : session?.isSystem ? "yellow" : sessionStatusColor(session, mode);
+    const effectiveOwner = effectiveSessionOwner(session, state.sessions?.byId || {});
     const titleText = buildSessionListTitle(
-        session,
+        effectiveOwner !== (session?.owner ?? null) ? { ...session, owner: effectiveOwner } : session,
         state.branding?.title || "PilotSwarm",
         shouldDecorateSessionOwners(state),
     );
-    const createdAtText = session?.createdAt ? ` ${formatDisplayDateTime(session.createdAt)}` : "";
+    // Show the session's last-updated time at the end of the row. For groups,
+    // keep the member-count badge but append the last-updated timestamp so the
+    // row reflects the same value the list is sorted by. `formatDisplayDateTime`
+    // uses the system locale/timezone, so the timestamp renders in the
+    // browser/client local zone.
+    const rowTimestampMs = session?.updatedAt
+        || session?.summaryUpdatedAt
+        || session?.latestSummaryUpdatedAt
+        || session?.createdAt
+        || 0;
+    const formattedRowTimestamp = rowTimestampMs ? formatDisplayDateTime(rowTimestampMs) : "";
+    let suffixText = "";
+    if (session?.isGroup) {
+        if (session?.memberCount != null) {
+            suffixText += ` ${session.memberCount} member${session.memberCount === 1 ? "" : "s"}`;
+        }
+        if (formattedRowTimestamp) {
+            suffixText += ` · ${formattedRowTimestamp}`;
+        }
+    } else if (formattedRowTimestamp) {
+        suffixText = ` ${formattedRowTimestamp}`;
+    }
     runs.push({
-        text: `${titleText}${createdAtText}`,
+        text: `${titleText}${suffixText}`,
         color: mainColor,
         bold: Boolean(session?.isSystem),
     });
@@ -486,21 +608,25 @@ export function selectSessionRows(state) {
             statusColor: sessionStatusColor(session, state.connection?.mode || "local"),
             active: entry.sessionId === state.sessions.activeSessionId,
             isSystem: Boolean(session?.isSystem),
+            isGroup: Boolean(session?.isGroup),
             hasChildren: entry.hasChildren,
             collapsed: entry.collapsed,
             pinned: pinnedSet.has(entry.sessionId),
             selected: selectedSet.has(entry.sessionId),
-            canPin: !session?.isSystem && !session?.parentSessionId,
+            canPin: canPinSessionRow(session),
         };
     }).filter((row) => {
         const session = state.sessions.byId[row.sessionId];
         if (!matchesOwnerFilter(session, ownerFilter, auth, state.sessions.byId)) return false;
-        const ownerSearchText = session?.owner
-            ? `${ownerDisplayName(session.owner, "")} ${session.owner.email || ""}`
+        const effectiveOwner = effectiveSessionOwner(session, state.sessions.byId);
+        const ownerSearchText = effectiveOwner
+            ? `${ownerDisplayName(effectiveOwner, "")} ${effectiveOwner.email || ""}`
             : "";
+        const summarySearchText = `${session?.shortSummary || ""} ${session?.summaryState?.intent || ""} ${session?.summaryState?.summary || ""}`;
         return matchesSearchQuery(row.text, query)
             || matchesSearchQuery(row.sessionId, query)
-            || matchesSearchQuery(ownerSearchText, query);
+            || matchesSearchQuery(ownerSearchText, query)
+            || matchesSearchQuery(summarySearchText, query);
     });
 }
 
@@ -637,7 +763,7 @@ function buildSessionErrorMessage(session) {
         : `${errorText}\n\nThe orchestration is still running, so this may be transient.`;
 
     return {
-        id: `session-error:${session.sessionId}:${session.updatedAt || ""}:${errorText}`,
+        id: `session-error:${session.sessionId}:${errorKind}:${errorText}`,
         role: "system",
         text: body,
         time: "",
@@ -825,6 +951,49 @@ export function selectActiveChat(state) {
     const sessionId = state.sessions.activeSessionId;
     const session = sessionId ? state.sessions.byId[sessionId] || null : null;
     if (!sessionId) return createSplashCard(state.branding);
+    if (session?.isGroup) {
+        const memberSessions = Object.values(state.sessions.byId || {})
+            .filter((candidate) => candidate && !candidate.isGroup && candidate.groupId === session.groupId && !candidate.parentSessionId);
+        const markdownCell = (value) => String(value ?? "")
+            .replace(/\|/g, "\\|")
+            .replace(/[\r\n]+/g, " ")
+            .trim() || " ";
+        const memberRows = memberSessions.map((candidate) => (
+            `| ${markdownCell(candidate.title || candidate.sessionId)} | ${markdownCell(candidate.status || "unknown")} | ${markdownCell(candidate.shortSummary || "")} |`
+        ));
+        const lines = [
+            `# ${session.title || session.groupId}`,
+            session.shortSummary || "",
+            "",
+            "| Metric | Count |",
+            "|---|---:|",
+            `| Members | ${session.memberCount ?? memberSessions.length} |`,
+            `| Running | ${session.runningCount ?? 0} |`,
+            `| Waiting | ${session.waitingCount ?? 0} |`,
+            `| Completed | ${session.completedCount ?? 0} |`,
+            `| Failed | ${session.failedCount ?? 0} |`,
+            `| Cancelled | ${session.cancelledCount ?? 0} |`,
+            "",
+            "## Members",
+            ...(memberRows.length > 0
+                ? [
+                    "| Session | Status | Summary |",
+                    "|---|---|---|",
+                    ...memberRows,
+                ]
+                : ["_No top-level members._"]),
+        ];
+        return [{
+            id: `group-details:${session.sessionId}`,
+            role: "system",
+            noChrome: true,
+            text: lines.filter((line, index) => index === 1 || String(line || "").length > 0).join("\n"),
+            createdAt: session.updatedAt || Date.now(),
+        }];
+    }
+    if (state.ui?.chatViewMode === "summary") {
+        return buildSessionSummaryCards(session);
+    }
     const history = state.history.bySessionId.get(sessionId);
     const chat = history?.chat || [];
     const pendingQuestionMessage = session?.pendingQuestion?.question
@@ -849,6 +1018,115 @@ export function selectActiveChat(state) {
         messages.push(sessionErrorMessage);
     }
     return messages;
+}
+
+function buildSessionSummaryCards(session) {
+    const normalizeSummaryMarkdownText = (value) => {
+        const source = String(value || "");
+        if (!source.includes("\\n")) return source;
+        return source
+            .replace(/\\\\n/g, "\n")
+            .replace(/\\n/g, "\n");
+    };
+
+    const summaryState = session?.summaryState && typeof session.summaryState === "object" && !Array.isArray(session.summaryState)
+        ? session.summaryState
+        : null;
+    const stateJson = summaryState?.state && typeof summaryState.state === "object" && !Array.isArray(summaryState.state)
+        ? summaryState.state
+        : null;
+    const title = buildSessionDisplayTitle(session) || session?.title || session?.sessionId || "Session";
+    const lines = [];
+    lines.push(`# ${title}`);
+    lines.push("");
+
+    // Compact metadata header — status / intent / updated on their own
+    // lines, each as a bold-labeled value. Skipped when empty.
+    const metaPairs = [];
+    const statusLabel = getSessionSummaryStatusLabel(session);
+    if (statusLabel) metaPairs.push(["Status", statusLabel]);
+    if (summaryState?.intent) metaPairs.push(["Intent", String(summaryState.intent)]);
+    if (session?.summaryUpdatedAt) {
+        const ts = formatTimestamp(session.summaryUpdatedAt);
+        if (ts) metaPairs.push(["Updated", ts]);
+    }
+    for (const [label, value] of metaPairs) {
+        lines.push(`**${label}:** ${value}`);
+    }
+    if (metaPairs.length > 0) lines.push("");
+
+    // Free-form summary paragraph (uses the LLM-authored summary if present,
+    // otherwise the short summary the CLI rolls up).
+    const narrative = normalizeSummaryMarkdownText(summaryState?.summary || session?.shortSummary || "").trim();
+    if (narrative) {
+        lines.push(narrative);
+        lines.push("");
+    }
+
+    // Structured state — each key:value renders as a bold-labeled bullet.
+    // Lists/objects are rendered as nested bullets so arrays of "progress"
+    // steps don't appear as JSON blobs.
+    if (stateJson) {
+        const entries = Object.entries(stateJson)
+            .filter(([, value]) => value !== null && value !== undefined && !(typeof value === "string" && !value.trim()));
+        if (entries.length > 0) {
+            lines.push("## State");
+            for (const [key, value] of entries) {
+                if (Array.isArray(value)) {
+                    if (value.length === 0) {
+                        lines.push(`- **${key}:** _(empty)_`);
+                    } else {
+                        lines.push(`- **${key}:**`);
+                        for (const item of value.slice(0, 16)) {
+                            const text = typeof item === "string"
+                                ? normalizeSummaryMarkdownText(item)
+                                : JSON.stringify(item);
+                            lines.push(`  - ${text}`);
+                        }
+                    }
+                } else if (value && typeof value === "object") {
+                    lines.push(`- **${key}:**`);
+                    for (const [subKey, subValue] of Object.entries(value).slice(0, 16)) {
+                        const text = typeof subValue === "string"
+                            ? normalizeSummaryMarkdownText(subValue)
+                            : JSON.stringify(subValue);
+                        lines.push(`  - **${subKey}:** ${text}`);
+                    }
+                } else {
+                    lines.push(`- **${key}:** ${normalizeSummaryMarkdownText(String(value))}`);
+                }
+            }
+            lines.push("");
+        }
+    }
+
+    // Structured tail sections. Each section renders only if it actually
+    // has items; skipped sections do not occupy vertical space.
+    for (const [heading, field] of [["Blockers", "blockers"], ["Open Questions", "openQuestions"], ["Next Actions", "nextActions"]]) {
+        const items = Array.isArray(summaryState?.[field]) ? summaryState[field].filter(Boolean).slice(0, 12) : [];
+        if (items.length === 0) continue;
+        lines.push(`## ${heading}`);
+        for (const item of items) {
+            lines.push(`- ${typeof item === "string" ? normalizeSummaryMarkdownText(item) : JSON.stringify(item)}`);
+        }
+        lines.push("");
+    }
+
+    if (!summaryState && !narrative) {
+        lines.push("_No summary has been written yet for this session._");
+    }
+
+    // Collapse trailing blank lines so the pane doesn't render empty rows
+    // at the bottom.
+    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+
+    return [{
+        id: `summary:${session?.sessionId || "none"}`,
+        role: "system",
+        noChrome: true,
+        text: lines.join("\n"),
+        createdAt: session?.summaryUpdatedAt || session?.updatedAt || Date.now(),
+    }];
 }
 
 export function selectActiveOutboxMessages(state) {
@@ -1356,6 +1634,18 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
         return buildThinkingCardLines(message, maxWidth);
     }
 
+    // Chrome-less message: render the text as plain markdown directly into
+    // the chat pane (no card border, no speaker prefix, no timestamp). Used
+    // for the session summary view so the summary feels like the pane's
+    // content rather than a single bordered card.
+    if (message?.noChrome) {
+        const markdownLines = trimLeadingBlankLines(parseMarkdownLines(
+            decorateArtifactLinksForChat(message?.text || ""),
+            { width: Math.max(20, maxWidth), tableMode: options.tableMode },
+        ));
+        return markdownLines;
+    }
+
     if (message?.role === "user") {
         const askedAndAnswered = parseAskedAndAnsweredExchange(message?.text || "");
         if (askedAndAnswered) {
@@ -1614,7 +1904,7 @@ export function selectChatPaneChrome(state, options = {}) {
     const mainColor = session.isSystem ? "yellow" : "cyan";
     const title = buildPaneTitleRuns(
         session.isSystem
-            ? `≈ ${canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")}`
+            ? `⚙ ${canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")}`
             : (buildSessionDisplayTitle(session) || "Chat"),
         mainColor,
     );
@@ -1633,7 +1923,9 @@ export function selectChatPaneChrome(state, options = {}) {
     const outboxItems = Array.isArray(state.outbox?.bySessionId?.[session.sessionId])
         ? state.outbox.bySessionId[session.sessionId]
         : [];
-    const progress = buildLiveProgressState(session, history, history?.chat || [], outboxItems);
+    const progress = state.ui?.chatViewMode === "summary"
+        ? null
+        : buildLiveProgressState(session, history, history?.chat || [], outboxItems);
 
     const modelName = shortModelReasoningLabel(session.model, session.reasoningEffort);
     if (modelName) {
@@ -1674,6 +1966,14 @@ export function selectActivityPane(state, maxLines = 12) {
     const activity = selectActiveActivity(state);
     const session = selectActiveSession(state);
     const title = buildPaneTitleRuns("Activity", "gray");
+
+    if (session?.isGroup) {
+        return {
+            title,
+            disabled: true,
+            lines: [{ text: SELECT_SESSION_DETAILS_MESSAGE, color: "gray" }],
+        };
+    }
 
     if (session?.statusVersion != null) {
         title.push({
@@ -2345,6 +2645,18 @@ export function selectStatusBar(state) {
             right: "up/down move · enter create · esc cancel",
         };
     }
+    if (state.ui.modal?.type === "sessionGroupPicker") {
+        return {
+            left: "Move selected session(s) to a group",
+            right: "up/down move · enter choose · esc cancel",
+        };
+    }
+    if (state.ui.modal?.type === "sessionGroupName") {
+        return {
+            left: "Name the new group",
+            right: "type name · left/right move · enter create · esc cancel",
+        };
+    }
     if (state.ui.modal?.type === "logFilter") {
         return {
             left: "Adjust log filters",
@@ -2367,13 +2679,15 @@ export function selectStatusBar(state) {
     const selectedCount = Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds.length : 0;
     if (selectMode && focus === FOCUS_REGIONS.SESSIONS) {
         return {
-            left: `Select mode · ${selectedCount} selected · only Cancel (c) acts on the selection`,
-            right: "up/down move · space toggle · c cancel selected · V/esc exit select",
+            left: `Select mode · ${selectedCount} selected`,
+            right: "up/down move · space toggle · ctrl-g group · c cancel · d complete · D hard delete · V/esc exit",
         };
     }
+    const chatViewMode = state.ui?.chatViewMode === "summary" ? "summary" : "transcript";
+    const chatViewHint = chatViewMode === "summary" ? "s transcript" : "s summary";
     const hints = {
-        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · f filter · P pin · V select · d done · D delete · r refresh · t title · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
-        [FOCUS_REGIONS.CHAT]: `j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · ctrl-g move group · f filter · P pin · V select · d done · D delete · r refresh · t title · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.CHAT]: `${chatViewHint} · j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
             ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] side pane · T themes · a linked items · drag copy · tab next pane`
             : state.ui.inspectorTab === "stats"
@@ -2507,7 +2821,7 @@ function joinUniqueSequenceDetail(parts = []) {
 
 function formatDehydrateSequenceDetail(event, preview = "") {
     return joinUniqueSequenceDetail([
-        event?.data?.reason,
+        event?.data?.reason === "cron_at" ? "cron" : event?.data?.reason,
         event?.data?.detail,
         event?.data?.message,
         event?.data?.error,
@@ -2666,10 +2980,28 @@ function mapEventToSequenceEntry(event) {
                 color: "magenta",
                 detail: `cron ${formatHumanDurationSeconds(event?.data?.intervalSeconds ?? 0)}`,
             };
+        case "session.cron_at_scheduled":
+        case "session.cron_at_started":
+            return {
+                ...base,
+                type: "cron_start",
+                color: "magenta",
+                detail: `cron ${formatCronTimestampForClient(event?.data?.nextFireAtMs ?? event?.data?.nextFireAt)}`,
+            };
         case "session.cron_fired":
             return { ...base, type: "cron_fire", color: "magenta", detail: "cron fired" };
+        case "session.cron_at_fired":
+            return {
+                ...base,
+                type: "cron_fire",
+                color: "magenta",
+                detail: `cron fired ${formatCronTimestampForClient(event?.data?.scheduledAt)}`,
+            };
         case "session.cron_cancelled":
+        case "session.cron_at_cancelled":
             return { ...base, type: "cron_cancel", color: "magenta", detail: "cron off" };
+        case "session.cron_at_completed":
+            return { ...base, type: "cron_cancel", color: "magenta", detail: "cron done" };
         case "session.command_received":
             return {
                 ...base,
@@ -3017,7 +3349,7 @@ function buildNodeMapCell(session, brandingTitle, width, active) {
             ? canonicalSystemTitle(session, brandingTitle)
             : (session?.title || shortSessionId(session?.sessionId)))
         : shortSessionId(session?.sessionId);
-    const prefix = session?.isSystem ? "≈ " : `${sessionStatusIcon(session) || "."} `;
+    const prefix = session?.isSystem ? "⚙ " : `${sessionStatusIcon(session) || "."} `;
     const text = padDisplayText(`${prefix}${label}`, width);
 
     if (active) {
@@ -3334,6 +3666,60 @@ export function selectReasoningEffortPickerModal(state, maxWidth = 64) {
     };
 }
 
+export function selectSessionGroupPickerModal(state, maxWidth = 72) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "sessionGroupPicker") return null;
+
+    const items = Array.isArray(modal.items) ? modal.items : [];
+    const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
+    const contentWidth = Math.max(24, maxWidth - 4);
+    const sessionCount = Array.isArray(modal.sessionIds) ? modal.sessionIds.length : 0;
+
+    const rows = items.map((item, index) => {
+        const isSelected = index === selectedIndex;
+        const marker = item?.kind === "noGroup" ? "○ " : item?.kind === "newGroup" ? "+ " : "🗂  ";
+        const labelRuns = fitRuns([
+            { text: marker, color: item?.kind === "group" ? "cyan" : "gray", bold: item?.kind !== "noGroup" },
+            { text: item?.label || item?.groupId || "Group", color: "white", bold: true },
+            ...(item?.kind === "group" ? [{ text: ` (${item.memberCount ?? 0})`, color: "gray" }] : []),
+        ], contentWidth);
+        return isSelected
+            ? buildActiveHighlightLine(labelRuns.map((run) => run.text).join("").padEnd(contentWidth, " "))
+            : labelRuns;
+    });
+
+    const selectedItem = items[selectedIndex] || null;
+    const detailsLines = selectedItem
+        ? [
+            [{ text: selectedItem.label || selectedItem.groupId || "Group", color: "white", bold: true }],
+            [{ text: `${sessionCount} session${sessionCount === 1 ? "" : "s"} selected`, color: "gray" }],
+            ...(selectedItem.kind === "group"
+                ? [[{ text: `${selectedItem.memberCount ?? 0} current member${selectedItem.memberCount === 1 ? "" : "s"}`, color: "gray" }]]
+                : []),
+            [{ text: "", color: "gray" }],
+            [{ text: selectedItem.description || "Move selected session(s) to this group.", color: "white" }],
+        ]
+        : [[{ text: "No group selected.", color: "gray" }]];
+
+    return {
+        title: modal.title || "Move to Group",
+        rows,
+        selectedRowIndex: selectedIndex,
+        detailsTitle: "Move Details",
+        detailsLines,
+        idealWidth: Math.min(
+            Math.max(
+                50,
+                rows.reduce((max, row) => {
+                    if (Array.isArray(row)) return Math.max(max, flattenRunsLength(row));
+                    return Math.max(max, String(row?.text || "").length);
+                }, 0) + 4,
+            ),
+            maxWidth,
+        ),
+    };
+}
+
 export function selectRenameSessionModal(state, maxWidth = 76) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "renameSession") return null;
@@ -3410,6 +3796,37 @@ export function selectRenameSessionModal(state, maxWidth = 76) {
             ),
             maxWidth,
         ),
+    };
+}
+
+export function selectSessionGroupNameModal(state, maxWidth = 76) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "sessionGroupName") return null;
+
+    const value = String(modal.value || "");
+    const sessionCount = Array.isArray(modal.sessionIds) ? modal.sessionIds.length : 0;
+    const previewTitle = value.trim() || "…";
+    return {
+        title: modal.title || "New Group",
+        value,
+        cursorIndex: Math.max(0, Math.min(Number(modal.cursorIndex) || 0, value.length)),
+        placeholder: "Type a group name",
+        helpTitle: "Group Name",
+        helpLines: [
+            [
+                { text: "Enter", color: "cyan", bold: true },
+                { text: " create and move  ", color: "gray" },
+                { text: "Esc", color: "cyan", bold: true },
+                { text: " cancel", color: "gray" },
+            ],
+            [{ text: "", color: "gray" }],
+            [{ text: `The new group will contain ${sessionCount} selected session${sessionCount === 1 ? "" : "s"}.`, color: "gray" }],
+        ],
+        detailsLines: [
+            [{ text: "New group: ", color: "gray" }, { text: previewTitle, color: "white", bold: true }],
+            [{ text: "Groups are containers only; session actions remain per-session.", color: "gray" }],
+        ],
+        idealWidth: Math.min(Math.max(56, displayLength(previewTitle) + 18), maxWidth),
     };
 }
 
@@ -4523,6 +4940,18 @@ export function selectInspector(state, options = {}) {
     const maxWidth = Math.max(18, Number(options?.width) || 36);
     const allowWideColumns = Boolean(options?.allowWideColumns);
     const compactSecondaryMeta = shouldCompactPaneTitleMetadata(maxWidth);
+
+    if (session?.isGroup) {
+        return {
+            title: buildPaneTitleRuns("Inspector", "magenta"),
+            activeTab,
+            tabs: INSPECTOR_TABS,
+            disabled: true,
+            stickyLines: [],
+            lines: [plainInspectorLine(SELECT_SESSION_DETAILS_MESSAGE, "gray")],
+        };
+    }
+
     const shortId = session ? shortSessionId(session.sessionId) : "";
     const recentWindow = activeTab === "sequence" || activeTab === "nodes"
         ? getRecentActivityWindow(state)
@@ -4633,6 +5062,8 @@ const HISTORY_EVENT_KIND_COLORS = {
     EventSent: "white",
     CustomStatusUpdated: "gray",
 };
+
+const SELECT_SESSION_DETAILS_MESSAGE = "Select a session to see details.";
 
 function formatHistoryEventPretty(event) {
     const ts = event.timestampMs

@@ -17,16 +17,18 @@ You can spawn autonomous sub-agents to work on tasks in parallel. Each sub-agent
 
 ## Tools
 
-### `spawn_agent(task, [model], [system_message], [tool_names])`
-Start a new sub-agent with a task description. Returns an agent ID.
+### `spawn_agent(task, [model], [system_message], [tool_names], [contract])`
+Start a new sub-agent with a task description. Returns an agent ID. `contract` is a named argument on `spawn_agent`; there is no separate contract tool or separate signature.
 - **task** (required): Clear description of what the agent should do — this becomes its first prompt
 - **model** (optional): Exact `provider:model` override from `list_available_models()`
 - **system_message** (optional): Custom system message for specialization
 - **tool_names** (optional): Specific tools to give the agent; defaults to your tools
+- **contract** (optional): Structured contract for expected outputs and parent wake policy. Use `wakeOn: "any"`, `"material_change"`, or `"completion"` to control autonomous parent wake-ups. A compact shape is `{ "purpose": "...", "successCriteria": ["..."], "expectedFacts": [{ "key": "result/...", "required": true }], "expectedArtifacts": [], "validationMode": "warn", "wakeOn": "material_change" }`.
 
-### `message_agent(agent_id, message)`
+### `message_agent(agent_id, message, [contract_patch])`
 Send additional instructions or context to a running sub-agent.
 - Use this whenever you need to ask a sub-agent a follow-up question, refine its scope, correct it, or request a status update.
+- Use `contract_patch: { wakeOn: "..." }` to make a child temporarily chattier (`any`) or quieter (`material_change` / `completion`).
 - Do not claim you cannot ask your sub-agents questions. That is exactly what `message_agent` is for.
 
 ### `check_agents()`
@@ -70,6 +72,21 @@ Block until sub-agents finish. Returns their final results.
 3. wait_for_agents() → combine results
 ```
 
+### Delegation With A Contract
+```
+spawn_agent(
+	task="Scan market data and store the durable finding",
+	contract={
+		"purpose": "Market scan",
+		"successCriteria": ["source-backed summary", "durable result fact"],
+		"expectedFacts": [{ "key": "result/market-scan", "required": true }],
+		"expectedArtifacts": [],
+		"validationMode": "warn",
+		"wakeOn": "material_change"
+	}
+)
+```
+
 ## Rules
 
 - **Maximum 20 concurrent sub-agents** — wait for some to complete before spawning more
@@ -86,5 +103,8 @@ Block until sub-agents finish. Returns their final results.
 - Sub-agents run on potentially different worker nodes — they cannot share in-memory state
 - If the user explicitly asks you to use sub-agents, delegation, fan-out, or parallel processing, do it within runtime limits instead of silently collapsing the task into a single-agent answer
 - If the user did not explicitly ask for delegation, you may decide whether sub-agents are actually useful
+- For short-lived investigations where every update matters, set `contract.wakeOn` to `"any"`
+- For long-running watcher children, use `contract.wakeOn: "material_change"` so no-op heartbeats do not spend parent LLM turns
+- For simple long-running children where only done/blocked/error matters, use `contract.wakeOn: "completion"`
 
 ````

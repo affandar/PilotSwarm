@@ -1,4 +1,6 @@
 ---
+schemaVersion: 1
+version: 1.0.0
 name: pilotswarm-sdk-builder
 description: "Use when building an SDK-first application or service on top of PilotSwarm. Scaffolds the client/worker split, layered plugin structure, tools, and tests."
 ---
@@ -28,6 +30,7 @@ Your job is to create or update the user's application code, plugin files, and w
 ## Always Consult
 
 - the installed `pilotswarm-sdk-builder` skill
+- the installed `pilotswarm-agent-versioning` skill when creating or editing `plugin/agents/*.agent.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-agents.md`
@@ -48,6 +51,7 @@ Your job is to create or update the user's application code, plugin files, and w
 - do not check in the real `.model_providers.json`; create it locally from `.model_providers.example.json` and add it to `.gitignore`
 - preserve the distinction between app code, worker code, and plugin content
 - do not copy PilotSwarm's built-in framework or management plugin text into the user's app
+- when creating `plugin/agents/*.agent.md`, include `schemaVersion: 1` and `version: 1.0.0`; when editing existing agent files, bump their `version` according to the app's versioning style
 
 ## Guided Intake
 

@@ -36,6 +36,14 @@ function writeConfig(patch) {
     } catch {}
 }
 
+function collapsedSessionIdsToArray(collapsedIds) {
+    if (!(collapsedIds instanceof Set)) return [];
+    return Array.from(collapsedIds)
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+        .sort();
+}
+
 function setupTuiHostRuntime() {
     const logFile = "/tmp/duroxide-tui.log";
     const originalConsole = {
@@ -117,9 +125,12 @@ export async function startTuiApp(config) {
         mode: config.mode,
         branding: config.branding,
         themeId: userConfig.themeId,
+        chatViewMode: userConfig.chatViewMode,
         sessionOwnerFilter: userConfig.sessionOwnerFilter,
         layoutAdjustments: userConfig.layoutAdjustments,
         pinnedSessionIds: userConfig.pinnedSessionIds,
+        collapsedSessionIds: userConfig.collapsedSessionIds,
+        activeSessionId: userConfig.activeSessionId,
     }));
     const controller = new PilotSwarmUiController({ store, transport });
     let tuiApp;
@@ -206,6 +217,7 @@ export async function startTuiApp(config) {
 
     // Persist theme changes to config file
     let lastPersistedThemeId = store.getState().ui.themeId;
+    let lastPersistedChatViewMode = store.getState().ui.chatViewMode;
     let lastPersistedSessionOwnerFilter = JSON.stringify(store.getState().sessions.ownerFilter || null);
     let lastPersistedLayoutAdjustments = JSON.stringify({
         paneAdjust: store.getState().ui.layout?.paneAdjust || 0,
@@ -213,9 +225,12 @@ export async function startTuiApp(config) {
         activityPaneAdjust: store.getState().ui.layout?.activityPaneAdjust || 0,
     });
     let lastPersistedPinnedSessionIds = JSON.stringify(store.getState().sessions.pinnedIds || []);
+    let lastPersistedCollapsedSessionIds = JSON.stringify(collapsedSessionIdsToArray(store.getState().sessions.collapsedIds));
+    let lastPersistedActiveSessionId = store.getState().sessions.activeSessionId || null;
     store.subscribe(() => {
         const state = store.getState();
         const currentThemeId = state.ui.themeId;
+        const currentChatViewMode = state.ui.chatViewMode;
         const currentSessionOwnerFilter = state.sessions.ownerFilter || null;
         const currentSessionOwnerFilterJson = JSON.stringify(currentSessionOwnerFilter);
         const currentLayoutAdjustments = {
@@ -226,12 +241,21 @@ export async function startTuiApp(config) {
         const currentLayoutAdjustmentsJson = JSON.stringify(currentLayoutAdjustments);
         const currentPinnedSessionIds = Array.isArray(state.sessions.pinnedIds) ? state.sessions.pinnedIds : [];
         const currentPinnedSessionIdsJson = JSON.stringify(currentPinnedSessionIds);
+        const currentCollapsedSessionIds = collapsedSessionIdsToArray(state.sessions.collapsedIds);
+        const currentCollapsedSessionIdsJson = JSON.stringify(currentCollapsedSessionIds);
+        const currentActiveSessionId = state.sessions.activeSessionId || null;
         const patch = {};
         let changed = false;
 
         if (currentThemeId && currentThemeId !== lastPersistedThemeId) {
             lastPersistedThemeId = currentThemeId;
             patch.themeId = currentThemeId;
+            changed = true;
+        }
+
+        if ((currentChatViewMode === "summary" || currentChatViewMode === "transcript") && currentChatViewMode !== lastPersistedChatViewMode) {
+            lastPersistedChatViewMode = currentChatViewMode;
+            patch.chatViewMode = currentChatViewMode;
             changed = true;
         }
 
@@ -250,6 +274,18 @@ export async function startTuiApp(config) {
         if (currentPinnedSessionIdsJson !== lastPersistedPinnedSessionIds) {
             lastPersistedPinnedSessionIds = currentPinnedSessionIdsJson;
             patch.pinnedSessionIds = currentPinnedSessionIds;
+            changed = true;
+        }
+
+        if (currentCollapsedSessionIdsJson !== lastPersistedCollapsedSessionIds) {
+            lastPersistedCollapsedSessionIds = currentCollapsedSessionIdsJson;
+            patch.collapsedSessionIds = currentCollapsedSessionIds;
+            changed = true;
+        }
+
+        if (currentActiveSessionId !== lastPersistedActiveSessionId) {
+            lastPersistedActiveSessionId = currentActiveSessionId;
+            patch.activeSessionId = currentActiveSessionId;
             changed = true;
         }
 

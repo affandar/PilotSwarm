@@ -4,8 +4,7 @@ function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
 }
 
-function normalizeSessionOwner(authContext) {
-    const principal = authContext?.principal;
+function normalizeOwnerPrincipal(principal) {
     const provider = String(principal?.provider || "").trim();
     const subject = String(principal?.subject || "").trim();
     if (!provider || !subject) return null;
@@ -15,6 +14,16 @@ function normalizeSessionOwner(authContext) {
         email: String(principal?.email || "").trim() || null,
         displayName: String(principal?.displayName || "").trim() || null,
     };
+}
+
+function normalizeSessionOwner(authContext) {
+    return normalizeOwnerPrincipal(authContext?.principal);
+}
+
+function ownerKey(owner) {
+    const provider = String(owner?.provider || "").trim();
+    const subject = String(owner?.subject || "").trim();
+    return provider && subject ? `${provider}\u0001${subject}` : null;
 }
 
 function requireUserPrincipal(authContext, methodName) {
@@ -60,6 +69,29 @@ export class PortalRuntime {
         }
     }
 
+    async resolveSessionGroupOwner(input = {}, authOwner = null) {
+        const inputOwner = normalizeOwnerPrincipal(input?.owner);
+        if (inputOwner) return inputOwner;
+
+        const sessionIds = Array.isArray(input?.sessionIds)
+            ? Array.from(new Set(input.sessionIds.map((id) => String(id || "").trim()).filter(Boolean)))
+            : [];
+        if (sessionIds.length > 0 && typeof this.transport.getSession === "function") {
+            const owners = [];
+            for (const sessionId of sessionIds) {
+                const session = await this.transport.getSession(sessionId).catch(() => null);
+                if (!session || session.isSystem || session.isGroup || session.parentSessionId) continue;
+                owners.push(normalizeOwnerPrincipal(session.owner));
+            }
+            const ownerKeys = new Set(owners.map((owner) => ownerKey(owner) || ""));
+            if (owners.length > 0 && ownerKeys.size === 1) {
+                return owners[0] ?? null;
+            }
+        }
+
+        return authOwner;
+    }
+
     async getBootstrap() {
         await this.start();
         return {
@@ -92,6 +124,23 @@ export class PortalRuntime {
         switch (method) {
             case "listSessions":
                 return this.transport.listSessions();
+            case "listSessionGroups":
+                return this.transport.listSessionGroups();
+            case "createSessionGroup":
+                return this.transport.createSessionGroup({
+                    ...(safeParams.input || {}),
+                    owner: await this.resolveSessionGroupOwner(safeParams.input || {}, owner),
+                });
+            case "updateSessionGroup":
+                return this.transport.updateSessionGroup(safeParams.groupId, safeParams.patch || {});
+            case "assignSessionsToGroup":
+                return this.transport.assignSessionsToGroup(safeParams.groupId, safeParams.sessionIds || []);
+            case "moveSessionsToGroup":
+                return this.transport.moveSessionsToGroup(safeParams.groupId ?? null, safeParams.sessionIds || []);
+            case "getChildOutcome":
+                return this.transport.getChildOutcome(safeParams.childSessionId);
+            case "listChildOutcomes":
+                return this.transport.listChildOutcomes(safeParams.parentSessionId);
             case "getSession":
                 return this.transport.getSession(safeParams.sessionId);
             case "getOrchestrationStats":
@@ -151,6 +200,7 @@ export class PortalRuntime {
                 return this.transport.createSession({
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
+                    groupId: safeParams.groupId,
                     owner,
                 });
             case "createSessionForAgent":
@@ -160,6 +210,7 @@ export class PortalRuntime {
                     title: safeParams.title,
                     splash: safeParams.splash,
                     initialPrompt: safeParams.initialPrompt,
+                    groupId: safeParams.groupId,
                     owner,
                 });
             case "listCreatableAgents":
@@ -176,10 +227,18 @@ export class PortalRuntime {
                 return this.transport.renameSession(safeParams.sessionId, safeParams.title);
             case "cancelSession":
                 return this.transport.cancelSession(safeParams.sessionId);
+            case "cancelSessionGroup":
+                return this.transport.cancelSessionGroup(safeParams.groupId, safeParams.reason);
             case "completeSession":
                 return this.transport.completeSession(safeParams.sessionId, safeParams.reason);
+            case "completeSessionGroup":
+                return this.transport.completeSessionGroup(safeParams.groupId, safeParams.options || {});
             case "deleteSession":
                 return this.transport.deleteSession(safeParams.sessionId);
+            case "restartSystemSession":
+                return this.transport.restartSystemSession(safeParams.agentIdOrSessionId, safeParams.options || {});
+            case "deleteSessionGroup":
+                return this.transport.deleteSessionGroup(safeParams.groupId);
             case "listModels":
                 return this.transport.listModels();
             case "listArtifacts":

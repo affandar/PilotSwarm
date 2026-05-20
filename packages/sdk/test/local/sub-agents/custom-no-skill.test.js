@@ -13,6 +13,19 @@ import { createCatalog } from "../../helpers/cms-helpers.js";
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
 
+async function waitForDirectChildren(catalog, parentSessionId, timeoutMs = 90_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const allSessions = await catalog.listSessions();
+        const children = allSessions.filter(
+            s => s.parentSessionId === parentSessionId,
+        );
+        if (children.length > 0) return children;
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    return [];
+}
+
 async function testCustomAgentWithoutSkill(env) {
     const catalog = await createCatalog(env);
 
@@ -21,18 +34,22 @@ async function testCustomAgentWithoutSkill(env) {
             const session = await client.createSession();
 
             console.log("  Spawning custom agent with task only (no agent_name, no skill)...");
-            const response = await session.sendAndWait(
-                "Spawn a sub-agent with the task: 'Calculate 99+1 and report the answer'",
-                TIMEOUT,
+            await session.send(
+                "Use the spawn_agent tool now with task='Calculate 99+1 and report the answer'. Do not pass agent_name or skill. After the tool call succeeds, you may finish with a short acknowledgement.",
             );
-            console.log(`  Response: "${response}"`);
 
             // Verify a child session was created
-            const allSessions = await catalog.listSessions();
-            const children = allSessions.filter(
-                s => s.parentSessionId === session.sessionId,
-            );
+            const children = await waitForDirectChildren(catalog, session.sessionId);
             console.log(`  Child sessions found: ${children.length}`);
+            if (children.length === 0) {
+                const row = await catalog.getSession(session.sessionId);
+                console.log("  Parent row:", row);
+                const events = await catalog.getSessionEvents(session.sessionId, undefined, 20);
+                console.log("  Parent events:", events.map((event) => ({
+                    type: event.eventType,
+                    data: event.data,
+                })));
+            }
             assertGreaterOrEqual(children.length, 1, "Custom task-only agent should spawn without a skill");
 
             const child = children[0];

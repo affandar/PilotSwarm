@@ -130,9 +130,9 @@ between them.
 5. Press `[` and `]` to resize the split between sessions and the
    workspace.
 6. Press `Tab` to cycle pane focus (Sessions → Chat → Activity → Inspector).
-7. Press `P` (capital) on a session to pin it. Pinned sessions stay at the
-   top of the list across refreshes. Useful for keeping your "main"
-   session always visible.
+7. Press `P` (capital) on a session to pin it. Pinned rows stay near the top
+   across refreshes: pinned groups come first, then pinned single sessions,
+   then unpinned groups. Useful for keeping your "main" session always visible.
 
 **Multi-select:**
 
@@ -177,8 +177,11 @@ yesterday's experiments. Keep three, kill nine.
 4. Press `V` to enter multi-select.
 5. Walk down the list with `j`, hit `Space` on each one you want gone.
    Skip the pinned/renamed keepers.
-6. Press `c` to cancel the selected sessions. Confirm.
-7. Press `Esc` to leave multi-select. Press `r` to refresh.
+6. Press `Ctrl+G` if you want to move the selected sessions into a
+   container first. Choose an existing group, `[New Group]`, or
+   `[No Group]` to ungroup them.
+7. Press `c` to cancel the selected sessions. Confirm.
+8. Press `Esc` to leave multi-select. Press `r` to refresh.
 
 **Three flavors of close:**
 

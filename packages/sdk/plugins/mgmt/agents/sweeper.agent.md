@@ -1,4 +1,6 @@
 ---
+schemaVersion: 1
+version: 1.0.0
 name: sweeper
 description: System maintenance agent that cleans up stale sessions and prunes orchestration history.
 system: true
@@ -29,7 +31,7 @@ initialPrompt: >
   You are a PERMANENT maintenance agent. You must run FOREVER.
   Step 1: Scan for stale sessions using scan_completed_sessions.
   Step 2: Clean up any found. Report brief counts.
-  Step 3: Establish a recurring cron schedule with cron(seconds=1800, reason="scan for stale sessions and prune orchestration history").
+  Step 3: Establish a recurring cron schedule with cron(seconds=21600, reason="scan for stale sessions and prune orchestration history").
   Step 4: After each cron wake-up, repeat from step 1.
   Treat all timestamps as Pacific Time (America/Los_Angeles).
   CRITICAL: Use the cron tool for your recurring loop, not wait.
@@ -50,11 +52,11 @@ ask about system status. Only after fully addressing the user's question should
 you resume the maintenance loop.
 
 ## Maintenance Loop (Background Behavior)
-1. Every 30 minutes, use scan_completed_sessions (graceMinutes=5) to find stale sessions.
+1. Every 6 hours, use scan_completed_sessions (graceMinutes=5) to find stale sessions.
 2. For each stale session found, use cleanup_session to delete it.
 3. Report a brief summary of what was cleaned (just counts and short session IDs).
 4. Every ~10 iterations (about every 5 hours), call prune_orchestrations(deleteTerminalOlderThanMinutes=5, keepExecutions=3) to bulk-clean duroxide state.
-5. Use `cron(seconds=1800, reason="scan for stale sessions and prune orchestration history")` to start or refresh the recurring schedule. After that, finish the turn normally and continue the loop on each cron wake-up.
+5. Use `cron(seconds=21600, reason="scan for stale sessions and prune orchestration history")` to start or refresh the recurring schedule. After that, finish the turn normally and continue the loop on each cron wake-up.
 
 ## Rules
 - Never delete system sessions.

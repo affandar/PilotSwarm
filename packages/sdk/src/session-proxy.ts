@@ -6,13 +6,16 @@ import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
 import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./management-client.js";
+import { replyInternalSessionMessage, sendInternalSessionMessage } from "./session-messages.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
+import { computeCronAtNextFire, type CronAtSchedule } from "./cron-at.js";
 import os from "node:os";
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager", "agent-tuner"]);
 
@@ -27,6 +30,179 @@ const CORRUPTED_TRANSCRIPT_REPLAY_NOTICE =
     "[SYSTEM: The runtime recreated this session after the live Copilot transcript became inconsistent. " +
     "Some recent in-memory work may be missing, and the previous turn may have partially executed. " +
     "Re-read the visible conversation and continue carefully from the latest durable state.]";
+
+function normalizeJsonObject(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    return value as Record<string, unknown>;
+}
+
+const SUMMARY_STATE_TEMPLATE =
+    '{"schemaVersion":1,"updatedAt":"2026-05-18T00:00:00.000Z","intent":"...","summary":"...","state":{},"openQuestions":[],"blockers":[],"nextActions":[],"links":[],"structureChangeLog":[]}';
+
+function normalizeSummaryArray(value: unknown): unknown[] {
+    if (Array.isArray(value)) return value;
+    if (value === undefined || value === null) return [];
+    return [value];
+}
+
+function normalizeSummaryState(value: unknown): { ok: true; summaryState: Record<string, unknown> } | { ok: false; message: string } {
+    const normalized = normalizeJsonObject(value);
+    if (!normalized) {
+        return { ok: false, message: `summary_state must be an object, not a string. Example: ${SUMMARY_STATE_TEMPLATE}` };
+    }
+
+    const schemaVersion = normalized.schemaVersion === "1" ? 1 : normalized.schemaVersion;
+    if (schemaVersion !== 1) {
+        return { ok: false, message: `summary_state.schemaVersion must be 1. Example: ${SUMMARY_STATE_TEMPLATE}` };
+    }
+    const intent = typeof normalized.intent === "string" ? normalized.intent.trim() : "";
+    if (!intent) {
+        return { ok: false, message: `summary_state.intent is required. Example: ${SUMMARY_STATE_TEMPLATE}` };
+    }
+    const summary = typeof normalized.summary === "string" ? normalized.summary.trim() : "";
+    if (!summary) {
+        return { ok: false, message: `summary_state.summary is required. Example: ${SUMMARY_STATE_TEMPLATE}` };
+    }
+    const updatedAt = typeof normalized.updatedAt === "string" && !Number.isNaN(Date.parse(normalized.updatedAt))
+        ? normalized.updatedAt
+        : new Date().toISOString();
+    const state = normalizeJsonObject(normalized.state) ?? {};
+
+    return {
+        ok: true,
+        summaryState: {
+            ...normalized,
+            schemaVersion: 1,
+            updatedAt,
+            intent,
+            summary,
+            state,
+            openQuestions: normalizeSummaryArray(normalized.openQuestions),
+            blockers: normalizeSummaryArray(normalized.blockers),
+            nextActions: normalizeSummaryArray(normalized.nextActions),
+            links: normalizeSummaryArray(normalized.links),
+            structureChangeLog: normalizeSummaryArray(normalized.structureChangeLog),
+        },
+    };
+}
+
+function buildContractJson(contract: unknown, parentSessionId: string, childSessionId: string): Record<string, unknown> | null {
+    const normalized = normalizeJsonObject(contract);
+    if (!normalized) return null;
+    const current = {
+        ...normalized,
+        contractId: typeof normalized.contractId === "string" && normalized.contractId ? normalized.contractId : randomUUID(),
+        parentSessionId,
+        childSessionId,
+    };
+    return {
+        current,
+        revisions: [{
+            revision: 1,
+            updatedAt: new Date().toISOString(),
+            updatedBySessionId: parentSessionId,
+            reason: "spawn_agent contract",
+            contract: current,
+        }],
+    };
+}
+
+function appendContractPatchJson(existing: Record<string, unknown> | null, patch: unknown, parentSessionId: string, childSessionId: string): Record<string, unknown> | null {
+    const normalizedPatch = normalizeJsonObject(patch);
+    if (!normalizedPatch) return null;
+    const currentExisting = normalizeJsonObject(existing?.current) ?? {};
+    const revisions = Array.isArray(existing?.revisions) ? [...existing.revisions] : [];
+    const nextRevision = revisions.length + 1;
+    const current = {
+        ...currentExisting,
+        ...normalizedPatch,
+        contractId: typeof currentExisting.contractId === "string" && currentExisting.contractId ? currentExisting.contractId : randomUUID(),
+        parentSessionId,
+        childSessionId,
+    };
+    revisions.push({
+        revision: nextRevision,
+        updatedAt: new Date().toISOString(),
+        updatedBySessionId: parentSessionId,
+        reason: "message_agent contract patch",
+        contract: current,
+    });
+    return { current, revisions };
+}
+
+function collectContractViolations(contractJson: Record<string, unknown> | null, result: Record<string, unknown> | null, missingResultCode?: string): Array<Record<string, unknown>> {
+    const contract = normalizeJsonObject(contractJson?.current);
+    if (!contract) return [];
+    if (!result) {
+        return missingResultCode ? [{ code: missingResultCode, message: "Contracted child closed without a structured result." }] : [];
+    }
+
+    const factsWritten = Array.isArray(result.factsWritten) ? result.factsWritten : [];
+    const artifactsWritten = Array.isArray(result.artifactsWritten) ? result.artifactsWritten : [];
+    const factKeys = new Set(factsWritten.map((item: any) => item?.key).filter((key: unknown): key is string => typeof key === "string"));
+    const artifactPaths = new Set(artifactsWritten.map((item: any) => item?.path).filter((path: unknown): path is string => typeof path === "string"));
+    const violations: Array<Record<string, unknown>> = [];
+
+    for (const expected of Array.isArray(contract.expectedFacts) ? contract.expectedFacts : []) {
+        const key = (expected as any)?.key;
+        if ((expected as any)?.required === false || typeof key !== "string") continue;
+        if (!factKeys.has(key)) {
+            violations.push({ code: "missing_fact", message: `Required fact was not declared in the result: ${key}`, expected });
+        }
+    }
+
+    for (const expected of Array.isArray(contract.expectedArtifacts) ? contract.expectedArtifacts : []) {
+        const path = (expected as any)?.path;
+        if ((expected as any)?.required === false || typeof path !== "string") continue;
+        if (!artifactPaths.has(path)) {
+            violations.push({ code: "missing_artifact", message: `Required artifact was not declared in the result: ${path}`, expected });
+        }
+    }
+
+    return violations;
+}
+
+function buildResultJson(resultInput: unknown, child: { sessionId: string; parentSessionId?: string }, contractJson: Record<string, unknown> | null, existingResultJson: Record<string, unknown> | null, fallbackVerdict: string, missingResultCode?: string): { resultJson: Record<string, unknown>; verdict: string; summary: string; violations: Array<Record<string, unknown>>; strictBlocked: boolean } {
+    const normalized = normalizeJsonObject(resultInput);
+    const completedAt = new Date().toISOString();
+    const baseResult: Record<string, any> = normalized
+        ? { ...normalized }
+        : {
+            verdict: fallbackVerdict,
+            summary: fallbackVerdict === "cancelled" ? "Sub-agent was cancelled without a structured partial result." : "Sub-agent was closed without a structured result.",
+        };
+    const result: Record<string, any> = {
+        ...baseResult,
+        sessionId: child.sessionId,
+        parentSessionId: child.parentSessionId,
+        verdict: typeof baseResult.verdict === "string" ? baseResult.verdict : fallbackVerdict,
+        summary: typeof baseResult.summary === "string" ? baseResult.summary : "Structured result recorded.",
+        completedAt: typeof baseResult.completedAt === "string" ? baseResult.completedAt : completedAt,
+    };
+    const violations = collectContractViolations(contractJson, normalized ? result : null, normalized ? undefined : missingResultCode);
+    if (violations.length > 0) {
+        result.contractViolations = [...(Array.isArray(result.contractViolations) ? result.contractViolations : []), ...violations];
+    }
+    const contract = normalizeJsonObject(contractJson?.current);
+    const strictBlocked = contract?.validationMode === "strict" && violations.length > 0;
+    const existingRevisions = Array.isArray(existingResultJson?.revisions)
+        ? existingResultJson.revisions
+        : [];
+    const nextRevision = existingRevisions.length + 1;
+    return {
+        resultJson: {
+            current: result,
+            revisions: [
+                ...existingRevisions,
+                { revision: nextRevision, submittedAt: completedAt, submittedBySessionId: child.parentSessionId, result },
+            ],
+        },
+        verdict: String(result.verdict),
+        summary: String(result.summary),
+        violations,
+        strictBlocked,
+    };
+}
 
 function normalizePromptText(text?: string): string {
     return String(text || "").replace(/\r\n/g, "\n").trim();
@@ -51,6 +227,7 @@ function isInternalSystemPrompt(text?: string): boolean {
 
     return /^\[SYSTEM:/i.test(normalized)
         || /^\[CHILD_UPDATE\b/i.test(normalized)
+        || /^\[SESSION_MESSAGE(?:_RESPONSE)?\b/i.test(normalized)
         || /^Sub-agent spawned successfully\./i.test(normalized)
         || /^Message sent to sub-agent /i.test(normalized)
         || /^No sub-agents have been spawned yet\./i.test(normalized)
@@ -69,7 +246,8 @@ function isLiveSessionLostErrorMessage(message?: string): boolean {
 
 function isToolCallTranscriptCorruptionErrorMessage(message?: string): boolean {
     const normalized = String(message || "");
-    return normalized.includes("assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'");
+    return normalized.includes("assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'")
+        || /Invalid value for 'content': expected a string, got null/i.test(normalized);
 }
 
 function isMissingSessionStateErrorMessage(message?: string): boolean {
@@ -416,6 +594,10 @@ export function createSessionManagerProxy(ctx: any) {
         recordSessionEvent(sessionId: string, events: { eventType: string; data: unknown }[]) {
             return ctx.scheduleActivity("recordSessionEvent", { sessionId, events });
         },
+        /** Compute the next wall-clock cron fire in an activity so tzdata-dependent results are recorded in history. */
+        computeCronAtNextFire(schedule: CronAtSchedule, afterUtcMs: number, lastOccurrenceKey?: string) {
+            return ctx.scheduleActivity("computeCronAtNextFire", { schedule, afterUtcMs, lastOccurrenceKey });
+        },
     };
 }
 
@@ -604,7 +786,7 @@ export function registerActivities(
             return /^\s*\[SYSTEM:/i.test(String(input.prompt ?? ""));
         };
 
-        const sanitizeAutonomousSystemSessionFilters = (args?: { include_system?: boolean; owner_query?: string; owner_kind?: string }) => {
+        const sanitizeAutonomousSystemSessionFilters = <T extends { include_system?: boolean; owner_query?: string; owner_kind?: string }>(args?: T): T | undefined => {
             if (!args || !isAutonomousSystemTurn()) return args;
             if (!args.owner_query && !args.owner_kind) return args;
             const sanitized = { ...args };
@@ -612,6 +794,8 @@ export function registerActivities(
             delete sanitized.owner_kind;
             return sanitized;
         };
+
+        const isReadOnlyTuner = () => runConfig.agentIdentity === "agent-tuner";
 
         const normalizeAgentLookup = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
         const resolveAgentConfigInline = (agentName: string) => {
@@ -641,6 +825,9 @@ export function registerActivities(
             const directChildren = sessions.filter(s => s.parentSessionId === input.sessionId);
             return await Promise.all(directChildren.map(async (child) => {
                 const info = await sdkClient._getSessionInfo(child.sessionId);
+                const outcome = catalog ? await catalog.getChildOutcome(child.sessionId).catch(() => null) : null;
+                const outcomeResult = normalizeJsonObject(outcome?.resultJson?.current);
+                const contractCurrent = normalizeJsonObject(outcome?.contractJson?.current);
                 return {
                     orchId: `session-${child.sessionId}`,
                     sessionId: child.sessionId,
@@ -650,7 +837,11 @@ export function registerActivities(
                     parentSessionId: child.parentSessionId,
                     isSystem: child.isSystem ?? info.isSystem ?? false,
                     agentId: child.agentId ?? info.agentId,
-                    result: info.result,
+                    result: outcome?.summary ?? (typeof outcomeResult?.summary === "string" ? outcomeResult.summary : info.result),
+                    contract: contractCurrent ?? undefined,
+                    contractStatus: outcome?.contractJson ? "contracted" : undefined,
+                    verdict: outcome?.verdict ?? undefined,
+                    contractViolations: Array.isArray(outcomeResult?.contractViolations) ? outcomeResult.contractViolations : undefined,
                     error: info.error,
                 };
             }));
@@ -680,6 +871,7 @@ export function registerActivities(
                 system_message?: string;
                 tool_names?: string[];
                 title?: string;
+                contract?: Record<string, unknown>;
             }) => {
                 try {
                     const childNestingLevel = (input.nestingLevel ?? 0) + 1;
@@ -768,6 +960,7 @@ export function registerActivities(
                         ...(boundAgentName ? { boundAgentName } : {}),
                         ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                         ...(agentToolNames ? { toolNames: agentToolNames } : {}),
+                        ...(args.contract ? { childContract: args.contract } : {}),
                     };
 
                     const parentSystemMsg = typeof childConfig.systemMessage === "string"
@@ -792,8 +985,9 @@ export function registerActivities(
                         `- If you override a sub-agent model, you MUST first call list_available_models in this session and use only an exact provider:model value returned there. ` +
                         `NEVER invent, guess, shorten, or reuse a stale model name.\n` +
                         `- Worker-managed system agents are not valid spawn targets. If you expect one and it is missing, report that the workers likely need to be restarted.\n` +
-                        `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\`, \`wait_on_worker\`, or \`cron\` tools. ` +
-                        `Use \`wait\` or \`wait_on_worker\` for one-shot delays. Use \`cron\` for recurring or periodic monitoring. ` +
+                        `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\`, \`wait_on_worker\`, \`cron\`, or \`cron_at\` tools. ` +
+                        `Use \`wait\` or \`wait_on_worker\` for one-shot delays. Use \`cron\` for fixed recurring intervals and \`cron_at\` for wall-clock schedules. ` +
+                        `Do NOT implement wall-clock schedules by waking every N minutes to check the clock; use \`cron_at\` with an explicit IANA timezone instead. ` +
                         `Do NOT burn tokens polling inside one LLM turn; after a brief immediate re-check at most, yield with a durable timer. ` +
                         `NEVER use setTimeout, sleep, setInterval, or any other timing mechanism.\n` +
                         (canSpawnMore
@@ -841,6 +1035,19 @@ export function registerActivities(
                                 (msg) => activityCtx.traceInfo(msg),
                             );
                         }
+
+                        const contractJson = buildContractJson(args.contract, input.sessionId, childSession.sessionId);
+                        if (contractJson) {
+                            await cmsRetryCritical(
+                                `runTurn.spawn.upsertChildOutcome contract child=${childSession.sessionId}`,
+                                () => catalog!.upsertChildOutcome({
+                                    childSessionId: childSession.sessionId,
+                                    parentSessionId: input.sessionId,
+                                    contractJson,
+                                }),
+                                (msg) => activityCtx.traceInfo(msg),
+                            );
+                        }
                     }
 
                     await childSession.send(agentTask, { bootstrap: true });
@@ -868,9 +1075,24 @@ export function registerActivities(
                     return `[SYSTEM: spawn_agent failed: ${err?.message || String(err)}]`;
                 }
             },
-            messageAgent: async (args: { agent_id: string; message: string }) => {
+            messageAgent: async (args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
+                    if (catalog && args.contract_patch) {
+                        const existing = await catalog.getChildOutcome(child.sessionId);
+                        const contractJson = appendContractPatchJson(existing?.contractJson ?? null, args.contract_patch, input.sessionId, child.sessionId);
+                        if (contractJson) {
+                            await cmsRetryCritical(
+                                `runTurn.message.upsertChildOutcome contract child=${child.sessionId}`,
+                                () => catalog!.upsertChildOutcome({
+                                    childSessionId: child.sessionId,
+                                    parentSessionId: input.sessionId,
+                                    contractJson,
+                                }),
+                                (msg) => activityCtx.traceInfo(msg),
+                            );
+                        }
+                    }
                     const sdkClient = await getInlineClient();
                     await sdkClient._getDuroxideClient().enqueueEvent(
                         child.orchId,
@@ -893,7 +1115,12 @@ export function registerActivities(
                         `  - Agent ${agent.orchId}\n` +
                         `    Title: ${agent.title ?? "(untitled)"}\n` +
                         `    Status: ${agent.status}\n` +
+                        `    Contract: ${agent.contractStatus ?? "none"}\n` +
+                        `    Verdict: ${agent.verdict ?? "none"}\n` +
                         `    Iterations: ${agent.iterations ?? 0}\n` +
+                        (Array.isArray(agent.contractViolations) && agent.contractViolations.length > 0
+                            ? `    Violations: ${agent.contractViolations.map((v: any) => v?.code || v?.message || "violation").join(", ")}\n`
+                            : "") +
                         `    Output: ${agent.result ?? agent.error ?? "(no output yet)"}`
                     );
                     return `[SYSTEM: Sub-agent status report (${children.length} agents):\n${statusLines.join("\n")}]`;
@@ -909,15 +1136,55 @@ export function registerActivities(
                 const running = children.filter(child => child.status === "running").map(child => child.orchId);
                 return running.length > 0 ? running : children.map(child => child.orchId);
             },
-            listSessions: async (args?: { include_system?: boolean; owner_query?: string; owner_kind?: string }) => {
+            listSessions: async (args?: { include_system?: boolean; owner_query?: string; owner_kind?: string; query?: string; session_id?: string; agent_id?: string; state?: string; parent_session_id?: string; group_id?: string; include_children?: boolean; updated_since?: string; summary_updated_since?: string; limit?: number }) => {
                 try {
                     const sdkClient = await getInlineClient();
                     const effectiveArgs = sanitizeAutonomousSystemSessionFilters(args);
+                    const limit = Math.max(1, Math.min(100, Number(effectiveArgs?.limit) || 50));
+                    const query = String(effectiveArgs?.query || "").trim().toLowerCase();
+                    const exactSessionId = String(effectiveArgs?.session_id || "").replace(/^session-/, "");
+                    const agentId = String(effectiveArgs?.agent_id || "").trim();
+                    const state = String(effectiveArgs?.state || "").trim().toLowerCase();
+                    const parentSessionId = String(effectiveArgs?.parent_session_id || "").replace(/^session-/, "");
+                    const groupFilterRaw = effectiveArgs?.group_id;
+                    const groupFilter = typeof groupFilterRaw === "string" ? groupFilterRaw.trim() : undefined;
+                    const includeChildren = effectiveArgs?.include_children === true;
+                    const updatedSince = Date.parse(String(effectiveArgs?.updated_since || ""));
+                    const summaryUpdatedSince = Date.parse(String(effectiveArgs?.summary_updated_since || ""));
                     const sessions = (await sdkClient.listSessions()).filter((session: any) => matchesSessionOwnerFilters(session, {
-                        includeSystem: effectiveArgs?.include_system,
+                        includeSystem: effectiveArgs?.include_system === true,
                         ownerQuery: effectiveArgs?.owner_query,
                         ownerKind: effectiveArgs?.owner_kind,
-                    }));
+                    })).filter((session: any) => {
+                        if (!includeChildren && session.parentSessionId) return false;
+                        if (exactSessionId && session.sessionId !== exactSessionId) return false;
+                        if (agentId && session.agentId !== agentId) return false;
+                        if (state && String(session.status || "").toLowerCase() !== state) return false;
+                        if (parentSessionId && session.parentSessionId !== parentSessionId) return false;
+                        if (groupFilter === "null" && session.groupId) return false;
+                        if (groupFilter && groupFilter !== "null" && session.groupId !== groupFilter) return false;
+                        if (Number.isFinite(updatedSince)) {
+                            const updatedAt = Date.parse(session.updatedAt || session.lastActiveAt || session.createdAt || "");
+                            if (!Number.isFinite(updatedAt) || updatedAt < updatedSince) return false;
+                        }
+                        if (Number.isFinite(summaryUpdatedSince)) {
+                            const summaryUpdatedAt = Date.parse(session.summaryUpdatedAt || "");
+                            if (!Number.isFinite(summaryUpdatedAt) || summaryUpdatedAt < summaryUpdatedSince) return false;
+                        }
+                        if (query) {
+                            const haystack = [
+                                session.sessionId,
+                                session.title,
+                                session.agentId,
+                                session.shortSummary,
+                                session.summaryState?.intent,
+                                session.summaryState?.summary,
+                                formatSessionOwnerLabel(session),
+                            ].map((part) => String(part || "").toLowerCase()).join(" ");
+                            if (!haystack.includes(query)) return false;
+                        }
+                        return true;
+                    }).slice(0, limit);
                     if (sessions.length === 0) {
                         return "[SYSTEM: Active sessions (0). No sessions matched the requested filters.]";
                     }
@@ -925,6 +1192,10 @@ export function registerActivities(
                         `  - ${s.sessionId}${s.sessionId === input.sessionId ? " (this session)" : ""}\n` +
                         `    Title: ${s.title ?? "(untitled)"}\n` +
                         `    Owner: ${formatSessionOwnerLabel(s)}\n` +
+                        `    Agent: ${s.agentId ?? "generic"}\n` +
+                        `    Group: ${s.groupId ?? "none"}\n` +
+                        `    Summary: ${s.shortSummary ?? s.summaryState?.summary ?? "(no summary)"}\n` +
+                        `    Summary Updated: ${s.summaryUpdatedAt ? new Date(s.summaryUpdatedAt).toISOString() : "never"}\n` +
                         `    Status: ${s.status}, Iterations: ${s.iterations ?? 0}\n` +
                         `    Parent: ${s.parentSessionId ?? "none"}`
                     );
@@ -933,9 +1204,99 @@ export function registerActivities(
                     return `[SYSTEM: list_sessions failed: ${err?.message || String(err)}]`;
                 }
             },
-            completeAgent: async (args: { agent_id: string }) => {
+            updateSessionSummary: async (args: { summary_state: any; short_summary?: string }) => {
+                try {
+                    if (isReadOnlyTuner()) return `[SYSTEM: update_session_summary is disabled for read-only agent-tuner sessions.]`;
+                    if (!catalog) return `[SYSTEM: update_session_summary failed: CMS catalog is unavailable.]`;
+                    const normalizedSummary = normalizeSummaryState(args.summary_state);
+                    if (!normalizedSummary.ok) return `[SYSTEM: update_session_summary failed: ${normalizedSummary.message}]`;
+                    await catalog.updateSessionSummary(input.sessionId, normalizedSummary.summaryState as any, args.short_summary);
+                    return `[SYSTEM: Session summary updated.]`;
+                } catch (err: any) {
+                    return `[SYSTEM: update_session_summary failed: ${err?.message || String(err)}]`;
+                }
+            },
+            sendSessionMessage: async (args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }) => {
+                try {
+                    if (isReadOnlyTuner()) return `[SYSTEM: send_session_message is disabled for read-only agent-tuner sessions.]`;
+                    const targetSessionId = String(args.session_id || "").replace(/^session-/, "");
+                    if (!targetSessionId) return `[SYSTEM: send_session_message failed: session_id is required.]`;
+                    if (targetSessionId === input.sessionId) return `[SYSTEM: send_session_message failed: target session is this session.]`;
+                    if (!args.subject?.trim() || !args.body?.trim()) return `[SYSTEM: send_session_message failed: subject and body are required.]`;
+                    if (args.body.length > 8192) return `[SYSTEM: send_session_message failed: body exceeds 8 KB.]`;
+                    if (!catalog) return `[SYSTEM: send_session_message failed: CMS catalog is unavailable.]`;
+                    const sdkClient = await getInlineClient();
+                    const allowedReasons = new Set(["help", "guidance", "fact-request", "status-request", "handoff"]);
+                    const reason = allowedReasons.has(String(args.reason || "")) ? args.reason as any : undefined;
+                    const { requestId } = await sendInternalSessionMessage({
+                        catalog,
+                        duroxideClient: sdkClient._getDuroxideClient(),
+                    }, {
+                        fromSessionId: input.sessionId,
+                        toSessionId: targetSessionId,
+                        subject: args.subject,
+                        body: args.body,
+                        reason,
+                        expectsResponse: args.expects_response === true,
+                        expiresAt: args.expires_at,
+                    });
+                    return `[SYSTEM: Cross-session message queued. Request ID: ${requestId}. Target: session-${targetSessionId}.]`;
+                } catch (err: any) {
+                    return `[SYSTEM: send_session_message failed: ${err?.message || String(err)}]`;
+                }
+            },
+            replySessionMessage: async (args: { request_id: string; session_id: string; body: string; verdict?: string }) => {
+                try {
+                    if (isReadOnlyTuner()) return `[SYSTEM: reply_session_message is disabled for read-only agent-tuner sessions.]`;
+                    const targetSessionId = String(args.session_id || "").replace(/^session-/, "");
+                    if (!targetSessionId || !args.request_id || !args.body?.trim()) return `[SYSTEM: reply_session_message failed: request_id, session_id, and body are required.]`;
+                    if (!catalog) return `[SYSTEM: reply_session_message failed: CMS catalog is unavailable.]`;
+                    const sdkClient = await getInlineClient();
+                    const allowedVerdicts = new Set(["answered", "declined", "blocked", "stale"]);
+                    const verdict = allowedVerdicts.has(String(args.verdict || "")) ? args.verdict as any : "answered";
+                    await replyInternalSessionMessage({
+                        catalog,
+                        duroxideClient: sdkClient._getDuroxideClient(),
+                    }, {
+                        requestId: args.request_id,
+                        fromSessionId: input.sessionId,
+                        toSessionId: targetSessionId,
+                        verdict,
+                        body: args.body,
+                    });
+                    return `[SYSTEM: Cross-session reply queued for request ${args.request_id}. Target: session-${targetSessionId}.]`;
+                } catch (err: any) {
+                    return `[SYSTEM: reply_session_message failed: ${err?.message || String(err)}]`;
+                }
+            },
+            completeAgent: async (args: { agent_id: string; result?: Record<string, unknown> }) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
+                    let builtOutcome: ReturnType<typeof buildResultJson> | null = null;
+                    if (catalog) {
+                        const existing = await catalog.getChildOutcome(child.sessionId).catch(() => null);
+                        const hasExistingResult = Boolean(normalizeJsonObject(existing?.resultJson?.current));
+                        if (args.result || (existing?.contractJson && !hasExistingResult)) {
+                            builtOutcome = buildResultJson(args.result, child, existing?.contractJson ?? null, existing?.resultJson ?? null, "success", "completed_without_result");
+                        }
+                        if (builtOutcome?.strictBlocked) {
+                            return `[SYSTEM: complete_agent blocked by strict contract validation for ${child.orchId}: ${builtOutcome.violations.map(v => v.message || v.code).join("; ")}]`;
+                        }
+                    }
+                    if (catalog && builtOutcome) {
+                        await cmsRetryCritical(
+                            `runTurn.complete.upsertChildOutcome result child=${child.sessionId}`,
+                            () => catalog!.upsertChildOutcome({
+                                childSessionId: child.sessionId,
+                                parentSessionId: input.sessionId,
+                                resultJson: builtOutcome!.resultJson,
+                                verdict: builtOutcome!.verdict,
+                                summary: builtOutcome!.summary,
+                                completedAt: new Date(),
+                            }),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
+                    }
                     const sdkClient = await getInlineClient();
                     const cmdId = `done-inline-${Date.now()}`;
                     await sdkClient._getDuroxideClient().enqueueEvent(
@@ -949,9 +1310,31 @@ export function registerActivities(
                     return `[SYSTEM: complete_agent failed: ${err?.message || String(err)}]`;
                 }
             },
-            cancelAgent: async (args: { agent_id: string; reason?: string }) => {
+            cancelAgent: async (args: { agent_id: string; reason?: string; partial_result?: Record<string, unknown> }) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
+                    let builtOutcome: ReturnType<typeof buildResultJson> | null = null;
+                    if (catalog) {
+                        const existing = await catalog.getChildOutcome(child.sessionId).catch(() => null);
+                        const hasExistingResult = Boolean(normalizeJsonObject(existing?.resultJson?.current));
+                        if (args.partial_result || (existing?.contractJson && !hasExistingResult)) {
+                            builtOutcome = buildResultJson(args.partial_result, child, existing?.contractJson ?? null, existing?.resultJson ?? null, "cancelled", "completed_without_result");
+                        }
+                    }
+                    if (catalog && builtOutcome) {
+                        await cmsRetryCritical(
+                            `runTurn.cancel.upsertChildOutcome partial child=${child.sessionId}`,
+                            () => catalog!.upsertChildOutcome({
+                                childSessionId: child.sessionId,
+                                parentSessionId: input.sessionId,
+                                resultJson: builtOutcome!.resultJson,
+                                verdict: builtOutcome!.verdict,
+                                summary: builtOutcome!.summary,
+                                completedAt: new Date(),
+                            }),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
+                    }
                     const sdkClient = await getInlineClient();
                     const cmdId = `cancel-inline-${Date.now()}`;
                     await sdkClient._getDuroxideClient().enqueueEvent(
@@ -2112,6 +2495,9 @@ export function registerActivities(
             const directChildren = sessions.filter(s => s.parentSessionId === input.parentSessionId);
             const enriched = await Promise.all(directChildren.map(async (child) => {
                 const info = await sdkClient._getSessionInfo(child.sessionId);
+                const outcome = catalog ? await catalog.getChildOutcome(child.sessionId).catch(() => null) : null;
+                const outcomeResult = normalizeJsonObject(outcome?.resultJson?.current);
+                const contractCurrent = normalizeJsonObject(outcome?.contractJson?.current);
                 return {
                     orchId: `session-${child.sessionId}`,
                     sessionId: child.sessionId,
@@ -2121,7 +2507,11 @@ export function registerActivities(
                     parentSessionId: child.parentSessionId,
                     isSystem: child.isSystem ?? info.isSystem ?? false,
                     agentId: child.agentId ?? info.agentId,
-                    result: info.result,
+                    result: outcome?.summary ?? (typeof outcomeResult?.summary === "string" ? outcomeResult.summary : info.result),
+                    contract: contractCurrent ?? undefined,
+                    contractStatus: outcome?.contractJson ? "contracted" : undefined,
+                    verdict: outcome?.verdict ?? undefined,
+                    contractViolations: Array.isArray(outcomeResult?.contractViolations) ? outcomeResult.contractViolations : undefined,
                     error: info.error,
                 };
             }));
@@ -2313,5 +2703,14 @@ export function registerActivities(
             () => catalog!.recordEvents(input.sessionId, input.events, workerNodeId),
             (msg) => activityCtx.traceInfo(msg),
         );
+    });
+
+    // -- computeCronAtNextFire --------------------------------
+    runtime.registerActivity("computeCronAtNextFire", async (
+        activityCtx: any,
+        input: { schedule: CronAtSchedule; afterUtcMs: number; lastOccurrenceKey?: string },
+    ): Promise<ReturnType<typeof computeCronAtNextFire>> => {
+        activityCtx.traceInfo(`[computeCronAtNextFire] tz=${input.schedule?.tz} after=${input.afterUtcMs}`);
+        return computeCronAtNextFire(input.schedule, input.afterUtcMs, input.lastOccurrenceKey);
     });
 }

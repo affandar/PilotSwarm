@@ -33,7 +33,7 @@ export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
  * [orch] cron timer:
  *
  * [SUB-AGENT CONTEXT]
- * use the \`wait\`, \`wait_on_worker\`, or \`cron\` tools
+ * use the \`wait\`, \`wait_on_worker\`, \`cron\`, or \`cron_at\` tools
  * report that ambiguity back to the parent
  * Prefer using \`store_fact\` for larger structured context handoffs
  * pass fact keys or \`read_facts\` pointers in messages/prompts

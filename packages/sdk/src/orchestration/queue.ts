@@ -6,7 +6,7 @@ import {
 } from "./agents.js";
 import {
     bufferChildUpdate,
-    drainLeadingQueuedCronActions,
+    drainLeadingQueuedScheduleActions,
     flushPendingChildDigestIntoPrompt,
     handleCommand,
     promptIdsIntersectCancellation,
@@ -15,6 +15,7 @@ import {
     recordCancelledMessageIds,
     wrapWithResumeContext,
 } from "./lifecycle.js";
+import { shouldWakeParentForChildDigest } from "../child-notifications.js";
 import {
     CHILD_UPDATE_BATCH_MS,
     FIFO_BUCKET_COUNT,
@@ -342,6 +343,25 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 }
                 ctx.traceInfo(`[drain] user prompt interrupted cron timer`);
                 state.activeTimer = null;
+            } else if (state.activeTimer?.type === "cron_at") {
+                const activeCronAt = state.cronAtSchedule;
+                const now: number = yield ctx.utcNow();
+                const remainingMs = Math.max(0, state.activeTimer.deadlineMs - now);
+                const scheduledAt = activeCronAt?.nextFireAtMs ? new Date(activeCronAt.nextFireAtMs).toISOString() : "unknown";
+                const cronAtResumeNote =
+                    `This is an internal wall-clock recurring schedule, not a new user prompt. ` +
+                    `There is an active wall-clock schedule for "${activeCronAt?.reason ?? state.activeTimer.reason}". ` +
+                    `The pending scheduled fire (${scheduledAt}) is preserved and will run after this turn completes; ` +
+                    `if the scheduled time passes while you respond, it will fire immediately afterward unless you explicitly cancel or reset the schedule. ` +
+                    `Do NOT call wait() just to keep the recurring loop alive. ` +
+                    `Call cron_at(action="cancel") only if you need to stop it.`;
+                if (state.activeTimer.shouldRehydrate && userPrompt) {
+                    userPrompt = wrapWithResumeContext(runtime, userPrompt, cronAtResumeNote);
+                } else if (userPrompt) {
+                    userPrompt = `${userPrompt}\n\n[SYSTEM: ${cronAtResumeNote}]`;
+                }
+                ctx.traceInfo(`[drain] user prompt interrupted cron_at timer (${Math.round(remainingMs / 1000)}s remain)`);
+                state.activeTimer = null;
             } else if (state.activeTimer?.type === "idle") {
                 ctx.traceInfo(`[drain] user prompt within idle window, cancelling idle timer`);
                 state.activeTimer = null;
@@ -479,7 +499,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     const { ctx, state } = runtime;
 
     // Priority 1: pending tool actions (in-memory, replay carry-forward).
-    drainLeadingQueuedCronActions(runtime);
+    yield* drainLeadingQueuedScheduleActions(runtime);
     if (state.pendingToolActions.length > 0) {
         const action = state.pendingToolActions.shift()!;
         ctx.traceInfo(`[orch] replaying queued action: ${action.type} remaining=${state.pendingToolActions.length}`);
@@ -588,6 +608,40 @@ function* processPendingChildDigest(runtime: DurableSessionRuntime): Generator<a
         return;
     }
 
+    const digestDecision = shouldWakeParentForChildDigest(
+        state.pendingChildDigest!.updates.map((update) => {
+            const agent = state.subAgents.find((entry) => entry.sessionId === update.sessionId);
+            return {
+                update: {
+                    kind: update.updateType === "wait"
+                        ? "wait"
+                        : update.updateType === "failed"
+                            ? "error"
+                            : update.updateType === "cancelled" || update.updateType === "deleted"
+                                ? "cancelled"
+                                : update.updateType === "completed"
+                                    ? "completed"
+                                    : "progress",
+                    summary: update.content,
+                },
+                contract: agent?.contract,
+            } as const;
+        }),
+    );
+    if (!digestDecision.wake) {
+        yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+            eventType: "session.child_update_suppressed",
+            data: {
+                reason: digestDecision.reason,
+                policy: digestDecision.policy,
+                classification: digestDecision.classification,
+                updateCount: state.pendingChildDigest!.updates.length,
+            },
+        }]);
+        clearPendingChildDigest(runtime);
+        return;
+    }
+
     if (state.activeTimer?.type === "wait") {
         const now: number = yield ctx.utcNow();
         const remainingMs = Math.max(0, state.activeTimer.deadlineMs - now);
@@ -631,6 +685,21 @@ function* processPendingChildDigest(runtime: DurableSessionRuntime): Generator<a
             `[SYSTEM: This is an internal orchestration wake-up caused by child session updates; the user did not send a new message. ` +
                 `Buffered child updates arrived while your recurring schedule was waiting for the next wake-up${activeCron ? ` ("${activeCron.reason}")` : ""}. ` +
                 `Review the updates and continue your task now. The recurring cron schedule remains active and will be re-armed automatically after this turn completes.\n\n${digestPrompt}]`,
+            true,
+        );
+        return;
+    }
+
+    if (state.activeTimer?.type === "cron_at") {
+        const activeCronAt = state.cronAtSchedule;
+        const scheduledAt = activeCronAt?.nextFireAtMs ? new Date(activeCronAt.nextFireAtMs).toISOString() : "unknown";
+        state.activeTimer = null;
+        clearPendingChildDigest(runtime);
+        yield* processPrompt(
+            runtime,
+            `[SYSTEM: This is an internal orchestration wake-up caused by child session updates; the user did not send a new message. ` +
+                `Buffered child updates arrived while your wall-clock schedule was waiting for its next fire${activeCronAt ? ` ("${activeCronAt.reason}", scheduled ${scheduledAt})` : ""}. ` +
+                `Review the updates and continue your task now. The wall-clock cron schedule remains active and will be re-armed automatically after this turn completes.\n\n${digestPrompt}]`,
             true,
         );
         return;

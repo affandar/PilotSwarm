@@ -76,14 +76,14 @@ session has lost affinity. Anything short of that is not a stall.
 
 ## Cron sessions in particular
 
-The four permanent system children — `sweeper`, `resourcemgr`,
-`facts-manager`, and (now) `agent-tuner` itself — use `cron(seconds=N)`
-to keep waking up. **Between ticks they are dehydrated.** Looking at
-`read_session_info` for a sweeper that ticked 30 seconds ago and
-ticks again in 30 seconds, you will see no live orchestration. That
-is correct.
+`sweeper` and `facts-manager` use low-frequency maintenance cron timers
+(`21600` seconds by default). `pilotswarm` and `resourcemgr` should not
+maintain recurring cron loops; they wake from direct operator prompts or
+runtime stimuli. **Between ticks, cron sessions are dehydrated.** Looking
+at `read_session_info` for a sweeper between maintenance ticks, you will
+see no live orchestration. That is correct.
 
-The `[cron 1m 0s]` and `[cron 5m 0s]` chips you see in the sessions
+The `[cron 6h 0m]` style chips you see in the sessions
 pane mean "this session has a pending cron timer firing in N
 seconds". The orchestration genuinely is not in memory — duroxide
 will rehydrate it when the timer fires.

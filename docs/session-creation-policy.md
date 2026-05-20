@@ -116,6 +116,8 @@ At orchestration start (iteration 0, before first `runTurn()`):
 
 `softDeleteSession()` checks `isSystem` at the DB level. No change needed.
 
+The explicit exception is the trusted management restart path: `PilotSwarmManagementClient.restartSystemSession()` temporarily archives the deterministic system-session row after the operator chooses `complete`, `terminate`, or `hard_delete`, then recreates the configured system agent under the same deterministic session id. Normal `deleteSession()` calls still reject system sessions.
+
 ## Top-Level Agent List
 
 The list of user-creatable top-level agents is:

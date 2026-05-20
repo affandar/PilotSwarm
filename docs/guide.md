@@ -438,6 +438,8 @@ console.log(info.title);       // LLM-generated session summary
 | `client.listSessions()` | List all active sessions |
 | `client.deleteSession(id)` | Soft-delete a session |
 
+System agents are protected from normal session deletion. Trusted operators can reset one through `PilotSwarmManagementClient.restartSystemSession(agentOrSessionId, { disposition })`, where `disposition` is `complete`, `terminate`, or `hard_delete`; the current deterministic system session is archived and a fresh replacement is started.
+
 ### `PilotSwarmWorker`
 
 | Method | Description |

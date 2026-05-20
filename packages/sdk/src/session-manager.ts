@@ -9,6 +9,7 @@ import type { SessionCatalogProvider } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
+import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -82,7 +83,11 @@ export interface WorkerDefaults {
     /** Backward-compatible alias for older code paths/tests. */
     systemMessage?: string;
     /** Raw prompt lookup for named and system agents bound directly to sessions. */
-    agentPromptLookup?: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>;
+    agentPromptLookup?: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; descriptor?: import("./prompt-layers.js").PromptLayerDescriptor }>;
+    /** Descriptor for the PilotSwarm framework base layer (from system default.agent.md). */
+    frameworkBaseDescriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
+    /** Descriptor for the app default layer (from app default.agent.md or inline config). */
+    appDefaultDescriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     /** Skill directories to pass to the Copilot SDK. */
     skillDirectories?: string[];
     /** Custom agents to pass to the Copilot SDK. */
@@ -103,6 +108,20 @@ export interface WorkerDefaults {
     modelProviders?: ModelProviderRegistry;
     /** Turn timeout in milliseconds. 0 or undefined = no timeout. */
     turnTimeoutMs?: number;
+}
+
+function buildEffectivePromptLayers(workerDefaults: WorkerDefaults, config: SerializableSessionConfig): PromptLayerDescriptor[] {
+    const boundAgentName = config.boundAgentName;
+    const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
+    const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
+    const layers: PromptLayerDescriptor[] = [];
+    if (workerDefaults.frameworkBaseDescriptor) layers.push(workerDefaults.frameworkBaseDescriptor);
+    if (!isPilotSwarmSystemAgent && workerDefaults.appDefaultDescriptor) layers.push(workerDefaults.appDefaultDescriptor);
+    if (boundAgentName) {
+        const agentDescriptor = workerDefaults.agentPromptLookup?.[boundAgentName]?.descriptor;
+        if (agentDescriptor) layers.push(agentDescriptor);
+    }
+    return layers;
 }
 
 /**
@@ -590,11 +609,15 @@ export class SessionManager {
                 "PilotSwarm invariant violated: factStore must be initialized before creating sessions.",
             );
         }
-        const userTools = config.tools ?? [];
-        const systemTools = ManagedSession.systemToolDefs();
         // Tuner sessions are read-only by design — no spawn / message / cancel.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
-        const subAgentTools = isTunerSession ? [] : ManagedSession.subAgentToolDefs();
+        const mutatingSystemToolNames = new Set(["update_session_summary", "send_session_message", "reply_session_message"]);
+        const userTools = config.tools ?? [];
+        const systemTools = ManagedSession.systemToolDefs()
+            .filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
+        const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
+        const subAgentTools = ManagedSession.subAgentToolDefs()
+            .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
         const factTools = createFactTools({
             factStore: this.factStore,
             getLineageSessionIds: this._getLineageSessionIds ?? undefined,
@@ -608,7 +631,30 @@ export class SessionManager {
                     }
                 }
                 : undefined,
-        });
+            onSharedIntakeFactStored: this.sessionCatalog && this._duroxideClient
+                ? async ({ key, sourceSessionId, agentId }) => {
+                    try {
+                        const sessions = await this.sessionCatalog!.listSessions();
+                        const factsManager = sessions.find((session) => session.agentId === "facts-manager" && session.state !== "failed" && session.state !== "cancelled");
+                        if (!factsManager) return;
+                        const payload = {
+                            type: "facts.intake_written",
+                            key,
+                            sourceSessionId,
+                            agentId,
+                            createdAt: new Date().toISOString(),
+                        };
+                        await this._duroxideClient.enqueueEvent(
+                            `session-${factsManager.sessionId}`,
+                            "messages",
+                            JSON.stringify({ prompt: `[FACTS_INTAKE ${JSON.stringify(payload)}]` }),
+                        );
+                    } catch {
+                        // Best-effort wake-up; the 6h maintenance pass is the fallback.
+                    }
+                }
+                : undefined,
+            }).filter((tool: any) => !isTunerSession || tool.name === "read_facts");
         const inspectTools = this.sessionCatalog
             ? createInspectTools({
                 catalog: this.sessionCatalog,
@@ -779,6 +825,13 @@ export class SessionManager {
 
         const managed = new ManagedSession(sessionId, copilotSession, config);
         this.sessions.set(sessionId, managed);
+        const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config);
+        if (promptLayers.length > 0 && this.sessionCatalog) {
+            void this.sessionCatalog.recordEvents(sessionId, [{
+                eventType: "session.prompt_layers",
+                data: buildPromptLayersEventPayload(promptLayers),
+            }]).catch(() => {});
+        }
         return managed;
     }
 
@@ -1242,12 +1295,17 @@ export class SessionManager {
         const additionalSections = knowledgeToolInstructions
             ? { tool_instructions: knowledgeToolInstructions, last_instructions: lastInstructions }
             : { last_instructions: lastInstructions };
+
+        const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
+        const layerManifest = buildEffectivePromptLayers(this.workerDefaults, config);
+
         return composeStructuredSystemMessage({
             frameworkBase,
-            appDefault: layerKind === "pilotswarm-system-agent"
+            appDefault: isPilotSwarmSystemAgent
                 ? undefined
                 : this.workerDefaults.appDefaultPrompt,
             additionalSections,
+            layerManifest: layerManifest.length > 0 ? layerManifest : undefined,
         });
     }
 }

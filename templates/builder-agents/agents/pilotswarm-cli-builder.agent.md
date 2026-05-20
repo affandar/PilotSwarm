@@ -1,4 +1,6 @@
 ---
+schemaVersion: 1
+version: 1.0.0
 name: pilotswarm-cli-builder
 description: "Use when building a plugin-driven CLI/TUI app on top of PilotSwarm. Scaffolds plugin.json branding, agents, skills, worker modules, and CLI run instructions."
 ---
@@ -30,6 +32,7 @@ Your job is to create or update application code in the user's repository, not t
 ## Always Consult
 
 - the installed `pilotswarm-cli-builder` skill
+- the installed `pilotswarm-agent-versioning` skill when creating or editing `plugin/agents/*.agent.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-agents.md`
@@ -51,6 +54,7 @@ Your job is to create or update application code in the user's repository, not t
 - do not check in the real `.model_providers.json`; create it locally from `.model_providers.example.json` and add it to `.gitignore`
 - if you add or change TUI keybindings, update all help/keybinding surfaces together
 - do not copy PilotSwarm's built-in framework or management plugin text into the user's app
+- when creating `plugin/agents/*.agent.md`, include `schemaVersion: 1` and `version: 1.0.0`; when editing existing agent files, bump their `version` according to the app's versioning style
 
 ## Guided Intake
 

@@ -1,6 +1,6 @@
 # Bug: wait boundary leaks post-wait content before resume
 
-**Status:** Accepted limitation for now
+**Status:** Partially fixed for tool side effects; assistant text leakage remains an accepted limitation
 **Filed:** 2026-04-20
 **Component:** `@pilotswarm/sdk` wait-tool behavior through `ManagedSession.runTurn()`
 **Severity:** Medium — strict PRE/WAIT/POST phase separation is not reliable across tested models
@@ -16,6 +16,8 @@ Examples observed during real-wait experiments:
 - `Wait 6 seconds. After the wait, reply with ZZPOSTZZ and ZZJOKEZZ.`
 
 In the failing cases, the post-wait tokens appeared both before and after the resume boundary.
+
+After the 2026-05-18 runtime hardening, side-effecting tools invoked after a terminal control boundary (`wait`, `ask_user`, `wait_for_agents`, `list_sessions`, `check_agents`) are refused in the same turn. This prevents durable writes such as `store_fact` from happening both before and after the actual timer resume. The remaining accepted limitation is assistant text emitted too early; text is still governed by the at-least-once contract below.
 
 ## Findings
 
@@ -46,14 +48,16 @@ Keeping the baseline system prompt fixed and varying only user phrasing:
 
 ## Current decision
 
-For now, PilotSwarm accepts an **at-least-once delivery** contract for waits:
+For assistant text, PilotSwarm still accepts an **at-least-once delivery** contract for waits:
 
 1. required pre-wait content must appear before the wait boundary
 2. the durable timer must actually be scheduled and the turn must resume
 3. required post-wait content must appear after the resume at least once
-4. duplicated or early-leaked post-wait content is tolerated
+4. duplicated or early-leaked assistant text is tolerated
 
-The shipped regression test reflects that relaxed contract.
+For tool side effects, the runtime now enforces a stricter contract: once a terminal control boundary is pending, later user/system side-effect tools in that same LLM turn are not executed. They must run after the durable resume instead.
+
+The shipped wait-content regression reflects the relaxed assistant-text contract; inline control-tool tests cover the stricter side-effect block.
 
 ## Future work
 

@@ -373,6 +373,43 @@ button {
   gap: 6px;
 }
 
+.ps-toolbar.is-mobile {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.ps-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ps-toolbar-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.ps-toolbar-row-actions::-webkit-scrollbar {
+  display: none;
+}
+
+.ps-toolbar-row-primary,
+.ps-toolbar-row-secondary {
+  min-width: 0;
+}
+
+.ps-toolbar-row-secondary {
+  justify-content: space-between;
+}
+
 .ps-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1157,6 +1194,32 @@ body.is-resizing-pane-y * {
   line-height: var(--ps-line-height-dense);
 }
 
+.ps-session-pane.ps-chat-focus-pane .ps-action-list.ps-session-list {
+  overflow-x: auto;
+  touch-action: pan-x pan-y;
+}
+
+.ps-session-pane.ps-chat-focus-pane .ps-session-list-button {
+  width: max-content;
+  min-width: 100%;
+  overflow: visible;
+}
+
+.ps-session-pane.ps-chat-focus-pane .ps-session-row-content {
+  display: inline-block;
+  min-width: max-content;
+  overflow: visible;
+  max-width: none;
+}
+
+.ps-session-pane.ps-chat-focus-pane .ps-action-list .ps-line {
+  max-width: none;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .ps-list-button {
   width: 100%;
   min-width: 0;
@@ -1875,11 +1938,26 @@ body.is-resizing-pane-y * {
   }
 
   .ps-toolbar {
-    align-items: center;
+    align-items: stretch;
+  }
+
+  .ps-toolbar.is-mobile {
+    gap: 6px;
+  }
+
+  .ps-toolbar.is-mobile .ps-toolbar-row {
+    flex-wrap: nowrap;
+  }
+
+  .ps-toolbar.is-mobile .ps-toolbar-status {
+    margin-left: auto;
+    max-width: 44%;
+    min-width: 0;
+    text-align: right;
   }
 
   .ps-toolbar-status {
-    max-width: 34%;
+    max-width: 40%;
     font-size: 9px;
   }
 

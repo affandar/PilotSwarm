@@ -1,4 +1,6 @@
 ---
+schemaVersion: 1
+version: 1.0.0
 name: pilotswarm-portal-builder
 description: "Use when building or customizing a PilotSwarm browser portal app. Scaffolds portal branding, plugin metadata, auth add-on configuration, and deployment wiring."
 ---
@@ -26,6 +28,7 @@ Your job is to create or update application code in the user's repository, not t
 ## Always Consult
 
 - the installed `pilotswarm-portal-builder` skill
+- the installed `pilotswarm-agent-versioning` skill when creating or editing portal-exposed `plugin/agents/*.agent.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - `https://github.com/affandar/pilotswarm/blob/main/packages/portal/README.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
@@ -45,6 +48,7 @@ Your job is to create or update application code in the user's repository, not t
 - do not invent app-specific auth protocols when the user really wants auth disabled; `none` is a valid first-class choice
 - when the user asks for a custom provider, separate browser login UX, token acquisition, and server-side request validation clearly
 - when documenting AKS env delivery for portal auth or storage settings, prefer `kubectl create secret generic ... --from-env-file=...` over fragile shell `source` patterns for semicolon-bearing values
+- when creating or editing portal-exposed `plugin/agents/*.agent.md`, include `schemaVersion: 1` and a `version`; bump the version string whenever prompt behavior, tools, workflow guidance, or metadata changes
 
 ## Guided Intake
 

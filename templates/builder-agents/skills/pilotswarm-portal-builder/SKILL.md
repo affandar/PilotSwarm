@@ -78,6 +78,7 @@ Do not guess these answers when they materially affect the scaffold. If the user
 - Keep the logo path in plugin metadata so the splash screen, signed-in header, and browser tab icon stay in sync.
 - Use `plugin.json.tui` only when the user explicitly wants the same title/splash across TUI and portal.
 - Keep agent prompts and personas in `plugin/agents/*.agent.md`, not inside portal UI files.
+- Every generated `.agent.md` must include `schemaVersion: 1` and a `version` string. Use `version: 1.0.0` for new agents by default, and bump `version` when editing an existing agent's prompt behavior, tools, workflow guidance, or metadata.
 - Use `session-policy.json` when the user wants the portal to offer only a curated agent roster instead of generic sessions.
 
 Example:

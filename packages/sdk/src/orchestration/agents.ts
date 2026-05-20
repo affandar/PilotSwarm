@@ -119,13 +119,14 @@ export function buildSubAgentSystemMessage(options: {
     } = options;
     const canSpawnMore = childNestingLevel < maxNestingLevel;
     const timingInstruction = agentIsSystem
-        ? `- For recurring or periodic work, use the \`cron\` tool instead of ending every cycle with \`wait\`. ` +
+                ? `- For recurring or periodic work, use the \`cron\` or \`cron_at\` tool instead of ending every cycle with \`wait\`. ` +
           `Call \`cron(seconds=<N>, reason="...")\` to start or update the durable recurring schedule, ` +
+                    `or \`cron_at(minute=<M>, hour=<H>, tz="...", reason="...")\` for wall-clock schedules. ` +
           `then finish turns normally so the orchestration wakes you automatically on each cron cycle. ` +
           `Use \`wait\` only for one-shot delays inside a turn. ` +
-          `Call \`cron(action="cancel")\` only when you intentionally want to stop the recurring loop.\n`
-        : `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\`, \`wait_on_worker\`, or \`cron\` tools. ` +
-          `Use \`wait\` or \`wait_on_worker\` for one-shot delays. Use \`cron\` for recurring or periodic monitoring. ` +
+                    `Call \`cron(action="cancel")\` or \`cron_at(action="cancel")\` only when you intentionally want to stop the recurring loop.\n`
+                : `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\`, \`wait_on_worker\`, \`cron\`, or \`cron_at\` tools. ` +
+                    `Use \`wait\` or \`wait_on_worker\` for one-shot delays. Use \`cron\` for fixed intervals and \`cron_at\` for wall-clock schedules. ` +
           `Do NOT burn tokens polling inside one LLM turn; after a brief immediate re-check at most, yield with a durable timer. ` +
           `NEVER use setTimeout, sleep, setInterval, or any other timing mechanism. ` +
           `Durable waits survive process restarts.\n`;
@@ -225,6 +226,7 @@ export function* refreshTrackedSubAgents(runtime: DurableSessionRuntime): Genera
             .filter(child => !child.isSystem)
             .map((child) => {
                 const existing = runtime.state.subAgents.find(agent => agent.sessionId === child.sessionId || agent.orchId === child.orchId);
+                const contract = (child as any).contract ?? existing?.contract;
                 const localStatus = existing?.status;
                 if (localStatus && isSubAgentTerminalStatus(localStatus)) {
                     return {
@@ -234,6 +236,7 @@ export function* refreshTrackedSubAgents(runtime: DurableSessionRuntime): Genera
                         status: localStatus,
                         result: child.result ?? existing?.result,
                         agentId: child.agentId ?? existing?.agentId,
+                        contract,
                     } satisfies SubAgentEntry;
                 }
                 const rawStatus = child.status ?? localStatus ?? "running";
@@ -250,6 +253,7 @@ export function* refreshTrackedSubAgents(runtime: DurableSessionRuntime): Genera
                     status: normalizedStatus,
                     result: child.result ?? existing?.result,
                     agentId: child.agentId ?? existing?.agentId,
+                    contract,
                 } satisfies SubAgentEntry;
             });
     } catch (err: any) {
@@ -616,6 +620,7 @@ export function* handleSubAgentAction(
                 ...(boundAgentName ? { boundAgentName } : {}),
                 ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                 ...(agentToolNames ? { toolNames: agentToolNames } : {}),
+                ...(result.contract ? { childContract: result.contract } : {}),
             };
 
             const parentSystemMsg = typeof childConfig.systemMessage === "string"
@@ -662,6 +667,7 @@ export function* handleSubAgentAction(
                 task: agentTask.slice(0, 500),
                 status: "running",
                 agentId: agentId || undefined,
+                contract: result.contract,
             });
 
             queueFollowup(runtime,
@@ -688,6 +694,13 @@ export function* handleSubAgentAction(
             }
 
             ctx.traceInfo(`[orch] message_agent via SDK: ${agentEntry.sessionId} msg="${result.message.slice(0, 60)}"`);
+
+            if (result.contractPatch && typeof result.contractPatch === "object") {
+                agentEntry.contract = {
+                    ...(agentEntry.contract ?? {}),
+                    ...result.contractPatch,
+                };
+            }
 
             try {
                 yield runtime.manager.sendToSession(agentEntry.sessionId, result.message);

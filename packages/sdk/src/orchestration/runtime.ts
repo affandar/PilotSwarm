@@ -39,7 +39,7 @@ function* restoreActiveTimer(runtime: DurableSessionRuntime): Generator<any, voi
         deadlineMs: initNow + (t.remainingMs ?? 0),
         originalDurationMs: t.originalDurationMs ?? t.remainingMs ?? 0,
         reason: t.reason,
-        type: t.type,
+        type: t.type as any,
         ...(t.shouldRehydrate ? { shouldRehydrate: true } : {}),
         ...(t.waitPlan ? { waitPlan: t.waitPlan } : {}),
         ...(t.content ? { content: t.content } : {}),

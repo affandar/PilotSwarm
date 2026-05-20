@@ -108,6 +108,8 @@ export class PilotSwarmClient {
         agentId?: string;
         /** Authenticated owner to associate with the new session. */
         owner?: SessionOwnerInfo | null;
+        /** Optional visual session group assignment. */
+        groupId?: string | null;
     }): Promise<PilotSwarmSession> {
         // ── Policy enforcement (client-side) ─────────────────
         const policy = this._sessionPolicy;
@@ -159,6 +161,7 @@ export class PilotSwarmClient {
             reasoningEffort: config?.reasoningEffort,
             parentSessionId: config?.parentSessionId,
             owner: config?.owner ?? null,
+            groupId: config?.groupId ?? null,
         });
 
         // Track parentSessionId for sub-agent orchestration input
@@ -195,6 +198,7 @@ export class PilotSwarmClient {
         splash?: string;
         initialPrompt?: string;
         owner?: SessionOwnerInfo | null;
+        groupId?: string | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -213,6 +217,7 @@ export class PilotSwarmClient {
             boundAgentName: agentName,
             promptLayering: { kind: "app-agent" },
             owner: opts?.owner ?? null,
+            groupId: opts?.groupId ?? null,
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)
@@ -344,6 +349,10 @@ export class PilotSwarmClient {
             isSystem: row.isSystem || undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
+            groupId: row.groupId ?? undefined,
+            shortSummary: row.shortSummary ?? undefined,
+            summaryState: row.summaryState ?? undefined,
+            summaryUpdatedAt: row.summaryUpdatedAt ?? undefined,
         }));
     }
 
@@ -718,6 +727,21 @@ export class PilotSwarmClient {
 
         const cronActive = customStatus.cronActive === true;
         const cronInterval = typeof customStatus.cronInterval === "number" ? customStatus.cronInterval : undefined;
+        const cronKind = cronActive && (customStatus.cronKind === "wall-clock" || customStatus.cronKind === "interval")
+            ? customStatus.cronKind
+            : undefined;
+        const cronNextFireAt = cronActive && typeof customStatus.cronNextFireAt === "number"
+            ? customStatus.cronNextFireAt
+            : undefined;
+        const cronTimezone = cronActive && typeof customStatus.cronTimezone === "string"
+            ? customStatus.cronTimezone
+            : undefined;
+        const cronMaxFires = cronActive && typeof customStatus.cronMaxFires === "number"
+            ? customStatus.cronMaxFires
+            : undefined;
+        const cronFiresCompleted = cronActive && typeof customStatus.cronFiresCompleted === "number"
+            ? customStatus.cronFiresCompleted
+            : undefined;
         const status = deriveStatusFromCmsAndRuntime({
             row: cmsRow,
             customStatus,
@@ -786,6 +810,10 @@ export class PilotSwarmClient {
             title: cmsRow?.title ?? undefined,
             agentId: cmsRow?.agentId ?? undefined,
             owner: cmsRow?.owner ?? undefined,
+            groupId: cmsRow?.groupId ?? undefined,
+            shortSummary: cmsRow?.shortSummary ?? undefined,
+            summaryState: cmsRow?.summaryState ?? undefined,
+            summaryUpdatedAt: cmsRow?.summaryUpdatedAt ?? undefined,
             createdAt: cmsRow?.createdAt ?? new Date(),
             updatedAt: cmsRow?.updatedAt ?? new Date(),
             iterations: customStatus.iteration ?? cmsRow?.currentIteration ?? 0,
@@ -804,6 +832,11 @@ export class PilotSwarmClient {
             waitReason: customStatus.waitReason,
             cronActive,
             cronInterval,
+            cronKind,
+            cronNextFireAt,
+            cronTimezone,
+            cronMaxFires,
+            cronFiresCompleted,
             cronReason: typeof customStatus.cronReason === "string" ? customStatus.cronReason : undefined,
             contextUsage: customStatus?.contextUsage && typeof customStatus.contextUsage === "object"
                 ? customStatus.contextUsage

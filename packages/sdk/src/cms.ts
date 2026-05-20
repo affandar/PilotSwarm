@@ -9,7 +9,7 @@
  */
 
 import { runCmsMigrations } from "./cms-migrator.js";
-import type { SessionOwnerInfo } from "./types.js";
+import type { SessionOwnerInfo, SessionSummaryState } from "./types.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -107,6 +107,14 @@ export interface SessionRow {
     agentId: string | null;
     /** Splash banner (terminal markup) from the agent definition. */
     splash: string | null;
+    /** Optional visual session group assignment. */
+    groupId: string | null;
+    /** Short live summary for discovery/session lists. */
+    shortSummary: string | null;
+    /** Structured live summary state, application domain payload included. */
+    summaryState: SessionSummaryState | null;
+    /** Last time summaryState/shortSummary was updated. */
+    summaryUpdatedAt: Date | null;
     /** Authenticated user associated with this session, if any. */
     owner: SessionOwnerInfo | null;
 }
@@ -126,6 +134,37 @@ export interface SessionRowUpdates {
     isSystem?: boolean;
     agentId?: string | null;
     splash?: string | null;
+    groupId?: string | null;
+}
+
+export interface SessionGroupRow {
+    groupId: string;
+    title: string;
+    description: string | null;
+    owner: SessionOwnerInfo | null;
+    metadata: Record<string, unknown>;
+    memberCount: number;
+    runningCount: number;
+    waitingCount: number;
+    completedCount: number;
+    failedCount: number;
+    cancelledCount: number;
+    latestActivityAt: Date | null;
+    latestSummaryUpdatedAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface ChildOutcomeRow {
+    childSessionId: string;
+    parentSessionId: string;
+    contractJson: Record<string, unknown> | null;
+    resultJson: Record<string, unknown> | null;
+    verdict: string | null;
+    summary: string | null;
+    completedAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
 }
 
 // ─── Session Metric Summary Types ────────────────────────────────
@@ -388,6 +427,7 @@ export interface SessionCatalogProvider {
         isSystem?: boolean;
         agentId?: string;
         splash?: string;
+        groupId?: string | null;
         owner?: SessionOwnerInfo | null;
     }): Promise<void>;
 
@@ -396,6 +436,9 @@ export interface SessionCatalogProvider {
 
     /** Soft-delete a session (set deleted_at). */
     softDeleteSession(sessionId: string): Promise<void>;
+
+    /** Privileged archive/reset for deterministic system-session restart. */
+    archiveSystemSessionForRestart(sessionId: string, state: "completed" | "cancelled" | "failed", lastError?: string | null): Promise<void>;
 
     // ── Reads (called from client) ───────────────────────────
 
@@ -418,6 +461,41 @@ export interface SessionCatalogProvider {
 
     /** Get the most recently active session ID. */
     getLastSessionId(): Promise<string | null>;
+
+    /** Persist a structured live session summary. */
+    updateSessionSummary(sessionId: string, summaryState: SessionSummaryState, shortSummary?: string | null): Promise<void>;
+
+    /** Create a visual session group. */
+    createSessionGroup(input: { groupId: string; title: string; description?: string | null; owner?: SessionOwnerInfo | null; metadata?: Record<string, unknown> }): Promise<void>;
+
+    /** Update title/description/metadata for a session group. */
+    updateSessionGroup(groupId: string, patch: { title?: string; description?: string | null; metadataPatch?: Record<string, unknown> }): Promise<void>;
+
+    /** List session groups with aggregate member status. */
+    listSessionGroups(): Promise<SessionGroupRow[]>;
+
+    /** List non-deleted sessions assigned to a group. */
+    listGroupSessions(groupId: string): Promise<SessionRow[]>;
+
+    /** Delete an empty session group. Returns false while non-deleted members remain. */
+    deleteSessionGroup(groupId: string): Promise<boolean>;
+
+    /** Upsert current child contract/result outcome state. */
+    upsertChildOutcome(input: {
+        childSessionId: string;
+        parentSessionId: string;
+        contractJson?: Record<string, unknown> | null;
+        resultJson?: Record<string, unknown> | null;
+        verdict?: string | null;
+        summary?: string | null;
+        completedAt?: Date | null;
+    }): Promise<void>;
+
+    /** Get a child outcome record by child session id. */
+    getChildOutcome(childSessionId: string): Promise<ChildOutcomeRow | null>;
+
+    /** List child outcome records for a parent session. */
+    listChildOutcomes(parentSessionId: string): Promise<ChildOutcomeRow[]>;
 
     // ── Events (written from worker, read from client) ───────
 
@@ -535,11 +613,22 @@ function sqlForSchema(schema: string) {
             inheritSessionOwner:        `${s}.cms_inherit_session_owner`,
             updateSession:              `${s}.cms_update_session`,
             softDeleteSession:          `${s}.cms_soft_delete_session`,
+            archiveSystemSessionForRestart: `${s}.cms_archive_system_session_for_restart`,
             listSessions:               `${s}.cms_list_sessions`,
             listSessionsPage:           `${s}.cms_list_sessions_page`,
             getSession:                 `${s}.cms_get_session`,
             getDescendantSessionIds:    `${s}.cms_get_descendant_session_ids`,
             getLastSessionId:           `${s}.cms_get_last_session_id`,
+            updateSessionSummary:       `${s}.cms_update_session_summary`,
+            assignSessionGroup:         `${s}.cms_assign_session_group`,
+            createSessionGroup:         `${s}.cms_create_session_group`,
+            updateSessionGroup:         `${s}.cms_update_session_group`,
+            listSessionGroups:          `${s}.cms_list_session_groups`,
+            listGroupSessions:          `${s}.cms_list_group_sessions`,
+            deleteSessionGroup:         `${s}.cms_delete_session_group`,
+            upsertChildOutcome:         `${s}.cms_upsert_child_outcome`,
+            getChildOutcome:            `${s}.cms_get_child_outcome`,
+            listChildOutcomes:          `${s}.cms_list_child_outcomes`,
             recordEvents:               `${s}.cms_record_events`,
             getSessionEvents:           `${s}.cms_get_session_events`,
             getSessionEventsBefore:     `${s}.cms_get_session_events_before`,
@@ -633,33 +722,54 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         isSystem?: boolean;
         agentId?: string;
         splash?: string;
+        groupId?: string | null;
         owner?: SessionOwnerInfo | null;
     }): Promise<void> {
-        await this.pool.query(
-            `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7)`,
-            [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null],
-        );
-        if (opts?.isSystem) return;
-
-        if (opts?.owner?.provider && opts?.owner?.subject) {
-            await this.pool.query(
-                `SELECT ${this.sql.fn.setSessionOwner}($1, $2, $3, $4, $5)`,
-                [
-                    sessionId,
-                    opts.owner.provider,
-                    opts.owner.subject,
-                    opts.owner.email ?? null,
-                    opts.owner.displayName ?? null,
-                ],
+        const explicitGroupId = typeof opts?.groupId === "string" && opts.groupId.trim()
+            ? opts.groupId.trim()
+            : null;
+        const createGroupId = explicitGroupId ? null : opts?.groupId ?? null;
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            await client.query(
+                `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8)`,
+                [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, createGroupId],
             );
-            return;
-        }
 
-        if (opts?.parentSessionId) {
-            await this.pool.query(
-                `SELECT ${this.sql.fn.inheritSessionOwner}($1, $2)`,
-                [sessionId, opts.parentSessionId],
-            );
+            if (!opts?.isSystem) {
+                if (opts?.owner?.provider && opts?.owner?.subject) {
+                    await client.query(
+                        `SELECT ${this.sql.fn.setSessionOwner}($1, $2, $3, $4, $5)`,
+                        [
+                            sessionId,
+                            opts.owner.provider,
+                            opts.owner.subject,
+                            opts.owner.email ?? null,
+                            opts.owner.displayName ?? null,
+                        ],
+                    );
+                } else if (opts?.parentSessionId) {
+                    await client.query(
+                        `SELECT ${this.sql.fn.inheritSessionOwner}($1, $2)`,
+                        [sessionId, opts.parentSessionId],
+                    );
+                }
+
+                if (explicitGroupId) {
+                    await client.query(
+                        `SELECT ${this.sql.fn.assignSessionGroup}($1, $2)`,
+                        [sessionId, explicitGroupId],
+                    );
+                }
+            }
+
+            await client.query("COMMIT");
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
         }
     }
 
@@ -678,6 +788,7 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         if (updates.isSystem !== undefined) jsonUpdates.isSystem = updates.isSystem;
         if (updates.agentId !== undefined) jsonUpdates.agentId = updates.agentId;
         if (updates.splash !== undefined) jsonUpdates.splash = updates.splash;
+        if (updates.groupId !== undefined) jsonUpdates.groupId = updates.groupId;
 
         if (Object.keys(jsonUpdates).length === 0) return;
 
@@ -699,6 +810,17 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
             }
             throw err;
         }
+    }
+
+    async archiveSystemSessionForRestart(
+        sessionId: string,
+        state: "completed" | "cancelled" | "failed",
+        lastError?: string | null,
+    ): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.archiveSystemSessionForRestart}($1, $2, $3)`,
+            [sessionId, state, lastError ?? null],
+        );
     }
 
     // ── Reads ────────────────────────────────────────────────
@@ -749,6 +871,95 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
             `SELECT ${this.sql.fn.getLastSessionId}() AS session_id`,
         );
         return rows.length > 0 ? rows[0].session_id : null;
+    }
+
+    async updateSessionSummary(sessionId: string, summaryState: SessionSummaryState, shortSummary?: string | null): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.updateSessionSummary}($1, $2, $3)`,
+            [sessionId, JSON.stringify(summaryState), shortSummary ?? null],
+        );
+    }
+
+    async createSessionGroup(input: { groupId: string; title: string; description?: string | null; owner?: SessionOwnerInfo | null; metadata?: Record<string, unknown> }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.createSessionGroup}($1, $2, $3, $4, $5)`,
+            [
+                input.groupId,
+                input.title,
+                input.description ?? null,
+                input.owner ? JSON.stringify(input.owner) : null,
+                JSON.stringify(input.metadata ?? {}),
+            ],
+        );
+    }
+
+    async updateSessionGroup(groupId: string, patch: { title?: string; description?: string | null; metadataPatch?: Record<string, unknown> }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.updateSessionGroup}($1, $2)`,
+            [groupId, JSON.stringify(patch)],
+        );
+    }
+
+    async listSessionGroups(): Promise<SessionGroupRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listSessionGroups}()`,
+        );
+        return rows.map(rowToSessionGroupRow);
+    }
+
+    async listGroupSessions(groupId: string): Promise<SessionRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listGroupSessions}($1)`,
+            [groupId],
+        );
+        return rows.map(rowToSessionRow);
+    }
+
+    async deleteSessionGroup(groupId: string): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.deleteSessionGroup}($1) AS deleted`,
+            [groupId],
+        );
+        return rows[0]?.deleted === true;
+    }
+
+    async upsertChildOutcome(input: {
+        childSessionId: string;
+        parentSessionId: string;
+        contractJson?: Record<string, unknown> | null;
+        resultJson?: Record<string, unknown> | null;
+        verdict?: string | null;
+        summary?: string | null;
+        completedAt?: Date | null;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.upsertChildOutcome}($1, $2, $3, $4, $5, $6, $7)`,
+            [
+                input.childSessionId,
+                input.parentSessionId,
+                input.contractJson ? JSON.stringify(input.contractJson) : null,
+                input.resultJson ? JSON.stringify(input.resultJson) : null,
+                input.verdict ?? null,
+                input.summary ?? null,
+                input.completedAt ?? null,
+            ],
+        );
+    }
+
+    async getChildOutcome(childSessionId: string): Promise<ChildOutcomeRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getChildOutcome}($1)`,
+            [childSessionId],
+        );
+        return rows.length > 0 ? rowToChildOutcomeRow(rows[0]) : null;
+    }
+
+    async listChildOutcomes(parentSessionId: string): Promise<ChildOutcomeRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listChildOutcomes}($1)`,
+            [parentSessionId],
+        );
+        return rows.map(rowToChildOutcomeRow);
     }
 
     // ── Events ───────────────────────────────────────────────
@@ -1273,7 +1484,53 @@ function rowToSessionRow(row: any): SessionRow {
         isSystem: row.is_system ?? false,
         agentId: row.agent_id ?? null,
         splash: row.splash ?? null,
+        groupId: row.group_id ?? null,
+        shortSummary: row.short_summary ?? null,
+        summaryState: row.summary_state ?? null,
+        summaryUpdatedAt: row.summary_updated_at ? new Date(row.summary_updated_at) : null,
         owner,
+    };
+}
+
+function rowToSessionGroupRow(row: any): SessionGroupRow {
+    const owner = row.owner_provider && row.owner_subject
+        ? {
+            provider: row.owner_provider,
+            subject: row.owner_subject,
+            email: row.owner_email ?? null,
+            displayName: row.owner_display_name ?? null,
+        }
+        : row.owner ?? null;
+    return {
+        groupId: row.group_id,
+        title: row.title,
+        description: row.description ?? null,
+        owner,
+        metadata: row.metadata ?? {},
+        memberCount: Number(row.member_count) || 0,
+        runningCount: Number(row.running_count) || 0,
+        waitingCount: Number(row.waiting_count) || 0,
+        completedCount: Number(row.completed_count) || 0,
+        failedCount: Number(row.failed_count) || 0,
+        cancelledCount: Number(row.cancelled_count) || 0,
+        latestActivityAt: row.latest_activity_at ? new Date(row.latest_activity_at) : null,
+        latestSummaryUpdatedAt: row.latest_summary_updated_at ? new Date(row.latest_summary_updated_at) : null,
+        createdAt: new Date(row.created_at),
+        updatedAt: new Date(row.updated_at),
+    };
+}
+
+function rowToChildOutcomeRow(row: any): ChildOutcomeRow {
+    return {
+        childSessionId: row.child_session_id,
+        parentSessionId: row.parent_session_id,
+        contractJson: row.contract_json ?? null,
+        resultJson: row.result_json ?? null,
+        verdict: row.verdict ?? null,
+        summary: row.summary ?? null,
+        completedAt: row.completed_at ? new Date(row.completed_at) : null,
+        createdAt: new Date(row.created_at),
+        updatedAt: new Date(row.updated_at),
     };
 }
 

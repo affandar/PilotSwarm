@@ -11,14 +11,16 @@ export type TurnAction =
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
+    | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
+    | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
-    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; title?: string; content?: string; events?: CapturedEvent[] }
-    | { type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] }
+    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] }
+    | { type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
-    | { type: "list_sessions"; includeSystem?: boolean; ownerQuery?: string; ownerKind?: string; events?: CapturedEvent[] }
-    | { type: "complete_agent"; agentId: string; events?: CapturedEvent[] }
-    | { type: "cancel_agent"; agentId: string; reason?: string; events?: CapturedEvent[] }
+    | { type: "list_sessions"; includeSystem?: boolean; ownerQuery?: string; ownerKind?: string; query?: string; sessionId?: string; agentId?: string; state?: string; parentSessionId?: string; groupId?: string; includeChildren?: boolean; updatedSince?: string; summaryUpdatedSince?: string; limit?: number; events?: CapturedEvent[] }
+    | { type: "complete_agent"; agentId: string; result?: Record<string, unknown>; events?: CapturedEvent[] }
+    | { type: "cancel_agent"; agentId: string; reason?: string; partialResult?: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] };
 
 type QueuedTurnActionCarrier = {
@@ -30,14 +32,16 @@ export type TurnResult =
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; title?: string; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "message_agent"; agentId: string; message: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "check_agents"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "list_sessions"; includeSystem?: boolean; ownerQuery?: string; ownerKind?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "complete_agent"; agentId: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "cancel_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "list_sessions"; includeSystem?: boolean; ownerQuery?: string; ownerKind?: string; query?: string; sessionId?: string; agentId?: string; state?: string; parentSessionId?: string; groupId?: string; includeChildren?: boolean; updatedSince?: string; summaryUpdatedSince?: string; limit?: number; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "complete_agent"; agentId: string; result?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "cancel_agent"; agentId: string; reason?: string; partialResult?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | { type: "cancelled" }
     | { type: "error"; message: string; events?: CapturedEvent[] };
@@ -71,18 +75,32 @@ export interface TurnOptions {
             system_message?: string;
             tool_names?: string[];
             title?: string;
+            contract?: Record<string, unknown>;
         }): Promise<string>;
-        messageAgent(args: { agent_id: string; message: string }): Promise<string>;
+        messageAgent(args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }): Promise<string>;
         checkAgents(): Promise<string>;
         resolveWaitForAgents(agentIds?: string[]): Promise<string[]>;
         listSessions(args?: {
             include_system?: boolean;
             owner_query?: string;
             owner_kind?: string;
+            query?: string;
+            session_id?: string;
+            agent_id?: string;
+            state?: string;
+            parent_session_id?: string;
+            group_id?: string;
+            include_children?: boolean;
+            updated_since?: string;
+            summary_updated_since?: string;
+            limit?: number;
         }): Promise<string>;
-        completeAgent(args: { agent_id: string }): Promise<string>;
-        cancelAgent(args: { agent_id: string; reason?: string }): Promise<string>;
+        completeAgent(args: { agent_id: string; result?: Record<string, unknown> }): Promise<string>;
+        cancelAgent(args: { agent_id: string; reason?: string; partial_result?: Record<string, unknown> }): Promise<string>;
         deleteAgent(args: { agent_id: string; reason?: string }): Promise<string>;
+        updateSessionSummary(args: { summary_state: SessionSummaryState; short_summary?: string }): Promise<string>;
+        sendSessionMessage(args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }): Promise<string>;
+        replySessionMessage(args: { request_id: string; session_id: string; body: string; verdict?: string }): Promise<string>;
     };
 }
 
@@ -104,6 +122,8 @@ export interface SerializableSessionConfig {
     promptLayering?: {
         kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     };
+    /** Internal: child contract supplied by the parent when this session was spawned. */
+    childContract?: Record<string, unknown>;
     /**
      * Names of tools registered on the worker via `worker.registerTools()`.
      * Serializable — travels through duroxide. The worker resolves these
@@ -181,6 +201,66 @@ export interface SessionOwnerInfo {
     displayName?: string | null;
 }
 
+export interface SessionSummaryState {
+    schemaVersion: number;
+    updatedAt: string;
+    intent: string;
+    summary: string;
+    state: Record<string, unknown>;
+    openQuestions: Array<Record<string, unknown>>;
+    blockers: string[];
+    nextActions: string[];
+    domain?: Record<string, unknown>;
+    links: Array<Record<string, unknown>>;
+    structureChangeLog: Array<Record<string, unknown>>;
+}
+
+export interface ChildSessionContract {
+    contractId?: string;
+    parentSessionId: string;
+    childSessionId: string;
+    validationMode?: "advisory" | "strict";
+    purpose?: string;
+    expectedFacts?: Array<Record<string, unknown>>;
+    expectedArtifacts?: Array<Record<string, unknown>>;
+    successCriteria?: string[];
+    blockerPolicy?: "allow-blocked-result" | "require-success";
+    deadlineAt?: string;
+    maxPollCount?: number;
+    maxWallClockMs?: number;
+    metadata?: Record<string, unknown>;
+    /**
+     * Autonomous parent wake policy for child updates. Defaults to
+     * `"material_change"` when omitted. See child-notifications.ts.
+     *
+    * - `any`             - wake parent for any child update
+    * - `material_change` - wake parent for material changes only
+    * - `completion`      - wake parent only on terminal/blocked/error
+     *
+     * `wakeOn` does not affect explicit parent reads such as `check_agents`
+     * or `wait_for_agents`.
+     */
+    wakeOn?: import("./child-notifications.js").ChildWakePolicy;
+}
+
+export type ChildSessionVerdict = "success" | "partial" | "blocked" | "failed" | "cancelled" | "timed_out";
+
+export interface ChildSessionResult {
+    sessionId: string;
+    parentSessionId?: string;
+    contractRevision?: number;
+    verdict: ChildSessionVerdict;
+    summary: string;
+    factsWritten?: Array<Record<string, unknown>>;
+    artifactsWritten?: Array<Record<string, unknown>>;
+    blockers?: string[];
+    nextActions?: string[];
+    contractViolations?: Array<Record<string, unknown>>;
+    completedAt: string;
+    finalAssistantMessageSeq?: number;
+    metadata?: Record<string, unknown>;
+}
+
 // ─── Session Info ────────────────────────────────────────────────
 
 export interface PilotSwarmSessionInfo {
@@ -198,6 +278,16 @@ export interface PilotSwarmSessionInfo {
     cronActive?: boolean;
     cronInterval?: number;
     cronReason?: string;
+    /** "interval" for legacy cron(seconds), "wall-clock" for cron_at. v1.0.53+. */
+    cronKind?: "interval" | "wall-clock";
+    /** Next scheduled fire (UTC ms) for active wall-clock cron_at schedules. */
+    cronNextFireAt?: number;
+    /** IANA timezone for active wall-clock cron_at schedules. */
+    cronTimezone?: string;
+    /** Optional cap on total fires for cron_at schedules. */
+    cronMaxFires?: number;
+    /** Number of fires completed for cron_at schedules. */
+    cronFiresCompleted?: number;
     result?: string;
     error?: string;
     iterations: number;
@@ -209,6 +299,14 @@ export interface PilotSwarmSessionInfo {
     agentId?: string;
     /** Splash banner (terminal markup) from the agent definition. */
     splash?: string;
+    /** Optional visual session group assignment. */
+    groupId?: string;
+    /** Short live summary for discovery/session lists. */
+    shortSummary?: string;
+    /** Structured live summary state. */
+    summaryState?: SessionSummaryState;
+    /** Last time summaryState/shortSummary was updated. */
+    summaryUpdatedAt?: Date;
     /** Authenticated user associated with this session when available. */
     owner?: SessionOwnerInfo;
     /** Latest known context-window usage snapshot for this session. */
@@ -268,6 +366,8 @@ export interface OrchestrationInput {
     forgottenTimerNudged?: boolean;
     /** Active recurring schedule set by the cron tool. */
     cronSchedule?: CronSchedule;
+    /** Active wall-clock recurring schedule set by the cron_at tool. */
+    cronAtSchedule?: import("./cron-at.js").CronAtSchedule;
     /** Latest known context-window usage snapshot captured from session events. */
     contextUsage?: SessionContextUsage;
 
@@ -362,6 +462,8 @@ export interface SubAgentEntry {
     result?: string;
     /** Named agent ID (e.g. "sweeper", "resourcemgr") for dedup guards. */
     agentId?: string;
+    /** Last known child contract for autonomous parent wake policy decisions. */
+    contract?: Record<string, unknown>;
 }
 
 // ─── Session Policy ──────────────────────────────────────────────
@@ -725,6 +827,11 @@ export interface SessionStatusSignal {
     cronActive?: boolean;
     cronInterval?: number;
     cronReason?: string;
+    cronKind?: "interval" | "wall-clock";
+    cronNextFireAt?: number;
+    cronTimezone?: string;
+    cronMaxFires?: number;
+    cronFiresCompleted?: number;
     error?: string;
     retriesExhausted?: boolean;
     contextUsage?: SessionContextUsage;

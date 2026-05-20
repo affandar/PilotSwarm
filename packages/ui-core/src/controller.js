@@ -7,6 +7,7 @@ import {
     getNextHistoryEventLimit,
 } from "./history.js";
 import { applySessionUsageEvent, cloneContextUsageSnapshot } from "./context-usage.js";
+import { shouldKeepRecoverableTransportWarning } from "./session-errors.js";
 import {
     computeLegacyLayout,
     getBaseSessionPaneHeight,
@@ -49,6 +50,48 @@ const FULLSCREENABLE_PANES = new Set([
     FOCUS_REGIONS.INSPECTOR,
     FOCUS_REGIONS.ACTIVITY,
 ]);
+
+function sessionGroupToRow(group) {
+    if (!group?.groupId) return null;
+    const latestSummaryUpdatedAt = group.latestSummaryUpdatedAt
+        ? new Date(group.latestSummaryUpdatedAt).getTime()
+        : null;
+    const memberCount = group.memberCount ?? 0;
+    return {
+        sessionId: `group:${group.groupId}`,
+        groupId: group.groupId,
+        isGroup: true,
+        title: group.title || group.groupId,
+        status: "group",
+        description: group.description ?? null,
+        owner: group.owner ?? null,
+        shortSummary: `${memberCount} grouped session${memberCount === 1 ? "" : "s"}`,
+        summaryUpdatedAt: Number.isFinite(latestSummaryUpdatedAt) ? latestSummaryUpdatedAt : null,
+        latestSummaryUpdatedAt: Number.isFinite(latestSummaryUpdatedAt) ? latestSummaryUpdatedAt : null,
+        memberCount,
+        runningCount: group.runningCount ?? 0,
+        waitingCount: group.waitingCount ?? 0,
+        completedCount: group.completedCount ?? 0,
+        failedCount: group.failedCount ?? 0,
+        cancelledCount: group.cancelledCount ?? 0,
+        createdAt: group.createdAt ? new Date(group.createdAt).getTime() : 0,
+        updatedAt: group.updatedAt ? new Date(group.updatedAt).getTime() : Date.now(),
+    };
+}
+
+function normalizeSessionListRow(session) {
+    if (!session?.sessionId) return session;
+    if (session.isGroup) return session;
+    return {
+        ...session,
+        groupId: session.groupId ?? null,
+        parentSessionId: session.parentSessionId ?? null,
+    };
+}
+
+function sessionGroupIdFromRowId(sessionId) {
+    return String(sessionId || "").startsWith("group:") ? String(sessionId).slice("group:".length) : null;
+}
 
 function groupModelsByProvider(models = []) {
     const groups = [];
@@ -141,6 +184,40 @@ function areStructuredValuesEqual(left, right) {
     return true;
 }
 
+function timestampMs(value) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (value instanceof Date) return value.getTime();
+    const parsed = Date.parse(value || "");
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isSameOrOlderSessionUpdate(previousSession, nextSession) {
+    const previousUpdatedAt = timestampMs(previousSession?.updatedAt);
+    const nextUpdatedAt = timestampMs(nextSession?.updatedAt);
+    return previousUpdatedAt > 0 && nextUpdatedAt > 0 && nextUpdatedAt <= previousUpdatedAt;
+}
+
+function isIdleLikeSessionStatus(status) {
+    return !status || status === "idle" || status === "unknown" || status === "pending";
+}
+
+function shouldPreserveStaleWaitingVisual(previousSession, nextSession) {
+    return previousSession?.status === "waiting"
+        && typeof previousSession?.waitReason === "string"
+        && previousSession.waitReason.trim().length > 0
+        && (nextSession?.waitReason === undefined || nextSession?.waitReason === null)
+        && isIdleLikeSessionStatus(nextSession?.status)
+        && isSameOrOlderSessionUpdate(previousSession, nextSession);
+}
+
+function shouldPreserveStaleCronVisual(previousSession, nextSession) {
+    return previousSession?.cronActive === true
+        && nextSession?.cronActive !== true
+        && !isTerminalSessionStatus(nextSession?.status)
+        && !isTerminalOrchestrationStatus(nextSession?.orchestrationStatus)
+        && isSameOrOlderSessionUpdate(previousSession, nextSession);
+}
+
 function buildSessionMergePatch(previousSession, nextSession) {
     if (!nextSession?.sessionId) return null;
 
@@ -157,11 +234,26 @@ function buildSessionMergePatch(previousSession, nextSession) {
         patch.pendingQuestion = null;
         changed = true;
     }
-    if (nextSession.waitReason === undefined && previousSession?.waitReason && nextSession.status !== "waiting" && nextSession.status !== "input_required") {
+    const preserveWaitingVisual = shouldPreserveStaleWaitingVisual(previousSession, nextSession);
+    if (preserveWaitingVisual) {
+        if (patch.status !== previousSession.status) {
+            patch.status = previousSession.status;
+            changed = true;
+        }
+        if (patch.waitReason !== previousSession.waitReason) {
+            patch.waitReason = previousSession.waitReason;
+            changed = true;
+        }
+    } else if (nextSession.waitReason === undefined && previousSession?.waitReason && nextSession.status !== "waiting" && nextSession.status !== "input_required") {
         patch.waitReason = null;
         changed = true;
     }
-    if (nextSession.error === undefined && previousSession?.error && nextSession.status !== "failed" && nextSession.status !== "error") {
+    if (shouldKeepRecoverableTransportWarning(previousSession, nextSession)) {
+        if (patch.error !== previousSession.error) {
+            patch.error = previousSession.error;
+            changed = true;
+        }
+    } else if (nextSession.error === undefined && previousSession?.error && nextSession.status !== "failed" && nextSession.status !== "error") {
         patch.error = null;
         changed = true;
     }
@@ -169,10 +261,24 @@ function buildSessionMergePatch(previousSession, nextSession) {
         patch.result = null;
         changed = true;
     }
-    if (nextSession.cronActive !== true) {
+    const preserveCronVisual = shouldPreserveStaleCronVisual(previousSession, nextSession);
+    if (preserveCronVisual) {
+        for (const key of ["cronActive", "cronKind", "cronInterval", "cronReason", "cronNextFireAt", "cronTimezone", "cronMaxFires", "cronFiresCompleted"]) {
+            if (previousSession?.[key] == null) continue;
+            if (areStructuredValuesEqual(patch[key], previousSession[key])) continue;
+            patch[key] = previousSession[key];
+            changed = true;
+        }
+    } else if (nextSession.cronActive !== true) {
         if (previousSession?.cronReason) {
             patch.cronReason = null;
             changed = true;
+        }
+        for (const key of ["cronKind", "cronNextFireAt", "cronTimezone", "cronMaxFires", "cronFiresCompleted"]) {
+            if (previousSession?.[key] != null && nextSession[key] === undefined) {
+                patch[key] = null;
+                changed = true;
+            }
         }
         if (previousSession?.cronInterval != null && nextSession.cronInterval === undefined) {
             patch.cronInterval = null;
@@ -232,7 +338,9 @@ function buildTerminalSendRejectedMessage(session, error) {
     const sessionStatus = String(session?.status || "unknown");
     const parentSessionId = session?.parentSessionId ? String(session.parentSessionId).slice(0, 8) : "root";
     const cronSummary = session?.cronActive === true || typeof session?.cronInterval === "number"
-        ? `active${typeof session?.cronInterval === "number" ? ` (${session.cronInterval}s)` : ""}`
+        ? session?.cronKind === "wall-clock"
+            ? `active wall-clock${typeof session?.cronNextFireAt === "number" ? ` (next ${new Date(session.cronNextFireAt).toISOString()})` : ""}`
+            : `active${typeof session?.cronInterval === "number" ? ` (${session.cronInterval}s)` : ""}`
         : "inactive";
     const body = [
         `Cannot send a new message because session ${shortSessionId} is attached to a terminal orchestration instance.`,
@@ -1533,7 +1641,14 @@ export class PilotSwarmUiController {
         const recoveringConnection = !preRefreshState.connection.connected || Boolean(preRefreshState.connection.error);
         const shouldClearRefreshFailureBanner = preRefreshState.ui.statusText === SESSION_REFRESH_FAILED_STATUS;
         const previousActive = this.getState().sessions.activeSessionId;
-        let sessions = await this.transport.listSessions();
+        let sessions = (await this.transport.listSessions()).map(normalizeSessionListRow);
+        if (typeof this.transport.listSessionGroups === "function") {
+            const groups = await this.transport.listSessionGroups().catch(() => []);
+            const groupRows = (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean);
+            if (groupRows.length > 0) {
+                sessions = [...groupRows, ...sessions];
+            }
+        }
         const active = previousActive;
         if (
             active
@@ -1542,7 +1657,7 @@ export class PilotSwarmUiController {
         ) {
             const activeSession = await this.transport.getSession(active).catch(() => null);
             if (activeSession?.sessionId) {
-                sessions = [...sessions, activeSession];
+                sessions = [...sessions, normalizeSessionListRow(activeSession)];
             }
         }
         if (recoveringConnection) {
@@ -1557,7 +1672,12 @@ export class PilotSwarmUiController {
         const syncedIds = new Set();
         if (selected) {
             if (selected !== previousActive) {
-                await this.loadSession(selected);
+                if (!this.getState().sessions.byId[selected]?.isGroup) {
+                    await this.loadSession(selected);
+                }
+                return;
+            }
+            if (this.getState().sessions.byId[selected]?.isGroup) {
                 return;
             }
             const existingHistory = this.getState().history.bySessionId.get(selected);
@@ -2655,6 +2775,10 @@ export class PilotSwarmUiController {
             }
             this.dispatch({ type: "sessions/selected", sessionId });
         }
+        if (this.getState().sessions.byId[sessionId]?.isGroup) {
+            this.detachActiveSession();
+            return;
+        }
         await this.ensureSessionHistory(sessionId, { force: true });
         await this.syncSessionDetail(sessionId).catch(() => {});
         this.attachActiveSession(sessionId);
@@ -2783,15 +2907,15 @@ export class PilotSwarmUiController {
         if (!session) return;
         const previousSession = this.getState().sessions.byId[sessionId] || null;
         const patch = buildSessionMergePatch(previousSession, session);
-        if (patch) {
-            this.dispatch({ type: "sessions/merged", session: patch });
+        if (patch || previousSession?.rowVisualStatusCandidate) {
+            this.dispatch({ type: "sessions/merged", session: patch || { sessionId } });
         }
         this.maybeFlushQueuedOutbox(sessionId, session);
     }
 
     async createSession(options = {}) {
         try {
-            const created = await this.transport.createSession(options);
+            const created = await this.transport.createSession(this.applyActiveGroupDefault(options));
             await this.refreshSessions();
             await this.loadSession(created.sessionId);
             this.setFocus(FOCUS_REGIONS.PROMPT);
@@ -2808,7 +2932,7 @@ export class PilotSwarmUiController {
             throw new Error("Named-agent session creation is not supported by this transport");
         }
         try {
-            const created = await this.transport.createSessionForAgent(agentName, options);
+            const created = await this.transport.createSessionForAgent(agentName, this.applyActiveGroupDefault(options));
             await this.refreshSessions();
             await this.loadSession(created.sessionId);
             this.setFocus(FOCUS_REGIONS.PROMPT);
@@ -2821,6 +2945,268 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: error?.message || String(error) || "Failed to create session" });
             return null;
         }
+    }
+
+    getMovableGroupSessionSelection() {
+        const state = this.getState();
+        const selectedIds = Array.isArray(state.sessions.selectedIds) && state.sessions.selectedIds.length > 0
+            ? state.sessions.selectedIds
+            : (state.sessions.activeSessionId ? [state.sessions.activeSessionId] : []);
+        return selectedIds
+            .map((id) => state.sessions.byId[id])
+            .filter((session) => session && !session.isSystem && !session.isGroup && !session.parentSessionId);
+    }
+
+    async openMoveToGroupModal() {
+        const state = this.getState();
+        const eligible = this.getMovableGroupSessionSelection();
+
+        if (eligible.length === 0) {
+            this.dispatch({ type: "ui/status", text: "Select a top-level non-system session to move" });
+            return null;
+        }
+        if (typeof this.transport.listSessionGroups !== "function") {
+            this.dispatch({ type: "ui/status", text: "Session groups are not supported by this transport" });
+            return null;
+        }
+
+        const groups = await this.transport.listSessionGroups().catch(() => []);
+        const sessionIds = eligible.map((session) => session.sessionId);
+        const firstGroupId = eligible.length === 1 ? eligible[0].groupId || null : null;
+        const selectedOwnerKeys = new Set(eligible.map((session) => ownerKeyForPrincipal(session.owner) || ""));
+        const singleOwnerKey = selectedOwnerKeys.size === 1 ? [...selectedOwnerKeys][0] : null;
+        const singleOwner = selectedOwnerKeys.size === 1 ? eligible[0]?.owner ?? null : null;
+        const compatibleGroups = selectedOwnerKeys.size === 1
+            ? (Array.isArray(groups) ? groups : []).filter((group) => (ownerKeyForPrincipal(group.owner) || "") === singleOwnerKey)
+            : [];
+        const canCreateOrAssignGroup = selectedOwnerKeys.size === 1;
+        const items = [
+            {
+                id: "__no_group__",
+                kind: "noGroup",
+                label: "[No Group]",
+                description: "Remove the selected session(s) from any group.",
+                groupId: null,
+                memberCount: 0,
+            },
+            ...(canCreateOrAssignGroup ? [{
+                id: "__new_group__",
+                kind: "newGroup",
+                label: "[New Group]",
+                description: "Create a new group for this owner, then move the selected session(s) into it.",
+                groupId: null,
+                memberCount: 0,
+                owner: singleOwner,
+            }] : []),
+            ...compatibleGroups.map((group) => ({
+                id: group.groupId,
+                kind: "group",
+                label: group.title || group.groupId,
+                description: group.description || "Move selected session(s) into this group.",
+                groupId: group.groupId,
+                owner: group.owner ?? null,
+                memberCount: group.memberCount ?? 0,
+            })),
+        ];
+        const selectedIndex = firstGroupId
+            ? Math.max(0, items.findIndex((item) => item.groupId === firstGroupId))
+            : Math.min(1, items.length - 1);
+
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "sessionGroupPicker",
+                title: eligible.length === 1 ? "Move Session to Group" : `Move ${eligible.length} Sessions to Group`,
+                previousFocus: state.ui.focusRegion,
+                sessionIds,
+                sessionLabels: eligible.map((session) => session.title || session.sessionId.slice(0, 8)),
+                selectedIndex: selectedIndex >= 0 ? selectedIndex : 0,
+                items,
+            },
+        });
+        this.dispatch({
+            type: "ui/status",
+            text: canCreateOrAssignGroup
+                ? "Choose a group, [New Group], or [No Group]"
+                : "Selected sessions have different owners; only [No Group] is available",
+        });
+        return items;
+    }
+
+    async createSessionGroupFromSelection() {
+        return this.openMoveToGroupModal();
+    }
+
+    async moveSessionsToGroup(groupId, sessionIds, { statusTitle = null } = {}) {
+        const ids = Array.from(new Set((Array.isArray(sessionIds) ? sessionIds : []).map((id) => String(id || "").trim()).filter(Boolean)));
+        if (ids.length === 0) {
+            this.dispatch({ type: "ui/status", text: "No sessions selected to move" });
+            return null;
+        }
+        if (typeof this.transport.moveSessionsToGroup === "function") {
+            await this.transport.moveSessionsToGroup(groupId ?? null, ids);
+        } else if (groupId && typeof this.transport.assignSessionsToGroup === "function") {
+            await this.transport.assignSessionsToGroup(groupId, ids);
+        } else {
+            this.dispatch({ type: "ui/status", text: "Moving sessions between groups is not supported by this transport" });
+            return null;
+        }
+
+        this.dispatch({ type: "sessions/selectClear" });
+        await this.refreshSessions();
+        if (groupId) {
+            await this.loadSession(`group:${groupId}`).catch(() => {});
+        }
+        const target = groupId ? `group ${statusTitle || groupId}` : "No Group";
+        this.dispatch({
+            type: "ui/status",
+            text: `Moved ${ids.length} session${ids.length === 1 ? "" : "s"} to ${target}`,
+        });
+        return true;
+    }
+
+    async confirmSessionGroupPickerModal() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionGroupPicker") return;
+        const item = modal.items?.[modal.selectedIndex || 0];
+        if (!item) return;
+        if (item.kind === "newGroup") {
+            const baseTitle = (modal.sessionLabels || []).length === 1
+                ? `${modal.sessionLabels[0]} Group`
+                : `${(modal.sessionIds || []).length} Session Group`;
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "sessionGroupName",
+                    title: "New Group",
+                    previousFocus: modal.previousFocus,
+                    sessionIds: modal.sessionIds || [],
+                    owner: item.owner ?? null,
+                    value: baseTitle,
+                    cursorIndex: baseTitle.length,
+                    maxLength: 80,
+                },
+            });
+            this.dispatch({ type: "ui/status", text: "Name the new group and press Enter" });
+            return;
+        }
+
+        const previousFocus = modal.previousFocus;
+        this.dispatch({ type: "ui/modal", modal: null });
+        if (previousFocus) this.setFocus(previousFocus);
+        try {
+            await this.moveSessionsToGroup(item.kind === "noGroup" ? null : item.groupId, modal.sessionIds || [], { statusTitle: item.label });
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `Move failed: ${error?.message || String(error)}` });
+        }
+    }
+
+    updateSessionGroupNameModal(updater) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionGroupName") return null;
+        const nextModal = typeof updater === "function" ? updater(modal) : updater;
+        if (!nextModal) return null;
+        this.dispatch({ type: "ui/modal", modal: { ...modal, ...nextModal } });
+        return this.getState().ui.modal;
+    }
+
+    setSessionGroupNameValue(value, cursorIndex = String(value || "").length) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionGroupName") return;
+        const safeValue = clampRenameSessionValue(value, modal.maxLength || 80);
+        const safeCursor = clampPromptCursor(safeValue, cursorIndex);
+        this.updateSessionGroupNameModal({ value: safeValue, cursorIndex: safeCursor });
+    }
+
+    insertSessionGroupNameText(text) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionGroupName") return;
+        const next = insertPromptTextAtCursor(modal.value || "", modal.cursorIndex || 0, clampRenameSessionValue(text, modal.maxLength || 80));
+        this.setSessionGroupNameValue(next.prompt, next.cursor);
+    }
+
+    deleteSessionGroupNameChar() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionGroupName") return;
+        const next = deletePromptCharBackward(modal.value || "", modal.cursorIndex || 0);
+        this.setSessionGroupNameValue(next.prompt, next.cursor);
+    }
+
+    moveSessionGroupNameCursor(delta) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionGroupName") return;
+        this.setSessionGroupNameValue(modal.value || "", clampPromptCursor(modal.value || "", (modal.cursorIndex || 0) + delta));
+    }
+
+    moveSessionGroupNameCursorToBoundary(kind) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionGroupName") return;
+        this.setSessionGroupNameValue(modal.value || "", kind === "start" ? 0 : String(modal.value || "").length);
+    }
+
+    async confirmSessionGroupNameModal() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionGroupName") return;
+        const title = String(modal.value || "").trim();
+        if (!title) {
+            this.dispatch({ type: "ui/status", text: "Group name cannot be empty" });
+            return;
+        }
+        if (typeof this.transport.createSessionGroup !== "function") {
+            this.dispatch({ type: "ui/status", text: "Session grouping is not supported by this transport" });
+            return;
+        }
+        const previousFocus = modal.previousFocus;
+        this.dispatch({ type: "ui/modal", modal: null });
+        if (previousFocus) this.setFocus(previousFocus);
+
+        try {
+            const group = await this.transport.createSessionGroup({
+                title,
+                description: `${(modal.sessionIds || []).length} grouped session${(modal.sessionIds || []).length === 1 ? "" : "s"}`,
+                sessionIds: modal.sessionIds || [],
+                owner: modal.owner ?? null,
+            });
+            await this.moveSessionsToGroup(group.groupId, modal.sessionIds || [], { statusTitle: group.title || title });
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `Move failed: ${error?.message || String(error)}` });
+        }
+    }
+
+    applyActiveGroupDefault(options = {}) {
+        if (options && Object.prototype.hasOwnProperty.call(options, "groupId")) {
+            return options;
+        }
+        const state = this.getState();
+        const activeSession = state.sessions?.activeSessionId
+            ? state.sessions.byId[state.sessions.activeSessionId]
+            : null;
+        const groupId = activeSession?.isGroup
+            ? activeSession.groupId || sessionGroupIdFromRowId(activeSession.sessionId)
+            : activeSession?.groupId;
+        return groupId ? { ...options, groupId } : options;
+    }
+
+    getActiveSession(state = this.getState()) {
+        const sessionId = state.sessions?.activeSessionId;
+        return sessionId ? state.sessions.byId[sessionId] || null : null;
+    }
+
+    toggleChatViewMode() {
+        const activeSession = this.getActiveSession();
+        if (activeSession?.isGroup) {
+            this.dispatch({ type: "ui/status", text: "Session groups show group details" });
+            return;
+        }
+        const nextMode = this.getState().ui?.chatViewMode === "summary" ? "transcript" : "summary";
+        this.dispatch({ type: "ui/chatViewMode", mode: nextMode });
+        this.dispatch({ type: "ui/status", text: nextMode === "summary" ? "Showing session summary" : "Showing chat transcript" });
+    }
+
+    setChatViewMode(mode) {
+        if (mode !== "summary" && mode !== "transcript") return;
+        if (this.getActiveSession()?.isGroup) return;
+        this.dispatch({ type: "ui/chatViewMode", mode });
     }
 
     async openSessionAgentPicker(options = {}) {
@@ -3354,31 +3740,35 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Open the Terminate picker for the active session. The picker is a
-     * tiny three-button modal: Mark Completed / Cancel / Delete. Each
-     * choice closes the picker and dispatches the corresponding action
-     * command, which itself opens the existing per-action confirm modal.
-     * Provides a mobile-friendly entry point to terminal actions that
-     * are otherwise only reachable via keyboard shortcuts.
+     * Open the Terminate/Restart picker for the active session. The picker is
+     * a tiny three-button modal: Mark Completed / Cancel / Delete for ordinary
+     * sessions, or Complete & Restart / Terminate & Restart / Hard Delete &
+     * Restart for system sessions. Each choice closes the picker and dispatches
+     * the corresponding action command, which itself opens the existing
+     * per-action confirm modal. Provides a mobile-friendly entry point to
+     * terminal actions that are otherwise only reachable via keyboard shortcuts.
      */
-    openTerminatePickerModal() {
+    async openTerminatePickerModal() {
         const state = this.getState();
         const selectedIds = Array.isArray(state.sessions.selectedIds) ? state.sessions.selectedIds : [];
-        // In bulk-select mode, open the same picker but configured for the
-        // whole selection. Each action (Mark Completed / Cancel / Delete)
-        // delegates to the corresponding bulk-aware handler. The reducer
-        // already filters system sessions out of the selection, so every
-        // selected id here is bulk-eligible.
-        if (selectedIds.length > 1) {
+        if (state.sessions.selectMode && selectedIds.length >= 1) {
+            const eligible = this.getBulkSelectedSessionActions(state).eligible;
+            if (eligible.length === 0) {
+                this.dispatch({ type: "ui/status", text: "No selected sessions can be terminated" });
+                return;
+            }
             this.dispatch({
                 type: "ui/modal",
                 modal: {
                     type: "terminatePicker",
-                    title: `Terminate ${selectedIds.length} sessions`,
-                    bulkCount: selectedIds.length,
+                    title: "Terminate Selected Sessions",
                     previousFocus: state.ui.focusRegion,
+                    bulkCount: eligible.length,
+                    skippedCount: selectedIds.length - eligible.length,
+                    selectedIds: eligible.map((session) => session.sessionId),
                 },
             });
+            this.dispatch({ type: "ui/status", text: "Choose what to do with the selected sessions" });
             return;
         }
         const sessionId = state.sessions.activeSessionId;
@@ -3392,7 +3782,24 @@ export class PilotSwarmUiController {
             return;
         }
         if (session.isSystem) {
-            this.dispatch({ type: "ui/status", text: "System sessions cannot be terminated from the UI" });
+            const label = String(session.title || session.agentId || sessionId.slice(0, 8)).trim();
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "terminatePicker",
+                    title: "Restart System Session",
+                    sessionId,
+                    previousFocus: state.ui.focusRegion,
+                    sessionTitle: label,
+                    state: String(session.state || "").trim(),
+                    systemRestart: true,
+                },
+            });
+            this.dispatch({ type: "ui/status", text: "Choose how to restart the system session" });
+            return;
+        }
+        if (session.isGroup) {
+            this.dispatch({ type: "ui/status", text: "Groups are containers; manage sessions individually." });
             return;
         }
         this.dispatch({
@@ -3426,6 +3833,20 @@ export class PilotSwarmUiController {
         } else if (action === "delete") {
             await this.deleteActiveSession();
         }
+    }
+
+    getBulkSelectedSessionActions(state = this.getState()) {
+        const selectedIds = Array.isArray(state.sessions.selectedIds) ? state.sessions.selectedIds : [];
+        const uniqueIds = [...new Set(selectedIds.map((id) => String(id || "").trim()).filter(Boolean))];
+        const selected = uniqueIds
+            .map((id) => state.sessions.byId[id])
+            .filter(Boolean);
+        const eligible = selected.filter((session) => !session.isSystem && !session.isGroup);
+        return {
+            selected,
+            eligible,
+            skippedCount: selected.length - eligible.length,
+        };
     }
 
     updateRenameSessionModal(updater) {
@@ -3491,6 +3912,36 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Title cannot be empty" });
             return;
         }
+
+        // Group rows live under the same Rename action but are renamed via
+        // the session-group API rather than renameSession (which only
+        // accepts real session ids).
+        const session = this.getState().sessions.byId[sessionId];
+        const groupId = session?.isGroup
+            ? (session.groupId || sessionGroupIdFromRowId(sessionId))
+            : null;
+        if (groupId) {
+            if (typeof this.transport.updateSessionGroup !== "function") {
+                this.dispatch({ type: "ui/status", text: "Group renaming is not supported by this transport" });
+                return;
+            }
+            const previousFocus = modal.previousFocus;
+            this.dispatch({ type: "ui/modal", modal: null });
+            if (previousFocus) this.setFocus(previousFocus);
+            this.dispatch({ type: "ui/status", text: `Renaming group ${groupId.slice(0, 8)}...` });
+            try {
+                await this.transport.updateSessionGroup(groupId, { title: requestedTitle });
+                await this.refreshSessions();
+                this.dispatch({ type: "ui/status", text: `Renamed group ${requestedTitle}` });
+            } catch (error) {
+                this.dispatch({
+                    type: "ui/status",
+                    text: `Rename failed: ${error?.message || String(error)}`,
+                });
+            }
+            return;
+        }
+
         if (typeof this.transport.renameSession !== "function") {
             this.dispatch({ type: "ui/status", text: "Session renaming is not supported by this transport" });
             return;
@@ -3612,6 +4063,14 @@ export class PilotSwarmUiController {
         }
         if (modal.type === "renameSession") {
             await this.confirmRenameSessionModal();
+            return;
+        }
+        if (modal.type === "sessionGroupPicker") {
+            await this.confirmSessionGroupPickerModal();
+            return;
+        }
+        if (modal.type === "sessionGroupName") {
+            await this.confirmSessionGroupNameModal();
             return;
         }
         if (modal.type === "sessionOwnerFilter") {
@@ -4771,17 +5230,14 @@ export class PilotSwarmUiController {
     async cancelActiveSession({ confirmed = false } = {}) {
         const state = this.getState();
         const selectedIds = Array.isArray(state.sessions.selectedIds) ? state.sessions.selectedIds : [];
-        // When the user has multi-selected sessions, terminate the WHOLE
-        // selection in a single confirmation. System sessions are skipped.
-        if (selectedIds.length > 1) {
-            const eligible = selectedIds
-                .map((id) => state.sessions.byId[id])
-                .filter((session) => session && !session.isSystem);
-            const skippedSystem = selectedIds.length - eligible.length;
+        // In select mode, cancel the explicit selection, even when it contains
+        // one row and focus has moved elsewhere.
+        if (state.sessions.selectMode && selectedIds.length >= 1) {
+            const { eligible, skippedCount } = this.getBulkSelectedSessionActions(state);
             if (eligible.length === 0) {
                 this.dispatch({
                     type: "ui/status",
-                    text: "No cancellable sessions in selection (system sessions are skipped).",
+                    text: "No cancellable sessions in selection (system sessions and groups are skipped).",
                 });
                 return;
             }
@@ -4791,7 +5247,7 @@ export class PilotSwarmUiController {
                     modal: {
                         type: "confirm",
                         title: "Cancel Sessions",
-                        message: `Cancel ${eligible.length} selected session${eligible.length === 1 ? "" : "s"}?${skippedSystem > 0 ? ` (${skippedSystem} system session${skippedSystem === 1 ? "" : "s"} will be skipped)` : ""}`,
+                        message: `Cancel ${eligible.length} selected session${eligible.length === 1 ? "" : "s"}?${skippedCount > 0 ? ` (${skippedCount} selected row${skippedCount === 1 ? "" : "s"} will be skipped)` : ""}`,
                         confirmLabel: "Cancel Sessions",
                         action: "cancelSession",
                         previousFocus: state.ui.focusRegion,
@@ -4820,8 +5276,43 @@ export class PilotSwarmUiController {
 
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
+        const activeSession = state.sessions.byId[sessionId];
+        if (activeSession?.isGroup) {
+            void confirmed;
+            this.dispatch({ type: "ui/status", text: "Groups are containers; cancel sessions individually." });
+            return;
+        }
+        if (activeSession?.isSystem) {
+            if (typeof this.transport.restartSystemSession !== "function") {
+                this.dispatch({ type: "ui/status", text: "System session restart is not supported by this transport" });
+                return;
+            }
+            if (!confirmed) {
+                const label = activeSession.title || activeSession.agentId || sessionId.slice(0, 8);
+                this.dispatch({
+                    type: "ui/modal",
+                    modal: {
+                        type: "confirm",
+                        title: "Terminate & Restart System Session",
+                        message: `Terminate system session "${label}" and start a fresh one?`,
+                        confirmLabel: "Terminate & Restart",
+                        action: "cancelSession",
+                        sessionId,
+                        previousFocus: state.ui.focusRegion,
+                    },
+                });
+                return;
+            }
+            await this.transport.restartSystemSession(activeSession.agentId || sessionId, {
+                disposition: "terminate",
+                reason: "Terminated by user for system-session restart",
+            });
+            this.dispatch({ type: "ui/status", text: `Restarted system session ${activeSession.agentId || sessionId.slice(0, 8)}` });
+            await this.refreshSessions();
+            return;
+        }
         if (!confirmed) {
-            const session = state.sessions.byId[sessionId];
+            const session = activeSession;
             const label = session?.title || sessionId.slice(0, 8);
             this.dispatch({
                 type: "ui/modal",
@@ -4852,8 +5343,8 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "System sessions cannot be pinned." });
             return;
         }
-        if (session.parentSessionId) {
-            this.dispatch({ type: "ui/status", text: "Only top-level sessions can be pinned." });
+        if (!session.isGroup && (session.parentSessionId || session.groupId)) {
+            this.dispatch({ type: "ui/status", text: "Sessions inside groups or parents cannot be pinned." });
             return;
         }
         const isPinned = Array.isArray(state.sessions.pinnedIds) && state.sessions.pinnedIds.includes(sessionId);
@@ -4877,7 +5368,7 @@ export class PilotSwarmUiController {
             if (activeId && state.sessions.byId[activeId]) {
                 this.dispatch({ type: "sessions/selectToggle", sessionId: activeId });
             }
-            this.dispatch({ type: "ui/status", text: "Select mode: space toggles, c cancels, V/esc exits" });
+            this.dispatch({ type: "ui/status", text: "Select mode: space toggles, Ctrl+G moves, c cancels, V/esc exits" });
         } else {
             this.dispatch({ type: "ui/status", text: "Select mode off" });
         }
@@ -4905,19 +5396,10 @@ export class PilotSwarmUiController {
     async completeActiveSession(reason = "Completed by user", { confirmed = false } = {}) {
         const state = this.getState();
         const selectedIds = Array.isArray(state.sessions.selectedIds) ? state.sessions.selectedIds : [];
-        // Bulk-complete: iterate every selected session. The reducer
-        // already filters out system sessions, so the selection is
-        // guaranteed to be eligible.
-        if (selectedIds.length > 1) {
-            if (typeof this.transport.completeSession !== "function") {
-                this.dispatch({ type: "ui/status", text: "Session completion is not supported by this transport" });
-                return;
-            }
-            const eligible = selectedIds
-                .map((id) => state.sessions.byId[id])
-                .filter((session) => session && !session.isSystem);
+        if (state.sessions.selectMode && selectedIds.length >= 1) {
+            const { eligible, skippedCount } = this.getBulkSelectedSessionActions(state);
             if (eligible.length === 0) {
-                this.dispatch({ type: "ui/status", text: "No completable sessions in selection." });
+                this.dispatch({ type: "ui/status", text: "No completable sessions in selection (system sessions and groups are skipped)." });
                 return;
             }
             if (!confirmed) {
@@ -4926,8 +5408,8 @@ export class PilotSwarmUiController {
                     modal: {
                         type: "confirm",
                         title: "Complete Sessions",
-                        message: `Mark ${eligible.length} selected session${eligible.length === 1 ? "" : "s"} as completed? This will cascade to their sub-agents.`,
-                        confirmLabel: "Complete",
+                        message: `Complete ${eligible.length} selected session${eligible.length === 1 ? "" : "s"}? This will cascade to their sub-agents.${skippedCount > 0 ? ` (${skippedCount} selected row${skippedCount === 1 ? "" : "s"} will be skipped)` : ""}`,
+                        confirmLabel: "Complete Sessions",
                         action: "completeSession",
                         previousFocus: state.ui.focusRegion,
                     },
@@ -4947,19 +5429,54 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "sessions/selectClear" });
             const summary = failures.length === 0
                 ? `Completed ${succeeded} session${succeeded === 1 ? "" : "s"}`
-                : `Completed ${succeeded}/${eligible.length}; ${failures.length} failed: ${failures.slice(0, 2).join(", ")}${failures.length > 2 ? "\u2026" : ""}`;
+                : `Completed ${succeeded}/${eligible.length}; ${failures.length} failed: ${failures.slice(0, 2).join(", ")}${failures.length > 2 ? "…" : ""}`;
             this.dispatch({ type: "ui/status", text: summary });
             await this.refreshSessions();
             return;
         }
         const sessionId = this.getState().sessions.activeSessionId;
         if (!sessionId) return;
+        const activeSession = this.getState().sessions.byId[sessionId];
+        if (activeSession?.isGroup) {
+            void reason;
+            void confirmed;
+            this.dispatch({ type: "ui/status", text: "Groups are containers; complete sessions individually." });
+            return;
+        }
+        if (activeSession?.isSystem) {
+            if (typeof this.transport.restartSystemSession !== "function") {
+                this.dispatch({ type: "ui/status", text: "System session restart is not supported by this transport" });
+                return;
+            }
+            if (!confirmed) {
+                const label = activeSession.title || activeSession.agentId || sessionId.slice(0, 8);
+                this.dispatch({
+                    type: "ui/modal",
+                    modal: {
+                        type: "confirm",
+                        title: "Complete & Restart System Session",
+                        message: `Mark system session "${label}" complete and start a fresh one?`,
+                        confirmLabel: "Complete & Restart",
+                        action: "completeSession",
+                        sessionId,
+                        previousFocus: this.getState().ui.focusRegion,
+                    },
+                });
+                return;
+            }
+            await this.transport.restartSystemSession(activeSession.agentId || sessionId, {
+                disposition: "complete",
+                reason,
+            });
+            this.dispatch({ type: "ui/status", text: `Restarted system session ${activeSession.agentId || sessionId.slice(0, 8)}` });
+            await this.refreshSessions();
+            return;
+        }
+
         if (typeof this.transport.completeSession !== "function") {
             this.dispatch({ type: "ui/status", text: "Session completion is not supported by this transport" });
             return;
         }
-
-        const activeSession = this.getState().sessions.byId[sessionId];
         if (activeSession?.status === "completed" && !activeSession?.cronActive && !activeSession?.cronInterval) {
             this.dispatch({ type: "ui/status", text: `${sessionId.slice(0, 8)} is already completed` });
             return;
@@ -5004,14 +5521,10 @@ export class PilotSwarmUiController {
     async deleteActiveSession({ confirmed = false } = {}) {
         const state = this.getState();
         const selectedIds = Array.isArray(state.sessions.selectedIds) ? state.sessions.selectedIds : [];
-        // Bulk-delete: iterate every selected session. The reducer
-        // already filters out system sessions.
-        if (selectedIds.length > 1) {
-            const eligible = selectedIds
-                .map((id) => state.sessions.byId[id])
-                .filter((session) => session && !session.isSystem);
+        if (state.sessions.selectMode && selectedIds.length >= 1) {
+            const { eligible, skippedCount } = this.getBulkSelectedSessionActions(state);
             if (eligible.length === 0) {
-                this.dispatch({ type: "ui/status", text: "No deletable sessions in selection." });
+                this.dispatch({ type: "ui/status", text: "No deletable sessions in selection (system sessions and groups are skipped)." });
                 return;
             }
             if (!confirmed) {
@@ -5019,9 +5532,9 @@ export class PilotSwarmUiController {
                     type: "ui/modal",
                     modal: {
                         type: "confirm",
-                        title: "Delete Sessions",
-                        message: `Delete ${eligible.length} selected session${eligible.length === 1 ? "" : "s"}? This action cannot be undone.`,
-                        confirmLabel: "Delete",
+                        title: "Hard Delete Sessions",
+                        message: `Hard delete ${eligible.length} selected session${eligible.length === 1 ? "" : "s"}? This action cannot be undone.${skippedCount > 0 ? ` (${skippedCount} selected row${skippedCount === 1 ? "" : "s"} will be skipped)` : ""}`,
+                        confirmLabel: "Hard Delete Sessions",
                         action: "deleteSession",
                         previousFocus: state.ui.focusRegion,
                     },
@@ -5041,15 +5554,87 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "sessions/selectClear" });
             const summary = failures.length === 0
                 ? `Deleted ${succeeded} session${succeeded === 1 ? "" : "s"}`
-                : `Deleted ${succeeded}/${eligible.length}; ${failures.length} failed: ${failures.slice(0, 2).join(", ")}${failures.length > 2 ? "\u2026" : ""}`;
+                : `Deleted ${succeeded}/${eligible.length}; ${failures.length} failed: ${failures.slice(0, 2).join(", ")}${failures.length > 2 ? "…" : ""}`;
             this.dispatch({ type: "ui/status", text: summary });
             await this.refreshSessions();
             return;
         }
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
+        const activeSession = state.sessions.byId[sessionId];
+        if (activeSession?.isGroup) {
+            const groupId = activeSession.groupId || sessionGroupIdFromRowId(sessionId);
+            if (!groupId || typeof this.transport.deleteSessionGroup !== "function") {
+                this.dispatch({ type: "ui/status", text: "Group deletion is not supported by this transport" });
+                return;
+            }
+            if (Number(activeSession.memberCount || 0) > 0) {
+                this.dispatch({
+                    type: "ui/modal",
+                    modal: {
+                        type: "confirm",
+                        title: "Group Not Empty",
+                        message: `Group "${activeSession.title || groupId}" is not empty. Move all sessions out of the group before deleting it.`,
+                        confirmLabel: "OK",
+                        action: "alert",
+                        alert: true,
+                        previousFocus: state.ui.focusRegion,
+                    },
+                });
+                this.dispatch({ type: "ui/status", text: "Move all sessions out of the group before deleting it." });
+                return;
+            }
+            if (!confirmed) {
+                this.dispatch({
+                    type: "ui/modal",
+                    modal: {
+                        type: "confirm",
+                        title: "Delete Group",
+                        message: `Delete empty group "${activeSession.title || groupId}"? This action cannot be undone.`,
+                        confirmLabel: "Delete Group",
+                        action: "deleteSession",
+                        sessionId,
+                        previousFocus: state.ui.focusRegion,
+                    },
+                });
+                return;
+            }
+            await this.transport.deleteSessionGroup(groupId);
+            this.dispatch({ type: "ui/status", text: `Deleted group ${activeSession.title || groupId}` });
+            await this.refreshSessions();
+            return;
+        }
+        if (activeSession?.isSystem) {
+            if (typeof this.transport.restartSystemSession !== "function") {
+                this.dispatch({ type: "ui/status", text: "System session restart is not supported by this transport" });
+                return;
+            }
+            if (!confirmed) {
+                const label = activeSession.title || activeSession.agentId || sessionId.slice(0, 8);
+                this.dispatch({
+                    type: "ui/modal",
+                    modal: {
+                        type: "confirm",
+                        title: "Hard Delete & Restart System Session",
+                        message: `Hard delete system session "${label}" and start a fresh one? This removes the current orchestration immediately.`,
+                        confirmLabel: "Hard Delete & Restart",
+                        action: "deleteSession",
+                        sessionId,
+                        previousFocus: state.ui.focusRegion,
+                    },
+                });
+                return;
+            }
+            await this.transport.restartSystemSession(activeSession.agentId || sessionId, {
+                disposition: "hard_delete",
+                reason: "Hard-deleted by user for system-session restart",
+            });
+            this.dispatch({ type: "ui/status", text: `Restarted system session ${activeSession.agentId || sessionId.slice(0, 8)}` });
+            await this.refreshSessions();
+            return;
+        }
         if (!confirmed) {
-            const session = state.sessions.byId[sessionId];
+            const session = activeSession;
             const label = session?.title || sessionId.slice(0, 8);
             this.dispatch({
                 type: "ui/modal",
@@ -5091,10 +5676,19 @@ export class PilotSwarmUiController {
                 this.openSessionOwnerFilter();
                 return;
             case UI_COMMANDS.OPEN_TERMINATE_PICKER:
-                this.openTerminatePickerModal();
+                await this.openTerminatePickerModal();
+                return;
+            case UI_COMMANDS.OPEN_MOVE_TO_GROUP:
+                await this.openMoveToGroupModal();
+                return;
+            case UI_COMMANDS.CREATE_SESSION_GROUP:
+                await this.openMoveToGroupModal();
                 return;
             case UI_COMMANDS.OPEN_ARTIFACT_UPLOAD:
                 this.openArtifactUploadModal();
+                return;
+            case UI_COMMANDS.TOGGLE_CHAT_VIEW:
+                this.toggleChatViewMode();
                 return;
             case UI_COMMANDS.CLOSE_MODAL:
                 this.closeModal();

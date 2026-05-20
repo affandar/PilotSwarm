@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.1.29** — Passwordless duroxide orchestration store. When `useManagedIdentity: true`, the worker now routes the duroxide Postgres store through `connectWithSchemaAndEntra` (duroxide-node 0.1.25), so CMS, facts, **and** the orchestration store all authenticate via Entra ID — no more password URL gap.
+> **Latest release: v0.1.30** — Base infrastructure state, wall-clock cron scheduling, cross-session messaging, prompt-layer versioning, Copilot SDK/CLI 1.0 refresh, and mobile portal/TUI polish for grouped sessions, summaries, and focus-mode workflows.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

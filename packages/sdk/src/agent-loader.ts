@@ -87,6 +87,18 @@ export interface AgentConfig {
     namespace?: string;
     /** Internal: identifies which prompt layering path this agent should use. */
     promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
+    /**
+     * Frontmatter schema version. Defaults to 1 when the file omits it. Higher integers
+     * indicate forward-incompatible frontmatter shapes the loader may reject in the future.
+     */
+    schemaVersion?: number;
+    /**
+     * Author-supplied version label for this agent definition. PilotSwarm-authored system
+     * agents use SemVer; app authors may use any meaningful non-empty string.
+     */
+    version?: string;
+    /** Absolute path the agent was loaded from, when known. Used for diagnostics. */
+    sourcePath?: string;
 }
 
 // ─── Frontmatter Parser ─────────────────────────────────────────
@@ -96,10 +108,10 @@ export interface AgentConfig {
  * Handles simple `key: value` pairs and YAML list syntax for `tools`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string };
+    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string; schemaVersion?: number; version?: string };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string } = {};
+    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string; schemaVersion?: number; version?: string } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -173,6 +185,11 @@ function parseAgentFrontmatter(content: string): {
         else if (key === "id") meta.id = value;
         else if (key === "title") meta.title = value;
         else if (key === "parent") meta.parent = value;
+        else if (key === "schemaVersion") {
+            const n = Number(value);
+            if (Number.isFinite(n) && n > 0) meta.schemaVersion = Math.floor(n);
+        }
+        else if (key === "version") meta.version = value;
         else if (key === "tools" && value) {
             // Inline array: tools: [view, grep]
             meta.tools = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
@@ -233,6 +250,11 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 continue;
             }
 
+            if (meta.schemaVersion !== undefined && meta.schemaVersion !== 1) {
+                console.warn(`[agent-loader] Skipping ${entry.name}: unsupported schemaVersion ${meta.schemaVersion}; expected schemaVersion: 1`);
+                continue;
+            }
+
             agents.push({
                 name: meta.name,
                 description: meta.description,
@@ -244,7 +266,16 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 parent: meta.parent,
                 splash: meta.splash,
                 initialPrompt: meta.initialPrompt,
+                schemaVersion: meta.schemaVersion,
+                version: meta.version,
+                sourcePath: filePath,
             });
+            if (meta.schemaVersion === undefined) {
+                console.warn(`[agent-loader] ${entry.name}: missing frontmatter 'schemaVersion'. Defaulting to 1; add 'schemaVersion: 1' to silence this warning.`);
+            }
+            if (!meta.version) {
+                console.warn(`[agent-loader] ${entry.name}: missing frontmatter 'version'. Add 'version: x.y.z' (or any non-empty label) to track agent prompt changes.`);
+            }
         } catch (err: any) {
             console.warn(`[agent-loader] Failed to parse ${entry.name}: ${err.message}`);
         }
