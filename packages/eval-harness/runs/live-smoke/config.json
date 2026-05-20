@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "live-smoke",
+  "description": "Opt-in live PilotSwarm worker/client smoke with an LLM judge check.",
+  "scenarios": "./scenarios.jsonl",
+  "defaults": {
+    "driver": "live",
+    "models": ["gpt-5.4"],
+    "trials": 1,
+    "isolation": "fresh-worker",
+    "timeoutMs": 180000
+  },
+  "filters": {
+    "includeTags": ["live-smoke"]
+  },
+  "reporters": ["console", "markdown", "jsonl"],
+  "output": { "reportsDir": ".eval-results/live-smoke" },
+  "llmJudge": {
+    "enabled": true,
+    "provider": "copilot",
+    "judgeModel": "gpt-5.4",
+    "applyTo": "all",
+    "defaultCheck": {
+      "rubric": "Evaluate whether the observed PilotSwarm execution satisfies the scenario description, deterministic checks, tool calls, CMS/session evidence, and terminal state. Mark PASSED only when the user-visible response and durable runtime evidence satisfy the scenario without contradictions; PARTIAL for incomplete or ambiguous evidence; FAILED for violations.",
+      "budgetUsd": 0.02
+    },
+    "totalBudgetUsd": 0.25,
+    "onMissingProvider": "error"
+  }
+}

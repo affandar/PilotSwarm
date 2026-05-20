@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "attach-live",
+  "description": "Diagnostic run against an already-running PilotSwarm worker. Prefer managed live runs for CI and production-grade E2E evidence.",
+  "scenarios": "./scenarios.jsonl",
+  "defaults": {
+    "driver": "attach",
+    "models": ["gpt-5.4"],
+    "trials": 1,
+    "isolation": "shared-worker",
+    "timeoutMs": 900000
+  },
+  "reporters": ["console", "markdown", "jsonl"],
+  "output": { "reportsDir": ".eval-results/attach-live" },
+  "llmJudge": {
+    "enabled": true,
+    "provider": "copilot",
+    "judgeModel": "gpt-5.4",
+    "applyTo": "all",
+    "defaultCheck": {
+      "rubric": "Evaluate whether the observed PilotSwarm execution satisfies the scenario description, deterministic checks, tool calls, CMS/session evidence, and terminal state. Mark PASSED only when the user-visible response and durable runtime evidence satisfy the scenario without contradictions; PARTIAL for incomplete or ambiguous evidence; FAILED for violations.",
+      "budgetUsd": 0.02
+    },
+    "totalBudgetUsd": 0.5,
+    "onMissingProvider": "error"
+  }
+}

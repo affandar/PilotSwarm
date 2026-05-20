@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "wait.do-wait-do",
+  "description": "Deploy validation computes initial blast radius, waits durably, then scales the confirmed impact for rollback planning.",
+  "agent": "default",
+  "tools": ["test_add", "test_multiply"],
+  "tags": ["durable", "critical-path", "smoke", "cheap"],
+  "input": {
+    "prompt": "For rollback planning, add 3 failed canaries and 4 degraded shards with test_add, wait 2 seconds for the durable validation checkpoint, then multiply that result by 2 affected clusters with test_multiply. Report the final impact."
+  },
+  "checks": [
+    { "type": "tool-sequence", "order": "exactSequence", "calls": ["test_add", "wait", "test_multiply"] },
+    { "type": "tool-call", "name": "test_add", "args": { "a": 3, "b": 4 }, "match": "subset" },
+    { "type": "tool-call", "name": "test_multiply", "args": { "a": 7, "b": 2 }, "match": "subset" },
+    { "type": "cms-events-contain", "events": ["session.wait_started", "session.dehydrated", "session.hydrated", "session.wait_completed"] },
+    { "type": "cms-events-order", "before": "session.wait_started", "after": "session.wait_completed" },
+    { "type": "response-contains", "any": ["14"] }
+  ],
+  "postRun": {
+    "trajectorySummary": {
+      "rubric": "Inspect whether the model used the durable wait tool between rollback impact calculations, avoided redundant retries, and reported 14 cleanly."
+    }
+  },
+  "runs": { "timeoutMs": 240000 },
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. Rollback impact after durable checkpoint: 14.",
+      "toolCalls": [
+        { "name": "test_add", "args": { "a": 3, "b": 4 }, "result": 7 },
+        { "name": "wait", "args": { "seconds": 2 }, "result": "completed" },
+        { "name": "test_multiply", "args": { "a": 7, "b": 2 }, "result": 14 }
+      ],
+      "cmsEvents": [
+        { "type": "session.turn_started" },
+        { "type": "session.wait_started" },
+        { "type": "session.dehydrated" },
+        { "type": "session.hydrated" },
+        { "type": "session.wait_completed" },
+        { "type": "session.turn_completed" }
+      ]
+    }
+  }
+}

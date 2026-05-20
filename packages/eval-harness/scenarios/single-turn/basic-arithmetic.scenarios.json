@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "kind": "single-turn",
+  "id": "batch.basic-arithmetic",
+  "description": "PilotSwarm operational tool-call samples covering impact math, service-status lookup, no-tool acknowledgements, sequencing, and repeated calls.",
+  "tools": ["test_add", "test_multiply", "test_weather"],
+  "tags": ["single-turn", "smoke", "cheap"],
+  "samples": [
+    {
+      "id": "single.add.basic",
+      "description": "Incident triage combines checkout and payment error counts with one deterministic tool call.",
+      "input": { "prompt": "During incident triage, use test_add to combine 17 checkout errors and 25 payment errors. Report the total affected requests." },
+      "checks": [
+        { "type": "tool-call", "name": "test_add", "args": { "a": 17, "b": 25 }, "match": "subset" },
+        { "type": "response-contains", "any": ["42"] },
+        { "type": "cms-state-in", "states": ["idle", "completed"] }
+      ],
+      "metadata": { "fake": { "finalResponse": "Completed. Total affected requests: 42.", "terminalState": "completed", "toolCalls": [{ "name": "test_add", "args": { "a": 17, "b": 25 }, "result": 42 }] } }
+    },
+    {
+      "id": "single.weather.multi-param",
+      "description": "External lookup stand-in checks the Tokyo checkout edge status with the service-status tool.",
+      "input": { "prompt": "Use test_weather as the service-status lookup for the Tokyo checkout edge. Report the status briefly." },
+      "checks": [
+        { "type": "tool-call", "name": "test_weather", "args": { "city": "Tokyo" }, "match": "subset" },
+        { "type": "response-contains", "any": ["Tokyo", "checkout"] },
+        { "type": "cms-state-in", "states": ["idle", "completed"] }
+      ],
+      "metadata": { "fake": { "finalResponse": "Completed. Tokyo checkout edge status is sunny.", "terminalState": "completed", "toolCalls": [{ "name": "test_weather", "args": { "city": "Tokyo" }, "result": "sunny" }] } }
+    },
+    {
+      "id": "selection.multiply-not-add",
+      "description": "Deployment capacity calculation should pick multiplication instead of addition for shard sizing.",
+      "input": { "prompt": "For deploy validation, calculate 4 services across 5 regions with the appropriate tool and report the service-region checks." },
+      "checks": [
+        { "type": "tool-call", "name": "test_multiply", "args": { "a": 4, "b": 5 }, "match": "subset" },
+        { "type": "forbidden-tools", "tools": ["test_add"] },
+        { "type": "response-contains", "any": ["20"] },
+        { "type": "cms-state-in", "states": ["idle", "completed"] }
+      ],
+      "metadata": { "fake": { "finalResponse": "Completed. Service-region checks: 20.", "terminalState": "completed", "toolCalls": [{ "name": "test_multiply", "args": { "a": 4, "b": 5 }, "result": 20 }] } }
+    },
+    {
+      "id": "selection.no-tool-with-tools",
+      "description": "Workspace handoff acknowledgement should avoid unnecessary tool calls when no lookup is requested.",
+      "input": { "prompt": "Say hello and acknowledge the PilotSwarm workspace handoff. Do not use any tools." },
+      "checks": [
+        { "type": "tool-call-count", "max": 0 },
+        { "type": "response-contains", "any": ["hello", "greetings"] },
+        { "type": "cms-state-in", "states": ["idle", "completed"] }
+      ],
+      "metadata": { "fake": { "finalResponse": "hello. PilotSwarm workspace handoff received.", "terminalState": "completed", "toolCalls": [] } }
+    },
+    {
+      "id": "sequence.add-then-multiply",
+      "description": "Runbook checkpoint validates that incident impact math happens in a strict add-then-multiply order.",
+      "input": { "prompt": "For the deploy runbook, first add 2 failing canaries and 3 alerting shards using test_add, then multiply 4 services by 5 regions using test_multiply. Do them in that exact order." },
+      "checks": [
+        { "type": "tool-call", "name": "test_add", "args": { "a": 2, "b": 3 }, "match": "subset", "order": 0 },
+        { "type": "tool-call", "name": "test_multiply", "args": { "a": 4, "b": 5 }, "match": "subset", "order": 1 },
+        { "type": "tool-sequence", "order": "exactSequence", "calls": ["test_add", "test_multiply"] },
+        { "type": "tool-call-count", "min": 2 },
+        { "type": "cms-state-in", "states": ["idle", "completed"] }
+      ],
+      "metadata": { "fake": { "finalResponse": "Completed. Runbook checkpoint totals: 5 then 20.", "terminalState": "completed", "toolCalls": [{ "name": "test_add", "args": { "a": 2, "b": 3 }, "result": 5 }, { "name": "test_multiply", "args": { "a": 4, "b": 5 }, "result": 20 }] } }
+    },
+    {
+      "id": "multi.unordered-weather",
+      "description": "Parallel regional service-status checks can complete in any order while still covering both regions.",
+      "input": { "prompt": "Use test_weather as a service-status lookup for the Tokyo and London checkout regions. Order does not matter, but check both." },
+      "checks": [
+        { "type": "tool-call", "name": "test_weather", "args": { "city": "Tokyo" }, "match": "subset" },
+        { "type": "tool-call", "name": "test_weather", "args": { "city": "London" }, "match": "subset" },
+        { "type": "tool-sequence", "order": "unordered", "calls": ["test_weather", "test_weather"] },
+        { "type": "tool-call-count", "name": "test_weather", "min": 2 },
+        { "type": "cms-state-in", "states": ["idle", "completed"] }
+      ],
+      "metadata": { "fake": { "finalResponse": "Completed. Tokyo and London checkout region statuses checked.", "terminalState": "completed", "toolCalls": [{ "name": "test_weather", "args": { "city": "Tokyo" }, "result": "sunny" }, { "name": "test_weather", "args": { "city": "London" }, "result": "rain" }] } }
+    }
+  ]
+}

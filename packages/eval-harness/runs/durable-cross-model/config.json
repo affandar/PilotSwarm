@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "durable-cross-model",
+  "description": "Affan durable model-classification run plan.",
+  "scenarios": "./scenarios.jsonl",
+  "defaults": {
+    "driver": "live",
+    "models": ["github-copilot:gpt-5.4", "github-copilot:gpt-5.5", "github-copilot:gpt-5-mini"],
+    "trials": 1,
+    "isolation": "fresh-worker",
+    "concurrent": 1,
+    "timeoutMs": 900000
+  },
+  "filters": {
+    "includeTags": ["durable-cross-model"]
+  },
+  "reporters": ["console", "markdown", "jsonl"],
+  "llmJudge": {
+    "enabled": true,
+    "provider": "copilot",
+    "judgeModel": "gpt-5.4",
+    "applyTo": "all",
+    "defaultCheck": {
+      "rubric": "Evaluate whether the observed PilotSwarm execution satisfies the scenario description, deterministic checks, tool calls, CMS/session evidence, and terminal state. Mark PASSED only when the user-visible response and durable runtime evidence satisfy the scenario without contradictions; PARTIAL for incomplete or ambiguous evidence; FAILED for violations.",
+      "budgetUsd": 0.02
+    },
+    "totalBudgetUsd": 1,
+    "onMissingProvider": "error"
+  },
+  "output": { "reportsDir": ".eval-results/durable-cross-model" }
+}

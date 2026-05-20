@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "prompt-variant",
+  "id": "meta.prompt-variant-example",
+  "description": "Example app prompt variant meta-scenario for an app-builder incident conductor agent.",
+  "tags": ["meta", "prompt-variant", "nightly"],
+  "appliesTo": "example-app/scenarios/*.scenario.json",
+  "variants": [
+    { "id": "baseline", "promptOverrides": {} },
+    { "id": "concise", "promptOverrides": { "incident-conductor": { "inline": "Triage incidents. Be concise and cite actions." } } }
+  ],
+  "baselineVariantId": "baseline",
+  "gate": "diagnostic",
+  "requirements": { "isolation": "fresh-worker" },
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. Prompt variants prepared.",
+      "toolCalls": []
+    }
+  }
+}

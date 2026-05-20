@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "live.critical-path.runtime-durable-wait",
+  "description": "A managed live PilotSwarm worker uses the built-in durable wait tool for a deployment drain checkpoint and records lifecycle events.",
+  "agent": "default",
+  "tools": [],
+  "tags": ["live-critical-path", "live-capable", "runtime", "durable", "wait"],
+  "systemMessage": {
+    "mode": "append",
+    "content": "You have a wait tool. When asked to run a deployment drain checkpoint, call the wait tool with the exact number of seconds. After the wait completes, answer with the requested sentinel and no extra prose."
+  },
+  "input": {
+    "prompt": "Use the built-in wait tool to run a 2 second deployment drain checkpoint. After the wait completes, reply exactly: WAIT_E2E_DONE"
+  },
+  "checks": [
+    { "type": "tool-call", "name": "wait", "args": { "seconds": 2 }, "match": "subset" },
+    { "type": "cms-events-contain", "events": ["session.wait_started", "session.dehydrated", "session.hydrated", "session.wait_completed", "session.turn_completed"] },
+    { "type": "cms-events-order", "before": "session.wait_started", "after": "session.wait_completed" },
+    { "type": "response-contains", "all": ["WAIT_E2E_DONE"] },
+    {
+      "type": "llm-judge",
+      "rubric": "Pass only if the observed PilotSwarm session used a 2-second durable deployment drain wait before final response, the CMS contains wait lifecycle/dehydrate/hydrate evidence, and the assistant replied with WAIT_E2E_DONE after the wait.",
+      "budgetUsd": 0.05,
+      "judgeModel": "gpt-5.4",
+      "maxOutputTokens": 512
+    }
+  ],
+  "runs": { "timeoutMs": 900000 }
+}

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "timer.after-worker-restart",
+  "description": "A rollback runbook timer scheduled before a worker restart still completes after PilotSwarm handoff.",
+  "agent": "default",
+  "tools": [],
+  "tags": ["durable", "timer", "worker-restart", "critical-path"],
+  "input": {
+    "prompt": "Run the rollback drain checkpoint: wait 2 seconds with the durable wait tool, then say exactly: done."
+  },
+  "chaos": {
+    "injectAt": "during-wait",
+    "type": "worker-restart",
+    "onTargetMissing": "error"
+  },
+  "checks": [
+    { "type": "tool-sequence", "order": "exactSequence", "calls": ["wait"] },
+    { "type": "cms-events-contain", "events": ["session.wait_started", "session.dehydrated", "session.hydrated", "session.wait_completed"] },
+    { "type": "cms-events-order", "before": "session.wait_started", "after": "session.wait_completed" },
+    { "type": "cms-state-in", "states": ["idle", "completed"] },
+    { "type": "response-contains", "any": ["done"] }
+  ],
+  "postRun": {
+    "trajectorySummary": {
+      "rubric": "Inspect whether the rollback drain timer resumed after worker restart and whether the model hallucinated elapsed time before the wait completed."
+    }
+  },
+  "requirements": { "isolation": "fresh-worker" },
+  "runs": { "timeoutMs": 300000 },
+  "metadata": {
+    "fake": {
+      "finalResponse": "done",
+      "terminalState": "completed",
+      "toolCalls": [{ "name": "wait", "args": { "seconds": 2 }, "result": "completed" }],
+      "cmsEvents": [
+        { "type": "session.wait_started" },
+        { "type": "session.dehydrated" },
+        { "type": "session.hydrated" },
+        { "type": "session.wait_completed" }
+      ]
+    }
+  }
+}

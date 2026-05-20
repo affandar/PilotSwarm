@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "single-turn",
+  "id": "live.critical-path.runtime-basic",
+  "description": "A managed live PilotSwarm worker accepts an operational workspace prompt, records CMS lifecycle events, and returns the requested sentinel.",
+  "agent": "default",
+  "tools": [],
+  "tags": ["live-critical-path", "live-capable", "runtime", "cms"],
+  "input": {
+    "prompt": "This is a PilotSwarm E2E eval for deployment workspace readiness. Reply with exactly: PILOTSWARM_E2E_OK"
+  },
+  "checks": [
+    { "type": "response-contains", "all": ["PILOTSWARM_E2E_OK"] },
+    { "type": "cms-events-contain", "events": ["user.message", "session.turn_started", "assistant.message", "session.turn_completed"] },
+    { "type": "cms-state-in", "states": ["idle", "completed"] },
+    {
+      "type": "llm-judge",
+      "rubric": "Pass only if the observed PilotSwarm session completed through the live runtime and the assistant returned the requested sentinel without adding unrelated content.",
+      "budgetUsd": 0.05,
+      "judgeModel": "gpt-5.4",
+      "maxOutputTokens": 512
+    }
+  ],
+  "runs": { "timeoutMs": 240000 }
+}

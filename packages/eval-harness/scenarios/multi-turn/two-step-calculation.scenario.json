@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "multi-turn",
+  "id": "multi-turn.two-step-calculation",
+  "description": "Two-turn incident workflow retains the first impact total, then scales it for the rollback blast radius.",
+  "agent": "default",
+  "tools": ["test_add", "test_multiply"],
+  "tags": ["multi-turn", "critical-path", "cheap"],
+  "turns": [
+    {
+      "input": { "prompt": "For incident PS-347, use test_add to combine 3 checkout canary failures and 4 payment canary failures. Remember the total for rollback planning." },
+      "checks": [
+        { "type": "tool-call", "name": "test_add", "args": { "a": 3, "b": 4 }, "match": "subset" },
+        { "type": "response-contains", "any": ["7"] }
+      ]
+    },
+    {
+      "input": { "prompt": "Now multiply that retained incident total by 2 affected clusters using test_multiply and report the rollback blast radius." },
+      "checks": [
+        { "type": "tool-call", "name": "test_multiply", "args": { "a": 7, "b": 2 }, "match": "subset" },
+        { "type": "response-contains", "any": ["14"] }
+      ]
+    }
+  ],
+  "checks": [
+    { "type": "tool-sequence", "order": "exactSequence", "calls": ["test_add", "test_multiply"] },
+    { "type": "tool-call-count", "min": 2, "max": 2 },
+    { "type": "goal-completed" }
+  ],
+  "runs": { "timeoutMs": 240000 },
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. The retained rollback blast radius is 14.",
+      "toolCalls": [
+        { "name": "test_add", "args": { "a": 3, "b": 4 }, "result": 7, "turnIndex": 0 },
+        { "name": "test_multiply", "args": { "a": 7, "b": 2 }, "result": 14, "turnIndex": 1 }
+      ]
+    }
+  }
+}

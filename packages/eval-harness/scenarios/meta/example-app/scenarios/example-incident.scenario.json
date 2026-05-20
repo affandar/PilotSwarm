@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "kind": "single-turn",
+  "id": "example-app.incident-triage",
+  "description": "Example downstream app incident triage scenario.",
+  "agent": "incident-conductor",
+  "tools": [],
+  "tags": ["example-app"],
+  "input": { "prompt": "API latency is high and checkout errors are rising. Triage it." },
+  "checks": [{ "type": "goal-completed" }],
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. Checkout latency incident triaged with owner and next action.",
+      "toolCalls": []
+    }
+  }
+}

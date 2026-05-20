@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "restart.worker-restart-mid-tool",
+  "description": "The eval harness restarts the active worker at the first external status lookup and PilotSwarm preserves incident evidence across the handoff.",
+  "agent": "default",
+  "tools": ["test_weather"],
+  "tags": ["durable", "worker-restart", "critical-path"],
+  "input": {
+    "prompt": "Use test_weather as the external status lookup for the Tokyo checkout region, then summarize the incident evidence after PilotSwarm continues across any worker restart."
+  },
+  "chaos": {
+    "injectAt": "after-tool-call-1",
+    "type": "worker-restart",
+    "onTargetMissing": "error"
+  },
+  "checks": [
+    { "type": "tool-call", "name": "test_weather", "args": { "city": "Tokyo" }, "match": "subset" },
+    { "type": "cms-events-contain", "events": ["session.turn_started", "session.dehydrated", "session.hydrated", "session.turn_completed"] },
+    { "type": "cms-events-order", "before": "session.dehydrated", "after": "session.hydrated" },
+    { "type": "cms-state-in", "states": ["idle", "completed"] },
+    { "type": "response-contains", "any": ["Tokyo"] }
+  ],
+  "postRun": {
+    "trajectorySummary": {
+      "rubric": "Inspect whether the worker restart produced a clean handoff or replay, and flag duplicate status calls that changed the user-visible incident summary."
+    }
+  },
+  "requirements": { "isolation": "fresh-worker" },
+  "runs": { "timeoutMs": 300000 },
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. Tokyo checkout status continued cleanly after worker restart.",
+      "terminalState": "completed",
+      "toolCalls": [{ "name": "test_weather", "args": { "city": "Tokyo" }, "result": "sunny" }],
+      "cmsEvents": [
+        { "type": "session.turn_started" },
+        { "type": "session.dehydrated" },
+        { "type": "session.hydrated" },
+        { "type": "session.turn_completed" }
+      ]
+    }
+  }
+}

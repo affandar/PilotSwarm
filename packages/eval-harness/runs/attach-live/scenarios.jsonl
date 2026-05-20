@@ -1,0 +1,6 @@
+{"schemaVersion":1}
+{"include":"../../scenarios/live/e2e-add-judge.scenario.json"}
+{"include":"../../scenarios/live/e2e-runtime-basic.scenario.json"}
+{"include":"../../scenarios/live/e2e-runtime-multi-turn.scenario.json"}
+{"include":"../../scenarios/live/e2e-runtime-durable-wait.scenario.json"}
+{"include":"../../scenarios/live/e2e-runtime-safety.scenario.json"}

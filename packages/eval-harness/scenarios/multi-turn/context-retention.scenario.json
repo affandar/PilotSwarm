@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "multi-turn",
+  "id": "multi-turn.context-retention",
+  "description": "Two-turn runtime workflow retains the checkout region code and uses it in a later status lookup.",
+  "agent": "default",
+  "tools": ["test_weather"],
+  "tags": ["multi-turn", "context-retention", "critical-path", "cheap"],
+  "turns": [
+    {
+      "input": { "prompt": "For incident PS-512, the checkout region under investigation is Osaka. Remember that region for the next runbook step." },
+      "checks": [
+        { "type": "tool-call-count", "max": 0 },
+        { "type": "response-contains", "any": ["Osaka"] }
+      ]
+    },
+    {
+      "input": { "prompt": "Use test_weather as the service-status lookup for the checkout region under investigation." },
+      "checks": [
+        { "type": "tool-call", "name": "test_weather", "args": { "city": "Osaka" }, "match": "subset" }
+      ]
+    }
+  ],
+  "checks": [
+    { "type": "response-contains", "any": ["Osaka"] },
+    { "type": "goal-completed" }
+  ],
+  "runs": { "timeoutMs": 240000 },
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. Osaka checkout status is sunny.",
+      "toolCalls": [{ "name": "test_weather", "args": { "city": "Osaka" }, "result": "sunny", "turnIndex": 1 }]
+    }
+  }
+}

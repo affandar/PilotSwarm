@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "single-turn",
+  "id": "live.critical-path.add-judge",
+  "description": "Managed live PilotSwarm worker executes test_add for incident impact accounting and the response is graded by an LLM judge.",
+  "agent": "default",
+  "tools": ["test_add"],
+  "tags": ["live-smoke", "live-critical-path", "live-capable", "nightly"],
+  "systemMessage": {
+    "mode": "append",
+    "content": "For this eval scenario, incident impact accounting must be performed with the test_add tool. Do not answer from mental math alone."
+  },
+  "input": {
+    "prompt": "Use the test_add tool to combine 17 checkout errors and 25 payment errors for incident impact. After the tool result, reply with exactly: 42"
+  },
+  "checks": [
+    { "type": "tool-call", "name": "test_add", "args": { "a": 17, "b": 25 }, "match": "subset" },
+    { "type": "response-contains", "any": ["42"] },
+    {
+      "type": "llm-judge",
+      "rubric": "First identify concrete evidence that the assistant used the add tool result and answered the incident impact task correctly. Mark PASSED only when the tool call and final answer are both correct; mark PARTIAL when evidence is incomplete; mark FAILED when the response is missing the correct answer or ignores the task.",
+      "budgetUsd": 0.05,
+      "judgeModel": "gpt-5.4",
+      "maxOutputTokens": 200
+    }
+  ],
+  "requirements": { "live": true, "isolation": "fresh-worker" },
+  "runs": { "timeoutMs": 900000 }
+}

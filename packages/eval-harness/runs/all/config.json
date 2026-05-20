@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "all",
+  "description": "Production live run over every checked-in eval-harness scenario instance.",
+  "scenarios": "./scenarios.jsonl",
+  "defaults": {
+    "driver": "live",
+    "models": ["gpt-5.4"],
+    "trials": 1,
+    "isolation": "shared-worker",
+    "concurrent": 2,
+    "timeoutMs": 900000
+  },
+  "llmJudge": {
+    "enabled": true,
+    "provider": "copilot",
+    "judgeModel": "gpt-5.4",
+    "applyTo": "all",
+    "defaultCheck": {
+      "rubric": "Evaluate whether the observed PilotSwarm execution satisfies the scenario description, deterministic checks, tool calls, CMS/session evidence, and terminal state. Mark PASSED only when the user-visible response and durable runtime evidence satisfy the scenario without contradictions; PARTIAL for incomplete or ambiguous evidence; FAILED for violations.",
+      "budgetUsd": 0.02
+    },
+    "totalBudgetUsd": 2,
+    "onMissingProvider": "error"
+  },
+  "reporters": ["console", "markdown", "jsonl"],
+  "output": { "reportsDir": ".eval-results/all" }
+}

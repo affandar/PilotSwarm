@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "wait.then-act",
+  "description": "Incident runbook waits durably for the drain window before calculating affected checkout requests.",
+  "agent": "default",
+  "tools": ["test_add"],
+  "tags": ["durable", "critical-path", "smoke", "cheap"],
+  "input": {
+    "prompt": "Follow the incident drain runbook: wait 2 seconds for the durable drain checkpoint, then use test_add to combine 6 checkout retries and 8 payment retries. Report the total affected requests."
+  },
+  "checks": [
+    { "type": "tool-sequence", "order": "exactSequence", "calls": ["wait", "test_add"] },
+    { "type": "tool-call", "name": "test_add", "args": { "a": 6, "b": 8 }, "match": "subset" },
+    { "type": "cms-events-contain", "events": ["session.wait_started", "session.dehydrated", "session.hydrated", "session.wait_completed"] },
+    { "type": "cms-events-order", "before": "session.wait_started", "after": "session.wait_completed" },
+    { "type": "response-contains", "any": ["14"] }
+  ],
+  "runs": { "timeoutMs": 240000 },
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. Drain checkpoint passed; total affected requests: 14.",
+      "toolCalls": [
+        { "name": "wait", "args": { "seconds": 2 }, "result": "completed" },
+        { "name": "test_add", "args": { "a": 6, "b": 8 }, "result": 14 }
+      ],
+      "cmsEvents": [
+        { "type": "session.wait_started" },
+        { "type": "session.dehydrated" },
+        { "type": "session.hydrated" },
+        { "type": "session.wait_completed" }
+      ]
+    }
+  }
+}

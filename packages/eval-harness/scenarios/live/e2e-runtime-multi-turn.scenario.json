@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "multi-turn",
+  "id": "live.critical-path.runtime-multi-turn",
+  "description": "A managed live PilotSwarm worker preserves deployment incident context across two client turns.",
+  "agent": "default",
+  "tools": [],
+  "tags": ["live-critical-path", "live-capable", "runtime", "multi-turn", "memory"],
+  "turns": [
+    {
+      "input": {
+        "prompt": "For this PilotSwarm E2E eval, remember this deployment incident code phrase: riverglass-42. Acknowledge briefly."
+      },
+      "checks": []
+    },
+    {
+      "input": {
+        "prompt": "What deployment incident code phrase did I ask you to remember? Reply exactly: CODE PHRASE: riverglass-42"
+      },
+      "checks": []
+    }
+  ],
+  "checks": [
+    { "type": "response-contains", "all": ["riverglass-42"] },
+    { "type": "cms-event-count", "event": "user.message", "min": 2 },
+    { "type": "cms-event-count", "event": "session.turn_started", "min": 2 },
+    { "type": "cms-state-in", "states": ["idle", "completed"] },
+    {
+      "type": "llm-judge",
+      "rubric": "Pass only if the observed multi-turn PilotSwarm session retained the deployment incident phrase from the first turn and answered the second turn with the exact requested phrase or a trivially equivalent response.",
+      "budgetUsd": 0.05,
+      "judgeModel": "gpt-5.4",
+      "maxOutputTokens": 512
+    }
+  ],
+  "runs": { "timeoutMs": 300000 }
+}

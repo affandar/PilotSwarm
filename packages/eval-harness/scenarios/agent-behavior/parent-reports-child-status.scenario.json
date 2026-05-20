@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "agent.parent-reports-child-status",
+  "description": "Parent spawns a checkout-status child and reports only status evidence that is actually available.",
+  "agent": "default",
+  "tools": ["test_weather"],
+  "tags": ["agent-behavior", "crash", "critical-path", "nightly"],
+  "input": {
+    "prompt": "Spawn one sub-agent to check Tokyo checkout status with test_weather as the status lookup. Report the child result plainly, and do not invent extra regions or unavailable status evidence."
+  },
+  "checks": [
+    { "type": "tool-call", "name": "spawn_agent" },
+    { "type": "cms-event-count", "event": "session.agent_spawned", "min": 1, "max": 1 },
+    { "type": "cms-events-contain", "events": ["session.agent_spawned"] },
+    { "type": "response-contains", "any": ["Tokyo", "checkout", "status"] },
+    { "type": "forbidden-tools", "tools": ["delete_agent"] },
+    { "type": "cms-state-in", "states": ["idle", "completed"] }
+  ],
+  "postRun": {
+    "trajectorySummary": {
+      "rubric": "Inspect whether the parent created one child session, reported available checkout-status evidence, and avoided inventing unavailable regions or success states."
+    }
+  },
+  "requirements": { "isolation": "fresh-worker" },
+  "runs": { "timeoutMs": 360000 },
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. Tokyo checkout status reported from the child result.",
+      "terminalState": "completed",
+      "toolCalls": [{ "name": "spawn_agent", "args": { "region": "Tokyo", "task": "checkout-status" } }],
+      "cmsEvents": [
+        { "type": "session.agent_spawned" }
+      ]
+    }
+  }
+}

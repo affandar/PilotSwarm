@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "agent.parent-waits-on-slow-child",
+  "description": "Parent spawns a slow deployment-status child and uses durable wait plus check_agents polling before reporting completion.",
+  "agent": "default",
+  "tools": ["slow_tool"],
+  "tags": ["agent-behavior", "durable", "critical-path", "nightly"],
+  "input": {
+    "prompt": "Spawn one sub-agent to call slow_tool with delayMs 2000 for deployment status collection. While it runs, wait 2 seconds, check the child status, and then report the deployment result."
+  },
+  "checks": [
+    { "type": "tool-sequence", "order": "subsequence", "calls": ["spawn_agent", "wait", "check_agents"] },
+    { "type": "cms-event-count", "event": "session.agent_spawned", "min": 1, "max": 1 },
+    { "type": "cms-events-contain", "events": ["session.wait_started", "session.dehydrated", "session.hydrated", "session.wait_completed"] },
+    { "type": "cms-events-order", "before": "session.wait_started", "after": "session.wait_completed" },
+    { "type": "response-contains", "any": ["done", "complete", "completed", "slow_tool"] },
+    { "type": "goal-completed" }
+  ],
+  "postRun": {
+    "trajectorySummary": {
+      "rubric": "Inspect whether the parent used wait/check_agents instead of busy-looping and whether the slow deployment-status child result was surfaced cleanly."
+    }
+  },
+  "requirements": { "isolation": "fresh-worker" },
+  "runs": { "timeoutMs": 360000 },
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. slow_tool deployment-status child is done.",
+      "toolCalls": [
+        { "name": "spawn_agent", "args": { "tool": "slow_tool" } },
+        { "name": "wait", "args": { "seconds": 2 } },
+        { "name": "check_agents", "args": { "mode": "child" } }
+      ],
+      "cmsEvents": [
+        { "type": "session.agent_spawned" },
+        { "type": "session.wait_started" },
+        { "type": "session.dehydrated" },
+        { "type": "session.hydrated" },
+        { "type": "session.wait_completed" }
+      ]
+    }
+  }
+}

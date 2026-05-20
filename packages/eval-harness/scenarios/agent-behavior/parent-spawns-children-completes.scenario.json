@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "agent.parent-spawns-children-completes",
+  "description": "Parent uses PilotSwarm-native sub-agent spawning to gather checkout-region status from three children and reports every result.",
+  "agent": "default",
+  "tools": ["test_weather"],
+  "tags": ["agent-behavior", "critical-path", "nightly"],
+  "input": {
+    "prompt": "Use sub-agents to fetch checkout service status for Tokyo, Osaka, and Kyoto in parallel. Each child should use test_weather as the region-status lookup for one region. Wait for all children, then report all three region results."
+  },
+  "checks": [
+    { "type": "tool-call", "name": "spawn_agent" },
+    { "type": "tool-call", "name": "check_agents" },
+    { "type": "cms-event-count", "event": "session.agent_spawned", "min": 3, "max": 3 },
+    { "type": "response-contains", "all": ["Tokyo", "Osaka", "Kyoto"] },
+    { "type": "cms-state-in", "states": ["idle", "completed"] },
+    { "type": "goal-completed" }
+  ],
+  "postRun": {
+    "trajectorySummary": {
+      "rubric": "Inspect whether the parent spawned exactly three useful children, waited for all results, avoided serial over-polling, and summarized each checkout region accurately."
+    }
+  },
+  "requirements": { "isolation": "fresh-worker" },
+  "runs": { "timeoutMs": 360000 },
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. Tokyo, Osaka, and Kyoto checkout region statuses are all available.",
+      "terminalState": "completed",
+      "toolCalls": [
+        { "name": "spawn_agent", "args": { "city": "Tokyo" } },
+        { "name": "spawn_agent", "args": { "city": "Osaka" } },
+        { "name": "spawn_agent", "args": { "city": "Kyoto" } },
+        { "name": "check_agents", "args": { "mode": "all" } }
+      ],
+      "cmsEvents": [
+        { "type": "session.agent_spawned" },
+        { "type": "session.agent_spawned" },
+        { "type": "session.agent_spawned" }
+      ]
+    }
+  }
+}

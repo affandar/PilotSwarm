@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "ablation",
+  "id": "meta.model-sweep-durable",
+  "description": "Per-model pass rate on durable rollback do-wait-do scenarios with hydration evidence.",
+  "tags": ["meta", "durable", "durable-cross-model", "nightly"],
+  "baseScenario": "../durable/wait-do-wait-do.scenario.json",
+  "axes": {
+    "model": ["github-copilot:gpt-5.4", "github-copilot:gpt-5.5", "github-copilot:gpt-5-mini"]
+  },
+  "gate": "diagnostic",
+  "runs": { "timeoutMs": 3600000 },
+  "metadata": {
+    "fake": {
+      "finalResponse": "Completed. Diagnostic model sweep prepared.",
+      "toolCalls": []
+    }
+  }
+}
