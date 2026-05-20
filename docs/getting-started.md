@@ -69,6 +69,10 @@ If you want the published terminal UI package as well:
 npm install pilotswarm-cli
 ```
 
+The latest published release is `0.1.30` for `pilotswarm-sdk`,
+`pilotswarm-cli`, and `pilotswarm-web`. Pin that version in applications when
+you want repeatable installs instead of the moving npm `latest` tag.
+
 Inside this repo, the recommended terminal UI path is
 [`run.sh`](../run.sh) or
 [`packages/cli/bin/tui.js`](../packages/cli/bin/tui.js).

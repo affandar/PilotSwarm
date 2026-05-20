@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### CI / Release
+
+- Switched npm publishing to GitHub Actions Trusted Publisher/OIDC so future
+  releases publish without an `NPM_TOKEN` repository secret.
+
 ## 0.1.30 — 2026-05-20
 
 ### SDK / Runtime
@@ -60,13 +65,12 @@
 
 ### Packages / Docker
 
-- Published package versions are bumped to `0.1.30` for `pilotswarm-sdk`,
-  `pilotswarm-cli`, and `pilotswarm-web`, with workspace dependency ranges and
-  lockfile entries updated together.
-- Refreshed the Docker quickstart versioned starter-image pull command to
-  `affandar/pilotswarm-starter:0.1.30`; the starter Docker publish workflow
-  remains wired to GitHub Release publication for `v0.1.30`, `0.1.30`, and
-  `latest` tags.
+- Published `pilotswarm-sdk`, `pilotswarm-cli`, and `pilotswarm-web` to npm at
+  `0.1.30`, with workspace dependency ranges and lockfile entries updated
+  together.
+- Published the starter Docker image as `affandar/pilotswarm-starter:v0.1.30`,
+  `affandar/pilotswarm-starter:0.1.30`, and `affandar/pilotswarm-starter:latest`;
+  the Docker quickstart now points its pinned pull command at `0.1.30`.
 
 ### Tests
 
@@ -76,7 +80,8 @@
   confirmation modals, session refresh behavior, history-pane UI, grouped
   sessions, and Copilot SDK tool-name collisions.
 - Full-suite testing was run outside this release-agent turn by the user; this
-  release pass still ran build and packaging checks before publish.
+  release pass ran build, npm package dry-runs, npm registry verification, and
+  Docker image tag verification.
 
 ## 0.1.29 — 2026-05-12
 

@@ -402,7 +402,7 @@ embedded password. Fully passwordless deployments may flip
 `passwordAuth: 'Disabled'` on the Bicep `postgres.bicep` module and
 drop the bootstrap admin password from Key Vault and the
 SecretProviderClass once their deploy path is on duroxide-node ≥ 0.1.25
-(pilotswarm-sdk ≥ 0.1.29).
+(pilotswarm-sdk ≥ 0.1.30).
 
 ## Model providers (LLM catalog)
 
