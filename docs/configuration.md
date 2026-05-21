@@ -70,6 +70,17 @@ PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
 For now, `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS` are interpreted
 as comma-delimited user email allowlists, not Entra group IDs.
 
+For tenants that prefer to drive admission from Entra **app roles** instead of
+an email allowlist, see the operator runbook at
+[`docs/portal-entra-app-roles.md`](./portal-entra-app-roles.md). Two optional
+env vars pin the role-to-engine-role mapping when the default suffix-strip
+match is too loose:
+
+| Env var | Description |
+| ------- | ----------- |
+| `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES` | Comma-delimited list of role values (case-insensitive exact match) that map to engine `admin`. Replaces the suffix-strip default. |
+| `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES`  | Same, for engine `user`. |
+
 Portal branding and sign-in copy come from `plugin.json.portal`, with
 `plugin.json.tui` used as a fallback when the portal plugin metadata does not
 provide an override. Preferred portal metadata shape is nested under

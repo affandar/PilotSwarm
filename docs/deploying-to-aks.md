@@ -434,6 +434,11 @@ same deployment slot without changing the portal shell contract.
 Use the canonical `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` keys only. The portal no
 longer reads legacy `ENTRA_*` aliases.
 
+For tenants driving admission from Entra app roles instead of an email
+allowlist, see [`docs/portal-entra-app-roles.md`](./portal-entra-app-roles.md)
+for the recommended end-state setup (define roles → enable
+`appRoleAssignmentRequired=true` → assign → align CA).
+
 Current authz is Phase 1 only:
 
 - authenticated users whose email appears in the configured admin/user allowlists are allowed in
