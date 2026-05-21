@@ -100,11 +100,16 @@ export function loadAuthorizationPolicy({
         env.PORTAL_AUTH_ALLOW_UNAUTHENTICATED,
         providerId === "none",
     );
+    const roleNames = {
+        admin: parseCsv(env.PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES),
+        user: parseCsv(env.PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES),
+    };
 
     return {
         defaultRole,
         adminGroups,
         userGroups,
         allowUnauthenticated,
+        roleNames,
     };
 }

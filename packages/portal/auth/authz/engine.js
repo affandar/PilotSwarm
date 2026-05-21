@@ -6,14 +6,80 @@ function normalizeRole(role) {
     return null;
 }
 
-function firstRoleMatch(roles = []) {
-    for (const role of roles) {
-        const normalized = normalizeRole(role);
-        if (normalized === "admin") return "admin";
+function suffixStripRole(token) {
+    const trimmed = String(token || "").trim();
+    if (!trimmed) return null;
+    const dot = trimmed.lastIndexOf(".");
+    const tail = (dot >= 0 ? trimmed.slice(dot + 1) : trimmed).toLowerCase();
+    if (tail === "admin") return "admin";
+    if (tail === "user") return "user";
+    return null;
+}
+
+function matchExactCaseInsensitive(token, list = []) {
+    const normalized = String(token || "").trim().toLowerCase();
+    if (!normalized) return false;
+    for (const entry of list) {
+        if (String(entry || "").trim().toLowerCase() === normalized) {
+            return true;
+        }
     }
-    for (const role of roles) {
-        const normalized = normalizeRole(role);
-        if (normalized === "user") return "user";
+    return false;
+}
+
+// Match `principalRoles` to an engine role using the configured policy.
+// See Spec.md FR-001..FR-009.
+//
+// Order: admin-before-user precedence is preserved (existing behavior — see
+// CodeResearch §8a).
+//
+// For each engine role:
+//   - If `policy.roleNames[engineRole]` is a non-empty array, do case-insensitive
+//     exact-string comparison against that list (explicit-list override, FR-006..FR-008).
+//   - Otherwise, fall back to the case-insensitive suffix-strip default: take the
+//     substring after the last `.` (or the whole string), lowercase it, and compare
+//     to the engine role name (FR-001/FR-002/FR-005).
+//
+// Empty / whitespace-only role tokens are filtered out before comparison
+// (mirrors `toStringArray` semantics in `normalize/entra.js`).
+//
+// Returns "admin", "user", or null.
+//
+// Note: `createNoAuthUnknownPrincipal()` produces `roles: ["anonymous"]` but is
+// never reachable here — the no-auth path passes `principal=null` to the engine
+// (CodeResearch §6). This matcher would correctly return null for "anonymous"
+// anyway, since neither "admin" nor "user" suffix-strips from it.
+function matchEngineRole(principalRoles, policy = {}) {
+    const rawTokens = Array.isArray(principalRoles) ? principalRoles : [];
+    const tokens = rawTokens
+        .map((t) => (typeof t === "string" ? t.trim() : ""))
+        .filter(Boolean);
+    if (tokens.length === 0) return null;
+
+    const policyRoleNames =
+        policy.roleNames && typeof policy.roleNames === "object"
+            ? policy.roleNames
+            : {};
+    const adminList = Array.isArray(policyRoleNames.admin) ? policyRoleNames.admin : [];
+    const userList = Array.isArray(policyRoleNames.user) ? policyRoleNames.user : [];
+
+    const adminExplicit = adminList.length > 0;
+    const userExplicit = userList.length > 0;
+
+    // Admin pass first to preserve admin-before-user precedence.
+    for (const token of tokens) {
+        if (adminExplicit) {
+            if (matchExactCaseInsensitive(token, adminList)) return "admin";
+        } else if (suffixStripRole(token) === "admin") {
+            return "admin";
+        }
+    }
+    for (const token of tokens) {
+        if (userExplicit) {
+            if (matchExactCaseInsensitive(token, userList)) return "user";
+        } else if (suffixStripRole(token) === "user") {
+            return "user";
+        }
     }
     return null;
 }
@@ -58,10 +124,36 @@ export function authorizePrincipal(principal, policy = {}) {
     const matchedAdminGroups = intersectIdentifier(principalEmail, adminGroups);
     const matchedUserGroups = intersectIdentifier(principalEmail, userGroups);
 
+    // Role-authoritative branch (Spec.md FR-001..FR-009): when the JWT carries a
+    // non-empty `roles[]` claim, decide solely from roles and bypass the email
+    // allowlist. Admin-before-user precedence is preserved by `matchEngineRole`.
+    const hasRoleTokens = principalRoles.some(
+        (t) => typeof t === "string" && t.trim().length > 0,
+    );
+    if (hasRoleTokens) {
+        const matched = matchEngineRole(principalRoles, policy);
+        if (matched) {
+            return {
+                allowed: true,
+                role: matched,
+                reason: `Matched ${matched} role`,
+                matchedGroups: [],
+            };
+        }
+        return {
+            allowed: false,
+            role: null,
+            reason: "Roles present but no admin/user role matched",
+            matchedGroups: [],
+        };
+    }
+
     if (adminGroups.length === 0 && userGroups.length === 0) {
+        // No email allowlists configured and the principal carries no role tokens
+        // (the role-authoritative branch above already handled non-empty roles).
         return {
             allowed: true,
-            role: firstRoleMatch(principalRoles) || defaultRole,
+            role: defaultRole,
             reason: "No email allowlists configured",
             matchedGroups: [],
         };
