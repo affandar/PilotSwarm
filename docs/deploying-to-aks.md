@@ -439,9 +439,10 @@ allowlist, see [`docs/portal-entra-app-roles.md`](./portal-entra-app-roles.md)
 for the recommended end-state setup (define roles → enable
 `appRoleAssignmentRequired=true` → assign → align CA).
 
-Current authz is Phase 1 only:
+Portal authz supports both email allowlists and Entra app-role claims:
 
 - authenticated users whose email appears in the configured admin/user allowlists are allowed in
+- authenticated users whose token carries an Entra app-role claim (`Portal.Admin` / `Portal.User`) are decided from that claim; see [`portal-entra-app-roles.md`](./portal-entra-app-roles.md)
 - `admin` and `user` have the same portal permissions today
 - per-user session visibility is a later phase
 

@@ -105,7 +105,7 @@ for those principals.
 
 Concretely, the engine evaluation order is:
 
-1. Token absent → unauthenticated branch (`PORTAL_AUTHZ_ALLOW_UNAUTHENTICATED`)
+1. Token absent → unauthenticated branch (`PORTAL_AUTH_ALLOW_UNAUTHENTICATED`)
 2. Token present **with** `roles` → role-authoritative branch (see below)
 3. Token present **without** `roles` → email-allowlist branch (unchanged)
 4. Token present, no allowlists configured → default role
@@ -149,10 +149,19 @@ understand the gap.
 
 - Without `appRoleAssignmentRequired=true`, any user in your tenant can
   obtain a token. Their token will not carry a `roles` claim (because no role
-  was assigned to them), so they fall through to the email-allowlist branch
-  and are denied **at the portal layer**.
+  was assigned to them), so they fall through to the email-allowlist branch.
+  What happens next depends on whether you have an allowlist configured:
+  - **With an email allowlist** (`PORTAL_AUTHZ_ADMIN_GROUPS` or
+    `PORTAL_AUTHZ_USER_GROUPS` set): unmatched users are denied at the portal
+    layer. This is the supported staged-rollout posture.
+  - **Without any email allowlist**: the portal admits role-less principals
+    as the configured `defaultRole` (`user` by default). Staged rollout is
+    **not a security posture** in this configuration — any tenant user gets
+    `user` access until step 2 (`appRoleAssignmentRequired=true`) is enabled.
+    Either configure an allowlist for the rollout window, or close the gap
+    immediately by completing step 2.
 - Side effect: portal logs will see more denied principals than they
-  otherwise would. This is harmless but noisier.
+  otherwise would (allowlist case). This is harmless but noisier.
 - Side effect: tenant users get a portal-side "you're not allowed" response
   instead of an Entra-side rejection, which is a slightly worse UX.
 
