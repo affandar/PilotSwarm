@@ -147,6 +147,24 @@ no role assignment still gets `defaultRole`. With
 error from Entra before any token is issued — they never reach the
 portal at all.
 
+**Don't mix postures in the env.** When you choose either roles posture,
+leave `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS` empty
+in the stamp's `.env`. The portal authz engine treats role claims as
+authoritative when present (see `packages/portal/auth/authz/engine.js`
+and `docs/portal-entra-app-roles.md`); the email-allowlist envs are
+the **Open**-posture mechanism only. Populating both creates a
+duplicate source of truth that the next person reading the env will
+have to untangle — and the role claim will win regardless.
+
+**Assignment is a separate step.** This skill creates the app + role
+definitions, but does not assign any principals to them. Immediately
+after invoking `Setup-PortalAuth.ps1 -CreateAppRoles`, use the
+[`pilotswarm-portal-auth-assignments`](../pilotswarm-portal-auth-assignments/SKILL.md)
+skill to assign at least one admin (default: the deploying user).
+Without that, a `-AssignmentRequired` app is unreachable and a
+no-lockdown app leaves everyone falling through to
+`PORTAL_AUTHZ_DEFAULT_ROLE` with no admin.
+
 ## Invocation
 
 Always invoke `pwsh` directly. Do not wrap through `npm` — there is no

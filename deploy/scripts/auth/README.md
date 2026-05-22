@@ -19,6 +19,7 @@ You can also invoke it directly.
 |------|---------|
 | `Create3PApplication.ps1` | Generic Azure AD application primitive. Useful if you need a non-portal app registration (e.g. a worker daemon with app roles). The PilotSwarm portal wrapper does **not** call this — it does its own SPA-shaped `az ad app create` so it can configure the SPA platform + implicit-grant + per-token-type groups claim, which the generic primitive doesn't expose. |
 | `Setup-PortalAuth.ps1` | Opinionated wrapper that creates the exact shape the PilotSwarm portal expects. See "Defaults" below. |
+| `Set-PortalAuthAssignments.ps1` | Add / remove / list user + group assignments against the `admin` / `user` app roles on an existing portal app. Idempotent. Re-runnable. See `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md` for full operator docs. |
 
 ## Prerequisites
 
@@ -155,9 +156,18 @@ with an empty redirect-URI list. After deploy finishes, run again with
   ```
   az ad app permission admin-consent --id <clientId>
   ```
-- Will not assign users to app roles. Use the Entra portal
-  ("Enterprise applications > <app> > Users and groups > Add user/group")
-  or `az ad app permission` / `az rest` for scripted assignments.
+- Will not assign users to app roles. Use `Set-PortalAuthAssignments.ps1`
+  (this folder) — wraps the Graph calls, idempotent, accepts UPNs /
+  object IDs / group display names:
+  ```
+  pwsh -NoProfile -ExecutionPolicy Bypass \
+    -File deploy/scripts/auth/Set-PortalAuthAssignments.ps1 \
+    -EnvName <stamp> -AdminAssignments <upn> [-UserAssignments <upn|group>...]
+  ```
+  See `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md` for
+  full operator docs. The Entra portal UI
+  ("Enterprise applications > <app> > Users and groups") still works
+  if you'd rather click.
 - Will not configure `PORTAL_AUTH_ENTRA_ADMIN_ROLE`, `PORTAL_AUTH_ENTRA_USER_ROLE`,
   or the `PORTAL_AUTHZ_*` env vars — those are deploy-time inputs to
   the portal `.env`.
@@ -172,7 +182,7 @@ with an empty redirect-URI list. After deploy finishes, run again with
 | Portal still shows "sign in" loop after deploy | Most often: redirect URI on the app reg doesn't match the deployed AFD endpoint exactly | Run `az ad app show --id <clientId> --query "spa.redirectUris"` and compare against your portal's `https://` root |
 | Group claims missing from access token | Group claim was not added, OR admin consent for `GroupMember.Read.All` was not granted | Re-run the script (it will idempotently re-apply optional claims) and grant admin consent |
 | Signed-in user with no role gets `defaultRole` instead of being denied | `-AssignmentRequired` was NOT set, so any tenant user can sign in even without an app-role assignment | Re-run with `-AssignmentRequired` (or set it manually: `az ad sp update --id <sp-objectId> --set appRoleAssignmentRequired=true`) |
-| `403` on portal admin routes | Signed-in user does not have the `admin` app role (or matching group via `PORTAL_AUTH_ENTRA_ADMIN_GROUPS`) | Assign the user to the `admin` role in "Enterprise applications > Users and groups" |
+| `403` on portal admin routes | Signed-in user does not have the `admin` app role (or matching group via `PORTAL_AUTH_ENTRA_ADMIN_GROUPS`) | Assign the user to the `admin` role: `pwsh -File deploy/scripts/auth/Set-PortalAuthAssignments.ps1 -EnvName <stamp> -AdminAssignments <upn>` (or via Entra portal "Users and groups") |
 
 ## Why `Create3PApplication.ps1` is included
 

@@ -26,6 +26,7 @@ operation.
 - Drive the interactive resource-naming + edge/TLS selection dialogue for new envs
 - Drive per-service rollouts (`worker`, `portal`, `base-infra`, …) against already-deployed new-env stamps via `deploy.mjs <service> <stamp> --steps …`
 - Drive the optional Entra app-registration pre-step via the `pilotswarm-portal-app-reg` skill
+- Drive role assignments after app-reg via the `pilotswarm-portal-auth-assignments` skill (mandatory when posture is roles-driven)
 - Enforce the **DO NOT WIPE** two-confirmation handshake for any destructive operation
 - Verify post-rollout health (portal `/api/health`, worker pod status, repo-cache readiness)
 
@@ -51,6 +52,7 @@ If after those cues it's still ambiguous, ask the user one clarifying question b
 
 - `.github/skills/pilotswarm-new-env-deploy/SKILL.md` — for any npm new-env work (fresh or rollout)
 - `.github/skills/pilotswarm-portal-app-reg/SKILL.md` — Entra app registration for portal auth (optional new-env pre-step)
+- `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md` — assign / revoke / list app-role assignments (mandatory follow-up to app-reg when posture is roles-driven)
 - `.github/copilot-instructions.md` — source of truth for DO NOT WIPE, repo-scope boundary, sensitive-files rule
 - `deploy/scripts/README.md` — canonical orchestrator reference (services, steps, EDGE_MODE × TLS_SOURCE, troubleshooting)
 - `deploy/scripts/auth/README.md` — portal app-registration scripts
@@ -180,6 +182,17 @@ Order matters operationally:
 
 Pick one explicitly with the user; do not silently improvise.
 
+**Roles posture requires an assignment follow-up step.** When the
+chosen posture is `-CreateAppRoles` (with or without
+`-AssignmentRequired`), the app-reg step only *defines* the roles —
+nobody is assigned yet. Immediately after `Setup-PortalAuth.ps1`
+returns, invoke the
+[`pilotswarm-portal-auth-assignments`](../skills/pilotswarm-portal-auth-assignments/SKILL.md)
+skill to assign the principals captured in the Step 2
+`ADMIN_ASSIGNMENTS` / `USER_ASSIGNMENTS` rows (default: deploying
+user → admin). Without that follow-up, a `-AssignmentRequired` stamp
+is unreachable by anyone and a no-lockdown stamp has no admin.
+
 ### Step 1 — Discover environment defaults
 
 Before opening the dialogue, run a quick discovery so the user sees
@@ -193,11 +206,11 @@ gh auth status      # confirms a token is available for GITHUB_TOKEN
 Cache the result for the rest of the conversation. Surface:
 - `sub` + `subName` → default `--subscription`
 - `tenant` → default `PORTAL_AUTH_ENTRA_TENANT_ID` (whatever `az account show` returns)
-- `user` (UPN) → **suggested** `ACME_EMAIL` and `PORTAL_AUTHZ_ADMIN_GROUPS`
-  value, but **always** ask the user to confirm or override before
-  using it. The UPN may not be the right address for cert-renewal
-  notices (shared mailbox preferred for prod) or for portal admin
-  allowlist (group object id often preferred over UPN).
+- `user` (UPN) → **suggested** `ACME_EMAIL`, but **always** ask the
+  user to confirm or override before using it. The UPN may not be the
+  right address for cert-renewal notices (shared mailbox preferred for
+  prod). Do **not** auto-suggest the UPN for `PORTAL_AUTHZ_ADMIN_GROUPS`
+  — that field is posture-dependent (see Step 2 posture rule below).
 - `gh` status → if logged in, offer to run `gh auth token` to populate
   `GITHUB_TOKEN`; if not, default it to empty (sentinel)
 
@@ -213,6 +226,33 @@ secrets**, **Portal auth**. Mark each value `(default)`,
 `(discovered)`, or `(required)`. The full canonical layout lives in
 the `pilotswarm-new-env-deploy` skill (Step 2) — reproduce it directly,
 do not paraphrase.
+
+**Posture-dependent portal-auth rule (must enforce in the table):**
+the portal authz engine treats Entra role claims as authoritative when
+present (`packages/portal/auth/authz/engine.js`,
+`docs/portal-entra-app-roles.md`). The defaults table MUST reflect the
+auth posture decided in Step 0:
+
+- **Open posture** (no `-CreateAppRoles`): suggest
+  `PORTAL_AUTHZ_ADMIN_GROUPS=<UPN>` and leave the role envs at default.
+  No `ADMIN_ASSIGNMENTS` row (no role to assign to).
+- **Roles, no lockdown** OR **Roles + lockdown** (`-CreateAppRoles`
+  set): **leave `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS`
+  empty.** Role claims decide admission and admin/user status; email
+  allowlists are dead config and only confuse the next person reading
+  the env. Surface `PORTAL_AUTH_ENTRA_ADMIN_ROLE` / `_USER_ROLE`
+  (defaults `admin` / `user`) and `PORTAL_AUTHZ_DEFAULT_ROLE` (default
+  `user`) instead. Also surface `ADMIN_ASSIGNMENTS=<UPN>` (default:
+  deploying user) and `USER_ASSIGNMENTS=<empty>` — these are the
+  principals the agent will hand to the
+  `pilotswarm-portal-auth-assignments` skill right after app-reg
+  finishes. The user may edit the lists (add a colleague, swap UPN
+  for a security group display name, etc.). These rows are *not*
+  stored in `.env`.
+
+Do not silently mix postures. If a user explicitly asks to populate
+allowlists *and* roles, call it out — they'll have a duplicate source
+of truth and the role claim will win.
 
 State the mode explicitly to the user once the table is on screen.
 Two safe modes exist; pick deliberately:
