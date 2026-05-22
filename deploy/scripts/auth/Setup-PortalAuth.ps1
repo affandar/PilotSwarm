@@ -10,10 +10,11 @@
     - serviceManagementReference: supplied via -ServiceTreeId (REQUIRED — no default)
     - SPA platform (no Web reply URLs); redirect URI is the portal's https:// root
     - implicitGrantSettings: idToken + accessToken issuance enabled
-    - MS Graph delegated permissions: User.Read
-      (The portal does NOT call MS Graph at runtime — group/role claims
-      ride on the ID token via optional-claims / app-roles. User.Read is
-      enabled by default, so no admin consent is required.)
+    - No MS Graph / API permissions declared. The portal does NOT call any
+      downstream API at runtime — group/role claims ride on the ID token via
+      optional-claims / app-roles, and the SPA only requests OIDC standard
+      scopes (openid, profile) at sign-in. Future downstream API access (e.g.
+      ADO via OBO) belongs on per-purpose worker apps, not the portal app.
     - Optional 'groups' claim on idToken, accessToken, and saml2Token
     - App roles (admin / user) — assignable to Users; created when -CreateAppRoles is set
     - Owner: current signed-in Azure CLI user (override with -Owner)
@@ -158,7 +159,6 @@ $ErrorActionPreference = "Stop"
 
 # MS Graph constants (well-known and stable)
 $MS_GRAPH_RESOURCE_APP_ID = "00000003-0000-0000-c000-000000000000"
-$MS_GRAPH_USER_READ_SCOPE_ID = "e1fe6dd8-ba31-4d61-89e7-88639da4683d"
 
 function Test-AzureCliReady {
     try {
@@ -214,17 +214,11 @@ function Resolve-RedirectUriFromEnv {
 }
 
 function Build-RequiredResourceAccessJson {
-    # Literal JSON - avoids PowerShell ConvertTo-Json mangling single-element arrays.
-    return @"
-[
-  {
-    "resourceAppId": "$MS_GRAPH_RESOURCE_APP_ID",
-    "resourceAccess": [
-      { "id": "$MS_GRAPH_USER_READ_SCOPE_ID", "type": "Scope" }
-    ]
-  }
-]
-"@
+    # Portal app declares NO API permissions. The SPA requests only OIDC standard
+    # scopes (openid, profile) at sign-in, which require no consent. Downstream
+    # API access (e.g. ADO via OBO) belongs on per-purpose worker apps with their
+    # own admin consent — see docs/proposals/portal-auth-provider-and-authz.md.
+    return "[]"
 }
 
 function Build-OptionalClaimsJson {
@@ -510,4 +504,4 @@ if ($CreateAppRoles) {
     Write-Host "  3. Run the deploy flow as usual"
 }
 Write-Host ""
-Write-Host "  Admin consent is NOT required — the portal only uses User.Read (default-consented)."
+Write-Host "  Admin consent is NOT required — the portal declares no API permissions; sign-in uses OIDC standard scopes (openid, profile)."

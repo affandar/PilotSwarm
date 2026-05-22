@@ -58,9 +58,12 @@ The wrapper bakes in:
 - `serviceManagementReference: <-ServiceTreeId>` (operator-supplied)
 - SPA platform (no Web reply URLs)
 - `implicitGrantSettings`: id-token + access-token issuance ON
-- MS Graph delegated permissions: `User.Read` (default-consented; the
-  portal never calls Graph at runtime — group/role claims ride on the
-  token itself)
+- **No MS Graph / API permissions** declared. The portal does NOT call
+  any downstream API at runtime — group/role claims ride on the token
+  itself. SPA requests only OIDC standard scopes (`openid`, `profile`)
+  at sign-in, which require no consent. Future downstream API access
+  (e.g. ADO via OBO) belongs on per-purpose worker apps with their own
+  admin consent — see `docs/proposals/portal-auth-provider-and-authz.md`.
 - `groups` optional claim on `idToken`, `accessToken`, `saml2Token` with Default formatting
 - Owner = signed-in user
 - Service principal created
@@ -282,14 +285,16 @@ values explicitly so they surface visibly.
 
 ## Admin consent
 
-**Not required.** The portal app registration requests only the
-`User.Read` delegated scope on MS Graph, which is **default-consented**
-for every signed-in user in the tenant. No tenant-admin action is
-required after running the wrapper.
+**Not required.** The portal app registration declares **no API
+permissions**. The SPA requests only OIDC standard scopes (`openid`,
+`profile`) at sign-in, which require no user or admin consent. The
+portal's own-API token (`<clientId>/.default` acquired silently after
+login) is a token to the portal's own app, not to any external resource,
+so it also requires no consent.
 
-This is deliberate: the portal does **not** call MS Graph at runtime.
-Group and role claims that drive authorization are sourced from the
-ID token directly:
+This is deliberate: the portal does **not** call MS Graph or any other
+downstream API at runtime. Group and role claims that drive
+authorization are sourced from the ID token directly:
 
 - Group membership via the `groups` optional claim configured on the
   app registration (the wrapper applies this).
@@ -336,9 +341,16 @@ application`. Assign the operator FIRST so they can finish setting up.
 - Never run the wrapper against a non-target tenant — the script will
   succeed but the app will be useless to your portal
 - Never propose granting `Application.ReadWrite.All`,
-  `GroupMember.Read.All`, or similar high-privilege tenant scopes —
-  `User.Read` (default-consented) is the entire delegated-scope
-  surface the portal needs at runtime
+  `GroupMember.Read.All`, `User.Read`, or any other delegated/app
+  scope on the portal app — the portal declares **no API permissions**
+  at runtime. Downstream API access (e.g. ADO via OBO) belongs on
+  per-purpose worker apps, not the portal app
+- Re-running the wrapper against a legacy app reg (created before this
+  shape was canonized) will normalize `requiredResourceAccess` to `[]`
+  by removing dead-weight `User.Read`. This is intentional — `User.Read`
+  was declared but never actually used at runtime. Legacy users with
+  existing consent records are unaffected; the portal's `.default`
+  scope on its own clientId continues to work
 - Single-tenant only by design. Multi-tenant or personal-MSA sign-in is
   out of scope for the wrapper; use `Create3PApplication.ps1` if you
   need a different shape

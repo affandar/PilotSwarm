@@ -59,7 +59,7 @@ tenant will reject `az ad app create` without a recognized value.
 | Platform | SPA (Single-page application) | Portal is a browser SPA using MSAL |
 | `web.implicitGrantSettings.enableIdTokenIssuance` | `true` | Matches portal MSAL config |
 | `web.implicitGrantSettings.enableAccessTokenIssuance` | `true` | Matches portal MSAL config |
-| MS Graph delegated scopes | `User.Read` only | Portal never calls Graph at runtime; group/role claims ride on the ID token. `User.Read` is default-consented so **no admin consent is required**. |
+| MS Graph delegated scopes | **none** | Portal never calls Graph at runtime; group/role claims ride on the ID token. SPA requests only OIDC standard scopes (`openid`, `profile`) at sign-in, which require no consent. Future downstream API access (e.g. ADO via OBO) belongs on per-purpose worker apps. |
 | Optional `groups` claim | `idToken`, `accessToken`, `saml2Token` | Required for group-based admin/user role mapping (`PORTAL_AUTH_ENTRA_ADMIN_GROUPS`, `PORTAL_AUTH_ENTRA_USER_GROUPS`) |
 | App roles (`-CreateAppRoles`) | optional `admin` + `user` (allowedMemberTypes=["User"]) | Read by `packages/portal/auth/authz/engine.js` — assign principals via "Enterprise applications > Users and groups" |
 | `appRoleAssignmentRequired` (`-AssignmentRequired`) | optional, `true` when set | Blocks unassigned users from getting a token at all |
@@ -101,8 +101,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass \
 After the script: assign at least one user to `admin` (so you can sign in)
 via `Set-PortalAuthAssignments.ps1` (see
 `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md`). No admin
-consent step is required — the app only requests `User.Read`, which is
-default-consented for all signed-in users.
+consent step is required — the app declares no API permissions; sign-in
+uses OIDC standard scopes (`openid`, `profile`) which require no consent.
 
 ### Sandbox stamp (no role gating)
 
@@ -152,11 +152,12 @@ with an empty redirect-URI list. After deploy finishes, run again with
 
 - Will not write to `.env` files — you must paste `PORTAL_AUTH_ENTRA_CLIENT_ID`
   yourself (so secrets surface explicitly).
-- Will not grant admin consent — none is required. The app only requests
-  the `User.Read` delegated scope on MS Graph, which is default-consented
-  for every signed-in user. Group and role claims are populated by the
-  token itself (via the `groups` optional claim and app-role assignments),
-  not by runtime Graph calls — the portal never calls Graph.
+- Will not grant admin consent — none is required. The app declares no
+  API permissions; the SPA requests only OIDC standard scopes (`openid`,
+  `profile`) at sign-in, which require no consent. Group and role claims
+  are populated by the token itself (via the `groups` optional claim and
+  app-role assignments), not by runtime API calls — the portal never
+  calls Graph or any other downstream API.
 - Will not assign users to app roles. Use `Set-PortalAuthAssignments.ps1`
   (this folder) — wraps the Graph calls, idempotent, accepts UPNs /
   object IDs / group display names:
