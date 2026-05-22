@@ -101,8 +101,8 @@ export function loadAuthorizationPolicy({
         providerId === "none",
     );
     const roleNames = {
-        admin: parseCsv(env.PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES),
-        user: parseCsv(env.PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES),
+        admin: firstNonEmptyString(env.PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME),
+        user: firstNonEmptyString(env.PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME),
     };
 
     return {

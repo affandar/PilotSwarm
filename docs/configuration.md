@@ -78,8 +78,8 @@ match is too loose:
 
 | Env var | Description |
 | ------- | ----------- |
-| `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES` | Comma-delimited list of role values (case-insensitive exact match) that map to engine `admin`. Replaces the suffix-strip default. |
-| `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES`  | Same, for engine `user`. |
+| `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME` | Single app-role `value` (case-insensitive exact match) that maps to engine `admin`. Replaces the suffix-strip default. |
+| `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME`  | Same, for engine `user`. |
 
 > **Provisioning the Entra app registration.** PilotSwarm ships
 > `deploy/scripts/auth/Setup-PortalAuth.ps1` to create (or append a

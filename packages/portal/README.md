@@ -100,9 +100,9 @@ PORTAL_AUTH_ENTRA_TENANT_ID=<tenant-id>
 PORTAL_AUTH_ENTRA_CLIENT_ID=<client-id>
 PORTAL_AUTHZ_ADMIN_GROUPS=admin1@contoso.com,admin2@contoso.com
 PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
-# Optional: explicit app-role-name lists (replace the suffix-strip default).
-# PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES=Portal.Admin
-# PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES=Portal.User
+# Optional: explicit app-role name overrides (replace the suffix-strip default).
+# PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME=Portal.Admin
+# PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME=Portal.User
 ```
 
 Notes:

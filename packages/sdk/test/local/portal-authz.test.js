@@ -287,9 +287,9 @@ describe("portal authz", () => {
     it("11. explicit policy.roleNames.admin rejects a non-matching dotted token (FR-006, SC-002)", () => {
         const decision = authorizePrincipal(
             buildPrincipal({ roles: ["legacy.Admin"] }),
-            { roleNames: { admin: ["Portal.Admin"], user: [] } },
+            { roleNames: { admin: "Portal.Admin", user: null } },
         );
-        // Explicit list replaces suffix-strip; legacy.Admin no longer suffix-strips to admin.
+        // Explicit name replaces suffix-strip; legacy.Admin no longer suffix-strips to admin.
         assertEqual(decision.allowed, false, "denied");
         assertEqual(decision.reason, "Roles present but no admin/user role matched", "pinned reason");
     });
@@ -297,7 +297,7 @@ describe("portal authz", () => {
     it("12. explicit policy.roleNames.admin accepts the configured token (FR-006, SC-002)", () => {
         const decision = authorizePrincipal(
             buildPrincipal({ roles: ["Portal.Admin"] }),
-            { roleNames: { admin: ["Portal.Admin"], user: [] } },
+            { roleNames: { admin: "Portal.Admin", user: null } },
         );
         assertEqual(decision.allowed, true, "allowed");
         assertEqual(decision.role, "admin", "admin role");
@@ -306,23 +306,23 @@ describe("portal authz", () => {
     it("13. explicit policy.roleNames.user rejects a non-matching token (FR-007)", () => {
         const decision = authorizePrincipal(
             buildPrincipal({ roles: ["legacy.User"] }),
-            { roleNames: { admin: [], user: ["Portal.User"] } },
+            { roleNames: { admin: null, user: "Portal.User" } },
         );
         assertEqual(decision.allowed, false, "denied");
         assertEqual(decision.reason, "Roles present but no admin/user role matched", "pinned reason");
     });
 
-    it("14. independent admin/user lists: explicit admin + suffix-strip user (FR-008, SC-002)", () => {
-        const policy = { roleNames: { admin: ["Portal.Admin"], user: [] } };
+    it("14. independent admin/user names: explicit admin + suffix-strip user (FR-008, SC-002)", () => {
+        const policy = { roleNames: { admin: "Portal.Admin", user: null } };
 
         // Admin: only the exact-match token works.
         const denied = authorizePrincipal(
             buildPrincipal({ roles: ["legacy.Admin"] }),
             policy,
         );
-        assertEqual(denied.allowed, false, "explicit admin list rejects legacy.Admin");
+        assertEqual(denied.allowed, false, "explicit admin name rejects legacy.Admin");
 
-        // User: empty user list → suffix-strip still active.
+        // User: null user name → suffix-strip still active.
         const userOk = authorizePrincipal(
             buildPrincipal({ roles: ["Portal.User"] }),
             policy,
@@ -331,12 +331,12 @@ describe("portal authz", () => {
         assertEqual(userOk.role, "user", "user role");
     });
 
-    it("15. empty-array explicit list reverts to suffix-strip default (FR-009)", () => {
+    it("15. null explicit name reverts to suffix-strip default (FR-009)", () => {
         const decision = authorizePrincipal(
             buildPrincipal({ roles: ["legacy.Admin"] }),
-            { roleNames: { admin: [], user: [] } },
+            { roleNames: { admin: null, user: null } },
         );
-        // Empty array == not configured; suffix-strip "legacy.Admin" → "admin".
+        // null == not configured; suffix-strip "legacy.Admin" → "admin".
         assertEqual(decision.allowed, true, "allowed via suffix-strip");
         assertEqual(decision.role, "admin", "admin from suffix-strip");
     });
@@ -350,28 +350,28 @@ describe("portal authz", () => {
         assertEqual(decision.role, "admin", "admin from non-whitespace token");
     });
 
-    it("17. env round-trip: PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES populates policy.roleNames.admin", () => {
+    it("17. env round-trip: PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME populates policy.roleNames.admin", () => {
         const policy = loadAuthorizationPolicy({
             env: {
-                PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES: "Portal.Admin, Other.Admin",
-                PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES: "Portal.User",
+                PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME: "Portal.Admin",
+                PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME: "Portal.User",
             },
             providerId: "entra",
         });
-        assertEqual(policy.roleNames.admin.join(","), "Portal.Admin,Other.Admin", "admin list");
-        assertEqual(policy.roleNames.user.join(","), "Portal.User", "user list");
+        assertEqual(policy.roleNames.admin, "Portal.Admin", "admin name");
+        assertEqual(policy.roleNames.user, "Portal.User", "user name");
     });
 
-    it("18. empty env var → parseCsv → [] → suffix-strip remains active (FR-009)", () => {
+    it("18. empty env var → null → suffix-strip remains active (FR-009)", () => {
         const policy = loadAuthorizationPolicy({
             env: {
-                PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES: "",
-                PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES: "   ",
+                PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME: "",
+                PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME: "   ",
             },
             providerId: "entra",
         });
-        assertEqual(policy.roleNames.admin.length, 0, "empty admin list");
-        assertEqual(policy.roleNames.user.length, 0, "empty user list");
+        assertEqual(policy.roleNames.admin, null, "empty admin name");
+        assertEqual(policy.roleNames.user, null, "empty user name");
 
         const decision = authorizePrincipal(
             buildPrincipal({ roles: ["Portal.Admin"] }),

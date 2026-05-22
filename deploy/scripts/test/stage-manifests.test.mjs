@@ -164,8 +164,8 @@ test("stageManifests(portal): copies worker base model_providers.json into porta
       PORTAL_AUTHZ_DEFAULT_ROLE: "viewer",
       PORTAL_AUTHZ_ADMIN_GROUPS: "__PS_UNSET__",
       PORTAL_AUTHZ_USER_GROUPS: "__PS_UNSET__",
-      PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES: "__PS_UNSET__",
-      PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES: "__PS_UNSET__",
+      PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME: "__PS_UNSET__",
+      PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME: "__PS_UNSET__",
     },
     stagingDir,
   });
@@ -210,8 +210,8 @@ function makePortalEnv(extra = {}) {
     PORTAL_AUTHZ_DEFAULT_ROLE: "viewer",
     PORTAL_AUTHZ_ADMIN_GROUPS: "__PS_UNSET__",
     PORTAL_AUTHZ_USER_GROUPS: "__PS_UNSET__",
-    PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES: "__PS_UNSET__",
-    PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES: "__PS_UNSET__",
+    PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME: "__PS_UNSET__",
+    PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME: "__PS_UNSET__",
     ...extra,
   };
 }

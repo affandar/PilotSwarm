@@ -241,7 +241,7 @@ auth posture decided in Step 0:
   empty.** Role claims decide admission and admin/user status; email
   allowlists are dead config and only confuse the next person reading
   the env. Role-name overrides
-  (`PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES` / `_USER_ROLE_NAMES`) are
+  (`PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME` / `_USER_ROLE_NAME`) are
   optional CSV — leave unset to use the engine's default suffix-strip
   mapping (`Portal.Admin` → `admin`, `User` → `user`, etc.); set only
   if your tenant publishes app roles with non-standard `value` strings.
@@ -333,7 +333,7 @@ Regardless of mode, after `new-env` completes always grep the rendered
 file and read the values back to the user:
 
 ```bash
-grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_PROVIDER|PORTAL_AUTH_ENTRA_TENANT_ID|PORTAL_AUTH_ENTRA_CLIENT_ID|PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES|PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES|PORTAL_AUTHZ_DEFAULT_ROLE|PORTAL_AUTHZ_ADMIN_GROUPS|PORTAL_AUTHZ_USER_GROUPS)=' deploy/envs/local/<stamp>/.env
+grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_PROVIDER|PORTAL_AUTH_ENTRA_TENANT_ID|PORTAL_AUTH_ENTRA_CLIENT_ID|PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME|PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME|PORTAL_AUTHZ_DEFAULT_ROLE|PORTAL_AUTHZ_ADMIN_GROUPS|PORTAL_AUTHZ_USER_GROUPS)=' deploy/envs/local/<stamp>/.env
 ```
 
 If any value looks wrong (especially `PORTAL_AUTHZ_DEFAULT_ROLE` not in

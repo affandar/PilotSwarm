@@ -129,18 +129,25 @@ last `.` in each role value is lowercased and compared to `admin`/`user`. This
 covers the common naming styles (`Portal.Admin`, `pilotswarm.admin`, plain
 `admin`).
 
-If you want stricter control, set explicit role-name lists:
+If you want stricter control, set explicit role-name overrides:
 
 ```bash
-PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES=Portal.Admin
-PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES=Portal.User
+PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME=Portal.Admin
+PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME=Portal.User
 ```
 
-When an explicit list is configured for an engine role, it **replaces** (does
+When an explicit name is configured for an engine role, it **replaces** (does
 not augment) the suffix-strip default for that role. Matching is
-case-insensitive exact-match against the listed values. The two env vars are
+case-insensitive exact-match against the configured value. The two env vars are
 independent — you can pin admin while leaving user on the default, or vice
 versa.
+
+> **Why a single name per role, not a list?** The roles-mode design assumes
+> exactly one canonical `Portal.Admin` and one `Portal.User` app role per app
+> registration. If you need additional granularity (e.g. a `Portal.Auditor`
+> role), define it as a new app role and gate-check it explicitly in code
+> against the JWT `roles` claim — don't alias multiple role values onto the
+> built-in admin/user buckets.
 
 Admin-before-user precedence is preserved regardless of which matcher path is
 in use: if a principal's token carries both an admin role and a user role,
@@ -195,9 +202,9 @@ last-resort fallback), the new precedence applies on upgrade:
 
 Two ways to opt out of the new precedence if it doesn't fit your deployment:
 
-1. **Pin role-name lists to a non-matching sentinel.** Set
-   `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES=__none__` and
-   `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES=__none__`. The role-authoritative
+1. **Pin role names to a non-matching sentinel.** Set
+   `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME=__none__` and
+   `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME=__none__`. The role-authoritative
    branch will see no match and deny — at which point you should plan a real
    migration rather than holding the new behavior off forever.
 2. **Strip the `roles` claim from token issuance.** Remove the app-role
@@ -215,14 +222,14 @@ Despite the existing variable names `PORTAL_AUTHZ_ADMIN_GROUPS` /
 `principal.email`, **not** against the JWT `groups` claim. The variable
 names predate the current implementation. The two new variables introduced
 by this feature —
-`PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES` /
-`PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES` — act on the JWT `roles` claim, which
+`PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME` /
+`PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME` — act on the JWT `roles` claim, which
 is a separate signal.
 
 ## Operational Note: Pod Restart Required for Env Changes
 
 The portal caches the resolved authorization policy at process startup. Changes
-to `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES`, `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES`,
+to `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME`, `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME`,
 or any other `PORTAL_AUTHZ_*` env var only take effect after the portal
 process (or pod, on AKS) is restarted. This is the same behavior the existing
 `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS` vars have today.

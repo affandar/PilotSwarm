@@ -47,6 +47,6 @@ export const PORTAL_CONFIG_KEYS = [
   // to the suffix-strip default (`Portal.Admin` → `admin`, etc.). Set
   // when your tenant publishes app roles with non-standard values.
   // Read by packages/portal/auth/config.js.
-  { env: "PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES" },
-  { env: "PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES" },
+  { env: "PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME" },
+  { env: "PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME" },
 ];

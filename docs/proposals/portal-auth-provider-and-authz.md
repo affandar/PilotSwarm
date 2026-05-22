@@ -1172,7 +1172,7 @@ Define on the Entra app registration, mapped to the existing taxonomy:
 
 Matching is case-insensitive and trims a dotted prefix, so any role string
 ending in `.admin` (e.g. `Portal.Admin`, `pilotswarm.admin`) normalizes to
-`admin`, and `.user` to `user`. The exact role-name list stays configurable
+`admin`, and `.user` to `user`. The exact role names stay configurable
 for installations that want a different naming scheme.
 
 ### Engine changes (additive, behind a config switch)
@@ -1184,14 +1184,16 @@ In `packages/portal/auth/authz/engine.js`:
   suffix rule above.
 - When `principal.roles[]` is empty, fall back to the current email
   allowlist behavior unchanged.
-- New optional policy field `roleNames: { admin: string[], user: string[] }`
-  for installations that want explicit role-name lists rather than the
-  suffix-strip default.
+- New optional policy field `roleNames: { admin: string | null, user: string | null }`
+  for installations that want an explicit role-name override rather than the
+  suffix-strip default. A single canonical name per engine role — extra
+  granularity belongs in new app roles checked explicitly in code, not
+  aliased into admin/user.
 
 In `packages/portal/auth/config.js`:
 
-- New optional env vars: `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES`,
-  `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES` (comma-separated). Empty ⇒ use
+- New optional env vars: `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME`,
+  `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME` (single scalar per role). Empty ⇒ use
   the suffix-strip default.
 
 No change to the `AuthorizationDecision` shape, no change to the email

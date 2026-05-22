@@ -11,10 +11,13 @@
   `admin`). Admin-before-user precedence is preserved. The email-allowlist
   path (`PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS`) is
   unchanged for principals whose token carries no `roles` claim.
-- **New env vars** `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES` and
-  `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES` pin explicit role-value lists
-  (case-insensitive exact match) when the suffix-strip default is too loose.
-  Configuring an explicit list **replaces** the default for that engine role.
+- **New env vars** `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME` and
+  `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME` pin the explicit Entra app-role
+  `value` (case-insensitive exact match) for each engine role when the
+  suffix-strip default is too loose. The roles-mode design assumes exactly
+  one canonical `Portal.Admin` and one `Portal.User` per app reg; extra
+  granularity belongs in new app roles checked explicitly in code, not
+  aliased into admin/user here.
 - **Operator runbook**: see [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md)
   for the recommended end-state setup (define roles → enable
   `appRoleAssignmentRequired=true` → assign → align Conditional Access).
@@ -31,7 +34,7 @@
   Entra-issued tokens that carry app-role claims will see role-driven
   decisions take precedence over the allowlist on upgrade. Tokens without
   `roles` are unaffected. Mitigation paths
-  (pin `PORTAL_AUTHZ_ENTRA_*_ROLE_NAMES` to a non-matching sentinel, or strip
+  (pin `PORTAL_AUTHZ_ENTRA_*_ROLE_NAME` to a non-matching sentinel, or strip
   the `roles` claim from token issuance) are documented in
   [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md).
 

@@ -3,7 +3,7 @@
 ## Summary
 
 Add a config-reloader pattern to the portal authorization layer so that changes
-to `PORTAL_AUTHZ_*` env vars (group allowlists, role-name lists, default role,
+to `PORTAL_AUTHZ_*` env vars (group allowlists, role-name overrides, default role,
 allow-unauthenticated, etc.) can take effect without restarting the portal
 process or pod. Today every change to these env vars requires a pod restart
 because `getProviderBundle()` caches the authorization policy for the process
@@ -32,8 +32,8 @@ This was acceptable when the only knob was `PORTAL_AUTHZ_ADMIN_GROUPS` /
 (`.paw/work/entra-app-roles-modernization/`, `docs/portal-entra-app-roles.md`)
 the surface grows:
 
-- `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES`
-- `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES`
+- `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME`
+- `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME`
 
 Operators tuning role names against a live Entra app registration will hit
 this friction more often, and the pod-restart requirement is now an

@@ -34,8 +34,12 @@ function matchExactCaseInsensitive(token, list = []) {
 // CodeResearch §8a).
 //
 // For each engine role:
-//   - If `policy.roleNames[engineRole]` is a non-empty array, do case-insensitive
-//     exact-string comparison against that list (explicit-list override, FR-006..FR-008).
+//   - If `policy.roleNames[engineRole]` is a non-empty string, do case-insensitive
+//     exact-string comparison against that single value (explicit-name override,
+//     FR-006..FR-008). The roles-mode design assumes exactly one canonical
+//     `Portal.Admin` and one `Portal.User` app-role per app reg. Additional
+//     granularity belongs in new app roles that are checked explicitly in code,
+//     not aliased into admin/user here.
 //   - Otherwise, fall back to the case-insensitive suffix-strip default: take the
 //     substring after the last `.` (or the whole string), lowercase it, and compare
 //     to the engine role name (FR-001/FR-002/FR-005).
@@ -60,23 +64,23 @@ function matchEngineRole(principalRoles, policy = {}) {
         policy.roleNames && typeof policy.roleNames === "object"
             ? policy.roleNames
             : {};
-    const adminList = Array.isArray(policyRoleNames.admin) ? policyRoleNames.admin : [];
-    const userList = Array.isArray(policyRoleNames.user) ? policyRoleNames.user : [];
+    const adminName = typeof policyRoleNames.admin === "string" ? policyRoleNames.admin.trim() : "";
+    const userName = typeof policyRoleNames.user === "string" ? policyRoleNames.user.trim() : "";
 
-    const adminExplicit = adminList.length > 0;
-    const userExplicit = userList.length > 0;
+    const adminExplicit = adminName.length > 0;
+    const userExplicit = userName.length > 0;
 
     // Admin pass first to preserve admin-before-user precedence.
     for (const token of tokens) {
         if (adminExplicit) {
-            if (matchExactCaseInsensitive(token, adminList)) return "admin";
+            if (matchExactCaseInsensitive(token, [adminName])) return "admin";
         } else if (suffixStripRole(token) === "admin") {
             return "admin";
         }
     }
     for (const token of tokens) {
         if (userExplicit) {
-            if (matchExactCaseInsensitive(token, userList)) return "user";
+            if (matchExactCaseInsensitive(token, [userName])) return "user";
         } else if (suffixStripRole(token) === "user") {
             return "user";
         }
