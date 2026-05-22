@@ -431,6 +431,16 @@ Register the portal ingress URL as the SPA redirect URI in Entra. The portal
 core does not require Entra specifically, so alternate providers can use the
 same deployment slot without changing the portal shell contract.
 
+> **Automating the app registration.** Rather than clicking through the
+> Azure Portal, use `deploy/scripts/auth/Setup-PortalAuth.ps1` to create
+> the Entra application, register the SPA redirect URI, and (optionally)
+> define the `admin`/`user` app roles consumed by the portal authz
+> engine. The script requires `-ServiceTreeId` (operator-supplied) and
+> exposes `-CreateAppRoles` and `-AssignmentRequired` switches for
+> role-driven and lockdown postures. Full operator docs:
+> `deploy/scripts/auth/README.md`. Agent-driven invocation:
+> `pilotswarm-portal-app-reg` skill.
+
 Use the canonical `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` keys only. The portal no
 longer reads legacy `ENTRA_*` aliases.
 
