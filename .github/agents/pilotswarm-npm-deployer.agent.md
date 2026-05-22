@@ -150,11 +150,31 @@ Ask, in order:
      invoke the skill in append mode (`-ExistingAppId <appId> -EnvName <stamp>`).
 3. **"Should sign-in be locked down to assigned users only, or open to
    any tenant member?"** (only when `entra` and provisioning new)
-   - **Production stamp** → recommend `-CreateAppRoles -AssignmentRequired`.
-     With assignment-required, only users explicitly assigned to a role
-     (`admin` or `user`) can sign in.
-   - **Sandbox / dev stamp** → defaults are fine. Any tenant user signs
-     in; `PORTAL_AUTHZ_DEFAULT_ROLE` decides their effective access.
+   - **Production stamp (recommended)** → `-CreateAppRoles` + assign
+     users/groups to the `admin` / `user` roles via the
+     `pilotswarm-portal-auth-assignments` skill (or
+     "Enterprise applications > Users and groups"). The role assignment
+     list **is** the allowlist — no env-var allowlist needed. The portal
+     engine is deny-by-default (since v0.1.33): assigned principals get
+     `admin` / `user` from the JWT `roles` claim; unassigned signed-in
+     users are denied at the portal layer. Leave
+     `appRoleAssignmentRequired=false` (do not pass `-AssignmentRequired`)
+     unless you have tenant-admin support to pre-grant OIDC scopes; in
+     restricted tenants flipping `appRoleAssignmentRequired=true` trips
+     an AADSTS90094 admin-consent prompt on every assigned user's first
+     sign-in.
+   - **Advanced: Entra-level lockdown** → `-CreateAppRoles -AssignmentRequired`.
+     Recommend only when the user has tenant-admin support to pre-grant
+     OIDC scopes for the app, or accepts the per-user consent dance.
+   - **Sandbox / dev stamp** → `-CreateAppRoles` omitted AND
+     `PORTAL_AUTHZ_DEFAULT_ROLE=user` in the stamp's `.env` (explicit
+     opt-in to the legacy open posture). Any tenant user signs in and
+     gets `user`. Default `PORTAL_AUTHZ_DEFAULT_ROLE=none` (deny-by-default)
+     will reject everyone for a no-allowlist, no-roles stamp.
+   - **Legacy email allowlist (no roles)** → omit `-CreateAppRoles` and
+     populate `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS`
+     in the stamp's `.env`. For stamps that don't want to do per-stamp
+     Entra role assignments.
 
 Invoke via `pwsh -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/auth/Setup-PortalAuth.ps1 ...`
 — works identically on Windows, Linux, and macOS as long as PowerShell
@@ -190,8 +210,12 @@ returns, invoke the
 [`pilotswarm-portal-auth-assignments`](../skills/pilotswarm-portal-auth-assignments/SKILL.md)
 skill to assign the principals captured in the Step 2
 `ADMIN_ASSIGNMENTS` / `USER_ASSIGNMENTS` rows (default: deploying
-user → admin). Without that follow-up, a `-AssignmentRequired` stamp
-is unreachable by anyone and a no-lockdown stamp has no admin.
+user → admin). The role assignment list in Entra **is** the allowlist
+for the Roles posture — do **not** also populate
+`PORTAL_AUTHZ_ADMIN_GROUPS` here, since the engine's
+role-authoritative branch ignores it when `roles[]` is present in the
+JWT. Without the assignment step, every sign-in is denied at the
+portal engine (deny-by-default) because no one has a role claim yet.
 
 ### Step 1 — Discover environment defaults
 
@@ -209,8 +233,10 @@ Cache the result for the rest of the conversation. Surface:
 - `user` (UPN) → **suggested** `ACME_EMAIL`, but **always** ask the
   user to confirm or override before using it. The UPN may not be the
   right address for cert-renewal notices (shared mailbox preferred for
-  prod). Do **not** auto-suggest the UPN for `PORTAL_AUTHZ_ADMIN_GROUPS`
-  — that field is posture-dependent (see Step 2 posture rule below).
+  prod). For Roles posture, also suggest the UPN as the initial
+  `ADMIN_ASSIGNMENTS` entry. Do **not** auto-suggest the UPN for
+  `PORTAL_AUTHZ_ADMIN_GROUPS` — that env var is only relevant in the
+  Legacy email allowlist posture, not the Roles posture.
 - `gh` status → if logged in, offer to run `gh auth token` to populate
   `GITHUB_TOKEN`; if not, default it to empty (sentinel)
 
@@ -230,27 +256,31 @@ do not paraphrase.
 **Posture-dependent portal-auth rule (must enforce in the table):**
 the portal authz engine treats Entra role claims as authoritative when
 present (`packages/portal/auth/authz/engine.js`,
-`docs/portal-entra-app-roles.md`). The defaults table MUST reflect the
-auth posture decided in Step 0:
+`docs/portal-entra-app-roles.md`). The role-authoritative branch
+ignores `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS`
+entirely when `roles[]` is non-empty in the JWT. Pick one mechanism
+per stamp:
 
-- **Open posture** (no `-CreateAppRoles`): suggest
-  `PORTAL_AUTHZ_ADMIN_GROUPS=<UPN>` and leave the role envs at default.
-  No `ADMIN_ASSIGNMENTS` row (no role to assign to).
-- **Roles, no lockdown** OR **Roles + lockdown** (`-CreateAppRoles`
-  set): **leave `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS`
-  empty.** Role claims decide admission and admin/user status; email
-  allowlists are dead config and only confuse the next person reading
-  the env. The portal matches the JWT `roles` claim by case-insensitive
-  equality against the canonical values `admin` and `user`; there is no
-  override env var. `PORTAL_AUTHZ_DEFAULT_ROLE` (default `user`)
-  controls the fallback for principals with no matching role claim.
-  Also surface `ADMIN_ASSIGNMENTS=<UPN>` (default:
-  deploying user) and `USER_ASSIGNMENTS=<empty>` — these are the
-  principals the agent will hand to the
-  `pilotswarm-portal-auth-assignments` skill right after app-reg
-  finishes. The user may edit the lists (add a colleague, swap UPN
-  for a security group display name, etc.). These rows are *not*
+- **Roles** (`-CreateAppRoles` set): **leave `PORTAL_AUTHZ_ADMIN_GROUPS`
+  and `PORTAL_AUTHZ_USER_GROUPS` empty.** Role assignments in Entra
+  decide admission and admin/user status; env allowlists are bypassed
+  and only confuse the next person reading the env. Leave
+  `PORTAL_AUTHZ_DEFAULT_ROLE` at the new `none` default —
+  deny-by-default catches any signed-in principal without a role claim.
+  Surface `ADMIN_ASSIGNMENTS=<UPN>` (default: deploying user) and
+  `USER_ASSIGNMENTS=<empty>` — these are the principals the agent will
+  hand to the `pilotswarm-portal-auth-assignments` skill right after
+  app-reg finishes. The user may edit the lists (add a colleague, swap
+  UPN for a security group display name, etc.). These rows are *not*
   stored in `.env`.
+- **Sandbox / open** (no `-CreateAppRoles`): set
+  `PORTAL_AUTHZ_DEFAULT_ROLE=user` to opt back into the legacy open
+  posture. Any tenant user signs in as `user`. Leave the email
+  allowlists empty. No `ADMIN_ASSIGNMENTS` row (no role to assign).
+- **Legacy email allowlist** (no `-CreateAppRoles`): suggest
+  `PORTAL_AUTHZ_ADMIN_GROUPS=<UPN>` and leave `PORTAL_AUTHZ_DEFAULT_ROLE`
+  at `none`. The engine consults the email allowlists since no role
+  claim is present. No `ADMIN_ASSIGNMENTS` row.
 
 Do not silently mix postures. If a user explicitly asks to populate
 allowlists *and* roles, call it out — they'll have a duplicate source

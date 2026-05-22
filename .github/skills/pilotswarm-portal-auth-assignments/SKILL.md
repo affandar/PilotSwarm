@@ -34,9 +34,10 @@ adding a new admin months later, removing an offboarded user, etc.
 In the `pilotswarm-npm-deployer` flow, after `Setup-PortalAuth.ps1`
 finishes with `-CreateAppRoles`, the deployer **must** invoke this
 skill before declaring auth setup complete. Without at least one admin
-assignment, a `-AssignmentRequired` app is unreachable by anyone (no
-one can sign in), and a no-lockdown app falls everyone through to
-`PORTAL_AUTHZ_DEFAULT_ROLE` (typically `user`), leaving no admin.
+assignment, an `-AssignmentRequired` app is unreachable by anyone (no
+one can sign in), and a no-`-AssignmentRequired` app is denied at the
+portal engine (deny-by-default since v0.1.33) for every signed-in
+user, since none of them carry the `admin` or `user` role claim yet.
 
 Default: assign the deploying user (UPN from `az account show`) to the
 `admin` role unless the user overrides the list in the Step 2 defaults
@@ -142,7 +143,7 @@ portal or token-claim pipeline.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `App '...' has no role with value 'admin'` | App was created without `-CreateAppRoles` | Run `Setup-PortalAuth.ps1 -CreateAppRoles -AssignmentRequired -ExistingAppId <id>` to add roles, then retry |
+| `App '...' has no role with value 'admin'` | App was created without `-CreateAppRoles` | Run `Setup-PortalAuth.ps1 -CreateAppRoles -ExistingAppId <id>` to add roles, then retry |
 | `Could not resolve '<x>'` | UPN typo, user not in tenant, or group name doesn't match | Verify with `az ad user show --id <upn>` or `az ad group list --display-name <name>` |
 | `Authorization_RequestDenied` on POST | Caller lacks app-role assignment permission | See "Permissions required" above |
 | `Could not load service principal for app` | App exists but SP was never created | Run `az ad sp create --id <appId>` then retry |

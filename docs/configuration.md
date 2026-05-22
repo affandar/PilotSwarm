@@ -84,9 +84,15 @@ belongs in new app roles checked explicitly in code.
 > requires a `-ServiceTreeId` (operator-supplied) and supports two
 > optional switches that align with the role-driven authz engine:
 > `-CreateAppRoles` defines `admin` and `user` app roles on the
-> application object, and `-AssignmentRequired` flips the service
-> principal to require explicit user/group assignment before any token
-> is issued. See `deploy/scripts/auth/README.md`,
+> application object (recommended for production stamps), and
+> `-AssignmentRequired` flips the service principal to require explicit
+> user/group assignment before any token is issued. `-AssignmentRequired`
+> is OFF by default — in restricted tenants it can trip an AADSTS90094
+> admin-consent prompt; the recommended production lockdown is
+> `-CreateAppRoles` plus role assignments in Entra (the role
+> assignment **is** the allowlist), with the portal engine's
+> deny-by-default behavior. See
+> `deploy/scripts/auth/README.md`,
 > [`docs/portal-entra-app-roles.md`](./portal-entra-app-roles.md), and
 > the `pilotswarm-portal-app-reg` skill for full usage. For
 > npm-orchestrator stamps, this is wired into the new-env flow by the

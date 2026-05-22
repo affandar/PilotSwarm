@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Portal — Deny-by-default authz
+
+- **Breaking-ish: `PORTAL_AUTHZ_DEFAULT_ROLE` now defaults to `none`
+  (deny).** Pre-v0.1.33, a signed-in principal that carried no `roles`
+  claim AND matched no email allowlist was silently admitted as `user`.
+  That left every `entra`-provider portal stamp without an explicit
+  allowlist open to the entire tenant unless
+  `appRoleAssignmentRequired=true` was flipped on the Enterprise
+  Application. The engine is now secure-by-default: such principals
+  are denied at the portal layer with the reason
+  `"No email allowlists configured and PORTAL_AUTHZ_DEFAULT_ROLE is not
+  set (deny by default)"`.
+- **To restore the legacy open posture** (any tenant user gets `user`),
+  set `PORTAL_AUTHZ_DEFAULT_ROLE=user` explicitly in the stamp's `.env`.
+  Recommended only for sandbox stamps.
+- **For production stamps**, the recommended lockdown is now
+  `Setup-PortalAuth.ps1 -CreateAppRoles` plus role assignments in Entra
+  (`Set-PortalAuthAssignments.ps1` or "Enterprise applications > Users
+  and groups"). The role assignment list **is** the allowlist — no env
+  var needed. The deny-by-default engine rejects any signed-in
+  principal whose token has no admin/user role claim.
+- `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS` remain the
+  **legacy** mechanism for stamps not using app roles. The engine's
+  role-authoritative branch (see `packages/portal/auth/authz/engine.js`)
+  bypasses these allowlists entirely when the JWT carries any `roles[]`
+  claim, so populating them alongside `-CreateAppRoles` is redundant —
+  pick one mechanism per stamp.
+- `-AssignmentRequired` is now an advanced opt-in — in tenants with
+  restricted user-consent policies it triggers an AADSTS90094
+  admin-consent prompt on the first sign-in of every assigned
+  principal. See
+  [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md)
+  Step 2b for the caveat and workaround.
+- Updated skills, deployer agent, and operator docs to reflect the new
+  default posture. `Setup-PortalAuth.ps1` already defaulted
+  `-AssignmentRequired` to `$false`; doc copy is now consistent.
+
 ## 0.1.32 — 2026-05-22
 
 ### Packages / Docker

@@ -3,6 +3,7 @@ function normalizeRole(role) {
     if (normalized === "admin") return "admin";
     if (normalized === "user") return "user";
     if (normalized === "anonymous") return "anonymous";
+    if (normalized === "none") return "none";
     return null;
 }
 
@@ -57,7 +58,11 @@ function intersectIdentifier(value, allowed = []) {
 }
 
 export function authorizePrincipal(principal, policy = {}) {
-    const defaultRole = normalizeRole(policy.defaultRole) || "user";
+    // Secure-by-default: when no PORTAL_AUTHZ_DEFAULT_ROLE is configured,
+    // unmatched authenticated principals are denied rather than silently
+    // granted `user`. Set `PORTAL_AUTHZ_DEFAULT_ROLE=user` to restore the
+    // pre-v0.1.33 "any tenant user gets `user`" behavior.
+    const defaultRole = normalizeRole(policy.defaultRole) || "none";
     const adminGroups = Array.isArray(policy.adminGroups) ? policy.adminGroups : [];
     const userGroups = Array.isArray(policy.userGroups) ? policy.userGroups : [];
     const allowUnauthenticated = policy.allowUnauthenticated === true;
@@ -111,6 +116,14 @@ export function authorizePrincipal(principal, policy = {}) {
     if (adminGroups.length === 0 && userGroups.length === 0) {
         // No email allowlists configured and the principal carries no role tokens
         // (the role-authoritative branch above already handled non-empty roles).
+        if (defaultRole === "none") {
+            return {
+                allowed: false,
+                role: null,
+                reason: "No email allowlists configured and PORTAL_AUTHZ_DEFAULT_ROLE is not set (deny by default)",
+                matchedGroups: [],
+            };
+        }
         return {
             allowed: true,
             role: defaultRole,
