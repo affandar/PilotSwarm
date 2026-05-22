@@ -113,11 +113,12 @@ gh auth status      # confirms a token is available for GITHUB_TOKEN
 Cache the result for the rest of the conversation. Surface:
 - `sub` + `subName` → default `--subscription`
 - `tenant` → default `PORTAL_AUTH_ENTRA_TENANT_ID` (whatever `az account show` returns)
-- `user` (UPN) → **suggested** `ACME_EMAIL` and `PORTAL_AUTHZ_ADMIN_GROUPS`
-  value, but **always** ask the user to confirm or override before
-  using it. The UPN may not be the right address for cert-renewal
-  notices (shared mailbox preferred for prod) or for portal admin
-  allowlist (group object id often preferred over UPN).
+- `user` (UPN) → **suggested** `ACME_EMAIL`, but **always** ask the
+  user to confirm or override before using it. The UPN may not be the
+  right address for cert-renewal notices (shared mailbox preferred for
+  prod). Do **not** auto-suggest the UPN for `PORTAL_AUTHZ_ADMIN_GROUPS`
+  — that field is posture-dependent (only populate when posture is
+  Open; leave empty when -CreateAppRoles is set).
 - `gh` status → if logged in, offer to run `gh auth token` to populate
   `GITHUB_TOKEN`; if not, default it to empty (sentinel)
 
@@ -155,20 +156,49 @@ Per-stamp secrets (Key Vault)
   AZURE_OAI_KEY                 <skip / sentinel>       # optional
   AZURE_OSS_DB_KEY              <skip / sentinel>       # optional
 
-Portal auth (ConfigMap)
+Portal auth (ConfigMap) — fields depend on auth posture
   PORTAL_AUTH_PROVIDER          entra (default)
   PORTAL_AUTH_ENTRA_TENANT_ID   <discovered: ${tenant}>
   PORTAL_AUTH_ENTRA_CLIENT_ID   <required if provider=entra>   # app-reg client id
                                                                # see pilotswarm-portal-app-reg skill if you don't have one
   PORTAL_AUTH_ALLOW_UNAUTHENTICATED  false (default)
-  PORTAL_AUTH_ENTRA_ADMIN_GROUPS     <empty> (default)
-  PORTAL_AUTH_ENTRA_USER_GROUPS      <empty> (default)
-  PORTAL_AUTH_ENTRA_ADMIN_ROLE       admin (default)             # role value on the Entra app
-  PORTAL_AUTH_ENTRA_USER_ROLE        user (default)
   PORTAL_AUTHZ_DEFAULT_ROLE          user (default)
-  PORTAL_AUTHZ_ADMIN_GROUPS          <suggested: ${user}; CONFIRM OR OVERRIDE>
-  PORTAL_AUTHZ_USER_GROUPS           <empty> (default)
+
+  # If posture = Open (no app roles):
+  PORTAL_AUTHZ_ADMIN_GROUPS          <suggested: ${user}; CONFIRM OR OVERRIDE>   # email allowlist
+  PORTAL_AUTHZ_USER_GROUPS           <empty> (default)                            # email allowlist
+
+  # If posture = Roles, no lockdown OR Roles + lockdown (-CreateAppRoles set):
+  PORTAL_AUTHZ_ADMIN_GROUPS          <leave empty>                                # roles are authoritative
+  PORTAL_AUTHZ_USER_GROUPS           <leave empty>                                # roles are authoritative
+  PORTAL_AUTH_ENTRA_ADMIN_GROUPS     <empty> (default)                            # only if mixing in Entra group object ids
+  PORTAL_AUTH_ENTRA_USER_GROUPS      <empty> (default)
+
+  # App-role assignments (Roles posture only — not stored in .env, applied via Set-PortalAuthAssignments.ps1)
+  ADMIN_ASSIGNMENTS                  <suggested: ${user}; CONFIRM OR OVERRIDE>   # UPNs / object ids / group display names, comma-separated
+  USER_ASSIGNMENTS                   <empty>                                       # UPNs / object ids / group display names, comma-separated
 ```
+
+**Why allowlist vs role fields are mutually exclusive in practice:**
+the portal authz engine treats the role claim as authoritative when
+present in the token (see `packages/portal/auth/authz/engine.js` and
+`docs/portal-entra-app-roles.md`). With `-CreateAppRoles` set, every
+admitted user has a role claim, so `PORTAL_AUTHZ_*_GROUPS` email
+allowlists are dead config. Leaving them populated is harmless but
+misleading — anyone reading the env later will wonder which one is
+actually in effect. Set them only when posture is **Open** (no app
+roles); leave them empty when posture is **Roles, no lockdown** or
+**Roles + lockdown**.
+
+**About `ADMIN_ASSIGNMENTS` / `USER_ASSIGNMENTS`:** these are *not*
+stored in `.env`. They are the principal list to feed into
+`Set-PortalAuthAssignments.ps1` after the app reg exists. The deployer
+agent collects them at table-confirmation time and invokes the
+[`pilotswarm-portal-auth-assignments`](../pilotswarm-portal-auth-assignments/SKILL.md)
+skill right after the app-reg pre-step. Default the admin list to the
+deploying user (UPN from `az account show`); the user can edit either
+list — add a colleague, swap to a security group, etc. Without at
+least one admin assignment, a `-AssignmentRequired` app is unreachable.
 
 State the mode explicitly to the user once the table is on screen.
 Two safe modes exist; pick deliberately:
@@ -247,7 +277,7 @@ Regardless of mode, after `new-env` completes always grep the rendered
 file and read the values back to the user:
 
 ```bash
-grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_PROVIDER|PORTAL_AUTH_ENTRA_TENANT_ID|PORTAL_AUTH_ENTRA_CLIENT_ID|PORTAL_AUTH_ENTRA_ADMIN_ROLE|PORTAL_AUTH_ENTRA_USER_ROLE|PORTAL_AUTHZ_DEFAULT_ROLE|PORTAL_AUTHZ_ADMIN_GROUPS|PORTAL_AUTHZ_USER_GROUPS)=' deploy/envs/local/<stamp>/.env
+grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_PROVIDER|PORTAL_AUTH_ENTRA_TENANT_ID|PORTAL_AUTH_ENTRA_CLIENT_ID|PORTAL_AUTHZ_DEFAULT_ROLE|PORTAL_AUTHZ_ADMIN_GROUPS|PORTAL_AUTHZ_USER_GROUPS)=' deploy/envs/local/<stamp>/.env
 ```
 
 If any value looks wrong (especially `PORTAL_AUTHZ_DEFAULT_ROLE` not in

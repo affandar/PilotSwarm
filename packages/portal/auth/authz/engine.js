@@ -6,15 +6,41 @@ function normalizeRole(role) {
     return null;
 }
 
-function firstRoleMatch(roles = []) {
-    for (const role of roles) {
-        const normalized = normalizeRole(role);
-        if (normalized === "admin") return "admin";
-    }
-    for (const role of roles) {
-        const normalized = normalizeRole(role);
-        if (normalized === "user") return "user";
-    }
+// Match `principalRoles` to an engine role using case-insensitive equality
+// against the two canonical role values `admin` and `user`. See Spec.md
+// FR-001..FR-005.
+//
+// Convention: the PilotSwarm app reg defines exactly two app roles with
+// `value: "admin"` and `value: "user"` (see deploy/scripts/auth/Setup-PortalAuth.ps1
+// `Build-AppRolesJson`). These are the canonical, prescriptive values —
+// the engine matches only these. If you need additional gate-keeping beyond
+// admin/user (e.g. an auditor role), define a new app role and check it
+// explicitly in code against the JWT `roles` claim — do not alias arbitrary
+// role values onto the built-in admin/user buckets here.
+//
+// Order: admin-before-user precedence is preserved — if a principal carries
+// both an admin role and a user role, the engine resolves to `admin`
+// (CodeResearch §8a).
+//
+// Empty / whitespace-only role tokens are filtered out before comparison
+// (mirrors `toStringArray` semantics in `normalize/entra.js`).
+//
+// Returns "admin", "user", or null.
+//
+// Note: `createNoAuthUnknownPrincipal()` produces `roles: ["anonymous"]` but is
+// never reachable here — the no-auth path passes `principal=null` to the engine
+// (CodeResearch §6). This matcher correctly returns null for "anonymous"
+// since it equals neither "admin" nor "user".
+function matchEngineRole(principalRoles) {
+    const rawTokens = Array.isArray(principalRoles) ? principalRoles : [];
+    const tokens = rawTokens
+        .map((t) => (typeof t === "string" ? t.trim().toLowerCase() : ""))
+        .filter(Boolean);
+    if (tokens.length === 0) return null;
+
+    // Admin pass first to preserve admin-before-user precedence.
+    if (tokens.includes("admin")) return "admin";
+    if (tokens.includes("user")) return "user";
     return null;
 }
 
@@ -58,10 +84,36 @@ export function authorizePrincipal(principal, policy = {}) {
     const matchedAdminGroups = intersectIdentifier(principalEmail, adminGroups);
     const matchedUserGroups = intersectIdentifier(principalEmail, userGroups);
 
+    // Role-authoritative branch (Spec.md FR-001..FR-009): when the JWT carries a
+    // non-empty `roles[]` claim, decide solely from roles and bypass the email
+    // allowlist. Admin-before-user precedence is preserved by `matchEngineRole`.
+    const hasRoleTokens = principalRoles.some(
+        (t) => typeof t === "string" && t.trim().length > 0,
+    );
+    if (hasRoleTokens) {
+        const matched = matchEngineRole(principalRoles);
+        if (matched) {
+            return {
+                allowed: true,
+                role: matched,
+                reason: `Matched ${matched} role`,
+                matchedGroups: [],
+            };
+        }
+        return {
+            allowed: false,
+            role: null,
+            reason: "Roles present but no admin/user role matched",
+            matchedGroups: [],
+        };
+    }
+
     if (adminGroups.length === 0 && userGroups.length === 0) {
+        // No email allowlists configured and the principal carries no role tokens
+        // (the role-authoritative branch above already handled non-empty roles).
         return {
             allowed: true,
-            role: firstRoleMatch(principalRoles) || defaultRole,
+            role: defaultRole,
             reason: "No email allowlists configured",
             matchedGroups: [],
         };

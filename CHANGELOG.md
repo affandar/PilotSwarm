@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Portal
+
+- **App-role claims are now authoritative when present.** The portal
+  authorization engine now decides admission from the JWT `roles` claim when
+  it is non-empty, using case-insensitive equality against the canonical
+  values `admin` and `user`. Admin-before-user precedence is preserved.
+  The email-allowlist path (`PORTAL_AUTHZ_ADMIN_GROUPS` /
+  `PORTAL_AUTHZ_USER_GROUPS`) is unchanged for principals whose token
+  carries no `roles` claim. Tokens that carry only non-matching role
+  values are denied — they do not fall through to the allowlist.
+- **Role values are fixed.** The roles-mode design assumes exactly two
+  canonical roles per app registration with `value: "admin"` and
+  `value: "user"`. There is no override env var. If you need additional
+  gate-keeping, define a new app role and check the JWT `roles` claim
+  for it explicitly in code — do not alias it onto the built-in
+  admin/user buckets. `Setup-PortalAuth.ps1 -CreateAppRoles` creates
+  exactly these two roles.
+- **Operator runbook**: see [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md)
+  for the recommended end-state setup (define roles → enable
+  `appRoleAssignmentRequired=true` → assign → align Conditional Access).
+- **Portal app registration no longer declares any API permissions.** The
+  SPA requests only OIDC standard scopes (`openid`, `profile`) at sign-in,
+  which require no user or admin consent. Dead-weight `User.Read` and
+  `GroupMember.Read.All` (the portal never called Graph at runtime) have
+  been removed. This makes `appRoleAssignmentRequired=true` work cleanly
+  without any tenant-admin consent step. Future downstream API access
+  (e.g. ADO via OBO) belongs on per-purpose worker apps with their own
+  consent posture — see
+  [`docs/proposals/portal-auth-provider-and-authz.md`](docs/proposals/portal-auth-provider-and-authz.md).
+- **Migration note**: deployments running with both an email allowlist **and**
+  Entra-issued tokens that carry app-role claims will see role-driven
+  decisions take precedence over the allowlist on upgrade. Tokens without
+  a `roles` claim are unaffected; tokens whose `roles` claim contains
+  values other than `admin` / `user` will now be denied. To preserve the
+  legacy behavior, remove the app-role assignments (or definitions) so the
+  `roles` claim is absent again, or migrate the allowlist entries into
+  `admin` / `user` role assignments. See
+  [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md).
+
 ## 0.1.31 — 2026-05-20
 
 ### Docker

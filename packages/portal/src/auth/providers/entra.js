@@ -59,11 +59,11 @@ export function createEntraBrowserAuthProvider() {
         async signIn() {
             if (!msal) return { account, accessToken };
             if (isMobileBrowser()) {
-                await msal.loginRedirect({ scopes: ["User.Read"] });
+                await msal.loginRedirect({ scopes: ["openid", "profile"] });
                 return { account: null, accessToken: null, redirected: true };
             }
 
-            const result = await msal.loginPopup({ scopes: ["User.Read"] });
+            const result = await msal.loginPopup({ scopes: ["openid", "profile"] });
             account = result.account || msal.getAllAccounts()[0] || null;
             accessToken = await acquireToken({ interactive: true });
             return { account, accessToken };

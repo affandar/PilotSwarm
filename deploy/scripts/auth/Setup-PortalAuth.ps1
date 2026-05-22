@@ -10,7 +10,11 @@
     - serviceManagementReference: supplied via -ServiceTreeId (REQUIRED — no default)
     - SPA platform (no Web reply URLs); redirect URI is the portal's https:// root
     - implicitGrantSettings: idToken + accessToken issuance enabled
-    - MS Graph delegated permissions: User.Read + GroupMember.Read.All
+    - No MS Graph / API permissions declared. The portal does NOT call any
+      downstream API at runtime — group/role claims ride on the ID token via
+      optional-claims / app-roles, and the SPA only requests OIDC standard
+      scopes (openid, profile) at sign-in. Future downstream API access (e.g.
+      ADO via OBO) belongs on per-purpose worker apps, not the portal app.
     - Optional 'groups' claim on idToken, accessToken, and saml2Token
     - App roles (admin / user) — assignable to Users; created when -CreateAppRoles is set
     - Owner: current signed-in Azure CLI user (override with -Owner)
@@ -23,7 +27,7 @@
 
     1) Pass -RedirectUri https://my-portal.example.com  (explicit)
     2) Pass -EnvName <stamp-name>                       (auto-discovers from
-       deploy/envs/<stamp>/bicep-outputs.cache.json — requires deploy to
+       deploy/.tmp/<stamp>/bicep-outputs.cache.json — requires deploy to
        have run at least through the bicep-publish step)
     3) Pass neither and the app will be created without a redirect URI; you
        can add one later with -ExistingAppId once you know the endpoint.
@@ -47,7 +51,7 @@
     Stamp name (e.g. mystamp). When provided:
     - Used to derive the default DisplayName.
     - Used to auto-discover the AFD endpoint from
-      deploy/envs/<EnvName>/bicep-outputs.cache.json if -RedirectUri is not given.
+      deploy/.tmp/<EnvName>/bicep-outputs.cache.json if -RedirectUri is not given.
 
 .PARAMETER RedirectUri
     Explicit SPA redirect URI (https://...). Overrides EnvName auto-discovery.
@@ -83,14 +87,15 @@
 
 .PARAMETER OutputFile
     Path to write a JSON summary { tenantId, clientId, objectId, redirectUri }.
-    Defaults to deploy/envs/<EnvName>/entra-app.json when EnvName is provided.
+    Defaults to deploy/envs/local/<EnvName>/entra-app.json when EnvName is provided
+    — co-located with the .env file scaffolded by deploy/scripts/new-env.mjs.
 
 .EXAMPLE
     .\Setup-PortalAuth.ps1 -ServiceTreeId <your-service-tree-id> -EnvName mystamp
 
     Creates a new app named "PilotSwarm Portal - mystamp", auto-discovers
-    the redirect URI from deploy/envs/mystamp/bicep-outputs.cache.json, and
-    writes the resulting clientId to deploy/envs/mystamp/entra-app.json.
+    the redirect URI from deploy/.tmp/mystamp/bicep-outputs.cache.json, and
+    writes the resulting clientId to deploy/envs/local/mystamp/entra-app.json.
 
 .EXAMPLE
     .\Setup-PortalAuth.ps1 -ServiceTreeId <your-service-tree-id> `
@@ -107,7 +112,9 @@
     appRoleAssignmentRequired=true on the service principal. Only users
     explicitly assigned to one of the roles can sign in. This is the
     recommended posture for production stamps consuming the role-driven
-    authorization engine (PORTAL_AUTH_ENTRA_ADMIN_ROLE/USER_ROLE).
+    authorization engine. The portal matches the JWT roles claim by
+    case-insensitive equality against the canonical values 'admin' and
+    'user' — no override env vars; the values are fixed.
 
 .EXAMPLE
     .\Setup-PortalAuth.ps1 -ServiceTreeId <your-service-tree-id> `
@@ -152,8 +159,6 @@ $ErrorActionPreference = "Stop"
 
 # MS Graph constants (well-known and stable)
 $MS_GRAPH_RESOURCE_APP_ID = "00000003-0000-0000-c000-000000000000"
-$MS_GRAPH_USER_READ_SCOPE_ID = "e1fe6dd8-ba31-4d61-89e7-88639da4683d"
-$MS_GRAPH_GROUPMEMBER_READ_ALL_SCOPE_ID = "bc024368-1153-4739-b217-4326f2e966d0"
 
 function Test-AzureCliReady {
     try {
@@ -172,7 +177,7 @@ function Get-RepoRoot {
 function Resolve-RedirectUriFromEnv {
     param([string]$Env)
     $repo = Get-RepoRoot
-    $cache = Join-Path $repo "deploy/envs/$Env/bicep-outputs.cache.json"
+    $cache = Join-Path $repo "deploy/.tmp/$Env/bicep-outputs.cache.json"
     if (-not (Test-Path $cache)) {
         Write-Warning "bicep-outputs.cache.json not found at $cache - cannot auto-discover redirect URI."
         return $null
@@ -183,41 +188,37 @@ function Resolve-RedirectUriFromEnv {
         Write-Warning "Failed to parse ${cache}: $_"
         return $null
     }
-    $candidates = @(
-        $outputs.portalFqdn,
-        $outputs.afdEndpointHostname,
-        $outputs.portalUrl,
-        $outputs.PORTAL_FQDN
-    ) | Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_) }
-    if ($candidates.Count -eq 0) {
-        foreach ($prop in $outputs.PSObject.Properties) {
-            if ($prop.Value -is [string] -and $prop.Value -match '^[a-z0-9-]+\.[a-z0-9.-]+$') {
-                $candidates += $prop.Value
-            }
+    # The deploy orchestrator's bicep cache uses UPPER_SNAKE keys
+    # (deploy/scripts/lib/bicep-outputs-cache.mjs). For EDGE_MODE=afd the
+    # public-facing URL is the AFD endpoint; for private/AppGw modes it
+    # is the PORTAL_HOSTNAME (AppGw FQDN). Try EDGE_MODE-aware order.
+    $edgeMode = if ($outputs.PSObject.Properties.Name -contains 'EDGE_MODE') { [string]$outputs.EDGE_MODE } else { '' }
+    $orderedKeys = if ($edgeMode -ieq 'afd') {
+        @('FRONT_DOOR_ENDPOINT_HOST_NAME', 'PORTAL_HOSTNAME')
+    } else {
+        @('PORTAL_HOSTNAME', 'FRONT_DOOR_ENDPOINT_HOST_NAME')
+    }
+    $portalHost = $null
+    foreach ($k in $orderedKeys) {
+        if ($outputs.PSObject.Properties.Name -contains $k) {
+            $v = [string]$outputs.$k
+            if (-not [string]::IsNullOrWhiteSpace($v)) { $portalHost = $v; break }
         }
     }
-    if ($candidates.Count -eq 0) {
-        Write-Warning "Could not find a portal hostname in $cache. Pass -RedirectUri explicitly."
+    if (-not $portalHost) {
+        Write-Warning "Could not find a portal hostname (FRONT_DOOR_ENDPOINT_HOST_NAME / PORTAL_HOSTNAME) in $cache. Pass -RedirectUri explicitly."
         return $null
     }
-    $portalHost = $candidates[0]
     if ($portalHost -notmatch '^https?://') { $portalHost = "https://$portalHost" }
     return $portalHost.TrimEnd('/')
 }
 
 function Build-RequiredResourceAccessJson {
-    # Literal JSON - avoids PowerShell ConvertTo-Json mangling single-element arrays.
-    return @"
-[
-  {
-    "resourceAppId": "$MS_GRAPH_RESOURCE_APP_ID",
-    "resourceAccess": [
-      { "id": "$MS_GRAPH_USER_READ_SCOPE_ID", "type": "Scope" },
-      { "id": "$MS_GRAPH_GROUPMEMBER_READ_ALL_SCOPE_ID", "type": "Scope" }
-    ]
-  }
-]
-"@
+    # Portal app declares NO API permissions. The SPA requests only OIDC standard
+    # scopes (openid, profile) at sign-in, which require no consent. Downstream
+    # API access (e.g. ADO via OBO) belongs on per-purpose worker apps with their
+    # own admin consent — see docs/proposals/portal-auth-provider-and-authz.md.
+    return "[]"
 }
 
 function Build-OptionalClaimsJson {
@@ -344,7 +345,7 @@ if ([string]::IsNullOrWhiteSpace($DisplayName)) {
 # Resolve output file
 if ([string]::IsNullOrWhiteSpace($OutputFile) -and -not [string]::IsNullOrWhiteSpace($EnvName)) {
     $repo = Get-RepoRoot
-    $OutputFile = Join-Path $repo "deploy/envs/$EnvName/entra-app.json"
+    $OutputFile = Join-Path $repo "deploy/envs/local/$EnvName/entra-app.json"
 }
 
 # Decide mode
@@ -489,18 +490,18 @@ Write-Host "==========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 if ($EnvName) {
-    Write-Host "  1. Paste PORTAL_AUTH_ENTRA_CLIENT_ID into deploy/envs/$EnvName/.env (or your shared .env.remote)"
+    Write-Host "  1. Paste PORTAL_AUTH_ENTRA_CLIENT_ID into deploy/envs/local/$EnvName/.env (or your shared .env.remote)"
 } else {
     Write-Host "  1. Paste PORTAL_AUTH_ENTRA_CLIENT_ID into your stamp's .env (or .env.remote)"
 }
 Write-Host "  2. Ensure PORTAL_AUTH_PROVIDER=entra and PORTAL_AUTH_ENTRA_TENANT_ID are set"
 if ($CreateAppRoles) {
     Write-Host "  3. Assign users/groups to the 'admin' / 'user' app roles:"
-    Write-Host "        Entra portal > Enterprise applications > $DisplayName > Users and groups"
+    Write-Host "        deploy/scripts/auth/Set-PortalAuthAssignments.ps1 -EnvName <env> -AdminAssignments <upn> [-UserAssignments ...]"
     Write-Host "     (Required when -AssignmentRequired is also set, otherwise role-less principals fall through to PORTAL_AUTHZ_DEFAULT_ROLE)"
-    Write-Host "  4. Grant admin consent for GroupMember.Read.All:"
+    Write-Host "  4. Run the deploy flow as usual"
 } else {
-    Write-Host "  3. Grant admin consent for GroupMember.Read.All:"
+    Write-Host "  3. Run the deploy flow as usual"
 }
-Write-Host "        az ad app permission admin-consent --id $clientId"
-Write-Host "  5. Run the deploy flow as usual"
+Write-Host ""
+Write-Host "  Admin consent is NOT required — the portal declares no API permissions; sign-in uses OIDC standard scopes (openid, profile)."

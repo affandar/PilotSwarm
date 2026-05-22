@@ -106,7 +106,19 @@ Notes:
 
 - `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS` are currently comma-delimited email allowlists despite the historical variable names.
 - If no admin/user groups are configured, any successfully authenticated user is allowed in as the default `user` role.
-- Phase 1 keeps `admin` and `user` permissions the same inside the portal; the email allowlists act as an admission gate and role assignment surface.
+- `admin` and `user` have the same portal permissions today; the allowlists act as an admission gate and role assignment surface.
+
+### App Roles (Recommended For IT-Managed Tenants)
+
+When the Entra app registration defines `admin` and `user` app roles and
+assigns them — and the Enterprise Application has
+`appRoleAssignmentRequired=true` — the portal decides admission from the JWT
+`roles` claim instead of the email allowlist. The portal matches the claim
+by case-insensitive equality against the canonical values `admin` and
+`user`; there is no override env var. The email-allowlist path still
+applies to principals whose token carries no `roles` claim. See
+[`../../docs/portal-entra-app-roles.md`](../../docs/portal-entra-app-roles.md)
+for the full operator runbook.
 
 The portal core no longer assumes Entra specifically. New providers can plug
 into the same browser/server provider interfaces, while sharing the same common

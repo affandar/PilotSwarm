@@ -12,8 +12,8 @@
     - Security-first design: OAuth2 delegated permissions require explicit opt-in
 
     This script is a generic primitive. For the PilotSwarm portal SPA shape
-    (single-tenant, SPA redirect URIs, implicit grant, MS Graph User.Read +
-    GroupMember.Read.All, groups optional-claim) use the wrapper
+    (single-tenant, SPA redirect URIs, implicit grant, no API permissions,
+    groups optional-claim, optional app roles) use the wrapper
     Setup-PortalAuth.ps1 in this directory.
 
     The -serviceManagementReference parameter is REQUIRED by Microsoft tenant

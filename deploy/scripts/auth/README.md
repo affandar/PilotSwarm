@@ -19,6 +19,7 @@ You can also invoke it directly.
 |------|---------|
 | `Create3PApplication.ps1` | Generic Azure AD application primitive. Useful if you need a non-portal app registration (e.g. a worker daemon with app roles). The PilotSwarm portal wrapper does **not** call this — it does its own SPA-shaped `az ad app create` so it can configure the SPA platform + implicit-grant + per-token-type groups claim, which the generic primitive doesn't expose. |
 | `Setup-PortalAuth.ps1` | Opinionated wrapper that creates the exact shape the PilotSwarm portal expects. See "Defaults" below. |
+| `Set-PortalAuthAssignments.ps1` | Add / remove / list user + group assignments against the `admin` / `user` app roles on an existing portal app. Idempotent. Re-runnable. See `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md` for full operator docs. |
 
 ## Prerequisites
 
@@ -31,7 +32,7 @@ You can also invoke it directly.
   create application registrations (typically the "Application Developer"
   Entra role or higher).
 - For `-EnvName` auto-discovery: the stamp's
-  `deploy/envs/<EnvName>/bicep-outputs.cache.json` must exist (i.e. the
+  `deploy/.tmp/<EnvName>/bicep-outputs.cache.json` must exist (i.e. the
   bicep-publish step of `npm run deploy` has run at least once).
 
 The scripts use only cross-platform pwsh APIs (`Join-Path`, `Resolve-Path`,
@@ -58,7 +59,7 @@ tenant will reject `az ad app create` without a recognized value.
 | Platform | SPA (Single-page application) | Portal is a browser SPA using MSAL |
 | `web.implicitGrantSettings.enableIdTokenIssuance` | `true` | Matches portal MSAL config |
 | `web.implicitGrantSettings.enableAccessTokenIssuance` | `true` | Matches portal MSAL config |
-| MS Graph delegated scopes | `User.Read` + `GroupMember.Read.All` | User.Read for sign-in; GroupMember.Read.All so groups optional-claim can populate |
+| MS Graph delegated scopes | **none** | Portal never calls Graph at runtime; group/role claims ride on the ID token. SPA requests only OIDC standard scopes (`openid`, `profile`) at sign-in, which require no consent. Future downstream API access (e.g. ADO via OBO) belongs on per-purpose worker apps. |
 | Optional `groups` claim | `idToken`, `accessToken`, `saml2Token` | Required for group-based admin/user role mapping (`PORTAL_AUTH_ENTRA_ADMIN_GROUPS`, `PORTAL_AUTH_ENTRA_USER_GROUPS`) |
 | App roles (`-CreateAppRoles`) | optional `admin` + `user` (allowedMemberTypes=["User"]) | Read by `packages/portal/auth/authz/engine.js` — assign principals via "Enterprise applications > Users and groups" |
 | `appRoleAssignmentRequired` (`-AssignmentRequired`) | optional, `true` when set | Blocks unassigned users from getting a token at all |
@@ -93,12 +94,15 @@ pwsh -NoProfile -ExecutionPolicy Bypass \
 - Defines `admin` and `user` app roles (assignable from "Users and groups")
 - Sets `appRoleAssignmentRequired=true` on the SP — only explicitly
   assigned users/groups can obtain a token
-- Auto-discovers redirect URI from `deploy/envs/prodstamp/bicep-outputs.cache.json`
-- Writes `{ tenantId, clientId, objectId, redirectUri }` to `deploy/envs/prodstamp/entra-app.json`
+- Auto-discovers redirect URI from `deploy/.tmp/prodstamp/bicep-outputs.cache.json`
+- Writes `{ tenantId, clientId, objectId, redirectUri }` to `deploy/envs/local/prodstamp/entra-app.json`
 - Prints env-var lines to paste into the stamp's `.env`
 
 After the script: assign at least one user to `admin` (so you can sign in)
-and grant admin consent for `GroupMember.Read.All`.
+via `Set-PortalAuthAssignments.ps1` (see
+`.github/skills/pilotswarm-portal-auth-assignments/SKILL.md`). No admin
+consent step is required — the app declares no API permissions; sign-in
+uses OIDC standard scopes (`openid`, `profile`) which require no consent.
 
 ### Sandbox stamp (no role gating)
 
@@ -148,19 +152,29 @@ with an empty redirect-URI list. After deploy finishes, run again with
 
 - Will not write to `.env` files — you must paste `PORTAL_AUTH_ENTRA_CLIENT_ID`
   yourself (so secrets surface explicitly).
-- Will not grant admin consent. Group-membership-based scopes
-  (`GroupMember.Read.All`) typically require admin consent in the tenant. The
-  operator workflow is: create app, then a tenant admin clicks "Grant
-  admin consent" in the portal **or** runs:
+- Will not grant admin consent — none is required. The app declares no
+  API permissions; the SPA requests only OIDC standard scopes (`openid`,
+  `profile`) at sign-in, which require no consent. Group and role claims
+  are populated by the token itself (via the `groups` optional claim and
+  app-role assignments), not by runtime API calls — the portal never
+  calls Graph or any other downstream API.
+- Will not assign users to app roles. Use `Set-PortalAuthAssignments.ps1`
+  (this folder) — wraps the Graph calls, idempotent, accepts UPNs /
+  object IDs / group display names:
   ```
-  az ad app permission admin-consent --id <clientId>
+  pwsh -NoProfile -ExecutionPolicy Bypass \
+    -File deploy/scripts/auth/Set-PortalAuthAssignments.ps1 \
+    -EnvName <stamp> -AdminAssignments <upn> [-UserAssignments <upn|group>...]
   ```
-- Will not assign users to app roles. Use the Entra portal
-  ("Enterprise applications > <app> > Users and groups > Add user/group")
-  or `az ad app permission` / `az rest` for scripted assignments.
-- Will not configure `PORTAL_AUTH_ENTRA_ADMIN_ROLE`, `PORTAL_AUTH_ENTRA_USER_ROLE`,
-  or the `PORTAL_AUTHZ_*` env vars — those are deploy-time inputs to
-  the portal `.env`.
+  See `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md` for
+  full operator docs. The Entra portal UI
+  ("Enterprise applications > <app> > Users and groups") still works
+  if you'd rather click.
+- Will not configure `PORTAL_AUTHZ_*` env vars — those are deploy-time
+  inputs to the portal `.env`. The roles-mode path needs no env-var
+  knobs (the engine matches the JWT `roles` claim by case-insensitive
+  equality against the canonical values `admin` / `user` that this
+  script creates).
 
 ## Troubleshooting
 
@@ -170,9 +184,9 @@ with an empty redirect-URI list. After deploy finishes, run again with
 | `Service tree ID is not valid` / tenant policy rejection | `-ServiceTreeId` not registered in your tenant's Service Tree | Register a Service Tree entry for the PilotSwarm deployment, then re-run with the registered GUID |
 | `az ad signed-in-user show` returns empty | You ran `az login --identity` (managed identity) or service-principal login | Run the script under an interactive `az login` user account |
 | Portal still shows "sign in" loop after deploy | Most often: redirect URI on the app reg doesn't match the deployed AFD endpoint exactly | Run `az ad app show --id <clientId> --query "spa.redirectUris"` and compare against your portal's `https://` root |
-| Group claims missing from access token | Group claim was not added, OR admin consent for `GroupMember.Read.All` was not granted | Re-run the script (it will idempotently re-apply optional claims) and grant admin consent |
+| Group claims missing from access token | The `groups` optional claim was not added to the app reg (or the user is in 200+ groups, triggering Graph overage which is unsupported here) | Re-run the script — it idempotently re-applies the optional-claim. If overage is the cause, switch the stamp to roles posture (`-CreateAppRoles`) instead of group-based authz |
 | Signed-in user with no role gets `defaultRole` instead of being denied | `-AssignmentRequired` was NOT set, so any tenant user can sign in even without an app-role assignment | Re-run with `-AssignmentRequired` (or set it manually: `az ad sp update --id <sp-objectId> --set appRoleAssignmentRequired=true`) |
-| `403` on portal admin routes | Signed-in user does not have the `admin` app role (or matching group via `PORTAL_AUTH_ENTRA_ADMIN_GROUPS`) | Assign the user to the `admin` role in "Enterprise applications > Users and groups" |
+| `403` on portal admin routes | Signed-in user does not have the `admin` app role (or matching group via `PORTAL_AUTH_ENTRA_ADMIN_GROUPS`) | Assign the user to the `admin` role: `pwsh -File deploy/scripts/auth/Set-PortalAuthAssignments.ps1 -EnvName <stamp> -AdminAssignments <upn>` (or via Entra portal "Users and groups") |
 
 ## Why `Create3PApplication.ps1` is included
 

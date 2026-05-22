@@ -85,11 +85,11 @@ async function signIn() {
   try {
     // Mobile browsers block popups — use redirect flow instead
     if (/Mobi|Android/i.test(navigator.userAgent)) {
-      await msalInstance.loginRedirect({ scopes: ["User.Read"] });
+      await msalInstance.loginRedirect({ scopes: ["openid", "profile"] });
       return; // page will redirect
     }
     const resp = await msalInstance.loginPopup({
-      scopes: ["User.Read"],
+      scopes: ["openid", "profile"],
     });
     currentAccount = resp.account;
     await acquireToken();

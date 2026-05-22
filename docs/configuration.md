@@ -70,6 +70,14 @@ PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
 For now, `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS` are interpreted
 as comma-delimited user email allowlists, not Entra group IDs.
 
+For tenants that prefer to drive admission from Entra **app roles** instead of
+an email allowlist, see the operator runbook at
+[`docs/portal-entra-app-roles.md`](./portal-entra-app-roles.md). The portal
+matches the JWT `roles` claim by case-insensitive equality against exactly
+two canonical values: `admin` and `user`. There is no override env var —
+the setup script creates exactly these two roles, and extra granularity
+belongs in new app roles checked explicitly in code.
+
 > **Provisioning the Entra app registration.** PilotSwarm ships
 > `deploy/scripts/auth/Setup-PortalAuth.ps1` to create (or append a
 > redirect URI to) the Entra application backing the portal. It
@@ -78,9 +86,10 @@ as comma-delimited user email allowlists, not Entra group IDs.
 > `-CreateAppRoles` defines `admin` and `user` app roles on the
 > application object, and `-AssignmentRequired` flips the service
 > principal to require explicit user/group assignment before any token
-> is issued. See `deploy/scripts/auth/README.md` and the
-> `pilotswarm-portal-app-reg` skill for full usage. For npm-orchestrator
-> stamps, this is wired into the new-env flow by the
+> is issued. See `deploy/scripts/auth/README.md`,
+> [`docs/portal-entra-app-roles.md`](./portal-entra-app-roles.md), and
+> the `pilotswarm-portal-app-reg` skill for full usage. For
+> npm-orchestrator stamps, this is wired into the new-env flow by the
 > `pilotswarm-npm-deployer` agent.
 
 Portal branding and sign-in copy come from `plugin.json.portal`, with
