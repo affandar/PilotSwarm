@@ -59,7 +59,7 @@ tenant will reject `az ad app create` without a recognized value.
 | Platform | SPA (Single-page application) | Portal is a browser SPA using MSAL |
 | `web.implicitGrantSettings.enableIdTokenIssuance` | `true` | Matches portal MSAL config |
 | `web.implicitGrantSettings.enableAccessTokenIssuance` | `true` | Matches portal MSAL config |
-| MS Graph delegated scopes | `User.Read` + `GroupMember.Read.All` | User.Read for sign-in; GroupMember.Read.All so groups optional-claim can populate |
+| MS Graph delegated scopes | `User.Read` only | Portal never calls Graph at runtime; group/role claims ride on the ID token. `User.Read` is default-consented so **no admin consent is required**. |
 | Optional `groups` claim | `idToken`, `accessToken`, `saml2Token` | Required for group-based admin/user role mapping (`PORTAL_AUTH_ENTRA_ADMIN_GROUPS`, `PORTAL_AUTH_ENTRA_USER_GROUPS`) |
 | App roles (`-CreateAppRoles`) | optional `admin` + `user` (allowedMemberTypes=["User"]) | Read by `packages/portal/auth/authz/engine.js` — assign principals via "Enterprise applications > Users and groups" |
 | `appRoleAssignmentRequired` (`-AssignmentRequired`) | optional, `true` when set | Blocks unassigned users from getting a token at all |
@@ -99,7 +99,10 @@ pwsh -NoProfile -ExecutionPolicy Bypass \
 - Prints env-var lines to paste into the stamp's `.env`
 
 After the script: assign at least one user to `admin` (so you can sign in)
-and grant admin consent for `GroupMember.Read.All`.
+via `Set-PortalAuthAssignments.ps1` (see
+`.github/skills/pilotswarm-portal-auth-assignments/SKILL.md`). No admin
+consent step is required — the app only requests `User.Read`, which is
+default-consented for all signed-in users.
 
 ### Sandbox stamp (no role gating)
 
@@ -149,13 +152,11 @@ with an empty redirect-URI list. After deploy finishes, run again with
 
 - Will not write to `.env` files — you must paste `PORTAL_AUTH_ENTRA_CLIENT_ID`
   yourself (so secrets surface explicitly).
-- Will not grant admin consent. Group-membership-based scopes
-  (`GroupMember.Read.All`) typically require admin consent in the tenant. The
-  operator workflow is: create app, then a tenant admin clicks "Grant
-  admin consent" in the portal **or** runs:
-  ```
-  az ad app permission admin-consent --id <clientId>
-  ```
+- Will not grant admin consent — none is required. The app only requests
+  the `User.Read` delegated scope on MS Graph, which is default-consented
+  for every signed-in user. Group and role claims are populated by the
+  token itself (via the `groups` optional claim and app-role assignments),
+  not by runtime Graph calls — the portal never calls Graph.
 - Will not assign users to app roles. Use `Set-PortalAuthAssignments.ps1`
   (this folder) — wraps the Graph calls, idempotent, accepts UPNs /
   object IDs / group display names:
@@ -181,7 +182,7 @@ with an empty redirect-URI list. After deploy finishes, run again with
 | `Service tree ID is not valid` / tenant policy rejection | `-ServiceTreeId` not registered in your tenant's Service Tree | Register a Service Tree entry for the PilotSwarm deployment, then re-run with the registered GUID |
 | `az ad signed-in-user show` returns empty | You ran `az login --identity` (managed identity) or service-principal login | Run the script under an interactive `az login` user account |
 | Portal still shows "sign in" loop after deploy | Most often: redirect URI on the app reg doesn't match the deployed AFD endpoint exactly | Run `az ad app show --id <clientId> --query "spa.redirectUris"` and compare against your portal's `https://` root |
-| Group claims missing from access token | Group claim was not added, OR admin consent for `GroupMember.Read.All` was not granted | Re-run the script (it will idempotently re-apply optional claims) and grant admin consent |
+| Group claims missing from access token | The `groups` optional claim was not added to the app reg (or the user is in 200+ groups, triggering Graph overage which is unsupported here) | Re-run the script — it idempotently re-applies the optional-claim. If overage is the cause, switch the stamp to roles posture (`-CreateAppRoles`) instead of group-based authz |
 | Signed-in user with no role gets `defaultRole` instead of being denied | `-AssignmentRequired` was NOT set, so any tenant user can sign in even without an app-role assignment | Re-run with `-AssignmentRequired` (or set it manually: `az ad sp update --id <sp-objectId> --set appRoleAssignmentRequired=true`) |
 | `403` on portal admin routes | Signed-in user does not have the `admin` app role (or matching group via `PORTAL_AUTH_ENTRA_ADMIN_GROUPS`) | Assign the user to the `admin` role: `pwsh -File deploy/scripts/auth/Set-PortalAuthAssignments.ps1 -EnvName <stamp> -AdminAssignments <upn>` (or via Entra portal "Users and groups") |
 

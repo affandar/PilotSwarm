@@ -58,7 +58,9 @@ The wrapper bakes in:
 - `serviceManagementReference: <-ServiceTreeId>` (operator-supplied)
 - SPA platform (no Web reply URLs)
 - `implicitGrantSettings`: id-token + access-token issuance ON
-- MS Graph delegated permissions: `User.Read` + `GroupMember.Read.All`
+- MS Graph delegated permissions: `User.Read` (default-consented; the
+  portal never calls Graph at runtime — group/role claims ride on the
+  token itself)
 - `groups` optional claim on `idToken`, `accessToken`, `saml2Token` with Default formatting
 - Owner = signed-in user
 - Service principal created
@@ -280,35 +282,37 @@ values explicitly so they surface visibly.
 
 ## Admin consent
 
-The `GroupMember.Read.All` delegated scope typically requires admin
-consent in the tenant. The wrapper does **not** grant consent. After
-the app is created, mention to the user:
+**Not required.** The portal app registration requests only the
+`User.Read` delegated scope on MS Graph, which is **default-consented**
+for every signed-in user in the tenant. No tenant-admin action is
+required after running the wrapper.
 
-```bash
-az ad app permission admin-consent --id <new-app-id>
-```
+This is deliberate: the portal does **not** call MS Graph at runtime.
+Group and role claims that drive authorization are sourced from the
+ID token directly:
 
-(requires tenant admin role) or direct them to the Azure portal: App
-registration → API permissions → "Grant admin consent".
+- Group membership via the `groups` optional claim configured on the
+  app registration (the wrapper applies this).
+- Role membership via Entra app-role assignments (created with
+  `-CreateAppRoles`, assigned via `Set-PortalAuthAssignments.ps1`).
 
-Without consent, sign-in still works but group claims will be empty,
-and `PORTAL_AUTH_ENTRA_ADMIN_GROUPS` / `PORTAL_AUTH_ENTRA_USER_GROUPS`
-keyed on group object IDs will not match. UPN-based admin lists
-(`PORTAL_AUTHZ_ADMIN_GROUPS`) still work without consent.
+If a user is a member of 200+ groups, Entra emits the `_claim_names` /
+`hasGroups` overage indicator instead of an inline `groups` claim. The
+portal does not resolve overage (would require Graph and admin
+consent). Stamps with overage-prone users should use the roles posture
+(`-CreateAppRoles`) instead of group-based authz.
 
 ## Role assignments (when -CreateAppRoles is used)
 
 After the script creates the `admin` and `user` app roles, principals
 must still be assigned. The script does NOT do this — it only defines
-the roles. Two paths:
+the roles. Use the dedicated assignments script + skill:
 
-1. **Entra portal** (recommended for one-offs): Enterprise applications
-   > `"PilotSwarm Portal - <stamp>"` > Users and groups > Add
-   user/group > pick role.
-2. **Scripted** (CI / many users): `az rest` against
-   `https://graph.microsoft.com/v1.0/servicePrincipals/<sp-objectId>/appRoleAssignedTo`
-   with the principal ID, resource ID (the SP's own object ID), and
-   `appRoleId` from the entra-app.json summary.
+- `deploy/scripts/auth/Set-PortalAuthAssignments.ps1` — idempotent
+  add/remove/list. See
+  `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md`.
+- Entra portal ("Enterprise applications > <app> > Users and groups")
+  still works if you'd rather click.
 
 If `-AssignmentRequired` is set and no one is assigned, sign-in fails
 with `AADSTS50105: The signed in user is not assigned to a role for the
@@ -317,8 +321,7 @@ application`. Assign the operator FIRST so they can finish setting up.
 ## What this skill will not do
 
 - Will not write to `.env` files (operator surfaces values explicitly)
-- Will not grant admin consent (separate tenant-admin action)
-- Will not assign users to app roles (Entra portal or `az rest` after creation)
+- Will not assign users to app roles — use `Set-PortalAuthAssignments.ps1`
 - Will not modify the npm `new-env` / `deploy` pipelines — they
   continue to consume `PORTAL_AUTH_ENTRA_CLIENT_ID` as plain input
 - Will not provision app registrations of non-portal shapes — for
@@ -332,9 +335,10 @@ application`. Assign the operator FIRST so they can finish setting up.
   invent a placeholder
 - Never run the wrapper against a non-target tenant — the script will
   succeed but the app will be useless to your portal
-- Never propose granting `Application.ReadWrite.All` or similar
-  high-privilege tenant scopes — `User.Read` + `GroupMember.Read.All`
-  is the full delegated-scope surface the portal needs
+- Never propose granting `Application.ReadWrite.All`,
+  `GroupMember.Read.All`, or similar high-privilege tenant scopes —
+  `User.Read` (default-consented) is the entire delegated-scope
+  surface the portal needs at runtime
 - Single-tenant only by design. Multi-tenant or personal-MSA sign-in is
   out of scope for the wrapper; use `Create3PApplication.ps1` if you
   need a different shape

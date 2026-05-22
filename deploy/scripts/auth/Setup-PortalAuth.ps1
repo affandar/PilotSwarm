@@ -10,7 +10,10 @@
     - serviceManagementReference: supplied via -ServiceTreeId (REQUIRED — no default)
     - SPA platform (no Web reply URLs); redirect URI is the portal's https:// root
     - implicitGrantSettings: idToken + accessToken issuance enabled
-    - MS Graph delegated permissions: User.Read + GroupMember.Read.All
+    - MS Graph delegated permissions: User.Read
+      (The portal does NOT call MS Graph at runtime — group/role claims
+      ride on the ID token via optional-claims / app-roles. User.Read is
+      enabled by default, so no admin consent is required.)
     - Optional 'groups' claim on idToken, accessToken, and saml2Token
     - App roles (admin / user) — assignable to Users; created when -CreateAppRoles is set
     - Owner: current signed-in Azure CLI user (override with -Owner)
@@ -156,7 +159,6 @@ $ErrorActionPreference = "Stop"
 # MS Graph constants (well-known and stable)
 $MS_GRAPH_RESOURCE_APP_ID = "00000003-0000-0000-c000-000000000000"
 $MS_GRAPH_USER_READ_SCOPE_ID = "e1fe6dd8-ba31-4d61-89e7-88639da4683d"
-$MS_GRAPH_GROUPMEMBER_READ_ALL_SCOPE_ID = "bc024368-1153-4739-b217-4326f2e966d0"
 
 function Test-AzureCliReady {
     try {
@@ -186,24 +188,27 @@ function Resolve-RedirectUriFromEnv {
         Write-Warning "Failed to parse ${cache}: $_"
         return $null
     }
-    $candidates = @(
-        $outputs.portalFqdn,
-        $outputs.afdEndpointHostname,
-        $outputs.portalUrl,
-        $outputs.PORTAL_FQDN
-    ) | Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_) }
-    if ($candidates.Count -eq 0) {
-        foreach ($prop in $outputs.PSObject.Properties) {
-            if ($prop.Value -is [string] -and $prop.Value -match '^[a-z0-9-]+\.[a-z0-9.-]+$') {
-                $candidates += $prop.Value
-            }
+    # The deploy orchestrator's bicep cache uses UPPER_SNAKE keys
+    # (deploy/scripts/lib/bicep-outputs-cache.mjs). For EDGE_MODE=afd the
+    # public-facing URL is the AFD endpoint; for private/AppGw modes it
+    # is the PORTAL_HOSTNAME (AppGw FQDN). Try EDGE_MODE-aware order.
+    $edgeMode = if ($outputs.PSObject.Properties.Name -contains 'EDGE_MODE') { [string]$outputs.EDGE_MODE } else { '' }
+    $orderedKeys = if ($edgeMode -ieq 'afd') {
+        @('FRONT_DOOR_ENDPOINT_HOST_NAME', 'PORTAL_HOSTNAME')
+    } else {
+        @('PORTAL_HOSTNAME', 'FRONT_DOOR_ENDPOINT_HOST_NAME')
+    }
+    $portalHost = $null
+    foreach ($k in $orderedKeys) {
+        if ($outputs.PSObject.Properties.Name -contains $k) {
+            $v = [string]$outputs.$k
+            if (-not [string]::IsNullOrWhiteSpace($v)) { $portalHost = $v; break }
         }
     }
-    if ($candidates.Count -eq 0) {
-        Write-Warning "Could not find a portal hostname in $cache. Pass -RedirectUri explicitly."
+    if (-not $portalHost) {
+        Write-Warning "Could not find a portal hostname (FRONT_DOOR_ENDPOINT_HOST_NAME / PORTAL_HOSTNAME) in $cache. Pass -RedirectUri explicitly."
         return $null
     }
-    $portalHost = $candidates[0]
     if ($portalHost -notmatch '^https?://') { $portalHost = "https://$portalHost" }
     return $portalHost.TrimEnd('/')
 }
@@ -215,8 +220,7 @@ function Build-RequiredResourceAccessJson {
   {
     "resourceAppId": "$MS_GRAPH_RESOURCE_APP_ID",
     "resourceAccess": [
-      { "id": "$MS_GRAPH_USER_READ_SCOPE_ID", "type": "Scope" },
-      { "id": "$MS_GRAPH_GROUPMEMBER_READ_ALL_SCOPE_ID", "type": "Scope" }
+      { "id": "$MS_GRAPH_USER_READ_SCOPE_ID", "type": "Scope" }
     ]
   }
 ]
@@ -499,11 +503,11 @@ if ($EnvName) {
 Write-Host "  2. Ensure PORTAL_AUTH_PROVIDER=entra and PORTAL_AUTH_ENTRA_TENANT_ID are set"
 if ($CreateAppRoles) {
     Write-Host "  3. Assign users/groups to the 'admin' / 'user' app roles:"
-    Write-Host "        Entra portal > Enterprise applications > $DisplayName > Users and groups"
+    Write-Host "        deploy/scripts/auth/Set-PortalAuthAssignments.ps1 -EnvName <env> -AdminAssignments <upn> [-UserAssignments ...]"
     Write-Host "     (Required when -AssignmentRequired is also set, otherwise role-less principals fall through to PORTAL_AUTHZ_DEFAULT_ROLE)"
-    Write-Host "  4. Grant admin consent for GroupMember.Read.All:"
+    Write-Host "  4. Run the deploy flow as usual"
 } else {
-    Write-Host "  3. Grant admin consent for GroupMember.Read.All:"
+    Write-Host "  3. Run the deploy flow as usual"
 }
-Write-Host "        az ad app permission admin-consent --id $clientId"
-Write-Host "  5. Run the deploy flow as usual"
+Write-Host ""
+Write-Host "  Admin consent is NOT required — the portal only uses User.Read (default-consented)."
