@@ -1132,7 +1132,7 @@ deployments that already have IT-managed Entra and want to delegate
 | Concern | Security groups (`groups` claim) | Email allowlists (today) | App roles (this section) |
 |---|---|---|---|
 | Token bloat / overage | Users in >150 groups produce `_claim_names` overage; needs Graph callback | Email is one claim, no overage | Roles are app-scoped, bounded, no overage |
-| Admin consent | `GroupMember.Read.All` org-wide read required | None beyond `User.Read` | None beyond `User.Read` |
+| Admin consent | `GroupMember.Read.All` org-wide read required | None | None |
 | Authoritative scope | Tenant-wide artifacts owned by IT, repurposed for app authz | App-managed list in env / KV | App-scoped, owned by the app team in the app reg itself |
 | Discoverability | Trace nested SGs to answer "why does Alice have admin?" | Read env var | `az ad app show` + `appRoleAssignments` |
 | Lifecycle | Group memberships outlive the app | Operator must remember to remove | Vanish with the app reg |
