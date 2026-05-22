@@ -18,6 +18,15 @@
 - **Operator runbook**: see [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md)
   for the recommended end-state setup (define roles → enable
   `appRoleAssignmentRequired=true` → assign → align Conditional Access).
+- **Portal app registration no longer declares any API permissions.** The
+  SPA requests only OIDC standard scopes (`openid`, `profile`) at sign-in,
+  which require no user or admin consent. Dead-weight `User.Read` and
+  `GroupMember.Read.All` (the portal never called Graph at runtime) have
+  been removed. This makes `appRoleAssignmentRequired=true` work cleanly
+  without any tenant-admin consent step. Future downstream API access
+  (e.g. ADO via OBO) belongs on per-purpose worker apps with their own
+  consent posture — see
+  [`docs/proposals/portal-auth-provider-and-authz.md`](docs/proposals/portal-auth-provider-and-authz.md).
 - **Migration note**: deployments running with both an email allowlist **and**
   Entra-issued tokens that carry app-role claims will see role-driven
   decisions take precedence over the allowlist on upgrade. Tokens without

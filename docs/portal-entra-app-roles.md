@@ -73,6 +73,12 @@ az ad sp update --id <enterprise-app-object-id> \
   --set appRoleAssignmentRequired=true
 ```
 
+> **No admin consent required.** The portal app reg declares no API
+> permissions and the SPA requests only OIDC standard scopes (`openid`,
+> `profile`) at sign-in, so flipping `appRoleAssignmentRequired=true`
+> does not block sign-in on a tenant-admin consent grant. Assigned users
+> sign in cleanly with zero consent prompt.
+
 ### 3. Assign roles
 
 Assign `Portal.Admin` and `Portal.User` either to individual users or to

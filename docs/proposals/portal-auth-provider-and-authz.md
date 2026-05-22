@@ -1227,9 +1227,10 @@ Each step is independently shippable.
 ### Open questions for the implementation PR
 
 1. **Per-env vs shared app registration.** Per-env is cleaner (independent
-   lifecycle, no cross-stamp blast radius) but requires admin consent for
-   each env. A shared app reg with many SPA `redirectUris` is operationally
-   simpler but couples envs together.
+   lifecycle, no cross-stamp blast radius) and has no operational tax: the
+   portal app reg declares no API permissions, so spinning up a new env
+   requires no admin consent. A shared app reg with many SPA `redirectUris`
+   is also viable but couples envs together.
 2. **Documenting the SG-to-role bridge.** Probably yes — it is the gentlest
    migration path for IT-group-driven shops.
 3. **Conditional Access alignment.** If org policy mandates role-targeted CA,
