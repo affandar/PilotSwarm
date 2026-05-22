@@ -240,9 +240,14 @@ auth posture decided in Step 0:
   set): **leave `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS`
   empty.** Role claims decide admission and admin/user status; email
   allowlists are dead config and only confuse the next person reading
-  the env. Surface `PORTAL_AUTH_ENTRA_ADMIN_ROLE` / `_USER_ROLE`
-  (defaults `admin` / `user`) and `PORTAL_AUTHZ_DEFAULT_ROLE` (default
-  `user`) instead. Also surface `ADMIN_ASSIGNMENTS=<UPN>` (default:
+  the env. Role-name overrides
+  (`PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES` / `_USER_ROLE_NAMES`) are
+  optional CSV — leave unset to use the engine's default suffix-strip
+  mapping (`Portal.Admin` → `admin`, `User` → `user`, etc.); set only
+  if your tenant publishes app roles with non-standard `value` strings.
+  `PORTAL_AUTHZ_DEFAULT_ROLE` (default `user`) controls the fallback
+  for principals with no matching role claim. Also surface
+  `ADMIN_ASSIGNMENTS=<UPN>` (default:
   deploying user) and `USER_ASSIGNMENTS=<empty>` — these are the
   principals the agent will hand to the
   `pilotswarm-portal-auth-assignments` skill right after app-reg
@@ -328,7 +333,7 @@ Regardless of mode, after `new-env` completes always grep the rendered
 file and read the values back to the user:
 
 ```bash
-grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_PROVIDER|PORTAL_AUTH_ENTRA_TENANT_ID|PORTAL_AUTH_ENTRA_CLIENT_ID|PORTAL_AUTH_ENTRA_ADMIN_ROLE|PORTAL_AUTH_ENTRA_USER_ROLE|PORTAL_AUTHZ_DEFAULT_ROLE|PORTAL_AUTHZ_ADMIN_GROUPS|PORTAL_AUTHZ_USER_GROUPS)=' deploy/envs/local/<stamp>/.env
+grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_PROVIDER|PORTAL_AUTH_ENTRA_TENANT_ID|PORTAL_AUTH_ENTRA_CLIENT_ID|PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES|PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES|PORTAL_AUTHZ_DEFAULT_ROLE|PORTAL_AUTHZ_ADMIN_GROUPS|PORTAL_AUTHZ_USER_GROUPS)=' deploy/envs/local/<stamp>/.env
 ```
 
 If any value looks wrong (especially `PORTAL_AUTHZ_DEFAULT_ROLE` not in

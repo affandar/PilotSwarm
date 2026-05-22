@@ -23,7 +23,7 @@
 
     1) Pass -RedirectUri https://my-portal.example.com  (explicit)
     2) Pass -EnvName <stamp-name>                       (auto-discovers from
-       deploy/envs/<stamp>/bicep-outputs.cache.json — requires deploy to
+       deploy/.tmp/<stamp>/bicep-outputs.cache.json — requires deploy to
        have run at least through the bicep-publish step)
     3) Pass neither and the app will be created without a redirect URI; you
        can add one later with -ExistingAppId once you know the endpoint.
@@ -47,7 +47,7 @@
     Stamp name (e.g. mystamp). When provided:
     - Used to derive the default DisplayName.
     - Used to auto-discover the AFD endpoint from
-      deploy/envs/<EnvName>/bicep-outputs.cache.json if -RedirectUri is not given.
+      deploy/.tmp/<EnvName>/bicep-outputs.cache.json if -RedirectUri is not given.
 
 .PARAMETER RedirectUri
     Explicit SPA redirect URI (https://...). Overrides EnvName auto-discovery.
@@ -83,14 +83,15 @@
 
 .PARAMETER OutputFile
     Path to write a JSON summary { tenantId, clientId, objectId, redirectUri }.
-    Defaults to deploy/envs/<EnvName>/entra-app.json when EnvName is provided.
+    Defaults to deploy/envs/local/<EnvName>/entra-app.json when EnvName is provided
+    — co-located with the .env file scaffolded by deploy/scripts/new-env.mjs.
 
 .EXAMPLE
     .\Setup-PortalAuth.ps1 -ServiceTreeId <your-service-tree-id> -EnvName mystamp
 
     Creates a new app named "PilotSwarm Portal - mystamp", auto-discovers
-    the redirect URI from deploy/envs/mystamp/bicep-outputs.cache.json, and
-    writes the resulting clientId to deploy/envs/mystamp/entra-app.json.
+    the redirect URI from deploy/.tmp/mystamp/bicep-outputs.cache.json, and
+    writes the resulting clientId to deploy/envs/local/mystamp/entra-app.json.
 
 .EXAMPLE
     .\Setup-PortalAuth.ps1 -ServiceTreeId <your-service-tree-id> `
@@ -107,7 +108,9 @@
     appRoleAssignmentRequired=true on the service principal. Only users
     explicitly assigned to one of the roles can sign in. This is the
     recommended posture for production stamps consuming the role-driven
-    authorization engine (PORTAL_AUTH_ENTRA_ADMIN_ROLE/USER_ROLE).
+    authorization engine. Role-name → engine-role mapping defaults to
+    suffix-strip; override with PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES /
+    PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES if you use non-standard role values.
 
 .EXAMPLE
     .\Setup-PortalAuth.ps1 -ServiceTreeId <your-service-tree-id> `
@@ -172,7 +175,7 @@ function Get-RepoRoot {
 function Resolve-RedirectUriFromEnv {
     param([string]$Env)
     $repo = Get-RepoRoot
-    $cache = Join-Path $repo "deploy/envs/$Env/bicep-outputs.cache.json"
+    $cache = Join-Path $repo "deploy/.tmp/$Env/bicep-outputs.cache.json"
     if (-not (Test-Path $cache)) {
         Write-Warning "bicep-outputs.cache.json not found at $cache - cannot auto-discover redirect URI."
         return $null
@@ -344,7 +347,7 @@ if ([string]::IsNullOrWhiteSpace($DisplayName)) {
 # Resolve output file
 if ([string]::IsNullOrWhiteSpace($OutputFile) -and -not [string]::IsNullOrWhiteSpace($EnvName)) {
     $repo = Get-RepoRoot
-    $OutputFile = Join-Path $repo "deploy/envs/$EnvName/entra-app.json"
+    $OutputFile = Join-Path $repo "deploy/envs/local/$EnvName/entra-app.json"
 }
 
 # Decide mode
@@ -489,7 +492,7 @@ Write-Host "==========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 if ($EnvName) {
-    Write-Host "  1. Paste PORTAL_AUTH_ENTRA_CLIENT_ID into deploy/envs/$EnvName/.env (or your shared .env.remote)"
+    Write-Host "  1. Paste PORTAL_AUTH_ENTRA_CLIENT_ID into deploy/envs/local/$EnvName/.env (or your shared .env.remote)"
 } else {
     Write-Host "  1. Paste PORTAL_AUTH_ENTRA_CLIENT_ID into your stamp's .env (or .env.remote)"
 }

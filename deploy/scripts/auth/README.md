@@ -32,7 +32,7 @@ You can also invoke it directly.
   create application registrations (typically the "Application Developer"
   Entra role or higher).
 - For `-EnvName` auto-discovery: the stamp's
-  `deploy/envs/<EnvName>/bicep-outputs.cache.json` must exist (i.e. the
+  `deploy/.tmp/<EnvName>/bicep-outputs.cache.json` must exist (i.e. the
   bicep-publish step of `npm run deploy` has run at least once).
 
 The scripts use only cross-platform pwsh APIs (`Join-Path`, `Resolve-Path`,
@@ -94,8 +94,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass \
 - Defines `admin` and `user` app roles (assignable from "Users and groups")
 - Sets `appRoleAssignmentRequired=true` on the SP — only explicitly
   assigned users/groups can obtain a token
-- Auto-discovers redirect URI from `deploy/envs/prodstamp/bicep-outputs.cache.json`
-- Writes `{ tenantId, clientId, objectId, redirectUri }` to `deploy/envs/prodstamp/entra-app.json`
+- Auto-discovers redirect URI from `deploy/.tmp/prodstamp/bicep-outputs.cache.json`
+- Writes `{ tenantId, clientId, objectId, redirectUri }` to `deploy/envs/local/prodstamp/entra-app.json`
 - Prints env-var lines to paste into the stamp's `.env`
 
 After the script: assign at least one user to `admin` (so you can sign in)
@@ -168,9 +168,10 @@ with an empty redirect-URI list. After deploy finishes, run again with
   full operator docs. The Entra portal UI
   ("Enterprise applications > <app> > Users and groups") still works
   if you'd rather click.
-- Will not configure `PORTAL_AUTH_ENTRA_ADMIN_ROLE`, `PORTAL_AUTH_ENTRA_USER_ROLE`,
-  or the `PORTAL_AUTHZ_*` env vars — those are deploy-time inputs to
-  the portal `.env`.
+- Will not configure `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES`,
+  `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES`, or any other `PORTAL_AUTHZ_*` env
+  vars — those are deploy-time inputs to the portal `.env` (and default
+  to suffix-strip mapping when unset, so most stamps don't need them).
 
 ## Troubleshooting
 

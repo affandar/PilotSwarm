@@ -120,8 +120,10 @@ that file isn't available.
 `-AdminRoleValue` / `-UserRoleValue` override the role `value` strings
 the script looks up (defaults `admin` / `user`). Change them if a
 tenant uses different role names — but in that case also set
-`PORTAL_AUTH_ENTRA_ADMIN_ROLE` / `_USER_ROLE` in the stamp's `.env` so
-the portal authz engine matches.
+`PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES` /
+`PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES` (CSV) in the stamp's `.env` so
+the portal authz engine maps the custom role values to engine
+`admin` / `user`.
 
 ## Expected outcome
 
