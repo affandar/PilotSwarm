@@ -70,6 +70,19 @@ PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
 For now, `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS` are interpreted
 as comma-delimited user email allowlists, not Entra group IDs.
 
+> **Provisioning the Entra app registration.** PilotSwarm ships
+> `deploy/scripts/auth/Setup-PortalAuth.ps1` to create (or append a
+> redirect URI to) the Entra application backing the portal. It
+> requires a `-ServiceTreeId` (operator-supplied) and supports two
+> optional switches that align with the role-driven authz engine:
+> `-CreateAppRoles` defines `admin` and `user` app roles on the
+> application object, and `-AssignmentRequired` flips the service
+> principal to require explicit user/group assignment before any token
+> is issued. See `deploy/scripts/auth/README.md` and the
+> `pilotswarm-portal-app-reg` skill for full usage. For npm-orchestrator
+> stamps, this is wired into the new-env flow by the
+> `pilotswarm-npm-deployer` agent.
+
 Portal branding and sign-in copy come from `plugin.json.portal`, with
 `plugin.json.tui` used as a fallback when the portal plugin metadata does not
 provide an override. Preferred portal metadata shape is nested under
