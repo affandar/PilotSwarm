@@ -81,6 +81,20 @@ match is too loose:
 | `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAMES` | Comma-delimited list of role values (case-insensitive exact match) that map to engine `admin`. Replaces the suffix-strip default. |
 | `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAMES`  | Same, for engine `user`. |
 
+> **Provisioning the Entra app registration.** PilotSwarm ships
+> `deploy/scripts/auth/Setup-PortalAuth.ps1` to create (or append a
+> redirect URI to) the Entra application backing the portal. It
+> requires a `-ServiceTreeId` (operator-supplied) and supports two
+> optional switches that align with the role-driven authz engine:
+> `-CreateAppRoles` defines `admin` and `user` app roles on the
+> application object, and `-AssignmentRequired` flips the service
+> principal to require explicit user/group assignment before any token
+> is issued. See `deploy/scripts/auth/README.md`,
+> [`docs/portal-entra-app-roles.md`](./portal-entra-app-roles.md), and
+> the `pilotswarm-portal-app-reg` skill for full usage. For
+> npm-orchestrator stamps, this is wired into the new-env flow by the
+> `pilotswarm-npm-deployer` agent.
+
 Portal branding and sign-in copy come from `plugin.json.portal`, with
 `plugin.json.tui` used as a fallback when the portal plugin metadata does not
 provide an override. Preferred portal metadata shape is nested under
