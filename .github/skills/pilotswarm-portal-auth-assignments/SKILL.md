@@ -118,12 +118,12 @@ pwsh -NoProfile -ExecutionPolicy Bypass \
 that file isn't available.
 
 `-AdminRoleValue` / `-UserRoleValue` override the role `value` strings
-the script looks up (defaults `admin` / `user`). Change them if a
-tenant uses different role names — but in that case also set
-`PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME` /
-`PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME` in the stamp's `.env` so
-the portal authz engine maps the custom role values to engine
-`admin` / `user`.
+the script looks up — but the portal authz engine matches the JWT
+`roles` claim only against the canonical literal values `admin` and
+`user`, so overriding the role values here will leave the portal
+unable to recognize them. Keep the defaults unless you also plan to
+add a new app role and gate-check it explicitly in code; do not try
+to alias custom role values onto the built-in admin/user buckets.
 
 ## Expected outcome
 

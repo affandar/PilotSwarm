@@ -42,11 +42,4 @@ export const PORTAL_CONFIG_KEYS = [
   { env: "PORTAL_AUTHZ_ADMIN_GROUPS" },
   // Authz user group ids (provider-agnostic).
   { env: "PORTAL_AUTHZ_USER_GROUPS" },
-  // Optional CSV overrides for the Entra app-role `value` strings that
-  // map to engine `admin` / `user`. Empty (sentinel) → engine falls back
-  // to the suffix-strip default (`Portal.Admin` → `admin`, etc.). Set
-  // when your tenant publishes app roles with non-standard values.
-  // Read by packages/portal/auth/config.js.
-  { env: "PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME" },
-  { env: "PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME" },
 ];

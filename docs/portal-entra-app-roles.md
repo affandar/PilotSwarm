@@ -16,31 +16,34 @@ exclusive — they cover different populations.
 The recommended configuration is a single coherent setup, not a sequence of
 optional toggles. Do all four steps.
 
-### 1. Define `Portal.Admin` and `Portal.User` app roles
+### 1. Define `admin` and `user` app roles
 
 In the Entra portal, open **App registrations → your app → App roles** and
 create:
 
-| Display name | Value         | Allowed member types |
-| ------------ | ------------- | -------------------- |
-| Portal Admin | `Portal.Admin` | Users/Groups         |
-| Portal User  | `Portal.User`  | Users/Groups         |
+| Display name | Value   | Allowed member types |
+| ------------ | ------- | -------------------- |
+| Admin        | `admin` | Users/Groups         |
+| User         | `user`  | Users/Groups         |
 
-Equivalent CLI sketch:
+`Setup-PortalAuth.ps1 -CreateAppRoles` creates exactly these roles for you
+(see [`deploy/scripts/auth/`](../deploy/scripts/auth/) and the
+[`pilotswarm-portal-app-reg`](../.github/skills/pilotswarm-portal-app-reg/SKILL.md)
+skill). If you're configuring an app reg by hand, the equivalent CLI sketch is:
 
 ```bash
 az ad app update --id <client-id> --app-roles '[
   {
-    "displayName": "Portal Admin",
-    "value": "Portal.Admin",
+    "displayName": "Admin",
+    "value": "admin",
     "description": "Portal administrators",
     "id": "<new-guid>",
     "isEnabled": true,
     "allowedMemberTypes": ["User"]
   },
   {
-    "displayName": "Portal User",
-    "value": "Portal.User",
+    "displayName": "User",
+    "value": "user",
     "description": "Portal users",
     "id": "<new-guid>",
     "isEnabled": true,
@@ -49,11 +52,13 @@ az ad app update --id <client-id> --app-roles '[
 ]'
 ```
 
-Role values are operator-chosen. The portal accepts any value whose
-suffix-after-last-dot is `admin` or `user` (case-insensitive) — so
-`Portal.Admin`, `pilotswarm.admin`, and a bare `admin` all map to the
-engine-level `admin` role. See [Explicit-list override](#explicit-list-override)
-below if you want a stricter mapping.
+The portal matches the JWT `roles` claim by case-insensitive equality
+against the canonical values `admin` and `user`. These are the prescriptive
+role values — the portal does not accept aliases (no `Portal.Admin`,
+`pilotswarm.admin`, etc.). If you need additional gate-keeping beyond
+admin/user, define a new app role (e.g. `auditor`) and check it
+explicitly in code against the JWT `roles` claim — don't try to alias
+custom names onto the built-in admin/user buckets.
 
 ### 2. Enable `appRoleAssignmentRequired=true` on the Enterprise Application
 
@@ -81,7 +86,7 @@ az ad sp update --id <enterprise-app-object-id> \
 
 ### 3. Assign roles
 
-Assign `Portal.Admin` and `Portal.User` either to individual users or to
+Assign `admin` and `user` either to individual users or to
 security groups. Entra flattens security-group membership into the `roles`
 claim at token issuance, so assigning a role to a security group and then
 managing membership of that group is fine and is how most teams should run.
@@ -120,38 +125,22 @@ When the role-authoritative branch runs and no role matches `admin`/`user`,
 the principal is denied with a stable reason string
 (`"Roles present but no admin/user role matched"`). This is a deliberate
 behavior — a token that explicitly says "this user has role `Whatever`"
-should not silently be re-classified through an email allowlist.
+should not silently be re-classified through an email allowlist.## Explicit Role Values
 
-## Explicit-List Override
+The portal matches the JWT `roles` claim by case-insensitive equality
+against exactly two values: `admin` and `user`. There is no aliasing,
+suffix-strip, or override env var — these are the prescriptive canonical
+role values, and the setup script creates exactly these two roles on the
+app registration.
 
-By default the engine uses **suffix-strip** matching: the substring after the
-last `.` in each role value is lowercased and compared to `admin`/`user`. This
-covers the common naming styles (`Portal.Admin`, `pilotswarm.admin`, plain
-`admin`).
+Admin-before-user precedence is preserved: if a principal's token carries
+both an `admin` role and a `user` role, the engine resolves to `admin`.
 
-If you want stricter control, set explicit role-name overrides:
-
-```bash
-PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME=Portal.Admin
-PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME=Portal.User
-```
-
-When an explicit name is configured for an engine role, it **replaces** (does
-not augment) the suffix-strip default for that role. Matching is
-case-insensitive exact-match against the configured value. The two env vars are
-independent — you can pin admin while leaving user on the default, or vice
-versa.
-
-> **Why a single name per role, not a list?** The roles-mode design assumes
-> exactly one canonical `Portal.Admin` and one `Portal.User` app role per app
-> registration. If you need additional granularity (e.g. a `Portal.Auditor`
-> role), define it as a new app role and gate-check it explicitly in code
-> against the JWT `roles` claim — don't alias multiple role values onto the
-> built-in admin/user buckets.
-
-Admin-before-user precedence is preserved regardless of which matcher path is
-in use: if a principal's token carries both an admin role and a user role,
-the engine resolves to `admin`.
+If you need additional gate-keeping beyond admin/user (e.g. an auditor
+role), define a new app role and check the JWT `roles` claim for it
+explicitly in code. Do **not** try to repurpose the built-in admin/user
+buckets for finer-grained roles — extra granularity belongs in new app
+roles checked explicitly, not aliased onto admin/user.
 
 ## Staged Rollout (Fallback Path)
 
@@ -192,51 +181,39 @@ users.
 ## Compatibility and Upgrade Notes
 
 If you are running PilotSwarm today with **both** an email allowlist **and**
-Entra-issued tokens that carry app-role claims (i.e. your app already defines
-roles even though the portal previously ignored them as anything other than a
-last-resort fallback), the new precedence applies on upgrade:
+Entra-issued tokens that carry app-role claims, the new precedence applies
+on upgrade:
 
-- Tokens that carry `roles` are decided from those roles, **not** from your
-  email allowlist.
-- Tokens that don't carry `roles` are unaffected.
-
-Two ways to opt out of the new precedence if it doesn't fit your deployment:
-
-1. **Pin role names to a non-matching sentinel.** Set
-   `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME=__none__` and
-   `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME=__none__`. The role-authoritative
-   branch will see no match and deny — at which point you should plan a real
-   migration rather than holding the new behavior off forever.
-2. **Strip the `roles` claim from token issuance.** Remove the app-role
-   assignments (or the app-role definitions) so issued tokens no longer
-   include a `roles` claim. The engine then falls through to the
-   email-allowlist branch as before.
+- Tokens that carry `roles` matching `admin` / `user` are decided from
+  those roles, **not** from your email allowlist.
+- Tokens that carry only non-matching role values (anything other than
+  `admin` / `user`) are denied with a stable reason string — they will
+  **not** fall through to the allowlist. If you previously relied on
+  irrelevant role claims being ignored, you must either:
+  1. Remove the app-role assignments (or the app-role definitions) so the
+     `roles` claim is absent again and the allowlist branch runs, or
+  2. Migrate your allowlist entries into `admin` / `user` role
+     assignments on the app registration.
+- Tokens that don't carry `roles` at all are unaffected — the allowlist
+  branch still runs.
 
 The recommended path is to embrace the new behavior and migrate your
-allowlist into app-role assignments.
+allowlist into `admin` / `user` role assignments.
 
 ## A Note on Variable Names
 
 Despite the existing variable names `PORTAL_AUTHZ_ADMIN_GROUPS` /
 `PORTAL_AUTHZ_USER_GROUPS`, the legacy email-allowlist path matches against
 `principal.email`, **not** against the JWT `groups` claim. The variable
-names predate the current implementation. The two new variables introduced
-by this feature —
-`PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME` /
-`PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME` — act on the JWT `roles` claim, which
-is a separate signal.
+names predate the current implementation. The roles-mode path acts on the
+JWT `roles` claim, which is a separate signal and has no env-var knobs of
+its own.
 
 ## Operational Note: Pod Restart Required for Env Changes
 
-The portal caches the resolved authorization policy at process startup. Changes
-to `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME`, `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME`,
-or any other `PORTAL_AUTHZ_*` env var only take effect after the portal
-process (or pod, on AKS) is restarted. This is the same behavior the existing
-`PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS` vars have today.
-
-The friction is tracked in
-[`docs/proposals/portal-auth-config-reloader.md`](./proposals/portal-auth-config-reloader.md);
-a future change should make these knobs hot-reloadable.
+The portal caches the resolved authorization policy at process startup.
+Changes to any `PORTAL_AUTHZ_*` env var only take effect after the portal
+process (or pod, on AKS) is restarted.
 
 ## See Also
 

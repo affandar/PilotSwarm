@@ -6,43 +6,21 @@ function normalizeRole(role) {
     return null;
 }
 
-function suffixStripRole(token) {
-    const trimmed = String(token || "").trim();
-    if (!trimmed) return null;
-    const dot = trimmed.lastIndexOf(".");
-    const tail = (dot >= 0 ? trimmed.slice(dot + 1) : trimmed).toLowerCase();
-    if (tail === "admin") return "admin";
-    if (tail === "user") return "user";
-    return null;
-}
-
-function matchExactCaseInsensitive(token, list = []) {
-    const normalized = String(token || "").trim().toLowerCase();
-    if (!normalized) return false;
-    for (const entry of list) {
-        if (String(entry || "").trim().toLowerCase() === normalized) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Match `principalRoles` to an engine role using the configured policy.
-// See Spec.md FR-001..FR-009.
+// Match `principalRoles` to an engine role using case-insensitive equality
+// against the two canonical role values `admin` and `user`. See Spec.md
+// FR-001..FR-005.
 //
-// Order: admin-before-user precedence is preserved (existing behavior — see
-// CodeResearch §8a).
+// Convention: the PilotSwarm app reg defines exactly two app roles with
+// `value: "admin"` and `value: "user"` (see deploy/scripts/auth/Setup-PortalAuth.ps1
+// `Build-AppRolesJson`). These are the canonical, prescriptive values —
+// the engine matches only these. If you need additional gate-keeping beyond
+// admin/user (e.g. an auditor role), define a new app role and check it
+// explicitly in code against the JWT `roles` claim — do not alias arbitrary
+// role values onto the built-in admin/user buckets here.
 //
-// For each engine role:
-//   - If `policy.roleNames[engineRole]` is a non-empty string, do case-insensitive
-//     exact-string comparison against that single value (explicit-name override,
-//     FR-006..FR-008). The roles-mode design assumes exactly one canonical
-//     `Portal.Admin` and one `Portal.User` app-role per app reg. Additional
-//     granularity belongs in new app roles that are checked explicitly in code,
-//     not aliased into admin/user here.
-//   - Otherwise, fall back to the case-insensitive suffix-strip default: take the
-//     substring after the last `.` (or the whole string), lowercase it, and compare
-//     to the engine role name (FR-001/FR-002/FR-005).
+// Order: admin-before-user precedence is preserved — if a principal carries
+// both an admin role and a user role, the engine resolves to `admin`
+// (CodeResearch §8a).
 //
 // Empty / whitespace-only role tokens are filtered out before comparison
 // (mirrors `toStringArray` semantics in `normalize/entra.js`).
@@ -51,40 +29,18 @@ function matchExactCaseInsensitive(token, list = []) {
 //
 // Note: `createNoAuthUnknownPrincipal()` produces `roles: ["anonymous"]` but is
 // never reachable here — the no-auth path passes `principal=null` to the engine
-// (CodeResearch §6). This matcher would correctly return null for "anonymous"
-// anyway, since neither "admin" nor "user" suffix-strips from it.
-function matchEngineRole(principalRoles, policy = {}) {
+// (CodeResearch §6). This matcher correctly returns null for "anonymous"
+// since it equals neither "admin" nor "user".
+function matchEngineRole(principalRoles) {
     const rawTokens = Array.isArray(principalRoles) ? principalRoles : [];
     const tokens = rawTokens
-        .map((t) => (typeof t === "string" ? t.trim() : ""))
+        .map((t) => (typeof t === "string" ? t.trim().toLowerCase() : ""))
         .filter(Boolean);
     if (tokens.length === 0) return null;
 
-    const policyRoleNames =
-        policy.roleNames && typeof policy.roleNames === "object"
-            ? policy.roleNames
-            : {};
-    const adminName = typeof policyRoleNames.admin === "string" ? policyRoleNames.admin.trim() : "";
-    const userName = typeof policyRoleNames.user === "string" ? policyRoleNames.user.trim() : "";
-
-    const adminExplicit = adminName.length > 0;
-    const userExplicit = userName.length > 0;
-
     // Admin pass first to preserve admin-before-user precedence.
-    for (const token of tokens) {
-        if (adminExplicit) {
-            if (matchExactCaseInsensitive(token, [adminName])) return "admin";
-        } else if (suffixStripRole(token) === "admin") {
-            return "admin";
-        }
-    }
-    for (const token of tokens) {
-        if (userExplicit) {
-            if (matchExactCaseInsensitive(token, [userName])) return "user";
-        } else if (suffixStripRole(token) === "user") {
-            return "user";
-        }
-    }
+    if (tokens.includes("admin")) return "admin";
+    if (tokens.includes("user")) return "user";
     return null;
 }
 
@@ -135,7 +91,7 @@ export function authorizePrincipal(principal, policy = {}) {
         (t) => typeof t === "string" && t.trim().length > 0,
     );
     if (hasRoleTokens) {
-        const matched = matchEngineRole(principalRoles, policy);
+        const matched = matchEngineRole(principalRoles);
         if (matched) {
             return {
                 allowed: true,

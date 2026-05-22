@@ -6,18 +6,19 @@
 
 - **App-role claims are now authoritative when present.** The portal
   authorization engine now decides admission from the JWT `roles` claim when
-  it is non-empty, using a case-insensitive suffix-strip default
-  (`Portal.Admin`, `pilotswarm.admin`, and bare `admin` all map to engine
-  `admin`). Admin-before-user precedence is preserved. The email-allowlist
-  path (`PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS`) is
-  unchanged for principals whose token carries no `roles` claim.
-- **New env vars** `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME` and
-  `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME` pin the explicit Entra app-role
-  `value` (case-insensitive exact match) for each engine role when the
-  suffix-strip default is too loose. The roles-mode design assumes exactly
-  one canonical `Portal.Admin` and one `Portal.User` per app reg; extra
-  granularity belongs in new app roles checked explicitly in code, not
-  aliased into admin/user here.
+  it is non-empty, using case-insensitive equality against the canonical
+  values `admin` and `user`. Admin-before-user precedence is preserved.
+  The email-allowlist path (`PORTAL_AUTHZ_ADMIN_GROUPS` /
+  `PORTAL_AUTHZ_USER_GROUPS`) is unchanged for principals whose token
+  carries no `roles` claim. Tokens that carry only non-matching role
+  values are denied — they do not fall through to the allowlist.
+- **Role values are fixed.** The roles-mode design assumes exactly two
+  canonical roles per app registration with `value: "admin"` and
+  `value: "user"`. There is no override env var. If you need additional
+  gate-keeping, define a new app role and check the JWT `roles` claim
+  for it explicitly in code — do not alias it onto the built-in
+  admin/user buckets. `Setup-PortalAuth.ps1 -CreateAppRoles` creates
+  exactly these two roles.
 - **Operator runbook**: see [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md)
   for the recommended end-state setup (define roles → enable
   `appRoleAssignmentRequired=true` → assign → align Conditional Access).
@@ -33,9 +34,11 @@
 - **Migration note**: deployments running with both an email allowlist **and**
   Entra-issued tokens that carry app-role claims will see role-driven
   decisions take precedence over the allowlist on upgrade. Tokens without
-  `roles` are unaffected. Mitigation paths
-  (pin `PORTAL_AUTHZ_ENTRA_*_ROLE_NAME` to a non-matching sentinel, or strip
-  the `roles` claim from token issuance) are documented in
+  a `roles` claim are unaffected; tokens whose `roles` claim contains
+  values other than `admin` / `user` will now be denied. To preserve the
+  legacy behavior, remove the app-role assignments (or definitions) so the
+  `roles` claim is absent again, or migrate the allowlist entries into
+  `admin` / `user` role assignments. See
   [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md).
 
 ## 0.1.31 — 2026-05-20

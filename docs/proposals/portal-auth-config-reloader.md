@@ -27,18 +27,12 @@ export function getProviderBundle(env = process.env) {
 ```
 
 This was acceptable when the only knob was `PORTAL_AUTHZ_ADMIN_GROUPS` /
-`PORTAL_AUTHZ_USER_GROUPS` — small, well-known, infrequently changed. With the
-**Entra App-Roles Modernization** feature
-(`.paw/work/entra-app-roles-modernization/`, `docs/portal-entra-app-roles.md`)
-the surface grows:
-
-- `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME`
-- `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME`
-
-Operators tuning role names against a live Entra app registration will hit
-this friction more often, and the pod-restart requirement is now an
-explicitly-documented operational caveat in the new operator runbook. We
-should remove the caveat rather than canonize it.
+`PORTAL_AUTHZ_USER_GROUPS` — small, well-known, infrequently changed. With
+ongoing portal authz work (Entra App-Roles Modernization,
+`.paw/work/entra-app-roles-modernization/`,
+`docs/portal-entra-app-roles.md`) the surface continues to grow, and any
+new `PORTAL_AUTHZ_*` or `PORTAL_AUTH_*` knob inherits the pod-restart
+requirement.
 
 ## Design Sketch
 

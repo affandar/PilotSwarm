@@ -170,10 +170,11 @@ with an empty redirect-URI list. After deploy finishes, run again with
   full operator docs. The Entra portal UI
   ("Enterprise applications > <app> > Users and groups") still works
   if you'd rather click.
-- Will not configure `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME`,
-  `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME`, or any other `PORTAL_AUTHZ_*` env
-  vars — those are deploy-time inputs to the portal `.env` (and default
-  to suffix-strip mapping when unset, so most stamps don't need them).
+- Will not configure `PORTAL_AUTHZ_*` env vars — those are deploy-time
+  inputs to the portal `.env`. The roles-mode path needs no env-var
+  knobs (the engine matches the JWT `roles` claim by case-insensitive
+  equality against the canonical values `admin` / `user` that this
+  script creates).
 
 ## Troubleshooting
 

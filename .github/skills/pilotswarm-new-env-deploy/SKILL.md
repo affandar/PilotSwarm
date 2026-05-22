@@ -169,8 +169,6 @@ Portal auth (ConfigMap) — fields depend on auth posture
   PORTAL_AUTHZ_USER_GROUPS           <empty> (default)                            # email allowlist
 
   # If posture = Roles, no lockdown OR Roles + lockdown (-CreateAppRoles set):
-  PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME <empty> (default → suffix-strip)         # optional: app-role `value` that maps to engine `admin`
-  PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME  <empty> (default → suffix-strip)         # optional: same, for `user`
   PORTAL_AUTHZ_ADMIN_GROUPS          <leave empty>                                # roles are authoritative
   PORTAL_AUTHZ_USER_GROUPS           <leave empty>                                # roles are authoritative
   PORTAL_AUTH_ENTRA_ADMIN_GROUPS     <empty> (default)                            # only if mixing in Entra group object ids
@@ -279,7 +277,7 @@ Regardless of mode, after `new-env` completes always grep the rendered
 file and read the values back to the user:
 
 ```bash
-grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_PROVIDER|PORTAL_AUTH_ENTRA_TENANT_ID|PORTAL_AUTH_ENTRA_CLIENT_ID|PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME|PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME|PORTAL_AUTHZ_DEFAULT_ROLE|PORTAL_AUTHZ_ADMIN_GROUPS|PORTAL_AUTHZ_USER_GROUPS)=' deploy/envs/local/<stamp>/.env
+grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_PROVIDER|PORTAL_AUTH_ENTRA_TENANT_ID|PORTAL_AUTH_ENTRA_CLIENT_ID|PORTAL_AUTHZ_DEFAULT_ROLE|PORTAL_AUTHZ_ADMIN_GROUPS|PORTAL_AUTHZ_USER_GROUPS)=' deploy/envs/local/<stamp>/.env
 ```
 
 If any value looks wrong (especially `PORTAL_AUTHZ_DEFAULT_ROLE` not in

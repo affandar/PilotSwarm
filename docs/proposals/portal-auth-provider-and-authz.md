@@ -1163,38 +1163,36 @@ need an `admin` app-role assignment.
 
 ### Proposed app-role definitions
 
-Define on the Entra app registration, mapped to the existing taxonomy:
+Define on the Entra app registration with these exact, prescriptive
+`value` strings:
 
-| App role | Maps to engine role | `allowedMemberTypes` |
+| App role | `value` | `allowedMemberTypes` |
 |---|---|---|
-| `Portal.Admin` | `admin` | `User` |
-| `Portal.User` | `user` | `User` |
+| Admin | `admin` | `User` |
+| User | `user` | `User` |
 
-Matching is case-insensitive and trims a dotted prefix, so any role string
-ending in `.admin` (e.g. `Portal.Admin`, `pilotswarm.admin`) normalizes to
-`admin`, and `.user` to `user`. The exact role names stay configurable
-for installations that want a different naming scheme.
+Matching is plain case-insensitive equality against the literal values
+`admin` and `user`. There is no aliasing, suffix-strip, or override —
+these are the canonical role values. If a deployment needs additional
+gate-keeping beyond admin/user (e.g. an auditor role), it should define
+a new app role and check the JWT `roles` claim for it explicitly in
+code, not alias the new name onto the admin/user buckets.
 
 ### Engine changes (additive, behind a config switch)
 
 In `packages/portal/auth/authz/engine.js`:
 
 - When `principal.roles[]` is non-empty, treat it as an **authoritative
-  signal** ahead of the email allowlist. Match via the case-insensitive
-  suffix rule above.
+  signal** ahead of the email allowlist. Match by case-insensitive
+  equality against the literal values `admin` / `user`. Admin wins over
+  user when both are present. Non-matching role values cause an explicit
+  deny — they do not fall through to the allowlist.
 - When `principal.roles[]` is empty, fall back to the current email
   allowlist behavior unchanged.
-- New optional policy field `roleNames: { admin: string | null, user: string | null }`
-  for installations that want an explicit role-name override rather than the
-  suffix-strip default. A single canonical name per engine role — extra
-  granularity belongs in new app roles checked explicitly in code, not
-  aliased into admin/user.
 
 In `packages/portal/auth/config.js`:
 
-- New optional env vars: `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME`,
-  `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME` (single scalar per role). Empty ⇒ use
-  the suffix-strip default.
+- No new env vars. The role values are fixed at `admin` / `user`.
 
 No change to the `AuthorizationDecision` shape, no change to the email
 allowlist envs, no change to non-Entra providers.
@@ -1220,7 +1218,7 @@ authz signal clean.
 
 | Step | Change | Behavior impact |
 |---|---|---|
-| 2.5a | Define `Portal.Admin` / `Portal.User` app roles on the app reg. Leave `appRoleAssignmentRequired=false`. Engine honors `principal.roles[]` ahead of email allowlist. | Additive. Installs with no role assignments fall through to existing email allowlist. |
+| 2.5a | Define `admin` / `user` app roles on the app reg. Leave `appRoleAssignmentRequired=false`. Engine honors `principal.roles[]` ahead of email allowlist. | Additive. Installs with no role assignments fall through to existing email allowlist. |
 | 2.5b | Operator assigns roles to expected users (or to an SG). Email allowlists may be retired or kept as break-glass. | Per-install operator action. |
 | 2.5c | Optionally flip `appRoleAssignmentRequired=true`. | Tightening; opt-in. |
 

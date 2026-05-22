@@ -72,14 +72,11 @@ as comma-delimited user email allowlists, not Entra group IDs.
 
 For tenants that prefer to drive admission from Entra **app roles** instead of
 an email allowlist, see the operator runbook at
-[`docs/portal-entra-app-roles.md`](./portal-entra-app-roles.md). Two optional
-env vars pin the role-to-engine-role mapping when the default suffix-strip
-match is too loose:
-
-| Env var | Description |
-| ------- | ----------- |
-| `PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME` | Single app-role `value` (case-insensitive exact match) that maps to engine `admin`. Replaces the suffix-strip default. |
-| `PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME`  | Same, for engine `user`. |
+[`docs/portal-entra-app-roles.md`](./portal-entra-app-roles.md). The portal
+matches the JWT `roles` claim by case-insensitive equality against exactly
+two canonical values: `admin` and `user`. There is no override env var —
+the setup script creates exactly these two roles, and extra granularity
+belongs in new app roles checked explicitly in code.
 
 > **Provisioning the Entra app registration.** PilotSwarm ships
 > `deploy/scripts/auth/Setup-PortalAuth.ps1` to create (or append a

@@ -100,9 +100,6 @@ PORTAL_AUTH_ENTRA_TENANT_ID=<tenant-id>
 PORTAL_AUTH_ENTRA_CLIENT_ID=<client-id>
 PORTAL_AUTHZ_ADMIN_GROUPS=admin1@contoso.com,admin2@contoso.com
 PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
-# Optional: explicit app-role name overrides (replace the suffix-strip default).
-# PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME=Portal.Admin
-# PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME=Portal.User
 ```
 
 Notes:
@@ -113,10 +110,12 @@ Notes:
 
 ### App Roles (Recommended For IT-Managed Tenants)
 
-When the Entra app registration defines app roles (`Portal.Admin` /
-`Portal.User`) and assigns them — and the Enterprise Application has
+When the Entra app registration defines `admin` and `user` app roles and
+assigns them — and the Enterprise Application has
 `appRoleAssignmentRequired=true` — the portal decides admission from the JWT
-`roles` claim instead of the email allowlist. The email-allowlist path still
+`roles` claim instead of the email allowlist. The portal matches the claim
+by case-insensitive equality against the canonical values `admin` and
+`user`; there is no override env var. The email-allowlist path still
 applies to principals whose token carries no `roles` claim. See
 [`../../docs/portal-entra-app-roles.md`](../../docs/portal-entra-app-roles.md)
 for the full operator runbook.

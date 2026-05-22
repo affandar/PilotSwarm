@@ -112,9 +112,9 @@
     appRoleAssignmentRequired=true on the service principal. Only users
     explicitly assigned to one of the roles can sign in. This is the
     recommended posture for production stamps consuming the role-driven
-    authorization engine. Role-name → engine-role mapping defaults to
-    suffix-strip; override with PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME /
-    PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME if you use non-standard role values.
+    authorization engine. The portal matches the JWT roles claim by
+    case-insensitive equality against the canonical values 'admin' and
+    'user' — no override env vars; the values are fixed.
 
 .EXAMPLE
     .\Setup-PortalAuth.ps1 -ServiceTreeId <your-service-tree-id> `

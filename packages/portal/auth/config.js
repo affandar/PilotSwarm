@@ -100,16 +100,11 @@ export function loadAuthorizationPolicy({
         env.PORTAL_AUTH_ALLOW_UNAUTHENTICATED,
         providerId === "none",
     );
-    const roleNames = {
-        admin: firstNonEmptyString(env.PORTAL_AUTHZ_ENTRA_ADMIN_ROLE_NAME),
-        user: firstNonEmptyString(env.PORTAL_AUTHZ_ENTRA_USER_ROLE_NAME),
-    };
 
     return {
         defaultRole,
         adminGroups,
         userGroups,
         allowUnauthenticated,
-        roleNames,
     };
 }
