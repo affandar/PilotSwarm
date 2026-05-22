@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.32 — 2026-05-22
+
+### Packages / Docker
+
+- Bumped published workspace packages to `0.1.32` and refreshed the Docker
+  quickstart's pinned starter-image references to `0.1.32`. The starter
+  Docker image is rebuilt and republished alongside this release.
 
 ### Portal
 

@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.1.31** — Starter Docker runtime fix for current duroxide native modules, moving the quickstart appliance to Debian trixie with embedded PostgreSQL 17 and refreshed Docker Hub tags.
+> **Latest release: v0.1.32** — Portal Entra app-roles modernization: the portal authorization engine now treats a non-empty JWT `roles` claim as authoritative (admin/user), the portal app registration drops API permissions so no admin consent is required, and new `Setup-PortalAuth.ps1` / `Set-PortalAuthAssignments.ps1` operator scripts plus the [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md) runbook cover end-to-end app-role provisioning and assignment.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

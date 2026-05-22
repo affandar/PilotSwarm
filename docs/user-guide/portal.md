@@ -13,7 +13,7 @@ Either:
 - **Docker quickstart** (easiest): `docker run -d -p 127.0.0.1:3001:3001 -p 127.0.0.1:2222:2222 -e GITHUB_TOKEN -v pilotswarm-data:/data --name pilotswarm-starter affandar/pilotswarm-starter:latest`. Then open `http://localhost:3001`.
 - **From source**: `npm install && npm run build`, set up `.env` (see [getting-started.md](../getting-started.md)), then `npm run portal:start` (or `./scripts/portal-start.sh`). Open `http://localhost:3001`.
 
-For a pinned Docker quickstart, replace `latest` with `0.1.31`.
+For a pinned Docker quickstart, replace `latest` with `0.1.32`.
 
 For deployments with Entra ID auth enabled (production), you'll see a
 sign-in flow first. For local development, sign-in is bypassed.
