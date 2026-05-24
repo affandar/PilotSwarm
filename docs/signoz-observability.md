@@ -305,7 +305,8 @@ Limitations:
 | Fact-store telemetry | None in this PR. | Fact reads/writes, key structure, result, latency, and bytes. |
 | Skill telemetry | CMS-backed skill usage exists elsewhere, but no OTel metric in this PR. | Skill invocation metrics with learned/static classification. |
 | Agent messaging telemetry | Session request/reply cards exist as product events, but no OTel metric in this PR. | Parent/child and session-to-session message counters and latency. |
-| Queue health | Removed from this PR. | Bridge duroxide queue-depth metrics or expose via provider-safe management API. |
+| Duroxide runtime/provider metrics | Not bridged in this PR. | All Duroxide metrics should be made available through PilotSwarm's OTel export path without reading provider tables directly. |
+| Queue health | Removed from this PR. | Bridge Duroxide queue-depth metrics or expose via provider-safe management API. |
 | SigNoZ dashboards | None. | Dashboard definitions, alert definitions, query recipes. |
 | Operator docs | This document. | Environment-specific deployment guide and screenshots. |
 | Agent tuner access | CMS summaries still exist for some data. | New OTel-derived or queue-health signals exposed through `PilotSwarmManagementClient` and tuner inspect tools. |
@@ -362,15 +363,37 @@ Once deployed, use these starting points in SigNoZ:
    without fake headers.
 5. Move OTel dependencies into `packages/sdk/package.json` if the SDK package
    imports `@opentelemetry/api` in published code.
-6. Add dashboard definitions or documented SigNoZ query recipes.
-7. Add alerts for turn failures, lossy handoffs, lifecycle failures, and queue
+6. Bridge all Duroxide runtime/provider metrics into the same PilotSwarm OTel
+  pipeline.
+7. Add dashboard definitions or documented SigNoZ query recipes.
+8. Add alerts for turn failures, lossy handoffs, lifecycle failures, and queue
    backlog.
-8. Expose operator-grade signals through `PilotSwarmManagementClient` and tuner
+9. Expose operator-grade signals through `PilotSwarmManagementClient` and tuner
    inspect tools when the signal is useful for autonomous investigations.
 
 ## Metrics To Add Next
 
-### Duroxide Queue Metrics
+### Duroxide Runtime And Provider Metrics
+
+All Duroxide metrics should be made available through PilotSwarm's
+OpenTelemetry export path. PilotSwarm is the product-level runtime wrapper, so
+operators should not need a separate Duroxide metrics pipeline to see queue,
+runtime, provider, activity, timer, replay, lock, or storage health in SigNoZ.
+
+This must preserve Duroxide's provider abstraction:
+
+- Prefer bridging Duroxide's own metrics surface into OTel.
+- Prefer Duroxide client/management APIs for pull-based observable gauges.
+- Do not query Duroxide provider tables directly from PilotSwarm.
+- If a desired metric only exists inside one provider's tables, add it to
+  Duroxide's provider/management surface first so every provider can implement
+  it.
+
+The first required Duroxide metrics are queue-depth signals, but the contract is
+broader: every Duroxide metric that exists or is added later should be exported
+through the PilotSwarm OTel/SigNoZ path.
+
+#### Duroxide Queue Metrics
 
 Duroxide already exposes queue depths as provider-safe signals:
 
@@ -389,6 +412,16 @@ Candidate metrics:
 | `duroxide_orchestrator_queue_depth` | gauge | `deployment.environment` | Orchestrator backlog. |
 | `duroxide_timer_queue_depth` | gauge | `deployment.environment` | Timer backlog and wake-up pressure. |
 | `pilotswarm_worker_queue_stale_depth` | gauge | threshold, deployment labels | Count visible queue work older than a provider-defined threshold. This should be added to duroxide's management/provider layer first. |
+
+Other Duroxide metric families to bridge as they become available:
+
+| Metric family | Examples | Scenario |
+| --- | --- | --- |
+| Activity execution | scheduled, started, completed, failed, retried | Activity throughput and retry storms. |
+| Orchestration replay | replay count, replay duration, nondeterminism failures | Replay pressure and determinism incidents. |
+| Durable timers | timers scheduled, fired, overdue, cancelled | Timer backlog and wake-up drift. |
+| Provider locks | lock acquisition latency, lock timeouts, abandoned locks | Provider contention and stuck workers. |
+| Provider storage | operation duration, operation errors, bytes read/written | Duroxide backend health independent of PilotSwarm CMS/facts. |
 
 ### Turn Metrics
 
