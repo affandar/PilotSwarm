@@ -14,7 +14,10 @@ function clampInteger(value, defaultValue, min, max) {
 function normalizeSessionPageOptions(params) {
     const limit = clampInteger(params.limit, 50, 1, 200);
     const includeDeleted = params.includeDeleted === true;
-    const rawCursor = params.cursor && typeof params.cursor === "object" ? params.cursor : null;
+    if (params.cursor != null && typeof params.cursor !== "object") {
+        throw new Error("listSessionsPage cursor must be an object when provided");
+    }
+    const rawCursor = params.cursor ?? null;
     let cursor = null;
 
     if (rawCursor) {
@@ -33,6 +36,9 @@ function normalizeSessionPageOptions(params) {
 }
 
 function normalizeTopEventEmitterOptions(params) {
+    if (params.since == null) {
+        throw new Error("getTopEventEmitters since is required");
+    }
     const since = new Date(params.since);
     if (Number.isNaN(since.getTime())) {
         throw new Error("getTopEventEmitters since must be a valid date");
