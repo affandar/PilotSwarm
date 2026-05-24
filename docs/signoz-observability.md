@@ -94,6 +94,27 @@ The root `npm run worker` script preloads the bootstrap:
 node --env-file=.env.remote --import ./scripts/otel/register.mjs packages/sdk/examples/worker.js
 ```
 
+## Required Metric Dimensions
+
+Future PilotSwarm-owned metrics should use a consistent dimension set so
+SigNoZ dashboards can slice the fleet the same way across turns, tools, facts,
+skills, and cross-session messages.
+
+| Dimension | Required? | Description |
+| --- | --- | --- |
+| `agent_id` | Yes when available | Stable named-agent id or system-agent id. Prefer this for joins and alert routing. |
+| `agent_name` | Yes when available | Human-readable agent name/type shown in dashboards. Keep bounded to named agent definitions and known system agents. |
+| `user` | Yes when available | Normalized user/owner dimension for per-user fleet health and cost. Avoid raw email addresses in long-retention telemetry when a stable non-PII identifier is available. |
+| `is_system` | Yes | Boolean string or boolean label indicating whether the session/agent is a system session. |
+| `model` | Yes for LLM-turn metrics | Model used by the turn. |
+| `worker_node_id` | Yes for worker-local metrics | Worker/pod/node that emitted the signal. |
+| `result` | Yes for request/lifecycle counters | Low-cardinality status such as `completed`, `error`, `lossy_handoff`, `timeout`, or `cancelled`. |
+
+Avoid `session_id` on long-retained metric series by default. Keep
+`session_id` on traces and CMS/management reads where high-cardinality lookup is
+expected. If a short-retention debug metric needs `session_id`, it should be
+explicitly marked as operator/debug only.
+
 ### Custom Trace Spans
 
 Implemented in `packages/sdk/src/session-proxy.ts` and
@@ -279,8 +300,11 @@ Limitations:
 | Local OTel bootstrap | Root `npm run worker` preloads `scripts/otel/register.mjs`. | Deployment worker image and start scripts do not preload it yet. |
 | Trace export | OTLP HTTP trace exporter. | Env plumbing in deploy manifests/secrets. |
 | Metric export | OTLP HTTP metric exporter and Node auto-instrumentation. | PilotSwarm-owned custom metric instruments. |
-| Turn telemetry | `session.turn` spans with model, token, tool, worker, result attributes. | Turn latency histogram, token counters, tool counters. |
+| Turn telemetry | `session.turn` spans with model, token, tool, worker, result attributes. | Turn latency histogram, token counters, tool counters, and normalized `agent_name`/`user`/`is_system` dimensions. |
 | Lifecycle telemetry | `session.hydration` and `session.dehydration` spans. | Lifecycle counters/histograms. |
+| Fact-store telemetry | None in this PR. | Fact reads/writes, key structure, result, latency, and bytes. |
+| Skill telemetry | CMS-backed skill usage exists elsewhere, but no OTel metric in this PR. | Skill invocation metrics with learned/static classification. |
+| Agent messaging telemetry | Session request/reply cards exist as product events, but no OTel metric in this PR. | Parent/child and session-to-session message counters and latency. |
 | Queue health | Removed from this PR. | Bridge duroxide queue-depth metrics or expose via provider-safe management API. |
 | SigNoZ dashboards | None. | Dashboard definitions, alert definitions, query recipes. |
 | Operator docs | This document. | Environment-specific deployment guide and screenshots. |
@@ -306,12 +330,15 @@ Once deployed, use these starting points in SigNoZ:
 | Question | View / Query Starting Point |
 | --- | --- |
 | Is the worker exporting telemetry? | Search traces for `worker.bootstrap`; service should appear as `pilotswarm-worker` if `OTEL_SERVICE_NAME` is set. |
-| How long do turns take? | Trace explorer, span name `session.turn`, group by `pilotswarm.model` and `pilotswarm.worker_node_id`. |
+| How long do turns take? | Trace explorer, span name `session.turn`, group by `pilotswarm.model`, agent, user, `is_system`, and `pilotswarm.worker_node_id`. |
 | Which turns fail? | Span status `ERROR`, span name `session.turn`, filter by `pilotswarm.turn_result`. |
 | Are tools failing? | Span name `session.turn`, filter `pilotswarm.tool_errors > 0`, inspect `pilotswarm.tool_names`. |
 | Are hydrations failing? | Span name `session.hydration`, status `ERROR` or `pilotswarm.hydration_result = error`. |
 | Are dehydrations lossy? | Span name `session.dehydration`, `pilotswarm.dehydration_result = lossy_handoff`. |
 | Are snapshots growing? | Span name `session.dehydration`, chart `pilotswarm.snapshot_size_bytes`. |
+| Which users or agent types are driving load? | Turn/token/tool dashboards grouped by `user`, `agent_name`, `agent_id`, and `is_system`. |
+| Are fact-store or skill workflows noisy? | Future fact/skill metrics grouped by key structure, skill type, agent, user, and result. |
+| Are agents messaging each other successfully? | Future message metrics grouped by source/target agent, relationship, message type, and result. |
 
 ## Next Steps To Complete The Rollout
 
@@ -370,12 +397,12 @@ time-window aggregation without scanning traces.
 
 | Metric | Type | Labels | Scenario |
 | --- | --- | --- | --- |
-| `pilotswarm_turn_duration_ms` | histogram | `model`, `agent_id`, `result`, `required_tool` | Latency SLOs and regression detection. |
-| `pilotswarm_turns_total` | counter | `model`, `agent_id`, `result` | Turn throughput and failure rate. |
-| `pilotswarm_turn_tokens_input_total` | counter | `model`, `agent_id` | Token spend trends. |
-| `pilotswarm_turn_tokens_output_total` | counter | `model`, `agent_id` | Token spend trends. |
-| `pilotswarm_turn_tokens_cache_read_total` | counter | `model`, `agent_id` | Cache effectiveness. |
-| `pilotswarm_turn_tokens_cache_write_total` | counter | `model`, `agent_id` | Cache write cost. |
+| `pilotswarm_turn_duration_ms` | histogram | `model`, `agent_id`, `agent_name`, `user`, `is_system`, `result`, `required_tool` | Latency SLOs and regression detection. |
+| `pilotswarm_turns_total` | counter | `model`, `agent_id`, `agent_name`, `user`, `is_system`, `result` | Turn throughput and failure rate. |
+| `pilotswarm_turn_tokens_input_total` | counter | `model`, `agent_id`, `agent_name`, `user`, `is_system` | Token spend trends. |
+| `pilotswarm_turn_tokens_output_total` | counter | `model`, `agent_id`, `agent_name`, `user`, `is_system` | Token spend trends. |
+| `pilotswarm_turn_tokens_cache_read_total` | counter | `model`, `agent_id`, `agent_name`, `user`, `is_system` | Cache effectiveness. |
+| `pilotswarm_turn_tokens_cache_write_total` | counter | `model`, `agent_id`, `agent_name`, `user`, `is_system` | Cache write cost. |
 
 Avoid `session_id` labels on long-retention metrics by default. Keep
 `session_id` on spans and CMS management reads where high-cardinality lookup is
@@ -385,29 +412,126 @@ expected.
 
 | Metric | Type | Labels | Scenario |
 | --- | --- | --- | --- |
-| `pilotswarm_tool_calls_total` | counter | `tool_name`, `agent_id`, `model` | Tool usage patterns. |
-| `pilotswarm_tool_errors_total` | counter | `tool_name`, `agent_id`, `model`, `error_type` | Tool failure alerts. |
-| `pilotswarm_tool_duration_ms` | histogram | `tool_name`, `agent_id` | Slow tool investigation. |
+| `pilotswarm_tool_calls_total` | counter | `tool_name`, `agent_id`, `agent_name`, `user`, `is_system`, `model`, `result` | Tool usage patterns. |
+| `pilotswarm_tool_errors_total` | counter | `tool_name`, `agent_id`, `agent_name`, `user`, `is_system`, `model`, `error_type` | Tool failure alerts. |
+| `pilotswarm_tool_duration_ms` | histogram | `tool_name`, `agent_id`, `agent_name`, `user`, `is_system`, `result` | Slow tool investigation. |
 
 ### Lifecycle Metrics
 
 | Metric | Type | Labels | Scenario |
 | --- | --- | --- | --- |
-| `pilotswarm_hydrations_total` | counter | `result`, `worker_node_id` | Hydration reliability. |
-| `pilotswarm_dehydrations_total` | counter | `reason`, `result`, `worker_node_id` | Dehydrate reliability. |
-| `pilotswarm_lossy_handoffs_total` | counter | `reason`, `worker_node_id` | Alert on data-loss risk. |
-| `pilotswarm_snapshot_size_bytes` | histogram | `agent_id`, `model` | Snapshot growth and storage pressure. |
-| `pilotswarm_hydration_duration_ms` | histogram | `result` | Recovery latency. |
-| `pilotswarm_dehydration_duration_ms` | histogram | `reason`, `result` | Shutdown/handoff latency. |
+| `pilotswarm_hydrations_total` | counter | `agent_id`, `agent_name`, `user`, `is_system`, `result`, `worker_node_id` | Hydration reliability. |
+| `pilotswarm_dehydrations_total` | counter | `agent_id`, `agent_name`, `user`, `is_system`, `reason`, `result`, `worker_node_id` | Dehydrate reliability. |
+| `pilotswarm_lossy_handoffs_total` | counter | `agent_id`, `agent_name`, `user`, `is_system`, `reason`, `worker_node_id` | Alert on data-loss risk. |
+| `pilotswarm_snapshot_size_bytes` | histogram | `agent_id`, `agent_name`, `user`, `is_system`, `model` | Snapshot growth and storage pressure. |
+| `pilotswarm_hydration_duration_ms` | histogram | `agent_id`, `agent_name`, `user`, `is_system`, `result` | Recovery latency. |
+| `pilotswarm_dehydration_duration_ms` | histogram | `agent_id`, `agent_name`, `user`, `is_system`, `reason`, `result` | Shutdown/handoff latency. |
+
+### Fact Store Metrics
+
+Fact-store metrics should expose durable-memory pressure and read/write
+patterns without putting raw fact keys or fact values into long-retention metric
+labels. Use bounded key-shape dimensions, not arbitrary key text.
+
+Recommended key-structure labels:
+
+- `fact_namespace`: high-level domain or table, such as `skills`, `memory`, or
+  app-specific bounded categories.
+- `fact_key_kind`: normalized key shape, not the raw key. Examples:
+  `skill`, `session`, `agent`, `global`, `user`, `unknown`.
+- `fact_scope`: bounded scope such as `session`, `agent`, `user`, or `fleet`.
+- `result`: `hit`, `miss`, `written`, `error`, `conflict`, or similar bounded
+  values.
+
+Candidate metrics:
+
+| Metric | Type | Labels | Scenario |
+| --- | --- | --- | --- |
+| `pilotswarm_fact_reads_total` | counter | `agent_id`, `agent_name`, `user`, `is_system`, `fact_namespace`, `fact_key_kind`, `fact_scope`, `result` | Fact-store read volume, misses, and errors. |
+| `pilotswarm_fact_writes_total` | counter | `agent_id`, `agent_name`, `user`, `is_system`, `fact_namespace`, `fact_key_kind`, `fact_scope`, `result` | Fact-store write volume and write failures. |
+| `pilotswarm_fact_read_duration_ms` | histogram | `agent_id`, `agent_name`, `user`, `is_system`, `fact_namespace`, `fact_key_kind`, `result` | Slow fact reads. |
+| `pilotswarm_fact_write_duration_ms` | histogram | `agent_id`, `agent_name`, `user`, `is_system`, `fact_namespace`, `fact_key_kind`, `result` | Slow fact writes. |
+| `pilotswarm_fact_payload_bytes` | histogram | `agent_id`, `agent_name`, `user`, `is_system`, `fact_namespace`, `fact_key_kind`, `operation` | Payload growth and storage pressure. |
+
+Scenarios covered:
+
+- Detect fact-store hot spots by agent, user, and key structure.
+- Detect static or learned skill lookup misses.
+- Track memory/fact write amplification by agent type.
+- Identify slow or failing fact-store operations without exposing raw keys.
+
+### Skill Metrics
+
+Skill metrics should separate static skills bundled with the agent/runtime from
+learned skills pulled from the fact/knowledge layer.
+
+Candidate labels:
+
+- `skill_key`: bounded curated skill identifier. Avoid freeform skill titles if
+  they can grow without limit.
+- `skill_source`: `static` or `learned`.
+- `skill_topic`: optional bounded topic/category.
+- `result`: `selected`, `read`, `invoked`, `error`, `miss`, or `unused`.
+
+Candidate metrics:
+
+| Metric | Type | Labels | Scenario |
+| --- | --- | --- | --- |
+| `pilotswarm_skill_invocations_total` | counter | `agent_id`, `agent_name`, `user`, `is_system`, `skill_key`, `skill_source`, `skill_topic`, `result` | Static vs learned skill usage and failures. |
+| `pilotswarm_skill_reads_total` | counter | `agent_id`, `agent_name`, `user`, `is_system`, `skill_key`, `skill_source`, `skill_topic`, `result` | Skill retrieval volume and misses. |
+| `pilotswarm_skill_invocation_duration_ms` | histogram | `agent_id`, `agent_name`, `user`, `is_system`, `skill_source`, `skill_topic`, `result` | Slow skill execution or retrieval path. |
+| `pilotswarm_skill_context_bytes` | histogram | `agent_id`, `agent_name`, `user`, `is_system`, `skill_source`, `skill_topic` | Prompt/context pressure from skills. |
+
+Scenarios covered:
+
+- Compare learned vs static skill adoption.
+- Alert on skill lookup failures.
+- Find skills that dominate prompt context.
+- Identify agents/users depending on learned skills.
+
+### Agent Messaging Metrics
+
+Agent-to-agent and session-to-session messaging should cover both structured
+parent/child flows and general session messages.
+
+Candidate labels:
+
+- `message_kind`: `parent_child`, `session_to_session`, `broadcast`, or
+  `unknown`.
+- `relationship`: `parent_to_child`, `child_to_parent`, `peer`, or `system`.
+- `source_agent_id`, `source_agent_name`, `source_is_system`.
+- `target_agent_id`, `target_agent_name`, `target_is_system`.
+- `user`: owner/user associated with the source session.
+- `result`: `sent`, `delivered`, `responded`, `timeout`, `error`, `cancelled`.
+
+Candidate metrics:
+
+| Metric | Type | Labels | Scenario |
+| --- | --- | --- | --- |
+| `pilotswarm_agent_messages_total` | counter | `message_kind`, `relationship`, `source_agent_id`, `source_agent_name`, `source_is_system`, `target_agent_id`, `target_agent_name`, `target_is_system`, `user`, `result` | Message volume and failures across parent/child and session-to-session flows. |
+| `pilotswarm_agent_message_latency_ms` | histogram | `message_kind`, `relationship`, `source_agent_name`, `target_agent_name`, `user`, `result` | Request/reply latency between agents or sessions. |
+| `pilotswarm_agent_message_payload_bytes` | histogram | `message_kind`, `relationship`, `source_agent_name`, `target_agent_name` | Large message detection and context pressure. |
+| `pilotswarm_agent_message_timeouts_total` | counter | `message_kind`, `relationship`, `source_agent_name`, `target_agent_name`, `user` | Alertable stalled conversations. |
+
+Scenarios covered:
+
+- Detect parent/child agent coordination failures.
+- Detect slow session-to-session request/reply flows.
+- Identify high-volume agent pairs.
+- Alert on message timeouts or failed delivery.
+
+Privacy and cardinality note: do not put message text or unbounded session
+titles into metric labels. Use trace attributes or durable event records for
+message-level investigation.
 
 ### Worker And Runtime Metrics
 
 | Metric | Type | Labels | Scenario |
 | --- | --- | --- | --- |
 | `pilotswarm_worker_bootstrap_total` | counter | `worker_node_id`, `version` | Worker restart spikes. |
-| `pilotswarm_worker_active_sessions` | gauge | `worker_node_id` | Load distribution. |
-| `pilotswarm_worker_run_turn_lock_wait_ms` | histogram | `worker_node_id` | Lock contention. |
-| `pilotswarm_worker_dehydrate_inflight` | gauge | `worker_node_id` | Shutdown pressure. |
+| `pilotswarm_worker_active_sessions` | gauge | `worker_node_id`, `is_system` | Load distribution. |
+| `pilotswarm_worker_run_turn_lock_wait_ms` | histogram | `worker_node_id`, `agent_id`, `agent_name`, `user`, `is_system` | Lock contention. |
+| `pilotswarm_worker_dehydrate_inflight` | gauge | `worker_node_id`, `is_system` | Shutdown pressure. |
 
 ### Management And Agent-Tuner Surfaces
 
@@ -425,6 +549,9 @@ Good candidates:
 - Fleet turn failure rate by agent/model.
 - Tool failure summaries.
 - Hydration/dehydration failure summaries.
+- Fact-store read/write summaries by key structure.
+- Static vs learned skill invocation summaries.
+- Agent-to-agent messaging latency and failures.
 
 ## Non-Goals For This PR
 
