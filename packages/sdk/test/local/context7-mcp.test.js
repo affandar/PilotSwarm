@@ -20,11 +20,14 @@ function parseMcpSse(text) {
     return JSON.parse(dataLines.join("\n"));
 }
 
-async function callContext7(payload) {
+async function callContext7(payload, sessionId = null, { expectBody = true } = {}) {
     const headers = {
         "content-type": "application/json",
         "accept": "application/json, text/event-stream",
     };
+    if (sessionId) {
+        headers["mcp-session-id"] = sessionId;
+    }
     if (process.env.CONTEXT7_API_KEY) {
         headers.CONTEXT7_API_KEY = process.env.CONTEXT7_API_KEY;
     }
@@ -38,7 +41,10 @@ async function callContext7(payload) {
 
     const text = await response.text();
     assert(response.ok, `Context7 MCP request failed: ${response.status} ${response.statusText} ${text.slice(0, 500)}`);
-    return parseMcpSse(text);
+    return {
+        body: expectBody ? parseMcpSse(text) : null,
+        sessionId: response.headers.get("mcp-session-id") || sessionId,
+    };
 }
 
 describe("Context7 MCP default", () => {
@@ -57,7 +63,7 @@ describe("Context7 MCP default", () => {
     });
 
     it("initializes the public Context7 MCP endpoint and calls resolve-library-id", { timeout: 45_000 }, async () => {
-        const initialize = await callContext7({
+        const initializeResponse = await callContext7({
             jsonrpc: "2.0",
             id: 1,
             method: "initialize",
@@ -67,15 +73,24 @@ describe("Context7 MCP default", () => {
                 clientInfo: { name: "pilotswarm-context7-test", version: "0.0.0" },
             },
         });
+        const initialize = initializeResponse.body;
+        const sessionId = initializeResponse.sessionId;
+        assert(sessionId, "Context7 initialize should return an MCP session id");
         assertEqual(initialize.result.serverInfo.name, "Context7", "server name");
         assert(initialize.result.capabilities.tools, "Context7 should advertise tools capability");
 
-        const tools = await callContext7({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+        // Unrelated to the bounded-read PR: Context7 now requires the Streamable
+        // HTTP session id from initialize on follow-up requests. Piggyback this
+        // compatibility fix here so the full local suite stays green.
+        await callContext7({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }, sessionId, { expectBody: false });
+
+        const toolsResponse = await callContext7({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, sessionId);
+        const tools = toolsResponse.body;
         const toolNames = tools.result.tools.map((tool) => tool.name);
         assert(toolNames.includes("resolve-library-id"), "Context7 should expose resolve-library-id");
         assert(toolNames.includes("query-docs"), "Context7 should expose query-docs");
 
-        const result = await callContext7({
+        const resultResponse = await callContext7({
             jsonrpc: "2.0",
             id: 3,
             method: "tools/call",
@@ -86,7 +101,8 @@ describe("Context7 MCP default", () => {
                     query: "Find official Vitest documentation for running tests from the CLI.",
                 },
             },
-        });
+        }, sessionId);
+        const result = resultResponse.body;
         const text = result.result.content.map((item) => item.text || "").join("\n");
         assertIncludes(text, "/vitest-dev/vitest", "Context7 resolve-library-id should return the Vitest library ID");
     });
