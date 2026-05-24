@@ -14,6 +14,7 @@ Start with the path that matches what you are trying to do.
 - [Architecture](./architecture.md) — how the durable runtime, CMS, client, and worker fit together
 - [Orchestration Design](./orchestration-design.md) — comprehensive reference for the durable session orchestration: modules, runtime model, drain/decide pseudocode, TurnResult dispatch, sub-agents, shutdown, CAN, hydration, replay invariants
 - [Main Orchestration Loop](./orchestration-loop.md) — short orientation; links into the design doc above
+- [SigNoZ Observability And Metrics](./signoz-observability.md) — current OpenTelemetry/SigNoZ architecture, implemented spans, missing deployment wiring, and next metrics
 - [TUI Architecture](./tui-architecture.md) — the current shared terminal UI stack across `packages/cli`, `ui-core`, and `ui-react`
 - [TUI Design And Implementor Guide](./tui-implementor-guide.md) — detailed contributor guide for terminal UI ownership, runtime flow, rendering, state, and change patterns
 - [Plugin Architecture & Layering Guide](./plugin-architecture-guide.md) — deep reference for agents, skills, MCP, and merge semantics
