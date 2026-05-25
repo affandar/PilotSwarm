@@ -27,7 +27,7 @@ test("buildSessionTree groups top-level members under synthetic group rows", () 
     ]);
 });
 
-test("session row selector renders group badge and summary-searchable rows", () => {
+test("session row selector renders group icon and summary-searchable rows", () => {
     let state = createInitialState();
     state = appReducer(state, {
         type: "sessions/loaded",
@@ -57,9 +57,12 @@ test("session row selector renders group badge and summary-searchable rows", () 
     const rows = selectSessionRows(state);
     assert.equal(rows[0].sessionId, "group:release");
     assert.equal(rows[0].isGroup, true);
-    assert.match(rows[0].text, /^\[G\]/);
+    assert.equal(rows[0].runs[1].text, "🗂  ");
+    assert.match(rows[0].text, /Release Validation/);
+    assert.match(rows[0].text, /1 member/);
 
-    state = appReducer(state, { type: "sessions/filter", query: "checkout" });
+    state = appReducer(state, { type: "sessions/expand", sessionId: "group:release" });
+    state = appReducer(state, { type: "sessions/filterQuery", query: "checkout" });
     const filtered = selectSessionRows(state);
     assert.equal(filtered.some((row) => row.sessionId === "member-a"), true);
 });
@@ -92,8 +95,10 @@ test("active group renders a group details card instead of transcript", () => {
 
     const chat = selectActiveChat(state);
     assert.equal(chat.length, 1);
-    assert.equal(chat[0].cardTitle, "Session Group");
-    assert.match(chat[0].text, /Member A: running/);
+    assert.equal(chat[0].id, "group-details:group:release");
+    assert.equal(chat[0].noChrome, true);
+    assert.match(chat[0].text, /^# Release Validation/);
+    assert.match(chat[0].text, /\| Member A \| running \| Smoke running \|/);
 });
 
 test("group rows are not bulk-selectable", () => {
@@ -137,9 +142,11 @@ test("chat summary mode renders structured session summary", () => {
 
     const chat = selectActiveChat(state);
     assert.equal(chat.length, 1);
-    assert.equal(chat[0].cardTitle, "Session Summary");
-    assert.match(chat[0].text, /Intent: Validate checkout/);
-    assert.match(chat[0].text, /phase: canary/);
+    assert.equal(chat[0].id, "summary:member-a");
+    assert.equal(chat[0].noChrome, true);
+    assert.match(chat[0].text, /^# Member A/);
+    assert.match(chat[0].text, /\*\*Intent:\*\* Validate checkout/);
+    assert.match(chat[0].text, /\*\*phase:\*\* canary/);
     assert.match(chat[0].text, /Rollout pending/);
 });
 
