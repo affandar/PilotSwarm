@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.1.33 — 2026-05-26
+
+### SDK / Runtime
+
+- Updated `pilotswarm-sdk` to consume the published `duroxide` `0.1.27`
+  package, keeping PilotSwarm aligned with the latest released Duroxide native
+  package set and PostgreSQL provider compatibility work.
+- Added bounded management reads for session listing, paged session-event
+  history, and top event-emitter diagnostics. The public management client now
+  exposes `listSessionsPage()`, `getSessionEventsBefore()`, and
+  `getTopEventEmitters()` for UI and operator paths that should not rely on
+  unbounded reads.
+- Added hydration and dehydration lifecycle tracing around session proxy
+  activities so lossy handoff and blob-state behavior can be correlated with
+  worker/runtime traces.
+
+### Observability
+
+- Added the Node OpenTelemetry bootstrap used by the worker entry point,
+  including OTLP trace and metric exporters, Node auto-instrumentation,
+  resource detection, a startup span, debug logging, and graceful SDK shutdown.
+- Documented the current SigNoZ architecture, implemented spans, required
+  metric dimensions, and remaining deployment/dashboard work in the new
+  SigNoZ observability guide. The stuck-activities queue metric remains
+  deferred to Duroxide so PilotSwarm does not ship a duplicate runtime signal.
+
+### Portal / TUI / Shared UI
+
+- Wired the node SDK transport, portal runtime RPC bridge, browser transport,
+  and shared UI controller to use the bounded session/event read surfaces for
+  refresh and polling flows.
+- Tightened portal RPC validation for bounded-read parameters, including page
+  cursors, event sequence bounds, and time-windowed event-emitter diagnostics.
+
+### Docs / Configuration
+
+- Added the SigNoZ observability guide to the documentation index and refreshed
+  the sample model-provider catalog used by new local configurations.
+
+### Packages / Docker
+
+- Bumped published workspace packages to `0.1.33` and advanced internal
+  workspace dependency ranges together (`pilotswarm-cli` → `pilotswarm-sdk`,
+  `pilotswarm-web` → `pilotswarm-cli`).
+- Refreshed the Docker quickstart's pinned starter-image references to
+  `0.1.33`. The starter Docker image is intended to be rebuilt and republished
+  alongside this release as `v0.1.33`, `0.1.33`, and `latest`.
+
+### Tests
+
+- Added coverage for bounded CMS session pages, top event-emitter diagnostics,
+  portal/browser bounded-read contracts, and shared UI session refresh behavior.
+- Updated hydration lifecycle tests, Context7 MCP streamable HTTP session-id
+  coverage, and shared UI session-group tests for the current no-chrome
+  markdown group-details and summary rendering contract.
+
 ## 0.1.32 — 2026-05-22
 
 ### Packages / Docker

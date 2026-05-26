@@ -27,7 +27,7 @@ Silicon.
 If you want the exact released build instead of the moving `latest` tag, pull the versioned image:
 
 ```bash
-docker pull affandar/pilotswarm-starter:0.1.32
+docker pull affandar/pilotswarm-starter:0.1.33
 ```
 
 ---

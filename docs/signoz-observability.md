@@ -4,9 +4,10 @@ This document describes the intended SigNoZ/OpenTelemetry architecture for
 PilotSwarm, the telemetry signals implemented by the current observability PR,
 what is still missing, and the next metrics to add.
 
-Status: this is an implementation note for the PR based on #29, currently
-rebased as #39. It documents the net result after the cleanup commit that
-removes the `pilotswarm.stuck_activities` metric.
+Status: this is the current implementation note for the OpenTelemetry/SigNoZ
+baseline. It documents the net result after the cleanup that removed the
+`pilotswarm.stuck_activities` metric in favor of Duroxide-owned runtime
+metrics.
 
 ## Goals
 
