@@ -4,6 +4,56 @@ function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
 }
 
+function clampInteger(value, defaultValue, min, max) {
+    if (value == null) return defaultValue;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return defaultValue;
+    return Math.max(min, Math.min(Math.trunc(numeric), max));
+}
+
+function normalizeSessionPageOptions(params) {
+    const limit = clampInteger(params.limit, 50, 1, 200);
+    const includeDeleted = params.includeDeleted === true;
+    if (params.cursor != null && typeof params.cursor !== "object") {
+        throw new Error("listSessionsPage cursor must be an object when provided");
+    }
+    const rawCursor = params.cursor ?? null;
+    let cursor = null;
+
+    if (rawCursor) {
+        const updatedAt = Number(rawCursor.updatedAt);
+        const sessionId = String(rawCursor.sessionId || "").trim();
+        if (!Number.isFinite(updatedAt)) {
+            throw new Error("listSessionsPage cursor.updatedAt must be a finite number");
+        }
+        if (!sessionId) {
+            throw new Error("listSessionsPage cursor.sessionId must be a non-empty string");
+        }
+        cursor = { updatedAt, sessionId };
+    }
+
+    return { limit, cursor, includeDeleted };
+}
+
+function normalizeTopEventEmitterOptions(params) {
+    if (params.since == null) {
+        throw new Error("getTopEventEmitters since is required");
+    }
+    const since = new Date(params.since);
+    if (Number.isNaN(since.getTime())) {
+        throw new Error("getTopEventEmitters since must be a valid date");
+    }
+    return {
+        since,
+        limit: clampInteger(params.limit, 20, 1, 100),
+    };
+}
+
+function normalizeSessionOwner(authContext) {
+    const principal = authContext?.principal;
+    return normalizeOwnerPrincipal(principal);
+}
+
 function normalizeOwnerPrincipal(principal) {
     const provider = String(principal?.provider || "").trim();
     const subject = String(principal?.subject || "").trim();
@@ -14,10 +64,6 @@ function normalizeOwnerPrincipal(principal) {
         email: String(principal?.email || "").trim() || null,
         displayName: String(principal?.displayName || "").trim() || null,
     };
-}
-
-function normalizeSessionOwner(authContext) {
-    return normalizeOwnerPrincipal(authContext?.principal);
 }
 
 function ownerKey(owner) {
@@ -141,6 +187,8 @@ export class PortalRuntime {
                 return this.transport.getChildOutcome(safeParams.childSessionId);
             case "listChildOutcomes":
                 return this.transport.listChildOutcomes(safeParams.parentSessionId);
+            case "listSessionsPage":
+                return this.transport.listSessionsPage(normalizeSessionPageOptions(safeParams));
             case "getSession":
                 return this.transport.getSession(safeParams.sessionId);
             case "getOrchestrationStats":
@@ -267,6 +315,8 @@ export class PortalRuntime {
                 return this.transport.getSessionEvents(safeParams.sessionId, safeParams.afterSeq, safeParams.limit);
             case "getSessionEventsBefore":
                 return this.transport.getSessionEventsBefore(safeParams.sessionId, safeParams.beforeSeq, safeParams.limit);
+            case "getTopEventEmitters":
+                return this.transport.getTopEventEmitters(normalizeTopEventEmitterOptions(safeParams));
             case "getLogConfig":
                 return this.transport.getLogConfig();
             case "getWorkerCount":

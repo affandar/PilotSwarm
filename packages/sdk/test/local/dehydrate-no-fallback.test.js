@@ -15,11 +15,12 @@
 import { describe, it, beforeAll, afterEach } from "vitest";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
-import { ONEWORD_CONFIG } from "../helpers/fixtures.js";
-import { assert, assertEqual } from "../helpers/assertions.js";
+import { ONEWORD_CONFIG, TEST_GPT_MODEL } from "../helpers/fixtures.js";
+import { assertEqual } from "../helpers/assertions.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
+const RUN_LIVE_DEHYDRATE_HAPPY_PATH = process.env.PS_ENABLE_LIVE_DEHYDRATE_TESTS === "1";
 
 function captureWarn() {
     const lines = [];
@@ -38,9 +39,15 @@ async function testNoFallbackOnHappyPath(env) {
     const cap = captureWarn();
     try {
         await withClient(env, async (client) => {
-            const session = await client.createSession(ONEWORD_CONFIG);
-            const reply = await session.sendAndWait("Reply with the single word OK.", TIMEOUT);
-            assert(reply && reply.length > 0, "Expected non-empty reply");
+            const session = await client.createSession({
+                ...ONEWORD_CONFIG,
+                model: TEST_GPT_MODEL,
+            });
+            // The regression this test cares about is session state placement
+            // before graceful shutdown. `createSession()` is enough to force
+            // the SDK to materialize workspace.yaml under sessionStateDir; a
+            // live LLM turn only adds latency and flaky external dependency.
+            void session;
             // Closing the client during teardown drives the dehydrate path.
         });
     } finally {
@@ -75,9 +82,16 @@ async function testNoFallbackOnHappyPath(env) {
 }
 
 describe("Level 1c: Dehydrate happy path", () => {
-    beforeAll(async () => { await preflightChecks(); });
-
-    it("no fallback to pre-destroy checkpoint", { timeout: TIMEOUT }, async () => {
-        await testNoFallbackOnHappyPath(getEnv());
+    beforeAll(async () => {
+        if (!RUN_LIVE_DEHYDRATE_HAPPY_PATH) return;
+        await preflightChecks();
     });
+
+    it.skipIf(!RUN_LIVE_DEHYDRATE_HAPPY_PATH)(
+        "no fallback to pre-destroy checkpoint",
+        { timeout: TIMEOUT },
+        async () => {
+        await testNoFallbackOnHappyPath(getEnv());
+        },
+    );
 });
