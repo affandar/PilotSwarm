@@ -39,9 +39,29 @@ describe("portal authz", () => {
             providerId: "entra",
         });
 
-        assertEqual(policy.defaultRole, "user", "default role");
+        assertEqual(policy.defaultRole, "none", "default role is deny-by-default");
         assertEqual(policy.adminGroups.join(","), "admin1@contoso.com,admin2@contoso.com", "admin allowlist");
         assertEqual(policy.userGroups.join(","), "user1@contoso.com", "user allowlist");
+    });
+
+    it("PORTAL_AUTHZ_DEFAULT_ROLE accepts 'admin', 'user', and 'none' (opt-in to legacy open posture)", () => {
+        const asUser = loadAuthorizationPolicy({
+            env: { PORTAL_AUTHZ_DEFAULT_ROLE: "user" },
+            providerId: "entra",
+        });
+        assertEqual(asUser.defaultRole, "user", "explicit user");
+
+        const asNone = loadAuthorizationPolicy({
+            env: { PORTAL_AUTHZ_DEFAULT_ROLE: "none" },
+            providerId: "entra",
+        });
+        assertEqual(asNone.defaultRole, "none", "explicit none");
+
+        const asAdmin = loadAuthorizationPolicy({
+            env: { PORTAL_AUTHZ_DEFAULT_ROLE: "admin" },
+            providerId: "entra",
+        });
+        assertEqual(asAdmin.defaultRole, "admin", "explicit admin");
     });
 
     it("authorizes admin and user roles from configured email allowlists", () => {
@@ -365,7 +385,7 @@ describe("portal authz", () => {
         );
     });
 
-    it("14. getPublicAuthContext shape — no-allowlist config (SC-006, FR-011)", () => {
+    it("14. getPublicAuthContext shape — no-allowlist config (SC-006, FR-011): deny-by-default", () => {
         const principal = buildPublicPrincipal({ email: "anyone@contoso.com" });
         const authorization = authorizePrincipal(principal, {});
         const out = getPublicAuthContext({ principal, authorization });
@@ -380,17 +400,25 @@ describe("portal authz", () => {
                 roles: [],
             },
             authorization: {
-                allowed: true,
-                role: "user",
-                reason: "No email allowlists configured",
+                allowed: false,
+                role: null,
+                reason: "No email allowlists configured and PORTAL_AUTHZ_DEFAULT_ROLE is not set (deny by default)",
                 matchedGroups: [],
             },
         };
         assertEqual(
             JSON.stringify(out),
             JSON.stringify(expected),
-            "byte-compatible (no-allowlist)",
+            "byte-compatible (no-allowlist, deny-by-default)",
         );
+    });
+
+    it("14a. PORTAL_AUTHZ_DEFAULT_ROLE='user' restores pre-v0.1.33 open posture (explicit opt-in)", () => {
+        const principal = buildPublicPrincipal({ email: "anyone@contoso.com" });
+        const authorization = authorizePrincipal(principal, { defaultRole: "user" });
+        assertEqual(authorization.allowed, true, "allowed under explicit defaultRole=user");
+        assertEqual(authorization.role, "user", "user role granted");
+        assertEqual(authorization.reason, "No email allowlists configured", "open-posture reason");
     });
 
     it("15. getPublicAuthContext shape — allow-unauthenticated config (SC-006, FR-011)", () => {

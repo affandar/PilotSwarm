@@ -105,18 +105,26 @@ PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
 Notes:
 
 - `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS` are currently comma-delimited email allowlists despite the historical variable names.
-- If no admin/user groups are configured, any successfully authenticated user is allowed in as the default `user` role.
+- `PORTAL_AUTHZ_DEFAULT_ROLE` defaults to `none` (deny-by-default since v0.1.33). If no admin/user groups are configured and the JWT carries no role claim, a signed-in user is **denied** at the portal layer. Set `PORTAL_AUTHZ_DEFAULT_ROLE=user` to restore the legacy "any tenant user gets `user`" open posture (sandbox stamps only).
 - `admin` and `user` have the same portal permissions today; the allowlists act as an admission gate and role assignment surface.
 
 ### App Roles (Recommended For IT-Managed Tenants)
 
-When the Entra app registration defines `admin` and `user` app roles and
-assigns them — and the Enterprise Application has
-`appRoleAssignmentRequired=true` — the portal decides admission from the JWT
-`roles` claim instead of the email allowlist. The portal matches the claim
-by case-insensitive equality against the canonical values `admin` and
-`user`; there is no override env var. The email-allowlist path still
-applies to principals whose token carries no `roles` claim. See
+When the Entra app registration defines `admin` and `user` app roles
+and assigns them, the portal decides admission from the JWT `roles`
+claim — the role assignment in Entra **is** the allowlist for this
+posture. The portal matches the claim by case-insensitive equality
+against the canonical values `admin` and `user`; there is no override
+env var. With deny-by-default (the default since v0.1.33), unassigned
+signed-in users are denied at the portal layer.
+
+The email-allowlist path (`PORTAL_AUTHZ_ADMIN_GROUPS` /
+`PORTAL_AUTHZ_USER_GROUPS`) is bypassed entirely when the JWT carries
+a `roles[]` claim — use it only for stamps that do not use
+`-CreateAppRoles`. Flipping `appRoleAssignmentRequired=true` on the
+Enterprise Application adds an Entra-side gate as well; it is optional
+and carries a restricted-tenant caveat (AADSTS90094 admin-consent
+prompts). See
 [`../../docs/portal-entra-app-roles.md`](../../docs/portal-entra-app-roles.md)
 for the full operator runbook.
 

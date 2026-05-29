@@ -18,7 +18,7 @@ This skill is **optional** — only invoke it when the user wants
 |---|---|
 | "set up entra auth for a new stamp" / "I need a client id" / new stamp with no opinion on auth wiring | **YES — create new (default recommendation)** |
 | "add a new stamp to the existing app" / mentions sharing a client id / wants single SSO consent across stamps | YES — `-ExistingAppId` mode |
-| "production stamp, lock down access" / "only certain people should sign in" / smoke-testing the role-driven authz | YES — create new with `-CreateAppRoles -AssignmentRequired` |
+| "production stamp, lock down access" / "only certain people should sign in" / smoke-testing the role-driven authz | YES — create new with `-CreateAppRoles` and assign users to the `admin` / `user` roles |
 | "skip auth" / "open sandbox" / `PORTAL_AUTH_PROVIDER=none` | NO — skip entirely |
 | User already pasted a `PORTAL_AUTH_ENTRA_CLIENT_ID` | NO — that value flows straight through to deploy |
 
@@ -74,7 +74,21 @@ Optional (off by default, opt-in with switches):
   (see `packages/portal/auth/authz/engine.js`)
 - `-AssignmentRequired` sets `appRoleAssignmentRequired=true` on the
   service principal so only users/groups explicitly assigned to the app
-  can obtain a token
+  can obtain a token.
+
+  ⚠️ **Caveat — leave OFF by default.** In tenants where user-consent
+  is restricted to verified-publisher apps (e.g. the Microsoft corporate
+  tenant), turning this on causes the first sign-in by every assigned
+  principal to trip an AADSTS90094 admin-consent prompt for the OIDC
+  scopes (`openid profile offline_access`) against Microsoft Graph,
+  even though this app declares no API permissions. The workaround is
+  a per-user "dance" (flip off, sign in once to accept user-consent for
+  Graph, flip back on) or a tenant admin pre-granting the OIDC scopes.
+  The recommended lockdown posture uses `-CreateAppRoles` plus role
+  assignments in Entra, while leaving `appRoleAssignmentRequired=false`.
+  The role assignment list **is** the allowlist — the engine's
+  deny-by-default behavior rejects any signed-in principal without an
+  admin/user role claim. See the posture matrix below.
 
 These bakes are NOT user-configurable — they are the contract the
 PilotSwarm portal depends on. The script's parameters only cover the
@@ -117,7 +131,7 @@ Identity
 
 Role-driven authz (recommended for prod stamps)
   CreateAppRoles           false (default)             # add 'admin' + 'user' app roles
-  AssignmentRequired       false (default)             # require explicit assignment to obtain a token
+  AssignmentRequired       false (default, recommended OFF — see caveat in "Underlying tooling" above)
 
 Redirect URI (mode=create-new only)
   EnvName                  <required-or-pick-one>
@@ -142,33 +156,34 @@ the user:
 
 | Posture | Switches | Who can sign in | Who gets the `admin` role | When to use |
 |---|---|---|---|---|
-| **Open** | neither | Any tenant user | Nobody (all signed-in users get `PORTAL_AUTHZ_DEFAULT_ROLE`, typically `user`) | Short-lived test stamps; pure sandbox |
-| **Roles, no lockdown** | `-CreateAppRoles` | Any tenant user | Users assigned to `admin` via Enterprise apps > Users and groups (role-less principals still sign in and fall through to `defaultRole`) | Dev stamps where you want some admins but don't need to block other tenant users |
-| **Roles + lockdown** (recommended for prod) | `-CreateAppRoles -AssignmentRequired` | Only users/groups explicitly assigned to a role | Same as above | Production stamps where the portal should only be reachable by named individuals |
+| **Open** | neither (and `PORTAL_AUTHZ_DEFAULT_ROLE=user` in `.env`) | Any tenant user | Nobody — every signed-in user gets `user` | Short-lived test stamps; pure sandbox where the portal is intentionally open to the whole tenant |
+| **Roles** (recommended for prod) | `-CreateAppRoles`, plus role assignments in Entra | Any tenant user can hit sign-in, but the engine denies anyone without an `admin` or `user` role claim | Users assigned to the `admin` app role via `Set-PortalAuthAssignments.ps1` or Enterprise apps > Users and groups | Production stamps. The role assignment in Entra **is** the allowlist; the engine is **deny-by-default** for principals with no admin/user role. No env-var allowlist needed. |
+| **Roles + `appRoleAssignmentRequired=true`** (advanced opt-in) | `-CreateAppRoles -AssignmentRequired` | Only users/groups explicitly assigned to a role | Same as above | Same use cases as the previous row, but adds a second gate at the Entra level. Requires per-user admin or self consent for the OIDC scopes against Microsoft Graph the first time anyone signs in — in restricted tenants this trips AADSTS90094. Prefer the previous row unless you have tenant-admin support to pre-grant. |
+| **Legacy email allowlist** (no roles) | neither, plus populate `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS` in the stamp's `.env` | Any tenant user can hit sign-in; the engine denies anyone whose email is not on the list | Users whose email matches `PORTAL_AUTHZ_ADMIN_GROUPS` | Stamps that don't want to do per-stamp Entra role assignments. The engine consults these allowlists only when the JWT carries no `roles[]` claim — combining them with `-CreateAppRoles` is redundant (the role-authoritative branch wins). |
 
-The "Roles + lockdown" posture closes the gap where a tenant user with
-no role assignment still gets `defaultRole`. With
-`appRoleAssignmentRequired=true`, an unassigned principal gets a sign-in
-error from Entra before any token is issued — they never reach the
-portal at all.
+**Deny-by-default is now in the engine** (since v0.1.33). When
+`PORTAL_AUTHZ_DEFAULT_ROLE` is unset or set to `none`, a principal that
+carries no admin/user role claim and matches no email allowlist is
+denied at the portal layer — even when `appRoleAssignmentRequired` is
+off. Set `PORTAL_AUTHZ_DEFAULT_ROLE=user` to restore the legacy "any
+tenant user gets `user`" open posture (only do this for sandbox stamps).
 
-**Don't mix postures in the env.** When you choose either roles posture,
-leave `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS` empty
-in the stamp's `.env`. The portal authz engine treats role claims as
-authoritative when present (see `packages/portal/auth/authz/engine.js`
-and `docs/portal-entra-app-roles.md`); the email-allowlist envs are
-the **Open**-posture mechanism only. Populating both creates a
-duplicate source of truth that the next person reading the env will
-have to untangle — and the role claim will win regardless.
+**Pick one mechanism per stamp.** The engine's role-authoritative
+branch (see `packages/portal/auth/authz/engine.js`) ignores
+`PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS` whenever the
+JWT carries any `roles[]` claim. So if you chose **Roles**, do NOT
+also populate the email allowlists — they are bypassed and become a
+second source of truth the next operator has to reconcile. The
+allowlists are only meaningful in the **Legacy email allowlist**
+posture (no `-CreateAppRoles`).
 
 **Assignment is a separate step.** This skill creates the app + role
 definitions, but does not assign any principals to them. Immediately
 after invoking `Setup-PortalAuth.ps1 -CreateAppRoles`, use the
 [`pilotswarm-portal-auth-assignments`](../pilotswarm-portal-auth-assignments/SKILL.md)
 skill to assign at least one admin (default: the deploying user).
-Without that, a `-AssignmentRequired` app is unreachable and a
-no-lockdown app leaves everyone falling through to
-`PORTAL_AUTHZ_DEFAULT_ROLE` with no admin.
+Without that, every sign-in is denied at the portal layer because no
+one has the `admin` or `user` role claim yet.
 
 ## Invocation
 
@@ -230,7 +245,29 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/auth/Setup-PortalAu
   -RedirectUri "https://<predicted-afd-fqdn>"
 ```
 
-### Create new for a production stamp (roles + lockdown)
+### Create new for a production stamp (roles — recommended)
+
+```bash
+pwsh -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/auth/Setup-PortalAuth.ps1 \
+  -ServiceTreeId <your-service-tree-id> \
+  -EnvName <stamp-name> \
+  -CreateAppRoles
+```
+
+After this completes the operator MUST assign at least one admin via
+`Set-PortalAuthAssignments.ps1 -EnvName <stamp-name> -AdminAssignments <upn>`
+(or Entra portal > Enterprise applications > `"PilotSwarm Portal - <stamp-name>"` > Users and groups).
+
+The portal engine is deny-by-default (since v0.1.33). With role
+assignments in place, assigned users get `admin` / `user` from the JWT
+`roles` claim. Any tenant user can still hit the sign-in page (since
+`appRoleAssignmentRequired=false`), but the engine rejects them when
+they arrive without a role claim. Do **not** also populate
+`PORTAL_AUTHZ_ADMIN_GROUPS` here — when the JWT carries `roles[]`, the
+engine's role-authoritative branch ignores the email allowlists
+entirely.
+
+### Advanced: roles + `appRoleAssignmentRequired=true` (Entra-level lockdown)
 
 ```bash
 pwsh -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/auth/Setup-PortalAuth.ps1 \
@@ -240,10 +277,9 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/auth/Setup-PortalAu
   -AssignmentRequired
 ```
 
-After this completes the operator MUST:
-1. Open Entra portal > Enterprise applications > `"PilotSwarm Portal - <stamp-name>"` > Users and groups
-2. Add at least one user (themselves, usually) to the `Admin` role —
-   otherwise no one can sign in because `appRoleAssignmentRequired=true`.
+Use only when you have tenant-admin support to pre-grant the OIDC
+scopes for the app, OR you accept that each assigned principal will
+need to do the one-time consent dance described in the caveat above.
 
 ### Add a stamp to a shared existing app
 
@@ -322,6 +358,13 @@ the roles. Use the dedicated assignments script + skill:
 If `-AssignmentRequired` is set and no one is assigned, sign-in fails
 with `AADSTS50105: The signed in user is not assigned to a role for the
 application`. Assign the operator FIRST so they can finish setting up.
+
+If `-AssignmentRequired` is NOT set (the recommended default), the
+**portal engine** still enforces deny-by-default: a signed-in
+principal with no admin/user role claim sees a "You are not authorized
+to access this portal" page rather than the app. Assign at least one
+app-role admin via `Set-PortalAuthAssignments.ps1` before the first
+sign-in so someone can actually reach the portal.
 
 ## What this skill will not do
 

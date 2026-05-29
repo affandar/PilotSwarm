@@ -79,12 +79,26 @@ Ask, in order:
      invoke the skill in append mode (`-ExistingAppId <appId> -EnvName <stamp>`).
 3. **"Should sign-in be locked down to assigned users only, or open to
    any tenant member?"** (only when `entra` and provisioning new)
-   - **Production stamp** → recommend `-CreateAppRoles -AssignmentRequired`.
-     With assignment-required, only users explicitly assigned to a role
-     (`admin` or `user`) can sign in. Closes the gap where a tenant user
-     with no role assignment still gets `PORTAL_AUTHZ_DEFAULT_ROLE`.
-   - **Sandbox / dev stamp** → defaults are fine. Any tenant user signs
-     in; `defaultRole` decides their effective access.
+   - **Production stamp (recommended)** → `-CreateAppRoles` + assign
+     users/groups to the `admin` / `user` roles in Entra (via
+     `Set-PortalAuthAssignments.ps1` or "Enterprise applications > Users
+     and groups"). The role assignment list **is** the allowlist — no
+     env-var allowlist needed. The portal engine is deny-by-default
+     (since v0.1.33): assigned principals get `admin` / `user` from
+     the JWT `roles` claim; unassigned signed-in users are denied at
+     the portal layer. Leave `appRoleAssignmentRequired=false` unless
+     a tenant admin can pre-grant OIDC scopes — flipping it on trips
+     AADSTS90094 admin-consent in restricted tenants.
+   - **Sandbox / dev stamp** → omit `-CreateAppRoles` AND set
+     `PORTAL_AUTHZ_DEFAULT_ROLE=user` in the stamp's `.env` to
+     explicitly opt into the legacy open posture (any tenant user signs
+     in as `user`). The default `PORTAL_AUTHZ_DEFAULT_ROLE=none` will
+     deny everyone for a no-allowlist, no-roles stamp.
+   - **Legacy email allowlist (no roles)** → omit `-CreateAppRoles`
+     and populate `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS`
+     in the stamp's `.env`. The engine consults these allowlists only
+     when the JWT carries no `roles[]` claim, so this posture is for
+     stamps that don't want to do per-stamp Entra role assignments.
 
 Order matters operationally:
 
@@ -116,9 +130,11 @@ Cache the result for the rest of the conversation. Surface:
 - `user` (UPN) → **suggested** `ACME_EMAIL`, but **always** ask the
   user to confirm or override before using it. The UPN may not be the
   right address for cert-renewal notices (shared mailbox preferred for
-  prod). Do **not** auto-suggest the UPN for `PORTAL_AUTHZ_ADMIN_GROUPS`
-  — that field is posture-dependent (only populate when posture is
-  Open; leave empty when -CreateAppRoles is set).
+  prod). For Roles posture, also suggest the UPN as the initial
+  `ADMIN_ASSIGNMENTS` entry (the principal that will be assigned to
+  the `admin` app role). Do **not** auto-suggest the UPN for
+  `PORTAL_AUTHZ_ADMIN_GROUPS` — that env var is only relevant in the
+  **Legacy email allowlist** posture, not the Roles posture.
 - `gh` status → if logged in, offer to run `gh auth token` to populate
   `GITHUB_TOKEN`; if not, default it to empty (sentinel)
 
@@ -139,7 +155,7 @@ Core
   subscription                  <discovered: ${sub} — ${subName}>
   location                      westus3 (default)
   region-short                  <derived from deploy-manifest.json>
-  foundry-enabled               y (default)
+  foundry-enabled               n (default)         # n | y; when 'y', also scaffolds foundry-deployments.json
 
 Edge / TLS
   edge-mode                     afd (default)         # afd | private
@@ -162,33 +178,41 @@ Portal auth (ConfigMap) — fields depend on auth posture
   PORTAL_AUTH_ENTRA_CLIENT_ID   <required if provider=entra>   # app-reg client id
                                                                # see pilotswarm-portal-app-reg skill if you don't have one
   PORTAL_AUTH_ALLOW_UNAUTHENTICATED  false (default)
-  PORTAL_AUTHZ_DEFAULT_ROLE          user (default)
+  PORTAL_AUTHZ_DEFAULT_ROLE          none (default — deny-by-default since v0.1.33)
 
-  # If posture = Open (no app roles):
-  PORTAL_AUTHZ_ADMIN_GROUPS          <suggested: ${user}; CONFIRM OR OVERRIDE>   # email allowlist
-  PORTAL_AUTHZ_USER_GROUPS           <empty> (default)                            # email allowlist
-
-  # If posture = Roles, no lockdown OR Roles + lockdown (-CreateAppRoles set):
-  PORTAL_AUTHZ_ADMIN_GROUPS          <leave empty>                                # roles are authoritative
-  PORTAL_AUTHZ_USER_GROUPS           <leave empty>                                # roles are authoritative
-  PORTAL_AUTH_ENTRA_ADMIN_GROUPS     <empty> (default)                            # only if mixing in Entra group object ids
+  # If posture = Roles (recommended for prod; -CreateAppRoles set):
+  PORTAL_AUTHZ_DEFAULT_ROLE          none (leave at default — deny-by-default)
+  PORTAL_AUTHZ_ADMIN_GROUPS          <leave empty>                                # role claim is authoritative; env allowlist is bypassed
+  PORTAL_AUTHZ_USER_GROUPS           <leave empty>
+  PORTAL_AUTH_ENTRA_ADMIN_GROUPS     <empty> (default)                            # optional: Entra group object ids that map to admin
   PORTAL_AUTH_ENTRA_USER_GROUPS      <empty> (default)
+
+  # If posture = Sandbox / open (no app roles, accept any tenant user):
+  PORTAL_AUTHZ_DEFAULT_ROLE          user                                         # explicit opt-in to the legacy open posture
+  PORTAL_AUTHZ_ADMIN_GROUPS          <empty>
+  PORTAL_AUTHZ_USER_GROUPS           <empty>
+
+  # If posture = Legacy email allowlist (no app roles, restrict by email):
+  PORTAL_AUTHZ_DEFAULT_ROLE          none (leave at default)
+  PORTAL_AUTHZ_ADMIN_GROUPS          <suggested: ${user}; CONFIRM OR OVERRIDE>   # comma-separated UPNs / emails
+  PORTAL_AUTHZ_USER_GROUPS           <empty> (default)
 
   # App-role assignments (Roles posture only — not stored in .env, applied via Set-PortalAuthAssignments.ps1)
   ADMIN_ASSIGNMENTS                  <suggested: ${user}; CONFIRM OR OVERRIDE>   # UPNs / object ids / group display names, comma-separated
   USER_ASSIGNMENTS                   <empty>                                       # UPNs / object ids / group display names, comma-separated
 ```
 
-**Why allowlist vs role fields are mutually exclusive in practice:**
-the portal authz engine treats the role claim as authoritative when
-present in the token (see `packages/portal/auth/authz/engine.js` and
-`docs/portal-entra-app-roles.md`). With `-CreateAppRoles` set, every
-admitted user has a role claim, so `PORTAL_AUTHZ_*_GROUPS` email
-allowlists are dead config. Leaving them populated is harmless but
-misleading — anyone reading the env later will wonder which one is
-actually in effect. Set them only when posture is **Open** (no app
-roles); leave them empty when posture is **Roles, no lockdown** or
-**Roles + lockdown**.
+**Pick one mechanism per stamp; don't mix roles + email allowlist.**
+The portal authz engine treats the JWT `roles` claim as authoritative
+when present (see `packages/portal/auth/authz/engine.js`): the
+role-authoritative branch ignores `PORTAL_AUTHZ_ADMIN_GROUPS` /
+`PORTAL_AUTHZ_USER_GROUPS` entirely when `roles[]` is non-empty. So
+for Roles posture, the env allowlists serve no purpose — the role
+assignment in Entra **is** the allowlist. The deny-by-default behavior
+(`PORTAL_AUTHZ_DEFAULT_ROLE=none`, the new default) catches any
+signed-in principal who has no role claim and no email match. For
+sandbox stamps, set `PORTAL_AUTHZ_DEFAULT_ROLE=user` to opt back into
+the open posture explicitly.
 
 **About `ADMIN_ASSIGNMENTS` / `USER_ASSIGNMENTS`:** these are *not*
 stored in `.env`. They are the principal list to feed into
@@ -198,7 +222,7 @@ agent collects them at table-confirmation time and invokes the
 skill right after the app-reg pre-step. Default the admin list to the
 deploying user (UPN from `az account show`); the user can edit either
 list — add a colleague, swap to a security group, etc. Without at
-least one admin assignment, a `-AssignmentRequired` app is unreachable.
+least one admin assignment, an `-AssignmentRequired` app is unreachable.
 
 State the mode explicitly to the user once the table is on screen.
 Two safe modes exist; pick deliberately:
@@ -263,6 +287,21 @@ Two rules to avoid the trap:
    removes the readline-echo ambiguity, and is materially safer than
    an LLM driving a stdin stream.
 
+   **Sentinel-vs-empty trap (read this before editing).** The
+   scaffolder writes `__PS_UNSET__` into `.env` for every
+   `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` key the operator did not provide.
+   That sentinel is **the correct way to express "unset at runtime"** —
+   the portal runtime strips it from `process.env` at startup so the
+   engine sees the key as absent (and applies its own default — e.g.
+   `PORTAL_AUTHZ_DEFAULT_ROLE` falls through to `none` =
+   deny-by-default). The deploy-time `substitute-env.mjs` gate treats
+   **empty strings as "unresolved" and refuses to render manifests** —
+   only the sentinel passes. When editing `.env`:
+   - Replace `__PS_UNSET__` with a real value ONLY when you have one.
+   - To leave a key "unset", leave the sentinel in place. **Do not
+     replace `__PS_UNSET__` with an empty string** — that turns the
+     deploy gate into a failure at the portal-manifests step.
+
 2. **If you must drive interactively**, send **one answer per
    `write_powershell` call**, then `read_powershell` and confirm the
    *next* prompt has actually printed before sending the next answer.
@@ -281,9 +320,11 @@ grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_
 ```
 
 If any value looks wrong (especially `PORTAL_AUTHZ_DEFAULT_ROLE` not in
-`{user, admin}`, or `ACME_EMAIL` empty when `TLS_SOURCE=letsencrypt`,
-or `__PS_UNSET__` sentinels you didn't intend to leave), fix it with
-`edit` before invoking `deploy.mjs`. This check is mandatory after any
+`{user, admin}` when you wanted an explicit value, `ACME_EMAIL` empty
+when `TLS_SOURCE=letsencrypt`, `__PS_UNSET__` sentinels you didn't
+intend to leave, or — symmetrically — `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*`
+keys that are empty strings where they should be `__PS_UNSET__`), fix
+it with `edit` before invoking `deploy.mjs`.This check is mandatory after any
 interactive run because of the readline-echo trap; it's cheap insurance
 after non-interactive runs too.
 

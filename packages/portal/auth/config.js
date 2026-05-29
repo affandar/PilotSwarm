@@ -31,9 +31,12 @@ function parseBoolean(value, defaultValue = false) {
     return defaultValue;
 }
 
-function normalizeRole(value, defaultRole = "user") {
+function normalizeRole(value, defaultRole = "none") {
     const normalized = String(value || "").trim().toLowerCase();
-    return normalized === "admin" ? "admin" : defaultRole;
+    if (normalized === "admin") return "admin";
+    if (normalized === "user") return "user";
+    if (normalized === "none") return "none";
+    return defaultRole;
 }
 
 export function resolvePluginAuthConfigFromPluginDirs(pluginDirs = getPluginDirsFromEnv()) {
@@ -83,7 +86,9 @@ export function loadAuthorizationPolicy({
     env = process.env,
     providerId = resolveAuthProviderId({ env }),
 } = {}) {
-    const defaultRole = normalizeRole(env.PORTAL_AUTHZ_DEFAULT_ROLE, "user");
+    // Secure-by-default: deny when PORTAL_AUTHZ_DEFAULT_ROLE is not set.
+    // Accepted values: "admin" | "user" | "none". Default: "none" (deny).
+    const defaultRole = normalizeRole(env.PORTAL_AUTHZ_DEFAULT_ROLE, "none");
     const adminGroups = parseCsv(
         firstNonEmptyString(
             env.PORTAL_AUTHZ_ADMIN_GROUPS,

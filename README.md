@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.1.33** — Observability and bounded-read refresh: SDK management APIs now provide bounded session, event, and emitter reads for the TUI/portal, worker startup includes OpenTelemetry/SigNoZ tracing hooks, published packages consume `duroxide` `0.1.27`, and the starter Docker quickstart is pinned to `0.1.33`.
+> **Latest release: v0.1.34** — Portal deny-by-default authz: signed-in principals without a `roles` claim or email allowlist match are now denied at the portal layer; `Setup-PortalAuth.ps1 -CreateAppRoles` plus Entra role assignments is the recommended lockdown, and `appRoleAssignmentRequired` defaults to `false` to avoid AADSTS90094 admin-consent prompts in restricted tenants. See [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md) for migration guidance.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

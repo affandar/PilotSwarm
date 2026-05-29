@@ -436,8 +436,13 @@ same deployment slot without changing the portal shell contract.
 > the Entra application, register the SPA redirect URI, and (optionally)
 > define the `admin`/`user` app roles consumed by the portal authz
 > engine. The script requires `-ServiceTreeId` (operator-supplied) and
-> exposes `-CreateAppRoles` and `-AssignmentRequired` switches for
-> role-driven and lockdown postures. Full operator docs:
+> exposes `-CreateAppRoles` (recommended for production stamps) and
+> `-AssignmentRequired` (advanced opt-in — see caveat in the README)
+> switches for role-driven and Entra-level lockdown postures. The
+> recommended production lockdown is `-CreateAppRoles` plus role
+> assignments in Entra (the role assignment is the allowlist); the
+> portal engine is deny-by-default for any signed-in principal without
+> a role claim. Full operator docs:
 > `deploy/scripts/auth/README.md`. Agent-driven invocation:
 > `pilotswarm-portal-app-reg` skill.
 
@@ -446,8 +451,13 @@ longer reads legacy `ENTRA_*` aliases.
 
 For tenants driving admission from Entra app roles instead of an email
 allowlist, see [`docs/portal-entra-app-roles.md`](./portal-entra-app-roles.md)
-for the recommended end-state setup (define roles → enable
-`appRoleAssignmentRequired=true` → assign → align CA).
+for the recommended end-state setup (define roles → assign principals
+→ rely on engine deny-by-default → optionally enable
+`appRoleAssignmentRequired=true` if your tenant allows it without
+tripping admin-consent → align CA). In the Roles posture, the role
+assignment in Entra **is** the allowlist — do not also populate
+`PORTAL_AUTHZ_ADMIN_GROUPS`, since the engine bypasses it whenever the
+JWT carries a `roles[]` claim.
 
 Portal authz supports both email allowlists and Entra app-role claims:
 

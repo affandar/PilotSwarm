@@ -19,8 +19,14 @@
     - App roles (admin / user) — assignable to Users; created when -CreateAppRoles is set
     - Owner: current signed-in Azure CLI user (override with -Owner)
     - Service principal created by default (needed for tenant consent + assignments)
-    - -AssignmentRequired sets appRoleAssignmentRequired=true on the SP so
-      only users/groups explicitly assigned to the app can obtain a token
+    - -AssignmentRequired (OPT-IN, off by default) sets
+      appRoleAssignmentRequired=true on the SP so only users/groups
+      explicitly assigned to the app can obtain a token. See the
+      "Lockdown posture" note below — in many tenants this triggers an
+      admin-consent prompt for first-time sign-in. The recommended
+      lockdown path is `-CreateAppRoles` + role assignments in Entra
+      (the role assignment is the allowlist), leaving
+      `appRoleAssignmentRequired=false`.
 
     The redirect URI for a stamp is the AFD endpoint (or AppGw FQDN) the
     portal is served from. You can either:
@@ -79,11 +85,34 @@
       - or `az ad sp app-role-assignment` (advanced)
 
 .PARAMETER AssignmentRequired
-    If set, configures the service principal with appRoleAssignmentRequired=true,
-    which blocks any user not explicitly assigned (directly or via a group) to
-    the app from obtaining a token. Recommended in combination with
-    -CreateAppRoles for production stamps where only assigned users + roles
-    should reach the portal at all.
+    OPT-IN. Off by default. If set, configures the service principal with
+    appRoleAssignmentRequired=true, which blocks any user not explicitly
+    assigned (directly or via a group) to the app from obtaining a token.
+
+    CAVEAT: In tenants where user-consent is restricted to apps from
+    verified publishers (e.g. the Microsoft corporate tenant), turning
+    this on can trigger an AADSTS90094 admin-consent prompt for the very
+    first sign-in by each assigned principal — even though this app
+    declares NO API permissions. The OIDC sign-in flow still records a
+    user-consent grant against Microsoft Graph for `openid profile
+    offline_access`, and `appRoleAssignmentRequired=true` blocks that
+    grant from being created on the user's behalf until they've already
+    signed in once with the flag off. The workaround is a one-time
+    "dance" per user (flip off, sign in, flip back on) or a tenant
+    admin pre-granting the OIDC scopes.
+
+    RECOMMENDED POSTURE for production: leave `-AssignmentRequired`
+    off, use `-CreateAppRoles`, and assign users/groups to the `admin`
+    / `user` roles in Entra (via Set-PortalAuthAssignments.ps1 or
+    "Enterprise applications > Users and groups"). The role assignment
+    list IS the allowlist for the Roles posture — the portal engine's
+    role-authoritative branch denies any signed-in principal whose JWT
+    does not carry an `admin` or `user` role claim. With v0.1.33+ the
+    engine is deny-by-default (PORTAL_AUTHZ_DEFAULT_ROLE defaults to
+    `none`), so no env-var allowlist is needed. The legacy
+    PORTAL_AUTHZ_ADMIN_GROUPS / PORTAL_AUTHZ_USER_GROUPS allowlists
+    are bypassed entirely when the JWT carries any roles[] claim;
+    only populate them when running without -CreateAppRoles.
 
 .PARAMETER OutputFile
     Path to write a JSON summary { tenantId, clientId, objectId, redirectUri }.
@@ -106,15 +135,24 @@
 
 .EXAMPLE
     .\Setup-PortalAuth.ps1 -ServiceTreeId <your-service-tree-id> `
-        -EnvName prodstamp -CreateAppRoles -AssignmentRequired
+        -EnvName prodstamp -CreateAppRoles
 
-    Creates a new app with 'admin' and 'user' app roles AND sets
-    appRoleAssignmentRequired=true on the service principal. Only users
-    explicitly assigned to one of the roles can sign in. This is the
-    recommended posture for production stamps consuming the role-driven
-    authorization engine. The portal matches the JWT roles claim by
-    case-insensitive equality against the canonical values 'admin' and
-    'user' — no override env vars; the values are fixed.
+    Creates a new app with 'admin' and 'user' app roles for production.
+    `appRoleAssignmentRequired` is left at its safe default (false), so
+    the first sign-in by each assigned admin does not trip the
+    AADSTS90094 admin-consent gate in restricted tenants. Lockdown is
+    enforced by the portal engine: with v0.1.33+ deny-by-default,
+    assigned principals get `admin` / `user` from the JWT roles claim;
+    unassigned signed-in users are denied at the portal layer. The
+    portal matches the JWT roles claim by case-insensitive equality
+    against the canonical values 'admin' and 'user' — no override env
+    vars; the values are fixed. Do NOT also populate
+    PORTAL_AUTHZ_ADMIN_GROUPS in the stamp's .env — it is bypassed
+    by the role-authoritative branch when roles[] is present.
+
+    To additionally turn on `appRoleAssignmentRequired=true` (opt-in,
+    read the caveat under -AssignmentRequired first), pass
+    `-AssignmentRequired` as well.
 
 .EXAMPLE
     .\Setup-PortalAuth.ps1 -ServiceTreeId <your-service-tree-id> `

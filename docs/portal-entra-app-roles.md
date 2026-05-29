@@ -60,29 +60,75 @@ admin/user, define a new app role (e.g. `auditor`) and check it
 explicitly in code against the JWT `roles` claim — don't try to alias
 custom names onto the built-in admin/user buckets.
 
-### 2. Enable `appRoleAssignmentRequired=true` on the Enterprise Application
+### 2. Enable lockdown (the recommended path)
 
-Open **Enterprise applications → your app → Properties** and set
-**Assignment required?** to **Yes**.
+The portal's authorization engine is **deny-by-default** (since
+v0.1.33): a signed-in principal that carries no `admin`/`user` role
+claim is denied at the portal layer rather than silently granted
+`user`. This is the secure baseline and requires no env-var
+configuration.
 
-This is part of the recommended setup, not a deferred extra. Without it, any
-user in your tenant can complete sign-in and be denied at the portal layer
-instead of at the identity provider. With it on, unassigned users see an
-Entra-side rejection page before they ever reach the portal — quieter logs,
-fewer wasted token issuances, and a single source of truth for who has access.
+For production stamps, that is the entire lockdown setup:
 
-CLI equivalent:
+1. **Define app roles** (Step 1 above).
+2. **Assign principals to the roles** (Step 3 below) — the role
+   assignment in Entra **is** the allowlist for the Roles posture.
+   Assigned principals get a `roles` claim and are admitted as `admin`
+   or `user`; unassigned signed-in users are denied by the engine's
+   deny-by-default behavior.
+
+Do **not** also populate `PORTAL_AUTHZ_ADMIN_GROUPS` /
+`PORTAL_AUTHZ_USER_GROUPS` in the stamp's `.env` when using Roles
+posture. The engine's role-authoritative branch (item 2 in
+*Precedence Semantics* below) ignores those allowlists entirely when
+`roles[]` is present in the JWT — populating them creates a second,
+silently-bypassed source of truth.
+
+The legacy email allowlist (`PORTAL_AUTHZ_ADMIN_GROUPS` /
+`PORTAL_AUTHZ_USER_GROUPS`) is an **alternative** posture for stamps
+that don't want to do per-stamp Entra role assignments. In that
+posture you skip `-CreateAppRoles`, leave
+`PORTAL_AUTHZ_DEFAULT_ROLE=none`, and populate the email allowlists.
+The engine consults them since no role claim is present.
+
+For the legacy "any tenant user gets `user`" open posture (sandbox
+stamps only), explicitly set `PORTAL_AUTHZ_DEFAULT_ROLE=user` in the
+stamp's `.env`. Without that, the engine denies all non-matched
+principals.
+
+### 2b. Advanced: also enable `appRoleAssignmentRequired=true` (optional)
+
+Some operators want Entra itself to block unassigned users before any
+token is issued, so denied users see an Entra-side rejection page
+instead of the portal's "not authorized" page. To do that, flip
+`appRoleAssignmentRequired=true` on the Enterprise Application:
 
 ```bash
 az ad sp update --id <enterprise-app-object-id> \
   --set appRoleAssignmentRequired=true
 ```
 
-> **No admin consent required.** The portal app reg declares no API
-> permissions and the SPA requests only OIDC standard scopes (`openid`,
-> `profile`) at sign-in, so flipping `appRoleAssignmentRequired=true`
-> does not block sign-in on a tenant-admin consent grant. Assigned users
-> sign in cleanly with zero consent prompt.
+…or pass `-AssignmentRequired` to `Setup-PortalAuth.ps1` at create time.
+
+> ⚠️ **Caveat — tenants with restricted user-consent.** In tenants
+> where user-consent is restricted to verified-publisher apps (e.g.
+> the Microsoft corporate tenant), flipping
+> `appRoleAssignmentRequired=true` causes the first sign-in by every
+> assigned principal to trip an `AADSTS90094` admin-consent prompt for
+> the OIDC scopes (`openid profile offline_access`) against Microsoft
+> Graph — even though this app declares no API permissions. The flag
+> blocks the implicit user-consent grant from being created on the
+> user's behalf until they've already signed in once with the flag off.
+>
+> If you hit this, either:
+> - Have a tenant admin pre-grant the OIDC scopes for the app
+>   (`oauth2PermissionGrant` for `00000003-0000-0000-c000-000000000000`,
+>   scope `openid profile offline_access`, consentType `AllPrincipals`), or
+> - Do the one-time per-user dance: flip the flag off, have the user
+>   sign in once to accept user-consent, then flip the flag back on, or
+> - Skip this step entirely and rely on Step 2 (engine deny-by-default
+>   + role assignments) for lockdown. This is the recommended path for
+>   most stamps.
 
 ### 3. Assign roles
 
@@ -119,7 +165,9 @@ Concretely, the engine evaluation order is:
 1. Token absent → unauthenticated branch (`PORTAL_AUTH_ALLOW_UNAUTHENTICATED`)
 2. Token present **with** `roles` → role-authoritative branch (see below)
 3. Token present **without** `roles` → email-allowlist branch (unchanged)
-4. Token present, no allowlists configured → default role
+4. Token present, no allowlists configured → driven by
+   `PORTAL_AUTHZ_DEFAULT_ROLE`: `none` (the default since v0.1.33)
+   denies; `user` or `admin` admits with that role.
 
 When the role-authoritative branch runs and no role matches `admin`/`user`,
 the principal is denied with a stable reason string
@@ -155,20 +203,29 @@ understand the gap.
   What happens next depends on whether you have an allowlist configured:
   - **With an email allowlist** (`PORTAL_AUTHZ_ADMIN_GROUPS` or
     `PORTAL_AUTHZ_USER_GROUPS` set): unmatched users are denied at the portal
-    layer. This is the supported staged-rollout posture.
-  - **Without any email allowlist**: the portal admits role-less principals
-    as the configured `defaultRole` (`user` by default). Staged rollout is
-    **not a security posture** in this configuration — any tenant user gets
-    `user` access until step 2 (`appRoleAssignmentRequired=true`) is enabled.
-    Either configure an allowlist for the rollout window, or close the gap
-    immediately by completing step 2.
+    layer. This is the supported staged-rollout posture and the recommended
+    production posture in restricted tenants.
+  - **Without any email allowlist AND with `PORTAL_AUTHZ_DEFAULT_ROLE`
+    unset or `=none`** (the default since v0.1.33): the portal engine
+    denies role-less principals at the portal layer. Functionally
+    equivalent to flipping `appRoleAssignmentRequired=true`, just
+    enforced one hop later (portal instead of Entra).
+  - **Without any email allowlist AND with
+    `PORTAL_AUTHZ_DEFAULT_ROLE=user`** (legacy open posture, explicit
+    opt-in): the portal admits role-less principals as `user`. Use this
+    only for sandbox stamps — it is **not a security posture** for
+    production.
 - Side effect: portal logs will see more denied principals than they
-  otherwise would (allowlist case). This is harmless but noisier.
+  otherwise would (allowlist / deny-by-default case). This is harmless
+  but noisier than the Entra-side rejection path.
 - Side effect: tenant users get a portal-side "you're not allowed" response
   instead of an Entra-side rejection, which is a slightly worse UX.
 
-Close the gap by completing step 2 (enable assignment-required) as soon as
-the role-driven path is verified working.
+For most stamps the engine deny-by-default + Entra role assignments
+combo is the **preferred** lockdown posture — it avoids the
+AADSTS90094 admin-consent caveat documented in Step 2b. Flip
+`appRoleAssignmentRequired=true` only when you have tenant-admin
+support to pre-grant OIDC scopes.
 
 ## User-Visible Impact
 
