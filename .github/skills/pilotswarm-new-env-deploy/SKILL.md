@@ -155,7 +155,7 @@ Core
   subscription                  <discovered: ${sub} — ${subName}>
   location                      westus3 (default)
   region-short                  <derived from deploy-manifest.json>
-  foundry-enabled               y (default)
+  foundry-enabled               n (default)         # n | y; when 'y', also scaffolds foundry-deployments.json
 
 Edge / TLS
   edge-mode                     afd (default)         # afd | private
@@ -287,6 +287,21 @@ Two rules to avoid the trap:
    removes the readline-echo ambiguity, and is materially safer than
    an LLM driving a stdin stream.
 
+   **Sentinel-vs-empty trap (read this before editing).** The
+   scaffolder writes `__PS_UNSET__` into `.env` for every
+   `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` key the operator did not provide.
+   That sentinel is **the correct way to express "unset at runtime"** —
+   the portal runtime strips it from `process.env` at startup so the
+   engine sees the key as absent (and applies its own default — e.g.
+   `PORTAL_AUTHZ_DEFAULT_ROLE` falls through to `none` =
+   deny-by-default). The deploy-time `substitute-env.mjs` gate treats
+   **empty strings as "unresolved" and refuses to render manifests** —
+   only the sentinel passes. When editing `.env`:
+   - Replace `__PS_UNSET__` with a real value ONLY when you have one.
+   - To leave a key "unset", leave the sentinel in place. **Do not
+     replace `__PS_UNSET__` with an empty string** — that turns the
+     deploy gate into a failure at the portal-manifests step.
+
 2. **If you must drive interactively**, send **one answer per
    `write_powershell` call**, then `read_powershell` and confirm the
    *next* prompt has actually printed before sending the next answer.
@@ -305,9 +320,11 @@ grep -E '^(SUBSCRIPTION_ID|LOCATION|EDGE_MODE|TLS_SOURCE|ACME_EMAIL|PORTAL_AUTH_
 ```
 
 If any value looks wrong (especially `PORTAL_AUTHZ_DEFAULT_ROLE` not in
-`{user, admin}`, or `ACME_EMAIL` empty when `TLS_SOURCE=letsencrypt`,
-or `__PS_UNSET__` sentinels you didn't intend to leave), fix it with
-`edit` before invoking `deploy.mjs`. This check is mandatory after any
+`{user, admin}` when you wanted an explicit value, `ACME_EMAIL` empty
+when `TLS_SOURCE=letsencrypt`, `__PS_UNSET__` sentinels you didn't
+intend to leave, or — symmetrically — `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*`
+keys that are empty strings where they should be `__PS_UNSET__`), fix
+it with `edit` before invoking `deploy.mjs`.This check is mandatory after any
 interactive run because of the readline-echo trap; it's cheap insurance
 after non-interactive runs too.
 
