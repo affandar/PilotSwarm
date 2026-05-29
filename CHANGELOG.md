@@ -1,11 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.34 — 2026-05-29
 
 ### Portal — Deny-by-default authz
 
 - **Breaking-ish: `PORTAL_AUTHZ_DEFAULT_ROLE` now defaults to `none`
-  (deny).** Pre-v0.1.33, a signed-in principal that carried no `roles`
+  (deny).** Pre-v0.1.34, a signed-in principal that carried no `roles`
   claim AND matched no email allowlist was silently admitted as `user`.
   That left every `entra`-provider portal stamp without an explicit
   allowlist open to the entire tenant unless
