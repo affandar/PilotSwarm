@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.1.34** — Portal deny-by-default authz: signed-in principals without a `roles` claim or email allowlist match are now denied at the portal layer; `Setup-PortalAuth.ps1 -CreateAppRoles` plus Entra role assignments is the recommended lockdown, and `appRoleAssignmentRequired` defaults to `false` to avoid AADSTS90094 admin-consent prompts in restricted tenants. See [`docs/portal-entra-app-roles.md`](docs/portal-entra-app-roles.md) for migration guidance.
+> **Latest release: v0.1.35** — Hotfix: `pilotswarm-sdk` now declares `@opentelemetry/api` as a direct dependency (it was hard-imported by `session-proxy.ts` in v0.1.33+ but not listed in `package.json`, so standalone installs crashed at import time). No behavior change. v0.1.34 release notes remain accurate for portal authz behavior.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

@@ -17,7 +17,7 @@ Either:
 - **Docker quickstart** (easiest): `docker run -d -p 127.0.0.1:3001:3001 -p 127.0.0.1:2222:2222 -e GITHUB_TOKEN -v pilotswarm-data:/data --name pilotswarm-starter affandar/pilotswarm-starter:latest`, then `ssh -p 2222 pilotswarm@localhost` (password: `pilotswarm`).
 - **From source**: clone the repo, run `npm install && npm run build`, set up `.env` (see [getting-started.md](../getting-started.md)), then `./run.sh local --db`.
 
-For a pinned Docker quickstart, replace `latest` with `0.1.34`.
+For a pinned Docker quickstart, replace `latest` with `0.1.35`.
 
 In either case you'll land on the **Sessions** pane focused on the left.
 That's the entry point for everything below.

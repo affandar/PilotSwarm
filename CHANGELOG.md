@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.35 — 2026-05-29
+
+### SDK — Hotfix: declare `@opentelemetry/api` as a dependency
+
+- `packages/sdk/src/session-proxy.ts` hard-imports
+  `@opentelemetry/api` (added in v0.1.33 alongside the SigNoz
+  observability work) but the package was not declared in
+  `packages/sdk/package.json` dependencies. Any consumer that
+  installed `pilotswarm-sdk@0.1.33` or `0.1.34` standalone
+  (i.e. not inside this monorepo) would crash on first import
+  with `ERR_MODULE_NOT_FOUND: Cannot find package
+  '@opentelemetry/api'`. Adds `^1.9.0` as a direct dep so
+  fresh installs are self-contained.
+- No behavior change. No API change. SDK consumers that already
+  worked around this by adding `@opentelemetry/api` to their own
+  `package.json` can keep that pin or drop it — either resolves
+  to the same version.
+
 ## 0.1.34 — 2026-05-29
 
 ### Portal — Deny-by-default authz
