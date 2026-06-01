@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "live.critical-path.runtime-durable-wait",
+  "description": "A managed live PilotSwarm worker uses the built-in durable wait tool for a deployment drain checkpoint and records lifecycle events.",
+  "agent": "default",
+  "tools": [],
+  "tags": ["live-critical-path", "live-capable", "runtime", "durable", "wait"],
+  "input": {
+    "prompt": "Use the built-in wait tool to run a 2 second deployment drain checkpoint. After the wait completes, reply exactly: WAIT_E2E_DONE"
+  },
+  "checks": [
+    { "type": "tool-call", "name": "wait", "args": { "seconds": 2 }, "match": "subset" },
+    { "type": "cms-events-contain", "events": ["session.wait_started", "session.dehydrated", "session.hydrated", "session.wait_completed", "session.turn_completed"] },
+    { "type": "cms-events-order", "before": "session.wait_started", "after": "session.wait_completed" },
+    { "type": "response-contains", "all": ["WAIT_E2E_DONE"] }
+  ],
+  "runs": { "timeoutMs": 900000 }
+}

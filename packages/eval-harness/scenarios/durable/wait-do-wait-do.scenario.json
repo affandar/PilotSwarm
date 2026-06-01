@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "wait.do-wait-do",
+  "description": "Deploy validation computes the initial impact, waits durably for a checkpoint that triggers session dehydration, then completes the rollback calculation after rehydration.",
+  "agent": "default",
+  "tools": ["test_add"],
+  "tags": ["durable", "critical-path", "smoke", "cheap"],
+  "input": {
+    "prompt": "For the deploy rollback runbook, combine 3 canary failures with 4 shard issues to get the initial impact. Wait 2 seconds for the durable validation checkpoint. Then double the impact across the two affected clusters. Report the final blast radius."
+  },
+  "checks": [
+    { "type": "cms-events-contain", "events": ["session.wait_started", "session.dehydrated", "session.hydrated", "session.wait_completed"] },
+    { "type": "cms-events-order", "before": "session.wait_started", "after": "session.wait_completed" },
+    { "type": "tool-call-count", "min": 1 },
+    { "type": "response-contains", "any": ["14"] }
+  ],
+  "runs": { "timeoutMs": 240000 }
+}

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "live-smoke",
+  "description": "Minimal opt-in live PilotSwarm worker/client smoke.",
+  "scenarios": "./scenarios.jsonl",
+  "defaults": {
+    "driver": "live",
+    "isolation": "fresh-worker",
+    "timeoutMs": 180000
+  },
+  "filters": {
+    "includeTags": [
+      "runtime"
+    ]
+  },
+  "reporters": [
+    "console"
+  ],
+  "output": {
+    "reportsDir": ".eval-results/live-smoke"
+  },
+  "llmJudge": {
+    "enabled": true,
+    "provider": "copilot",
+    "judgeModel": "gpt-5.4",
+    "totalBudgetUsd": 0.1,
+    "onMissingProvider": "error"
+  }
+}

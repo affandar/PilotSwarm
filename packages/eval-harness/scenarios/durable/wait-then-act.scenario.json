@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "durable-trajectory",
+  "id": "wait.then-act",
+  "description": "Incident runbook waits durably for the drain checkpoint that triggers session dehydration, then completes the calculation after rehydration.",
+  "agent": "default",
+  "tools": ["test_add"],
+  "tags": ["durable", "critical-path", "smoke", "cheap"],
+  "input": {
+    "prompt": "For the incident drain runbook, wait 2 seconds for the durable drain checkpoint, then combine 6 checkout retries and 8 payment retries. Report the total affected requests."
+  },
+  "checks": [
+    { "type": "cms-events-contain", "events": ["session.wait_started", "session.dehydrated", "session.hydrated", "session.wait_completed"] },
+    { "type": "cms-events-order", "before": "session.wait_started", "after": "session.wait_completed" },
+    { "type": "tool-call-count", "min": 1 },
+    { "type": "response-contains", "any": ["14"] }
+  ],
+  "runs": { "timeoutMs": 240000 }
+}
