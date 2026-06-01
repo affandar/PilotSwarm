@@ -49,7 +49,8 @@ Notes:
     - A full run (no suite filter) also runs the deploy-scripts tests
       (node --test against deploy/scripts/test/*.test.mjs) and the
       mcp-server unit tests (node) before the SDK suites. Set
-      SKIP_DEPLOY_SCRIPTS_TESTS=1 or SKIP_MCP_SERVER_TESTS=1 to skip.
+      SKIP_DEPLOY_SCRIPTS_TESTS=1, SKIP_MCP_SERVER_TESTS=1, or
+      SKIP_EVAL_HARNESS_TESTS=1 to skip.
       The mcp-server LIVE integration suite is opt-in via
       `npm run test:mcp-server:integration` (or :all).
 EOF
@@ -103,6 +104,16 @@ run_mcp_server_tests() {
     echo "🧪 Running mcp-server unit tests (node)..."
     (cd "$REPO_ROOT" && npm run --silent test:mcp-server) \
         || { echo "❌ mcp-server tests failed"; exit 1; }
+}
+
+run_eval_harness_tests() {
+    if [ "${SKIP_EVAL_HARNESS_TESTS:-0}" = "1" ]; then
+        echo "⏭  Skipping eval-harness tests (SKIP_EVAL_HARNESS_TESTS=1)."
+        return 0
+    fi
+    echo "🧪 Running eval-harness tests (vitest)..."
+    (cd "$REPO_ROOT" && npm run --silent test --workspace=pilotswarm-eval-harness) \
+        || { echo "❌ eval-harness tests failed"; exit 1; }
 }
 
 # Suppress duroxide Rust WARN logs in tests (AKS workers use INFO via their own env)
@@ -164,5 +175,6 @@ if [ ${#TARGET_FILES[@]} -gt 0 ]; then
 else
     run_deploy_scripts_tests
     run_mcp_server_tests
+    run_eval_harness_tests
     exec npx vitest "${VITEST_ARGS[@]}"
 fi

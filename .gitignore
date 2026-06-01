@@ -11,6 +11,7 @@ vendor/
 nohup.out
 dumps/
 perf/reports/
+*.eval-results/
 TODO.md
 docs/inbox/
 .portal.pids
