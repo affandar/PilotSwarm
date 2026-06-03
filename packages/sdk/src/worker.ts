@@ -13,6 +13,7 @@ import { loadAgentFiles } from "./agent-loader.js";
 import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
+import { selectEnvelopeCrypto } from "./envelope-crypto.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { createFactStoreForUrl, PgFactStore, type FactStore } from "./facts-store.js";
 import { createSweeperTools } from "./sweeper-tools.js";
@@ -192,6 +193,9 @@ export class PilotSwarmWorker {
         // Load model providers: explicit file path > auto-discover > env vars fallback
         this._modelProviders = loadModelProviders(options.modelProvidersPath);
 
+        // Select envelope-crypto backend based on env (null when no OBO scope).
+        const envelopeCrypto = selectEnvelopeCrypto(process.env);
+
         this.sessionManager = new SessionManager(
             options.githubToken,
             this.sessionStore,
@@ -212,6 +216,7 @@ export class PilotSwarmWorker {
                 turnTimeoutMs: options.turnTimeoutMs,
             },
             effectiveSessionStateDir,
+            envelopeCrypto,
         );
     }
 

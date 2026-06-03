@@ -11,6 +11,8 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./k
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
+import type { EnvelopeCrypto } from "./envelope-crypto.js";
+import { UserContextStore } from "./user-context-store.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -191,16 +193,32 @@ export class SessionManager {
     private _getLineageSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
     /** Per-session critical sections; protects the SDK session handle and local session.db. */
     private sessionLocks = new Map<string, Promise<void>>();
+    /** Envelope crypto backend; null when no OBO downstream scope is configured. */
+    private envelopeCrypto: EnvelopeCrypto | null = null;
+    /** In-memory store of per-session user contexts (Phase 1 minimal). */
+    private userContextStore = new UserContextStore();
 
     constructor(
         private githubToken?: string,
         sessionStore?: SessionStateStore | null,
         workerDefaults?: WorkerDefaults,
         sessionStateDir?: string,
+        envelopeCrypto?: EnvelopeCrypto | null,
     ) {
         this.sessionStore = sessionStore ?? null;
         this.workerDefaults = workerDefaults ?? {};
         this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
+        this.envelopeCrypto = envelopeCrypto ?? null;
+    }
+
+    /** Returns the configured envelope-crypto backend, or null when OBO is disabled. */
+    getEnvelopeCrypto(): EnvelopeCrypto | null {
+        return this.envelopeCrypto;
+    }
+
+    /** Returns the per-worker user-context store. */
+    getUserContextStore(): UserContextStore {
+        return this.userContextStore;
     }
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */

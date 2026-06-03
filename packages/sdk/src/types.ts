@@ -836,3 +836,75 @@ export interface SessionStatusSignal {
     retriesExhausted?: boolean;
     contextUsage?: SessionContextUsage;
 }
+
+// ─── User OBO Envelope (Phase 1) ────────────────────────────────
+// Plaintext shape used inside pod memory only. Carries principal claims
+// plus optional user access token for downstream OBO exchanges.
+// See ImplementationPlan.md Phase 1.
+
+export interface PrincipalClaims {
+    provider: string;
+    subject: string;
+    email: string | null;
+    displayName: string | null;
+}
+
+/**
+ * Plaintext user envelope. NEVER written to durable queue or activity input.
+ * Token fields are nullable to allow principal-only carriage when no
+ * downstream worker scope is configured (FR-002 / SC-002 / P1 scenario 2).
+ */
+export interface UserEnvelope {
+    provider: string;
+    subject: string;
+    email: string | null;
+    displayName: string | null;
+    accessToken: string | null;
+    accessTokenExpiresAt: number | null;
+}
+
+/**
+ * Wire ciphertext shape (versioned). AES-GCM ciphertext over
+ * {accessToken, accessTokenExpiresAt} plus a KEK-wrapped DEK.
+ * kekKid is the AKV key URL with version (or "plaintext-mode" for
+ * the dev-only PlaintextEnvelopeCrypto backend; cross-mode interpretation
+ * is REFUSED at decrypt time).
+ */
+export interface EnvelopeCipher {
+    /** AES-GCM ciphertext, base64. */
+    ciphertext: string;
+    /** AES-GCM 12-byte nonce, base64. */
+    iv: string;
+    /** AES-GCM 16-byte tag, base64. */
+    tag: string;
+    /** KEK-wrapped 32-byte DEK, base64. */
+    wrappedDek: string;
+    /** AKV key URL with version, or "plaintext-mode" sentinel. */
+    kekKid: string;
+}
+
+/**
+ * The on-the-wire carrier travelling in queue payloads and unTurn
+ * activity input. Principal claims are plaintext (not secret). Token
+ * material is encrypted (or absent when no OBO scope is configured).
+ *
+ * Field name on the wire: nvelope (NOT nvelopeCipher) — reflects
+ * that it carries plaintext principal + optional ciphertext.
+ */
+export interface UserEnvelopeCarrier {
+    /** Carrier-shape version. Always 1 for Phase 1. */
+    v: 1;
+    principal: PrincipalClaims;
+    /** Null when no OBO scope configured for the deployment. */
+    accessTokenCipher: EnvelopeCipher | null;
+}
+
+/**
+ * Lookup return type (Phase 2 exposes the public lookup; Phase 1 stores
+ * this shape in the in-memory UserContextStore).
+ */
+export interface UserContext {
+    principal: PrincipalClaims;
+    accessToken: string | null;
+    accessTokenExpiresAt: number | null;
+}

@@ -438,7 +438,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; retryCount?: number; clientMessageIds?: string[] },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; retryCount?: number; clientMessageIds?: string[]; envelope?: import("./types.js").UserEnvelopeCarrier | null },
         ) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
@@ -455,6 +455,7 @@ export function createSessionProxy(
                     ...(turnMeta?.clientMessageIds && turnMeta.clientMessageIds.length > 0
                         ? { clientMessageIds: turnMeta.clientMessageIds }
                         : {}),
+                    ...(turnMeta?.envelope ? { envelope: turnMeta.envelope } : {}),
                 },
                 affinityKey,
             );
@@ -653,9 +654,57 @@ export function registerActivities(
             nestingLevel?: number;
             requiredTool?: string;
             retryCount?: number;
+            envelope?: import("./types.js").UserEnvelopeCarrier | null;
         },
     ): Promise<TurnResult> => {
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId}`);
+
+        // ── User envelope decrypt + UserContextStore population ───
+        // Run before any business logic so tools invoked during the turn
+        // can consume user context via the (Phase 2) lookup. Population
+        // happens whether or not `accessTokenCipher` is null — that
+        // satisfies Spec P1 scenario 2 (no OBO scope → principal+null token).
+        if (input.envelope && input.envelope.v === 1 && input.envelope.principal) {
+            try {
+                const principal = input.envelope.principal;
+                let accessToken: string | null = null;
+                let accessTokenExpiresAt: number | null = null;
+                if (input.envelope.accessTokenCipher) {
+                    const crypto = sessionManager.getEnvelopeCrypto();
+                    if (!crypto) {
+                        activityCtx.traceInfo(
+                            `[runTurn] envelope carries accessTokenCipher but no envelopeCrypto is configured on this worker; ignoring token portion (principal still populated)`,
+                        );
+                    } else {
+                        try {
+                            const decrypted = await crypto.decrypt(input.envelope.accessTokenCipher);
+                            accessToken = decrypted.accessToken ?? null;
+                            accessTokenExpiresAt = decrypted.accessTokenExpiresAt ?? null;
+                        } catch (decryptErr: any) {
+                            // Persistent failure surfaces in Phase 4 as a structured
+                            // service_unavailable outcome. For Phase 1, log and
+                            // populate principal-only so identity-aware tools still
+                            // function while token-dependent tools see null.
+                            activityCtx.traceInfo(
+                                `[runTurn] envelope decrypt failed: ${decryptErr?.message ?? decryptErr} (populating principal-only)`,
+                            );
+                        }
+                    }
+                }
+                sessionManager.getUserContextStore().setUserContext(input.sessionId, {
+                    provider: principal.provider,
+                    subject: principal.subject,
+                    email: principal.email ?? null,
+                    displayName: principal.displayName ?? null,
+                    accessToken,
+                    accessTokenExpiresAt,
+                });
+            } catch (envErr: any) {
+                activityCtx.traceInfo(
+                    `[runTurn] envelope processing failed (non-fatal): ${envErr?.message ?? envErr}`,
+                );
+            }
+        }
 
         const turnTelemetry = {
             tokensInput: 0,
@@ -2043,6 +2092,12 @@ export function registerActivities(
         _ctx: any,
         input: { sessionId: string },
     ): Promise<void> => {
+        // Clear user-context entry on terminal cleanup so a future
+        // session with the same id (or sub-agent chain walks) cannot
+        // resolve to stale token material.
+        try {
+            sessionManager.getUserContextStore().clear(input.sessionId);
+        } catch { /* best-effort */ }
         await sessionManager.destroySession(input.sessionId);
     });
 
