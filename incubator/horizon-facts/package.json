@@ -1,0 +1,37 @@
+{
+  "name": "@incubator/horizon-facts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "INCUBATING — Enhanced facts interface implemented on top of Azure HorizonDB (pg_textsearch + AI pipelines + AGE graph + pg_durable). Not wired into PilotSwarm. Lives outside packages/* on purpose.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "node --test test/*.test.mjs",
+    "test:integration": "node --test test/integration/*.test.mjs",
+    "poc:lexical": "node poc/01-lexical.mjs",
+    "poc:semantic": "node poc/02-semantic.mjs",
+    "poc:graph": "node poc/03-graph.mjs",
+    "poc:hybrid": "node poc/04-hybrid.mjs",
+    "poc:crawler": "node poc/05-crawler.mjs"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
