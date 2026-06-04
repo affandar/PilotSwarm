@@ -82,6 +82,28 @@ function requireUserPrincipal(authContext, methodName) {
     return principal;
 }
 
+/**
+ * Build a UserEnvelopeCarrier from the auth context if a principal is present.
+ *
+ * Phase 1B: Attaches the principal claims so worker-side tool handlers can
+ * resolve user identity via getUserContextStore(). The accessTokenCipher is
+ * null today; Phase 3 wires the MSAL-acquired downstream-scope token here
+ * (encrypted via the worker's EnvelopeCrypto, KEK in inherited base-infra AKV).
+ *
+ * Returns null when the request has no authenticated principal (anonymous /
+ * local-TUI / system-driven RPC). The orchestration treats absent envelope
+ * as "no per-user identity bound to this turn".
+ */
+function buildUserEnvelope(authContext) {
+    const principal = normalizeSessionOwner(authContext);
+    if (!principal) return null;
+    return {
+        v: 1,
+        principal,
+        accessTokenCipher: null,
+    };
+}
+
 export class PortalRuntime {
     constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
@@ -251,7 +273,8 @@ export class PortalRuntime {
                     groupId: safeParams.groupId,
                     owner,
                 });
-            case "createSessionForAgent":
+            case "createSessionForAgent": {
+                const envelope = buildUserEnvelope(authContext);
                 return this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
@@ -260,15 +283,25 @@ export class PortalRuntime {
                     initialPrompt: safeParams.initialPrompt,
                     groupId: safeParams.groupId,
                     owner,
+                    ...(envelope ? { envelope } : {}),
                 });
+            }
             case "listCreatableAgents":
                 return this.transport.listCreatableAgents();
             case "getSessionCreationPolicy":
                 return this.transport.getSessionCreationPolicy();
-            case "sendMessage":
-                return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, safeParams.options);
-            case "sendAnswer":
-                return this.transport.sendAnswer(safeParams.sessionId, safeParams.answer);
+            case "sendMessage": {
+                const envelope = buildUserEnvelope(authContext);
+                const options = {
+                    ...(safeParams.options || {}),
+                    ...(envelope ? { envelope } : {}),
+                };
+                return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, options);
+            }
+            case "sendAnswer": {
+                const envelope = buildUserEnvelope(authContext);
+                return this.transport.sendAnswer(safeParams.sessionId, safeParams.answer, envelope ? { envelope } : undefined);
+            }
             case "cancelPendingMessage":
                 return this.transport.cancelPendingMessage(safeParams.sessionId, safeParams.clientMessageIds);
             case "renameSession":

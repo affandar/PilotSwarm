@@ -1,4 +1,4 @@
-import type { OrchestrationInput, TurnResult } from "../types.js";
+import type { OrchestrationInput, TurnResult, UserEnvelopeCarrier } from "../types.js";
 import { SESSION_STATE_MISSING_PREFIX } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
 import { planWaitHandling } from "../wait-affinity.js";
@@ -199,6 +199,7 @@ export function* processPrompt(
     isBootstrap: boolean,
     requiredTool?: string,
     clientMessageIds?: string[],
+    envelope?: UserEnvelopeCarrier | null,
 ): Generator<any, void, any> {
     const { ctx, state } = runtime;
     let prompt = promptText;
@@ -293,6 +294,7 @@ export function* processPrompt(
             ...(requiredTool ? { requiredTool } : {}),
             retryCount: state.retryCount,
             ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
+            ...(envelope ? { envelope } : {}),
         });
     } catch (err: any) {
         state.config.turnSystemPrompt = undefined;

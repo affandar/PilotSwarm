@@ -23,6 +23,7 @@ import type {
     SessionContextUsage,
     SessionOwnerInfo,
     SessionSummaryState,
+    UserEnvelopeCarrier,
 } from "./types.js";
 import type { SessionCatalogProvider, SessionRow, TopEventEmitterRow } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
@@ -1587,7 +1588,7 @@ export class PilotSwarmManagementClient {
     async sendMessage(
         sessionId: string,
         prompt: string,
-        options?: { clientMessageIds?: string[] },
+        options?: { clientMessageIds?: string[]; envelope?: UserEnvelopeCarrier | null },
     ): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
@@ -1626,6 +1627,9 @@ export class PilotSwarmManagementClient {
         const payload: Record<string, unknown> = { prompt };
         if (options?.clientMessageIds && options.clientMessageIds.length > 0) {
             payload.clientMessageIds = options.clientMessageIds;
+        }
+        if (options?.envelope) {
+            payload.envelope = options.envelope;
         }
         await this._duroxideClient.enqueueEvent(
             orchId,
@@ -1678,14 +1682,22 @@ export class PilotSwarmManagementClient {
     /**
      * Send an answer to a pending question from a session.
      */
-    async sendAnswer(sessionId: string, answer: string): Promise<void> {
+    async sendAnswer(
+        sessionId: string,
+        answer: string,
+        options?: { envelope?: UserEnvelopeCarrier | null },
+    ): Promise<void> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
+        const payload: Record<string, unknown> = { answer, wasFreeform: true };
+        if (options?.envelope) {
+            payload.envelope = options.envelope;
+        }
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
-            JSON.stringify({ answer, wasFreeform: true }),
+            JSON.stringify(payload),
         );
     }
 

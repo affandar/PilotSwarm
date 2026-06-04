@@ -17,6 +17,7 @@ import type {
     CommandResponse,
     SessionResponsePayload,
     SessionOwnerInfo,
+    UserEnvelopeCarrier,
 } from "./types.js";
 import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
@@ -199,6 +200,7 @@ export class PilotSwarmClient {
         initialPrompt?: string;
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
+        envelope?: UserEnvelopeCarrier | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -230,7 +232,10 @@ export class PilotSwarmClient {
         });
 
         if (opts?.initialPrompt) {
-            await session.send(opts.initialPrompt, { bootstrap: true });
+            await session.send(opts.initialPrompt, {
+                bootstrap: true,
+                ...(opts?.envelope ? { envelope: opts.envelope } : {}),
+            });
         }
 
         return session;
@@ -493,7 +498,7 @@ export class PilotSwarmClient {
     private async _ensureOrchestrationAndSend(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] },
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; envelope?: UserEnvelopeCarrier | null },
     ): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
         const _trace = this.config.traceWriter ?? (() => {});
@@ -598,6 +603,7 @@ export class PilotSwarmClient {
                 ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
                     ? { clientMessageIds: opts.clientMessageIds }
                     : {}),
+                ...(opts?.envelope ? { envelope: opts.envelope } : {}),
             }),
         );
         trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
@@ -613,7 +619,7 @@ export class PilotSwarmClient {
         onUserInput: UserInputHandler | undefined,
         timeout?: number,
         onIntermediateContent?: (content: string) => void,
-        opts?: { bootstrap?: boolean; signal?: AbortSignal; requiredTool?: string },
+        opts?: { bootstrap?: boolean; signal?: AbortSignal; requiredTool?: string; envelope?: UserEnvelopeCarrier | null },
     ): Promise<string | undefined> {
         const orchestrationId = await this._ensureOrchestrationAndSend(sessionId, prompt, opts);
 
@@ -631,7 +637,7 @@ export class PilotSwarmClient {
     async _startTurn(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] },
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; envelope?: UserEnvelopeCarrier | null },
     ): Promise<string> {
         return this._ensureOrchestrationAndSend(sessionId, prompt, opts);
     }
@@ -1059,7 +1065,7 @@ export class PilotSwarmSession {
         prompt: string,
         timeout?: number,
         onIntermediateContent?: (content: string) => void,
-        opts?: { signal?: AbortSignal; requiredTool?: string },
+        opts?: { signal?: AbortSignal; requiredTool?: string; envelope?: UserEnvelopeCarrier | null },
     ): Promise<string | undefined> {
         return this.client._startAndWait(
             this.sessionId,
@@ -1071,7 +1077,7 @@ export class PilotSwarmSession {
         );
     }
 
-    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] }): Promise<void> {
+    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; envelope?: UserEnvelopeCarrier | null }): Promise<void> {
         this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt, opts);
     }
 
