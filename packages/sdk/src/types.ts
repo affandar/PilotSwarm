@@ -884,11 +884,11 @@ export interface EnvelopeCipher {
 }
 
 /**
- * The on-the-wire carrier travelling in queue payloads and unTurn
+ * The on-the-wire carrier travelling in queue payloads and runTurn
  * activity input. Principal claims are plaintext (not secret). Token
  * material is encrypted (or absent when no OBO scope is configured).
  *
- * Field name on the wire: nvelope (NOT nvelopeCipher) — reflects
+ * Field name on the wire: envelope (NOT envelopeCipher) — reflects
  * that it carries plaintext principal + optional ciphertext.
  */
 export interface UserEnvelopeCarrier {
