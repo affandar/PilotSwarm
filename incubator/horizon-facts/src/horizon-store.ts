@@ -15,7 +15,7 @@ import type {
     ReadFactsQuery, RelAssertion, RelHit, RelQuery, RelRef, EntityRef, RelatedOpts,
     ScoredFact, SearchOpts, SearchResult, StoreFactInput, SubGraph,
 } from "./types.js";
-import type { HorizonFactsConfig } from "./config.js";
+import type { HorizonFactsConfig, EmbeddingEndpointConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { EmbeddingClient, toVectorLiteral } from "./embedding-client.js";
 import { setupSchema, prepareAgeSession } from "./migrations.js";
@@ -40,6 +40,16 @@ function namespaceOf(key: string): FactsStatsRow["namespace"] {
 }
 
 interface AclClause { sql: string; params: unknown[]; }
+
+/** Lifecycle state of the provider's background embedding generator. */
+export interface EmbedderStatus {
+    /** True while the durable embedder loop is pending/running. */
+    running: boolean;
+    /** The pg_durable instance id of the embedder loop, when one exists. */
+    instanceId?: string;
+    /** Raw pg_durable status (pending/running/completed/cancelled/failed). */
+    status?: string;
+}
 
 export class HorizonFactStore implements EnhancedFactStore, GraphCrawlerInterface {
     private pool: any;
@@ -75,6 +85,7 @@ export class HorizonFactStore implements EnhancedFactStore, GraphCrawlerInterfac
             graphName: this.graph,
             embeddingDim: this.cfg.embedding?.dim ?? 1536,
             enableSemantic: !!this.cfg.embedding,
+            annIndex: this.cfg.annIndex ?? "auto",
         });
         if (this.cfg.embedding) {
             this.httpEmbedding = await setupHttpEmbedding(this.pool, this.schema, this.cfg.embedding);
@@ -82,7 +93,7 @@ export class HorizonFactStore implements EnhancedFactStore, GraphCrawlerInterfac
         this.initialized = true;
     }
 
-    /** Whether the in-DB HTTP embedding pipeline is installed on this cluster. */
+    /** Whether the in-DB df.http embedding pipeline is installed on this cluster. */
     httpEmbeddingCapability(): HttpEmbeddingCapability | undefined {
         return this.httpEmbedding;
     }
@@ -213,37 +224,181 @@ export class HorizonFactStore implements EnhancedFactStore, GraphCrawlerInterfac
 
     // ─── embedding maintenance ────────────────────────────────────────────────
 
+    // ─── embedding lifecycle (provider-internal generator) ────────────────────
+    //
+    // Embedding generation is an INTERNAL capability of this provider, not part
+    // of the EnhancedFactStore contract. Callers never trigger embedding directly
+    // or wait on any df instance — they write facts and observe the result (the
+    // vector appears / semantic search returns the fact). The only public surface
+    // is the lifecycle: configureEmbedder / startEmbedder / stopEmbedder /
+    // embedderStatus. In production the generator is the durable pg_durable cron
+    // (df.loop → CALL embed_new_facts_durable → df.http per fact). The two methods
+    // below (_embedPendingNode / _embedNewFactsInDbOnce) are NOT production paths;
+    // they exist only as sanity checks that we call the embedding endpoint the
+    // right way, and are exercised by the provider's own integration tests.
+
     /**
-     * NODE FALLBACK for the in-DB HTTP pipeline. Pulls facts that need embedding,
-     * embeds them via the Node EmbeddingClient, and writes vectors back. Use this
-     * to bootstrap/test when the cluster lacks the `http` extension, or for
-     * environments that prefer host-side embedding. The production path is the
-     * pg_durable embed_new_facts() activity (sql/006).
+     * Stable pg_durable label for this schema's embedder loop instance.
+     * @internal
      */
-    async embedPending(batch = 128): Promise<number> {
-        if (!this.embedder) throw new Error("embedPending requires an embedding endpoint in config.");
+    private get embedderLabel(): string {
+        return `hz-embed-cron:${this.schema}`;
+    }
+
+    /**
+     * Set or replace the embedding endpoint config for this store (writes the
+     * single-row embedding_config table the df.http procedure reads, with the
+     * df.http allow-list host rewrite applied). Safe to call before or while the
+     * embedder is running; the running loop picks up the new config on its next
+     * tick. Requires the in-DB df.http pipeline to be installed.
+     */
+    async configureEmbedder(endpoint: EmbeddingEndpointConfig): Promise<HttpEmbeddingCapability> {
+        this.httpEmbedding = await setupHttpEmbedding(this.pool, this.schema, endpoint);
+        return this.httpEmbedding;
+    }
+
+    /**
+     * Start the durable background embedder: a pg_durable instance that, every
+     * `intervalSeconds`, embeds any facts whose content changed since their last
+     * embedding (embedding IS NULL OR last_embedded_hash <> content_hash). The
+     * cadence is a fixed interval via df.sleep (sub-minute granularity, which
+     * cron expressions can't express), wrapped in df.loop so it self-perpetuates
+     * durably:
+     *
+     *   df.loop( df.seq( df.sleep(intervalSeconds), df.sql("CALL embed_new_facts_durable") ) )
+     *
+     * The loop is pure scheduling; the per-fact df.http embedding lives in the
+     * procedure it CALLs. Idempotent: if a non-terminal instance for this schema
+     * already exists, returns it. Requires the in-DB df.http pipeline.
+     */
+    async startEmbedder(opts: { intervalSeconds?: number; batch?: number } = {}): Promise<EmbedderStatus> {
+        const intervalSeconds = opts.intervalSeconds ?? 5;
+        const batch = opts.batch ?? 128;
+        if (!this.httpEmbedding?.inDbHttp) {
+            throw new Error(
+                "startEmbedder requires the in-DB df.http pipeline; " +
+                `httpEmbeddingCapability(): ${JSON.stringify(this.httpEmbedding ?? null)}`);
+        }
+        if (!Number.isInteger(intervalSeconds) || intervalSeconds < 1) {
+            throw new Error(`intervalSeconds must be a positive integer, got ${intervalSeconds}`);
+        }
+        const existing = await this.embedderStatus();
+        if (existing.running) return existing;
+
         const s = ident(this.schema);
+        const call = `CALL ${s}.embed_new_facts_durable(${Number(batch)}, NULL)`;
+        await this.pool.query(
+            `SELECT df.start(
+                 df.loop(df.seq(df.sleep($1::bigint), df.sql($2))),
+                 $3, NULL) AS iid`,
+            [intervalSeconds, call, this.embedderLabel]);
+        return this.embedderStatus();
+    }
+
+    /**
+     * Stop the background embedder for this schema (if running). Returns the
+     * resulting status (running:false). No-op if already stopped.
+     */
+    async stopEmbedder(reason = "stopped by host"): Promise<EmbedderStatus> {
+        const st = await this.embedderStatus();
+        if (st.running && st.instanceId) {
+            await this.pool.query(`SELECT df.cancel($1, $2)`, [st.instanceId, reason]);
+        }
+        return this.embedderStatus();
+    }
+
+    /**
+     * Current embedder lifecycle state, derived from the most recent loop
+     * instance with this schema's label. `running` is true while the durable
+     * loop is pending/running; terminal statuses (completed/cancelled/failed)
+     * report running:false.
+     */
+    async embedderStatus(): Promise<EmbedderStatus> {
+        const { rows } = await this.pool.query(
+            `SELECT id, status FROM df.instances
+             WHERE label = $1 ORDER BY created_at DESC LIMIT 1`,
+            [this.embedderLabel]);
+        if (rows.length === 0) return { running: false };
+        const status = String(rows[0].status);
+        const running = status === "pending" || status === "running";
+        return { running, instanceId: String(rows[0].id), status };
+    }
+
+    // ─── embedding endpoint sanity checks (provider tests only, NOT production) ─
+
+    /**
+     * SANITY CHECK — not a production path. Embeds pending facts host-side via
+     * Node fetch, sending the EXACT request the in-DB df.http procedure sends
+     * (same URL + headers + body, read from the stored embedding_config row).
+     * Its only purpose is to validate, against a Node-reachable endpoint (e.g.
+     * the local test stub), that the request shape we hand to df.http is correct.
+     * The production embedder is the durable df.http cron; never call this in a
+     * real deployment.
+     * @internal
+     */
+    async _embedPendingNode(batch = 128): Promise<number> {
+        const s = ident(this.schema);
+        const { rows: cfgRows } = await this.pool.query(
+            `SELECT url, model, dim, api_key, key_header, input_field, timeout_seconds
+             FROM ${s}.embedding_config WHERE id = 1`);
+        if (cfgRows.length === 0) {
+            throw new Error("_embedPendingNode: embedding_config not set; call configureEmbedder first.");
+        }
+        const c = cfgRows[0];
         const { rows } = await this.pool.query(
             `SELECT id, key, value, content_hash FROM ${s}.facts
              WHERE embedding IS NULL OR last_embedded_hash IS DISTINCT FROM content_hash
              ORDER BY id LIMIT $1`, [batch]);
         if (rows.length === 0) return 0;
-        const texts = rows.map((r: any) => textForEmbedding(r));
-        const vectors = await this.embedder.embedBatch(texts);
-        for (let k = 0; k < rows.length; k++) {
+
+        // Build the IDENTICAL request df.http sends (see http-embedding.ts):
+        //   headers = { <key_header>: api_key, content-type: application/json }
+        //   body    = { <input_field>: <text>, model: <model> }
+        for (const r of rows) {
+            const text = textForEmbedding(r);
+            const headers: Record<string, string> = { "content-type": "application/json" };
+            if (c.api_key) headers[c.key_header || "api-key"] = c.api_key;
+            const body = JSON.stringify({ [c.input_field || "input"]: text, model: c.model });
+
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), (c.timeout_seconds ?? 30) * 1000);
+            let res: Response;
+            try {
+                res = await fetch(c.url, { method: "POST", headers, body, signal: controller.signal });
+            } finally {
+                clearTimeout(timer);
+            }
+            if (!res.ok) {
+                const detail = await res.text().catch(() => "");
+                throw new Error(`embedding endpoint ${res.status}: ${detail.slice(0, 200)}`);
+            }
+            const json: any = await res.json();
+            const emb = json?.data?.[0]?.embedding;
+            if (!Array.isArray(emb)) throw new Error("embedding endpoint returned no data[0].embedding[]");
+            if (emb.length !== c.dim) {
+                throw new Error(`embedding dim mismatch: got ${emb.length}, expected ${c.dim}`);
+            }
             await this.pool.query(
                 `UPDATE ${s}.facts SET embedding = $1::vector, embedded_at = now(),
                     embedding_model = $2, last_embedded_hash = content_hash WHERE id = $3`,
-                [toVectorLiteral(vectors[k]), this.cfg.embedding!.model, rows[k].id]);
+                [toVectorLiteral(emb), c.model, r.id]);
         }
         return rows.length;
     }
 
-    /** Trigger the in-DB HTTP embedding activity (pg_durable's embed_new_facts). */
-    async embedNewFactsInDb(batch = 128): Promise<number> {
+    /**
+     * SANITY CHECK — not a production path. One-shot synchronous trigger of the
+     * durable in-DB procedure embed_new_facts_durable (the same procedure the
+     * background cron CALLs each tick), returning the number embedded. Used by
+     * provider tests to verify the df.http path works without waiting on the
+     * loop cadence. Production uses startEmbedder (the cron), never this.
+     * @internal
+     */
+    async _embedNewFactsInDbOnce(batch = 128): Promise<number> {
         const s = ident(this.schema);
-        const { rows } = await this.pool.query(`SELECT ${s}.embed_new_facts($1) AS n`, [batch]);
-        return Number(rows[0]?.n ?? 0);
+        const { rows } = await this.pool.query(
+            `CALL ${s}.embed_new_facts_durable($1, NULL)`, [batch]);
+        return Number(rows[0]?.p_count ?? 0);
     }
 
     // ─── enhanced retrieval ───────────────────────────────────────────────────
@@ -397,7 +552,9 @@ export class HorizonFactStore implements EnhancedFactStore, GraphCrawlerInterfac
         if (q.kind) filters.push(`e.kind = ${cypherStr(q.kind)}`);
         if (q.nameLike) {
             const pat = cypherStr(q.nameLike.toLowerCase());
-            filters.push(`(toLower(e.name) CONTAINS ${pat} OR any(a IN e.aliases WHERE toLower(a) CONTAINS ${pat}))`);
+            // AGE does not support the `any(x IN list WHERE pred)` predicate; use
+            // the list-comprehension form `size([x IN list WHERE pred]) > 0`.
+            filters.push(`(toLower(e.name) CONTAINS ${pat} OR size([a IN e.aliases WHERE toLower(a) CONTAINS ${pat}]) > 0)`);
         }
         const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
         const limit = cypherNum(q.limit ?? 20);

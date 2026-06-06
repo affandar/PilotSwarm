@@ -1,17 +1,24 @@
 // @incubator/horizon-facts — provider configuration.
 //
 // The EnhancedFactStore is configured with a connection string and, optionally,
-// an EMBEDDING ENDPOINT. The embedding endpoint is the seam that replaces
-// HorizonDB's built-in `aiModelManagement`: instead of relying on an in-cluster
-// model, the provider records an HTTP embedding endpoint that the pg_durable
-// maintenance loop calls (via an in-database HTTP extension) to embed facts.
+// an EMBEDDING ENDPOINT. The embedding endpoint is a DATABASE-AGNOSTIC contract:
+// it describes an OpenAI/Azure-OpenAI-compatible HTTP embeddings API and says
+// nothing about how any particular provider invokes it. A provider records this
+// endpoint and embeds facts however it likes — the HorizonDB provider calls it
+// in-database via pg_durable's df.http() background loop, but an AlloyDB- or
+// any-Postgres-based provider could consume the exact same config and call it
+// from a trigger, a sidecar, or host-side code. PilotSwarm only passes the
+// endpoint; the mechanism is the provider's concern.
 //
 // The SAME endpoint config is also usable Node-side (see embedding-client.ts)
-// for query-time embedding and for tests that don't want to depend on the
-// in-database HTTP path.
+// for query-time embedding and for tests that don't depend on any in-database
+// HTTP path.
 
 /**
- * Describes an OpenAI/Azure-OpenAI-compatible embeddings endpoint.
+ * Describes an OpenAI/Azure-OpenAI-compatible embeddings endpoint. This is a
+ * provider-neutral contract: it is the only embedding-related thing PilotSwarm
+ * hands to a fact-store provider, and any provider (HorizonDB, AlloyDB, plain
+ * Postgres, …) can consume it.
  *
  * Request  (POST url): { "<inputField>": "text", "model": "<model>" }
  * Response (200):      { "data": [ { "embedding": [..<dim> floats..] } ] }
@@ -49,10 +56,18 @@ export interface HorizonFactsConfig {
     /** AGE graph name. Default "horizon_facts". */
     graphName?: string;
     /**
-     * Embedding endpoint. Required for semantic/hybrid search and for the
-     * pg_durable HTTP embedding pipeline. Lexical + graph work without it.
+     * Embedding endpoint (provider-neutral, see EmbeddingEndpointConfig).
+     * Required for semantic/hybrid search and for this provider's in-DB embedding
+     * pipeline. Lexical + graph work without it.
      */
     embedding?: EmbeddingEndpointConfig;
+    /**
+     * Vector ANN index method. "diskann" uses Azure's pg_diskann (must be
+     * allow-listed in the cluster's azure.extensions parameter group); "hnsw"
+     * uses pgvector's built-in HNSW; "auto" (default) prefers diskann and falls
+     * back to hnsw when pg_diskann is unavailable.
+     */
+    annIndex?: "diskann" | "hnsw" | "auto";
     /** Max pool connections. Default 3. */
     poolMax?: number;
     /** AAD / managed-identity auth (mirrors PilotSwarm's PgFactStore). */
@@ -89,6 +104,9 @@ export function resolveConfig(partial: Partial<HorizonFactsConfig> = {}): Horizo
         schema: partial.schema ?? DEFAULT_SCHEMA,
         graphName: partial.graphName ?? DEFAULT_GRAPH,
         embedding,
+        annIndex: partial.annIndex
+            ?? (process.env.HORIZON_ANN_INDEX as HorizonFactsConfig["annIndex"])
+            ?? "auto",
         poolMax: partial.poolMax ?? DEFAULT_POOL_MAX,
         useManagedIdentity: partial.useManagedIdentity,
         aadUser: partial.aadUser,

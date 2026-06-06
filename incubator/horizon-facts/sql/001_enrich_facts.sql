@@ -52,7 +52,14 @@ ALTER TABLE :"schema".facts
     ADD COLUMN IF NOT EXISTS content_hash TEXT
     GENERATED ALWAYS AS (md5(coalesce(value::text, ''))) STORED;
 
--- HNSW ANN index over cosine distance. Built incrementally as rows get embedded.
+-- ANN index over cosine distance. Built incrementally as rows get embedded.
+-- PREFER DiskANN (Azure's pg_diskann) for better recall/latency at scale. It
+-- must be allow-listed in the cluster's azure.extensions parameter group:
+--     CREATE EXTENSION IF NOT EXISTS pg_diskann CASCADE;
+--     CREATE INDEX idx_facts_embedding
+--         ON :"schema".facts USING diskann (embedding vector_cosine_ops);
+-- If pg_diskann is not allow-listed, use the HNSW fallback below. Both share the
+-- vector_cosine_ops opclass and the <=> operator, so queries are identical.
 CREATE INDEX IF NOT EXISTS idx_facts_embedding
     ON :"schema".facts USING hnsw (embedding vector_cosine_ops);
 

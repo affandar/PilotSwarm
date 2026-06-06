@@ -91,7 +91,7 @@ test("searchFacts: lexical finds by keyword", opts, async () => {
 });
 
 test("searchFacts: semantic ranks by embedding similarity", opts, async () => {
-    await store.embedPending(50); // embed everything stored so far
+    await store._embedPendingNode(50); // embed everything stored so far
 
     const res = await store.searchFacts("jsonb subscript", { mode: "semantic" }, { unrestricted: true });
     assert.ok(res.facts.length >= 1, "semantic returns hits");
@@ -100,7 +100,7 @@ test("searchFacts: semantic ranks by embedding similarity", opts, async () => {
 });
 
 test("searchFacts: hybrid fuses lexical + semantic", opts, async () => {
-    await store.embedPending(50);
+    await store._embedPendingNode(50);
     const res = await store.searchFacts("jsonb subscript", { mode: "hybrid" }, { unrestricted: true });
     assert.ok(res.facts.length >= 1);
     assert.equal(res.mode, "hybrid");
@@ -111,7 +111,7 @@ test("searchFacts: hybrid fuses lexical + semantic", opts, async () => {
 });
 
 test("relatedFacts: nearest neighbours of an anchor", opts, async () => {
-    await store.embedPending(50);
+    await store._embedPendingNode(50);
     const res = await store.relatedFacts("shared:skills/jsonb-subscript", { k: 5, minScore: 0 }, { unrestricted: true });
     assert.ok(res.facts.length >= 1, "returns neighbours");
     assert.ok(!res.facts.some((f) => f.key === "skills/jsonb-subscript"), "anchor excluded from its own neighbours");

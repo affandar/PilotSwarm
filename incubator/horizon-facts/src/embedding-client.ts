@@ -4,8 +4,10 @@
 //   1. QUERY-TIME embedding for semantic/hybrid search (the adapter embeds the
 //      query string here, then passes the vector to SQL as `$1::vector`).
 //   2. A reference implementation of the request/response contract that the
-//      in-database pg_durable HTTP pipeline (sql/006) mirrors. The integration
-//      test stub server speaks this exact shape.
+//   2. A reference implementation of the request/response contract that any
+//      provider's embedding path must speak. The HorizonDB provider mirrors it
+//      in-database (sql/006 df.http); the integration test stub server speaks
+//      this exact shape.
 //
 // It calls an OpenAI/Azure-OpenAI-compatible embeddings endpoint over HTTP using
 // the global fetch (Node ≥ 18).
