@@ -74,6 +74,17 @@ const SHARED_BICEP_OUTPUT_KEYS = Object.freeze([
   "PORTAL_AUTHZ_DEFAULT_ROLE",
   "PORTAL_AUTHZ_ADMIN_GROUPS",
   "PORTAL_AUTHZ_USER_GROUPS",
+  // User OBO Propagation (Phase 6). PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE is
+  // user-supplied (per-stamp opt-in via deploy/envs/local/<env>/.env);
+  // OBO_KEK_KID is a bicep output emitted by base-infra/keyvault.bicep
+  // when oboEnabled=true. Both are listed here because they're always
+  // resolved by substitute-env: empty user input is rendered as the
+  // __PS_UNSET__ sentinel (stripped by the portal runtime at startup),
+  // and the bicep output is the empty string when OBO is not enabled in
+  // the stamp. Listed in bicepOutputKeys so the substitute-env target
+  // gate accepts the overlay .env line.
+  "PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE",
+  "OBO_KEK_KID",
 ]);
 
 // Shared composed-key roster (populated by compose-env.mjs from prior

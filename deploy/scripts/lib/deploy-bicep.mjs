@@ -76,6 +76,15 @@ const OUTPUT_ALIAS = {
   // components/edge-appgw/kustomization.yaml in place of the previously-
   // hardcoded `pilotswarm-portal-tls` literal.
   portalTlsCertName: "PORTAL_TLS_CERT_NAME",
+  // User OBO Propagation (Phase 6). Un-versioned AKV key URL for the OBO
+  // KEK provisioned by base-infra/keyvault.bicep when `oboEnabled=true`.
+  // Bicep emits empty string when oboEnabled=false; the deploy pipeline
+  // treats empty as "OBO disabled in this stamp" and leaves the overlay
+  // sentinel in place. Worker `AkvEnvelopeCrypto` reads OBO_KEK_KID at
+  // startup; absence is fine for stamps not using OBO (selectEnvelopeCrypto
+  // returns null and the worker continues with the existing principal-only
+  // envelope shape).
+  oboKekKid: "OBO_KEK_KID",
 };
 
 export async function deployBicep({ service, envName, env, region, stagingDir, moduleListOverride, force, forceModules }) {

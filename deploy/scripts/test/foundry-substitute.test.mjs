@@ -51,6 +51,7 @@ test("__FOUNDRY_ENDPOINT__ in model_providers.json is substituted from FOUNDRY_E
       PILOTSWARM_DB_AAD_USER: "uami",
       LOCATION: "westus3",
       FOUNDRY_ENDPOINT: "https://pstest-aif.cognitiveservices.azure.com/",
+      OBO_KEK_KID: "__PS_UNSET__",
     };
     const stagedRoot = stageManifests({
       service: "worker",
@@ -103,6 +104,7 @@ test("__FOUNDRY_ENDPOINT__ stays unresolved when FOUNDRY_ENDPOINT is empty/unset
       PILOTSWARM_DB_AAD_USER: "uami",
       LOCATION: "westus3",
       FOUNDRY_ENDPOINT: "",
+      OBO_KEK_KID: "__PS_UNSET__",
     };
     const stagedRoot = stageManifests({
       service: "worker",

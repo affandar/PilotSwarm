@@ -225,3 +225,12 @@ devops-command-center/
 | Title prefixing | Named-agent sessions keep their prefix, e.g. "Investigator: CPU Spike Analysis" |
 | TUI layering | Sample plugin branding, named-agent session picker, and worker-module tools all run on the shipped terminal UI host |
 | Management client | Rename sessions, cancel, delete |
+
+> **User OBO Propagation (added in 0.1.36).** This sample does not currently
+> use the new `getUserContextForSession()` lookup or the `interactionRequired`
+> / `serviceUnavailable` tool-outcome helpers — its tools operate on local
+> mock data and do not call user-delegated downstream services. Apps that
+> do call Azure DevOps, Microsoft Graph, etc. on behalf of the signed-in
+> user can opt into the OBO flow per the
+> [Configuration guide](../../docs/configuration.md#user-obo-propagation-optional)
+> and the [tool-handler integration guide](../../docs/sdk/user-context.md).

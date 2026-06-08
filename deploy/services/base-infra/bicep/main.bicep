@@ -91,6 +91,9 @@ param foundrySku string = 'S0'
 @description('Array of Foundry model deployments to provision. Each entry: { name, model: { format, name, version }, sku: { name, capacity } }. Threaded by the deploy orchestrator from a per-stamp JSON file (deploy/envs/local/<env>/foundry-deployments.json) via `--parameters foundryDeployments=@<file>`. Empty array → account is provisioned with no deployments, useful for incremental opt-in. Ignored when foundryEnabled=false.')
 param foundryDeployments array = []
 
+@description('When true, provisions the OBO KEK in the stamp Key Vault (RSA-2048, wrapKey/unwrapKey, 365-day rotation) and grants `Key Vault Crypto User` to the shared CSI UAMI principal. Required for the User OBO Propagation feature (portal→worker per-RPC envelope encryption of user access tokens). Defaults to false; opt-in by setting OBO_ENABLED=true in the per-env .env.')
+param oboEnabled bool = false
+
 // ==============================================================================
 // Derived names
 // ==============================================================================
@@ -371,6 +374,14 @@ module KeyVault './keyvault.bicep' = {
     appGwPrincipalId: Uami.outputs.appGwIdentityPrincipalId
     localDeploymentPrincipalId: localDeploymentPrincipalId
     localDeploymentPrincipalType: localDeploymentPrincipalType
+    oboEnabled: oboEnabled
+    // PilotSwarm reference deploy uses a single shared CSI UAMI federated
+    // to BOTH the worker and portal service accounts (uami-federation.bicep).
+    // Pass a 1-element array; the keyvault module's role-assignment loop
+    // expands to one Microsoft.Authorization/roleAssignments resource.
+    // Downstream consumers with a different UAMI topology (e.g. distinct
+    // portal vs worker UAMIs) override by passing an N-element array.
+    oboKekUamiPrincipalIds: oboEnabled ? [Uami.outputs.csiIdentityPrincipalId] : []
   }
 }
 
@@ -515,6 +526,15 @@ output deploymentStorageAccountName string = Storage.outputs.storageAccountName
 // (`approvalManagedIdentityId` param). Captured by the OSS deploy script
 // (deploy-bicep.mjs OUTPUT_ALIAS) into env key APPROVAL_MANAGED_IDENTITY_ID.
 output approverIdentityResourceId string = Uami.outputs.approverIdentityResourceId
+
+// OBO KEK un-versioned key URL (User OBO Propagation). Empty string when
+// `oboEnabled=false`. Captured by the OSS deploy script
+// (deploy-bicep.mjs OUTPUT_ALIAS) into env key OBO_KEK_KID and projected
+// into the worker + portal pods via the overlay-generated ConfigMaps. The
+// worker `AkvEnvelopeCrypto` (packages/sdk/src/envelope-crypto.ts) decrypts
+// per-RPC user access tokens against this key. The portal uses the same
+// key (`wrapKey`) when encrypting outbound envelopes.
+output oboKekKid string = KeyVault.outputs.oboKekKid
 
 // AKS VNet resource id — consumed by Portal Bicep in private mode for
 // the Private DNS Zone vnet link (`aksVnetId` param). Always emitted.

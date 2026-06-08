@@ -66,4 +66,17 @@ export function composeDerivedEnv(env) {
       `postgresql://${encodeURIComponent(env.PILOTSWARM_DB_AAD_USER)}@${env.POSTGRES_FQDN}:5432/${pgDb}?sslmode=require`;
     log("info", `Composed PILOTSWARM_CMS_FACTS_DATABASE_URL (passwordless AAD URL) for CMS + facts.`);
   }
+
+  // User OBO Propagation (Phase 6). The base-infra bicep emits oboKekKid
+  // either as the un-versioned AKV key URL (when oboEnabled=true) or as
+  // the substitute-env sentinel (when oboEnabled=false). For deploy flows
+  // that skip the `bicep` step (e.g., `--steps manifests,rollout` without
+  // a populated outputs cache) we fall back to the sentinel so substitute-
+  // env stays satisfied. The worker / portal runtime strips sentinel
+  // values at startup, so OBO is treated as truly unconfigured and the
+  // existing principal-only envelope path engages (FR-002 backwards-compat).
+  if (!env.OBO_KEK_KID) {
+    env.OBO_KEK_KID = "__PS_UNSET__";
+    log("info", `Composed OBO_KEK_KID fallback to __PS_UNSET__ sentinel (OBO not enabled or bicep output absent).`);
+  }
 }
