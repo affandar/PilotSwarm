@@ -908,3 +908,58 @@ export interface UserContext {
     accessToken: string | null;
     accessTokenExpiresAt: number | null;
 }
+
+// ─── Phase 4: Structured tool outcomes ───────────────────────────────
+//
+// Two members of the Structured tool outcome family that worker tools can
+// emit (via interactionRequired() / serviceUnavailable() from
+// "pilotswarm-sdk") to communicate something fundamentally different from
+// generic tool failure:
+//
+//   * interaction_required — the user must re-authenticate at the IdP
+//     before the tool can proceed. Triggers a re-auth affordance in the
+//     portal. The opaque `claims` blob (IdP claims-challenge) is persisted
+//     server-side but NEVER passed to the LLM.
+//
+//   * service_unavailable — a transport-layer dependency (AKV unwrap,
+//     downstream IdP, etc.) is persistently unavailable. The user has
+//     nothing to do; the UI surfaces a transient-error notice with an
+//     optional retry-after countdown.
+//
+// Three-way distinguishability vs generic failure (SC-005) is preserved
+// at the event-data level via a separate `outcome` field.
+
+export type ToolOutcomeKind = "success" | "failure" | "interaction_required" | "service_unavailable";
+
+export interface InteractionRequiredPayload {
+    reasonCode: string;
+    message?: string | null;
+    /**
+     * Opaque IdP claims-challenge blob. Persisted in the CMS event row so
+     * the portal can forward it to MSAL's `acquireToken({ claims })`
+     * call; NEVER included in the LLM-visible text result.
+     */
+    claims?: string | null;
+}
+
+export interface ServiceUnavailablePayload {
+    reasonCode: string;
+    retryAfter?: number | null;
+    message?: string | null;
+}
+
+export type ToolOutcomePayload = InteractionRequiredPayload | ServiceUnavailablePayload;
+
+/**
+ * Marker field embedded in a tool handler's return value by the
+ * `interactionRequired` / `serviceUnavailable` helpers. Detected by
+ * ManagedSession's tool wrapper and stripped before the LLM-visible
+ * string is shipped to the model.
+ */
+export interface ToolOutcomeMarker {
+    kind: "interaction_required" | "service_unavailable";
+    payload: ToolOutcomePayload;
+}
+
+export const PS_TOOL_OUTCOME_MARKER = "__pilotswarmToolOutcome" as const;
+

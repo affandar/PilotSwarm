@@ -536,21 +536,50 @@ function formatToolActivityRuns(time, event, phase = "start") {
     const args = event?.data?.arguments || event?.data?.args;
     const durableSessionId = event?.data?.durableSessionId;
     const summary = formatToolArgsSummary(toolName, args);
-    const phasePrefix = phase === "start"
-        ? "▶"
-        : phase === "partial"
-            ? "…"
-            : "✓";
-    const phaseColor = phase === "start"
-        ? "yellow"
-        : phase === "partial"
-            ? "cyan"
-            : "green";
+    // Phase 4: structured tool outcomes — distinct icon/color per kind so
+    // both the native TUI and the portal can render the same machine-
+    // distinguishable signals (SC-005). The opaque IdP `claims` blob and
+    // any token material are sanitized server-side; only `reasonCode` and
+    // optional `message` / `retryAfter` are surfaced.
+    const outcome = phase === "complete" ? (event?.data?.outcome || null) : null;
+    const outcomePayload = (event?.data?.outcome_payload && typeof event.data.outcome_payload === "object")
+        ? event.data.outcome_payload
+        : null;
+    let phasePrefix;
+    let phaseColor;
+    if (phase === "start") {
+        phasePrefix = "▶";
+        phaseColor = "yellow";
+    } else if (phase === "partial") {
+        phasePrefix = "…";
+        phaseColor = "cyan";
+    } else if (outcome === "interaction_required") {
+        phasePrefix = "🔐";
+        phaseColor = "yellow";
+    } else if (outcome === "service_unavailable") {
+        phasePrefix = "⚠";
+        phaseColor = "magenta";
+    } else if (outcome === "failure") {
+        phasePrefix = "✗";
+        phaseColor = "red";
+    } else {
+        phasePrefix = "✓";
+        phaseColor = "green";
+    }
+
+    let outcomeDetail = "";
+    if (outcome === "interaction_required" || outcome === "service_unavailable") {
+        const reason = typeof outcomePayload?.reasonCode === "string" ? outcomePayload.reasonCode : null;
+        const retry = (outcome === "service_unavailable" && Number.isFinite(outcomePayload?.retryAfter))
+            ? ` retry in ${Number(outcomePayload.retryAfter)}s`
+            : "";
+        outcomeDetail = reason ? ` [${reason}${retry}]` : (retry ? ` [${retry.trim()}]` : "");
+    }
 
     return [
         ...buildActivityPrefix(time),
         {
-            text: `${phasePrefix} ${toolName}${summary}`,
+            text: `${phasePrefix} ${toolName}${summary}${outcomeDetail}`,
             color: phaseColor,
         },
         ...(durableSessionId
@@ -597,6 +626,28 @@ function formatActivity(event) {
                     ? data.detail
                     : (data.percent != null ? `${Math.round(Number(data.percent))}%` : "running…");
             runs = buildLabeledActivityRuns(time, "[tool]", "cyan", `${toolName} ${detail}`, "white");
+            break;
+        }
+
+        case "system.tool_outcome": {
+            // Phase 4 FR-024: synthetic structured outcome (e.g., persistent
+            // envelope-decrypt failure during runTurn). Same visual treatment
+            // as a tool.execution_complete carrying the same outcome shape so
+            // operators see one consistent rendering for the family.
+            const data = (event?.data ?? {}) || {};
+            const outcome = typeof data.outcome === "string" ? data.outcome : "service_unavailable";
+            const payload = (data.outcome_payload && typeof data.outcome_payload === "object") ? data.outcome_payload : {};
+            const reason = typeof payload.reasonCode === "string" ? payload.reasonCode : null;
+            const retry = (outcome === "service_unavailable" && Number.isFinite(payload.retryAfter))
+                ? ` retry in ${Number(payload.retryAfter)}s`
+                : "";
+            const detailParts = [];
+            if (reason) detailParts.push(reason);
+            if (retry) detailParts.push(retry.trim());
+            const detail = detailParts.length ? detailParts.join(" ") : (typeof payload.message === "string" ? payload.message : outcome);
+            const color = outcome === "interaction_required" ? "yellow" : "magenta";
+            const label = outcome === "interaction_required" ? "[reauth required]" : "[unavailable]";
+            runs = buildLabeledActivityRuns(time, label, color, detail, "white");
             break;
         }
 

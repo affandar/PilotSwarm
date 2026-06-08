@@ -2,7 +2,8 @@ import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session
 import { runWithSessionManager } from "./worker-registry.js";
 import type { SessionStateStore } from "./session-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
-import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, PS_TOOL_OUTCOME_MARKER, type ToolOutcomeKind } from "./types.js";
+import { readToolOutcomeMarker, sanitizeOutcomePayloadForPersistence } from "./tool-outcomes.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
@@ -390,6 +391,49 @@ function isFailureToolCompletion(data: unknown): boolean {
         || typeof eventData.errorMessage === "string";
 }
 
+/**
+ * Phase 4: detect a structured tool outcome on a tool.execution_complete
+ * event and rewrite the event data so it carries `outcome` and
+ * `outcome_payload` (sanitized via the allow-list in tool-outcomes.ts).
+ * The raw marker is stripped from the persisted row so it never appears
+ * inside the JSONB CMS column.
+ *
+ * Always populates `outcome` for tool.execution_complete events so
+ * downstream consumers can match on a single field instead of inferring
+ * success vs failure heuristically (SC-005: three-way distinguishability).
+ *
+ * Backwards-compat: legacy consumers that don't read `outcome` continue
+ * to see existing fields (`resultType`, `error`, etc.) unchanged.
+ */
+function enrichToolCompletionEventData(eventData: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
+    if (!eventData) return undefined;
+    const cloned: Record<string, unknown> = { ...eventData };
+    const marker = readToolOutcomeMarker(cloned)
+        ?? readToolOutcomeMarker(cloned.result)
+        ?? readToolOutcomeMarker(cloned.toolResult);
+    if (marker) {
+        cloned.outcome = marker.kind as ToolOutcomeKind;
+        cloned.outcome_payload = sanitizeOutcomePayloadForPersistence(marker);
+        delete cloned[PS_TOOL_OUTCOME_MARKER];
+        if (cloned.result && typeof cloned.result === "object") {
+            const rcopy = { ...(cloned.result as Record<string, unknown>) };
+            delete rcopy[PS_TOOL_OUTCOME_MARKER];
+            cloned.result = rcopy;
+        }
+        if (cloned.toolResult && typeof cloned.toolResult === "object") {
+            const tcopy = { ...(cloned.toolResult as Record<string, unknown>) };
+            delete tcopy[PS_TOOL_OUTCOME_MARKER];
+            cloned.toolResult = tcopy;
+        }
+        return cloned;
+    }
+    // No structured marker → default to success/failure based on existing
+    // heuristic. Sets a stable `outcome` field so consumers don't need to
+    // re-implement the heuristic at read time.
+    cloned.outcome = isFailureToolCompletion(eventData) ? "failure" : "success";
+    return cloned;
+}
+
 async function tryReadSnapshotSizeBytes(sessionStore: SessionStateStore | null | undefined, sessionId: string): Promise<number | undefined> {
     if (!sessionStore) return undefined;
 
@@ -691,13 +735,33 @@ export function registerActivities(
                             accessToken = decrypted.accessToken ?? null;
                             accessTokenExpiresAt = decrypted.accessTokenExpiresAt ?? null;
                         } catch (decryptErr: any) {
-                            // Persistent failure surfaces in Phase 4 as a structured
-                            // service_unavailable outcome. For Phase 1, log and
-                            // populate principal-only so identity-aware tools still
-                            // function while token-dependent tools see null.
+                            // Persistent failure (after Duroxide activity-level retry
+                            // budget exhausted) surfaces as a structured
+                            // service_unavailable system event (FR-024) so the
+                            // portal can render a transient-error notice. The turn
+                            // still proceeds with principal-only context so
+                            // identity-aware tools (those that don't need the
+                            // access token) continue to function.
                             activityCtx.traceInfo(
-                                `[runTurn] envelope decrypt failed: ${decryptErr?.message ?? decryptErr} (populating principal-only)`,
+                                `[runTurn] envelope decrypt failed: ${decryptErr?.message ?? decryptErr} (populating principal-only, emitting service_unavailable)`,
                             );
+                            if (catalog) {
+                                await cmsRetryBestEffort(
+                                    `runTurn.recordEvent system.tool_outcome akv_unwrap_failure session=${input.sessionId}`,
+                                    () => catalog!.recordEvents(input.sessionId, [{
+                                        eventType: "system.tool_outcome",
+                                        data: {
+                                            outcome: "service_unavailable",
+                                            outcome_payload: {
+                                                reasonCode: "akv_unwrap_failure",
+                                                message: "User access token could not be decrypted; downstream identity-bound calls are unavailable.",
+                                            },
+                                            source: "envelope_decrypt",
+                                        },
+                                    }], workerNodeId),
+                                    (msg) => activityCtx.traceInfo(msg),
+                                );
+                            }
                         }
                     }
                 }
@@ -1544,6 +1608,17 @@ export function registerActivities(
                         if (toolName) turnTelemetry.toolNames.add(toolName);
                     } else if (event.eventType === "tool.execution_complete" && isFailureToolCompletion(event.data)) {
                         turnTelemetry.toolErrors += 1;
+                    }
+                    // Phase 4: enrich tool.execution_complete events with
+                    // a stable `outcome` field and structured-outcome
+                    // payload (when applicable). Mutates a copy of the
+                    // event data before persistence; the raw marker
+                    // never lands in the CMS JSONB column.
+                    if (persistedEvent.eventType === "tool.execution_complete") {
+                        const enriched = enrichToolCompletionEventData(
+                            normalizeEventData(persistedEvent.data as Record<string, unknown> | undefined),
+                        );
+                        if (enriched) persistedEvent.data = enriched;
                     }
                     // Best-effort with one transient retry. trackEventWrite tracks
                     // the wrapped promise so the post-turn barrier waits for the

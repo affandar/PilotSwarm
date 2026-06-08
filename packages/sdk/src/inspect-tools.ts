@@ -708,6 +708,115 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         }));
     }
 
+    // ─── Structured tool-outcome inspect tools (Phase 4) ───────────────
+    // Mirror PilotSwarmManagementClient.getStructuredOutcomeEvents and
+    // getFleetStructuredOutcomeStats so the tuner can reason about
+    // interaction_required + service_unavailable signals through a tool
+    // call (per the repo "Observability Surface for the Agent Tuner"
+    // rule). Token material is never present in the persisted payload
+    // (FR-020 allow-list sanitization), so these reads are safe.
+
+    const readSessionStructuredOutcomesTool = defineTool("read_session_structured_outcomes", {
+        description:
+            "List structured tool-outcome events (interaction_required and/or service_unavailable) " +
+            "for a session. Returns seq, eventType, outcome, outcome_payload, createdAt for each match. " +
+            "Includes both tool.execution_complete rows and synthetic system.tool_outcome rows " +
+            "(e.g., persistent AKV-unwrap failures). Optionally filter by outcome kind.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_id: { type: "string" },
+                kind: { type: "string", enum: ["interaction_required", "service_unavailable"] },
+                limit: { type: "number" },
+            },
+            required: ["session_id"],
+        },
+        handler: async (args: { session_id: string; kind?: "interaction_required" | "service_unavailable"; limit?: number }) => {
+            const id = normalizeSessionId(args.session_id);
+            try {
+                const limit = clampLimit(args.limit);
+                const events = await catalog.getSessionEvents(id, undefined, limit);
+                const rows: Array<Record<string, unknown>> = [];
+                for (const ev of events) {
+                    const data = (ev as any)?.data;
+                    if (!data || typeof data !== "object") continue;
+                    const outcome = (data as any).outcome;
+                    if (outcome !== "interaction_required" && outcome !== "service_unavailable") continue;
+                    if (args.kind && outcome !== args.kind) continue;
+                    rows.push({
+                        seq: (ev as any).seq,
+                        eventType: (ev as any).eventType,
+                        outcome,
+                        outcome_payload: (data as any).outcome_payload ?? null,
+                        createdAt: (ev as any).createdAt,
+                    });
+                }
+                return { sessionId: id, count: rows.length, rows };
+            } catch (err: any) {
+                return { error: `read_session_structured_outcomes: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
+    const readFleetStructuredOutcomeStatsTool = defineTool("read_fleet_structured_outcome_stats", {
+        description:
+            "Fleet-wide aggregate of structured tool outcomes — totals per kind plus a per-reasonCode breakdown. " +
+            "Iterates sessions (capped) and counts interaction_required / service_unavailable outcomes. " +
+            "Use for triage of how often re-auth or transport failures hit users across the fleet.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_limit: { type: "number" },
+                event_limit_per_session: { type: "number" },
+            },
+        },
+        handler: async (args: { session_limit?: number; event_limit_per_session?: number }) => {
+            try {
+                const sessionCap = args.session_limit && args.session_limit > 0 ? Math.min(args.session_limit, 1000) : 200;
+                const evCap = args.event_limit_per_session && args.event_limit_per_session > 0
+                    ? Math.min(args.event_limit_per_session, MAX_LIMIT)
+                    : DEFAULT_LIMIT;
+                const sessions = await catalog.listSessions();
+                const slice = sessions.slice(0, sessionCap);
+                let totalIR = 0;
+                let totalSU = 0;
+                const buckets = new Map<string, { outcome: string; reasonCode: string; count: number }>();
+                for (const sess of slice) {
+                    const sid = (sess as any).sessionId ?? (sess as any).id;
+                    if (!sid) continue;
+                    try {
+                        const events = await catalog.getSessionEvents(String(sid), undefined, evCap);
+                        for (const ev of events) {
+                            const data = (ev as any)?.data;
+                            if (!data || typeof data !== "object") continue;
+                            const outcome = (data as any).outcome;
+                            if (outcome !== "interaction_required" && outcome !== "service_unavailable") continue;
+                            if (outcome === "interaction_required") totalIR += 1;
+                            else totalSU += 1;
+                            const payload = (data as any).outcome_payload;
+                            const reasonCode = (payload && typeof payload.reasonCode === "string")
+                                ? payload.reasonCode
+                                : "unknown";
+                            const key = `${outcome}::${reasonCode}`;
+                            const prev = buckets.get(key);
+                            if (prev) prev.count += 1;
+                            else buckets.set(key, { outcome, reasonCode, count: 1 });
+                        }
+                    } catch {
+                        // non-fatal per-session
+                    }
+                }
+                return {
+                    totals: { interactionRequired: totalIR, serviceUnavailable: totalSU },
+                    byReasonCode: [...buckets.values()].sort((a, b) => b.count - a.count),
+                    sessionsScanned: slice.length,
+                };
+            } catch (err: any) {
+                return { error: `read_fleet_structured_outcome_stats: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
     const tools: Tool<any>[] = [
         readAgentEventsTool,
         ...systemReadTools,
@@ -717,6 +826,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         readSessionSkillUsageTool,
         readSessionTreeSkillUsageTool,
         readFleetSkillUsageTool,
+        readSessionStructuredOutcomesTool,
+        readFleetStructuredOutcomeStatsTool,
         ...factsTools,
     ];
 

@@ -169,3 +169,17 @@ export type {
     EnvelopeCipher,
     UserEnvelopeCarrier,
 } from "./types.js";
+
+// Phase 4 (user-OBO): structured tool outcome helpers — interaction_required
+// and service_unavailable — for worker tools to signal IdP re-auth required
+// or transport-layer dependency outage. Three-way distinguishability from
+// generic tool failure is preserved via the persisted `outcome` event field.
+export { interactionRequired, serviceUnavailable } from "./tool-outcomes.js";
+export type { StructuredToolResult } from "./tool-outcomes.js";
+export type {
+    ToolOutcomeKind,
+    InteractionRequiredPayload,
+    ServiceUnavailablePayload,
+    ToolOutcomePayload,
+    ToolOutcomeMarker,
+} from "./types.js";
