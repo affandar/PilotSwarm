@@ -79,4 +79,8 @@ export function composeDerivedEnv(env) {
     env.OBO_KEK_KID = "__PS_UNSET__";
     log("info", `Composed OBO_KEK_KID fallback to __PS_UNSET__ sentinel (OBO not enabled or bicep output absent).`);
   }
+  if (!env.PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE) {
+    env.PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE = "__PS_UNSET__";
+    log("info", `Composed PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE fallback to __PS_UNSET__ sentinel (OBO not enabled or scope not configured).`);
+  }
 }

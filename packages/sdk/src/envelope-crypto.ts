@@ -234,12 +234,21 @@ export class AkvEnvelopeCrypto implements EnvelopeCrypto {
             const wrappedDek: Buffer = Buffer.isBuffer(wrapResult.result)
                 ? wrapResult.result
                 : Buffer.from(wrapResult.result);
+            // Pin the ciphertext to the specific KEK *version* that wrapped
+            // the DEK (not the un-versioned `OBO_KEK_KID` env value). After
+            // KEK rotation, this lets `decrypt()` request the prior version
+            // and successfully unwrap. `wrapResult.keyID` is the fully
+            // versioned key URL returned by AKV.
+            const versionedKid: string =
+                (wrapResult && typeof wrapResult.keyID === "string" && wrapResult.keyID.length > 0)
+                    ? wrapResult.keyID
+                    : this.kekKid;
             return {
                 ciphertext: ciphertext.toString("base64"),
                 iv: iv.toString("base64"),
                 tag: tag.toString("base64"),
                 wrappedDek: wrappedDek.toString("base64"),
-                kekKid: this.kekKid,
+                kekKid: versionedKid,
             };
         } finally {
             zeroize(dek);
