@@ -402,11 +402,23 @@ export function usePortalAuth(authConfig) {
         return providerRef.current.getAccessToken();
     }, [state.accessToken, state.authEnabled, state.provider]);
 
+    // Phase 3 (user-OBO): expose downstream-scope token acquisition to RPC
+    // dispatch. Returns `{ accessToken, accessTokenExpiresAt } | null`.
+    // Provider implementations are responsible for caching + near-expiry
+    // refresh; this hook is a thin pass-through.
+    const getDownstreamToken = React.useCallback(async () => {
+        if (!state.authEnabled) return null;
+        if (!providerRef.current) return null;
+        if (typeof providerRef.current.getDownstreamToken !== "function") return null;
+        return providerRef.current.getDownstreamToken();
+    }, [state.authEnabled]);
+
     return {
         ...state,
         signIn,
         signOut,
         getAccessToken,
+        getDownstreamToken,
         handleUnauthorized,
         handleForbidden,
     };

@@ -156,3 +156,16 @@ export { defineTool } from "@github/copilot-sdk";
 // sessions, broken chains, and ambiguous multi-worker contexts.
 export { getUserContextForSession } from "./worker-registry.js";
 export type { UserContext, PrincipalClaims } from "./types.js";
+
+// Phase 3 (user-OBO): envelope-crypto factory for portal-side encryption.
+// Portals construct their own EnvelopeCrypto via selectEnvelopeCrypto(env)
+// and use it to encrypt the per-RPC user access token before placing the
+// envelope on the durable queue. The same env-driven selection logic is
+// shared with workers so portal and worker agree on backend + KEK kid.
+export { selectEnvelopeCrypto } from "./envelope-crypto.js";
+export type { EnvelopeCrypto } from "./envelope-crypto.js";
+export type {
+    UserEnvelope,
+    EnvelopeCipher,
+    UserEnvelopeCarrier,
+} from "./types.js";

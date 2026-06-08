@@ -156,6 +156,26 @@ export async function startServer(opts = {}) {
             res.status(400).json({ ok: false, error: "RPC method is required" });
             return;
         }
+        // Phase 3 (user-OBO): the SPA forwards a downstream-scope access
+        // token in the RPC body's `auth` field. Extract + type-validate
+        // here and stamp onto req.auth.principal so portal/runtime.js can
+        // encrypt it into the per-RPC envelope. Tokens NEVER travel in
+        // headers/WS, only in the TLS-protected body.
+        const bodyAuth = req.body?.auth;
+        if (req.auth?.principal && bodyAuth && typeof bodyAuth === "object") {
+            const accessToken = typeof bodyAuth.accessToken === "string" && bodyAuth.accessToken.length > 0
+                ? bodyAuth.accessToken
+                : null;
+            const expires = Number(bodyAuth.accessTokenExpiresAt);
+            const accessTokenExpiresAt = Number.isFinite(expires) && expires > 0 ? expires : null;
+            if (accessToken) {
+                req.auth.principal = {
+                    ...req.auth.principal,
+                    accessToken,
+                    accessTokenExpiresAt,
+                };
+            }
+        }
         try {
             const result = await runtime.call(method, req.body?.params || {}, req.auth);
             res.json({ ok: true, result });

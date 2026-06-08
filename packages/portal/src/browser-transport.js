@@ -22,8 +22,12 @@ async function readErrorMessage(response) {
 }
 
 export class BrowserPortalTransport {
-    constructor({ getAccessToken, onUnauthorized, onForbidden }) {
+    constructor({ getAccessToken, getDownstreamToken, onUnauthorized, onForbidden }) {
         this.getAccessToken = typeof getAccessToken === "function" ? getAccessToken : async () => null;
+        // Phase 3 (user-OBO): null when no downstream scope is configured or
+        // the auth provider doesn't support OBO. The transport ships a
+        // principal-only envelope in that case.
+        this.getDownstreamToken = typeof getDownstreamToken === "function" ? getDownstreamToken : async () => null;
         this.onUnauthorized = typeof onUnauthorized === "function" ? onUnauthorized : () => {};
         this.onForbidden = typeof onForbidden === "function" ? onForbidden : () => {};
         this.bootstrap = null;
@@ -118,9 +122,26 @@ export class BrowserPortalTransport {
     }
 
     async rpc(method, params = {}) {
+        // Phase 3 (user-OBO): when the deployment configures a downstream
+        // scope, attach the freshest cached/refreshed token to the RPC body's
+        // auth envelope. The server middleware extracts these fields and
+        // stamps them onto req.auth.principal; portal/runtime.js then
+        // encrypts the token at envelope-build time so plaintext never lands
+        // in the durable queue (FR-020). Sent in the JSON body — not as
+        // headers — so it's covered by TLS only and not logged by reverse
+        // proxies that capture request headers.
+        const downstream = await this.getDownstreamToken().catch(() => null);
+        const auth = downstream && downstream.accessToken
+            ? {
+                accessToken: downstream.accessToken,
+                accessTokenExpiresAt: Number.isFinite(downstream.accessTokenExpiresAt)
+                    ? downstream.accessTokenExpiresAt
+                    : null,
+            }
+            : undefined;
         return this.fetchJson("/api/rpc", {
             method: "POST",
-            body: JSON.stringify({ method, params }),
+            body: JSON.stringify(auth ? { method, params, auth } : { method, params }),
         });
     }
 

@@ -302,9 +302,10 @@ function PortalHeader({ account, authEnabled, branding, onSignOut, versionLabel 
 function PortalWorkspace({ auth, portal, shellStyle }) {
     const transport = React.useMemo(() => new BrowserPortalTransport({
         getAccessToken: auth.getAccessToken,
+        getDownstreamToken: auth.getDownstreamToken,
         onUnauthorized: auth.handleUnauthorized,
         onForbidden: auth.handleForbidden,
-    }), [auth.getAccessToken, auth.handleForbidden, auth.handleUnauthorized]);
+    }), [auth.getAccessToken, auth.getDownstreamToken, auth.handleForbidden, auth.handleUnauthorized]);
     const controller = React.useMemo(() => createWebPilotSwarmController({
         transport,
         mode: "remote",
