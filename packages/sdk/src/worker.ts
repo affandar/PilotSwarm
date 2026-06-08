@@ -14,6 +14,7 @@ import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import { selectEnvelopeCrypto } from "./envelope-crypto.js";
+import { registerSessionManager, unregisterSessionManager } from "./worker-registry.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { createFactStoreForUrl, PgFactStore, type FactStore } from "./facts-store.js";
 import { createSweeperTools } from "./sweeper-tools.js";
@@ -521,6 +522,10 @@ export class PilotSwarmWorker {
             console.error("[PilotSwarmWorker] Runtime error:", err);
         });
         this._started = true;
+        // Phase 2 (user-OBO): publish this SessionManager so the public
+        // `getUserContextForSession` lookup can resolve. Registration is
+        // tied to successful start; `stop()` unregisters in finally.
+        registerSessionManager(this.sessionManager);
 
         await new Promise(r => setTimeout(r, 200));
 
@@ -533,28 +538,35 @@ export class PilotSwarmWorker {
     }
 
     async stop(): Promise<void> {
-        if (this.runtime) {
-            const rawShutdownTimeoutMs = Number.parseInt(
-                process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "",
-                10,
-            );
-            const shutdownTimeoutMs = Number.isFinite(rawShutdownTimeoutMs) && rawShutdownTimeoutMs >= 0
-                ? rawShutdownTimeoutMs
-                : 5000;
-            await this.runtime.shutdown(shutdownTimeoutMs);
-            this.runtime = null;
+        try {
+            if (this.runtime) {
+                const rawShutdownTimeoutMs = Number.parseInt(
+                    process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "",
+                    10,
+                );
+                const shutdownTimeoutMs = Number.isFinite(rawShutdownTimeoutMs) && rawShutdownTimeoutMs >= 0
+                    ? rawShutdownTimeoutMs
+                    : 5000;
+                await this.runtime.shutdown(shutdownTimeoutMs);
+                this.runtime = null;
+            }
+            await this.sessionManager.shutdown();
+            if (this._catalog) {
+                try { await this._catalog.close(); } catch {}
+                this._catalog = null;
+            }
+            if (this.factStore) {
+                try { await this.factStore.close(); } catch {}
+                this.factStore = null;
+            }
+            this._provider = null;
+            this._started = false;
+        } finally {
+            // Phase 2 (user-OBO): always drop the registry slot even if
+            // shutdown throws, otherwise stale workers would linger and
+            // ambiguate the lookup fallback.
+            unregisterSessionManager(this.sessionManager);
         }
-        await this.sessionManager.shutdown();
-        if (this._catalog) {
-            try { await this._catalog.close(); } catch {}
-            this._catalog = null;
-        }
-        if (this.factStore) {
-            try { await this.factStore.close(); } catch {}
-            this.factStore = null;
-        }
-        this._provider = null;
-        this._started = false;
     }
 
     /** Dehydrate all active sessions, then stop. */

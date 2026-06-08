@@ -150,3 +150,9 @@ export { SessionDumper } from "./session-dumper.js";
 
 // Re-export defineTool from Copilot SDK for convenience
 export { defineTool } from "@github/copilot-sdk";
+
+// Phase 2 (user-OBO): worker-side per-session user-context lookup.
+// Synchronous, importable. Returns null for system sessions, unknown
+// sessions, broken chains, and ambiguous multi-worker contexts.
+export { getUserContextForSession } from "./worker-registry.js";
+export type { UserContext, PrincipalClaims } from "./types.js";

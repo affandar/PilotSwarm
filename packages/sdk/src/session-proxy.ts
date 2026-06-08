@@ -1,4 +1,5 @@
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
+import { runWithSessionManager } from "./worker-registry.js";
 import type { SessionStateStore } from "./session-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
@@ -657,6 +658,15 @@ export function registerActivities(
             envelope?: import("./types.js").UserEnvelopeCarrier | null;
         },
     ): Promise<TurnResult> => {
+        // Phase 2 (user-OBO): publish the owning SessionManager into
+        // AsyncLocalStorage for the duration of this activity so any
+        // tool handler that calls `getUserContextForSession(sessionId)`
+        // resolves to this worker's UserContextStore. Without this,
+        // the public lookup would fall back to a global single-worker
+        // assumption that is unsafe in multi-worker/in-process tests
+        // and in embedded mode where the same node hosts more than one
+        // worker.
+        return runWithSessionManager(sessionManager, async () => {
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId}`);
 
         // ── User envelope decrypt + UserContextStore population ───
@@ -1908,6 +1918,7 @@ export function registerActivities(
                 try { await (clientToStop as any).stop(); } catch {}
             }
         }
+        });  // end runWithSessionManager
     });
 
     // ── dehydrateSession ────────────────────────────────────
@@ -2092,11 +2103,15 @@ export function registerActivities(
         _ctx: any,
         input: { sessionId: string },
     ): Promise<void> => {
-        // Clear user-context entry on terminal cleanup so a future
-        // session with the same id (or sub-agent chain walks) cannot
-        // resolve to stale token material.
+        // Clear user-context entry AND parent-map binding on terminal
+        // cleanup. The entry holds plaintext token material; the parent-
+        // map binding is structural metadata but is no longer useful
+        // once the session is destroyed (and a future session reusing
+        // this id MUST start with a fresh chain).
         try {
-            sessionManager.getUserContextStore().clear(input.sessionId);
+            const store = sessionManager.getUserContextStore();
+            store.clear(input.sessionId);
+            store.clearParent(input.sessionId);
         } catch { /* best-effort */ }
         await sessionManager.destroySession(input.sessionId);
     });
