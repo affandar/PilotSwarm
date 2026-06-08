@@ -1,0 +1,14 @@
+{
+  "name": "@pilotswarm-examples/obo-smoke",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference smoke plugin for the User OBO Propagation feature. Two tools: obo_smoke_whoami (proves SC-001/SC-007) and obo_smoke_force_reauth (proves SC-008).",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "dependencies": {
+    "pilotswarm-sdk": "*"
+  }
+}
