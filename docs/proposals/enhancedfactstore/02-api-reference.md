@@ -3,8 +3,8 @@
 > Status: Proposal · Companion: [01-functional-spec.md](./01-functional-spec.md) ·
 > [03-design.md](./03-design.md) · [04-test-spec.md](./04-test-spec.md)
 >
-> This reflects the **target** API after the refactor. Types that change name are
-> noted inline. TypeScript signatures are illustrative.
+> This is the API contract for the EnhancedFactStore. TypeScript signatures are
+> illustrative.
 
 ## 1. Configuration
 
@@ -81,15 +81,21 @@ resets `last_crawled_at → NULL` (§3a) in stores that carry those columns.
 
 ```ts
 interface EnhancedFactStore extends FactStore {
-  /** Retrieval over the FACTS STORE ONLY: lexical / semantic / hybrid. */
+  /**
+   * Retrieval over the FACTS STORE ONLY: lexical / semantic / hybrid.
+   * NOTE: `query` is interpreted by `opts.mode` — a BM25 keyword query for
+   * `lexical`, natural-language text (embedded) for `semantic`, and both for
+   * `hybrid`. Callers/tool layers should surface this so an LLM passes keywords
+   * (not a sentence) in lexical mode.
+   */
   searchFacts(query: string, opts: SearchOpts, access: AccessContext): Promise<SearchResult>;
 
   /** Semantic nearest-neighbours of a known fact (pgvector cosine kNN, no re-embed). */
   similarFacts(scopeKey: string, opts: SimilarOpts, access: AccessContext): Promise<SearchResult>;
 
   // Graph retrieval/relatedness is NOT here — see §5 GraphInterface.
-  // The old `relatedFacts` is removed: compose searchGraphNodes({ seeds }) + readFacts.
-  // `lineageFacts` is removed: use base readFacts({ scope: "descendants" }), rank via searchFacts.
+  // There is no `relatedFacts`: compose searchGraphNodes({ seeds }) + readFacts.
+  // There is no `lineageFacts`: use base readFacts({ scope: "descendants" }), rank via searchFacts.
 }
 ```
 
@@ -118,7 +124,7 @@ interface ScoredFact extends FactRecord {
 interface SearchResult { count: number; mode: SearchMode; facts: ScoredFact[]; }
 ```
 
-> **Composing semantic entry + graph expansion** (replaces `relatedFacts`):
+> **Composing semantic entry + graph expansion**:
 > ```ts
 > const seeds = (await store.searchFacts(q, { mode: "semantic" }, acl)).facts.map(f => f.scopeKey);
 > const nodes = await graph.searchGraphNodes({ seeds, depth: 2 });
@@ -181,25 +187,25 @@ interface EnhancedFactStore {
 ```ts
 interface GraphInterface {
   // read
-  searchGraphNodes(q: GraphNodeQuery): Promise<GraphNodeHit[]>;   // was searchEntities; takes seeds[]
-  searchGraphEdges(q: GraphEdgeQuery): Promise<GraphEdgeHit[]>;   // was searchEdges/searchRelationships
-  graphNeighbourhood(nodeKey: string, depth: number): Promise<SubGraph>;  // was neighbourhood
+  searchGraphNodes(q: GraphNodeQuery): Promise<GraphNodeHit[]>;   // takes seeds[] for fact-pivot
+  searchGraphEdges(q: GraphEdgeQuery): Promise<GraphEdgeHit[]>;
+  graphNeighbourhood(nodeKey: string, depth: number): Promise<SubGraph>;
 
   // write (upsert + merge; evidence OPTIONAL, unions in)
-  upsertGraphNode(n: GraphNodeInput): Promise<GraphNodeRef>;      // was upsertEntity
-  upsertGraphEdge(e: GraphEdgeInput): Promise<GraphEdgeRef>;      // was upsertEdge; absorbs linkEvidence
-  mergeGraphNodes(fromKey: string, intoKey: string, reason: string): Promise<void>;  // was mergeEntities
+  upsertGraphNode(n: GraphNodeInput): Promise<GraphNodeRef>;
+  upsertGraphEdge(e: GraphEdgeInput): Promise<GraphEdgeRef>;      // evidence unions in on re-assert
+  mergeGraphNodes(fromKey: string, intoKey: string, reason: string): Promise<void>;
 
   // delete (no cross-store cascade)
-  deleteGraphNode(nodeKey: string): Promise<boolean>;            // was deleteEntity; DETACH DELETE
-  deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string): Promise<boolean>;  // was deleteEdge
+  deleteGraphNode(nodeKey: string): Promise<boolean>;            // DETACH DELETE
+  deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string): Promise<boolean>;
 }
 ```
 
 ### Write inputs
 
 ```ts
-interface GraphNodeInput {                 // was EntityInput / EntityAssertion
+interface GraphNodeInput {
   kind: string;            // free text: person, patch, file, ...
   name: string;
   aliases?: string[];      // merged into existing aliases on upsert
@@ -207,7 +213,7 @@ interface GraphNodeInput {                 // was EntityInput / EntityAssertion
   agentId: string;
 }
 
-interface GraphEdgeInput {                 // was EdgeInput / RelAssertion
+interface GraphEdgeInput {
   fromKey: string;         // nodeKey OR fact scope_key (by convention)
   toKey: string;
   predicate: string;       // free text, e.g. "revives argument from"
@@ -221,7 +227,7 @@ interface GraphEdgeInput {                 // was EdgeInput / RelAssertion
 ### Read inputs / outputs
 
 ```ts
-interface GraphNodeQuery {                  // was EntityQuery
+interface GraphNodeQuery {
   kind?: string;
   nameLike?: string;                        // lexical match on name/aliases (no embeddings)
   seeds?: string[];                         // fact scopeKeys OR node keys — anchors from a prior searchFacts()
@@ -230,7 +236,7 @@ interface GraphNodeQuery {                  // was EntityQuery
   limit?: number;
 }
 
-interface GraphEdgeQuery {                  // was RelQuery / EdgeQuery
+interface GraphEdgeQuery {
   predicate?: string;                       // EXACT text (app-owned ontology)
   predicateKey?: string;                    // EXACT normalized key (preferred)
   fromKey?: string;                         // anchor endpoints (explore mode)
@@ -246,11 +252,11 @@ interface GraphNodeHit {
   score?: number;
 }
 
-interface GraphEdgeRef {                     // was RelRef / EdgeRef
+interface GraphEdgeRef {
   fromKey: string; toKey: string; predicate: string; predicateKey: string;
   confidence: number; observations: number; reinforced: boolean;
 }
-interface GraphEdgeHit {                      // was RelHit / EdgeHit
+interface GraphEdgeHit {
   fromKey: string; toKey: string; predicate: string; predicateKey: string;
   confidence: number; observations: number; evidence: string[];
 }
@@ -274,20 +280,80 @@ interface SubGraph {
 | `startEmbedder` when already running | No-op; returns existing status. |
 | `stopEmbedder` when already stopped | No-op; returns `{ running: false }`. |
 
-## 7. Removed surface
+## 7. Intentionally out of scope
 
-- `relatedFacts` (graph-traversal-returns-facts) — compose
-  `searchGraphNodes({ seeds })` + `readFacts` instead.
-- `lineageFacts` — lineage is base `readFacts({ scope: "descendants" })` (rank via
-  `searchFacts`); no dedicated method.
-- `searchFacts` `"graph"` mode — `searchFacts` is facts-store-only
-  (`lexical`/`semantic`/`hybrid`).
-- `HttpEmbeddingCapability`, `inDbHttp`, all capability-flag branching and Node
-  fallback.
-- `_embedPendingNode`, `_embedNewFactsInDbOnce`.
-- `startRecurringEmbedder` / `stopRecurringEmbedder` / `recurringEmbedderStatus`
-  (replaced by `startEmbedder` / `stopEmbedder` / `embedderStatus`).
-- `linkEvidence` (folded into `upsertGraphNode` / `upsertGraphEdge`).
-- The `Entity*` / `Rel*` / `Edge*` and `GraphCrawlerInterface` names (renamed to
-  `GraphNode*` / `GraphEdge*` / `GraphInterface`).
-- Mandatory-evidence rejection on edge assertion.
+Design decisions about what this API deliberately does **not** offer, and what to
+use instead:
+
+- **No `relatedFacts` method** (a "graph traversal that returns facts"). Keep the
+  facts and graph surfaces orthogonal; compose `searchGraphNodes({ seeds })` +
+  `readFacts`, or use the Phase 2 `searchGraphContext` (§8).
+- **No `lineageFacts` method.** Lineage is base `readFacts({ scope: "descendants" })`,
+  ranked via `searchFacts`.
+- **No `"graph"` mode on `searchFacts`.** `searchFacts` is facts-store-only
+  (`lexical`/`semantic`/`hybrid`); graph retrieval is a separate surface.
+- **No mandatory-evidence rejection** on edge assertion. Evidence is optional and
+  unions in on upsert; the graph stays permissive rather than failing writes.
+
+## 8. Phase 2 — compound context reads
+
+> **Phase 2.** These *compose* the Phase 1 primitives; they are gated behind a
+> harvester having populated `EVIDENCED_BY`. With an unharvested graph they
+> return exactly the seed facts (empty `nodes`/`edges`/`factLinks`). See
+> [01-functional-spec.md §7](./01-functional-spec.md).
+
+```ts
+interface ContextOpts {
+  mode?: SearchMode;        // entry searchFacts mode (searchGraphContext only)
+  seedLimit?: number;       // facts entering the graph (default 10)
+  depth?: number;           // graph hops from seeds, clamped 1..3 (default 1)
+  expandLimit?: number;     // max nodes reached (default 50)
+  factLimit?: number;       // max facts read back (default 50)
+}
+interface SimilarContextOpts extends Omit<ContextOpts, "mode"> {
+  k?: number;               // similarFacts cluster size (default 8)
+  minScore?: number;        // cluster cosine floor (0..1)
+  maxFactLinks?: number;    // cap on derived fact↔fact links (default 50)
+}
+
+interface ContextNode { nodeKey: string; kind: string; name: string; aliases: string[]; evidence: string[]; }
+interface ContextEdge {
+  fromKey: string; toKey: string; predicate: string; predicateKey: string;
+  confidence: number; observations: number; evidence: string[];
+}
+
+interface GraphContextResult {
+  entry:  { query: string; mode: SearchMode };
+  seeds:  ScoredFact[];                  // facts that entered the graph
+  nodes:  ContextNode[];                 // entities reached via EVIDENCED_BY
+  edges:  ContextEdge[];                 // relationships among them
+  facts:  Record<string, FactRecord>;    // every referenced fact, deduped, keyed by scopeKey
+}
+
+/** A fact↔fact link inferred from a shared graph node. */
+interface FactLink {
+  aScopeKey: string; bScopeKey: string;
+  via: { nodeKey: string; name: string }[];   // shared node(s) both facts evidence
+  predicates: string[];                        // predicates on the connecting edges
+}
+
+interface SimilarGraphContextResult extends Omit<GraphContextResult, "entry"> {
+  entry:     { scopeKey: string };       // the anchor fact
+  factLinks: FactLink[];                 // cluster legibility — why facts relate
+}
+
+interface EnhancedFactStore {
+  /** query → searchFacts → graph(seeds) → readFacts, as one ACL-checked bundle. */
+  searchGraphContext(query: string, opts: ContextOpts, access: AccessContext): Promise<GraphContextResult>;
+
+  /** known fact → similarFacts cluster → graph(seeds) → readFacts (+ factLinks). */
+  similarGraphContext(scopeKey: string, opts: SimilarContextOpts, access: AccessContext): Promise<SimilarGraphContextResult>;
+}
+```
+
+**Notes**
+
+- Read-only; never writes the graph or mutates crawl state.
+- ACL is applied on the entry retrieval **and** re-applied on the final
+  `readFacts`, so an unreachable fact never leaks via a reachable node.
+- `factLinks` (similar only) is bounded by `maxFactLinks` and 1-hop shared nodes.

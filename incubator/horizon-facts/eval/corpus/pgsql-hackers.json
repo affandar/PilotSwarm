@@ -1,0 +1,24 @@
+{
+  "scenario": "postgres pgsql-hackers mailing list — jsonb subscript debate",
+  "description": "Synthetic archived messages. The harvester must build an open graph: people, patches, code files, threads, and the free-text relationships between them. Messages 1001 and 1002 restate the same Tom Lane → patch relationship (one via the alias 'tgl') so the eval can verify dedup + edge reinforcement. Message 1003 introduces a second person (Andres Freund) and a review relationship.",
+  "messages": [
+    {
+      "id": "1001",
+      "from": "Tom Lane <tgl@sss.pgh.pa.us>",
+      "subject": "Re: jsonb subscripting semantics (v3)",
+      "body": "I looked over the v3 fix jsonb subscript patch. It touches src/backend/utils/adt/jsonbsubs.c and changes how a missing key is handled. This revives the argument from the 2025 jsonb subscript semantics thread — we never settled whether assignment to a missing path should auto-vivify. I comment on the patch with that concern. — tgl"
+    },
+    {
+      "id": "1002",
+      "from": "tgl@sss.pgh.pa.us",
+      "subject": "Re: jsonb subscripting semantics (v3)",
+      "body": "Following up on my earlier note: I still comment on the v3 fix jsonb subscript patch. The change in src/backend/utils/adt/jsonbsubs.c is the right shape, but the error message wording needs work. Same patch, same file."
+    },
+    {
+      "id": "1003",
+      "from": "Andres Freund <andres@anarazel.de>",
+      "subject": "Re: jsonb subscripting semantics (v3)",
+      "body": "I reviews the v3 fix jsonb subscript patch from the performance angle. I disagrees with Tom Lane about auto-vivification — I think the extra branch in src/backend/utils/adt/jsonbsubs.c is cheap enough. Otherwise the patch looks good to me."
+    }
+  ]
+}

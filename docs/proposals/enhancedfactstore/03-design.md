@@ -179,14 +179,14 @@ The harvester manages both stores. Deleting a fact does **not** delete graph
 provenance (no cascade); a deleted fact may remain referenced until a harvester
 or maintenance pass cleans it up.
 
-## 3. Embedding generator (the corrected design)
+## 3. Embedding generator
 
-### 3.1 Why the previous design was wrong
+### 3.1 Why a single eternal loop (not df-in-df)
 
-The old loop scheduled a plpgsql procedure that, **per fact**, started a child
-`df.http` instance and blocked on `df.wait_for_completion`. That is a durable
-instance nested inside a durable instance ("df-in-df") — fragile, and it only
-existed because we believed `df.http` bodies were static. They are not.
+A naive design would schedule a plpgsql procedure that, **per fact**, starts a
+child `df.http` instance and blocks on `df.wait_for_completion` — a durable
+instance nested inside a durable instance ("df-in-df"). That is fragile, and it
+is unnecessary because `df.http` bodies are **not** static.
 
 `df.http` supports runtime substitution in url/body/headers via:
 
@@ -281,9 +281,9 @@ flowchart TB
 - **`similarFacts`** = the `semantic_knn` proc anchored on a known fact's stored
   vector (no query embedding, no fusion, no graph).
 - **Lineage** = base `readFacts({ scope: "descendants" })` (rank via `searchFacts`).
-- **Graph retrieval is NOT a `searchFacts` mode.** `relatedFacts` is removed.
+- **Graph retrieval is NOT a `searchFacts` mode.** There is no `relatedFacts`.
 
-### 4.1 Graph retrieval & the fact-pivot (replaces the old `graph` mode)
+### 4.1 Graph retrieval & the fact-pivot
 
 Graph nodes have **no vector index** — a free-text query cannot kNN its way to a
 node. So the query entry point rides the **facts'** vector index, then pivots

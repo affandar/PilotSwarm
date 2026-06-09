@@ -110,7 +110,7 @@ at the real dimension. Outcome-only assertions.
 | SF3 | `minScore` | filters by cosine |
 | SF4 | **(neg)** unknown scope_key | empty result |
 
-### 2.5 Graph retrieval via seeds (replaces `relatedFacts`)
+### 2.5 Graph retrieval via seeds
 
 Graph relatedness is `searchGraphNodes({ seeds })` + `readFacts`, not a facts
 method. See also §3.3.
@@ -210,6 +210,33 @@ Lineage is the base API's `readFacts({ scope: "descendants" })`; ranking is via
 | GD4 | **(neg)** deleteGraphNode unknown key | `false` |
 | GD5 | **no cascade** — deleteFact then graph | graph provenance referencing the fact still present |
 
+## 3a. Phase 2 — compound context reads (depends on `EVIDENCED_BY`)
+
+These exercise `searchGraphContext` / `similarGraphContext`. They require a
+harvested fixture (`GX` nodes/edges linked to `FX` facts via `EVIDENCED_BY`).
+The degenerate cases run against an **unharvested** corpus (facts only, empty
+graph) to prove graceful fallback.
+
+### 3a.1 `searchGraphContext`
+
+| # | Case | Expectation |
+|---|------|-------------|
+| CX1 | query matches seed facts, graph harvested | `seeds` non-empty; `nodes`/`edges` reached via `EVIDENCED_BY`; `facts` map covers every referenced scopeKey |
+| CX2 | bundle is self-resolving | every `node.evidence` / `edge.evidence` / seed key is present as a key in `facts` |
+| CX3 | `breadth`/`depth` bounding | higher breadth reaches more nodes; `depth` clamped to 1..3 |
+| CX4 | **degenerate** — unharvested graph | `nodes`/`edges` empty; `facts` equals the seed set |
+| CX5 | **(acl)** unreachable fact evidenced by a reachable node | excluded from `facts` (ACL re-applied on final read) |
+
+### 3a.2 `similarGraphContext`
+
+| # | Case | Expectation |
+|---|------|-------------|
+| CS1 | anchor fact, harvested graph | cluster from `similarFacts` seeds the graph; `nodes`/`edges` returned |
+| CS2 | `factLinks` derivation | two cluster facts sharing a node yield a `FactLink` with `via` node + `predicates` |
+| CS3 | `factLinks` bounded | capped at `maxFactLinks`; shared-node (1-hop) links only |
+| CS4 | **degenerate** — no shared nodes / unharvested | `factLinks` empty; `facts` equals the cluster |
+| CS5 | read-only | neither graph nor crawl state mutated (compare before/after) |
+
 ## 4. Embedder lifecycle (pg_durable)
 
 Outcome-based for embedding effects; explicit df-state checks for lifecycle.
@@ -279,8 +306,8 @@ incubator/horizon-facts/test/integration/
   graph-edges.test.mjs        # §3.2
   graph-query.test.mjs        # §3.3
   graph-merge.test.mjs        # §3.4
-  graph-delete.test.mjs       # §3.5
-  embedder-lifecycle.test.mjs # §4  (start/stop/double-start/double-stop)
+  graph-delete.test.mjs       # §3.5  context-search.test.mjs     # §3a.1  (searchGraphContext — Phase 2)
+  context-similar.test.mjs    # §3a.2  (similarGraphContext + factLinks — Phase 2)  embedder-lifecycle.test.mjs # §4  (start/stop/double-start/double-stop)
   embedder-live.test.mjs      # §4 live group (env-gated outcomes)
   preconditions.test.mjs      # §5
   migrations.test.mjs         # §6

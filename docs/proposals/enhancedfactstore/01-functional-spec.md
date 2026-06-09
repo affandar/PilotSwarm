@@ -137,11 +137,16 @@ Retrieval **over the facts store only**. `mode ∈ { lexical, semantic, hybrid }
 API (§6). Signal type (text/semantic/hybrid) is orthogonal to *which store* you
 query; `searchFacts` is purely the facts store.
 
-- **lexical** — keyword match over fact key + value text.
+- **lexical** — BM25 keyword match over fact key + value text. `query` is a
+  **keyword/terms query**, not a natural-language sentence.
 - **semantic** — pgvector cosine kNN over `facts.embedding` (query embedded at
-  call time via the Node embedding client).
+  call time via the Node embedding client). `query` is **natural language**.
 - **hybrid** — weighted fusion of lexical + semantic; a missing signal
-  contributes 0.
+  contributes 0. `query` is used **both ways** (BM25 + embedded).
+
+The `query` argument's expected shape therefore depends on `mode`; tool layers
+that expose `searchFacts` to an LLM must make this explicit so the model passes
+keywords (not a sentence) in lexical mode.
 
 Every hit is ACL-filtered **after** ranking and carries per-signal score
 contributions for debuggability. `searchFacts` output (an array of fact
@@ -156,12 +161,12 @@ Pure **semantic** nearest-neighbours of a known fact (cosine kNN over the fact's
 Returns ACL-filtered `ScoredFact[]` with a `semantic` signal. Distinct from
 `searchFacts` by **anchor type**: an existing fact key, not query text.
 
-> **Removed: `relatedFacts`.** Graph-aware relatedness now belongs to the graph
+> **No dedicated `relatedFacts`.** Graph-aware relatedness belongs to the graph
 > API: `searchGraphNodes({ seeds: [...] })` expands from seed facts/nodes, then
 > `readFacts` on the connected fact keys returns facts. This keeps facts
 > retrieval (this section) orthogonal to graph traversal (§6).
 
-> **Removed: `lineageFacts`.** Lineage scoping is already in the base `FactStore`:
+> **No dedicated `lineageFacts`.** Lineage scoping is already in the base `FactStore`:
 > `readFacts({ sessionId, scope: "descendants" }, { grantedSessionIds })` reads
 > spawn-tree facts. To rank them, pass the query through `searchFacts` (which is
 > ACL-filtered the same way). No dedicated lineage retrieval method is needed.
@@ -240,11 +245,10 @@ facts" is the **facts'** vector index (via `searchFacts` seeds), not node vector
   optional `evidence`) into the existing node. Returns canonical `GraphNodeRef`.
 - **`upsertGraphEdge(GraphEdgeInput)`** — create, or reinforce an existing edge
   (noisy-OR `confidence`, `observations++`) and **union** any supplied
-  `evidence`. This single verb absorbs the former `linkEvidence` (call it again
-  with only new evidence to add provenance).
-- **Evidence is OPTIONAL** in this iteration. The previous hard rejection of
-  evidence-less assertions is dropped. *(TODO: re-evaluate mandatory evidence for
-  graph trust.)*
+  `evidence`. This single verb also serves as the evidence-linking primitive:
+  call it again with only new evidence to add provenance to an edge.
+- **Evidence is OPTIONAL.** Evidence-less assertions are accepted rather than
+  rejected. *(TODO: re-evaluate mandatory evidence for graph trust.)*
 - **`mergeGraphNodes(fromKey, intoKey, reason)`** — node resolution / dedup:
   union aliases onto the survivor, repoint in/out edges, delete the duplicate.
 
@@ -301,29 +305,63 @@ stale facts automatically re-enter the queue. `last_crawled_at` is independent o
 the embedding pending-state (`content_hash` vs `last_embedded_hash`); a write
 resets both.
 
-| Before | After |
-|--------|-------|
-| `relatedFacts` (semantic kNN) | `similarFacts` |
-| `relatedFacts` (graph) | removed → `searchGraphNodes({ seeds })` + `readFacts` |
-| `lineageFacts` | removed → base `readFacts({ scope: "descendants" })`, ranked via `searchFacts` |
-| `searchFacts` `graph` mode | removed (facts store only: lexical/semantic/hybrid) |
-| `EntityAssertion` / `EntityInput` | `GraphNodeInput` |
-| `EntityRef` / `EntityHit` / `EntityQuery` | `GraphNodeRef` / `GraphNodeHit` / `GraphNodeQuery` |
-| `searchEntities` | `searchGraphNodes` (now takes `seeds[]`) |
-| `upsertEntity` | `upsertGraphNode` |
-| `mergeEntities` | `mergeGraphNodes` |
-| `deleteEntity` | `deleteGraphNode` |
-| `assertRelationship` / `RelAssertion` / `EdgeInput` | `upsertGraphEdge` / `GraphEdgeInput` |
-| `RelRef` / `EdgeRef` | `GraphEdgeRef` |
-| `RelQuery` / `EdgeQuery` | `GraphEdgeQuery` |
-| `RelHit` / `EdgeHit` | `GraphEdgeHit` |
-| `searchRelationships` / `searchEdges` | `searchGraphEdges` |
-| `deleteEdge` | `deleteGraphEdge` |
-| `neighbourhood` | `graphNeighbourhood` |
-| `linkEvidence` | removed (folded into `upsertGraphNode` / `upsertGraphEdge`) |
-| `HttpEmbeddingCapability` + fallbacks | removed (fail-fast preconditions) |
-| `_embedPendingNode`, `_embedNewFactsInDbOnce` | removed |
-| `startRecurringEmbedder` / `stopRecurringEmbedder` / `recurringEmbedderStatus` | `startEmbedder` / `stopEmbedder` / `embedderStatus` |
+## 7. Phase 2 — compound cross-store reads (context APIs)
+
+> **Phasing.** Everything above is **Phase 1**: the orthogonal primitives
+> (`searchFacts`, `similarFacts`, the graph API) plus the harvester support that
+> *populates* the graph. The two APIs below are **Phase 2** — they *compose*
+> those primitives into one call. They are gated behind Phase 1 because **they
+> only return useful results once a harvester has populated `EVIDENCED_BY`**
+> links between facts and graph nodes. Against an empty/unharvested graph they
+> degrade to "just the seed facts" — correct, but unremarkable. Ship Phase 1
+> first; turn these on once the graph has evidence.
+
+Both methods perform the cross-store join a caller would otherwise wire by hand
+(`searchFacts`/`similarFacts` → `searchGraphNodes({ seeds })` → `readFacts`) and
+return a **single normalized, relationship-aware bundle** an LLM can read. The
+Phase 1 primitives stay pure; this is an additive "context" surface on top.
+
+### 7.1 `searchGraphContext(query, opts, access)` — query → graph → facts
+
+Entry by **query text**. Pipeline:
+
+1. `searchFacts(query, { mode, limit: seedLimit }, access)` → seed facts.
+2. `searchGraphNodes({ seeds: seedScopeKeys, depth }, access)` → reached nodes
+   plus their `EVIDENCED_BY` fact keys.
+3. `readFacts` over every referenced fact key (seeds + evidence), ACL re-applied.
+
+Returns a `GraphContextResult` (02-api-reference §8): the entry descriptor, the
+scored seed facts, the reached `nodes`, the `edges` among them, and a deduped
+`facts` map keyed by `scopeKey` so every node/edge/seed resolves back to its
+source fact without a second call.
+
+### 7.2 `similarGraphContext(scopeKey, opts, access)` — known fact → similar cluster → graph → facts
+
+Entry by an **existing fact**. Pipeline:
+
+1. `similarFacts(scopeKey, { k }, access)` → a semantically-related **cluster**.
+2. Seed the graph with the **anchor + the whole cluster** and expand
+   (`searchGraphNodes({ seeds, depth })`).
+3. `readFacts` over all referenced fact keys.
+
+Because multiple related facts pivot in together, the result also surfaces the
+relationships **among** the cluster. It returns a `SimilarGraphContextResult`
+that extends the bundle above with **`factLinks`** — derived fact↔fact links
+("these two facts are related *because* both evidence node X via predicates …"),
+the structure that makes the cluster legible to an LLM. `factLinks` is bounded
+(capped pairs; shared-node hops only) so the derivation stays cheap.
+
+### 7.3 Requirements
+
+- Both re-apply ACL on the final `readFacts`; a fact unreachable to the caller
+  never appears, even if a reachable node evidences it.
+- Both are **read-only** and side-effect free; they never write the graph or
+  mutate crawl state.
+- With no graph evidence, `nodes` / `edges` / `factLinks` are empty and `facts`
+  equals the seed set — a graceful, correct degenerate.
+- Bounding knobs (`seedLimit`, `depth` clamped 1..3, `expandLimit`, `factLimit`)
+  cap each stage; the tool wrapper (05-tools-spec §6) collapses them into a
+  single `breadth` preset for LLM callers.
 
 ## 8. Acceptance criteria
 
@@ -349,3 +387,14 @@ resets both.
 10. All data access (relational + vector) goes through stored procedures; graph
     access goes through a typed Cypher layer; all DDL ships as numbered
     migrations (no SQL embedded in TypeScript source).
+
+**Phase 2 (compound context reads — gated behind a populated graph):**
+
+11. `searchGraphContext` returns the seed facts, the nodes/edges reached via
+    their `EVIDENCED_BY` seeds, and a deduped `facts` map — equivalent to the
+    manual `searchFacts → searchGraphNodes → readFacts` pipeline in one call.
+12. `similarGraphContext` additionally returns `factLinks` connecting cluster
+    facts through shared nodes; against an unharvested (evidence-free) graph both
+    APIs degrade to exactly the seed facts (empty `nodes`/`edges`/`factLinks`).
+13. Both context APIs re-apply ACL on the final read and never mutate the graph
+    or crawl state.
