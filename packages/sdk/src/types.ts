@@ -932,7 +932,7 @@ export interface UserContext {
 export type ToolOutcomeKind = "success" | "failure" | "interaction_required" | "service_unavailable";
 
 export interface InteractionRequiredPayload {
-    reasonCode: string;
+    reasonCode: InteractionRequiredReasonCode;
     message?: string | null;
     /**
      * Opaque IdP claims-challenge blob. Persisted in the CMS event row so
@@ -941,6 +941,27 @@ export interface InteractionRequiredPayload {
      */
     claims?: string | null;
 }
+
+/**
+ * Pinned set of stable reason codes accepted by
+ * `interactionRequired()`. The portal keys behavior off `reasonCode`
+ * (not free-form text), so this is part of the public contract.
+ * Extension requires explicit consensus across PilotSwarm + downstream
+ * consumers (see CHANGELOG entry for the OBO Phase 4 outcome
+ * contract).
+ */
+export type InteractionRequiredReasonCode =
+    | "reauth_required"
+    | "mfa_refresh"
+    | "conditional_access"
+    | "consent_required";
+
+export const INTERACTION_REQUIRED_REASON_CODES: ReadonlySet<InteractionRequiredReasonCode> = new Set([
+    "reauth_required",
+    "mfa_refresh",
+    "conditional_access",
+    "consent_required",
+]);
 
 export interface ServiceUnavailablePayload {
     reasonCode: string;

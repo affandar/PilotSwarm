@@ -77,6 +77,20 @@ describe("Phase 4 — tool-outcome helpers", () => {
             expect(() => interactionRequired({})).toThrow(/reasonCode/);
             expect(() => interactionRequired({ reasonCode: "   " })).toThrow(/reasonCode/);
         });
+
+        it("rejects reason codes outside the pinned taxonomy (Phase 7 final-review Finding 4)", () => {
+            // The portal keys behavior off reasonCode (not free-form text),
+            // so unknown values must be rejected at helper-call time so
+            // downstream consumers can't fragment the contract.
+            expect(() => interactionRequired({ reasonCode: "made_up_code" }))
+                .toThrow(/not in the pinned taxonomy/);
+            expect(() => interactionRequired({ reasonCode: "Reauth_Required" }))
+                .toThrow(/not in the pinned taxonomy/);
+            // The four pinned values continue to work.
+            for (const code of ["reauth_required", "mfa_refresh", "conditional_access", "consent_required"]) {
+                expect(() => interactionRequired({ reasonCode: code })).not.toThrow();
+            }
+        });
     });
 
     describe("serviceUnavailable()", () => {

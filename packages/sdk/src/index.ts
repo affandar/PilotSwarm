@@ -176,9 +176,11 @@ export type {
 // generic tool failure is preserved via the persisted `outcome` event field.
 export { interactionRequired, serviceUnavailable } from "./tool-outcomes.js";
 export type { StructuredToolResult } from "./tool-outcomes.js";
+export { INTERACTION_REQUIRED_REASON_CODES } from "./types.js";
 export type {
     ToolOutcomeKind,
     InteractionRequiredPayload,
+    InteractionRequiredReasonCode,
     ServiceUnavailablePayload,
     ToolOutcomePayload,
     ToolOutcomeMarker,

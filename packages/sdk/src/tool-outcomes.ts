@@ -24,7 +24,7 @@ import type {
     ToolOutcomeMarker,
     ToolOutcomePayload,
 } from "./types.js";
-import { PS_TOOL_OUTCOME_MARKER } from "./types.js";
+import { PS_TOOL_OUTCOME_MARKER, INTERACTION_REQUIRED_REASON_CODES } from "./types.js";
 
 /**
  * Result shape returned by `interactionRequired` / `serviceUnavailable`
@@ -65,9 +65,12 @@ function defaultMessageFor(kind: "interaction_required" | "service_unavailable",
  * re-authenticates, the next worker-bound RPC carries a freshly-acquired
  * downstream token (FR-011 / SC-006).
  *
- * - `reasonCode` (required, stable identifier): `"reauth_required"`,
- *   `"mfa_refresh"`, `"conditional_access"`, `"consent_required"`, or a
- *   plugin-specific value. Persisted in `outcome_payload.reasonCode`.
+ * - `reasonCode` (required, stable identifier): one of the pinned
+ *   values in `INTERACTION_REQUIRED_REASON_CODES` —
+ *   `"reauth_required" | "mfa_refresh" | "conditional_access" | "consent_required"`.
+ *   The portal keys behavior off this code (not free-form text);
+ *   unknown values are rejected at helper-call time. Persisted in
+ *   `outcome_payload.reasonCode`.
  * - `message` (optional, LLM-visible): a short developer-authored hint
  *   explaining why re-auth is needed. **Do not include token material.**
  * - `claims` (optional, NOT LLM-visible): the opaque IdP claims-challenge
@@ -78,10 +81,16 @@ export function interactionRequired(input: InteractionRequiredPayload): Structur
     if (!reasonCode) {
         throw new Error("interactionRequired: reasonCode is required and must be a non-empty string.");
     }
+    if (!INTERACTION_REQUIRED_REASON_CODES.has(reasonCode as any)) {
+        const allowed = Array.from(INTERACTION_REQUIRED_REASON_CODES).join(", ");
+        throw new Error(
+            `interactionRequired: reasonCode "${reasonCode}" is not in the pinned taxonomy. Allowed: ${allowed}.`,
+        );
+    }
     const message = sanitizeString(input?.message);
     const claims = sanitizeString(input?.claims);
     const payload: InteractionRequiredPayload = {
-        reasonCode,
+        reasonCode: reasonCode as any,
         message,
         claims,
     };
