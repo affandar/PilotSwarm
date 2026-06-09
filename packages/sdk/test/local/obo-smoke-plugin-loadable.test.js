@@ -41,6 +41,11 @@ describe("Phase 5 — examples/obo-smoke plugin loadable", () => {
         expect(typeof mod.buildOboSmokeTools).toBe("function");
         expect(typeof mod.registerOboSmokeTools).toBe("function");
         expect(typeof mod.default).toBe("function");
+        // Phase 7 (FR-025): selectAuthBackend is part of the public
+        // surface so unit tests + downstream extensions can reuse it.
+        expect(typeof mod.selectAuthBackend).toBe("function");
+        expect(typeof mod.getCachedCca).toBe("function");
+        expect(typeof mod._resetSmokePluginStateForTests).toBe("function");
     });
 
     it("buildOboSmokeTools returns the two expected tools with stable names", async () => {

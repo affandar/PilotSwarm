@@ -9,6 +9,7 @@
     ".": "./index.js"
   },
   "dependencies": {
+    "@azure/msal-node": "^5.1.0",
     "pilotswarm-sdk": "*"
   }
 }

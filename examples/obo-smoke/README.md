@@ -38,29 +38,45 @@ worker.registerTools(buildOboSmokeTools());
 
 The tool reads `process.env` **at every invocation** (never at module
 import time, so contributors cannot accidentally bake smoke creds
-into a non-smoke worker by importing the module). It branches as
-follows:
+into a non-smoke worker by importing the module).
 
-| Lookup result | `OBO_SMOKE_WORKER_APP_*` set? | `accessToken` present? | `mode` returned |
+It auto-selects between two OBO backends (Phase 7 / FR-025):
+
+| Env present | Selected backend | Notes |
+|---|---|---|
+| `AZURE_FEDERATED_TOKEN_FILE` only | **`fic`** | Production-shape; AKS workload-identity. |
+| `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` only | **`client-secret`** | Local-developer path. |
+| Both | **`fic`** (precedence) | Secret logged once as ignored. |
+| Neither | _structured `serviceUnavailable` outcome_ | Plugin module load itself never throws. |
+
+Then it branches on the user-context lookup + access-token presence:
+
+| Lookup result | Backend selected? | `accessToken` present? | `mode` returned |
 |---|---|---|---|
 | `null` | — | — | `no_user_context` |
-| present | no (any var missing) | — | `principal_only` (lists missing vars) |
+| present | no | — | `serviceUnavailable({ reasonCode: "smoke_misconfigured" })` |
 | present | yes | no | `principal_only` (reason: token absent) |
-| present | yes | yes, OBO exchange + Graph succeed | `obo_ok` |
-| present | yes, OBO exchange or Graph failed | yes | `obo_failed` (reason included) |
+| present | yes | yes, OBO + Graph succeed | `obo_ok` |
+| present | yes | yes, OBO or Graph failed | `obo_failed` (reason included) |
 
-Required env (all four for the real-OBO path):
+Required env (common to both backends):
 
 - `OBO_SMOKE_WORKER_APP_TENANT_ID`
 - `OBO_SMOKE_WORKER_APP_CLIENT_ID`
-- `OBO_SMOKE_WORKER_APP_CLIENT_SECRET`
 - `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE` (e.g.
   `https://graph.microsoft.com/User.Read`)
 
+Backend-specific:
+
+- `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` — client-secret backend only.
+- `AZURE_FEDERATED_TOKEN_FILE` — FIC backend; auto-set inside AKS pods
+  with the workload-identity webhook.
+- `AZURE_AUTHORITY_HOST` — optional override of the MSAL authority
+  host (defaults to `https://login.microsoftonline.com`).
+
 These env keys are **deliberately** namespaced separately from any
 production OBO env vars and **MUST NOT** be added to `.env.example`
-or to any auto-load path used by a non-smoke worker (Spec Phase-5
-Changes Required).
+or to any auto-load path used by a non-smoke worker.
 
 ## How `obo_smoke_force_reauth` works
 
@@ -75,15 +91,22 @@ and has no side effects. Run it twice in a session:
 
 ## Notes
 
-- **Why local-developer uses a confidential client + secret** — AKS
-  workload-identity Federated Identity Credentials (FIC) are not
-  available on a local maintainer machine. The FIC binding is
-  validated downstream by consumers (e.g., Waldemort) in their own
-  deploy stack and is **out of scope** for the smoke plugin per Spec
-  FR-015.
+- **Backend auto-selection (Phase 7 / FR-025).** The plugin selects
+  between AKS workload-identity FIC and a confidential-client +
+  client-secret at handler-call time, with FIC winning precedence.
+  Local developers configure `OBO_SMOKE_WORKER_APP_CLIENT_SECRET`;
+  AKS pods automatically take the FIC path via
+  `AZURE_FEDERATED_TOKEN_FILE`. Both backends route through
+  `@azure/msal-node`'s `acquireTokenOnBehalfOf` so the OBO request
+  shape matches the production-shape MSAL path consumers (Waldemort,
+  etc.) actually use.
 - **Tokens are never logged.** The plugin returns metadata only —
   `upn`, `objectId`, and a `hasAccessToken` boolean indicator. The
   underlying access token is held only on the per-call stack frame
   and discarded when the handler returns.
 - **No persistent state.** The plugin allocates nothing at module
   load; every state read happens inside the handler.
+- **Repeatable smoke driver.** See
+  [`docs/operations/live-smoke.md`](../../docs/operations/live-smoke.md)
+  for the `pilotswarm smoke <stamp> --profile obo` harness that
+  drives these tools end-to-end against a deployed stamp.

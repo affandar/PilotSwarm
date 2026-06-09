@@ -73,10 +73,26 @@ crypto backend; no runtime impact for stamps that don't enable OBO):
 
 **Reference plugin:** [`examples/obo-smoke/`](examples/obo-smoke/) ships
 `obo_smoke_whoami` (5 metadata-only modes including real Graph
-`/me` exchange) and `obo_smoke_force_reauth` (always emits
-`interactionRequired`). A manual live-tenant smoke checklist
-([`examples/obo-smoke/SMOKE_CHECKLIST.md`](examples/obo-smoke/SMOKE_CHECKLIST.md))
-is the npm-publish release gate for changes touching the OBO path.
+`/me` exchange via `@azure/msal-node`'s `acquireTokenOnBehalfOf` —
+auto-selects between client-secret and AKS workload-identity FIC
+backends, FIC winning precedence) and `obo_smoke_force_reauth`
+(always emits `interactionRequired`). The manual live-tenant smoke
+checklist ([`examples/obo-smoke/SMOKE_CHECKLIST.md`](examples/obo-smoke/SMOKE_CHECKLIST.md))
+remains the npm-publish release gate for changes touching the OBO
+path.
+
+**Repeatable live-smoke harness (Phase 7):** `pilotswarm smoke <stamp>
+--profile obo` — CLI driver that loads a stamp's `.env`, validates
+preflight, acquires user access tokens (device-code or pre-staged
+env), drives the deployed portal's `/api/rpc` with both the admission
+bearer and the encrypted-envelope downstream token, exercises both
+`obo_smoke_*` tools, and emits a structured pass/fail JSON record.
+A `workflow_dispatch`-only GitHub Actions scaffold
+(`.github/workflows/live-smoke-obo.yml`) wraps the same driver for
+post-deploy verification. New runbook at
+[`docs/operations/live-smoke.md`](docs/operations/live-smoke.md). The
+worker registers the smoke tools only when `OBO_SMOKE_ENABLED=true`
+is set on the stamp.
 
 **Docs:**
 

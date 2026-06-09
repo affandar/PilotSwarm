@@ -1,6 +1,11 @@
 # OBO KEK Runbook
 
 > Operator runbook for the User OBO Propagation key (`obo-user-token-kek`).
+>
+> See also:
+> [`docs/operations/live-smoke.md`](./live-smoke.md) — repeatable
+> `pilotswarm smoke <stamp> --profile obo` harness for verifying the
+> end-to-end OBO path on a deployed stamp after the KEK is in place.
 
 ## Overview
 

@@ -149,17 +149,43 @@ Same checklist as above, but expected to run on a maintainer's local
 machine without AKS:
 
 - The worker uses the confidential-client + dev-secret path
-  (`OBO_SMOKE_WORKER_APP_CLIENT_SECRET` is set) instead of an AKS
-  workload-identity Federated Identity Credential. The FIC binding
-  is validated downstream by consumers (Waldemort) in their own
-  deploy stack and is **out of scope** for the smoke plugin
-  (Spec FR-015).
+  (`OBO_SMOKE_WORKER_APP_CLIENT_SECRET` is set). On a local machine
+  `AZURE_FEDERATED_TOKEN_FILE` is unset, so the plugin's
+  auto-selection picks the client-secret backend (FR-025).
 - The portal runs locally (`run.sh portal` or equivalent) and is
   reached via `http://localhost:<port>`.
 - Run all of Step 4 through Step 8 above.
 
 - [ ] Local-developer smoke completed by **<maintainer name>** on
       **<date>** on **<machine description>**.
+
+---
+
+## AKS-deployed smoke variant (Phase 7)
+
+For full-fidelity verification on a deployed stamp without paying
+the local-portal setup cost, use the
+[`pilotswarm smoke`](../../docs/operations/live-smoke.md) harness:
+
+- [ ] Deploy a stamp with `OBO_ENABLED=true` and
+      `OBO_SMOKE_ENABLED=true`. The worker registers `obo_smoke_*`
+      tools at startup; non-smoke stamps are unaffected (the toggle
+      is worker-only and defaults to `false`).
+- [ ] Configure FIC trust on the smoke AAD app for the worker SA
+      (federated-credential subject =
+      `system:serviceaccount:<namespace>:<worker-sa>`). Per stamp,
+      one-time.
+- [ ] Set `OBO_SMOKE_WORKER_APP_TENANT_ID`,
+      `OBO_SMOKE_WORKER_APP_CLIENT_ID`, and
+      `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE` in the per-stamp `.env`.
+      No client secret needed — the FIC backend wins automatically.
+- [ ] Run `npx pilotswarm smoke <stamp> --profile obo`. The driver
+      acquires user tokens via device-code, drives the deployed
+      portal's `/api/rpc`, exercises both tools, and emits a JSON
+      pass record.
+- [ ] On pass: capture the JSON in the release PR description.
+- [ ] On fail: investigate `failedStep` + `reasonCode` per the
+      operations doc.
 
 ---
 

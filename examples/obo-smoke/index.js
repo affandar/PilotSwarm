@@ -1,123 +1,251 @@
 /**
- * OBO Smoke Plugin — reference implementation of the
- * User OBO Propagation feature contract.
+ * OBO Smoke Plugin — reference implementation of the User OBO
+ * Propagation feature contract.
  *
- * This plugin exposes two tools that exercise the end-to-end OBO flow
- * without any external consumer being present. It is the release-gate
- * vehicle for the `pilotswarm-sdk` OBO surface (Spec FR-018):
- *
+ * Two tools:
  *   - `obo_smoke_whoami` — proves the worker-side lookup
  *     (`getUserContextForSession`) returns the portal-bound principal
- *     (SC-001) and, when configured, that the worker can perform a real
- *     OBO exchange against Microsoft Graph (SC-007). When OBO env vars
- *     are unset, the tool degrades to a principal-only report — still
- *     proves SC-001 but skips the Graph call.
- *
+ *     (SC-001) and, when env-configured, that the worker can perform
+ *     a real OBO exchange against Microsoft Graph (SC-007).
  *   - `obo_smoke_force_reauth` — always emits `interactionRequired(...)`
- *     so a maintainer can manually verify the portal re-auth UX path
- *     and that the next worker-bound RPC observes the freshly-acquired
- *     downstream token (SC-008 / FR-011 / SC-006).
+ *     so a maintainer can verify the portal re-auth UX path
+ *     (SC-008 / FR-011 / SC-006).
  *
- * Loadable test ensures the module imports cleanly and the registered
- * tools have the expected names + handler shape, regardless of whether
- * Entra/Graph credentials are present.
+ * # Auth-backend selection (Phase 7 — FR-025)
  *
- * # Smoke-plugin env namespace (Spec Phase-5 Changes Required)
+ * The plugin auto-selects between two OBO backends at *handler-call*
+ * time (never at module load):
  *
- * Worker-app credentials for the optional real-OBO path MUST be
- * namespaced `OBO_SMOKE_WORKER_APP_*` so they are physically distinct
- * from any production OBO env vars. They are read on a per-tool-call
- * basis (no module-load-time capture) so a contributor cannot
- * accidentally bake them into a non-smoke worker by importing this
- * module.
+ *   - **FIC** (workload-identity Federated Identity Credential):
+ *     selected when `AZURE_FEDERATED_TOKEN_FILE` is present. The
+ *     production-shape path used by deployed AKS pods. Wins precedence
+ *     when both backends are configured (FR-025); when both are present
+ *     a single startup-style log line records that the secret was
+ *     ignored.
  *
- * Required for the real-OBO path (all four):
+ *   - **client-secret**: selected when only the four
+ *     `OBO_SMOKE_WORKER_APP_*` keys are set. The local-developer path.
  *
- *   - `OBO_SMOKE_WORKER_APP_TENANT_ID`
- *   - `OBO_SMOKE_WORKER_APP_CLIENT_ID`
- *   - `OBO_SMOKE_WORKER_APP_CLIENT_SECRET`
- *   - `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE`
- *     (e.g., `https://graph.microsoft.com/User.Read`)
+ *   - When neither set is satisfied, the handler returns a structured
+ *     `serviceUnavailable({ reasonCode: "smoke_misconfigured" })`
+ *     outcome. Module load itself never throws.
  *
- * If ANY of these are missing the tool falls back to the
- * principal-only report and explicitly logs which env vars are
- * missing — never silently disables.
+ * Both backends route through `@azure/msal-node`'s
+ * `ConfidentialClientApplication.acquireTokenOnBehalfOf` so the OBO
+ * request shape matches the production-shape MSAL path consumers
+ * (e.g., Waldemort) actually use. The FIC `clientAssertion` callback
+ * re-reads `AZURE_FEDERATED_TOKEN_FILE` on **every** acquisition (the
+ * projected SA token rotates); caching the assertion in the CCA
+ * config would silently break after rotation. SC-018 pins this.
+ *
+ * # Smoke-plugin env namespace
+ *
+ * Worker-app credentials for the local-developer path live under
+ * `OBO_SMOKE_WORKER_APP_*` so they are physically distinct from any
+ * production OBO env vars. They are read on a per-tool-call basis (no
+ * module-load-time capture) so a contributor cannot accidentally bake
+ * them into a non-smoke worker by importing this module.
+ *
+ *   - `OBO_SMOKE_WORKER_APP_TENANT_ID`         (both backends)
+ *   - `OBO_SMOKE_WORKER_APP_CLIENT_ID`         (both backends)
+ *   - `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE`       (both backends)
+ *   - `OBO_SMOKE_WORKER_APP_CLIENT_SECRET`     (client-secret backend)
+ *   - `AZURE_FEDERATED_TOKEN_FILE`             (FIC backend; auto-set
+ *                                               by the AKS workload-identity
+ *                                               webhook)
+ *   - `AZURE_AUTHORITY_HOST` (optional override; defaults to the
+ *                             public cloud authority)
  *
  * @module
  */
 
-import { defineTool, getUserContextForSession, interactionRequired } from "pilotswarm-sdk";
+import fs from "node:fs/promises";
+import { defineTool, getUserContextForSession, interactionRequired, serviceUnavailable } from "pilotswarm-sdk";
+import { ConfidentialClientApplication } from "@azure/msal-node";
 
-const REAL_OBO_ENV_KEYS = [
+const COMMON_ENV_KEYS = [
     "OBO_SMOKE_WORKER_APP_TENANT_ID",
     "OBO_SMOKE_WORKER_APP_CLIENT_ID",
-    "OBO_SMOKE_WORKER_APP_CLIENT_SECRET",
     "OBO_SMOKE_WORKER_APP_GRAPH_SCOPE",
 ];
 
-function readSmokeEnv(env) {
-    const out = {};
-    const missing = [];
-    for (const key of REAL_OBO_ENV_KEYS) {
-        const value = env[key];
-        if (typeof value === "string" && value.trim().length > 0) {
-            out[key] = value.trim();
+const SECRET_BACKEND_KEY = "OBO_SMOKE_WORKER_APP_CLIENT_SECRET";
+const FIC_TOKEN_FILE_KEY = "AZURE_FEDERATED_TOKEN_FILE";
+
+/**
+ * Read the smoke-plugin env tuple from the live `env` map (always
+ * `process.env` in production; injected for tests).
+ *
+ * Returns `{ values, backend, missing, secretIgnoredReason }` where:
+ *   - `backend` is `"fic" | "client-secret" | null`
+ *   - `missing` describes which keys are missing for each backend so
+ *     the structured `serviceUnavailable` outcome can name them
+ *   - `secretIgnoredReason` is set when both FIC and the secret are
+ *     present (FIC wins; the secret is logged once as ignored)
+ */
+export function selectAuthBackend(env) {
+    const common = {};
+    const missingCommon = [];
+    for (const key of COMMON_ENV_KEYS) {
+        const v = env[key];
+        if (typeof v === "string" && v.trim().length > 0) {
+            common[key] = v.trim();
         } else {
-            missing.push(key);
+            missingCommon.push(key);
         }
     }
-    return { values: out, missing };
+
+    const ficTokenFile = (typeof env[FIC_TOKEN_FILE_KEY] === "string" && env[FIC_TOKEN_FILE_KEY].trim().length > 0)
+        ? env[FIC_TOKEN_FILE_KEY].trim()
+        : null;
+    const clientSecret = (typeof env[SECRET_BACKEND_KEY] === "string" && env[SECRET_BACKEND_KEY].trim().length > 0)
+        ? env[SECRET_BACKEND_KEY].trim()
+        : null;
+
+    // FIC wins precedence (FR-025): the production-shape path is always
+    // preferred when its prerequisite is satisfied. The secret is
+    // explicitly noted as ignored so an operator can see what
+    // happened.
+    if (ficTokenFile && missingCommon.length === 0) {
+        return {
+            backend: "fic",
+            values: { ...common, [FIC_TOKEN_FILE_KEY]: ficTokenFile },
+            missing: { fic: [], "client-secret": clientSecret ? [] : [SECRET_BACKEND_KEY] },
+            secretIgnoredReason: clientSecret
+                ? "AZURE_FEDERATED_TOKEN_FILE is set; OBO_SMOKE_WORKER_APP_CLIENT_SECRET ignored due to FIC precedence (FR-025)."
+                : null,
+        };
+    }
+    if (clientSecret && missingCommon.length === 0) {
+        return {
+            backend: "client-secret",
+            values: { ...common, [SECRET_BACKEND_KEY]: clientSecret },
+            missing: { fic: [FIC_TOKEN_FILE_KEY], "client-secret": [] },
+            secretIgnoredReason: null,
+        };
+    }
+
+    // Neither backend's prerequisites are satisfied. Return the full
+    // missing-key map so the handler can name what's missing for each
+    // backend.
+    return {
+        backend: null,
+        values: common,
+        missing: {
+            fic: [...missingCommon, ...(ficTokenFile ? [] : [FIC_TOKEN_FILE_KEY])],
+            "client-secret": [...missingCommon, ...(clientSecret ? [] : [SECRET_BACKEND_KEY])],
+        },
+        secretIgnoredReason: null,
+    };
+}
+
+// One-shot startup-style log dedupe: emit the FIC-precedence message
+// at most once per process per (tenant, client) tuple.
+const _loggedSecretIgnored = new Set();
+function logSecretIgnoredOnce(reason, tenantId, clientId) {
+    if (!reason) return;
+    const key = `${tenantId}::${clientId}`;
+    if (_loggedSecretIgnored.has(key)) return;
+    _loggedSecretIgnored.add(key);
+    console.log(`[obo-smoke] ${reason}`);
+}
+
+// Per-(backend, tenant, clientId) CCA cache. The CCA itself is cheap
+// to build but caches token state internally between acquisitions, so
+// reusing one across calls keeps the OBO exchange fast.
+const _ccaCache = new Map();
+
+function authority(env, tenantId) {
+    const host = (typeof env.AZURE_AUTHORITY_HOST === "string" && env.AZURE_AUTHORITY_HOST.trim().length > 0)
+        ? env.AZURE_AUTHORITY_HOST.trim().replace(/\/+$/, "")
+        : "https://login.microsoftonline.com";
+    return `${host}/${tenantId}`;
 }
 
 /**
- * Perform the OAuth 2.0 On-Behalf-Of exchange against Entra and call
- * Microsoft Graph `/me`. Uses confidential-client + client-secret
- * (local-developer variant per Phase 5; AKS workload-identity FIC is
- * out of scope for the smoke plugin per Spec FR-015 — that lives in
- * each downstream consumer's deploy stack).
- *
- * Returns `{ ok: true, upn, objectId }` on success, or
- * `{ ok: false, reason: string }` on any failure (token acquisition
- * error, Graph call non-2xx, malformed response).
+ * Construct (or look up) the confidential-client app for the given
+ * backend. Public for unit-test injection.
  */
-async function exchangeAndCallGraph({ tenantId, clientId, clientSecret, graphScope, userAccessToken }) {
-    const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`;
-    const tokenForm = new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        client_id: clientId,
-        client_secret: clientSecret,
-        assertion: userAccessToken,
-        scope: graphScope,
-        requested_token_use: "on_behalf_of",
-    });
-    let tokenResponse;
-    try {
-        tokenResponse = await fetch(tokenUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: tokenForm.toString(),
-        });
-    } catch (err) {
-        return { ok: false, reason: `token endpoint unreachable: ${err?.message ?? err}` };
-    }
-    if (!tokenResponse.ok) {
-        const text = await tokenResponse.text().catch(() => "");
-        return { ok: false, reason: `OBO exchange failed: ${tokenResponse.status} ${text.slice(0, 200)}` };
-    }
-    let tokenJson;
-    try {
-        tokenJson = await tokenResponse.json();
-    } catch (err) {
-        return { ok: false, reason: `OBO exchange returned non-JSON: ${err?.message ?? err}` };
-    }
-    const downstreamAccessToken = tokenJson?.access_token;
-    if (typeof downstreamAccessToken !== "string" || downstreamAccessToken.length === 0) {
-        return { ok: false, reason: "OBO exchange returned no access_token" };
+export function getCachedCca({ backend, tenantId, clientId, env }, { newCca = null } = {}) {
+    const key = `${backend}::${tenantId}::${clientId}`;
+    const cached = _ccaCache.get(key);
+    if (cached) return cached;
+
+    const auth = {
+        clientId,
+        authority: authority(env, tenantId),
+    };
+    if (backend === "client-secret") {
+        auth.clientSecret = env[SECRET_BACKEND_KEY];
+    } else if (backend === "fic") {
+        // CRITICAL invariant: re-read AZURE_FEDERATED_TOKEN_FILE on
+        // every acquisition. The projected SA token rotates on a
+        // schedule; capturing its contents here would break after the
+        // first rotation. SC-018(b) pins this.
+        auth.clientAssertion = async () => {
+            const tokenFile = env[FIC_TOKEN_FILE_KEY];
+            if (typeof tokenFile !== "string" || tokenFile.trim().length === 0) {
+                throw new Error("FIC backend: AZURE_FEDERATED_TOKEN_FILE missing at acquisition time");
+            }
+            const raw = await fs.readFile(tokenFile.trim(), "utf8");
+            return raw.trim();
+        };
+    } else {
+        throw new Error(`getCachedCca: unsupported backend ${backend}`);
     }
 
+    const cca = (typeof newCca === "function")
+        ? newCca({ auth })
+        : new ConfidentialClientApplication({ auth });
+    _ccaCache.set(key, cca);
+    return cca;
+}
+
+// Test-only hook: clear caches between sub-tests.
+export function _resetSmokePluginStateForTests() {
+    _ccaCache.clear();
+    _loggedSecretIgnored.clear();
+}
+
+/**
+ * Perform OBO via MSAL CCA and call Microsoft Graph `/me`. Both
+ * backends share this code path; the only difference is how the CCA
+ * was constructed (above).
+ */
+async function exchangeAndCallGraph({
+    backend,
+    tenantId,
+    clientId,
+    graphScope,
+    userAccessToken,
+    env,
+    deps,
+}) {
+    let cca;
+    try {
+        cca = getCachedCca({ backend, tenantId, clientId, env }, { newCca: deps?.newCca });
+    } catch (err) {
+        return { ok: false, reason: `MSAL CCA construction failed: ${err?.message ?? err}` };
+    }
+
+    let tokenResult;
+    try {
+        tokenResult = await cca.acquireTokenOnBehalfOf({
+            oboAssertion: userAccessToken,
+            scopes: [graphScope],
+        });
+    } catch (err) {
+        return { ok: false, reason: `OBO exchange failed: ${err?.errorCode || err?.message || err}` };
+    }
+    const downstreamAccessToken = tokenResult?.accessToken;
+    if (typeof downstreamAccessToken !== "string" || downstreamAccessToken.length === 0) {
+        return { ok: false, reason: "OBO exchange returned no accessToken" };
+    }
+
+    const fetchImpl = deps?.fetch ?? fetch;
     let graphResponse;
     try {
-        graphResponse = await fetch("https://graph.microsoft.com/v1.0/me", {
+        graphResponse = await fetchImpl("https://graph.microsoft.com/v1.0/me", {
             headers: { Authorization: `Bearer ${downstreamAccessToken}` },
         });
     } catch (err) {
@@ -143,21 +271,18 @@ async function exchangeAndCallGraph({ tenantId, clientId, clientSecret, graphSco
 /**
  * Build the obo_smoke_whoami tool definition.
  *
- * The tool resolves the active session's user context via
- * `getUserContextForSession`. When all four `OBO_SMOKE_WORKER_APP_*`
- * env vars are present AND the lookup returns a non-null access
- * token, it performs a real OBO exchange and calls Graph `/me`. In
- * every other case it returns a structured principal-only report
- * with an explicit `mode` field so a maintainer running the smoke
- * checklist can see why the real-OBO path was skipped.
+ * `deps` is an optional injection seam used by tests:
+ *   - `deps.env` — substitutes `process.env` for backend selection
+ *   - `deps.newCca({ auth })` — substitutes the CCA constructor
+ *   - `deps.fetch` — substitutes `fetch` for the Graph call
  */
-function defineWhoamiTool() {
+function defineWhoamiTool(deps = {}) {
     return defineTool("obo_smoke_whoami", {
         description:
             "OBO smoke tool: returns the engineer's identity as resolved by the worker-side " +
             "lookup, optionally enriched with a Microsoft Graph /me lookup performed via " +
-            "OAuth 2.0 On-Behalf-Of when smoke env vars are configured. Use this to verify " +
-            "an end-to-end OBO sign-in works for a designated smoke tenant before publish.",
+            "OAuth 2.0 On-Behalf-Of when smoke env vars are configured. Auto-selects between " +
+            "client-secret and workload-identity FIC backends; FIC wins precedence when both are present.",
         parameters: {
             type: "object",
             properties: {},
@@ -191,17 +316,31 @@ function defineWhoamiTool() {
                 accessTokenExpiresAt: userContext.accessTokenExpiresAt,
             };
 
-            const env = readSmokeEnv(process.env);
-            if (env.missing.length > 0) {
-                return {
-                    mode: "principal_only",
-                    reason: `OBO smoke env vars missing: ${env.missing.join(", ")} — set OBO_SMOKE_WORKER_APP_* to enable Graph round-trip`,
-                    principal: principalReport,
-                };
+            const env = deps.env ?? process.env;
+            const selection = selectAuthBackend(env);
+            if (selection.backend === null) {
+                // Handler-time refusal as a structured outcome — matches
+                // the Phase-4 outcome family, three-way distinguishable
+                // from `interactionRequired` and generic failure.
+                return serviceUnavailable({
+                    reasonCode: "smoke_misconfigured",
+                    message:
+                        `OBO smoke env not configured for either backend. ` +
+                        `For FIC: set { ${selection.missing.fic.join(", ")} }. ` +
+                        `For client-secret: set { ${selection.missing["client-secret"].join(", ")} }.`,
+                });
             }
+
+            logSecretIgnoredOnce(
+                selection.secretIgnoredReason,
+                selection.values.OBO_SMOKE_WORKER_APP_TENANT_ID,
+                selection.values.OBO_SMOKE_WORKER_APP_CLIENT_ID,
+            );
+
             if (!principalReport.hasAccessToken) {
                 return {
                     mode: "principal_only",
+                    backend: selection.backend,
                     reason:
                         "User context is bound but accessToken is null — either no downstream scope " +
                         "configured at the portal, or envelope decrypt failed (look for system.tool_outcome).",
@@ -210,21 +349,25 @@ function defineWhoamiTool() {
             }
 
             const exchange = await exchangeAndCallGraph({
-                tenantId: env.values.OBO_SMOKE_WORKER_APP_TENANT_ID,
-                clientId: env.values.OBO_SMOKE_WORKER_APP_CLIENT_ID,
-                clientSecret: env.values.OBO_SMOKE_WORKER_APP_CLIENT_SECRET,
-                graphScope: env.values.OBO_SMOKE_WORKER_APP_GRAPH_SCOPE,
+                backend: selection.backend,
+                tenantId: selection.values.OBO_SMOKE_WORKER_APP_TENANT_ID,
+                clientId: selection.values.OBO_SMOKE_WORKER_APP_CLIENT_ID,
+                graphScope: selection.values.OBO_SMOKE_WORKER_APP_GRAPH_SCOPE,
                 userAccessToken: userContext.accessToken,
+                env,
+                deps,
             });
             if (!exchange.ok) {
                 return {
                     mode: "obo_failed",
+                    backend: selection.backend,
                     reason: exchange.reason,
                     principal: principalReport,
                 };
             }
             return {
                 mode: "obo_ok",
+                backend: selection.backend,
                 principal: principalReport,
                 graph: { upn: exchange.upn, objectId: exchange.objectId },
             };
@@ -232,14 +375,6 @@ function defineWhoamiTool() {
     });
 }
 
-/**
- * Build the obo_smoke_force_reauth tool definition.
- *
- * Always returns an `interaction_required` structured outcome so a
- * maintainer can verify the portal re-auth banner UX and confirm
- * that after re-auth the next worker-bound RPC observes the fresh
- * downstream token (SC-008 / FR-011 / SC-006). Has no side effects.
- */
 function defineForceReauthTool() {
     return defineTool("obo_smoke_force_reauth", {
         description:
@@ -261,26 +396,20 @@ function defineForceReauthTool() {
 }
 
 /**
- * Build the array of OBO smoke tools.
- *
- * Exported as a function (not a pre-built array) so the env read at
- * tool-call time happens against the live process.env, never against
- * a captured snapshot from module import time.
+ * Build the array of OBO smoke tools. `deps` is forwarded to the
+ * whoami tool for unit-test injection (env / fetch / CCA constructor
+ * substitutions). Production callers use `buildOboSmokeTools()` with
+ * no arguments.
  */
-export function buildOboSmokeTools() {
-    return [defineWhoamiTool(), defineForceReauthTool()];
+export function buildOboSmokeTools(deps = {}) {
+    return [defineWhoamiTool(deps), defineForceReauthTool()];
 }
 
-/**
- * Convenience helper for callers that prefer to register the tools in
- * one line: `registerOboSmokeTools(worker)`. Equivalent to
- * `worker.registerTools(buildOboSmokeTools())`.
- */
-export function registerOboSmokeTools(worker) {
+export function registerOboSmokeTools(worker, deps = {}) {
     if (!worker || typeof worker.registerTools !== "function") {
         throw new Error("registerOboSmokeTools: worker.registerTools(...) is required");
     }
-    worker.registerTools(buildOboSmokeTools());
+    worker.registerTools(buildOboSmokeTools(deps));
 }
 
 export default buildOboSmokeTools;

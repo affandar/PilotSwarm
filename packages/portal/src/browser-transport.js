@@ -570,7 +570,12 @@ export class BrowserPortalTransport {
     maybeTriggerInteractiveReauth(sessionId, sessionEvent) {
         if (!sessionId || !sessionEvent) return;
         const data = sessionEvent.data || {};
-        const eventType = sessionEvent.type;
+        // Normalize event-type field: live websocket events arrive as
+        // `{ eventType }` (canonical SDK shape used by `client.ts` and
+        // `session-proxy.ts`); some legacy/poll paths use `{ type }`.
+        // Without this normalization the auto re-auth path silently
+        // missed live interaction_required events (FR-011 / SC-006).
+        const eventType = sessionEvent.eventType || sessionEvent.type;
         const isToolComplete = eventType === "tool.execution_complete"
             && data.outcome === "interaction_required";
         const isSyntheticOutcome = eventType === "system.tool_outcome"

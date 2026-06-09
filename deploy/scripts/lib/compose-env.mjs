@@ -83,4 +83,14 @@ export function composeDerivedEnv(env) {
     env.PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE = "__PS_UNSET__";
     log("info", `Composed PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE fallback to __PS_UNSET__ sentinel (OBO not enabled or scope not configured).`);
   }
+  // Phase 7 (live-smoke primitives, FR-026). Worker-only toggle that
+  // gates the OBO smoke plugin's tool registration. Default to the
+  // substitute-env sentinel so non-smoke stamps and stamps that
+  // simply omit the value still satisfy substitute-env. The worker's
+  // startup sentinel-strip turns __PS_UNSET__ into an unset env var,
+  // which the registration if-check correctly treats as false.
+  if (!env.OBO_SMOKE_ENABLED) {
+    env.OBO_SMOKE_ENABLED = "__PS_UNSET__";
+    log("info", `Composed OBO_SMOKE_ENABLED fallback to __PS_UNSET__ sentinel (smoke plugin not enabled on this stamp).`);
+  }
 }

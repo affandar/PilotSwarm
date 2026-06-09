@@ -106,8 +106,25 @@ const worker = new PilotSwarmWorker({
     blobAccountUrl: process.env.AZURE_STORAGE_ACCOUNT_URL || undefined,
 });
 
+// Phase 7 (live-smoke primitives, FR-026): when OBO_SMOKE_ENABLED=true,
+// dynamically register the reference smoke plugin's tools BEFORE
+// `worker.start()` so the orchestration poller cannot race a session
+// that calls `obo_user_*` before tool registration completes. Dynamic
+// import keeps `@azure/msal-node` (the smoke plugin's only extra dep)
+// out of the eager dep graph for non-smoke stamps. Uses ESM URL form
+// so no `__dirname` polyfill is needed; resolves consistently in the
+// Docker image (/app/packages/sdk/examples/worker.js → /app/examples/obo-smoke/index.js)
+// and in a local-dev workspace clone.
+if (process.env.OBO_SMOKE_ENABLED === "true") {
+    const smokeUrl = new URL("../../../examples/obo-smoke/index.js", import.meta.url);
+    const { registerOboSmokeTools } = await import(smokeUrl);
+    registerOboSmokeTools(worker);
+    console.log("[worker] OBO smoke tools registered (OBO_SMOKE_ENABLED=true)");
+}
+
 await worker.start();
 console.log(`[worker] Started ✓ Polling for orchestrations...`);
+
 if (worker.modelProviders) {
     const groups = worker.modelProviders.getModelsByProvider();
     for (const g of groups) {
