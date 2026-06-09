@@ -9,7 +9,7 @@
  * Pure unit tests — no live worker / no DB. Safe to run in any environment.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
     InMemoryEnvelopeCrypto,
     PlaintextEnvelopeCrypto,
@@ -145,5 +145,61 @@ describe("selectEnvelopeCrypto", () => {
                 NODE_ENV: "production",
             }),
         ).toThrow(/production/i);
+    });
+});
+
+describe("selectEnvelopeCrypto plaintext-mode startup warning", () => {
+    // Asserts the loud operator-visible warning that fires when a deployment
+    // selects PlaintextEnvelopeCrypto via OBO_ENVELOPE_PLAINTEXT_MODE=1.
+    // Without this the only signal that a stamp shipped with unencrypted
+    // user access tokens on the wire would be the live-tenant smoke check
+    // (release-gate, but post-build). This unit test catches a regression
+    // that silences the warning at the factory layer (envelope-crypto.ts:321).
+
+    it("emits a console.warn naming plaintext-mode and the NOT-encrypted risk", () => {
+        const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            const result = selectEnvelopeCrypto({
+                PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE: "api://worker/.default",
+                OBO_ENVELOPE_PLAINTEXT_MODE: "1",
+                NODE_ENV: "development",
+            });
+            expect(result?.backend).toBe("plaintext");
+            expect(spy).toHaveBeenCalledTimes(1);
+            const msg = String(spy.mock.calls[0][0] ?? "");
+            expect(msg).toMatch(/envelope-crypto/i);
+            expect(msg).toMatch(/OBO_ENVELOPE_PLAINTEXT_MODE/);
+            expect(msg).toMatch(/NOT encrypted/i);
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
+    it("does NOT emit the plaintext warning when AKV backend is selected", () => {
+        const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            const result = selectEnvelopeCrypto({
+                PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE: "api://worker/.default",
+                OBO_KEK_KID: "https://kv.vault.azure.net/keys/obo-kek/abc",
+            });
+            expect(result?.backend).toBe("akv");
+            const plaintextWarnings = spy.mock.calls
+                .map((c) => String(c[0] ?? ""))
+                .filter((m) => /OBO_ENVELOPE_PLAINTEXT_MODE/.test(m));
+            expect(plaintextWarnings).toEqual([]);
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
+    it("does NOT emit the plaintext warning when scope is unset (OBO disabled)", () => {
+        const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            const result = selectEnvelopeCrypto({});
+            expect(result).toBeNull();
+            expect(spy).not.toHaveBeenCalled();
+        } finally {
+            spy.mockRestore();
+        }
     });
 });
