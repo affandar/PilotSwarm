@@ -37,6 +37,12 @@ export class BrowserPortalTransport {
         this.stopped = false;
         this.sessionSubscribers = new Map();
         this.logSubscribers = new Set();
+        // Phase 6 (FR-011): per-session debounce timestamps for the
+        // interactive downstream-token re-acquisition triggered by
+        // `interaction_required` outcomes. Capped to ~5 entries to bound
+        // memory; oldest entries are evicted on overflow.
+        this.lastInteractiveReauthAtBySession = new Map();
+        this.interactiveReauthInFlight = false;
     }
 
     async start() {
@@ -175,6 +181,17 @@ export class BrowserPortalTransport {
                 try {
                     const message = JSON.parse(String(event.data || ""));
                     if (message.type === "sessionEvent") {
+                        // Phase 6 (FR-011): when a tool emits an
+                        // `interaction_required` outcome (or the worker
+                        // synthesises one as a `system.tool_outcome` after
+                        // a transport-level failure that shaped to
+                        // interaction_required), trigger an interactive
+                        // downstream-token acquisition so the next
+                        // worker-bound RPC carries a freshly-acquired
+                        // token. Debounced per session id to avoid popup
+                        // storms when an agent emits the outcome multiple
+                        // times in quick succession.
+                        this.maybeTriggerInteractiveReauth(message.sessionId, message.event);
                         const handlers = this.sessionSubscribers.get(message.sessionId);
                         if (handlers) {
                             for (const handler of handlers) handler(message.event);
@@ -531,6 +548,50 @@ export class BrowserPortalTransport {
 
     async getSessionEventsBefore(sessionId, beforeSeq, limit) {
         return this.rpc("getSessionEventsBefore", { sessionId, beforeSeq, limit });
+    }
+
+    /**
+     * Phase 6 (FR-011): inspect a session event for an
+     * `interaction_required` outcome and, if present, fire-and-forget an
+     * interactive downstream-token acquisition. The provider's popup /
+     * redirect path runs to completion; on success, the cached
+     * downstream token is refreshed in place and the next worker-bound
+     * RPC's `getDownstreamToken({ interactive: false })` returns the
+     * fresh token (FR-011, SC-006).
+     *
+     * Debounced per session id (one trigger per ~30 seconds) so an agent
+     * that emits the outcome multiple times in quick succession does not
+     * cause a popup storm. A global in-flight guard prevents two
+     * sessions from racing two popups concurrently. Errors are
+     * swallowed; the existing UI badge (🔐 [reauth required]) plus the
+     * portal's manual sign-out/sign-in path remain available as
+     * fallbacks.
+     */
+    maybeTriggerInteractiveReauth(sessionId, sessionEvent) {
+        if (!sessionId || !sessionEvent) return;
+        const data = sessionEvent.data || {};
+        const eventType = sessionEvent.type;
+        const isToolComplete = eventType === "tool.execution_complete"
+            && data.outcome === "interaction_required";
+        const isSyntheticOutcome = eventType === "system.tool_outcome"
+            && data.outcome === "interaction_required";
+        if (!isToolComplete && !isSyntheticOutcome) return;
+        const now = Date.now();
+        const last = this.lastInteractiveReauthAtBySession.get(sessionId) || 0;
+        if (now - last < 30_000) return;
+        if (this.interactiveReauthInFlight) return;
+        if (this.lastInteractiveReauthAtBySession.size > 32) {
+            const oldestKey = this.lastInteractiveReauthAtBySession.keys().next().value;
+            if (oldestKey !== undefined) this.lastInteractiveReauthAtBySession.delete(oldestKey);
+        }
+        this.lastInteractiveReauthAtBySession.set(sessionId, now);
+        this.interactiveReauthInFlight = true;
+        Promise.resolve()
+            .then(() => this.getDownstreamToken({ interactive: true }))
+            .catch(() => null)
+            .finally(() => {
+                this.interactiveReauthInFlight = false;
+            });
     }
 
     subscribeSession(sessionId, handler) {

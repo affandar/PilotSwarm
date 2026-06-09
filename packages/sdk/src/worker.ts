@@ -559,12 +559,12 @@ export class PilotSwarmWorker {
                 try { await this.factStore.close(); } catch {}
                 this.factStore = null;
             }
+        } finally {
+            // Always clear started/provider and drop the registry slot even
+            // if shutdown above throws, otherwise a partially-stopped
+            // worker would linger and ambiguate the lookup fallback.
             this._provider = null;
             this._started = false;
-        } finally {
-            // Phase 2 (user-OBO): always drop the registry slot even if
-            // shutdown throws, otherwise stale workers would linger and
-            // ambiguate the lookup fallback.
             unregisterSessionManager(this.sessionManager);
         }
     }

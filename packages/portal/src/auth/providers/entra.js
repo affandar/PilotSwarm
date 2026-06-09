@@ -211,9 +211,16 @@ export function createEntraBrowserAuthProvider() {
          * for the configured downstream scope, or null when no scope is
          * configured / acquisition failed. Never throws — Spec A-8 requires
          * graceful degradation to principal-only envelope.
+         *
+         * Phase 6 (FR-011): accepts optional `{ interactive }`. When the
+         * transport observes an `interaction_required` outcome, it calls
+         * with `interactive: true`, which falls back to a popup/redirect on
+         * silent-acquire failure (e.g., Conditional Access reauth, MFA
+         * refresh). After the user re-authenticates, the cached token is
+         * populated and the next worker-bound RPC carries it.
          */
-        async getDownstreamToken() {
-            return acquireDownstreamToken({ interactive: false });
+        async getDownstreamToken({ interactive = false } = {}) {
+            return acquireDownstreamToken({ interactive: Boolean(interactive) });
         },
         getAccount() {
             return account;

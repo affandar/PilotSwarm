@@ -183,10 +183,10 @@ function defineWhoamiTool() {
             }
 
             const principalReport = {
-                provider: userContext.provider,
-                subject: userContext.subject,
-                email: userContext.email,
-                displayName: userContext.displayName,
+                provider: userContext.principal.provider,
+                subject: userContext.principal.subject,
+                email: userContext.principal.email,
+                displayName: userContext.principal.displayName,
                 hasAccessToken: typeof userContext.accessToken === "string" && userContext.accessToken.length > 0,
                 accessTokenExpiresAt: userContext.accessTokenExpiresAt,
             };
