@@ -76,6 +76,7 @@ Match the change to a service and a minimal step set. Always invoke via `node de
 | Cert refresh after AKV cert rotation | `node deploy/scripts/deploy.mjs portal <stamp> --force-module portal --steps bicep` |
 | Worker-t3 (StatefulSet) manifest change | `node deploy/scripts/deploy.mjs worker-t3 <stamp> --steps manifests,rollout` |
 | End-to-end re-render after multi-service change | `node deploy/scripts/deploy.mjs all <stamp>` (filters by EDGE_MODE/TLS_SOURCE automatically) |
+| Toggle OBO User Context on a stamp (`OBO_ENABLED=true`) | `node deploy/scripts/deploy.mjs base-infra <stamp> --steps bicep` then `node deploy/scripts/deploy.mjs all <stamp> --steps manifests,rollout` (re-renders overlay .env with the new `OBO_KEK_KID` bicep output and re-projects worker + portal ConfigMaps). Operator must edit `deploy/envs/local/<stamp>/.env` to set `OBO_ENABLED=true` and `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=api://<worker-app>/.default` before re-running base-infra. See `pilotswarm-new-env-deploy` §"User OBO Propagation" + `docs/operations/obo-kek-runbook.md`. |
 
 ### Pre-flight (mandatory before invoking)
 

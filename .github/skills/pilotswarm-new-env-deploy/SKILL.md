@@ -31,7 +31,7 @@ updated in lockstep with the code, this skill is a procedural overlay:
 | Tier | Resource | Notes |
 |---|---|---|
 | Global | AFD Premium profile, AFD WAF policy, Global RG | Only when `EDGE_MODE=afd` |
-| T2 | Control AKS, ACR, Postgres Flex, Storage, Key Vault, UAMIs, Flux | Always |
+| T2 | Control AKS, ACR, Postgres Flex, Storage, Key Vault (incl. optional OBO KEK), UAMIs, Flux | Always |
 | T2 edge (afd) | AppGw v2 + WAF + Private Link Service + AGIC | `EDGE_MODE=afd` |
 | T2 edge (private) | AKS web-app-routing (NGINX) on ILB + Private DNS Zone | `EDGE_MODE=private` |
 | T3 | Ephemeral worker AKS + workload-SA UAMI + Flux + `worker-t3-manifests` blob container | Always |
@@ -200,7 +200,30 @@ Portal auth (ConfigMap) — fields depend on auth posture
   # App-role assignments (Roles posture only — not stored in .env, applied via Set-PortalAuthAssignments.ps1)
   ADMIN_ASSIGNMENTS                  <suggested: ${user}; CONFIRM OR OVERRIDE>   # UPNs / object ids / group display names, comma-separated
   USER_ASSIGNMENTS                   <empty>                                       # UPNs / object ids / group display names, comma-separated
+
+User OBO Propagation (optional — opt-in feature for downstream consumers like waldemort)
+  OBO_ENABLED                        false (default)                              # set 'true' to provision the OBO KEK in stamp Key Vault
+  PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE <empty> (default)                             # api://<worker-app>/.default form when consumer wires OBO end-to-end
 ```
+
+**About OBO User Context propagation:** opt-in feature (default off,
+backwards-compatible per FR-002 of the OBO spec). When `OBO_ENABLED=true`,
+the base-infra Bicep additionally provisions a key in the stamp Key Vault:
+`obo-user-token-kek` (RSA-2048, `wrapKey`/`unwrapKey` only, 365-day
+auto-rotation with prior-version retention) and grants `Key Vault Crypto
+User` on the vault to the principal IDs passed via the
+`oboKekUamiPrincipalIds` array Bicep param. The reference shape (single
+shared CSI UAMI federated to both worker and portal SAs) collapses to a
+1-element array; downstream consumers with split portal/worker UAMI
+topologies override by passing an N-element array in their parameter
+file — no template fork. The unversioned key URL is emitted as the
+Bicep output `oboKekKid` and projected into the worker + portal pods as
+`OBO_KEK_KID` via the overlay-rendered ConfigMaps. `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`
+is read by the portal MSAL flow at sign-in to acquire an additional
+downstream access token (plus `offline_access`, added automatically) on
+top of the existing portal sign-in. Leaving it empty disables the OBO
+flow even if `OBO_ENABLED=true`. See [`docs/operations/obo-kek-runbook.md`](../../../docs/operations/obo-kek-runbook.md)
+for KEK rotation, AKV firewall, and live-tenant smoke procedures.
 
 **Pick one mechanism per stamp; don't mix roles + email allowlist.**
 The portal authz engine treats the JWT `roles` claim as authoritative
@@ -404,6 +427,19 @@ kubectl --context ps<name>-aks-t3 get statefulset,pvc,pod,svc -n pilotswarm-jobs
 # Portal health (substitute the AFD endpoint or private FQDN).
 curl -s https://<portal-fqdn>/api/health
 # → {"ok":true,...}
+
+# OBO User Context (only when OBO_ENABLED=true in the per-stamp .env).
+# Verify the KEK was provisioned and the role assignment landed:
+KV_NAME=$(jq -r '.keyVaultName.value' deploy/.tmp/<name>/bicep-outputs.cache.json)
+az keyvault key show --vault-name "$KV_NAME" --name obo-user-token-kek \
+  --query '{name: key.kid, kty: key.kty, ops: key.keyOps}'
+# → kty: RSA, ops: [wrapKey, unwrapKey]
+az role assignment list --scope $(az keyvault show --name "$KV_NAME" --query id -o tsv) \
+  --query "[?roleDefinitionName=='Key Vault Crypto User'].{principal: principalId, role: roleDefinitionName}"
+# → at least one assignment per principalId in oboKekUamiPrincipalIds
+kubectl --context ps<name>-aks -n pilotswarm get configmap portal-env -o jsonpath='{.data.OBO_KEK_KID}'
+kubectl --context ps<name>-aks -n pilotswarm get configmap worker-env -o jsonpath='{.data.OBO_KEK_KID}'
+# → un-versioned AKV key URL (NOT __PS_UNSET__)
 ```
 
 (Adjust namespace names if your deploy manifests use different defaults
