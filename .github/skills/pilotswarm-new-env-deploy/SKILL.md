@@ -204,6 +204,13 @@ Portal auth (ConfigMap) — fields depend on auth posture
 User OBO Propagation (optional — opt-in feature for downstream consumers like waldemort)
   OBO_ENABLED                        false (default)                              # set 'true' to provision the OBO KEK in stamp Key Vault
   PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE <empty> (default)                             # api://<worker-app>/.default form when consumer wires OBO end-to-end
+
+User OBO live-smoke (optional — only on dedicated smoke stamps; production stamps must leave OBO_SMOKE_ENABLED=false)
+  OBO_SMOKE_ENABLED                  false (default)                              # set 'true' to register the obo_smoke_* tools on this stamp's worker
+  OBO_SMOKE_WORKER_APP_TENANT_ID     <empty> (default)                             # downstream AAD app tenant for the smoke plugin's auth backend
+  OBO_SMOKE_WORKER_APP_CLIENT_ID     <empty> (default)                             # downstream AAD app clientId — must match PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE
+  OBO_SMOKE_WORKER_APP_GRAPH_SCOPE   <empty> (default)                             # e.g. https://graph.microsoft.com/User.Read
+  OBO_SMOKE_TEST_USER_UPN            <empty> (default)                             # dedicated smoke test-user UPN; smoke driver asserts whoami returns this
 ```
 
 **About OBO User Context propagation:** opt-in feature (default off,
@@ -224,6 +231,27 @@ downstream access token (plus `offline_access`, added automatically) on
 top of the existing portal sign-in. Leaving it empty disables the OBO
 flow even if `OBO_ENABLED=true`. See [`docs/operations/obo-kek-runbook.md`](../../../docs/operations/obo-kek-runbook.md)
 for KEK rotation, AKV firewall, and live-tenant smoke procedures.
+
+**About OBO live-smoke (Phase 7, FR-026):** opt-in per-stamp. When
+`OBO_SMOKE_ENABLED=true`, the worker entrypoint registers the reference
+smoke plugin's `obo_smoke_*` tools at startup (gated by sentinel-strip
+on the worker overlay). The plugin's auth backend reads
+`OBO_SMOKE_WORKER_APP_*` at handler-call time so a stamp can be
+smoke-enabled without rebuilding the worker image. **On AKS, leave the
+client-secret unset** — the plugin uses workload-identity FIC via the
+existing `WORKLOAD_IDENTITY_CLIENT_ID` / `AZURE_FEDERATED_TOKEN_FILE`
+machinery. After flipping the toggle and re-projecting the worker
+ConfigMap (`node deploy/scripts/deploy.mjs worker <stamp> --steps
+manifests,rollout`), drive the smoke from a workstation with
+`pilotswarm smoke <stamp> --profile obo` (test-user tokens supplied
+via `OBO_SMOKE_USER_ADMISSION_TOKEN` + `OBO_SMOKE_USER_DOWNSTREAM_TOKEN`
+env vars or one of the other supported auth modes — see
+[`docs/operations/live-smoke.md`](../../../docs/operations/live-smoke.md)
+for test-user provisioning, MFA-exemption considerations, and the
+`.github/workflows/live-smoke-obo.yml` `workflow_dispatch` scaffold).
+**Production stamps must leave `OBO_SMOKE_ENABLED=false`** — the smoke
+tools are not gated on principal/role and would expose a force-reauth
+path to any signed-in user otherwise.
 
 **Pick one mechanism per stamp; don't mix roles + email allowlist.**
 The portal authz engine treats the JWT `roles` claim as authoritative
@@ -440,6 +468,18 @@ az role assignment list --scope $(az keyvault show --name "$KV_NAME" --query id 
 kubectl --context ps<name>-aks -n pilotswarm get configmap portal-env -o jsonpath='{.data.OBO_KEK_KID}'
 kubectl --context ps<name>-aks -n pilotswarm get configmap worker-env -o jsonpath='{.data.OBO_KEK_KID}'
 # → un-versioned AKV key URL (NOT __PS_UNSET__)
+
+# OBO live-smoke (only when OBO_SMOKE_ENABLED=true on a dedicated smoke stamp).
+# Confirm the toggle and the per-stamp downstream-app config landed in the worker ConfigMap:
+kubectl --context ps<name>-aks -n pilotswarm get configmap worker-env -o jsonpath='{.data.OBO_SMOKE_ENABLED}'
+# → "true"
+for k in OBO_SMOKE_WORKER_APP_TENANT_ID OBO_SMOKE_WORKER_APP_CLIENT_ID OBO_SMOKE_WORKER_APP_GRAPH_SCOPE OBO_SMOKE_TEST_USER_UPN; do
+  echo -n "$k="; kubectl --context ps<name>-aks -n pilotswarm get configmap worker-env -o jsonpath="{.data.$k}"; echo
+done
+# → all four populated (NOT __PS_UNSET__)
+# Then drive the smoke from a workstation with the dedicated test-user tokens:
+pilotswarm smoke <stamp> --profile obo
+# → JSON pass/fail; non-zero exit on failure
 ```
 
 (Adjust namespace names if your deploy manifests use different defaults

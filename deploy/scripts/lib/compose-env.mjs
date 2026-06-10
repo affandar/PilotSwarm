@@ -93,4 +93,22 @@ export function composeDerivedEnv(env) {
     env.OBO_SMOKE_ENABLED = "__PS_UNSET__";
     log("info", `Composed OBO_SMOKE_ENABLED fallback to __PS_UNSET__ sentinel (smoke plugin not enabled on this stamp).`);
   }
+  // Phase 7 (live-smoke primitives, FR-026). Per-stamp downstream-app
+  // identity consumed by the smoke plugin's auth backend at handler
+  // time. Sentinel default keeps substitute-env happy on non-smoke
+  // stamps; the worker's startup sentinel-strip turns __PS_UNSET__ into
+  // unset env vars so the smoke plugin fast-fails with
+  // serviceUnavailable({ reasonCode: "smoke_misconfigured" }) if a
+  // smoke stamp forgot to populate them.
+  for (const key of [
+    "OBO_SMOKE_WORKER_APP_TENANT_ID",
+    "OBO_SMOKE_WORKER_APP_CLIENT_ID",
+    "OBO_SMOKE_WORKER_APP_GRAPH_SCOPE",
+    "OBO_SMOKE_TEST_USER_UPN",
+  ]) {
+    if (!env[key]) {
+      env[key] = "__PS_UNSET__";
+      log("info", `Composed ${key} fallback to __PS_UNSET__ sentinel (smoke plugin downstream-app not configured on this stamp).`);
+    }
+  }
 }
