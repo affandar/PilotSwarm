@@ -91,15 +91,6 @@ and has no side effects. Run it twice in a session:
 
 ## Notes
 
-- **Backend auto-selection (FR-025).** The plugin selects
-  between AKS workload-identity FIC and a confidential-client +
-  client-secret at handler-call time, with FIC winning precedence.
-  Local developers configure `OBO_SMOKE_WORKER_APP_CLIENT_SECRET`;
-  AKS pods automatically take the FIC path via
-  `AZURE_FEDERATED_TOKEN_FILE`. Both backends route through
-  `@azure/msal-node`'s `acquireTokenOnBehalfOf` so the OBO request
-  shape matches the production-shape MSAL path consumers (ExampleApp,
-  etc.) actually use.
 - **Tokens are never logged.** The plugin returns metadata only —
   `upn`, `objectId`, and a `hasAccessToken` boolean indicator. The
   underlying access token is held only on the per-call stack frame
