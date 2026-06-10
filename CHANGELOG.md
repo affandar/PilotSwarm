@@ -91,12 +91,13 @@ preflight, acquires user access tokens (device-code or pre-staged
 env), drives the deployed portal's `/api/rpc` with both the admission
 bearer and the encrypted-envelope downstream token, exercises both
 `obo_smoke_*` tools, and emits a structured pass/fail JSON record.
-A `workflow_dispatch`-only GitHub Actions scaffold
-(`.github/workflows/live-smoke-obo.yml`) wraps the same driver for
-post-deploy verification. New runbook at
+New runbook at
 [`docs/operations/live-smoke.md`](docs/operations/live-smoke.md). The
 worker registers the smoke tools only when `OBO_SMOKE_ENABLED=true`
-is set on the stamp.
+is set on the stamp. A CI workflow wrapping the driver is deferred —
+per-stamp `.env` files are gitignored, so a runner-side env loader and
+committed CI federated-credential trust are prerequisites for adding
+one later.
 
 **Live-smoke deploy-pipeline plumbing:** `deploy/envs/template.env`,
 `deploy/scripts/lib/compose-env.mjs`, and the worker overlay

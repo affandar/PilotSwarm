@@ -271,8 +271,7 @@ manifests,rollout`), drive the smoke from a workstation with
 via `OBO_SMOKE_USER_ADMISSION_TOKEN` + `OBO_SMOKE_USER_DOWNSTREAM_TOKEN`
 env vars or one of the other supported auth modes — see
 [`docs/operations/live-smoke.md`](../../../docs/operations/live-smoke.md)
-for test-user provisioning, MFA-exemption considerations, and the
-`.github/workflows/live-smoke-obo.yml` `workflow_dispatch` scaffold).
+for test-user provisioning and MFA-exemption considerations).
 **Production stamps must leave `OBO_SMOKE_ENABLED=false`** — the smoke
 tools are not gated on principal/role and would expose a force-reauth
 path to any signed-in user otherwise.

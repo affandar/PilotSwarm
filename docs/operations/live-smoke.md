@@ -250,28 +250,30 @@ export default profile;
 Then add the profile to the `PROFILES` map in
 `packages/cli/src/smoke/cli.js`. No other plumbing required.
 
-## Workflow scaffold
+## CI workflow (future work)
 
-`.github/workflows/live-smoke-obo.yml` ships **disabled-by-default**
-in the sense that it has no automatic triggers — only
-`workflow_dispatch`. Operators trigger it manually after deploying a
-target stamp.
+A `workflow_dispatch`-only GitHub Actions workflow wrapping
+`pilotswarm smoke <stamp> --profile obo` is **not shipped** today.
 
-Required repo secrets:
+Two prerequisites prevent it from running as-is:
 
-| Secret | Purpose |
-|---|---|
-| `AZURE_CLIENT_ID` | CI service principal client-id (federated-credential trust target) |
-| `AZURE_TENANT_ID` | Azure tenant id of the SP |
-| `AZURE_SUBSCRIPTION_ID` | Subscription that hosts the AKS cluster |
-| `OBO_SMOKE_USER_ADMISSION_TOKEN` | Freshly-acquired test-user portal admission JWT (rotate before each run) |
-| `OBO_SMOKE_USER_DOWNSTREAM_TOKEN` | Freshly-acquired test-user downstream JWT (rotate before each run) |
+1. Per-stamp `.env` files live in `deploy/envs/local/<stamp>/` and are
+   gitignored, so a CI runner cannot read them off the branch.
+2. There is no committed CI service principal or
+   federated-credential trust against the AKS cluster's subscription.
 
-The workflow runs the same `pilotswarm smoke` driver as the
-local-maintainer flow, but always with `--auth from-env`. The two
-`OBO_SMOKE_USER_*_TOKEN` secrets must be rotated by an operator
-immediately before triggering — Entra access tokens typically expire
-in ~60 minutes.
+Operators with a CI environment that can supply both (a committed,
+non-secret per-stamp manifest, or a runner-side env loader, plus a
+federated-credential-enabled SP) can add a workflow whose body matches
+the local invocation:
+
+```bash
+npx pilotswarm smoke "<stamp>" --profile obo --auth from-env --skip-kube-bootstrap
+```
+
+Keep any such workflow `workflow_dispatch`-only and out of required
+checks. The same CLI driver, the same plugin, and the same invariants
+listed below apply.
 
 ## Repeatability invariants (MUST stay true under refactors)
 
@@ -306,11 +308,6 @@ These invariants are pinned by tests in `packages/sdk/test/local/`:
   Microsoft-deprecated for SFI compliance and never reintroduced.
   (`auth.js`)
 
-- **Workflow trigger surface stays narrow.** No `push`,
-  `pull_request`, or `schedule` triggers ever land on
-  `live-smoke-obo.yml` — `workflow_dispatch` only.
-  (`deploy/scripts/test/live-smoke-workflow.test.mjs`)
-
 ## Cross-references
 
 - [`docs/operations/obo-kek-runbook.md`](./obo-kek-runbook.md) — KEK
@@ -321,5 +318,6 @@ These invariants are pinned by tests in `packages/sdk/test/local/`:
   scan).
 - [`examples/obo-smoke/README.md`](../../examples/obo-smoke/README.md)
   — plugin reference, env tuple, mode matrix.
-- Spec FR-025 / FR-026 / FR-027 / FR-028 — the four requirements
-  the live-smoke harness implements.
+- Spec FR-025 / FR-026 / FR-027 — the three requirements the
+  live-smoke harness implements (FR-028 is deferred — see "CI workflow
+  (future work)" above).
