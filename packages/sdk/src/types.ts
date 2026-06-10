@@ -949,19 +949,24 @@ export interface InteractionRequiredPayload {
  * Extension requires explicit consensus across PilotSwarm + downstream
  * consumers (see CHANGELOG entry for the OBO Phase 4 outcome
  * contract).
+ *
+ * The union type and the runtime `ReadonlySet` are both derived from
+ * a single private tuple so a future contributor adding a code can
+ * only edit one place; the type and the runtime check can never
+ * silently drift apart.
  */
-export type InteractionRequiredReasonCode =
-    | "reauth_required"
-    | "mfa_refresh"
-    | "conditional_access"
-    | "consent_required";
-
-export const INTERACTION_REQUIRED_REASON_CODES: ReadonlySet<InteractionRequiredReasonCode> = new Set([
+const INTERACTION_REQUIRED_REASON_CODES_TUPLE = [
     "reauth_required",
     "mfa_refresh",
     "conditional_access",
     "consent_required",
-]);
+] as const;
+
+export type InteractionRequiredReasonCode =
+    (typeof INTERACTION_REQUIRED_REASON_CODES_TUPLE)[number];
+
+export const INTERACTION_REQUIRED_REASON_CODES: ReadonlySet<InteractionRequiredReasonCode> =
+    new Set(INTERACTION_REQUIRED_REASON_CODES_TUPLE);
 
 export interface ServiceUnavailablePayload {
     reasonCode: string;
