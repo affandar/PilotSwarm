@@ -1,5 +1,5 @@
 /**
- * Phase 4 — tool.execution_complete event enrichment unit test.
+ * — tool.execution_complete event enrichment unit test.
  *
  * This test isolates the `enrichToolCompletionEventData` behavior that
  * session-proxy.ts applies on every tool.execution_complete event before
@@ -59,7 +59,7 @@ function enrich(eventData) {
     return cloned;
 }
 
-describe("Phase 4 — tool.execution_complete event enrichment", () => {
+describe("tool.execution_complete event enrichment", () => {
     it("interaction_required → data.outcome populated + payload sanitized + marker stripped", () => {
         // Simulate the event data shape we'd see when a tool returned
         // interactionRequired(...) and the Copilot SDK packed it into
@@ -156,7 +156,7 @@ describe("Phase 4 — tool.execution_complete event enrichment", () => {
         const toolResult = interactionRequired({ reasonCode: "reauth_required" });
         const enriched = enrich({ result: toolResult });
         // Legacy reader checks resultType to decide success/failure UX.
-        // Phase 4 leaves resultType intact (the helper sets it to
+        // leaves resultType intact (the helper sets it to
         // "interaction_required" — legacy reader treats anything not
         // "success" as non-success without crashing on the new fields).
         expect(enriched.result.resultType).toBe("interaction_required");

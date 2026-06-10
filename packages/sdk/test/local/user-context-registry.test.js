@@ -1,4 +1,4 @@
-// Worker registry / public lookup tests (Phase 2).
+// Worker registry / public lookup tests.
 // Covers AsyncLocalStorage-affine resolution, single-worker fallback,
 // multi-worker ambiguity, and defensive-copy semantics on the public
 // getUserContextForSession entry point.

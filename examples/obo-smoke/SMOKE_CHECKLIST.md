@@ -10,7 +10,7 @@ There are two variants:
 
 - **Live-tenant smoke** — full path through portal MSAL → encrypted
   envelope → worker decrypt → real OBO exchange → Microsoft Graph
-  `/me`. Required for any release whose changelog includes Phase 1–4
+  `/me`. Required for any release whose changelog includes OBO
   surface changes.
 - **Local-developer smoke** — same path but with a confidential
   client + dev secret in place of AKS workload-identity FIC. Required
@@ -23,9 +23,9 @@ Tokens MUST NEVER be pasted into the checklist log. Capture only
 
 ## Pre-flight
 
-- [ ] You are on a release-candidate branch with the OBO Phase 1–4
+- [ ] You are on a release-candidate branch with the OBO
   changes merged.
-- [ ] `cd packages/sdk && npx vitest run test/local/*tool-outcomes*.test.js test/local/*envelope-crypto*.test.js test/local/*user-context*.test.js test/local/phase3-*.test.js test/local/structured-outcomes-*.test.js` passes locally.
+- [ ] `cd packages/sdk && npx vitest run test/local/*tool-outcomes*.test.js test/local/*envelope-crypto*.test.js test/local/*user-context*.test.js test/local/obo-runtime-envelope-encrypt.test.js test/local/obo-server-auth-body.test.js test/local/structured-outcomes-*.test.js` passes locally.
 - [ ] `cd packages/sdk && npx vitest run test/local/obo-smoke-plugin-loadable.test.js` passes locally.
 - [ ] `npm run build` is clean across the workspace.
 
@@ -161,7 +161,7 @@ machine without AKS:
 
 ---
 
-## AKS-deployed smoke variant (Phase 7)
+## AKS-deployed smoke variant
 
 For full-fidelity verification on a deployed stamp without paying
 the local-portal setup cost, use the

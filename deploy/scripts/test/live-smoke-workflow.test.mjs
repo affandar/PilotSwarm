@@ -1,4 +1,4 @@
-// Phase 7 (SC-019): static validation of the live-smoke workflow YAML.
+// SC-019: static validation of the live-smoke workflow YAML.
 //
 // Asserts the workflow is workflow_dispatch-only (no push/pr/schedule
 // triggers), that it requests `id-token: write` permission for OIDC

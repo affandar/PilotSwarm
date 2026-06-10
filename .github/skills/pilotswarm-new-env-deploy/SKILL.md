@@ -255,7 +255,7 @@ top of the existing portal sign-in. Leaving it empty disables the OBO
 flow even if `OBO_ENABLED=true`. See [`docs/operations/obo-kek-runbook.md`](../../../docs/operations/obo-kek-runbook.md)
 for KEK rotation, AKV firewall, and live-tenant smoke procedures.
 
-**About OBO live-smoke (Phase 7, FR-026):** opt-in per-stamp. When
+**About OBO live-smoke (FR-026):** opt-in per-stamp. When
 `OBO_SMOKE_ENABLED=true`, the worker entrypoint registers the reference
 smoke plugin's `obo_smoke_*` tools at startup (gated by sentinel-strip
 on the worker overlay). The plugin's auth backend reads

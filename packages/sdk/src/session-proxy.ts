@@ -392,7 +392,7 @@ function isFailureToolCompletion(data: unknown): boolean {
 }
 
 /**
- * Phase 4: detect a structured tool outcome on a tool.execution_complete
+ * Detect a structured tool outcome on a tool.execution_complete
  * event and rewrite the event data so it carries `outcome` and
  * `outcome_payload` (sanitized via the allow-list in tool-outcomes.ts).
  * The raw marker is stripped from the persisted row so it never appears
@@ -702,7 +702,7 @@ export function registerActivities(
             envelope?: import("./types.js").UserEnvelopeCarrier | null;
         },
     ): Promise<TurnResult> => {
-        // Phase 2 (user-OBO): publish the owning SessionManager into
+        // User OBO: publish the owning SessionManager into
         // AsyncLocalStorage for the duration of this activity so any
         // tool handler that calls `getUserContextForSession(sessionId)`
         // resolves to this worker's UserContextStore. Without this,
@@ -715,7 +715,7 @@ export function registerActivities(
 
         // ── User envelope decrypt + UserContextStore population ───
         // Run before any business logic so tools invoked during the turn
-        // can consume user context via the (Phase 2) lookup. Population
+        // can consume user context via the public lookup. Population
         // happens whether or not `accessTokenCipher` is null — that
         // satisfies Spec P1 scenario 2 (no OBO scope → principal+null token).
         if (input.envelope && input.envelope.v === 1 && input.envelope.principal) {
@@ -1647,7 +1647,7 @@ export function registerActivities(
                     } else if (event.eventType === "tool.execution_complete" && isFailureToolCompletion(event.data)) {
                         turnTelemetry.toolErrors += 1;
                     }
-                    // Phase 4: enrich tool.execution_complete events with
+                    // Enrich tool.execution_complete events with
                     // a stable `outcome` field and structured-outcome
                     // payload (when applicable). Mutates a copy of the
                     // event data before persistence; the raw marker

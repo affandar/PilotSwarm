@@ -1,4 +1,4 @@
-// Phase 8: Static-shape regression guards for
+// Static-shape regression guards for
 // deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1.
 //
 // This script auto-provisions the per-stamp Entra worker app used by the
@@ -349,7 +349,7 @@ test("INV-8: header comment block explicitly states the script never modifies .e
 // through `az deployment ... show --query properties.outputs`, so a submodule-
 // only output is invisible to the cache writer (deploy-bicep.mjs:271). If this
 // regresses, the wrapper fails at Resolve-OidcIssuerFromEnv on every fresh
-// stamp and Phase 8's "one-line opt-in" guarantee silently breaks.
+// stamp and the "one-line opt-in" guarantee silently breaks.
 //
 // `aliasFor("oidcIssuerUrl")` in deploy-bicep.mjs:357 produces
 // `OIDC_ISSUER_URL` — the first candidate key the wrapper checks. Pinning the

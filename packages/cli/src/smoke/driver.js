@@ -1,4 +1,4 @@
-// Phase 7 (FR-027): smoke driver orchestrator.
+// FR-027: smoke driver orchestrator.
 //
 // Pure-ish function that loads a stamp's `.env`, validates
 // preconditions, acquires a user access token, runs the named

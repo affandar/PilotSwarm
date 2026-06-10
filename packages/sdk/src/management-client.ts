@@ -1325,7 +1325,7 @@ export class PilotSwarmManagementClient {
         return this._catalog!.getFleetStats(opts);
     }
 
-    // ─── Structured Tool Outcomes (Phase 4 observability surface) ──────
+    // ─── Structured Tool Outcomes (observability surface) ──────
     // FR-010 / SC-005 / repo "Observability Surface for the Agent Tuner"
     // rule: the two members of the Structured tool outcome family
     // (interaction_required, service_unavailable) must be reachable by the

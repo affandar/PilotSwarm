@@ -522,7 +522,7 @@ export class PilotSwarmWorker {
             console.error("[PilotSwarmWorker] Runtime error:", err);
         });
         this._started = true;
-        // Phase 2 (user-OBO): publish this SessionManager so the public
+        // User OBO: publish this SessionManager so the public
         // `getUserContextForSession` lookup can resolve. Registration is
         // tied to successful start; `stop()` unregisters in finally.
         registerSessionManager(this.sessionManager);

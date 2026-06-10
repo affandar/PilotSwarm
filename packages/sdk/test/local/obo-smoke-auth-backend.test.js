@@ -1,5 +1,5 @@
 /**
- * Phase 7 — OBO smoke plugin auth-backend selection (SC-018).
+ * — OBO smoke plugin auth-backend selection (SC-018).
  *
  * Asserts the four-quadrant matrix locked in Spec FR-025:
  *
@@ -31,7 +31,7 @@ async function importPlugin() {
     return mod;
 }
 
-describe("Phase 7 — selectAuthBackend (FR-025)", () => {
+describe("selectAuthBackend (FR-025)", () => {
     it("client-secret backend selected when only the secret env keys are set", async () => {
         const { selectAuthBackend } = await importPlugin();
         const env = {
@@ -89,7 +89,7 @@ describe("Phase 7 — selectAuthBackend (FR-025)", () => {
     });
 });
 
-describe("Phase 7 — handler returns serviceUnavailable when neither backend is configured (FR-025 + Phase 4)", () => {
+describe("handler returns serviceUnavailable when neither backend is configured (FR-025 + structured outcomes)", () => {
     it("obo_smoke_whoami emits serviceUnavailable({ reasonCode: 'smoke_misconfigured' }) at handler-call time", async () => {
         const { buildOboSmokeTools } = await importPlugin();
         // Inject env without any smoke keys; the SDK lookup is unbound
@@ -122,7 +122,7 @@ describe("Phase 7 — handler returns serviceUnavailable when neither backend is
     });
 });
 
-describe("Phase 7 — FIC clientAssertion re-reads AZURE_FEDERATED_TOKEN_FILE on every acquisition (SC-018(b))", () => {
+describe("FIC clientAssertion re-reads AZURE_FEDERATED_TOKEN_FILE on every acquisition (SC-018(b))", () => {
     let tmpDir;
     let tokenPath;
 
@@ -212,7 +212,7 @@ describe("Phase 7 — FIC clientAssertion re-reads AZURE_FEDERATED_TOKEN_FILE on
     });
 });
 
-describe("Phase 7 — getCachedCca per-(backend, tenant, client) caching", () => {
+describe("getCachedCca per-(backend, tenant, client) caching", () => {
     it("returns the same CCA instance for repeated lookups with identical key", async () => {
         const { getCachedCca, _resetSmokePluginStateForTests } = await importPlugin();
         _resetSmokePluginStateForTests();

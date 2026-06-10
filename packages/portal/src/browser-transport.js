@@ -24,7 +24,7 @@ async function readErrorMessage(response) {
 export class BrowserPortalTransport {
     constructor({ getAccessToken, getDownstreamToken, onUnauthorized, onForbidden }) {
         this.getAccessToken = typeof getAccessToken === "function" ? getAccessToken : async () => null;
-        // Phase 3 (user-OBO): null when no downstream scope is configured or
+        // User OBO: null when no downstream scope is configured or
         // the auth provider doesn't support OBO. The transport ships a
         // principal-only envelope in that case.
         this.getDownstreamToken = typeof getDownstreamToken === "function" ? getDownstreamToken : async () => null;
@@ -37,7 +37,7 @@ export class BrowserPortalTransport {
         this.stopped = false;
         this.sessionSubscribers = new Map();
         this.logSubscribers = new Set();
-        // Phase 6 (FR-011): per-session debounce timestamps for the
+        // FR-011: per-session debounce timestamps for the
         // interactive downstream-token re-acquisition triggered by
         // `interaction_required` outcomes. Capped to ~5 entries to bound
         // memory; oldest entries are evicted on overflow.
@@ -128,7 +128,7 @@ export class BrowserPortalTransport {
     }
 
     async rpc(method, params = {}) {
-        // Phase 3 (user-OBO): when the deployment configures a downstream
+        // User OBO: when the deployment configures a downstream
         // scope, attach the freshest cached/refreshed token to the RPC body's
         // auth envelope. The server middleware extracts these fields and
         // stamps them onto req.auth.principal; portal/runtime.js then
@@ -181,7 +181,7 @@ export class BrowserPortalTransport {
                 try {
                     const message = JSON.parse(String(event.data || ""));
                     if (message.type === "sessionEvent") {
-                        // Phase 6 (FR-011): when a tool emits an
+                        // FR-011: when a tool emits an
                         // `interaction_required` outcome (or the worker
                         // synthesises one as a `system.tool_outcome` after
                         // a transport-level failure that shaped to
@@ -551,7 +551,7 @@ export class BrowserPortalTransport {
     }
 
     /**
-     * Phase 6 (FR-011): inspect a session event for an
+     * FR-011: inspect a session event for an
      * `interaction_required` outcome and, if present, fire-and-forget an
      * interactive downstream-token acquisition. The provider's popup /
      * redirect path runs to completion; on success, the cached

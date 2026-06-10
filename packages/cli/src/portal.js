@@ -6,7 +6,7 @@ export {
     resolvePortalConfigFromPluginDirs,
 } from "./plugin-config.js";
 
-// Phase 3 (user-OBO): re-export envelope-crypto factory so the portal can
+// User OBO: re-export envelope-crypto factory so the portal can
 // instantiate its own EnvelopeCrypto without taking a direct dependency on
 // pilotswarm-sdk. Same env-driven selection rules as the worker.
 export { selectEnvelopeCrypto } from "pilotswarm-sdk";

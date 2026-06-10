@@ -88,7 +88,7 @@ In the stamp's `deploy/envs/local/<stamp>/.env`:
 
 | Key | Value |
 |---|---|
-| `OBO_ENABLED` | `true` (Phase 6 envelope-encrypted token path) |
+| `OBO_ENABLED` | `true` (envelope-encrypted token path) |
 | `OBO_SMOKE_ENABLED` | `true` (registers `obo_smoke_*` tools on worker startup) |
 | `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` | `api://<smoke-app-client-id>/.default` |
 | `PORTAL_AUTH_ENTRA_TENANT_ID` / `PORTAL_AUTH_ENTRA_CLIENT_ID` | Existing portal Entra config |
@@ -319,4 +319,4 @@ These invariants are pinned by tests in `packages/sdk/test/local/`:
 - [`examples/obo-smoke/README.md`](../../examples/obo-smoke/README.md)
   — plugin reference, env tuple, mode matrix.
 - Spec FR-025 / FR-026 / FR-027 / FR-028 — the four requirements
-  Phase 7 implements.
+  the live-smoke harness implements.

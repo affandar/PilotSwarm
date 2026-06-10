@@ -1,4 +1,4 @@
-// Phase 7 (FR-027): `pilotswarm smoke` subcommand entry.
+// FR-027: `pilotswarm smoke` subcommand entry.
 //
 // Parses args, validates, then hands off to runDriver. Keeps the
 // arg-parsing surface and exit-code mapping in one place so the

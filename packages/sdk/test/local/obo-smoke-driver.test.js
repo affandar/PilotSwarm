@@ -1,5 +1,5 @@
 /**
- * Phase 7 — smoke driver orchestrator (SC-017).
+ * — smoke driver orchestrator (SC-017).
  *
  * Drives `runDriver` end-to-end through five injected dependency
  * doubles (no network, no MSAL, no kubectl). Three sub-tests:
@@ -103,7 +103,7 @@ function buildDeps({ stampEnv, portalRpc }) {
     };
 }
 
-describe("Phase 7 — smoke driver pass path (SC-017)", () => {
+describe("smoke driver pass path (SC-017)", () => {
     it("returns pass: true with whoami + force-reauth + cleanup steps", async () => {
         const stampEnv = passingStampEnv();
         const portalRpc = makeFakePortalRpc({ events: PASS_EVENTS });
@@ -140,7 +140,7 @@ describe("Phase 7 — smoke driver pass path (SC-017)", () => {
     });
 });
 
-describe("Phase 7 — smoke driver fails fast at preflight (SC-017)", () => {
+describe("smoke driver fails fast at preflight (SC-017)", () => {
     it("OBO_SMOKE_ENABLED=false → smoke_tools_not_registered, exitCode=2", async () => {
         const stampEnv = passingStampEnv({ OBO_SMOKE_ENABLED: "false" });
         const portalRpc = makeFakePortalRpc({ events: [] });
@@ -194,7 +194,7 @@ describe("Phase 7 — smoke driver fails fast at preflight (SC-017)", () => {
     });
 });
 
-describe("Phase 7 — smoke driver kube bootstrap (FR-027)", () => {
+describe("smoke driver kube bootstrap (FR-027)", () => {
     it("invokes acquireKubeContext when stamp env has RESOURCE_GROUP + AKS_CLUSTER_NAME", async () => {
         const stampEnv = passingStampEnv({
             RESOURCE_GROUP: "rg-smoke",
@@ -265,7 +265,7 @@ describe("Phase 7 — smoke driver kube bootstrap (FR-027)", () => {
     });
 });
 
-describe("Phase 7 — smoke driver fails when whoami returns wrong mode", () => {
+describe("smoke driver fails when whoami returns wrong mode", () => {
     it("returns pass: false with reasonCode whoami_<mode> when mode != obo_ok", async () => {
         const stampEnv = passingStampEnv();
         const events = [

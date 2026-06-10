@@ -1,5 +1,5 @@
 /**
- * Phase 3 runtime envelope encryption test (FR-020).
+ * runtime envelope encryption test (FR-020).
  *
  * Asserts:
  *  - When portal/runtime.js receives an authContext whose principal carries a
@@ -10,7 +10,7 @@
  *    configured), the token is dropped and the carrier ships principal-only
  *    with `accessTokenCipher = null`. This is the safe-by-default behavior:
  *    a misconfigured deployment cannot leak plaintext.
- *  - When an authContext has no accessToken at all (Phase 1B compat),
+ *  - When an authContext has no accessToken at all (legacy principal-only compat),
  *    cipher stays null regardless of envelopeCrypto.
  *  - When encryption throws, the runtime logs and ships principal-only —
  *    NEVER plaintext (FR-020 guard).
@@ -47,7 +47,7 @@ function buildRuntime({ envelopeCrypto = null } = {}) {
     return { runtime, calls };
 }
 
-describe("Phase 3 — portal runtime envelope encryption", () => {
+describe("portal runtime envelope encryption", () => {
     let warnSpy;
     beforeEach(() => {
         warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -110,7 +110,7 @@ describe("Phase 3 — portal runtime envelope encryption", () => {
         expect(flat).not.toContain("user-access-token-XYZ");
     });
 
-    it("ships principal-only when authContext has no accessToken (Phase 1B compat)", async () => {
+    it("ships principal-only when authContext has no accessToken (legacy principal-only compat)", async () => {
         const crypto = new InMemoryEnvelopeCrypto();
         const { runtime, calls } = buildRuntime({ envelopeCrypto: crypto });
         await runtime.call("sendMessage", { sessionId: "s1", prompt: "hi", options: {} }, { principal: PRINCIPAL });

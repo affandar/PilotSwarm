@@ -536,7 +536,7 @@ function formatToolActivityRuns(time, event, phase = "start") {
     const args = event?.data?.arguments || event?.data?.args;
     const durableSessionId = event?.data?.durableSessionId;
     const summary = formatToolArgsSummary(toolName, args);
-    // Phase 4: structured tool outcomes — distinct icon/color per kind so
+    // Structured tool outcomes — distinct icon/color per kind so
     // both the native TUI and the portal can render the same machine-
     // distinguishable signals (SC-005). The opaque IdP `claims` blob and
     // any token material are sanitized server-side; only `reasonCode` and
@@ -630,7 +630,7 @@ function formatActivity(event) {
         }
 
         case "system.tool_outcome": {
-            // Phase 4 FR-024: synthetic structured outcome (e.g., persistent
+            // FR-024: synthetic structured outcome (e.g., persistent
             // envelope-decrypt failure during runTurn). Same visual treatment
             // as a tool.execution_complete carrying the same outcome shape so
             // operators see one consistent rendering for the family.

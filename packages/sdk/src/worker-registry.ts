@@ -1,6 +1,6 @@
 /**
  * Worker registry for the public `getUserContextForSession` lookup API
- * (Phase 2 of the user-OBO-propagation work).
+ * (part of the user-OBO-propagation feature).
  *
  * Two resolution paths, in priority order:
  *

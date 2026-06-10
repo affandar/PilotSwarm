@@ -224,7 +224,7 @@ portal engine (deny-by-default) because no one has a role claim yet.
 
 Skip this step entirely when the stamp has `OBO_SMOKE_ENABLED=false` (the
 default) or no `OBO_SMOKE_ENABLED` key in `.env`. When it is `true`, this
-step closes the last manual gap in the Phase 7 live-smoke harness by
+step closes the last manual gap in the OBO live-smoke harness by
 auto-provisioning the per-stamp downstream worker AAD app, its OAuth2
 scope, the OBO pre-authorization for the portal app, and the AKS
 workload-identity FIC on the new app.

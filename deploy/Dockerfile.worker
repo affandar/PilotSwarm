@@ -23,7 +23,7 @@ COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
 COPY packages/cli/plugins/ ./packages/cli/plugins/
 
-# Phase 7 (FR-026): always copy the OBO smoke plugin into the image.
+# always copy the OBO smoke plugin into the image.
 # The runtime gate (OBO_SMOKE_ENABLED=true) keeps the tools out of
 # non-smoke stamps; the directory is small (~30KB) and unconditional
 # copy keeps Dockerfile.worker single-shape. The plugin's only extra

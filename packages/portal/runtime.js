@@ -85,8 +85,8 @@ function requireUserPrincipal(authContext, methodName) {
 /**
  * Build a UserEnvelopeCarrier from the auth context if a principal is present.
  *
- * Phase 1B: Attaches the principal claims so worker-side tool handlers can
- * resolve user identity via getUserContextStore(). Phase 3: when the request
+ * Attaches the principal claims so worker-side tool handlers can
+ * resolve user identity via getUserContextStore(). When the request
  * carried a downstream-scope access token (set on req.auth.principal by the
  * /api/rpc body extractor), it is encrypted via the configured EnvelopeCrypto
  * before placement on the durable queue (FR-020 — no plaintext token in
@@ -140,7 +140,7 @@ export class PortalRuntime {
         this.mode = mode;
         this.started = false;
         this.startPromise = null;
-        // Phase 3 (user-OBO): the portal owns its own EnvelopeCrypto instance
+        // User OBO: the portal owns its own EnvelopeCrypto instance
         // for encrypting per-RPC user access tokens at envelope-build time.
         // Construction is identical to the worker-side selection so portal
         // and worker agree on backend + KEK kid (KEK provisioned by

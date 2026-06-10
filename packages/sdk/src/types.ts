@@ -837,10 +837,9 @@ export interface SessionStatusSignal {
     contextUsage?: SessionContextUsage;
 }
 
-// ─── User OBO Envelope (Phase 1) ────────────────────────────────
+// ─── User OBO Envelope ──────────────────────────────────────────
 // Plaintext shape used inside pod memory only. Carries principal claims
 // plus optional user access token for downstream OBO exchanges.
-// See ImplementationPlan.md Phase 1.
 
 export interface PrincipalClaims {
     provider: string;
@@ -892,7 +891,7 @@ export interface EnvelopeCipher {
  * that it carries plaintext principal + optional ciphertext.
  */
 export interface UserEnvelopeCarrier {
-    /** Carrier-shape version. Always 1 for Phase 1. */
+    /** Carrier-shape version. Always 1 for the current wire format. */
     v: 1;
     principal: PrincipalClaims;
     /** Null when no OBO scope configured for the deployment. */
@@ -900,8 +899,8 @@ export interface UserEnvelopeCarrier {
 }
 
 /**
- * Lookup return type (Phase 2 exposes the public lookup; Phase 1 stores
- * this shape in the in-memory UserContextStore).
+ * Lookup return type for getUserContextForSession(); the in-memory
+ * UserContextStore stores this shape per session.
  */
 export interface UserContext {
     principal: PrincipalClaims;
@@ -909,7 +908,7 @@ export interface UserContext {
     accessTokenExpiresAt: number | null;
 }
 
-// ─── Phase 4: Structured tool outcomes ───────────────────────────────
+// ─── Structured tool outcomes ────────────────────────────────────────
 //
 // Two members of the Structured tool outcome family that worker tools can
 // emit (via interactionRequired() / serviceUnavailable() from
@@ -947,7 +946,7 @@ export interface InteractionRequiredPayload {
  * `interactionRequired()`. The portal keys behavior off `reasonCode`
  * (not free-form text), so this is part of the public contract.
  * Extension requires explicit consensus across PilotSwarm + downstream
- * consumers (see CHANGELOG entry for the OBO Phase 4 outcome
+ * consumers (see CHANGELOG entry for the OBO structured tool outcome
  * contract).
  *
  * The union type and the runtime `ReadonlySet` are both derived from

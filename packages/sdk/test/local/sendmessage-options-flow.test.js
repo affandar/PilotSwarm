@@ -1,6 +1,6 @@
 /**
  * CLI sendMessage normal-path regression test (rubber-duck #4 from
- * Phase 1 plan review).
+ * the user-OBO planning review).
  *
  * Pre-fix: NodeSdkTransport.sendMessage's normal path called
  * `sessionHandle.send(prompt)` and dropped the `sendOptions` builder

@@ -1,5 +1,5 @@
 /**
- * Envelope crypto for the User OBO propagation feature (Phase 1).
+ * Envelope crypto for the User OBO propagation feature.
  *
  * Token material in `UserEnvelope.accessToken` MUST NOT enter the durable
  * PG queue or Duroxide activity-input history in plaintext (FR-020 /
@@ -291,7 +291,7 @@ export class AkvEnvelopeCrypto implements EnvelopeCrypto {
 /**
  * Selects the envelope-crypto backend based on environment configuration.
  *
- * Selection rules (Phase 1):
+ * Selection rules:
  *   - No worker scope configured (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` unset):
  *     returns `null`. Portal still attaches plaintext principal-only
  *     envelopes to worker-bound RPCs — token cipher field is `null`.

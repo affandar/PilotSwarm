@@ -85,7 +85,7 @@ checklist ([`examples/obo-smoke/SMOKE_CHECKLIST.md`](examples/obo-smoke/SMOKE_CH
 remains the npm-publish release gate for changes touching the OBO
 path.
 
-**Repeatable live-smoke harness (Phase 7):** `pilotswarm smoke <stamp>
+**Repeatable live-smoke harness:** `pilotswarm smoke <stamp>
 --profile obo` — CLI driver that loads a stamp's `.env`, validates
 preflight, acquires user access tokens (device-code or pre-staged
 env), drives the deployed portal's `/api/rpc` with both the admission
@@ -98,7 +98,7 @@ post-deploy verification. New runbook at
 worker registers the smoke tools only when `OBO_SMOKE_ENABLED=true`
 is set on the stamp.
 
-**Phase 7 deploy-pipeline plumbing:** `deploy/envs/template.env`,
+**Live-smoke deploy-pipeline plumbing:** `deploy/envs/template.env`,
 `deploy/scripts/lib/compose-env.mjs`, and the worker overlay
 (`deploy/gitops/worker/overlays/default/.env`) project the smoke
 toggle plus the per-stamp downstream-app identity
@@ -111,9 +111,9 @@ toggle and re-run
 to land the smoke tools — no worker image rebuild required. The
 `pilotswarm-npm-deployer` agent and `pilotswarm-new-env-deploy` skill
 document the full toggle-and-verify workflow alongside the existing
-OBO Phase 6 toggle.
+OBO toggle.
 
-**Phase 8 — auto-provisioning the OBO smoke worker AAD app:** new
+**Auto-provisioning the OBO smoke worker AAD app:** new
 opinionated wrapper `deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1`
 provisions the per-stamp downstream worker app in a single idempotent
 invocation: creates/finds the app, mints the OAuth2 delegated scope,
@@ -132,7 +132,7 @@ mutators). A new skill, `pilotswarm-obo-smoke-app-reg`, drives the
 wrapper from the `pilotswarm-npm-deployer` agent's new Step 0.b
 (sequenced after portal app-reg + bicep, before
 `worker manifests,rollout`). Closes the last manual gap in the
-Phase 7 live-smoke harness — `OBO_SMOKE_ENABLED=true` is now a
+live-smoke harness — `OBO_SMOKE_ENABLED=true` is now a
 true one-line opt-in.
 
 **Docs:**

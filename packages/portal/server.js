@@ -156,7 +156,7 @@ export async function startServer(opts = {}) {
             res.status(400).json({ ok: false, error: "RPC method is required" });
             return;
         }
-        // Phase 3 (user-OBO): the SPA forwards a downstream-scope access
+        // User OBO: the SPA forwards a downstream-scope access
         // token in the RPC body's `auth` field. Extract + type-validate
         // here and stamp onto req.auth.principal so portal/runtime.js can
         // encrypt it into the per-RPC envelope. Tokens NEVER travel in

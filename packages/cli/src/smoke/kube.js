@@ -1,4 +1,4 @@
-// Phase 7 (FR-027): thin wrappers around `kubectl` and
+// FR-027: thin wrappers around `kubectl` and
 // `az aks get-credentials` for the smoke driver. Kept separate from
 // the orchestrator so the orchestrator can be unit-tested with
 // in-memory `runKubectl` doubles.

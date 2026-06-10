@@ -1,4 +1,4 @@
-// Phase 7 (FR-027): minimal HTTP JSON-RPC client mirroring the
+// FR-027: minimal HTTP JSON-RPC client mirroring the
 // portal's browser transport (`packages/portal/src/browser-transport.js`
 // — `rpc()` shape, ~lines 130-151).
 //

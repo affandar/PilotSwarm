@@ -708,7 +708,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         }));
     }
 
-    // ─── Structured tool-outcome inspect tools (Phase 4) ───────────────
+    // ─── Structured tool-outcome inspect tools ───────────────
     // Mirror PilotSwarmManagementClient.getStructuredOutcomeEvents and
     // getFleetStructuredOutcomeStats so the tuner can reason about
     // interaction_required + service_unavailable signals through a tool

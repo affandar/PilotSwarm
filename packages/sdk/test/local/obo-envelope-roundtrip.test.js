@@ -1,5 +1,5 @@
 /**
- * Integration round-trip test for the OBO envelope plumbing (Phase 1).
+ * Integration round-trip test for the OBO envelope plumbing.
  *
  * Exercises: client.send({envelope}) → durable enqueue → orchestration
  * drain → runTurn activity → decrypt → UserContextStore population.
@@ -45,7 +45,7 @@ async function testRoundTrip(env) {
         worker: {
             // Inject the same in-memory crypto into the worker by overriding
             // selectEnvelopeCrypto via the constructor's optional injection.
-            // Phase 1 worker reads from selectEnvelopeCrypto(process.env);
+            // worker reads from selectEnvelopeCrypto(process.env);
             // for tests, we set the per-process env so it picks Plaintext —
             // but we want InMemory for stronger guarantees, so we hand
             // the crypto in via a private hook (set after construction).

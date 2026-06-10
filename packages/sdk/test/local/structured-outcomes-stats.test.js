@@ -1,5 +1,5 @@
 /**
- * Phase 4 — observability surface unit test.
+ * — observability surface unit test.
  *
  * Per the repo "Observability Surface for the Agent Tuner" rule, every new
  * signal used by the tuner must be reachable through:
@@ -10,7 +10,7 @@
  * This test exercises both layers in isolation against a fake
  * SessionCatalogProvider. The full integration variant (real worker, real
  * tools emitting interactionRequired/serviceUnavailable end-to-end) is
- * deferred per the Phase 1/2/3 pattern — requires GITHUB_TOKEN + live
+ * deferred per the established pattern — requires GITHUB_TOKEN + live
  * Postgres + Copilot SDK.
  */
 
@@ -143,7 +143,7 @@ async function getFleetStructuredOutcomeStats(catalog) {
     };
 }
 
-describe("Phase 4 — observability surface for structured tool outcomes", () => {
+describe("observability surface for structured tool outcomes", () => {
     it("getStructuredOutcomeEvents returns only structured outcomes (success/failure filtered out)", async () => {
         const catalog = makeFakeCatalog();
         const rows = await getStructuredOutcomeEvents(catalog, "s1");

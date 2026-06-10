@@ -1,8 +1,8 @@
 /**
- * In-memory user-context store (Phase 1 + Phase 2).
+ * In-memory user-context store.
  *
- * Two maps with different purposes and lifetimes (per ImplementationPlan
- * Phase 2 — single-source-of-truth invariant, FR-021):
+ * Two maps with different purposes and lifetimes (single-source-of-truth
+ * invariant, FR-021):
  *
  *   - `entries` (sessionId → UserContext) — populated only at successful
  *     envelope decryption on a worker-bound RPC. Cleared on terminal
@@ -165,9 +165,8 @@ export class UserContextStore {
 
     /**
      * Direct read — returns a defensive copy of the entry for exactly
-     * this sessionId, without any chain walking. Phase 2 callers should
-     * use `lookup` for the public path; `getRaw` stays for tests and
-     * debug.
+     * this sessionId, without any chain walking. Public callers should
+     * use `lookup`; `getRaw` stays for tests and debug.
      */
     getRaw(sessionId: string): UserContext | null {
         const id = String(sessionId || "").trim();

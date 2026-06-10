@@ -1,9 +1,9 @@
-// Phase 2 dehydration-exclusion guard.
+// dehydration-exclusion guard.
 //
 // The UserContextStore lives ONLY in pod memory. It is never persisted
 // to the SessionStore (filesystem or blob), never serialized into the
 // dehydration blob, never included in the Duroxide activity-input
-// history (Phase 1 already enforces the cipher path; this test guards
+// history (the cipher path already enforces the cipher path; this test guards
 // against an accidental future change that would persist plaintext).
 //
 // Strategy: instantiate the store, populate it with a sentinel token,

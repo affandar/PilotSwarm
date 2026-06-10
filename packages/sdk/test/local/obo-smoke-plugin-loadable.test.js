@@ -1,5 +1,5 @@
 /**
- * Phase 5 — OBO smoke plugin loadable test.
+ * — OBO smoke plugin loadable test.
  *
  * Asserts that `examples/obo-smoke/index.js` imports cleanly, that
  * `buildOboSmokeTools()` returns the two expected tools with the
@@ -31,7 +31,7 @@ function clearSmokeEnv() {
     }
 }
 
-describe("Phase 5 — examples/obo-smoke plugin loadable", () => {
+describe("examples/obo-smoke plugin loadable", () => {
     beforeEach(() => {
         clearSmokeEnv();
     });
@@ -41,7 +41,7 @@ describe("Phase 5 — examples/obo-smoke plugin loadable", () => {
         expect(typeof mod.buildOboSmokeTools).toBe("function");
         expect(typeof mod.registerOboSmokeTools).toBe("function");
         expect(typeof mod.default).toBe("function");
-        // Phase 7 (FR-025): selectAuthBackend is part of the public
+        // FR-025: selectAuthBackend is part of the public
         // surface so unit tests + downstream extensions can reuse it.
         expect(typeof mod.selectAuthBackend).toBe("function");
         expect(typeof mod.getCachedCca).toBe("function");

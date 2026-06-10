@@ -1,4 +1,4 @@
-// Phase 7 (FR-027): the OBO smoke profile.
+// FR-027: the OBO smoke profile.
 //
 // Exercises the deployed stamp end-to-end:
 //   1. portal-health     — GET /api/health returns ok=true

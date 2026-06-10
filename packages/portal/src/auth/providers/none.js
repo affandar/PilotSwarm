@@ -12,7 +12,7 @@ export function createNoBrowserAuthProvider() {
         async getAccessToken() {
             return null;
         },
-        // Phase 3 (user-OBO): the "none" provider has no IdP and no downstream
+        // User OBO: the "none" provider has no IdP and no downstream
         // scope, so always returns null. Worker-side OBO is disabled.
         async getDownstreamToken() {
             return null;

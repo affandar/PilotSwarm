@@ -1,5 +1,5 @@
 /**
- * Unit tests for envelope shape normalization (Phase 1).
+ * Unit tests for envelope shape normalization.
  *
  * Verifies that null/undefined/missing fields on the wire are normalized
  * consistently into UserContextStore entries.

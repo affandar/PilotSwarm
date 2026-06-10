@@ -1,4 +1,4 @@
-// Phase 7 (FR-027): MSAL-based user-access-token acquisition for the
+// FR-027: MSAL-based user-access-token acquisition for the
 // smoke driver.
 //
 // Two modes:
@@ -16,7 +16,7 @@
 // `${authorityHost ?? "https://login.microsoftonline.com"}/${tenantId}`
 // to avoid the MSAL default falling through to /common, which would
 // produce surprising tenant-mismatch failures (rubber-duck finding
-// Phase 7 #3).
+// live-smoke harness #3).
 //
 // ROPC (resource-owner password credentials) is intentionally NOT
 // implemented — see SFI guidance in docs/operations/live-smoke.md.

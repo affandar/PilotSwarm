@@ -151,13 +151,13 @@ export { SessionDumper } from "./session-dumper.js";
 // Re-export defineTool from Copilot SDK for convenience
 export { defineTool } from "@github/copilot-sdk";
 
-// Phase 2 (user-OBO): worker-side per-session user-context lookup.
+// User OBO: worker-side per-session user-context lookup.
 // Synchronous, importable. Returns null for system sessions, unknown
 // sessions, broken chains, and ambiguous multi-worker contexts.
 export { getUserContextForSession } from "./worker-registry.js";
 export type { UserContext, PrincipalClaims } from "./types.js";
 
-// Phase 3 (user-OBO): envelope-crypto factory for portal-side encryption.
+// User OBO: envelope-crypto factory for portal-side encryption.
 // Portals construct their own EnvelopeCrypto via selectEnvelopeCrypto(env)
 // and use it to encrypt the per-RPC user access token before placing the
 // envelope on the durable queue. The same env-driven selection logic is
@@ -170,7 +170,7 @@ export type {
     UserEnvelopeCarrier,
 } from "./types.js";
 
-// Phase 4 (user-OBO): structured tool outcome helpers — interaction_required
+// User OBO: structured tool outcome helpers — interaction_required
 // and service_unavailable — for worker tools to signal IdP re-auth required
 // or transport-layer dependency outage. Three-way distinguishability from
 // generic tool failure is preserved via the persisted `outcome` event field.

@@ -195,7 +195,7 @@ export class SessionManager {
     private sessionLocks = new Map<string, Promise<void>>();
     /** Envelope crypto backend; null when no OBO downstream scope is configured. */
     private envelopeCrypto: EnvelopeCrypto | null = null;
-    /** In-memory store of per-session user contexts (Phase 1 minimal). */
+    /** In-memory store of per-session user contexts. */
     private userContextStore = new UserContextStore();
 
     constructor(
@@ -843,7 +843,7 @@ export class SessionManager {
 
         const managed = new ManagedSession(sessionId, copilotSession, config);
         this.sessions.set(sessionId, managed);
-        // ── Phase 2: bind parent-map entries by walking the CMS-recorded
+        // ── User OBO: bind parent-map entries by walking the CMS-recorded
         // ancestor chain ONCE per session per worker. Idempotent and
         // bounded; never blocks resume. Required so descendant lookups
         // can resolve to the portal-bound ancestor even after the
@@ -1095,7 +1095,7 @@ export class SessionManager {
         } else {
             emitSessionManagerTrace(sessionId, `dehydrate complete reason=${reason}`, { trace });
         }
-        // ── Phase 2: clear the user-context entry on dehydrate so token
+        // ── User OBO: clear the user-context entry on dehydrate so token
         // material never outlives the warm session in pod memory. The
         // parent-map binding intentionally persists so descendants can
         // still resolve to the portal-bound ancestor; the next envelope

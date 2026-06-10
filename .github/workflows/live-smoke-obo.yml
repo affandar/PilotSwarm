@@ -1,4 +1,4 @@
-# Phase 7 (FR-028): live-tenant OBO smoke. workflow_dispatch-only.
+# Live-tenant OBO smoke (FR-028). workflow_dispatch-only.
 #
 # Prerequisites (one-time, per-repo, NOT created by this workflow):
 #
@@ -19,7 +19,7 @@
 #      ~60 min). We deliberately do NOT acquire them in CI: device-code
 #      is interactive, ROPC is SFI-blocked, and federated-user
 #      assertions for the test user would require AAD app-grant
-#      changes outside Phase 7's scope.
+#      changes outside the live-smoke scope.
 #
 # Without those prerequisites, the run fails fast at the
 # `Acquire AKS credentials` or `Run smoke` step with a clear error.

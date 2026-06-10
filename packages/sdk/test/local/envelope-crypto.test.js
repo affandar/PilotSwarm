@@ -1,7 +1,7 @@
 /**
  * Unit tests for the envelope-crypto backends and selectEnvelopeCrypto factory.
  *
- * Covers Phase 1 / FR-008 / FR-020 / FR-023:
+ * Covers FR-008 / FR-020 / FR-023:
  *   - InMemoryEnvelopeCrypto round-trip + cross-mode refusal
  *   - PlaintextEnvelopeCrypto refuses production
  *   - selectEnvelopeCrypto rules by env vars

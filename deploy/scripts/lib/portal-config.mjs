@@ -42,7 +42,7 @@ export const PORTAL_CONFIG_KEYS = [
   { env: "PORTAL_AUTHZ_ADMIN_GROUPS" },
   // Authz user group ids (provider-agnostic).
   { env: "PORTAL_AUTHZ_USER_GROUPS" },
-  // User OBO Propagation (Phase 6). Downstream resource scope acquired by
+  // User OBO Propagation. Downstream resource scope acquired by
   // the portal MSAL flow at sign-in / silent refresh. Typical value:
   // `api://<worker-app>/.default` (the worker-side AAD app the consumer's
   // tools exchange OBO tokens against). When unset, the portal skips

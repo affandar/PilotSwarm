@@ -1,4 +1,4 @@
-// User-context store unit tests (Phase 2).
+// User-context store unit tests.
 // Covers FR-008, FR-009, FR-021, FR-022 + plan-promised edge cases:
 //   - Principal-only entry
 //   - Single-source-of-truth chain walk
@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { UserContextStore } from "../../src/user-context-store.ts";
 
-describe("UserContextStore (Phase 2)", () => {
+describe("UserContextStore", () => {
     let store;
 
     beforeEach(() => {
@@ -114,7 +114,7 @@ describe("UserContextStore (Phase 2)", () => {
             store.setUserContext("mid", { provider: "p", subject: "mid-user", accessToken: "mid-tok", accessTokenExpiresAt: 1 });
             store.setUserContext("root", { provider: "p", subject: "root-user", accessToken: "root-tok", accessTokenExpiresAt: 2 });
             // Mid session terminates: its user-context entry is cleared, but
-            // parent-map binding persists (per Phase 2 lifecycle).
+            // parent-map binding persists (per the user-OBO lifecycle).
             store.clear("mid");
             const got = store.lookup("leaf");
             // Mid is gone → walk past it to root.

@@ -1,5 +1,5 @@
 /**
- * Phase 4 — tool-outcome helpers unit tests.
+ * — tool-outcome helpers unit tests.
  *
  * Covers:
  *  - Both helpers produce the documented marker-field shape with correct kind.
@@ -29,7 +29,7 @@ import {
 } from "../../src/tool-outcomes.js";
 import { PS_TOOL_OUTCOME_MARKER } from "../../src/types.js";
 
-describe("Phase 4 — tool-outcome helpers", () => {
+describe("tool-outcome helpers", () => {
     describe("interactionRequired()", () => {
         it("produces marker shape with kind='interaction_required'", () => {
             const result = interactionRequired({ reasonCode: "reauth_required" });
@@ -78,7 +78,7 @@ describe("Phase 4 — tool-outcome helpers", () => {
             expect(() => interactionRequired({ reasonCode: "   " })).toThrow(/reasonCode/);
         });
 
-        it("rejects reason codes outside the pinned taxonomy (Phase 7 final-review Finding 4)", () => {
+        it("rejects reason codes outside the pinned taxonomy (final-review hardening)", () => {
             // The portal keys behavior off reasonCode (not free-form text),
             // so unknown values must be rejected at helper-call time so
             // downstream consumers can't fragment the contract.

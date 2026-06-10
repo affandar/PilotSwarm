@@ -1,4 +1,4 @@
-// Phase 7 (FR-027): barrel exports for the smoke subcommand.
+// FR-027: barrel exports for the smoke subcommand.
 //
 // Test code uses these named imports to reach driver internals
 // without spelling each module's path. The CLI entry only depends

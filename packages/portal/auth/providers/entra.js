@@ -70,7 +70,7 @@ export function createEntraAuthProvider({ pluginAuthConfig } = {}) {
                     clientId: config.clientId,
                     authority: `https://login.microsoftonline.com/${config.tenantId}`,
                     redirectUri: `${req?.protocol || "https"}://${host}`,
-                    // Phase 3 (user-OBO): when the deployment configures a
+                    // User OBO: when the deployment configures a
                     // downstream scope (e.g. api://<worker-app>/.default for a
                     // consumer like Waldemort), the SPA acquires an additional
                     // access token at sign-in / RPC time and forwards it via

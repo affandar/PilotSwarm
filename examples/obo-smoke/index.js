@@ -11,7 +11,7 @@
  *     so a maintainer can verify the portal re-auth UX path
  *     (SC-008 / FR-011 / SC-006).
  *
- * # Auth-backend selection (Phase 7 — FR-025)
+ * # Auth-backend selection (FR-025)
  *
  * The plugin auto-selects between two OBO backends at *handler-call*
  * time (never at module load):

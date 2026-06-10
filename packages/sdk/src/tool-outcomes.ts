@@ -1,5 +1,5 @@
 /**
- * Phase 4: Structured tool outcome helpers.
+ * Structured tool outcome helpers.
  *
  * Two helpers worker tools call to emit structured outcomes distinct from
  * generic tool failure:
@@ -39,7 +39,7 @@ import { PS_TOOL_OUTCOME_MARKER, INTERACTION_REQUIRED_REASON_CODES } from "./typ
 export interface StructuredToolResult {
     textResultForLlm: string;
     resultType: "interaction_required" | "service_unavailable";
-    /** Phase 4 marker — detected by ManagedSession's tool wrapper. */
+    /** Outcome marker — detected by ManagedSession's tool wrapper. */
     [PS_TOOL_OUTCOME_MARKER]: ToolOutcomeMarker;
     toolTelemetry: Record<string, unknown>;
 }
@@ -165,7 +165,7 @@ export const TOKEN_SHAPED_REGEX = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A
 
 /**
  * Sanitize an outcome payload for persistence into the CMS event row.
- * Per FR-020 / Phase 4 plan, this is an allow-list of fields per kind;
+ * Per FR-020, this is an allow-list of fields per kind;
  * any extra fields are dropped. Token material is never present in
  * either payload type's allow-list, so this also defends against
  * accidental field copying.

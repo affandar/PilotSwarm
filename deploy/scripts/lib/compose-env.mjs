@@ -67,7 +67,7 @@ export function composeDerivedEnv(env) {
     log("info", `Composed PILOTSWARM_CMS_FACTS_DATABASE_URL (passwordless AAD URL) for CMS + facts.`);
   }
 
-  // User OBO Propagation (Phase 6). The base-infra bicep emits oboKekKid
+  // User OBO Propagation. The base-infra bicep emits oboKekKid
   // either as the un-versioned AKV key URL (when oboEnabled=true) or as
   // the substitute-env sentinel (when oboEnabled=false). For deploy flows
   // that skip the `bicep` step (e.g., `--steps manifests,rollout` without
@@ -83,7 +83,7 @@ export function composeDerivedEnv(env) {
     env.PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE = "__PS_UNSET__";
     log("info", `Composed PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE fallback to __PS_UNSET__ sentinel (OBO not enabled or scope not configured).`);
   }
-  // Phase 7 (live-smoke primitives, FR-026). Worker-only toggle that
+  // Live-smoke harness (FR-026). Worker-only toggle that
   // gates the OBO smoke plugin's tool registration. Default to the
   // substitute-env sentinel so non-smoke stamps and stamps that
   // simply omit the value still satisfy substitute-env. The worker's
@@ -93,7 +93,7 @@ export function composeDerivedEnv(env) {
     env.OBO_SMOKE_ENABLED = "__PS_UNSET__";
     log("info", `Composed OBO_SMOKE_ENABLED fallback to __PS_UNSET__ sentinel (smoke plugin not enabled on this stamp).`);
   }
-  // Phase 7 (live-smoke primitives, FR-026). Per-stamp downstream-app
+  // Live-smoke harness (FR-026). Per-stamp downstream-app
   // identity consumed by the smoke plugin's auth backend at handler
   // time. Sentinel default keeps substitute-env happy on non-smoke
   // stamps; the worker's startup sentinel-strip turns __PS_UNSET__ into

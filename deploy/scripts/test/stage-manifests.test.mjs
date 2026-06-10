@@ -164,7 +164,7 @@ test("stageManifests(portal): copies worker base model_providers.json into porta
       PORTAL_AUTHZ_DEFAULT_ROLE: "viewer",
       PORTAL_AUTHZ_ADMIN_GROUPS: "__PS_UNSET__",
       PORTAL_AUTHZ_USER_GROUPS: "__PS_UNSET__",
-      // OBO Phase 1+ overlay keys — sentinel-stubbed so substituteOverlayEnv passes.
+      // OBO overlay keys — sentinel-stubbed so substituteOverlayEnv passes.
       OBO_KEK_KID: "__PS_UNSET__",
       PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE: "__PS_UNSET__",
     },
@@ -211,7 +211,7 @@ function makePortalEnv(extra = {}) {
     PORTAL_AUTHZ_DEFAULT_ROLE: "viewer",
     PORTAL_AUTHZ_ADMIN_GROUPS: "__PS_UNSET__",
     PORTAL_AUTHZ_USER_GROUPS: "__PS_UNSET__",
-    // OBO Phase 1+ overlay keys — sentinel-stubbed so substituteOverlayEnv passes.
+    // OBO overlay keys — sentinel-stubbed so substituteOverlayEnv passes.
     OBO_KEK_KID: "__PS_UNSET__",
     PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE: "__PS_UNSET__",
     ...extra,

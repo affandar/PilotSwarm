@@ -106,7 +106,7 @@ const worker = new PilotSwarmWorker({
     blobAccountUrl: process.env.AZURE_STORAGE_ACCOUNT_URL || undefined,
 });
 
-// Phase 7 (live-smoke primitives, FR-026): when OBO_SMOKE_ENABLED=true,
+// Live-smoke harness (FR-026): when OBO_SMOKE_ENABLED=true,
 // dynamically register the reference smoke plugin's tools BEFORE
 // `worker.start()` so the orchestration poller cannot race a session
 // that calls `obo_user_*` before tool registration completes. Dynamic

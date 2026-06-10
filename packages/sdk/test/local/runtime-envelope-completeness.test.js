@@ -1,5 +1,5 @@
 /**
- * Portal runtime envelope-completeness test (Phase 1 / FR-005 / FR-007).
+ * Portal runtime envelope-completeness test(FR-005 / FR-007).
  *
  * Asserts that the portal's `call()` dispatcher attaches a UserEnvelopeCarrier
  * to every prompt-bearing RPC: sendMessage, sendAnswer, createSessionForAgent

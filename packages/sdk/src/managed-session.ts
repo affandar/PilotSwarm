@@ -1344,7 +1344,7 @@ export class ManagedSession {
                     const augmented = { ...invocation, durableSessionId };
                     try {
                         const result = await (t as any).handler(args, augmented);
-                        // Phase 4: structured tool outcomes. If the handler
+                        // Structured tool outcomes. If the handler
                         // returned an `interactionRequired(...)` /
                         // `serviceUnavailable(...)` payload, the marker is
                         // intentionally LEFT on the result so the session

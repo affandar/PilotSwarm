@@ -40,7 +40,7 @@ The tool reads `process.env` **at every invocation** (never at module
 import time, so contributors cannot accidentally bake smoke creds
 into a non-smoke worker by importing the module).
 
-It auto-selects between two OBO backends (Phase 7 / FR-025):
+It auto-selects between two OBO backends (FR-025):
 
 | Env present | Selected backend | Notes |
 |---|---|---|
@@ -91,7 +91,7 @@ and has no side effects. Run it twice in a session:
 
 ## Notes
 
-- **Backend auto-selection (Phase 7 / FR-025).** The plugin selects
+- **Backend auto-selection (FR-025).** The plugin selects
   between AKS workload-identity FIC and a confidential-client +
   client-secret at handler-call time, with FIC winning precedence.
   Local developers configure `OBO_SMOKE_WORKER_APP_CLIENT_SECRET`;

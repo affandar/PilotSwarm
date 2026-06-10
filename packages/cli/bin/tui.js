@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Phase 7 (FR-027): `pilotswarm smoke <stamp> --profile <profile>`
+// FR-027: `pilotswarm smoke <stamp> --profile <profile>`
 // subcommand. Branches before any TUI/Ink boot so the smoke driver
 // runs as a plain CLI without the React/Ink module graph being
 // loaded. Keeps the TUI path untouched.

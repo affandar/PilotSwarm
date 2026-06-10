@@ -4,7 +4,7 @@ function isMobileBrowser() {
     return /Mobi|Android|iPhone|iPad|iPod/i.test(window.navigator.userAgent || "");
 }
 
-// Phase 3 (user-OBO): refresh a downstream-scope token when its remaining
+// User OBO: refresh a downstream-scope token when its remaining
 // lifetime drops below this threshold. Five minutes mirrors the spec's
 // near-expiry window; the worker performs OBO immediately after RPC arrival
 // so a token within 5 minutes of expiry is treated as "about to expire".
@@ -23,7 +23,7 @@ export function createEntraBrowserAuthProvider() {
     let config = null;
     let account = null;
     let accessToken = null;
-    // Phase 3: separate cache for the downstream-scope token. Distinct from
+    // Separate cache for the downstream-scope token. Distinct from
     // the admission `accessToken` because the two scopes/audiences differ;
     // mixing them would cause MSAL to refresh-the-wrong-token.
     let downstreamToken = null; // { accessToken, accessTokenExpiresAt } | null
@@ -58,7 +58,7 @@ export function createEntraBrowserAuthProvider() {
     }
 
     /**
-     * Phase 3 (user-OBO): acquire a token for the configured downstream scope
+     * User OBO: acquire a token for the configured downstream scope
      * (e.g. api://<worker-app>/.default). Returns `{ accessToken,
      * accessTokenExpiresAt }` or null when the deployment has no downstream
      * scope configured, when MSAL silently fails and `interactive` is false,
@@ -207,12 +207,12 @@ export function createEntraBrowserAuthProvider() {
             return acquireToken({ interactive: true });
         },
         /**
-         * Phase 3 (user-OBO): returns `{ accessToken, accessTokenExpiresAt }`
+         * User OBO: returns `{ accessToken, accessTokenExpiresAt }`
          * for the configured downstream scope, or null when no scope is
          * configured / acquisition failed. Never throws — Spec A-8 requires
          * graceful degradation to principal-only envelope.
          *
-         * Phase 6 (FR-011): accepts optional `{ interactive }`. When the
+         * FR-011: accepts optional `{ interactive }`. When the
          * transport observes an `interaction_required` outcome, it calls
          * with `interactive: true`, which falls back to a popup/redirect on
          * silent-acquire failure (e.g., Conditional Access reauth, MFA

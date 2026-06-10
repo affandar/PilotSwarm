@@ -1,5 +1,5 @@
 /**
- * Phase 3 server-side RPC body auth extraction test.
+ * server-side RPC body auth extraction test.
  *
  * Asserts that the /api/rpc handler extracts the SPA-supplied downstream
  * access token from the JSON request body's `auth` field and stamps it
@@ -18,7 +18,7 @@ import http from "node:http";
 // Import the handler logic by replicating the relevant slice of server.js.
 // We inline it to avoid the heavyweight runtime initialization in the
 // production server.js bootstrap. The slice under test mirrors lines
-// added in Phase 3 (extract bodyAuth → stamp on req.auth.principal).
+// added with the user-OBO feature (extract bodyAuth → stamp on req.auth.principal).
 function buildRpcSliceApp({ runtimeCall, authPrincipal }) {
     const app = express();
     app.use(express.json({ limit: "2mb" }));
@@ -79,7 +79,7 @@ async function postRpc(server, body) {
     });
 }
 
-describe("Phase 3 — /api/rpc body auth extraction", () => {
+describe("/api/rpc body auth extraction", () => {
     let server;
     let runtimeCalls;
     const PRINCIPAL = {
