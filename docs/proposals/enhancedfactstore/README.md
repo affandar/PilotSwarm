@@ -13,7 +13,8 @@ graph, and a durable in-database embedding generator. First provider:
 | 02 | [API Reference](./02-api-reference.md) | Target TypeScript interfaces for retrieval, the embedder lifecycle, and the graph crawler. |
 | 03 | [Design](./03-design.md) | Component/data-model/embedder/retrieval/migration designs with diagrams. |
 | 04 | [Test Specification](./04-test-spec.md) | Deterministic datasets, functional matrices, negative cases, embedder lifecycle, fail-fast, layout. |
-| 05 | [Agent Tools Spec](./05-tools-spec.md) | LLM-facing tool contract (`facts_*` / `graph_*`), harvester loop, and the Phase 2 context tools. |
+| 05 | [Agent Tools Spec](./05-tools-spec.md) | LLM-facing tool contract (`facts_*` / `graph_*`), harvester loop, a **worked graph example** (§5a, diagrammed over the real pgsql-hackers corpus), and the Phase 2 context tools. |
+| 06 | [Provider Test Plan](./06-provider-test-plan.md) | Executable plan for 04: no-mocks/full-validation ground rule, suite order, live-HorizonDB lifecycle, migration tests, real-endpoint embedder validation, and the Copilot-SDK harvester scenarios on the pgsql-hackers corpus. |
 
 ## Phasing
 
@@ -30,37 +31,66 @@ graph, and a durable in-database embedding generator. First provider:
 ## Key decisions captured here
 
 - **Retrieval:** `searchFacts` is **facts-store-only** (`lexical`/`semantic`/`hybrid`
-  — no graph mode); `similarFacts` (semantic kNN of a known fact, no re-embed).
-  There is **no** dedicated `lineageFacts` — lineage is base
+  — no graph mode); `similarFacts` (semantic kNN of a known fact, no re-embed;
+  an inaccessible anchor behaves exactly like an unknown one). There is **no**
+  dedicated `lineageFacts` — lineage is base
   `readFacts({ scope: "descendants" })`, ranked via `searchFacts`. There is **no**
   dedicated `relatedFacts` — graph relatedness is `searchGraphNodes({ seeds })` +
-  `readFacts`. Signal type is orthogonal to which store you query.
+  `readFacts`. Signal type is orthogonal to which store you query. **ACL is part
+  of the search procs' WHERE clause, before ranking/LIMIT** — never a
+  post-ranking filter.
 - **Embedder:** one durable, eternal `df.loop` that embeds **batches** via the
   array-input API and one `df.http` per batch — no "df-in-df" nesting. Config in
-  `df.setvar` (sourced from `.env`/k8s); the API key is in a durable var **for
-  now** (plaintext-at-rest TODO). Lifecycle: `configureEmbedder` /
-  `startEmbedder` / `stopEmbedder` / `embedderStatus`.
+  `df.setvar` (sourced from `.env`/k8s); durable vars are **captured at
+  `df.start` and immutable for the run** (pg_durable contract), so
+  `configureEmbedder` **restarts a running loop** to apply new config/keys.
+  The API key is in a durable var **for now** (plaintext-at-rest TODO).
+  Lifecycle: `configureEmbedder` / `startEmbedder` / `stopEmbedder` /
+  `embedderStatus`. Write-back stamps `embedding_model` and the **select-time**
+  `content_hash`; rows embedded under another model count as un-embedded
+  (pending + invisible to semantic search), so model rotation is a rolling
+  re-embed.
 - **Crawl tracking:** the facts table gains `last_crawled_at` (marks graph
   incorporation). It resets to `NULL` on any `storeFact` content
   change (trigger), so pending-crawl = `last_crawled_at IS NULL`. Harvester
   support: `readUncrawledFacts` (work queue) + `markFactsCrawled` (stamp done).
-- **Fail-fast:** `initialize()` requires `vector`, `age`, `pg_durable`+`df.http`;
-  no feature flags, no Node fallback.
+  **Crawling is privileged** — the harvester reads all facts across scopes —
+  and `markFactsCrawled` takes `{ scopeKey, contentHash }` receipts, stamping
+  only when the hash still matches (mid-crawl edits stay queued).
+- **Fail-fast:** `initialize()` requires `vector`, `age`,
+  `pg_textsearch` (BM25), `pg_durable`+`df.http`; no feature flags, no Node
+  fallback.
 - **Phase 2 context reads:** `searchGraphContext` (query → graph → facts) and
   `similarGraphContext` (known fact → similar cluster → graph, with derived
   `factLinks`) compose the Phase 1 primitives into one ACL-checked, deduped
   bundle. Read-only; gated behind a harvested graph (`EVIDENCED_BY`).
 - **Graph:** `GraphInterface` with `upsertGraphNode` + `upsertGraphEdge` (evidence
-  **optional**, merge/union semantics; `upsertGraphEdge` absorbs `linkEvidence`);
-  `mergeGraphNodes`; `deleteGraphNode` / `deleteGraphEdge`; reads
+  **optional**, merge/union semantics; `upsertGraphEdge` absorbs `linkEvidence`;
+  reinforcement counts only novel evidence); `mergeGraphNodes`;
+  `deleteGraphNode` / `deleteGraphEdge`; reads
   `searchGraphNodes` (takes `seeds[]` of fact scopeKeys or node keys) /
   `searchGraphEdges` / `graphNeighbourhood`. Graph nodes carry **no embeddings** —
   the query entry point is the facts' vector index, pivoting in via `EVIDENCED_BY`
   seeds. **No cascade** from fact deletion into the graph — the KV ↔ graph linkage
   is **by convention, not contract**.
+- **Graph trust model:** the graph is a **shared-scope surface** with no
+  per-node/edge ACL — **ingestion is publication** (the privileged harvester
+  decides what enters; extracted content is visible to all readers). Read-side
+  compensation: all graph reads take the caller's access context, **`evidence`
+  arrays are filtered to caller-accessible scopeKeys** (syntactic
+  `shared:`/`session:<id>:` check) and inaccessible fact seeds are ignored;
+  traversal still uses the full evidence set, so connectivity through
+  inaccessible facts is preserved without disclosing their keys. See
+  [01 §6.1a](./01-functional-spec.md).
 - **Storage:** relational + vector access via **stored procedures**; graph access
   via a **typed Cypher layer**; all DDL via **numbered migrations** using a
   vendored migrator (merge back into `pg-migrator.ts` on graduation).
+- **Base-API prerequisites (PilotSwarm core):** `FactRecord.scopeKey` +
+  `ReadFactsQuery.scopeKeys` (bulk by-key read — every evidence round-trip
+  depends on it), and **store-provider injection**: the caller passes the facts
+  store provider in the PilotSwarm initializer; an `EnhancedFactStore` lights up
+  the enhanced/graph tools and the base instructions name the matching skill
+  per store. See [02-api-reference.md §1b–1c](./02-api-reference.md).
 - **Connection targets (PilotSwarm core):** three independent connection strings
   — `store` (orchestration / `ps_duroxide`), `cmsFactsDatabaseUrl` (CMS), and the
   new `enhancedFactsDatabaseUrl` (EnhancedFactStore on HorizonDB). Resolution

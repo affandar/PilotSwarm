@@ -1,0 +1,471 @@
+{
+  "scenario": "postgres pgsql-hackers mailing list — Generic type subscripting (REAL archive data)",
+  "description": "Real messages pulled from the public postgresql.org archives for the '[HACKERS] [PATCH] Generic type subscripting' thread — the patch series that became jsonb subscripting. Bodies have quoted reply lines stripped and are capped at 2500 chars. Used by the harvester scenarios (docs/proposals/enhancedfactstore/06-provider-test-plan.md §10); scenario invariants are derived from the metadata block below, not hand-authored.",
+  "source": {
+    "list": "pgsql-hackers",
+    "threads": [
+      "https://www.postgresql.org/message-id/flat/CA%2Bq6zcVovR%2BXY4mfk-7oNk-rF91gH0PebnNfuUjuuDsyHjOcVA%40mail.gmail.com",
+      "https://www.postgresql.org/message-id/flat/20210102141411.5xa6asqp5arjumeq%40localhost"
+    ],
+    "fetchedAt": "2026-06-10T03:06:47.846Z",
+    "note": "Public mailing-list archive content; regenerate with build-pgsql-hackers-real.mjs"
+  },
+  "metadata": {
+    "messageCount": 60,
+    "participants": [
+      {
+        "name": "Dmitry Dolgov",
+        "messages": 28
+      },
+      {
+        "name": "Arthur Zakirov",
+        "messages": 19
+      },
+      {
+        "name": "Tom Lane",
+        "messages": 6
+      },
+      {
+        "name": "Peter Eisentraut",
+        "messages": 4
+      },
+      {
+        "name": "David Steele",
+        "messages": 2
+      },
+      {
+        "name": "Oleg Bartunov",
+        "messages": 1
+      }
+    ],
+    "multiMessageAuthors": [
+      "Dmitry Dolgov",
+      "Arthur Zakirov",
+      "Tom Lane",
+      "Peter Eisentraut",
+      "David Steele"
+    ]
+  },
+  "messages": [
+    {
+      "id": "CA+q6zcVovR+XY4mfk-7oNk-rF91gH0PebnNfuUjuuDsyHjOcVA@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "[PATCH] Generic type subscripting",
+      "date": "2017-02-28 18:02:02",
+      "body": "Hi all\n\nRegarding to the previous conversation [1], here is the patch for generic\ntype\nsubscripting with several improvements. It contains the following changes:\n\n* Subscripting node was separated into `SubscriptingRef` (only for data\n  extraction) and `SubscriptingAssignRef` (only for assignment), and common\n  data for both nodes is stored in `SubscriptingBase`. When it did make\nsense, I\n  also separated correlated pieces of code. Common code for both nodes works\n  with `SubscriptingRef`.\n\n* Type related logic is separated into several functions, and the purpose of\n  procedures like `jsonb_subscripting`/`array_subscripting` now is just to\n  generate proper node with a correct function oid (I also tried to use a\n  function pointer instead of a function oid, and it worked for me in\ngeneral\n  case, but I'm not sure if it will be ok for `_outSubscriptingRef` and\n  `_readSubscriptingRef`).\n\n* Function signatures are fixed.\n\n* Functions for type dependent logic are going to be properly verified\n(where I\n  found out such places, e.g. for `check_functions_in_node`)\n\nThe only thing left is separated typmod and collation. But since it's\nnecessary\nonly for future data types, and there is already big enough list of changes\nfrom previous version of this patch, I think it would be great to discuss\nit now and\nimplement this feature little bit later.\n\nGenerally speaking functionality, which has been implemented in this patch,\nis\nthe same. Code itself is little bit clumsy I guess (looks like I need to\nrename\n`SubscriptingRef` to something shorter), but I hope I can refine it soon\nenough.\n\nAs always, any feedback is welcome.\n\n[1]:\nhttps://www.postgresql.org/message-id/flat/CA+q6zcVDuGBv=M0FqBYX8DPebS3F_0KQ6OVFobGJPM507_SZ_w(at)mail(dot)gmail(dot)com#CA+q6zcVDuGBv=M0FqBYX8DPebS3F_0KQ6OVFobGJPM507_SZ_w@mail.gmail.com"
+    },
+    {
+      "id": "dc125ec4-d3d4-aed8-6014-c21d5714530e@2ndquadrant.com",
+      "from": "Peter Eisentraut <peter(dot)eisentraut(at)2ndquadrant(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-10 05:20:54",
+      "body": "I see a possible problem here:  This design only allows one subscripting\nfunction.  But what you'd really want in this case is at least two: one\ntaking an integer type for selecting by array index, and one taking text\nfor selecting by field name.\n\nI suppose that since a given value can only be either an array or an\nobject, there is no ambiguity, but I think this might also lose some\nerror checking.  It might also not work the same way for other types.\n\nIt looks like your jsonb subscripting function just returns null if it\ncan't find a field, which is also a bit dubious."
+    },
+    {
+      "id": "18287.1489529644@sss.pgh.pa.us",
+      "from": "Tom Lane <tgl(at)sss(dot)pgh(dot)pa(dot)us>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-14 22:14:04",
+      "body": "Peter Eisentraut <peter(dot)eisentraut(at)2ndquadrant(dot)com> writes:\n\nNo, I think you're missing the point: there is just one function per\ndatatype for *parse analysis* of a subscripting operation applied to\nthat datatype.  What it chooses to allow as subscript type, and what\nfunction it determines will be used at execution, is up to it.\n\nI agree that the given jsonb_subscript is failing to handle the\nsubscript-an-array-with-an-integer case, but that's a datatype-specific\nshortcoming not a failure of the overall design.\n\nI would guess that what we really want for jsonb is the ability to\nintermix integer and text subscripts, so that\n\t jsonbcol['foo'][42]['bar']\nwould extract the \"bar\" field of an object in position 42 of an\narray in field \"foo\" of the given jsonb value.  So you probably\nend up still having one jsonb execution function, not two, and\nit would have different code paths depending on whether it sees\nthe type of the next subscript expression to be integer or text.\n\nNah, that seems fine.  Our precedent for standard array subscripting is to\nreturn NULL for out-of-range subscripts, and the jsonb -> operator also\nreturns NULL if there's no such field.  It would be rather surprising if\njsonb subscripting threw an error instead; and I do not think it would be\nmore useful.\n\n\t\t\tregards, tom lane"
+    },
+    {
+      "id": "20423.1489533013@sss.pgh.pa.us",
+      "from": "Tom Lane <tgl(at)sss(dot)pgh(dot)pa(dot)us>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-14 23:10:13",
+      "body": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com> writes:\n\nI looked through this a bit.\n\nI think that the basic design of having a type-specific parse analysis\nfunction that returns a constructed SubscriptingRef node is fine.\n\nI'm not totally excited about the naming you've chosen though,\nparticularly the function names \"array_subscripting()\" and\n\"jsonb_subscripting()\" --- those are too generic, and a person coming to\nthem for the first time would probably expect that they actually execute\nsubscripting, when they do no such thing.  Names like\n\"array_subscript_parse()\" might be better.  Likewise the name of the\nnew pg_type column doesn't really convey what it does, though I suppose\n\"typsubscriptparse\" is too much of a mouthful.  \"typsubparse\" seems short\nenough but might be confusing too.\n\nI wonder also if we should try to provide some helper functions rather\nthan expecting every data type to know all there is to know about parsing\nand execution of subscripting.  Not sure what would be helpful, however.\n\nOne thing that needs more thought for sure is the nested-assignment case\n(the logic around isAssignmentIndirectionExpr) --- the design you've got\nhere implies that *every* container-like datatype would need to duplicate\nthat logic, and I don't think we want to go there.\n\nThe documentation needs a lot of work of course, and I do not think\nyou're doing either yourself or anybody else any favors with the proposed\nadditions to src/tutorial/.  You'll never be sure that that stuff even\ncompiles let alone accurately represents what people need to do.  Actual\nrunning code is much better.  It may be that jsonb_subscript is enough\nof an extension example, but perhaps adding a subscripting feature to some\ncontrib module would be better.\n\nAren't SBS_VALIDATION and SBS_EXEC just hangovers from the previous\ndesign?  They're still in parse_node.h, and they're still mentioned in\nthe docs, but I don't see them used in actual code anywhere.\nget_slice_arguments seems to be a hangover as well, which is good\nbecause it's mighty ugly and undocumented.\n\nIt seems rather silly for ExecEvalSubscriptingRef to be palloc'ing some\nper-subscript arrays each time through when it's got other arrays that are\nstill of fixed size MAXDIM.  I can believe that it might be a good idea\nto increase or remove the MAXDIM limit, but this doesn't do it.  In any\ncase, you don't want to add the overhead of a couple of pallocs per\nexecution.  Using OidFunctionCall2 is even worse: that's adding a system\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "393cd0ae-5b84-849e-fc73-7077470a009e@pgmasters.net",
+      "from": "David Steele <david(at)pgmasters(dot)net>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-21 17:16:41",
+      "body": "Hi Dmitry,\n\nThis thread has been idle for over a week.  Please respond and/or post a\nnew patch by 2017-03-24 00:00 AoE (UTC-12) or this submission will be\nmarked \"Returned with Feedback\".\n\nThanks,"
+    },
+    {
+      "id": "CA+q6zcUX=Om75kgZXkpYPhnwUCo4osFpzd83dKPzjSGfCmxEgA@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-21 20:42:06",
+      "body": "Yes, sorry for the late reply. I'm still trying to find a better solution\nfor\nsome of the problems, that arose in this patch.\n\nThank you for the feedback.\n\npeter(dot)eisentraut(at)2ndquadrant(dot)com> wrote:\n\nMaybe I misunderstood you, but isn't it already possible?\n\n```\n=# select ('{\"a\": [{\"b\": 1}, {\"c\": 2}]}'::jsonb)['a'][0]['b'];\n jsonb\n-------\n 1\n(1 row)\n\n=# select * from test;\n            data\n-----------------------------\n {\"a\": [{\"b\": 1}, {\"c\": 2}]}\n(1 row)\n\n=# update test set data['a'][0]['b'] = 42;\nUPDATE 1\n\n=# select * from test;\n            data\n-----------------------------\n {\"a\": [{\"b\": 42}, {\"c\": 2}]}\n(1 row)\n```\n\nIt looks quite tempting for me to replace the word \"subscript\" by an\nabbreviation all over the patch. Then it will become something like\n\"typsbsparse\" which is not that mouthful, but I'm not sure if it will be\neasily\nrecognizable.\n\nI don't really see what details we can hide behind this helper, because\nalmost\nall code there is type specific (e.g. to check if subscript indexes are\ncorrect), can you elaborate on that?\n\nYes, unfortunately, I forget to update documentation from the previous\nversion\nof the patch. I'll fix it soon in the next version.\n\nYes, these are from the previous version too, I'll remove them.\n\nIt looks for me that it's a great idea to perform null-handling inside\ndatatype\nspecific code and I'm not sure, what would be complicated? All necessary\ninformation for that is already in `SubscriptingExecData` (I just have to\nuse\n`eisnull` in a different way).\n\nI'm thinking to replace these structures by more meaningful ones, something\nlike:\n\n```\ntypedef struct SubscriptContainerRef\n{\nExpr xpr;\nOid refcontainertype;\nOid refelemtype;\nint32 reftypmod;\nOid refcollid;\n} SubscriptBase;\n\ntypedef struct SubscriptExtractRef\n{\nExpr        xpr;\nSubscriptContainerRef *containerExpr;\nList                *refupperindexpr;\nList                *reflowerindexpr;\nOid            refevalfunc;\n} SubscriptExtractRef;\n\ntypedef struct SubscriptAssignRef\n{\nExpr        xpr;\nSubscriptContainerRef *containerExpr;\nExpr        *refassgnexpr;\nList                *refupperindexpr;\nList                *reflowerindexpr;\nOid            refevalfunc;\n} SubscriptAssignRef;\n\n```\n\nIt's close to the previous version, but here will be a bit less duplicated\ncode\nin comparison with two independent structures, we still can use different\nnodes\nfor data assignment and data extraction, and node processing for these nodes\ncan be little bit more separated, e.g.:\n\n```\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "65df4a65-a9d8-3531-5baf-edb237771f0e@pgmasters.net",
+      "from": "David Steele <david(at)pgmasters(dot)net>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-24 14:39:36",
+      "body": "Hi Dmitry,\n\nDo you have an idea when you will have a patch ready?  We are now into\nthe last week of the commitfest.  I see one question for Tom, but it's\nnot clear that this would prevent you from producing a new patch.\n\nPlease post a new patch by 2017-03-28 00:00 AoE (UTC-12) or this\nsubmission will be marked \"Returned with Feedback\".\n\nThanks,"
+    },
+    {
+      "id": "CA+q6zcVZFHyktBdtr8uNvqFJM+=UHJWOXQqm4c3S9Jpr-JTokg@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-24 15:25:42",
+      "body": "Yes, I'll prepare a new version with most important changes in two days."
+    },
+    {
+      "id": "22355.1490369372@sss.pgh.pa.us",
+      "from": "Tom Lane <tgl(at)sss(dot)pgh(dot)pa(dot)us>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-24 15:29:32",
+      "body": "David Steele <david(at)pgmasters(dot)net> writes:\n\nFWIW, I'm up to my eyeballs in Andres' faster-expressions patch, and\nwon't have time to think about this one for at least a couple more\ndays.\n\n\t\t\tregards, tom lane"
+    },
+    {
+      "id": "449f42b9-f338-9e45-cb33-3e15c7b547ad@postgrespro.ru",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-24 15:42:18",
+      "body": "I can try to review a new version of the patch, when Dmitry will send\nit. If no one objects. Besides, I've seen the previous versions of the\npatch from previous commitfest."
+    },
+    {
+      "id": "CA+q6zcWFLpEX6H1LOOKFJMAN+LB+mmEx=6Syd4WVioXkbXq32A@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-27 20:28:40",
+      "body": "Here is a new version of this patch. What was changed:\n\n* I rebased code against the latest version of master and adapted recent\n  changes about the expression execution\n\n* Several names (functions and related pg_type column) were changed\n\n* A new oid function field was introduced to handle nested assignment\nsituation\n\n* I updated the documentation for patch\n\n* `MAXDIM` was replaced by `MAX_SUBSCRIPT_DEPTH`\n\n* I returned one `SubscriptingRef` for both fetch & assign operations, since\n  there is no real readability improvements at this point (they're already\n  separated at the time of evaluation, and besides the evaluation code\nfetch &\n  assign are handled almost identically)."
+    },
+    {
+      "id": "c7cc0592-4c9b-699d-3b61-810804759de6@postgrespro.ru",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-28 09:58:33",
+      "body": "Hello,\n\nYour patch reverts commits from 25-26 march. And therefore contains\n15000 lines.\n\nI think the patch needs rebasing."
+    },
+    {
+      "id": "CA+q6zcXQ9UO0_qGqoFgd_4ymKYxwr-3he+abEbnWaPk2nbmPVQ@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-28 10:08:07",
+      "body": "lines.\n\nWow, I didn't notice that, sorry - will fix it shortly."
+    },
+    {
+      "id": "CA+q6zcXsonX+qLhf2crQgj14NzJmcibABhyVch1kjNtSL1+V1A@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-28 16:31:53",
+      "body": "So, here is the corrected version of the patch."
+    },
+    {
+      "id": "38e32275-91f2-61e9-24dd-57135a662c41@postgrespro.ru",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-29 17:14:27",
+      "body": "I have some picky comments.\n\nI'm not sure that \"typsbsparse\" is better than \"typsubscripting\" or\n\"typsubparse\". Maybe \"typsubsparse\"?\n\nHere you didn't fix \"typsubscripting\" to new name.\n\nShould be \"JSONB data type supports\".\n\nShould be \"It should contain\".\n\nYou have implemented jsonb subscripting. The documentation should be\nfixed to:\n\n+ <sect2 id=\"jsonb-subscripting\">\n+  <title><type>jsonb</> Subscripting</title>\n+  <para>\n+   <type>jsonb</> data type support array-style subscripting\nexpressions to extract or update particular element. An example of\nsubscripting syntax:\n\nI think IsOneOf() macros should be removed. Since it is not used anywhere.\n\nHere one of the conditions is excess. Better to delete assert condition\nI think.\n\nI've tried tests from message [1]. They looks good. Performance looks\nsimilar for subscripting without patch and with patch.\n\nI wanted to implement subscripting for ltree or hstore extensions.\nSubscripting for ltree looks more interesting. Especially with slicing.\nBut I haven't done it yet. I hope that I will implement it tomorrow.\n\n1.\nhttps://www.postgresql.org/message-id/CAKNkYnz_WWkzzxyFx934N%3DEp47CAFju-Rk-sGeZo0ui8QdrGmw%40mail.gmail.com"
+    },
+    {
+      "id": "CA+q6zcUaUoW_okVE0QKdf8OHfG1kMFMhbfxCjhF+qhSN9Vz2sQ@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-30 17:18:46",
+      "body": "\"typsubparse\". Maybe \"typsubsparse\"?\n\n`typsubparse` is more confusing as for me, but I like `typsubsparse`.\n\nsimilar for subscripting without patch and with patch.\n\nGreat, thank you for confirmation.\n\nI've attached a new version of the patch with related improvements."
+    },
+    {
+      "id": "91a90c4e-9e95-60be-d796-d319b640655c@postgrespro.ru",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-30 17:36:40",
+      "body": "ltree\n-----\n\nI've implemented fetching ltree elements using subscripting. But haven't\nimplemented assigning ltree elements yet. I'll send second patch after\nimplementing assigning.\n\nNow you can execute the following query:\n\nSELECT ('Top.Science.Astronomy.Astrophysics'::ltree)[1:2];\n     ltree\n-------------\n  Top.Science\n\nComments\n--------\n\nBut I've noticed about some points.\n\nIn array_subscript_parse() passed uninitialized values of \"typesource\"\nand \"typeneeded\" variables for coerce_to_target_type().\n\nHere is the bug. Second variable should be \"typeneeded\". Moreover these\nassignments should be moved up to first coerce_to_target_type() execution.\n\nThis code looks like a magic. This happens because of appending\nA_Indeces to lowerIndexpr:\n\nAnd this A_Indeces used only when slicing is not used to make a constant\n1. Maybe there are another way?\n\nAlso it would be better if \"refevalfunc\" and \"refnestedfunc\" had\npointers to functions not Oid type. Now you need to create \"..._fetch\"\nand \"..._assign\" functions in catalog and in \"..._parse\" function you\nneed get their Oid using to_regproc() function.\n\nCan we use IndexAmRoutine structure method, when you use only pointers\nto necessary functions? You can see an example in blhandler() function\nin blutils.c.\n\nThe last point is about the tutorial. As Tom pointed it is not useful\nwhen the tutorial doesn't execute. It happens because there is not\n\"custom\" type in subscripting.sql. Also it contradicts the README of\ntutorials."
+    },
+    {
+      "id": "CA+q6zcXc8_+dkOjW1ramBtcE6y+ih7DCu9L8UZBEqBEAnkxt6Q@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-31 02:32:41",
+      "body": "when the tutorial doesn't execute. It happens because there is not \"custom\"\ntype in subscripting.sql.\n\nI'm confused. Maybe I'm missing something, but there is \"custom\" type in\nthis file:\n\n```\n-- subscripting.sql\n\nCREATE TYPE custom (\n   internallength = 8,\n   input = custom_in,\n   output = custom_out,\n   subscripting = custom_subscript_parse\n);\n```\n\n```\npsql:subscripting.sql:39: NOTICE:  42704: type \"custom\" is not yet defined\nDETAIL:  Creating a shell type definition.\nLOCATION:  compute_return_type, functioncmds.c:141\nCREATE FUNCTION\nTime: 4.257 ms\npsql:subscripting.sql:47: NOTICE:  42809: argument type custom is only a\nshell\nLOCATION:  interpret_function_parameter_list, functioncmds.c:245\nCREATE FUNCTION\nTime: 37.038 ms\nCREATE FUNCTION\nTime: 13.891 ms\nCREATE FUNCTION\nTime: 0.946 ms\nCREATE FUNCTION\nTime: 1.161 ms\nCREATE TYPE\nTime: 1.336 ms\nCREATE TABLE\nTime: 2.129 ms\nINSERT 0 1\nTime: 2.501 ms\n data\n------\n    2\n(1 row)\n\nTime: 0.960 ms\nUPDATE 1\nTime: 0.887 ms\n```\n\nSo the only problem I see is notification about \"type 'custom' is not yet\ndefined\", but it's the same for \"complex\" tutorial\n\n```\npsql:complex.sql:39: NOTICE:  42704: type \"complex\" is not yet defined\nDETAIL:  Creating a shell type definition.\nLOCATION:  compute_return_type, functioncmds.c:141\nCREATE FUNCTION\nTime: 1.741 ms\npsql:complex.sql:47: NOTICE:  42809: argument type complex is only a shell\nLOCATION:  interpret_function_parameter_list, functioncmds.c:245\nCREATE FUNCTION\nTime: 0.977 ms\npsql:complex.sql:55: NOTICE:  42809: return type complex is only a shell\nLOCATION:  compute_return_type, functioncmds.c:105\nCREATE FUNCTION\nTime: 0.975 ms\npsql:complex.sql:63: NOTICE:  42809: argument type complex is only a shell\nLOCATION:  interpret_function_parameter_list, functioncmds.c:245\nCREATE FUNCTION\nTime: 0.893 ms\nCREATE TYPE\nTime: 0.992 ms\n...\n```\n\nCan you clarify this point?"
+    },
+    {
+      "id": "CAKNkYnzEdLKbcJj+-o0wHq=0uQjd1B9aUL0x0VEEbrXf2CyAoQ@mail.gmail.com",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-03-31 05:58:50",
+      "body": "2017-03-31 5:32 GMT+03:00 Dmitry Dolgov <9erthalion6(at)gmail(dot)com>:\n\nSorry for confusing. I should have been more careful. I've mixed up\nNOTICE message with error message and I haven't noticed CREATE TYPE\ncommand."
+    },
+    {
+      "id": "CAKNkYnzpMwx0KtLCaOoFVGQZoJHJ5E+mTrZGEcary0eKu2LdLg@mail.gmail.com",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-04-01 19:26:44",
+      "body": "2017-03-28 19:31 GMT+03:00 Dmitry Dolgov <9erthalion6(at)gmail(dot)com>:\n\nThank you!\n\nThe patch looks good to me. But it is not applied :) I think it is\nbecause of new FTS functions for jsonb. The patch need rebasing.\n\nBut, from my point of view, it would be nice if the code mentioned\nearlier was improved:\n\nIt is necessary for arrays of course because of logic mentioned in the\ndocumentation.\n\nBut it would be better if SubscriptingRef structure had a new field of\nList type. This field can store list of booleans, which means is there\nslices or not. I think it can improve readability of the code."
+    },
+    {
+      "id": "CA+q6zcWVDF5Y8+FNQoV1vOmA9zCt4TiCqpHmDP3grP6v2mE30A@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-04-04 12:41:42",
+      "body": "Sorry for late reply. Here is a new version of the patch, I rebased it and\nfixed those issues you've mentioned (pretty nasty problems, thank you for\nnoticing)."
+    },
+    {
+      "id": "f65bee8c-34b8-178c-2ff2-28b2cfb7de4f@postgrespro.ru",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-04-05 13:06:04",
+      "body": "Thank you!\n\nI've looked at the patch again.\n\nI'd like to focus on \"refevalfunc\" and \"refnestedfunc\" fields as I did\nearlier. I think using Oid type for them is a bad approach. \"..._fetch\"\nand \"..._assign\" functions in catalog is unnecessary movement to me.\nUser of subscript of his type may think the same. But he won't see the\ncode and won't know why he needs these functions.\n\nAnd so \"..._fetch\" and \"..._assign\" functions in catalog is a bad design\nto me. But, of course, it is just my opinion. This approach is the main\nthink which we should resolve first, because after commiting the patch\nit will be hard to fix it.\n\nI think isAssignmentIndirectionExpr() here was forgoten to delete,\nbecause isAssignmentIndirectionExpr() is in execExpr.c now.\n\nThere is the extra line here after the brace.\n\nAlso I was wondering do we need this code in array_subscript_parse()? I\nhaven't understood the purpose of it. If it is necessary then would be\ngood to add explain comment."
+    },
+    {
+      "id": "12d8e0d0-e0ed-2846-cb8b-431f17e7d8c7@postgrespro.ru",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-04-05 14:33:52",
+      "body": "Sorry maybe it's too naive. Also I was wondering.\n\nI don't understand this part of the patch. Why is it necessary to\nexecute transformArrayType() second time? It was executed in\ntransformContainerSubscripts().\n\nThis part looks strange to me too.\n\nIt this parts are necessary it would be good to add comments."
+    },
+    {
+      "id": "77f6449a-cc91-fee2-697f-5eacebfca0d7@postgrespro.ru",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-04-06 13:24:33",
+      "body": "I've read olders messages and thread. I see now that this approach was\nmade with other hackers. I've just been confused when I've been\nimplementing subscript for ltree.\n\nSorry if I confused you.\n\nAny opinions about the patch?"
+    },
+    {
+      "id": "CA+q6zcX+HBjSp9nX-SFhmAQ5k7waU4yDnbnyvZPJHy+E+8258A@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-04-07 14:49:00",
+      "body": "Well, it's necessary because `array_type` can be modified by\n`transformArrayType` and we have to perform coercion again. I'm not sure if\nmore explanation for that is required, can you suggest something to add\nhere?\n\nYes, that's my mistake, I removed one from `parse_node.c`.\nHere is a new slightly improved version of the patch."
+    },
+    {
+      "id": "CA+q6zcUmz_Xa6SQC6-+XH4vNj439r0huXwJR_YK9KBEAW9C3HQ@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-05-10 20:43:10",
+      "body": "type\n\nSo, a few words about current state of the patch:\n\n* after a lot of serious improvements general design of this feature is\nagreeable\n\n* we introduced a lot of small changes to polish it\n\n* I rebased the patch on the latest version of master, so you can take a\nlook at it again\n\nAs always, any feedback is welcome."
+    },
+    {
+      "id": "3939224.Pu1MPp1GC3@zakirov",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-06-30 09:34:08",
+      "body": "Hello,\n\nCan you rebase the patch please? It is not applyed now. I think it is because\nof pgindent.\n\nAlso I have noticed that assigning eval_finfo and nested_finfo after every time\neval step is pushed is unnecessary in ExecInitSubscriptingRef() function. We\nneed them only for EEOP_SBSREF_OLD, EEOP_SBSREF_ASSIGN and EEOP_SBSREF_FETCH\nsteps."
+    },
+    {
+      "id": "CA+q6zcXV4Mscao_Z9ypy8rz6QfuPE+-gj2THMi5xXjvQGohFYA@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-07-05 15:05:30",
+      "body": "because\n\nSure, I've attached the rebased version of the patch.\n\nevery time\nWe\nEEOP_SBSREF_FETCH\n\nI'm not sure, because an absence of any of those `eval_finfo`/`nested_finfo`\nblocks in `ExecInitSubscriptingRef` breaks few tests."
+    },
+    {
+      "id": "CA+q6zcXW2nn0FAu9iCkn7WWM+OQeCTf2ons-Vp6SfxYHeg+gjw@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-08-12 11:37:55",
+      "body": "Here is a new rebased version of this patch (there were some conflicts in\ncommentaries)."
+    },
+    {
+      "id": "CA+q6zcVb+ka1vF4RJuhuh9i4fKP4RWwQMpVizq00b-iQXQ42sQ@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-08-29 20:42:04",
+      "body": "commentaries).\n\nTo make a review little bit easier I've divided the patch into a few\nsmaller parts."
+    },
+    {
+      "id": "CA+q6zcVRkCZZSXee42nwjrPL1V3YEcjnhOjQNykxTn0t02Lw4Q@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-07 20:49:54",
+      "body": "smaller parts.\n\nApparently I forgot about subscripting for the name data type, so here is a\nsmall update of the patch."
+    },
+    {
+      "id": "20170909213349.GA17898@arthur.localdomain",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-09 21:33:49",
+      "body": "Thank you for rebasing the patch!\n\nPostgreSQL and documentation with the patch compiles without any errors. All regression tests passed.\n\nBut honestly I still cannot say that I agree with *_extract() and *_assign() functions creation way. For example, there is no entry in pg_depend for them (related with pg_type entry).\n\nBecause there is no such entry, there is the following bug:\n\n1 - make and install src/tutorial\n2 - run src/tutorial/subscripting.sql\n3 - run:\n\n=# drop function custom_subscripting_extract(internal);\n\n4 - and we get the error:\n\n=# select data[0] from test_subscripting;\nERROR:  function 0x55deb7911bfd returned NULL\n\nBut of course it is only my opinion and I could be wrong."
+    },
+    {
+      "id": "CA+q6zcULY8b37PV=G+efOP04UnHksxcJjjKe2OoA+NmrHMupKQ@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-11 21:12:29",
+      "body": "wrote:\nAll\n\nThank you!\n\n*_assign()\nthem\n\nHm...I never thought about the feature in this way. When I was\nexperimenting I\nalso tried another approach for this - save to `refevalfunc` a function\npointer to an appropriate function. For simple situations it was ok, but\nthere\nwere questions about how it would work with node-related functions from\n`outfuncs`/`copyfuncs` etc. Another my idea was to find out an actual\n`refevalfunc` not at the time of a node creation but later on - this was\nalso\nquestionable since in this case we need to carry a lot of information with\na node\njust for this sole purpose. Maybe you can suggest something else?\n\nAbout dependencies between functions - as far as I understand one cannot\ncreate\na `pg_depend` entry or any other kind of dependencies between custom\nuser-defined functions. So yes, looks like with the current approach the\nonly\nsolution would be to check in the `_parse` function that `_extract` and\n`_assign` functions are existed (which is inconvenient).\n\nAre there any other disadvantages of this approach?"
+    },
+    {
+      "id": "4675.1505164755@sss.pgh.pa.us",
+      "from": "Tom Lane <tgl(at)sss(dot)pgh(dot)pa(dot)us>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-11 21:19:15",
+      "body": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com> writes:\n\nUh, what?  Sure you can.  Just because the existing code never has a\nreason to create such a dependency doesn't mean it wouldn't work.\n\n\t\t\tregards, tom lane"
+    },
+    {
+      "id": "CA+q6zcXvhHbs0TxOHYJ92SWLZw0uD+Lz2zraDFJnrNbYi02_PA@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-11 21:33:20",
+      "body": "Well, I thought that `pg_depend` was not intended to be used from\nuser-defined\ncode and it's something \"internal\". But if I'm wrong then maybe the problem\nArhur raised is a valid reason for that."
+    },
+    {
+      "id": "5907.1505166328@sss.pgh.pa.us",
+      "from": "Tom Lane <tgl(at)sss(dot)pgh(dot)pa(dot)us>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-11 21:45:28",
+      "body": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com> writes:\n\nWell, no, we're not expecting that SQL code will manually insert rows\nthere.  This feature should have some sort of SQL command that will\nset up the relevant catalog entries, including the dependencies.\nIf you don't want to do that, you're going to need the runtime tests.\n\n\t\t\tregards, tom lane"
+    },
+    {
+      "id": "CA+q6zcXzHbVHzX5HcYBQ1mL9b6d5f=REu3jGVVnfk7wSRGaMfg@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-11 21:55:01",
+      "body": "Sure, an SQL command for that purpose is much better than a runtime check.\nI'm going to add such command to the patch, thank you for the information!"
+    },
+    {
+      "id": "CA+q6zcVoVJAEZB55MJ60pYvrr52efgySfyAo52XO8Acy6mHpJg@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-15 20:02:00",
+      "body": "wrote:\n\nSo, I've implemented a patch for that in form of a `DEPENDS ON` syntax for\ncreating a function.\nBasically it looks like this (and initially I was looking for something\nlike that in the documentation,\nyou can find a complete example in the test `create_function_3.sql`):\n\n```\nCREATE FUNCTION custom_subscripting_extract(internal)\n   RETURNS internal;\n\nCREATE FUNCTION custom_subscripting_assign(internal)\n   RETURNS internal;\n\nCREATE FUNCTION custom_subscript_parse(internal)\n   RETURNS internal\n   DEPENDS ON custom_subscripting_extract, custom_subscripting_assign;\n```\n\nI hope it sounds reasonable and can help to address a problem with\ndependencies between functions."
+    },
+    {
+      "id": "20170916220454.GA15505@arthur.localdomain",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-16 22:04:55",
+      "body": "In my opinion, 'DEPENDS ON' syntax is not actually appropriate here. It\nalso looks like a not very good hack to me.\n\nMoreover user can implement subscripting to its own type without using\n'DEPENDS ON' syntax. And he will face the bug mentioned above too."
+    },
+    {
+      "id": "CA+q6zcWSFL2x3j4XPWcCFDG1PtSg815gnwbCGpC5kidoHwjF0w@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-16 22:27:58",
+      "body": "wrote:\n\nHm...why do you think about it as a hack?\n\nYes, but since it will require from a user to create few independent custom\nfunctions for subscripting (as we discussed before, there were few reasons\nof\nhaving them as a proper separate function), I don't see how to avoid this\nstep\nof explicitly marking all of them as related to a subscripting logic for\nparticular data type. And therefore it's possible to forget to do that step\nin\nspite of what form this step will be. Maybe it's possible to make something\nlike `CREATE FUNCTION ... FOR SUBSCRIPTING`, then verify that assign/extract\nfunctions are presented and notify user if he missed them (but I would\nrather\nnot do this unless it's really necessary, since it looks like an overkill).\n\nBut I'm open to any suggestions, do you have something in mind?"
+    },
+    {
+      "id": "20170917213427.GA4430@arthur.localdomain",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-17 21:34:29",
+      "body": "I have put some thought into it. What about the following syntax?\n\nCREATE SUBSCRIPTING FOR type_name\n  INITFUNC = subscripting_init_func\n  FETCHFUNC = subscripting_fetch_func\n  ASSIGNFUNC = subscripting_assign_func\nDROP SUBSCRIPTING FOR type_name\n\nBut I am not if the community will like such syntax."
+    },
+    {
+      "id": "13830.1505688725@sss.pgh.pa.us",
+      "from": "Tom Lane <tgl(at)sss(dot)pgh(dot)pa(dot)us>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-17 22:52:05",
+      "body": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru> writes:\n\nReasonable, but let's make the syntax more like other similar\nutility commands such as CREATE AGGREGATE --- basically just\nadding some parens, IIRC.\n\n\t\t\tregards, tom lane"
+    },
+    {
+      "id": "CA+q6zcUVWwRXNWa5YUtEdYjhEf59-qKfm3tsw3jK6JTW6xS13w@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-18 08:31:54",
+      "body": "wrote:\n\nJust to clarify, do you mean that `CREATE SUBSCRIPTING FOR` would only make\na\ndependency record? In this case `DROP SUBSCRIPTING FOR` actually means just\ndrop an init function."
+    },
+    {
+      "id": "20170918093943.GA3473@zakirov.localdomain",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-18 09:39:44",
+      "body": "I think it would be good to add new catalog table. It may be named as pg_type_sbs or pg_subscripting (second is better I think).\nThis table may have the fields:\n- oid\n- sbstype\n- sbsinit\n- sbsfetch\n- sbsassign\n\nAnd command 'CREATE SUBSCRIPTING' should add an entry to the pg_subscripting table. It also adds entries to the pg_depend table: dependency between pg_type and pg_subscripting, dependency between pg_type and pg_proc.\n'DROP SUBSCRIPTING' should drop this entries, it should not drop init function.\n\nAccording to the Tom's comment the syntax can be modified in the following way:\n\nCREATE SUBSCRIPTING FOR type_namei (\n  INITFUNC = subscripting_init_func\n  FETCHFUNC = subscripting_fetch_func\n  ASSIGNFUNC = subscripting_assign_func\n)\nDROP SUBSCRIPTING FOR type_name"
+    },
+    {
+      "id": "CA+q6zcVOCOCtNm7OxDkc0vanOG+6o-58OjotRF16eaKP47dZaQ@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-18 10:25:04",
+      "body": "wrote:\npg_type_sbs or pg_subscripting (second is better I think).\n\nWhat is `sbstype`?\n\npg_subscripting table. It also adds entries to the pg_depend table:\ndependency between pg_type and pg_subscripting, dependency between pg_type\nand pg_proc.\nfunction.\n\nWhy we should keep those subscripting functions? From my understanding\nthey're\ntotally internal and useless without subscripting context.\n\nOverall I have only one concern about this suggestion - basically it changes\nnothing from the perspective of functionality or implementation quality. The\nonly purpose of it is to make a `subscripting` entity more explicit at the\nexpense of overhead of having one more catalog table and little bit more\ncomplexity. I'm not really sure if it's necessary or not, and I would\nappreciate any commentaries about that topic from the community (to make me\nmore convinced that this is a good decision or not)."
+    },
+    {
+      "id": "20170919082141.GA2647@zakirov.localdomain",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-19 08:21:43",
+      "body": "'sbstype' is oid of type from pg_type for which subscripting is created. I.e. pg_type may not have the 'typsubsparse' field.\n\nOther similar commands do not drop related functions. For example 'DROP CAST' do not drop a function used to perform a cast.\n\nHere was a typo from me. Last entry is dependency between pg_subscripting and pg_proc."
+    },
+    {
+      "id": "CA+q6zcX1jmDwFmQh03-UjM9o3os8iL6b15EwU-LZHzTEq8VOsg@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-19 12:11:52",
+      "body": "wrote:\nI.e. pg_type may not have the 'typsubsparse' field.\n\nI'm confused, why do we need it? I mean, isn't it enough to have a\nsubscripting\noid in a pg_type record?\n\nwrote:\nchanges\n\nFew more thoughts about this point. Basically if we're going this way (i.e.\nhaving `pg_subscripting`) there will be one possible change of\nfunctionality -\nin this case since we store oids of all the required functions, we can pass\nthem to a `parse` function (so that a custom extension does not need to\nresolve\nthem every time).\n\nAt the same time there are consequences of storing `pg_subscripting`, e.g.:\n\n* I assume the performance would be worse because we have to do more\nactions to\n  actually call a proper function.\n\n* The implementation itself will be little bit more complex I think.\n\n* Should we think about other functionality besides `CREATE` and `DROP`, for\n  example `ALTER` (as far as I see aggregations support that).\n\nand maybe something else that I don't see now."
+    },
+    {
+      "id": "390c5fe0-bced-9d4d-6167-82896efa93bf@2ndquadrant.com",
+      "from": "Peter Eisentraut <peter(dot)eisentraut(at)2ndquadrant(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-20 01:01:57",
+      "body": "Would you mind posting a summary of how you go here?\n\nSuperficially, it seems like this sort of feature should be handled by a\ncouple of type attributes and pg_type columns.  But you are talking\nabout a new system catalog and new DDL, and it's not clear to me how you\ngot here."
+    },
+    {
+      "id": "20170920081226.GA7166@zakirov.localdomain",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-20 08:12:28",
+      "body": "There were several points here to me:\n- it is necessary to solve the dependency problem (it can be solved also by adding several oid fields to the pg_type)\n- users may want to add subscripting to their existing type, which already created in their database, or drop subscripting from existing type (it cannot be done by CREATE TYPE)\n- other type related functionalities have their CREATE command and system catalog table. For example, CREATE CAST, CREATE TRANSFORM (this is a weakest point I think, mostly because of several casts and transforms can be defined to one type, and only one subscripting can be defined to one type).\n\nYou are right of course. It can be handled by oid columns of *_parse, *_extract and *_assign functions. Also it is clear to me now that the second point can be handled by ALTER TYPE command. The command should be modified to handle it of course. And it can be modified by a separate patch later.\n\nI want to emphasize that I don't insist on CREATE SUBSCRIPTING command. The patch brings important functionality and I don't want to be a person who blocked it from commiting."
+    },
+    {
+      "id": "bb39cf19-744c-e320-3f3d-42dbe4af51bf@2ndquadrant.com",
+      "from": "Peter Eisentraut <peter(dot)eisentraut(at)2ndquadrant(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-20 13:35:06",
+      "body": "A few oid or regproc fields in pg_type seem sensible.\n\nThat's what ALTER TYPE is for.\n\nThe difference is that those create associations between two separate\nobjects (cast: type1 <-> type2, transform: type <-> language).  A\nsubscripting is just a property of a type."
+    },
+    {
+      "id": "20170920151934.GA12130@zakirov.localdomain",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-20 15:19:35",
+      "body": "Yes, indeed. I agree.\n\nAs a conclusion:\n- additional field are needed to pg_type for *_fetch and *_assign functions to solve dependency problem\n- ALTER TYPE requires a modification to add or drop subscripting from existing type (I am not sure that it should be done by this patch, maybe better to do it by a separate patch)"
+    },
+    {
+      "id": "CA+q6zcUA2VafRppdoR=rouWW4t=80iS=r51Pz121xNNygDNgjg@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-21 15:24:17",
+      "body": "wrote:\nfunctions to solve dependency problem\n\nOne last thing that I need to clarify. Initially there was an idea to\nminimize\nchanges in `pg_type` - that's why I added only one column there that\ncontains an\nOID of main subscripting function (and everything else you should find out\ninside it). But I have no objections about adding more columns if everyone\nis\nok with that. Basically pros and cons (marked as + and -):\n\none new column in `pg_type`:\n\n* less intrusive (+)\n* it's neccessary to make a dependency record between subscripting functions\n  explicitly (-)\n\nthree new columns in `pg_type`:\n\n* more intrusive (-)\n* we can create a dependency record between subscripting functions\n  simultaneously with a custom type creation (+)\n* custom subscripting code does not need to resolve `fetch` and `assign`\n  functions (+)"
+    },
+    {
+      "id": "c74d1710-1aee-045b-b772-01c697034a4e@2ndquadrant.com",
+      "from": "Peter Eisentraut <peter(dot)eisentraut(at)2ndquadrant(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-22 12:51:30",
+      "body": "I see, but there is no value in that if it makes everything else more\ncomplicated."
+    },
+    {
+      "id": "CAF4Au4xAumwV74jueM4nbedFWfhmNzOnTtjeKKC=vbBXgk-P-w@mail.gmail.com",
+      "from": "Oleg Bartunov <obartunov(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-25 18:45:49",
+      "body": "On Fri, Sep 22, 2017 at 3:51 PM, Peter Eisentraut\n<peter(dot)eisentraut(at)2ndquadrant(dot)com> wrote:\n\n+1"
+    },
+    {
+      "id": "CA+q6zcUZpCFshMwvzs4fBqiGpp=hyGV=Y0zxw5LLgmbj_U7X=Q@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-09-30 20:13:32",
+      "body": "peter(dot)eisentraut(at)2ndquadrant(dot)com> wrote:\n\nI'm still working on that, but obviously I'll not manage to finish it\nwithin this CF,\nso I'm going to move it to the next one."
+    },
+    {
+      "id": "CA+q6zcVJdNNGG63aFR6Kf6rt71VsPAsO4ugqjq856zkhdA74Xg@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-10-29 21:56:19",
+      "body": "wrote:\nwithin\n\nSo, here is the new version of patch that contains modifications we've\ndiscussed, namely:\n\n* store oids of `parse`, `fetch` and `assign` functions\n\n* introduce dependencies from a data type\n\n* as a side effect of previous two I also eliminated some unnecessary\narguments\n  in `parse` function.\n\nI'm going to make few more improvements, but in the meantime I hope we can\ncontinue to review the patch."
+    },
+    {
+      "id": "20171031150515.GA20467@zakirov.localdomain",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-10-31 15:05:16",
+      "body": "Thank you for new version of the patch.\n\nThere are some notes.\n\nDocumentation\n-------------\n\nDocumentation is compiled. But there are warnings about end-tags. Now it is necessary to have full named end-tags:\n\n=# make -C doc/src/sgml check\n/usr/sbin/onsgmls:json.sgml:574:20:W: empty end-tag\n...\n\nDocumentation is out of date:\n- catalogs.sgml needs to add information about additional pg_type fields\n- create_type.sgml needs information about subscripting_parse, subscripting_assign and subscripting_fetch options\n- xsubscripting.sgml is out of date\n\nCode\n----\n\nI think it is necessary to check Oids of subscripting_parse, subscripting_assign, subscripting_fetch. Maybe within TypeCreate().\n\nOtherwise next cases possible:\n\n=# CREATE TYPE custom (\n   internallength = 8,\n   input = custom_in,\n   output = custom_out,\n   subscripting_parse = custom_subscripting_parse);\n=# CREATE TYPE custom (\n   internallength = 8,\n   input = custom_in,\n   output = custom_out,\n   subscripting_fetch = custom_subscripting_fetch);\n\nAre all subscripting_* fields mandatory? If so if user provided at least one of them then all fields should be provided.\n\nShould all types have support assigning via subscript? If not then subscripting_assign parameter is optional.\n\nand\n\nHere isAssignment is unused variable, so it could be removed.\n\nAs I mentioned earlier we need assigning eval_finfo and nested_finfo only for EEOP_SBSREF_OLD, EEOP_SBSREF_ASSIGN and EEOP_SBSREF_FETCH steps.\nAlso they should be assigned before calling ExprEvalPushStep(), not after. Otherwise some bugs may appear in future.\n\nIs there necessity to use newNode() instead using makeNode(). The previous code was shorter.\n\nThere is no changes in execnodes.h except removed line. So I think execnodes.h could be removed from the patch.\n\nI will wait."
+    },
+    {
+      "id": "CA+q6zcX3nL_u3hf7Ofwb=ERANgZMX+PBJf0u96X3+bAR9Db=kQ@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-11-07 20:00:43",
+      "body": "wrote:\nis necessary to have full named end-tags\n\nFixed, thanks for noticing.\n\nsubscripting_assign, subscripting_fetch. Maybe within TypeCreate().\n\nYes, I agree. I implemented it in a way that all subscripting-related\nfunctions\nmust be provided if `subscripting_parse` is there - in this case if you\nwant to\nprevent assign or fetch, you can just do it inside a corresponding function\nand\nit allows to provide a custom message about that.\n\nIn this case I disagree - the purpose of these examples is to show\neverything\nyou can use. So I just need to come up with some example that involves\n`isAssignment`.\n\nfor EEOP_SBSREF_OLD, EEOP_SBSREF_ASSIGN and EEOP_SBSREF_FETCH steps.\nafter. Otherwise some bugs may appear in future.\n\nI'm really confused about this one. Can you tell me the exact line numbers?\nBecause if I remove any of these lines \"blindly\", tests are failing.\n\nnewNode(nodeSize, sbstag);\nprevious code was shorter.\n\nGood catch! It was a leftover from the version when I had two different\nnodes\nfor subscripting.\n\nexecnodes.h could be removed from the patch.\n\nFixed."
+    },
+    {
+      "id": "20171108162529.GA7953@zakirov.localdomain",
+      "from": "Arthur Zakirov <a(dot)zakirov(at)postgrespro(dot)ru>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-11-08 16:25:31",
+      "body": "Thank you for fixing.\n\nUnderstood.\n\nField scratch->d is union. Its fields should be changed only before calling ExprEvalPushStep(), which copies 'scratch'. To be more specific I attached the patch 0005-Fix-ExprEvalStep.patch, which can be applyed over your patches.\n\nSome other notes are below.\n\nI think you forgot commas and conjunction 'and'.\n\nHere you forgot comma or 'and'. Also 'contain' should be used instead 'contains'.\n\nIt seems that in the following you switched descriptions:\n\nsubscripting_assign_function is used for updating.\n\nsubscripting_fetch_function is used for fetching.\n\nI have a little complain about how ExprEvalStep gets resvalue. resvalue is assigned in one place (within ExecEvalSubscriptingRefFetch(), ExecEvalSubscriptingRefAssign()), resnull is assigned in another place (within jsonb_subscript_fetch(), jsonb_subscript_assign()). I'm not sure that it is a good idea, but it is not critical, it is just complaint.\n\nAfter your fixing I think we should wait for opinion of senior community members and mark the patch as 'Ready for Commiter'. Maybe I will do more tests and try to implement subscripting to another type."
+    },
+    {
+      "id": "CA+q6zcX5_meFnpnQj=wY5iyNXs-i_x+KpJ8eyZGnvn3CaUS2YQ@mail.gmail.com",
+      "from": "Dmitry Dolgov <9erthalion6(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Generic type subscripting",
+      "date": "2017-11-11 15:34:31",
+      "body": "wrote:\n\nThanks for your review!\n\nPG_GETARG_BOOL(0);\neverything\n\nI've incorporated this variable into the tutorial.\n\nwhich can be applyed over your patches.\n\nOh, now I see, thank you.\n\n'contains'.\n\nShame on me :) Fixed.\n\nHm...I'm afraid I don't get this. `resnull` is never assigned inside\n`jsonb_subscript_fetch` or `jsonb_subscript_assign`, instead it's coming\nfrom `ExecInterpExp` as `isnull` if I remember correctly. Are we talking\nabout\nthe same thing?\n\nIn this version of the patch I also improved NULL handling, you can see it\nin\nthe tests."
+    }
+  ]
+}

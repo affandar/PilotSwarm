@@ -22,7 +22,9 @@ corpus (emails)  ──seed──▶  HorizonDB facts
 
 | File | Role |
 |------|------|
-| `corpus/pgsql-hackers.json` | Synthetic archived emails (the jsonb-subscript debate). |
+| `corpus/pgsql-hackers.json` | **Synthetic** 3-message corpus (the jsonb-subscript debate) with hand-planted invariants: the `tgl` alias, the 1001/1002 restated relationship, the 1003 disagreement. Kept for precise, hand-authored assertions. |
+| `corpus/pgsql-hackers-real.json` | **Real** archive data: 60 messages from the actual pgsql-hackers "[PATCH] Generic type subscripting" thread (the patch series that became jsonb subscripting; 2017 segment — Dmitry Dolgov, Arthur Zakirov, Tom Lane, Peter Eisentraut, David Steele, Oleg Bartunov). Quoted reply lines stripped, bodies capped at 2500 chars. Carries a `metadata` block (participants, per-author counts, multi-message authors) that scale-scenario invariants are **derived from** — nothing hand-authored. |
+| `corpus/build-pgsql-hackers-real.mjs` | Regenerates the real corpus from the public postgresql.org archives (`node build-pgsql-hackers-real.mjs --max 60`; the full thread has ~276 messages). Refuses to write a corpus under 30 messages. |
 | `store-adapter.mjs` | Maps the enhanced-API tool surface onto the incubating `HorizonFactStore`, and models crawl tracking (`last_crawled_at`) with marker facts. |
 | `tools.mjs` | The LLM-facing tools (`defineTool`) + the harvester system prompt. |
 | `harvester-eval.mjs` | Seeds the corpus, runs the agent, asserts graph invariants. |
@@ -56,7 +58,9 @@ never pollute each other; the per-run graph is dropped (best-effort) at the end.
 ## What it asserts
 
 The agent's output is non-deterministic (it's an LLM), so the assertions check
-**structural invariants**, not exact predicate strings:
+**structural invariants**, not exact predicate strings.
+
+**On the synthetic corpus** (hand-authored invariants):
 
 1. **Dedup** — `Tom Lane` resolves to exactly **one** person node; the handle
    `tgl` is an **alias**, not a second person.
@@ -67,6 +71,22 @@ The agent's output is non-deterministic (it's an LLM), so the assertions check
 5. **Provenance** — every edge carries ≥1 evidence `scope_key`; the reinforced
    edge accumulated evidence from both source messages.
 6. **Queue drains** — no fact remains uncrawled after the run.
+
+**On the real corpus** (invariants derived from `metadata`, never hand-coded):
+
+1. **Person dedup at scale** — for every `multiMessageAuthors` entry, exactly
+   **one** person node exists whose name or aliases match it (no duplicate
+   person nodes across 60 messages of varying salutations/sign-offs).
+2. **Connectivity** — every multi-message author connects (≤2 hops) to at
+   least one non-person node (patch / file / thread / concept).
+3. **Reinforcement in the wild** — at least one edge has `observations >= 2`
+   with **≥2 distinct** message scopeKeys in its evidence (authors restate
+   relationships across a 28-message participation; this must consolidate,
+   not duplicate).
+4. **Provenance** — every edge carries ≥1 evidence key from the corpus
+   namespace.
+5. **Queue drains** — all `metadata.messageCount` facts crawled, receipts
+   matching (`skipped == 0`).
 
 Exit code is `0` only if all invariants pass.
 

@@ -71,6 +71,21 @@ flowchart TB
 
 **Adjacent (PilotSwarm core, prerequisite)**
 
+- **`scopeKeys` on the base read API.** `ReadFactsQuery` gains
+  `scopeKeys?: string[]` (bulk read of an explicit fact set) and `FactRecord`
+  exposes `scopeKey`. Every seed/evidence round-trip in this spec
+  (`searchFacts` seeds → graph → `readFacts({ scopeKeys })`) depends on it.
+  Additive, ACL-scoped like any read. `packages/sdk` change. See
+  [02-api-reference.md §1c](./02-api-reference.md).
+
+- **Store-provider injection.** The caller provides the facts-store provider in
+  the PilotSwarm initializer (`factsStoreProvider`); supplying an
+  `EnhancedFactStore` lights up the additional features — the enhanced
+  retrieval / crawl-queue / graph tools — and the base agent instructions call
+  out which skill to load based on the store provided. No provider ⇒ today's
+  `PgFactStore`. `packages/sdk` change. See
+  [02-api-reference.md §1b](./02-api-reference.md).
+
 - **Separate connection target for the enhanced store.** PilotSwarm gains an
   optional `enhancedFactsDatabaseUrl` (+ `enhancedFactsSchema`) so the
   EnhancedFactStore can live on its own HorizonDB while orchestration (`store`)
@@ -148,8 +163,15 @@ The `query` argument's expected shape therefore depends on `mode`; tool layers
 that expose `searchFacts` to an LLM must make this explicit so the model passes
 keywords (not a sentence) in lexical mode.
 
-Every hit is ACL-filtered **after** ranking and carries per-signal score
-contributions for debuggability. `searchFacts` output (an array of fact
+**ACL is applied inside the search procedures, before ranking and `LIMIT`** —
+the access predicate (shared / session / granted / unrestricted) is part of the
+candidate `WHERE` clause, exactly as in the base store's `readFacts` proc. This
+guarantees a session-scoped caller's accessible matches are never starved out of
+a bounded candidate pool by inaccessible higher-ranked rows, and removes the
+side-channel where pool exhaustion reveals that inaccessible matches exist. The
+provider MAY additionally re-check ACL on the assembled result as
+defense-in-depth, but post-filtering is never the primary mechanism. Every hit
+carries per-signal score contributions for debuggability. `searchFacts` output (an array of fact
 scopeKeys) is the natural **seed** for a follow-on graph query (§6.5) — that is
 how the "semantic entry point → graph expansion" pattern is composed by the
 caller, rather than being hidden inside a `graph` mode.
@@ -160,6 +182,11 @@ Pure **semantic** nearest-neighbours of a known fact (cosine kNN over the fact's
 **stored** vector — no re-embedding, no query string). Never touches the graph.
 Returns ACL-filtered `ScoredFact[]` with a `semantic` signal. Distinct from
 `searchFacts` by **anchor type**: an existing fact key, not query text.
+
+The **anchor itself is ACL-checked first**: anchoring on a fact that exists but
+is not accessible to the caller returns an empty result, indistinguishable from
+an unknown `scopeKey`. (Otherwise result rankings would act as a similarity
+oracle against private facts.)
 
 > **No dedicated `relatedFacts`.** Graph-aware relatedness belongs to the graph
 > API: `searchGraphNodes({ seeds: [...] })` expands from seed facts/nodes, then
@@ -177,7 +204,7 @@ Returns ACL-filtered `ScoredFact[]` with a `semantic` signal. Distinct from
 
 | Operation | Behaviour |
 |-----------|-----------|
-| `configureEmbedder(endpoint)` | Record the embedding endpoint config (url, model, dim, key, key header, input field) into durable config. |
+| `configureEmbedder(endpoint)` | Record the embedding endpoint config (url, model, dim, key, key header, input field) into durable config. **If the loop is running, restart it** (cancel + start, same label) — pg_durable captures durable variables at `df.start()` and they are immutable for the run, so a restart is the only way a running loop can observe new config (incl. key rotation). |
 | `startEmbedder({ intervalSeconds, batch })` | Launch a single durable, eternal loop that embeds pending facts in batches. Idempotent. |
 | `stopEmbedder()` | Cancel the loop. No-op if already stopped. |
 | `embedderStatus()` | Report `{ running, instanceId?, status? }`. |
@@ -188,16 +215,40 @@ search returns the fact.
 
 ### 5.2 What "pending" means
 
-A fact needs embedding when `embedding IS NULL OR last_embedded_hash IS DISTINCT
-FROM content_hash`. Storing a fact with changed content re-marks it pending, so
-the loop re-embeds it on its next tick. Content hashing makes re-embedding
-idempotent (no re-billing for unchanged content).
+A fact needs embedding when
+
+```
+embedding IS NULL
+OR last_embedded_hash IS DISTINCT FROM content_hash
+OR embedding_model    IS DISTINCT FROM <configured model>
+```
+
+Storing a fact with changed content re-marks it pending, so the loop re-embeds
+it on its next tick. Content hashing makes re-embedding idempotent (no
+re-billing for unchanged content).
+
+**Model rotation.** The model used to generate an embedding is stored with it
+(`embedding_model`, stamped by the loop). Any row whose `embedding_model`
+differs from the currently configured model is treated **as if its embedding
+were NULL** — pending for the embedder, ignored by semantic search — because
+vectors from different models are not comparable. Rotating the model therefore
+triggers a rolling re-embed of the corpus with no manual reset. Changing the
+vector **dimension** additionally requires a migration of the `vector(N)`
+column.
 
 ### 5.3 Batch embedding
 
 The loop embeds a **batch per tick** using the endpoint's array-input API
 (`input: [t1, t2, …]` → `data[]` in order) — one HTTP request per batch, not per
 fact. Vectors are mapped back to facts positionally.
+
+**Write-back is guarded against mid-flight edits.** The batch captures each
+fact's `content_hash` at **select time**; the write-back sets
+`last_embedded_hash = <hash captured at select>` (never the row's current
+`content_hash`) and stamps `embedding_model`. A fact edited while the HTTP call
+was in flight therefore still satisfies `last_embedded_hash IS DISTINCT FROM
+content_hash` and is re-embedded on the next tick — a stale vector can never be
+marked fresh.
 
 ### 5.4 Configuration & secrets
 
@@ -212,9 +263,12 @@ fact. Vectors are mapped back to facts positionally.
 ### 5.5 Preconditions (fail fast)
 
 `initialize()` verifies the cluster has the required extensions and capabilities
-(`vector`, `age`, `pg_durable` with `df.http` present and usage granted). If any
-are missing, initialization **throws a precise error** naming the missing piece
-and the fix. There are no feature flags or silent fallbacks.
+(`vector`, `age`, `pg_textsearch` (BM25 lexical ranking), `pg_durable` with
+`df.http` present and usage granted). If any are missing, initialization
+**throws a precise error** naming the missing piece and the fix. There are no
+feature flags or silent fallbacks. (Lexical mode is specified as **BM25**;
+plain `tsvector`/`ts_rank` is not an acceptable silent substitute, hence the
+`pg_textsearch` precondition.)
 
 ## 6. Functional requirements — open graph (crawler)
 
@@ -227,6 +281,33 @@ the app's harvester role. **Graph nodes carry no embeddings** — the graph is
 navigated by text match (`nameLike`), by `kind`, and by traversal from seeds; it
 does not have a vector index. The query entry point for "what connects to these
 facts" is the **facts'** vector index (via `searchFacts` seeds), not node vectors.
+
+### 6.1a The graph is a shared-scope surface (ingestion contract)
+
+The graph carries **no per-node/per-edge ACL**. Its trust model is split between
+the two boundaries:
+
+- **Ingestion (write) — the contract.** Incorporating a fact into the graph
+  **publishes** the extracted entities and relationships (node `kind`/`name`/
+  `aliases`, edge `predicate`s) to **every** reader, regardless of the source
+  fact's ACL. The harvester is privileged precisely so it can make this call:
+  it decides *what* is appropriate to publish, typically by targeting the
+  corpus it was deployed for (the `namespace` filter on the crawl queue).
+  Harvesting a session-private fact is allowed but is a deliberate act of
+  publication — extracted content cannot be retroactively scoped.
+- **Read — the filter.** Graph topology and node/edge content are readable by
+  everyone, but the **`evidence` arrays returned by every graph read are
+  filtered to the caller's ACL** (§6.5): a fact scopeKey the caller could not
+  `readFacts` is omitted from results. **Traversal is not affected** — paths
+  still route through evidence the caller cannot see, so two accessible facts
+  connected only via an inaccessible one are still discovered as connected; the
+  caller just never sees the inaccessible fact's key (its existence, owning
+  session, and key text stay private). Fact **bodies** were already protected
+  by the ACL on `readFacts`.
+
+In short: *connections and extracted content are shared; fact pointers and fact
+bodies are scoped.* What enters the graph is governed at ingestion time by the
+harvester, not at read time by the store.
 
 ### 6.2 The harvest sequence (search → resolve → assert)
 
@@ -247,6 +328,12 @@ facts" is the **facts'** vector index (via `searchFacts` seeds), not node vector
   (noisy-OR `confidence`, `observations++`) and **union** any supplied
   `evidence`. This single verb also serves as the evidence-linking primitive:
   call it again with only new evidence to add provenance to an edge.
+  **Reinforcement counts only novel observations:** an assertion reinforces iff
+  it carries ≥1 evidence scopeKey not already on the edge, or carries no
+  evidence at all. Re-asserting with only already-known evidence is an
+  idempotent no-op — a duplicate harvest of the same fact (replay, concurrent
+  harvesters, re-crawl after a lost race) cannot inflate `observations` or
+  `confidence`.
 - **Evidence is OPTIONAL.** Evidence-less assertions are accepted rather than
   rejected. *(TODO: re-evaluate mandatory evidence for graph trust.)*
 - **`mergeGraphNodes(fromKey, intoKey, reason)`** — node resolution / dedup:
@@ -266,19 +353,29 @@ This is intentional for this iteration.
 
 ### 6.5 Read API
 
-- **`searchGraphNodes(GraphNodeQuery)`** — find/expand graph nodes. Inputs are
-  combinable: `kind`, `nameLike` (lexical match on name/aliases), and
+All graph reads take the caller's `AccessContext` and apply the **evidence
+filter** of §6.1a: returned `evidence` arrays contain only fact scopeKeys the
+caller could `readFacts` (a syntactic check — `shared:` always passes;
+`session:<id>:` passes iff `<id>` is the reader's or a granted session, or the
+caller is unrestricted). Traversal internally uses the **full** evidence set.
+The privileged harvester reads with `unrestricted` and sees everything.
+
+- **`searchGraphNodes(GraphNodeQuery, access)`** — find/expand graph nodes.
+  Inputs are combinable: `kind`, `nameLike` (lexical match on name/aliases), and
   **`seeds: string[]`** — an array of **fact scopeKeys OR node keys** that anchors
   the query. Seeds let the caller feed `searchFacts` output straight into the
-  graph (fact seeds pivot via `EVIDENCED_BY`; node seeds expand directly). `depth`
-  (1..5) bounds traversal from the seeds. Each returned node carries its
-  `EVIDENCED_BY` fact scopeKeys so the caller can `readFacts` in one follow-on
-  hop.
-- **`searchGraphEdges(GraphEdgeQuery)`** — two modes only: **anchor-and-explore**
-  (`fromKey`/`toKey` set) or **exact-predicate** (`predicate` / `predicateKey`,
-  exact equality, no fuzzy match).
-- **`graphNeighbourhood(nodeKey, depth)`** — bounded subgraph (depth clamped
-  1..5) around an anchor node.
+  graph (fact seeds pivot via `EVIDENCED_BY`; node seeds expand directly).
+  **Seed fact scopeKeys are ACL-checked first**: a seed the caller could not
+  read is ignored (treated as unknown), so seeding cannot be used to probe
+  whether a private fact evidences anything. `depth` (1..5) bounds traversal
+  from the seeds. Each returned node carries its `EVIDENCED_BY` fact scopeKeys
+  (ACL-filtered) so the caller can `readFacts` in one follow-on hop.
+- **`searchGraphEdges(GraphEdgeQuery, access)`** — two modes only:
+  **anchor-and-explore** (`fromKey`/`toKey` set) or **exact-predicate**
+  (`predicate` / `predicateKey`, exact equality, no fuzzy match). Returned edge
+  `evidence` is ACL-filtered.
+- **`graphNeighbourhood(nodeKey, depth, access)`** — bounded subgraph (depth
+  clamped 1..5) around an anchor node.
 
 ### 6.6 Crawl tracking (harvester support)
 
@@ -292,18 +389,28 @@ column that marks whether a fact has already been incorporated into the graph.
 - **Pending crawl = `last_crawled_at IS NULL`.** A freshly created or freshly
   updated fact is, by definition, uncrawled until the harvester re-incorporates
   it.
-- **`readUncrawledFacts(opts)`** — enhanced-store read that returns facts with
-  `last_crawled_at IS NULL` (bounded by `limit`), ACL-scoped like any read. This
-  is the harvester's work queue.
-- **`markFactsCrawled(scopeKeys)`** — enhanced-store write that stamps
-  `last_crawled_at = now()` for the given facts after they have been incorporated
-  into the graph. Returns `{ marked }`.
+- **Crawling is privileged.** The harvester is a trusted role: it crawls **all**
+  facts (shared + every session), so `readUncrawledFacts` / `markFactsCrawled`
+  take no access context and are exposed only to the harvester role — they are
+  not registered as tools for ordinary reader agents.
+- **`readUncrawledFacts({ namespace?, limit? })`** — enhanced-store read that
+  returns facts with `last_crawled_at IS NULL` (optionally restricted to a key
+  prefix, bounded by `limit`), across all scopes. This is the harvester's work
+  queue. Each returned fact carries its `contentHash`, which is the receipt for
+  `markFactsCrawled`.
+- **`markFactsCrawled(stamps: { scopeKey, contentHash }[])`** — enhanced-store
+  write that stamps `last_crawled_at = now()` for the given facts after they
+  have been incorporated into the graph. **Race-guarded:** each stamp applies
+  only `WHERE content_hash` still equals the supplied hash, so a fact edited
+  between read and mark keeps `last_crawled_at = NULL` and re-enters the queue
+  (the mid-crawl edit can never be silently swallowed). Returns
+  `{ marked, skipped }`; mismatches are skipped, not errors.
 
 The harvester loop becomes: `readUncrawledFacts` → extract → `upsertGraphNode` /
-`upsertGraphEdge` → `markFactsCrawled`. Because any later edit resets the column,
-stale facts automatically re-enter the queue. `last_crawled_at` is independent of
-the embedding pending-state (`content_hash` vs `last_embedded_hash`); a write
-resets both.
+`upsertGraphEdge` → `markFactsCrawled(stamps)`. Because any later edit resets the
+column, stale facts automatically re-enter the queue. `last_crawled_at` is
+independent of the embedding pending-state (`content_hash` vs
+`last_embedded_hash`); a write resets both.
 
 ## 7. Phase 2 — compound cross-store reads (context APIs)
 
@@ -354,7 +461,11 @@ the structure that makes the cluster legible to an LLM. `factLinks` is bounded
 ### 7.3 Requirements
 
 - Both re-apply ACL on the final `readFacts`; a fact unreachable to the caller
-  never appears, even if a reachable node evidences it.
+  never appears, even if a reachable node evidences it. Because the underlying
+  graph reads filter `evidence` arrays to the caller's ACL (§6.1a), the bundle
+  is **exactly self-resolving**: every `evidence` key on every returned
+  node/edge is present in the `facts` map — no dangling keys for facts the
+  caller cannot read.
 - Both are **read-only** and side-effect free; they never write the graph or
   mutate crawl state.
 - With no graph evidence, `nodes` / `edges` / `factLinks` are empty and `facts`
@@ -366,24 +477,45 @@ the structure that makes the cluster legible to an LLM. `factLinks` is bounded
 ## 8. Acceptance criteria
 
 1. All existing `FactStore` behaviour is preserved (base CRUD, ACL, stats).
-2. `searchFacts` returns correctly ranked, ACL-filtered results in `lexical`,
-   `semantic`, and `hybrid` modes over the **facts store only** (no graph mode).
+   The base API additions (`FactRecord.scopeKey`, `ReadFactsQuery.scopeKeys`)
+   round-trip: `readFacts({ scopeKeys })` returns exactly the accessible subset.
+2. `searchFacts` returns correctly ranked, ACL-filtered results in `lexical`
+   (BM25), `semantic`, and `hybrid` modes over the **facts store only** (no
+   graph mode). The ACL predicate is applied **inside the search procs, before
+   ranking/LIMIT** — an accessible match is returned even when the global
+   top-`candidatePool` is dominated by inaccessible rows.
 3. `similarFacts` (semantic kNN of a known fact, no re-embedding) is distinct
-   from `searchFacts` (query-text anchored).
+   from `searchFacts` (query-text anchored). An existing-but-inaccessible
+   anchor returns empty, indistinguishable from an unknown key.
 4. The graph API (`searchGraphNodes` with `seeds[]`, `searchGraphEdges`,
    `graphNeighbourhood`) performs graph retrieval independently; feeding
    `searchFacts` output as `seeds` returns graph-expanded connections that pure
    facts search would miss.
-5. **Crawl tracking:** a new fact has `last_crawled_at IS NULL`; `markFactsCrawled`
-  stamps it; any subsequent `storeFact` content change resets it to
-   `NULL`; `readUncrawledFacts` returns exactly the pending set.
+5. **Crawl tracking:** a new fact has `last_crawled_at IS NULL`;
+   `markFactsCrawled` stamps it **only when the supplied `contentHash` still
+   matches** (a mid-crawl edit is skipped and stays queued); any subsequent
+   `storeFact` content change resets it to `NULL`; `readUncrawledFacts` returns
+   exactly the pending set across **all** scopes (privileged), each row
+   carrying the `contentHash` receipt.
 6. `startEmbedder` creates exactly **one** durable instance; a second start is a
    no-op returning the same instance; `stopEmbedder` cancels it; a second stop is
-   a no-op.
+   a no-op. `configureEmbedder` while running restarts the loop (new instance,
+   same label) and the new config takes effect — durable vars are captured at
+   `df.start` and immutable for a run.
 7. After `startEmbedder`, pending facts get embedded and changed facts get
    re-embedded — observed via the vector/search outcome, never via df internals.
-8. `initialize()` fails fast with a precise error when an extension is missing.
-9. Graph upsert/merge/delete behave per §6, with evidence optional.
+   A fact edited while its batch was in flight remains pending (select-time
+   hash write-back). Rows embedded under a different `embedding_model` are
+   pending and excluded from semantic search.
+8. `initialize()` fails fast with a precise error when an extension is missing
+   (`vector`, `age`, `pg_textsearch`, `pg_durable`/`df.http`).
+9. Graph upsert/merge/delete behave per §6, with evidence optional;
+   re-asserting an edge with only already-known evidence does not reinforce.
+9a. **Shared-graph contract + evidence filter:** graph topology and node/edge
+    content are readable by every caller, but `evidence` arrays in all graph
+    read results contain only caller-accessible fact scopeKeys, and seed fact
+    scopeKeys the caller cannot read are ignored. Traversal through
+    inaccessible evidence still connects accessible facts.
 10. All data access (relational + vector) goes through stored procedures; graph
     access goes through a typed Cypher layer; all DDL ships as numbered
     migrations (no SQL embedded in TypeScript source).

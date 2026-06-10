@@ -11,6 +11,14 @@ without reading the TypeScript API. Each tool maps 1:1 onto an EnhancedFactStore
 prefixes `facts_` (facts store) and `graph_` (open graph); a host may rechoose
 the prefix.
 
+**How these tools light up.** The host selects the facts-store provider in the
+PilotSwarm initializer (02-api-reference §1b). When the provided store is an
+`EnhancedFactStore`, the worker registers these tools in addition to the base
+fact tools, and the base agent instructions name the matching skill to load for
+the store provided (base store → base fact tools/skill only; enhanced store →
+this surface). The crawl-queue tools (§2) and graph write tools (§4) are
+registered **only for the harvester role** — they are privileged (see §2).
+
 The audience is two app roles over the **same** corpus:
 
 - **Reader** — answers questions: `facts_search`, `facts_similar`, `facts_read`,
@@ -36,19 +44,40 @@ The bridge between them is **evidence**: every graph node/edge can carry the
 pivot: *semantic search the facts → seed the graph with those fact keys → expand
 by graph hops*.
 
+**The graph is shared.** There is no per-node/edge ACL: node names, aliases and
+edge predicates are visible to **every** reader. What stays scoped is the
+*facts* layer — fact bodies are ACL-checked on read, and the `evidence` arrays
+you get back from graph tools only ever contain fact keys **you** are allowed
+to read (connections through facts you can't see still work; you just don't see
+their keys).
+
 **Golden rules for the harvester**
+
+0. **Harvesting is publishing.** Incorporating a fact puts its extracted
+   entities and relationships into a graph every reader can see, regardless of
+   the source fact's ACL. You are privileged so you can make this call: stick
+   to the corpus/namespace you were deployed to harvest, and do not incorporate
+   private material that shouldn't be shared — extracted content cannot be
+   retroactively scoped.
 
 1. **Resolve before you create.** Always `graph_search_nodes` for an existing
    node (by name/alias) before `graph_upsert_node`. This is how `"tgl"` attaches
    to the existing *Tom Lane* node instead of spawning a duplicate.
 2. **Predicates are free text.** Invent the verb that fits (`"comments on"`,
    `"revives argument from"`). Re-stating the same relationship later **reinforces**
-   the edge — you do not need to dedupe edges yourself.
-3. **Always pass evidence.** The `scope_key` of the fact you are reading is the
-   evidence for any node/edge you derive from it.
+   the edge — you do not need to dedupe edges yourself. (Reinforcement counts
+   when you bring *new* evidence — ≥1 scopeKey not already on the edge — or no
+   evidence at all; re-asserting with only already-known evidence is a harmless
+   no-op, so replays cannot inflate confidence.)
+3. **Pass evidence.** Evidence is *optional in the contract* (an assertion
+   without it is accepted), but as a harvester you should always pass the
+   `scope_key` of the fact you are reading — it is the provenance for any
+   node/edge you derive from it, and it is what makes reinforcement dedup work.
 4. **Mark work done.** After incorporating a fact into the graph, call
-   `facts_mark_crawled` so it leaves the queue. Editing a fact later re-queues it
-   automatically.
+   `facts_mark_crawled` with the fact's `scopeKey` **and the `contentHash` you
+   read** so it leaves the queue. If the fact was edited while you worked, your
+   stamp is skipped and the fact stays queued — that is correct; just move on.
+   Editing a fact later re-queues it automatically.
 
 ---
 
@@ -120,11 +149,12 @@ graph node) and want the raw fact rows. Also the way to read **lineage**:
 | Param | Type | Req | Meaning |
 |-------|------|-----|---------|
 | `keyPattern` | string | | Key prefix/pattern filter. |
+| `scopeKeys` | string[] | | Read an explicit set of facts by `scope_key` — the way to resolve graph `evidence` back into facts. Inaccessible/unknown keys are silently omitted. |
 | `tags` | string[] | | Must carry all tags. |
 | `scope` | `"accessible" \| "shared" \| "session" \| "descendants"` | | Visibility scope (default accessible). |
 | `limit` | number | | Max rows. |
 
-**Returns.** `{ count, facts: [...] }`.
+**Returns.** `{ count, facts: [...] }` (each fact carries its `scopeKey`).
 
 > To rank a lineage, call `facts_read({ scope: "descendants" })` then pass those
 > keys/topic through `facts_search`. There is no separate “lineage” tool.
@@ -134,6 +164,11 @@ graph node) and want the raw fact rows. Also the way to read **lineage**:
 ## 2. Crawl-queue tools (harvester)
 
 These make the harvester loop trivial: pull the backlog, do work, stamp done.
+
+> **Privileged.** Crawling is a trusted, host-granted capability: these tools
+> see **all** facts (shared + every session), regardless of the calling
+> session, and are registered only for the harvester role — ordinary reader
+> agents never get them.
 
 ### `facts_read_uncrawled`
 
@@ -145,7 +180,8 @@ These make the harvester loop trivial: pull the backlog, do work, stamp done.
 | `namespace` | string | | Restrict the queue to a key prefix, e.g. `"archive/pgsql-hackers"`. |
 | `limit` | number | | Max facts to pull this batch (default 20). |
 
-**Returns.** `{ count, facts: [{ scopeKey, key, value, tags }] }`.
+**Returns.** `{ count, facts: [{ scopeKey, key, value, tags, contentHash }] }` —
+keep each fact's `contentHash`; it is the receipt `facts_mark_crawled` needs.
 
 **Note.** A fact is uncrawled when it is new or was edited since it was last
 crawled. You do not manage this flag on writes — it resets automatically.
@@ -158,9 +194,11 @@ fact.
 
 | Param | Type | Req | Meaning |
 |-------|------|-----|---------|
-| `scopeKeys` | string[] | ✓ | The fact `scope_key`s you just processed. |
+| `stamps` | `{ scopeKey, contentHash }[]` | ✓ | One stamp per processed fact, with the `contentHash` returned by `facts_read_uncrawled`. |
 
-**Returns.** `{ marked }`.
+**Returns.** `{ marked, skipped }` — a stamp is **skipped** (not an error) when
+the fact's content changed since you read it; the fact stays in the queue and
+you will see its new version on a later pull.
 
 ---
 
@@ -181,8 +219,9 @@ graph nodes).
 | `limit` | number | | Max nodes. |
 
 **Returns.** `[{ nodeKey, kind, name, aliases, evidence }]` — each hit carries its
-`EVIDENCED_BY` fact `scope_key`s, so you can feed `evidence` straight into
-`facts_read`.
+`EVIDENCED_BY` fact `scope_key`s, **filtered to the ones you can read**, so you
+can feed `evidence` straight into `facts_read` and every key will resolve.
+(Seeds you can't read are silently ignored.)
 
 **Resolve pattern (do this before every create):**
 ```
@@ -195,7 +234,7 @@ graph_search_nodes({ kind: "person", nameLike: "tgl" })
 ```
 hits  = facts_search({ query: "jsonb subscript", mode: "semantic" })
 nodes = graph_search_nodes({ seeds: hits.facts.map(f => f.scopeKey), depth: 2 })
-facts = facts_read({ keys: nodes.flatMap(n => n.evidence) })   // back to facts
+facts = facts_read({ scopeKeys: nodes.flatMap(n => n.evidence) })   // back to facts
 ```
 
 ### `graph_search_edges`
@@ -316,8 +355,10 @@ repeat:
       graph_upsert_edge({ fromKey, toKey, predicate, confidence,
                           evidence: [fact.scopeKey] })
 
-    # 5. MARK done
-    facts_mark_crawled({ scopeKeys: [fact.scopeKey] })
+    # 5. MARK done (with the contentHash you read; a skip means the fact
+    #    changed under you — it stays queued, move on)
+    facts_mark_crawled({ stamps: [{ scopeKey: fact.scopeKey,
+                                    contentHash: fact.contentHash }] })
 ```
 
 **What “correct” looks like** (the eval asserts these):
@@ -328,6 +369,157 @@ repeat:
   (`observations == 2`, confidence combined by noisy-OR), not two edges.
 - Every edge carries ≥1 evidence `scope_key`.
 - After the run, no fact in the namespace remains uncrawled.
+
+---
+
+## 5a. Worked example — what the graph actually looks like
+
+A concrete walkthrough of the harvest loop over the first messages of the
+**real** pgsql-hackers corpus
+([`eval/corpus/pgsql-hackers-real.json`](../../../incubator/horizon-facts/eval/corpus/pgsql-hackers-real.json)
+— the "[PATCH] Generic type subscripting" thread). Conventions in the
+diagrams: solid boxes = `GraphNode`s (label = `kind:name`), cylinders =
+`:Fact` anchor nodes (content-free pointers, created **lazily** on first
+evidence citation — facts never auto-mirror into the graph), solid arrows =
+`[:REL]` edges, dotted arrows = `[:EVIDENCED_BY]`.
+
+> Recall the two physical forms of evidence (03-design §2.2): a **node's**
+> evidence is a real `EVIDENCED_BY` edge to a `:Fact` anchor (traversable —
+> it is what seed-pivoting matches); a **REL edge's** evidence is a
+> `scope_key[]` property on the edge (property graphs have no edge-to-edge
+> links). The API surfaces both as `evidence: string[]`.
+
+### Step 1 — first message harvested (the patch submission)
+
+Sixty facts were seeded; the graph starts empty. Harvesting Dmitry Dolgov's
+submission mints the first nodes — `kind`s are free text invented by the
+harvester — and the first (and only) anchor:
+
+```mermaid
+flowchart LR
+  classDef fact fill:#fff3cd,stroke:#b8860b,stroke-dasharray: 3 3
+  classDef person fill:#d1e7dd,stroke:#0f5132
+  classDef thing fill:#cfe2ff,stroke:#084298
+
+  DD["person:<br/><b>Dmitry Dolgov</b>"]:::person
+  P["patch:<br/><b>Generic type subscripting</b>"]:::thing
+  SR["node-type:<br/>SubscriptingRef"]:::thing
+  SAR["node-type:<br/>SubscriptingAssignRef"]:::thing
+  F1[("Fact<br/>msg-CA+q6zcVovR…")]:::fact
+
+  DD -->|"authored (obs:1)"| P
+  P -->|"splits node into"| SR
+  P -->|"splits node into"| SAR
+  DD -.->|EVIDENCED_BY| F1
+  P -.->|EVIDENCED_BY| F1
+```
+
+Facts table: 60 rows. Graph: 4 nodes, **1 anchor** — the other 59 facts have
+no graph presence at all.
+
+### Step 2 — second message (resolve-before-create reuses the patch node)
+
+Peter Eisentraut objects to the design. `graph_search_nodes({ nameLike })`
+finds the existing patch node, so it is **reused, not duplicated** — it just
+gains a second `EVIDENCED_BY`:
+
+```mermaid
+flowchart LR
+  classDef fact fill:#fff3cd,stroke:#b8860b,stroke-dasharray: 3 3
+  classDef person fill:#d1e7dd,stroke:#0f5132
+  classDef thing fill:#cfe2ff,stroke:#084298
+
+  DD["person:<br/>Dmitry Dolgov"]:::person
+  PE["person:<br/><b>Peter Eisentraut</b>"]:::person
+  P["patch:<br/>Generic type subscripting"]:::thing
+  F1[("Fact<br/>msg-CA+q6zcVovR…")]:::fact
+  F2[("Fact<br/>msg-dc125ec4…")]:::fact
+
+  DD -->|authored| P
+  PE -->|"raises design concern about"| P
+  DD -.-> F1
+  P -.-> F1
+  PE -.-> F2
+  P -.-> F2
+```
+
+### Step 3 — Tom Lane, twice: the reinforced edge
+
+Tom Lane defends the design in one message (`msg-18287`) and reviews the
+same patch in depth in another (`msg-20423`). Re-asserting the same triple
+from a **different** fact reinforces the edge — `observations: 2`, noisy-OR
+confidence, evidence union — rather than duplicating it. New concept nodes
+(`typsubparse`, `ExecEvalSubscriptingRef`) appear from the review:
+
+```mermaid
+flowchart LR
+  classDef fact fill:#fff3cd,stroke:#b8860b,stroke-dasharray: 3 3
+  classDef person fill:#d1e7dd,stroke:#0f5132
+  classDef thing fill:#cfe2ff,stroke:#084298
+
+  DD["person:<br/>Dmitry Dolgov"]:::person
+  PE["person:<br/>Peter Eisentraut"]:::person
+  TL["person:<br/><b>Tom Lane</b>"]:::person
+  P["patch:<br/>Generic type subscripting"]:::thing
+  TS["identifier:<br/>typsubparse"]:::thing
+  EE["function:<br/>ExecEvalSubscriptingRef"]:::thing
+  F3[("Fact msg-18287…")]:::fact
+  F4[("Fact msg-20423…")]:::fact
+
+  DD -->|authored| P
+  PE -->|raises design concern about| P
+  TL ==>|"defends design of<br/><b>obs:2</b>, noisy-OR conf<br/>evidence: {F3, F4}"| P
+  TL -->|disagrees with| PE
+  TL -->|proposes name| TS
+  TL -->|criticizes pallocs in| EE
+  TL -.-> F3
+  TL -.-> F4
+  P -.-> F3
+  P -.-> F4
+  TS -.-> F4
+  EE -.-> F4
+
+  linkStyle 2 stroke:#dc3545,stroke-width:3px
+```
+
+The thick edge is the scale-scenario reinforcement invariant
+(06-provider-test-plan §10, SC1b): one edge, two observations, evidence from
+two distinct messages. A replay carrying only already-known evidence leaves
+it untouched (SC2). Note: a procedural message (e.g. David Steele's
+commitfest ping) may contribute almost nothing — it is still
+`facts_mark_crawled`; **crawled ≠ in the graph**.
+
+### Step 4 — the reader pivot through the anchors
+
+Facts are the searchable layer (vectors + BM25); GraphNodes are the
+connective layer (no embeddings); the `:Fact` anchors are the turnstile
+between them — every entry into the graph and every exit back to readable
+content crosses an `EVIDENCED_BY` hop:
+
+```mermaid
+flowchart TB
+  classDef fact fill:#fff3cd,stroke:#b8860b,stroke-dasharray: 3 3
+  classDef person fill:#d1e7dd,stroke:#0f5132
+  classDef thing fill:#cfe2ff,stroke:#084298
+  classDef step fill:#f8f9fa,stroke:#6c757d
+
+  Q["Step 1 — facts_search('typsubparse naming objection', semantic)<br/><i>runs on the facts' vector index — nodes have no embeddings</i>"]:::step
+  F4[("Fact<br/>msg-20423…")]:::fact
+  TL["person:<br/>Tom Lane"]:::person
+  P["patch:<br/>Generic type subscripting"]:::thing
+  TS["identifier:<br/>typsubparse"]:::thing
+  DD["person:<br/>Dmitry Dolgov"]:::person
+  R["Step 3 — facts_read({ scopeKeys: evidence of reached nodes })<br/><i>back to the relational store, ACL re-applied</i>"]:::step
+
+  Q -->|"top hit's scopeKey = seed"| F4
+  F4 -.->|"Step 2 — graph_search_nodes({seeds:[F4], depth:2})<br/>enters via EVIDENCED_BY"| TL
+  TL -->|defends design of| P
+  TL -->|proposes name| TS
+  P -->|authored by| DD
+  TL --> R
+  P --> R
+  DD --> R
+```
 
 ---
 

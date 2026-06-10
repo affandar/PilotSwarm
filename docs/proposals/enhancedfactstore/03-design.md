@@ -130,14 +130,26 @@ flowchart LR
 | ACL / tags / timestamps | As today. |
 
 ANN index: `pg_diskann` (allow-listed) or pgvector HNSW; `auto` prefers diskann.
+Lexical ranking: **BM25 via `pg_textsearch`** (a fail-fast precondition, same as
+`vector`/`age`/`pg_durable`).
 
 **Write-resets-pending-state (trigger).** A `BEFORE INSERT OR UPDATE` trigger
 recomputes `content_hash` from key/value; when it changes it (a) leaves
 `last_embedded_hash` stale so the embedder re-embeds, and (b) sets
 `last_crawled_at = NULL` so the harvester re-crawls. This makes `storeFact`
 (upsert/create/replace) reset crawl/embedding state with no per-proc bookkeeping.
-`readUncrawledFacts` selects `last_crawled_at IS NULL`; `markFactsCrawled` stamps
-`now()`.
+`readUncrawledFacts` selects `last_crawled_at IS NULL` across all scopes
+(privileged harvester read); `markFactsCrawled` stamps `now()` **only
+`WHERE content_hash` matches the hash the harvester read** — the receipt that
+closes the read→mark TOCTOU race (a mid-crawl edit keeps the fact queued).
+
+**Model is part of pending.** A row is pending when `embedding IS NULL OR
+last_embedded_hash IS DISTINCT FROM content_hash OR embedding_model IS DISTINCT
+FROM {embed_model}`. Rows embedded under another model are treated as
+NULL-embedded everywhere (embedder re-embeds them; semantic kNN excludes them) —
+vectors from different models are not comparable. A model rotation is therefore
+a rolling re-embed, no manual reset; a `dim` change still needs a `vector(N)`
+migration.
 
 ### 2.2 Open graph (AGE)
 
@@ -159,6 +171,18 @@ flowchart LR
   The graph does not enforce that a referenced `scope_key` exists in `facts`.
   These links are also the **pivot** a query uses to enter the graph from a
   semantic facts hit (§4.1).
+- **Evidence has two physical representations** (the API hides this — both
+  surface as `evidence: string[]`):
+  - **Node evidence is a real edge**: `(:GraphNode)-[:EVIDENCED_BY]->(:Fact
+    {scope_key})`, where `:Fact` is a content-free anchor node. It must be an
+    edge — the seed pivot is a Cypher `MATCH (f:Fact)<-[:EVIDENCED_BY]-(n)`,
+    which a property array could not support without a full scan.
+  - **REL evidence is a property array** on the `[:REL]` edge (property graphs
+    have no edge-to-edge links). It is never traversed, only read back (and it
+    is what reinforcement dedup compares against).
+  - `upsertGraphNode({ evidence })` MERGEs the `:Fact` anchors + `EVIDENCED_BY`
+    edges; `deleteGraphNode`'s `DETACH DELETE` removes them; the §2.4 evidence
+    filter applies to both representations at result assembly.
 
 ### 2.3 KV ↔ graph linkage is by convention
 
@@ -179,6 +203,26 @@ The harvester manages both stores. Deleting a fact does **not** delete graph
 provenance (no cascade); a deleted fact may remain referenced until a harvester
 or maintenance pass cleans it up.
 
+### 2.4 Shared graph + evidence filter (read-side ACL)
+
+The graph is a **shared-scope surface** (01 §6.1a): no per-node/edge ACL;
+ingestion publishes extracted content to all readers. The read-side
+compensation is the **evidence filter**, implemented in the typed Cypher layer
+at result-assembly time:
+
+- ACL on a fact scopeKey is **syntactic** — no facts-table lookup needed.
+  `shared:<key>` always passes; `session:<id>:<key>` passes iff `<id>` is the
+  reader's session, in `grantedSessionIds`, or the caller is `unrestricted`.
+  This is exactly the base store's visibility rule, evaluated on the key text.
+- **Traversal runs on the full evidence set** (Cypher sees every
+  `EVIDENCED_BY` edge); only the `evidence` arrays in assembled
+  `GraphNodeHit`/`GraphEdgeHit` results are filtered. Connectivity through
+  inaccessible facts is preserved; their keys are simply not disclosed.
+- **Seed checking** uses the same syntactic predicate: fact-scopeKey seeds the
+  caller cannot read are dropped before the Cypher query (indistinguishable
+  from unknown seeds).
+- The privileged harvester calls with `unrestricted` and sees raw evidence.
+
 ## 3. Embedding generator
 
 ### 3.1 Why a single eternal loop (not df-in-df)
@@ -191,12 +235,24 @@ is unnecessary because `df.http` bodies are **not** static.
 `df.http` supports runtime substitution in url/body/headers via:
 
 - **`{var}`** — durable variables (`df.setvar`) snapshotted at `df.start`,
-  immutable during the run (used for config + secret).
+  immutable during the run (used for config + secret). This is the pg_durable
+  contract, verified against the upstream source/docs: *"Variables are captured
+  when `df.start()` is called"* and `df.setvar` cannot run inside a durable
+  function — it is configuration-only.
 - **`$name`** — a step's result named with `|=>`, substituted at runtime
   (used for the dynamic batch body).
 
 So a single eternal loop can build a batch body in SQL and feed it straight into
 one `df.http` call. No nesting.
+
+**Consequence — reconfiguration = restart.** Because `{var}` is frozen at
+`df.start`, an eternal loop can never pick up new config mid-run. The lifecycle
+therefore defines `configureEmbedder` as: write the durable vars; if a loop
+instance is running, `df.cancel` it and `df.start` a fresh one under the same
+stable label. Key rotation and endpoint changes take effect on the next tick of
+the new instance. (The rejected alternative — reading `df.getvar` per tick via a
+`$cfg` step — works but adds a per-tick query and diverges from pg_durable's
+setvar-then-start pattern.)
 
 ### 3.2 The single eternal loop
 
@@ -205,10 +261,10 @@ flowchart TB
   S(["df.start(loop, 'hz-embed-cron:schema')"]) --> L
   subgraph L["df.loop (eternal)"]
     SL["df.sleep(intervalSeconds)"]
-    Q["SQL: select pending facts LIMIT {batch}<br/>build body = input[] + model;<br/>ids = int[]  |=> 'batch'"]
+    Q["SQL: select pending facts LIMIT {batch}<br/>(pending incl. embedding_model mismatch)<br/>build body = input[] + model;<br/>ids = int[], hashes = text[]  |=> 'batch'"]
     IF{"df.if_rows('batch')"}
     H["df.http('{embed_url}','POST','$batch.body',<br/>headers w/ {embed_key})  |=> 'resp'"]
-    U["SQL: zip $resp.data[] WITH ORDINALITY<br/>↔ unnest($batch.ids) → UPDATE facts<br/>SET embedding, last_embedded_hash"]
+    U["SQL: zip $resp.data[] WITH ORDINALITY<br/>↔ unnest($batch.ids, $batch.hashes) → UPDATE facts<br/>SET embedding,<br/>last_embedded_hash = batch.hash (select-time, NOT current content_hash),<br/>embedding_model = {embed_model}"]
     BK["df.sleep(intervalSeconds)<br/>(nothing pending: back off)"]
     SL --> Q --> IF
     IF -- rows --> H --> U
@@ -220,6 +276,11 @@ flowchart TB
 - **Batch per tick** via the array-input embedding API → one HTTP per batch.
 - `df.if_rows` skips the HTTP when nothing is pending.
 - Positional zip-back (`WITH ORDINALITY`) maps `data[i]` to `ids[i]`.
+- **Select-time hash write-back.** The batch carries each row's `content_hash`
+  as read at select time; the UPDATE writes *that* hash into
+  `last_embedded_hash`. A row edited while the HTTP call was in flight stays
+  pending (`last_embedded_hash ≠ content_hash`) and is re-embedded next tick —
+  a stale vector can never be marked fresh.
 
 ### 3.3 Config & secret flow
 
@@ -251,6 +312,7 @@ stateDiagram-v2
   [*] --> Idle
   Idle --> Running: startEmbedder()
   Running --> Running: startEmbedder() (no-op, same instance)
+  Running --> Running: configureEmbedder() (restart — df.cancel + df.start, NEW instance, same label)
   Running --> Stopped: stopEmbedder() → df.cancel
   Stopped --> Stopped: stopEmbedder() (no-op)
   Stopped --> Running: startEmbedder()
@@ -259,7 +321,9 @@ stateDiagram-v2
 ```
 
 `embedderStatus()` derives `running` from the latest instance with the schema
-label (`pending`/`running` ⇒ running; terminal ⇒ not running).
+label (`pending`/`running` ⇒ running; terminal ⇒ not running). After a
+`configureEmbedder` restart the reported `instanceId` changes; `running` stays
+true throughout (cancel + start happen back-to-back under the same label).
 
 ## 4. Retrieval design
 
@@ -270,13 +334,21 @@ feeding `searchFacts` output in as `seeds`.
 ```mermaid
 flowchart TB
   Q["searchFacts(query, mode)<br/>FACTS STORE ONLY"] --> MODE{mode}
-  MODE -- lexical --> LEX["proc: lexical_search<br/>(keyword over key/value)"]
-  MODE -- semantic --> EMBQ["embed query (Node client)"] --> SEM["proc: semantic_knn<br/>(pgvector cosine)"]
+  MODE -- lexical --> LEX["proc: lexical_search (BM25)<br/>ACL predicate IN the WHERE clause,<br/>before rank/LIMIT"]
+  MODE -- semantic --> EMBQ["embed query (Node client)"] --> SEM["proc: semantic_knn<br/>(pgvector cosine, model-matched rows only)<br/>ACL predicate IN the WHERE clause"]
   MODE -- hybrid --> LEX & SEM
   LEX --> FUSE["weighted fusion"]
   SEM --> FUSE
-  FUSE --> ACL["ACL filter (access ctx)"] --> R["ScoredFact[] + per-signal signals"]
+  FUSE --> R["ScoredFact[] + per-signal signals"]
 ```
+
+**ACL placement.** The access predicate (shared / session / granted /
+unrestricted — same parameters as the base `readFacts` proc) is part of each
+search proc's candidate `WHERE` clause, evaluated **before** ranking and
+`LIMIT candidatePool`. Post-fusion re-checking is permitted as
+defense-in-depth only. Rationale: a post-ranking filter over a bounded pool
+starves session-scoped callers whose matches rank below the global top-N, and
+leaks (via visible pool exhaustion) that inaccessible matches exist.
 
 - **`similarFacts`** = the `semantic_knn` proc anchored on a known fact's stored
   vector (no query embedding, no fusion, no graph).
@@ -304,8 +376,10 @@ flowchart TB
   a name.
 - **Seeds** accepted by `searchGraphNodes` are fact scopeKeys (pivot via
   `EVIDENCED_BY`) or node keys (expand directly). `depth` bounds the traversal.
-- Each returned node carries its `EVIDENCED_BY` scopeKeys, so the round-trip back
-  to facts is a single `readFacts`.
+  Inaccessible fact seeds are dropped first (§2.4).
+- Each returned node carries its `EVIDENCED_BY` scopeKeys **filtered to the
+  caller's ACL** (§2.4), so the round-trip back to facts is a single
+  `readFacts({ scopeKeys })` that always fully resolves.
 
 ## 5. Migrations & code structure
 
@@ -471,7 +545,7 @@ passed**:
 
 This script is a **design artifact**: it is the gate a cluster must pass before
 PilotSwarm and pg_durable are allowed to share a database, and it is referenced by
-the test spec ([04-test-spec.md §6](./04-test-spec.md)).
+the test spec ([04-test-spec.md §6.1](./04-test-spec.md)).
 
 ### 6.6 Properties & constraints
 
