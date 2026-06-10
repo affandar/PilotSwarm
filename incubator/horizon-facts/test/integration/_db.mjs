@@ -13,6 +13,9 @@
 //   PLAIN_DATABASE_URL     — a real vanilla Postgres (preconditions negatives)
 
 import pg from "pg";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 function normalizeDbUrl(raw) {
     if (!raw) return "";
@@ -21,9 +24,26 @@ function normalizeDbUrl(raw) {
     return raw + (raw.includes("?") ? "&" : "?") + "uselibpqcompat=true";
 }
 
+/**
+ * The plain-Postgres target for the preconditions NEGATIVES (06 §4): a real
+ * vanilla Postgres that genuinely lacks the Horizon extensions. Resolution:
+ * PLAIN_DATABASE_URL, else the PilotSwarm repo root .env's DATABASE_URL
+ * (the main orchestration database — plain Postgres by definition), recast.
+ */
+function resolvePlainDbUrl() {
+    if (process.env.PLAIN_DATABASE_URL) return process.env.PLAIN_DATABASE_URL;
+    try {
+        const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
+        const env = readFileSync(path.join(root, ".env"), "utf8");
+        const m = env.match(/^DATABASE_URL=(.+)$/m);
+        if (m) return m[1].trim().replace(/^["']|["']$/g, "");
+    } catch { /* no root .env — suite skips */ }
+    return "";
+}
+
 export const DB_URL = normalizeDbUrl(process.env.HORIZON_DATABASE_URL || "");
 export const HAS_DB = !!DB_URL;
-export const PLAIN_DB_URL = normalizeDbUrl(process.env.PLAIN_DATABASE_URL || "");
+export const PLAIN_DB_URL = normalizeDbUrl(resolvePlainDbUrl());
 export const HAS_PLAIN_DB = !!PLAIN_DB_URL;
 
 export const REAL_EMBED_DIM = Number(process.env.HORIZON_EMBED_DIM ?? "1536");
