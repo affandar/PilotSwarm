@@ -289,6 +289,11 @@ interface GraphInterface {
   // idempotent no-op (evidence union unchanged, no confidence bump) — so a
   // duplicate/replayed harvest of the same fact cannot inflate confidence.
   upsertGraphEdge(e: GraphEdgeInput): Promise<GraphEdgeRef>;
+  // Repointed edges that collide with an existing survivor triple COMBINE
+  // (evidence union, observations sum, noisy-OR) — but only when the duplicate
+  // edge carries NOVEL evidence; an all-known-evidence collision just drops
+  // the duplicate (the GR7 principle extended to merges, so a replayed merge
+  // cannot double-count).
   mergeGraphNodes(fromKey: string, intoKey: string, reason: string): Promise<void>;
 
   // delete (no cross-store cascade)

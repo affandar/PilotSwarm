@@ -1,174 +1,136 @@
-// eval/tools.mjs — the LLM-facing harvester toolset (Copilot SDK defineTool).
+// eval/tools.mjs — Copilot-SDK tool bridge + agent prompts.
 //
-// These are the tools from docs/proposals/enhancedfactstore/05-tools-spec.md,
-// wired to the EnhancedFactsAdapter. Descriptions are intentionally rich: the
-// eval measures whether a model can harvest correctly GIVEN this tool surface,
-// so the guidance the model needs lives in the descriptions, not in the test.
+// NO ADAPTER: the tools the LLM sees ARE the provider's own agent-tools
+// descriptors (src/agent-tools.ts → createFactsTools), bridged 1:1 into the
+// Copilot SDK's defineTool shape. The eval measures whether a model can
+// harvest correctly GIVEN the 05-tools-spec surface — so the tool names,
+// schemas, and descriptions come from the provider, not from this file.
+//
+// The bridge can RECORD every tool invocation (name, args, result) — SC2
+// replays the recorded mutating calls verbatim to prove replay immunity.
 
 import { defineTool } from "@github/copilot-sdk";
 
 /**
- * @param {import("./store-adapter.mjs").EnhancedFactsAdapter} adapter
- * @returns {import("@github/copilot-sdk").Tool<any>[]}
+ * Bridge the provider's AgentTool descriptors into Copilot SDK tools.
+ *
+ * @param {import("../dist/src/index.js").HorizonFactStore} store
+ * @param {{ role: "reader"|"harvester", record?: Array<{name:string,args:any,result?:any,error?:string}> }} opts
  */
-export function createHarvesterTools(adapter) {
-    const facts_read_uncrawled = defineTool("facts_read_uncrawled", {
-        description:
-            "Return facts that have NOT yet been incorporated into the knowledge graph (the crawl backlog). " +
-            "This is your work queue. Process each returned fact, then call facts_mark_crawled for it. " +
-            "When this returns count:0 the corpus is fully harvested and you are done.",
-        parameters: {
-            type: "object",
-            properties: {
-                limit: { type: "number", description: "Max facts to pull this batch (default 20)." },
-            },
-        },
-        handler: async (args) => adapter.readUncrawled({ limit: args?.limit }),
-    });
+export async function buildSdkTools(store, { role, record } = {}) {
+    const { createFactsTools } = await import("../dist/src/index.js");
+    const descriptors = createFactsTools(store, { role: role ?? "reader", agentId: `eval-${role}` });
 
-    const facts_mark_crawled = defineTool("facts_mark_crawled", {
-        description:
-            "Stamp facts as incorporated into the graph so they leave the crawl queue. " +
-            "Call this AFTER you have upserted the nodes and edges derived from a fact. " +
-            "Pass the exact scopeKey values from facts_read_uncrawled.",
-        parameters: {
-            type: "object",
-            properties: {
-                scopeKeys: { type: "array", items: { type: "string" }, description: "Fact scope_keys you just processed." },
-            },
-            required: ["scopeKeys"],
-        },
-        handler: async (args) => adapter.markCrawled({ scopeKeys: args?.scopeKeys ?? [] }),
-    });
+    // HARVESTER POLICY (05 golden rule #3): evidence is optional in the
+    // provider CONTRACT, but this app's harvester norm is always-evidence —
+    // enforced here so the model self-corrects in-loop. It also makes SC2's
+    // replay determinism total: evidence-carrying re-asserts are no-ops (GR7),
+    // while evidence-less ones would legitimately reinforce on replay (GR8).
+    if (role === "harvester") {
+        for (const d of descriptors) {
+            if (d.name !== "graph_upsert_node" && d.name !== "graph_upsert_edge") continue;
+            const inner = d.handler;
+            d.handler = async (args) => {
+                if (!Array.isArray(args?.evidence) || args.evidence.length === 0) {
+                    throw new Error(
+                        `${d.name}: evidence is required when harvesting — pass the source email's scopeKey ` +
+                        `(from facts_read_uncrawled) as evidence: ["<scopeKey>"] and retry.`);
+                }
+                return inner(args);
+            };
+        }
+    }
+    const handlers = new Map(descriptors.map((d) => [d.name, d.handler]));
 
-    const facts_search = defineTool("facts_search", {
-        description:
-            "Search the FACTS store and return ranked facts. This searches facts only — " +
-            "it does NOT traverse the graph (use graph_search_nodes for that). " +
-            "IMPORTANT: how 'query' is interpreted depends on 'mode'. " +
-            "In lexical mode (the default here) 'query' is a BM25 keyword search — pass salient TERMS " +
-            "(e.g. 'jsonb subscript vacuum'), NOT a natural-language sentence; extra stop-words dilute the match. " +
-            "In semantic mode 'query' is natural language matched by meaning. In hybrid mode pass a short, " +
-            "keyword-rich phrase used both ways.",
-        parameters: {
-            type: "object",
-            properties: {
-                query: { type: "string", description: "Keywords/terms for lexical (BM25); natural language for semantic; a keyword-rich phrase for hybrid." },
-                mode: { type: "string", enum: ["lexical", "semantic", "hybrid"], description: "Default lexical in this eval — so 'query' should be keywords, not a sentence." },
-                limit: { type: "number", description: "Max results (default 10)." },
+    const tools = descriptors.map((d) =>
+        defineTool(d.name, {
+            description: d.description,
+            parameters: d.parameters,
+            // Trusted by construction (the eval owns both sides) — and avoids
+            // the SDK wedging on parallel permission approvals for one tool.
+            skipPermission: true,
+            handler: async (args) => {
+                const entry = { name: d.name, args: args ?? {} };
+                try {
+                    const result = await d.handler(args ?? {});
+                    entry.result = result;
+                    record?.push(entry);
+                    return result;
+                } catch (err) {
+                    entry.error = String(err?.message ?? err);
+                    record?.push(entry);
+                    throw err;
+                }
             },
-            required: ["query"],
-        },
-        handler: async (args) => adapter.searchFacts({ query: args?.query, mode: args?.mode, limit: args?.limit }),
-    });
-
-    const graph_search_nodes = defineTool("graph_search_nodes", {
-        description:
-            "Find existing graph nodes by kind and/or nameLike (matches name OR any alias). " +
-            "ALWAYS call this to RESOLVE an entity BEFORE creating it with graph_upsert_node — " +
-            "this is how a new surface form like 'tgl' attaches to the existing 'Tom Lane' node " +
-            "instead of creating a duplicate person. Returns matching nodes with their nodeKey.",
-        parameters: {
-            type: "object",
-            properties: {
-                kind: { type: "string", description: "Node kind filter, e.g. person, patch, code_file, thread." },
-                nameLike: { type: "string", description: "Lexical match on node name or any alias." },
-                seeds: { type: "array", items: { type: "string" }, description: "Optional node keys to expand from." },
-                depth: { type: "number", description: "Hops to expand from seeds (1..5)." },
-                limit: { type: "number", description: "Max nodes (default 20)." },
-            },
-        },
-        handler: async (args) => adapter.searchGraphNodes(args ?? {}),
-    });
-
-    const graph_upsert_node = defineTool("graph_upsert_node", {
-        description:
-            "Create a graph node, or merge into an existing one (idempotent — aliases and evidence union in). " +
-            "kind and name are free text. ALWAYS pass evidence: the scopeKey of the fact you are reading. " +
-            "Use graph_search_nodes FIRST to avoid duplicates. Returns nodeKey (use it for edges) and created:false " +
-            "when it merged into an existing node.",
-        parameters: {
-            type: "object",
-            properties: {
-                kind: { type: "string", description: "Free text: person, patch, code_file, thread, ..." },
-                name: { type: "string", description: "Canonical surface form." },
-                aliases: { type: "array", items: { type: "string" }, description: "Other observed surface forms." },
-                evidence: { type: "array", items: { type: "string" }, description: "Fact scope_keys justifying this node." },
-            },
-            required: ["kind", "name"],
-        },
-        handler: async (args) => adapter.upsertGraphNode(args ?? {}),
-    });
-
-    const graph_upsert_edge = defineTool("graph_upsert_edge", {
-        description:
-            "Assert a free-text relationship between two nodes, or reinforce an existing one. " +
-            "Re-stating the same (fromKey, predicate, toKey) does NOT duplicate — it strengthens the edge. " +
-            "predicate is a free-text verb phrase, e.g. 'comments on', 'reviews', 'revives argument from'. " +
-            "Pass the RESOLVED nodeKey values (from graph_upsert_node), not raw names. " +
-            "evidence is REQUIRED: the scopeKey of the source fact.",
-        parameters: {
-            type: "object",
-            properties: {
-                fromKey: { type: "string", description: "Source node key." },
-                toKey: { type: "string", description: "Target node key." },
-                predicate: { type: "string", description: "Free-text verb phrase." },
-                confidence: { type: "number", description: "0..1 for this observation (default 1.0)." },
-                evidence: { type: "array", items: { type: "string" }, description: "Fact scope_keys justifying this edge (>=1)." },
-            },
-            required: ["fromKey", "toKey", "predicate", "evidence"],
-        },
-        handler: async (args) => adapter.upsertGraphEdge(args ?? {}),
-    });
-
-    const graph_search_edges = defineTool("graph_search_edges", {
-        description:
-            "Find edges by anchor (fromKey/toKey) or exact predicate. Use to inspect existing relationships " +
-            "around a node before asserting new ones.",
-        parameters: {
-            type: "object",
-            properties: {
-                fromKey: { type: "string" },
-                toKey: { type: "string" },
-                predicate: { type: "string", description: "EXACT predicate text." },
-                minConfidence: { type: "number" },
-                limit: { type: "number" },
-            },
-        },
-        handler: async (args) => adapter.searchGraphEdges(args ?? {}),
-    });
-
-    return [
-        facts_read_uncrawled,
-        facts_mark_crawled,
-        facts_search,
-        graph_search_nodes,
-        graph_upsert_node,
-        graph_upsert_edge,
-        graph_search_edges,
-    ];
+        }),
+    );
+    return { tools, handlers, toolNames: descriptors.map((d) => d.name) };
 }
 
+/** Tool names whose calls mutate state — the SC2 replay set, in call order. */
+export const MUTATING_TOOLS = new Set([
+    "graph_upsert_node",
+    "graph_upsert_edge",
+    "graph_merge_nodes",
+    "graph_delete_node",
+    "graph_delete_edge",
+    "facts_mark_crawled",
+]);
+
+// ── prompts ──────────────────────────────────────────────────────────────────
+
 export const HARVESTER_SYSTEM_PROMPT = [
-    "You are a knowledge-graph HARVESTER for the PostgreSQL pgsql-hackers mailing list archive.",
-    "Your job: read each uncrawled fact (an archived email) and incorporate it into an open knowledge graph",
-    "of people, patches, code files, and threads, joined by free-text relationships.",
+    "You are a knowledge-graph HARVESTER for a PostgreSQL pgsql-hackers mailing-list archive.",
+    "Each fact is an archived email. Incorporate every uncrawled fact into an open knowledge graph",
+    "of people, patches, code_files, threads and concepts, joined by free-text relationships.",
     "",
-    "Follow this loop until facts_read_uncrawled returns count:0:",
-    "  1. Call facts_read_uncrawled to get a batch of unprocessed emails.",
-    "  2. For EACH email, read its body and identify entities (people, patches, code_files, threads)",
-    "     and the relationships between them.",
-    "  3. RESOLVE before you create: for each entity call graph_search_nodes(kind, nameLike) FIRST.",
-    "     If a node already exists, reuse its nodeKey. If a sender appears by a short handle (e.g. 'tgl')",
-    "     that is the same person as a full name already in the graph, upsert the node with that handle",
-    "     as an alias so it MERGES — never create a second person node for the same human.",
-    "  4. Create/merge each entity with graph_upsert_node, passing the email's scopeKey as evidence.",
-    "  5. Assert each relationship with graph_upsert_edge using a concise lowercase free-text predicate,",
-    "     passing the resolved nodeKeys and the email's scopeKey as evidence.",
-    "     Use the predicate 'comments on' when a person comments on a patch, and 'reviews' when a person",
-    "     reviews a patch, so repeated observations reinforce the same edge.",
-    "  6. Call facts_mark_crawled with the email's scopeKey.",
+    "THE LOOP — repeat until facts_read_uncrawled returns count:0:",
+    "  1. facts_read_uncrawled with limit: 5 — SMALL batches keep quality high. KEEP each",
+    "     fact's scopeKey AND contentHash.",
+    "  2. Process the emails STRICTLY ONE AT A TIME, in order: finish steps 3-6 for one email",
+    "     before starting the next. For each email, identify entities and relationships.",
+    "     MINIMUM extraction per EVERY fact — including drafts, notes and short procedural",
+    "     mails: the sender (person node) AND at least one relationship the fact states",
+    "     (e.g. sender -authored/reviews/comments on-> the patch or thread it discusses).",
+    "     Most emails also mention patches, code files, or concepts — capture them.",
+    "     If a later email RE-STATES a relationship you already asserted from an earlier email",
+    "     (follow-ups by the same sender about the same patch are the classic case), assert it",
+    "     AGAIN with the new email's evidence — and REUSE THE EXACT SAME PREDICATE you used the",
+    "     first time (check with graph_search_edges(fromKey, toKey) if unsure): the same verb",
+    "     reinforces the edge, a synonym fragments it. NEVER merge evidence from multiple",
+    "     emails into a single assertion.",
+    "  3. RESOLVE BEFORE YOU CREATE: graph_search_nodes(kind, nameLike) first. If the entity",
+    "     exists, reuse its nodeKey. A short handle (e.g. 'tgl') for a person already in the",
+    "     graph under a full name is the SAME person — upsert with the handle as an alias so it",
+    "     merges; NEVER create a second person node for the same human.",
+    "  4. graph_upsert_node for each entity. kind MUST be one of: person, patch, code_file,",
+    "     thread, concept. Always pass evidence: [<the email's scopeKey>].",
+    "  5. graph_upsert_edge for each relationship, using the RESOLVED nodeKeys, a concise",
+    "     lowercase free-text predicate, and evidence: [<the email's scopeKey>]. One verb per",
+    "     edge. Use 'authored' when a person wrote/submitted a patch, 'reviews' when a person",
+    "     reviews a patch, 'comments on' for commentary — consistent verbs reinforce edges.",
+    "  6. facts_mark_crawled with stamps: [{ scopeKey, contentHash }] — the EXACT contentHash",
+    "     you read in step 1. NEVER mark an email crawled before you have incorporated it",
+    "     (steps 3-5): marking without incorporating permanently loses that email's knowledge.",
+    "     If a stamp is skipped the fact changed under you: that is fine, it stays queued and",
+    "     you will see the new version on a later batch.",
     "",
-    "Always pass evidence (the source email scopeKey) on every node and edge. Keep predicates short.",
-    "When the queue is empty, reply with a one-line summary of what you built.",
+    "After finishing ONE batch of 5, END YOUR TURN with a one-line progress note — you will be",
+    "prompted to continue. Always pass evidence. Keep predicates short. When the queue is empty,",
+    "reply with a one-line summary of what you built.",
+].join("\n");
+
+export const READER_SYSTEM_PROMPT = [
+    "You are a research READER over a facts store and a knowledge graph built from a",
+    "PostgreSQL pgsql-hackers mailing-list archive.",
+    "",
+    "To answer a question:",
+    "  1. facts_search for the topic (keywords for lexical mode, natural language for semantic).",
+    "  2. Take the scopeKey values of the best hits and call graph_search_nodes({ seeds, depth: 2 })",
+    "     to find the entities and relationships around them.",
+    "  3. graph_search_edges / graph_neighbourhood to inspect specific connections.",
+    "  4. facts_read({ scopeKeys: <evidence from the graph hits> }) to read the underlying emails.",
+    "",
+    "Ground every claim in evidence: end your answer with the list of fact scopeKeys you relied on,",
+    "one per line, prefixed 'EVIDENCE: '.",
 ].join("\n");

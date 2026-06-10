@@ -350,8 +350,11 @@ expectations):**
    into reinforced edges, not duplicates.
 4. **Provenance:** every edge carries ≥1 evidence scopeKey from the corpus
    namespace.
-5. **Queue drained at scale:** all `metadata.messageCount` facts crawled with
-   matching receipts (`skipped == 0`).
+5. **Queue drained at scale, receipts honest:** every seeded fact ends marked
+   (total `marked` covers the corpus) and the queue drains. A skipped stamp
+   mid-run is the receipt guard WORKING (bad/stale hash rejected) — it must be
+   retried, which the drained queue proves; `skipped == 0` is the common case,
+   not the invariant.
 
 ### SC2 — Replay immunity (confidence cannot inflate)
 

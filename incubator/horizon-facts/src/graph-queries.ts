@@ -160,7 +160,35 @@ export class GraphQueries implements GraphInterface {
         });
     }
 
-    /** EVIDENCED_BY scopeKeys per node, ACL-filtered (01 §6.1a). */
+    /**
+     * Idempotent, duplicate-anchor-proof evidence linking. A naive
+     * `MERGE (f:Fact {scope_key}) MERGE (e)-[:EVIDENCED_BY]->(f)` is NOT safe
+     * here: AGE has no unique constraints, so concurrent upserts can race the
+     * anchor MERGE into duplicate :Fact nodes — after which a later MERGE
+     * binds EVERY duplicate and mints extra edges. Instead: skip when any
+     * edge already exists; bind exactly ONE anchor (WITH … LIMIT 1) or create
+     * it when none exists.
+     */
+    private async linkEvidenceAnchor(client: any, nodeKey: string, scopeKey: string): Promise<void> {
+        const linked = await this.cypher(client,
+            `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} })-[:EVIDENCED_BY]->(f:Fact { scope_key: ${cypherStr(scopeKey)} })
+             RETURN f.scope_key LIMIT 1`, ["scope_key"]);
+        if (linked.length > 0) return;
+        const anchored = await this.cypher(client,
+            `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} })
+             MATCH (f:Fact { scope_key: ${cypherStr(scopeKey)} })
+             WITH e, f LIMIT 1
+             CREATE (e)-[:EVIDENCED_BY]->(f) RETURN f.scope_key`, ["scope_key"]);
+        if (anchored.length === 0) {
+            await this.cypher(client,
+                `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} })
+                 CREATE (f:Fact { scope_key: ${cypherStr(scopeKey)} })
+                 CREATE (e)-[:EVIDENCED_BY]->(f) RETURN f.scope_key`, ["scope_key"]);
+        }
+    }
+
+    /** EVIDENCED_BY scopeKeys per node, ACL-filtered (01 §6.1a), deduped
+     * (duplicate anchors must never surface as duplicate evidence keys). */
     private async evidenceFor(client: any, nodeKeys: string[], access?: AccessContext): Promise<Map<string, string[]>> {
         const out = new Map<string, string[]>();
         if (nodeKeys.length === 0) return out;
@@ -173,7 +201,7 @@ export class GraphQueries implements GraphInterface {
             const sk = ag(r.scope_key);
             if (!scopeKeyAccessible(sk, access)) continue;   // traversal saw it; the caller doesn't
             const arr = out.get(nk) ?? [];
-            arr.push(sk);
+            if (!arr.includes(sk)) arr.push(sk);
             out.set(nk, arr);
         }
         return out;
@@ -260,12 +288,9 @@ export class GraphQueries implements GraphInterface {
                 ref = { nodeKey: key, kind: n.kind, name: n.name, aliases: incomingAliases, created: true };
             }
             // Node evidence = real EVIDENCED_BY edges to lazy :Fact anchors
-            // (03-design §2.2). Unioned on every upsert; MERGE is idempotent.
+            // (03-design §2.2). Unioned on every upsert.
             for (const sk of new Set(n.evidence ?? [])) {
-                await this.cypher(c,
-                    `MATCH (e:GraphNode { node_key: ${cypherStr(key)} })
-                     MERGE (f:Fact { scope_key: ${cypherStr(sk)} })
-                     MERGE (e)-[:EVIDENCED_BY]->(f) RETURN f.scope_key`, ["scope_key"]);
+                await this.linkEvidenceAnchor(c, key, sk);
             }
             return ref;
         });
@@ -372,9 +397,20 @@ export class GraphQueries implements GraphInterface {
                          RETURN rel.confidence, rel.observations, rel.evidence`,
                         ["confidence", "observations", "evidence"]);
                     if (ex.length > 0) {
+                        // Evidence-aware combine (same principle as GR7): when the
+                        // duplicate edge brings NO novel evidence, the survivor
+                        // already absorbed it — drop the dup edge without summing
+                        // observations / noisy-OR-ing again, so a replayed merge
+                        // cannot double-count. Evidence-less duplicates can't be
+                        // deduped and still combine.
+                        const exEv = agArr(ex[0].evidence);
+                        const dupEv = agArr(r.evidence);
+                        const known = new Set(exEv);
+                        const novel = dupEv.filter((e) => !known.has(e));
+                        if (dupEv.length > 0 && novel.length === 0) continue;
                         const conf = reinforceConfidence(Number(ag(ex[0].confidence)), Number(ag(r.confidence)));
                         const obs = Number(ag(ex[0].observations)) + Number(ag(r.observations));
-                        const ev = [...new Set([...agArr(ex[0].evidence), ...agArr(r.evidence)])];
+                        const ev = [...exEv, ...novel];
                         await this.cypher(c,
                             `MATCH (a:GraphNode { node_key: ${cypherStr(fromK)} })-[rel:REL { predicate_key: ${cypherStr(pk)} }]->(b:GraphNode { node_key: ${cypherStr(toK)} })
                              SET rel.confidence = ${cypherNum(clamp01(conf))}, rel.observations = ${cypherNum(obs)},
@@ -398,10 +434,7 @@ export class GraphQueries implements GraphInterface {
                 `MATCH (d:GraphNode { node_key: ${cypherStr(fromKey)} })-[:EVIDENCED_BY]->(f:Fact)
                  RETURN f.scope_key`, ["scope_key"]);
             for (const r of anchors) {
-                await this.cypher(c,
-                    `MATCH (s:GraphNode { node_key: ${cypherStr(intoKey)} })
-                     MERGE (f:Fact { scope_key: ${cypherStr(ag(r.scope_key))} })
-                     MERGE (s)-[:EVIDENCED_BY]->(f) RETURN f.scope_key`, ["scope_key"]);
+                await this.linkEvidenceAnchor(c, intoKey, ag(r.scope_key));
             }
 
             // 4. Remove the duplicate (and all its remaining edges).

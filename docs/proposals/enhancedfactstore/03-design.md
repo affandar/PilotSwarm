@@ -577,7 +577,8 @@ the test spec ([04-test-spec.md §6.1](./04-test-spec.md)).
 |------|------------------------|
 | Whole-body `$batch.body` substitution escaping | Verify at build; fall back to per-fact `"$f.text"` template loop if whole-body substitution is unsafe. |
 | API key in `df.vars` (plaintext) | Accepted for incubation; TODO to move to runtime-injected secret. |
-| `mergeGraphNodes` recreates edges (no APOC) | Harden + cover with tests; possible duplicate/observation drift. |
+| `mergeGraphNodes` recreates edges (no APOC) | Hardened: colliding triples COMBINE evidence-aware (novel evidence only — replay cannot double-count); covered by GM tests + the SC2 replay scenario. |
+| AGE `MERGE` races duplicate `:Fact` anchors under concurrent upserts (no unique constraints) | Evidence linking is duplicate-anchor-proof (exists-check + single-bind `WITH … LIMIT 1`), and evidence assembly dedupes scopeKeys. Found by the SC2 replay scenario. |
 | Provenance rot (no cascade) | Optional future `gcGraph()` maintenance pass. |
 | AGE Cypher quirks (no startNode/endNode/UNWIND on var-length) | Encapsulated in the typed Cypher layer; covered by graph tests. |
 | Orchestration schema rename on existing clusters | Online single-transaction `ALTER SCHEMA` + recreation guard (atomic); old workers fail loud but cannot recreate `duroxide`; guarded against non-PilotSwarm `duroxide` (§6). |

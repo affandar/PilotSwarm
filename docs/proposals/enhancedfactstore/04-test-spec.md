@@ -386,7 +386,7 @@ invariants are **derived from the corpus `metadata` block at assert time**
 | # | Scenario | Corpus | Core invariant |
 |---|----------|--------|----------------|
 | SC1a | Cold harvest (exact) | synthetic | one Tom Lane node (`tgl` an alias); Andres distinct; reinforced edge `observations == 2` with evidence `{msg-1001, msg-1002}`; every edge ≥1 evidence; queue drained with hash receipts, `skipped == 0` |
-| SC1b | Cold harvest (scale) | real | per `metadata`: every multi-message author = exactly one person node; each reaches a non-person node ≤2 hops; ≥1 edge reinforced from ≥2 distinct messages; every edge ≥1 corpus evidence key; all `messageCount` facts crawled, `skipped == 0` |
+| SC1b | Cold harvest (scale) | real | per `metadata`: every multi-message author = exactly one person node; each reaches a non-person node ≤2 hops; ≥1 edge reinforced from ≥2 distinct messages; every edge ≥1 corpus evidence key; all `messageCount` facts crawled with honest receipts (skips, if any, provably retried) |
 | SC2 | Replay immunity | real | re-queue + replay SC1b's recorded tool calls → graph snapshot byte-identical (no observation/confidence/alias/evidence drift) |
 | SC3 | Edit → re-queue → incremental harvest | real | only the edited fact re-enters the queue; reinforcement no-op on known evidence; stale-hash mark skipped if edited mid-harvest |
 | SC4 | Reader fact-pivot | real | reader answers "who authored the patch / who pushed back": names the earliest-message author + ≥1 other multi-message participant (both metadata-derived); all cited evidence ⊆ corpus scopeKeys |

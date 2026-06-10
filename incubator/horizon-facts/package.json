@@ -23,7 +23,8 @@
     "poc:graph": "node poc/03-graph.mjs",
     "poc:hybrid": "node poc/04-hybrid.mjs",
     "poc:crawler": "node poc/05-crawler.mjs",
-    "eval:harvester": "node eval/harvester-eval.mjs"
+    "eval:harvester": "node --env-file-if-exists=.env eval/scenarios.mjs sc1a",
+    "eval:scenarios": "node --env-file-if-exists=.env eval/scenarios.mjs"
   },
   "dependencies": {
     "pg": "^8.13.1"

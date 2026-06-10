@@ -1,105 +1,96 @@
-# Harvester Eval — Copilot SDK + Enhanced Facts + HorizonDB
+# Scenario tier — Copilot SDK agents on the real provider surface
 
-An end-to-end **eval** that proves the enhanced-facts tool surface
-([docs/proposals/enhancedfactstore/05-tools-spec.md](../../../docs/proposals/enhancedfactstore/05-tools-spec.md))
-is usable by a real LLM. It builds a **harvester agent with the standard GitHub
-Copilot SDK** (no PilotSwarm, no duroxide), hands it the enhanced-facts tools,
-seeds a synthetic **pgsql-hackers mailing list** corpus into **HorizonDB**, lets
-the agent crawl it into an open knowledge graph, then asserts the graph is
-correct.
+The [06-provider-test-plan §10](../../../docs/proposals/enhancedfactstore/06-provider-test-plan.md)
+scenario tier: **GitHub Copilot SDK** agents (no PilotSwarm) drive the
+provider's own LLM tool surface ([src/agent-tools.ts](../src/agent-tools.ts),
+per [05-tools-spec](../../../docs/proposals/enhancedfactstore/05-tools-spec.md))
+against live HorizonDB. There is **no adapter**: the tools the model sees ARE
+the provider's descriptors, bridged 1:1 into the SDK (`eval/tools.mjs`), with
+one eval-side policy on top — the harvester role REQUIRES evidence on graph
+writes (the 05 golden-rule norm, enforced so the model self-corrects in-loop).
 
 ```
-corpus (emails)  ──seed──▶  HorizonDB facts
+corpus (emails) ──seed──▶ HorizonDB facts ◀── facts_read_uncrawled / facts_mark_crawled
                                    │
-   Copilot SDK agent ── tools ─────┤  facts_read_uncrawled / facts_search
-   (harvester prompt)              │  graph_search_nodes / graph_upsert_node
-                                   │  graph_upsert_edge / facts_mark_crawled
-                                   ▼
-                            HorizonDB AGE graph  ──assert──▶ invariants
+   Copilot SDK agent ── tools ─────┤  graph_search_nodes / graph_upsert_node / graph_upsert_edge
+   (harvester / reader prompts)    ▼
+                            HorizonDB AGE graph ──assert──▶ structural invariants
 ```
 
 ## Files
 
 | File | Role |
 |------|------|
-| `corpus/pgsql-hackers.json` | **Synthetic** 3-message corpus (the jsonb-subscript debate) with hand-planted invariants: the `tgl` alias, the 1001/1002 restated relationship, the 1003 disagreement. Kept for precise, hand-authored assertions. |
-| `corpus/pgsql-hackers-real.json` | **Real** archive data: 60 messages from the actual pgsql-hackers "[PATCH] Generic type subscripting" thread (the patch series that became jsonb subscripting; 2017 segment — Dmitry Dolgov, Arthur Zakirov, Tom Lane, Peter Eisentraut, David Steele, Oleg Bartunov). Quoted reply lines stripped, bodies capped at 2500 chars. Carries a `metadata` block (participants, per-author counts, multi-message authors) that scale-scenario invariants are **derived from** — nothing hand-authored. |
-| `corpus/build-pgsql-hackers-real.mjs` | Regenerates the real corpus from the public postgresql.org archives (`node build-pgsql-hackers-real.mjs --max 60`; the full thread has ~276 messages). Refuses to write a corpus under 30 messages. |
-| `store-adapter.mjs` | Maps the enhanced-API tool surface onto the incubating `HorizonFactStore`, and models crawl tracking (`last_crawled_at`) with marker facts. |
-| `tools.mjs` | The LLM-facing tools (`defineTool`) + the harvester system prompt. |
-| `harvester-eval.mjs` | Seeds the corpus, runs the agent, asserts graph invariants. |
+| `scenarios.mjs` | The scenario runner (SC1a, and the real-corpus chain SC1b→SC5→SC2→SC3→SC4). |
+| `tools.mjs` | Copilot-SDK bridge over `createFactsTools` (+ recording for SC2 replay) and the harvester/reader prompts. |
+| `corpus/pgsql-hackers.json` | **Synthetic** 3-message corpus with hand-planted invariants (the `tgl` alias, the 1001/1002 restatement). |
+| `corpus/pgsql-hackers-real.json` | **Real** archive data: 60 messages from the actual "[PATCH] Generic type subscripting" thread; `metadata` drives the derived invariants. |
+| `corpus/build-pgsql-hackers-real.mjs` | Regenerates the real corpus from the public postgresql.org archives (`--max`, ~276 messages available). |
 
-## Run it
-
-The eval is **doubly gated** and SKIPS (exit 0) unless both are set:
+## Run
 
 ```bash
 cd incubator/horizon-facts
-npm install          # pulls @github/copilot-sdk
-npm run build        # produces dist/ that the adapter imports
-
-HORIZON_DATABASE_URL='postgres://user:pw@host/db?sslmode=require' \
-GITHUB_TOKEN='gho_...' \
-npm run eval:harvester
+npm run build
+npm run eval:harvester               # SC1a only (synthetic, ~1 min)
+npm run eval:scenarios               # everything (SC1a + real-corpus chain, ~15 min)
+npm run eval:scenarios -- real       # real-corpus chain only
 ```
 
-Optional env:
+Gates (SKIPs exit 0 when missing): `HORIZON_DATABASE_URL` and a GitHub token
+(`GITHUB_TOKEN` env → repo root `.env` → `gh auth token`). Optional:
+`HORIZON_EMBED_*` (real endpoint → SC4 runs hybrid; else lexical),
+`EVAL_MODEL` (default `claude-haiku-4.5`), `EVAL_LIMIT` (cap the real corpus
+for cheap dev runs — invariants re-derive from the seeded subset, so a capped
+run stays honest), `EVAL_ROUND_TIMEOUT_MS` (activity watchdog — a round fails
+only on agent SILENCE, long productive turns are fine), `EVAL_MAX_ROUNDS`.
 
-| Var | Default | Meaning |
-|-----|---------|---------|
-| `EVAL_MODEL` | `gpt-4o-mini` | Copilot model name. |
-| `EVAL_PROVIDER` | — | Provider id, if your token needs an explicit provider. |
-| `EVAL_TIMEOUT_MS` | `240000` | Max wall-clock for the agent harvest. |
-| `EVAL_SCHEMA` | `horizon_facts_eval` | Postgres schema for the eval facts. |
+Each run uses per-run schemas/graphs (`hzev_*`), dropped at the end.
 
-Each run uses a unique namespace + AGE graph (`pg_eval_<runId>`) so repeated runs
-never pollute each other; the per-run graph is dropped (best-effort) at the end.
+## Scenarios & invariants
 
-## What it asserts
+LLM output is non-deterministic, so assertions are **structural invariants**;
+SC2 gets byte-identical determinism from **recorded replay** of SC1b's actual
+mutating tool calls.
 
-The agent's output is non-deterministic (it's an LLM), so the assertions check
-**structural invariants**, not exact predicate strings.
+- **SC1a — cold harvest, synthetic (exact, hand-authored):** one Tom Lane node
+  with `tgl` as an alias (never two person nodes); Andres Freund distinct;
+  Tom connected within 2 hops; the 1001/1002 restatement is ONE edge with
+  `observations == 2` and evidence from both messages; every edge evidenced;
+  queue drained with hash receipts.
+- **SC1b — cold harvest, real corpus (derived from `corpus.metadata`):** every
+  multi-message author resolves to exactly one person node and reaches a
+  non-person node ≤2 hops; ≥1 edge reinforced from ≥2 distinct messages;
+  every edge evidenced; queue drained; **receipts honest** — every fact ends
+  marked; a skipped stamp mid-run is the receipt guard working (bad/stale
+  hash rejected) and must be retried, which a drained queue proves.
+- **SC5 — scoped publication:** a session-private draft seeded alongside the
+  corpus IS harvested into the shared graph (content published — by design);
+  other sessions see the node content but NOT the private evidence pointer;
+  the owner sees it; seeding with the private scopeKey from another session
+  behaves exactly like an unknown seed.
+- **SC2 — replay immunity:** snapshot graph → re-queue everything → re-issue
+  the recorded mutating calls verbatim → graph **byte-identical** and the
+  replayed receipts resolve exactly as the original run did.
+- **SC3 — edit → re-queue → incremental:** editing one message re-queues only
+  it; the incremental harvest drains it without duplicating triples or
+  touching other facts' crawl stamps.
+- **SC4 — reader fact-pivot:** a reader-role agent answers "who authored the
+  patch / who pushed back" via `facts_search → graph_search_nodes(seeds) →
+  facts_read(evidence)`; the answer names the earliest-message author + ≥1
+  other multi-message participant, citing only corpus scopeKeys.
 
-**On the synthetic corpus** (hand-authored invariants):
+Exit code is `0` only if every invariant passes.
 
-1. **Dedup** — `Tom Lane` resolves to exactly **one** person node; the handle
-   `tgl` is an **alias**, not a second person.
-2. **Distinct entities** — `Andres Freund` is its own person node.
-3. **Connectivity** — Tom Lane links to at least one patch/file/thread.
-4. **Reinforcement** — the relationship stated in two messages is **one** edge
-   with `observations >= 2` (noisy-OR confidence), not two edges.
-5. **Provenance** — every edge carries ≥1 evidence `scope_key`; the reinforced
-   edge accumulated evidence from both source messages.
-6. **Queue drains** — no fact remains uncrawled after the run.
+## What the eval caught while being built (why it exists)
 
-**On the real corpus** (invariants derived from `metadata`, never hand-coded):
-
-1. **Person dedup at scale** — for every `multiMessageAuthors` entry, exactly
-   **one** person node exists whose name or aliases match it (no duplicate
-   person nodes across 60 messages of varying salutations/sign-offs).
-2. **Connectivity** — every multi-message author connects (≤2 hops) to at
-   least one non-person node (patch / file / thread / concept).
-3. **Reinforcement in the wild** — at least one edge has `observations >= 2`
-   with **≥2 distinct** message scopeKeys in its evidence (authors restate
-   relationships across a 28-message participation; this must consolidate,
-   not duplicate).
-4. **Provenance** — every edge carries ≥1 evidence key from the corpus
-   namespace.
-5. **Queue drains** — all `metadata.messageCount` facts crawled, receipts
-   matching (`skipped == 0`).
-
-Exit code is `0` only if all invariants pass.
-
-## Notes / boundaries
-
-- This runs against the **current** `HorizonFactStore` (old method names) via the
-  adapter. The tools the LLM sees are the **new** enhanced-API names from the
-  tools spec. When the store is renamed to the new API, `store-adapter.mjs`
-  collapses to pass-throughs.
-- Crawl tracking is modeled here with `_crawlmark/*` marker facts because the
-  incubating store predates the `last_crawled_at` column. Production uses the
-  real column + reset trigger (see 03-design §2.1).
-- `facts_search` runs in **lexical** mode here (the eval store has no embedding
-  endpoint configured). Wire an embedding endpoint to exercise semantic/hybrid.
-- The deterministic, DB-less version of this harvest flow (same invariants, no
-  LLM, no DB) lives at [`poc/05-crawler.mjs`](../poc/05-crawler.mjs).
+- A model under volume pressure will **mark facts crawled without extracting**
+  (queue drains, graph stays empty) — countered by small batches, per-email
+  processing, and the minimum-extraction + never-mark-before-incorporate rules
+  in the harvester prompt.
+- **Evidence-less asserts break replay determinism** (GR8: they always
+  reinforce) — countered by the harvester-policy evidence requirement.
+- Two real provider bugs: AGE `MERGE` racing **duplicate :Fact anchors** under
+  parallel tool calls (fixed: duplicate-anchor-proof linking + assembly dedup)
+  and **merge repoint double-counting on replay** (fixed: evidence-aware
+  combine, the GR7 principle extended to merges).
