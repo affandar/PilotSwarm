@@ -169,7 +169,7 @@ Current overlap to preserve unless intentionally changed:
 
 ## User OBO (User-On-Behalf-Of) Propagation
 
-PilotSwarm propagates the signed-in portal user's identity (and, when configured, an envelope-encrypted downstream access token) to worker tool handlers so downstream consumers can perform OAuth2 OBO flows (e.g. Azure DevOps, Microsoft Graph) as the engineer rather than as the worker UAMI. This is a generic propagation surface; ADO is the first consumer (microsoft/waldemort).
+PilotSwarm propagates the signed-in portal user's identity (and, when configured, an envelope-encrypted downstream access token) to worker tool handlers so downstream consumers can perform OAuth2 OBO flows (e.g. Azure DevOps, Microsoft Graph) as the engineer rather than as the worker UAMI. This is a generic propagation surface; ADO is the first consumer (a downstream consumer app).
 
 Architecture invariants — do not break these without an explicit cross-repo coordination:
 
@@ -188,7 +188,7 @@ Trust boundary (FR-014): the portal-issued envelope is the trust root. Worker to
 Operator-visible config:
 - Portal: `PORTAL_AUTH_PROVIDER=entra`, `PORTAL_AUTH_ENTRA_TENANT_ID`, `PORTAL_AUTH_ENTRA_CLIENT_ID`, `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` (e.g. `api://<worker-app>/.default offline_access`).
 - Worker: `OBO_KEK_KID` (AKV key URL), `WORKLOAD_IDENTITY_CLIENT_ID` for the federated-credential exchange.
-- Both pods must hold `Key Vault Crypto User` on the OBO KEK AKV. Bicep accepts an array `oboKekUamiPrincipalIds` so single-UAMI deployments (Waldemort shape) and dual-UAMI deployments (PilotSwarm reference shape) both work.
+- Both pods must hold `Key Vault Crypto User` on the OBO KEK AKV. Bicep accepts an array `oboKekUamiPrincipalIds` so single-UAMI deployments (single-UAMI shape) and dual-UAMI deployments (PilotSwarm reference shape) both work.
 
 Live-tenant smoke is the npm publish gate for OBO changes — see `examples/obo-smoke/` (`obo_smoke_whoami` against Graph `/me`, `obo_smoke_force_reauth`) and `docs/operations/obo-kek-runbook.md`. Reference smoke env vars are read at handler-time, not at module-load time, so a smoke plugin loaded before env is set still functions correctly once configured.
 

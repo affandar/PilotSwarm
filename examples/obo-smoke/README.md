@@ -98,7 +98,7 @@ and has no side effects. Run it twice in a session:
   AKS pods automatically take the FIC path via
   `AZURE_FEDERATED_TOKEN_FILE`. Both backends route through
   `@azure/msal-node`'s `acquireTokenOnBehalfOf` so the OBO request
-  shape matches the production-shape MSAL path consumers (Waldemort,
+  shape matches the production-shape MSAL path consumers (ExampleApp,
   etc.) actually use.
 - **Tokens are never logged.** The plugin returns metadata only —
   `upn`, `objectId`, and a `hasAccessToken` boolean indicator. The

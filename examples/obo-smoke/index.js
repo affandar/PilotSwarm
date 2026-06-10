@@ -33,7 +33,7 @@
  * Both backends route through `@azure/msal-node`'s
  * `ConfidentialClientApplication.acquireTokenOnBehalfOf` so the OBO
  * request shape matches the production-shape MSAL path consumers
- * (e.g., Waldemort) actually use. The FIC `clientAssertion` callback
+ * (e.g., ExampleApp) actually use. The FIC `clientAssertion` callback
  * re-reads `AZURE_FEDERATED_TOKEN_FILE` on **every** acquisition (the
  * projected SA token rotates); caching the assertion in the CCA
  * config would silently break after rotation. SC-018 pins this.

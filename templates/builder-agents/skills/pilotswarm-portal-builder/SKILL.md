@@ -85,12 +85,12 @@ Example:
 
 ```json
 {
-  "name": "waldemort",
+  "name": "exampleapp",
   "description": "Operations workspace",
   "portal": {
     "branding": {
-      "title": "Waldemort",
-      "pageTitle": "Waldemort Portal",
+      "title": "ExampleApp",
+      "pageTitle": "ExampleApp Portal",
       "logoFile": "./assets/logo.svg",
       "faviconFile": "./assets/favicon.png"
     },
@@ -98,7 +98,7 @@ Example:
       "loadingMessage": "Preparing your command center"
     },
     "auth": {
-      "signInTitle": "Sign in to Waldemort",
+      "signInTitle": "Sign in to ExampleApp",
       "signInMessage": "Use your organization account to open the browser workspace."
     }
   }

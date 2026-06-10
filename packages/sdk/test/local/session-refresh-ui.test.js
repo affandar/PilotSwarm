@@ -235,8 +235,8 @@ describe("session refresh UI recovery", () => {
     it("rebrands legacy PilotSwarm root sessions with the active app title", async () => {
         const { store } = createController({}, {
             branding: {
-                title: "Waldemort",
-                splash: "{bold}{cyan-fg}Waldemort{/cyan-fg}{/bold}",
+                title: "ExampleApp",
+                splash: "{bold}{cyan-fg}ExampleApp{/cyan-fg}{/bold}",
             },
         });
 
@@ -265,17 +265,17 @@ describe("session refresh UI recovery", () => {
 
         const rows = selectVisibleSessionRows(store.getState(), 8);
         const rootRow = rows[0]?.runs?.map((run) => run.text).join("") || "";
-        assert(rootRow.startsWith("⚙ Waldemort"), "system session row should use one visible space after the gear marker");
-        assertIncludes(rootRow, "Waldemort", "legacy root row should use the current branding title");
+        assert(rootRow.startsWith("⚙ ExampleApp"), "system session row should use one visible space after the gear marker");
+        assertIncludes(rootRow, "ExampleApp", "legacy root row should use the current branding title");
         assert(!rootRow.includes("PilotSwarm"), "legacy root row should not leak the old PilotSwarm title");
 
         const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
-        assert(chromeTitle.startsWith("⚙ Waldemort"), "system chat chrome should use one visible space after the gear marker");
-        assertIncludes(chromeTitle, "Waldemort", "chat chrome should use the branded system title");
+        assert(chromeTitle.startsWith("⚙ ExampleApp"), "system chat chrome should use one visible space after the gear marker");
+        assertIncludes(chromeTitle, "ExampleApp", "chat chrome should use the branded system title");
         assert(!chromeTitle.includes("PilotSwarm"), "chat chrome should not leak the old PilotSwarm title");
 
         const splash = selectActiveChat(store.getState());
-        assertEqual(splash[0]?.id, "splash:Waldemort", "empty system-session splash should use the branded root title");
+        assertEqual(splash[0]?.id, "splash:ExampleApp", "empty system-session splash should use the branded root title");
     });
 
     it("shows a sending status in the chat header without appending a synthetic chat bubble", () => {

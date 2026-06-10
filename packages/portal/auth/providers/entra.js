@@ -72,7 +72,7 @@ export function createEntraAuthProvider({ pluginAuthConfig } = {}) {
                     redirectUri: `${req?.protocol || "https"}://${host}`,
                     // User OBO: when the deployment configures a
                     // downstream scope (e.g. api://<worker-app>/.default for a
-                    // consumer like Waldemort), the SPA acquires an additional
+                    // downstream consumer), the SPA acquires an additional
                     // access token at sign-in / RPC time and forwards it via
                     // the per-RPC envelope so worker tools can perform OBO.
                     // null = OBO disabled for this deployment; SPA stays on

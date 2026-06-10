@@ -4,6 +4,9 @@
 > feature works end-to-end on a deployed PilotSwarm stamp. Used as a
 > release gate (FR-018), post-incident verification, and post-deploy
 > stamp-bringup check.
+>
+> Feature spec (FR/SC numbering referenced throughout this document):
+> [`docs/specs/user-obo-propagation.md`](../specs/user-obo-propagation.md).
 
 ## When to run
 
@@ -17,7 +20,7 @@
   rather than leaving you with a generic "session hangs" symptom.
 - **Post-deploy bringup** for any new stamp opting in to OBO. Run
   immediately after `OBO_ENABLED=true` lands so you have a clean
-  baseline before any consumer (Waldemort, etc.) wires in.
+  baseline before any consumer (ExampleApp, etc.) wires in.
 
 ## Prerequisites
 

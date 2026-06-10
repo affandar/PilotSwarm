@@ -201,7 +201,7 @@ Portal auth (ConfigMap) — fields depend on auth posture
   ADMIN_ASSIGNMENTS                  <suggested: ${user}; CONFIRM OR OVERRIDE>   # UPNs / object ids / group display names, comma-separated
   USER_ASSIGNMENTS                   <empty>                                       # UPNs / object ids / group display names, comma-separated
 
-User OBO Propagation (optional — opt-in feature for downstream consumers like waldemort)
+User OBO Propagation (optional — opt-in feature for downstream consumers like ExampleApp)
   OBO_ENABLED                        false (default)                              # set 'true' to provision the OBO KEK in stamp Key Vault
   PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE <empty> (default)                             # api://<worker-app>/.default form when consumer wires OBO end-to-end
 
@@ -237,7 +237,8 @@ User OBO live-smoke (optional — only on dedicated smoke stamps; production sta
 > `pilotswarm-obo-smoke-app-reg` for the full table.
 
 **About OBO User Context propagation:** opt-in feature (default off,
-backwards-compatible per FR-002 of the OBO spec). When `OBO_ENABLED=true`,
+backwards-compatible per FR-002 of the User OBO Propagation spec at
+[`docs/specs/user-obo-propagation.md`](../../../docs/specs/user-obo-propagation.md)). When `OBO_ENABLED=true`,
 the base-infra Bicep additionally provisions a key in the stamp Key Vault:
 `obo-user-token-kek` (RSA-2048, `wrapKey`/`unwrapKey` only, 365-day
 auto-rotation with prior-version retention) and grants `Key Vault Crypto

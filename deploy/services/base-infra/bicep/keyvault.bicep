@@ -36,7 +36,7 @@ param localDeploymentPrincipalType string = 'User'
 @description('When true, provision an additional AKV key used as the OBO Key Encryption Key (KEK) for envelope-encrypting per-RPC user access tokens carried portal→worker (User OBO Propagation feature). Defaults to false; opt-in per environment via the OBO_ENABLED env var → base-infra params template. When false, no key is created and no crypto role assignments are made — strictly backwards-compatible for environments not using user OBO.')
 param oboEnabled bool = false
 
-@description('Name of the OBO KEK to provision when oboEnabled=true. Default matches the canonical name agreed with downstream consumers (microsoft/waldemort): `obo-user-token-kek`.')
+@description('Name of the OBO KEK to provision when oboEnabled=true. Default matches the canonical name agreed with downstream consumers (a downstream consumer app): `obo-user-token-kek`.')
 param oboKekName string = 'obo-user-token-kek'
 
 @description('Array of AAD principal IDs (UAMI principalIds) that need wrapKey/unwrapKey on the OBO KEK. PilotSwarm reference deploy passes the single shared CSI UAMI principalId (both worker and portal pods federate against it). Downstream consumers that use a different UAMI topology can pass an array of distinct principalIds — one role assignment is emitted per element. Ignored when oboEnabled=false.')

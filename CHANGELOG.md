@@ -7,7 +7,7 @@
 Adds first-class support for per-RPC user identity + access-token
 propagation from the portal sign-in flow through to worker tool
 handlers, enabling downstream consumers (e.g.
-[microsoft/waldemort](https://github.com/microsoft/waldemort)) to
+downstream consumer apps) to
 perform Azure DevOps / Graph / etc. calls via the OAuth 2.0
 On-Behalf-Of flow under the signed-in engineer's Entra identity.
 
