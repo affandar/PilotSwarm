@@ -29,10 +29,14 @@ provisioned only when `OBO_ENABLED=true` in the per-env `.env`.
 - `interactionRequired({ reasonCode, message?, claims? })` — helper
   that produces a structured tool-result outcome signaling the user
   must re-authenticate (Conditional Access, MFA, consent, password
-  change). Reason-code taxonomy: `reauth_required`, `mfa_refresh`,
-  `conditional_access`, `consent_required`. The portal UI keys off
-  `reasonCode` to render the re-auth affordance; the `claims` blob is
-  never forwarded to the LLM.
+  change). Reason-code taxonomy is **pinned**: only
+  `reauth_required`, `mfa_refresh`, `conditional_access`,
+  `consent_required` are accepted; the helper throws on unknown
+  codes (the portal UI keys off `reasonCode` to render the re-auth
+  affordance, so unstable values would fragment the contract). The
+  pinned set is also exported as `INTERACTION_REQUIRED_REASON_CODES`
+  and the matching `InteractionRequiredReasonCode` type. The
+  `claims` blob is never forwarded to the LLM.
 - `serviceUnavailable({ reasonCode, retryAfter?, message? })` —
   helper for transient service-degraded outcomes
   (`akv_unwrap_failure`, `idp_unreachable`, etc.). Machine-
@@ -93,6 +97,21 @@ post-deploy verification. New runbook at
 [`docs/operations/live-smoke.md`](docs/operations/live-smoke.md). The
 worker registers the smoke tools only when `OBO_SMOKE_ENABLED=true`
 is set on the stamp.
+
+**Phase 7 deploy-pipeline plumbing:** `deploy/envs/template.env`,
+`deploy/scripts/lib/compose-env.mjs`, and the worker overlay
+(`deploy/gitops/worker/overlays/default/.env`) project the smoke
+toggle plus the per-stamp downstream-app identity
+(`OBO_SMOKE_WORKER_APP_TENANT_ID` / `_CLIENT_ID` / `_GRAPH_SCOPE`,
+`OBO_SMOKE_TEST_USER_UPN`) into the worker ConfigMap with
+`__PS_UNSET__` sentinel defaults so a non-smoke stamp omitting any
+of them keeps the substitute-env contract green. Operators flip the
+toggle and re-run
+`node deploy/scripts/deploy.mjs worker <stamp> --steps manifests,rollout`
+to land the smoke tools — no worker image rebuild required. The
+`pilotswarm-npm-deployer` agent and `pilotswarm-new-env-deploy` skill
+document the full toggle-and-verify workflow alongside the existing
+OBO Phase 6 toggle.
 
 **Docs:**
 

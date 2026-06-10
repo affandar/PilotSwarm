@@ -111,7 +111,9 @@ not off the message text.
 
 ### `interactionRequired({ reasonCode, message?, claims? })`
 
-Signals the user must re-authenticate. Pinned reason codes:
+Signals the user must re-authenticate. **Reason codes are strictly
+pinned** — passing a value outside this set throws at helper-call
+time so downstream consumers can't fragment the contract:
 
 | `reasonCode` | When to use |
 |---|---|
@@ -119,6 +121,11 @@ Signals the user must re-authenticate. Pinned reason codes:
 | `mfa_refresh` | IdP requires fresh MFA proof |
 | `conditional_access` | Conditional Access policy challenged the token |
 | `consent_required` | User needs to consent to a new scope |
+
+The pinned set is also exported from `pilotswarm-sdk` as
+`INTERACTION_REQUIRED_REASON_CODES` (a `ReadonlySet`) and the
+matching `InteractionRequiredReasonCode` TypeScript union, so callers
+can validate against the same source of truth.
 
 The `claims` field (the WWW-Authenticate `claims=` challenge from the
 IdP) is forwarded to the portal MSAL flow for the re-auth call but is

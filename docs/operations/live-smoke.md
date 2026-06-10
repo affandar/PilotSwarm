@@ -59,6 +59,20 @@ In the stamp's `deploy/envs/local/<stamp>/.env`:
 | `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` | (only for local-dev backend; FIC pods read from `AZURE_FEDERATED_TOKEN_FILE`) |
 | `OBO_SMOKE_TEST_USER_UPN` | (optional) UPN to assert against `graph.upn`; if unset, any non-empty UPN passes |
 
+These keys are wired through the deploy pipeline so a `worker --steps
+manifests,rollout` re-render projects them into the worker pod's
+ConfigMap (`compose-env.mjs` falls them back to the `__PS_UNSET__`
+sentinel when a stamp omits any of them, and the worker overlay's
+`OBO_SMOKE_WORKER_APP_*` block strips the sentinel at startup so the
+smoke plugin treats absent values as `undefined`). On AKS, leave
+`OBO_SMOKE_WORKER_APP_CLIENT_SECRET` unset — the plugin uses the
+stamp's existing workload-identity FIC machinery
+(`WORKLOAD_IDENTITY_CLIENT_ID` + `AZURE_FEDERATED_TOKEN_FILE`). For
+local-dev (running the worker outside a pod), set the secret in the
+stamp's local `.env` instead. **Production stamps must leave
+`OBO_SMOKE_ENABLED=false`** — the smoke tools are not authz-gated and
+would otherwise expose a `force_reauth` path to any signed-in user.
+
 The plugin auto-selects between the FIC and client-secret backends at
 **handler-call time** (FR-025): when `AZURE_FEDERATED_TOKEN_FILE` is
 present, the FIC backend wins precedence; the secret is logged once
