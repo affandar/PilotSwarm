@@ -14,39 +14,10 @@
 // for query-time embedding and for tests that don't depend on any in-database
 // HTTP path.
 
-/**
- * Describes an OpenAI/Azure-OpenAI-compatible embeddings endpoint. This is a
- * provider-neutral contract: it is the only embedding-related thing PilotSwarm
- * hands to a fact-store provider, and any provider (HorizonDB, AlloyDB, plain
- * Postgres, …) can consume it.
- *
- * Request  (POST url): { "<inputField>": "text", "model": "<model>" }
- * Response (200):      { "data": [ { "embedding": [..<dim> floats..] } ] }
- *
- * This is the shape used by both Azure OpenAI (`/embeddings?api-version=...`)
- * and OpenAI (`/v1/embeddings`). Override the field/response path if your
- * gateway differs.
- */
-export interface EmbeddingEndpointConfig {
-    /** Full POST URL of the embeddings endpoint (including any api-version query). */
-    url: string;
-    /** Model/deployment name sent in the request body. */
-    model: string;
-    /** Vector dimension; MUST equal the `vector(N)` column dimension. */
-    dim: number;
-    /** Optional API key. For Azure OpenAI use header "api-key"; for OpenAI use Authorization. */
-    apiKey?: string;
-    /** Header to carry the key. Default "api-key". Use "Authorization" (with "Bearer ") for OpenAI. */
-    apiKeyHeader?: string;
-    /** If true, the key value is prefixed with "Bearer " (OpenAI style). Default false. */
-    bearer?: boolean;
-    /** Request body field carrying the text. Default "input". */
-    inputField?: string;
-    /** Extra static headers. */
-    headers?: Record<string, string>;
-    /** Per-request timeout (ms). Default 30_000. */
-    timeoutMs?: number;
-}
+// The endpoint contract type lives in types.ts (02-api-reference §1);
+// re-exported here for back-compat with existing imports.
+import type { EmbeddingEndpointConfig } from "./types.js";
+export type { EmbeddingEndpointConfig } from "./types.js";
 
 export interface HorizonFactsConfig {
     /** PostgreSQL/HorizonDB connection string. */
@@ -58,9 +29,16 @@ export interface HorizonFactsConfig {
     /**
      * Embedding endpoint (provider-neutral, see EmbeddingEndpointConfig).
      * Required for semantic/hybrid search and for this provider's in-DB embedding
-     * pipeline. Lexical + graph work without it.
+     * pipeline. Lexical + graph work without it. When provided, initialize()
+     * calls configureEmbedder() with it automatically.
      */
     embedding?: EmbeddingEndpointConfig;
+    /**
+     * Dimension of the vector(N) column, fixed at migration time. Defaults to
+     * embedding?.dim ?? 1536. configureEmbedder() rejects endpoints whose dim
+     * differs (a dim change requires a column migration + full re-embed).
+     */
+    embeddingDim?: number;
     /**
      * Vector ANN index method. "diskann" uses Azure's pg_diskann (must be
      * allow-listed in the cluster's azure.extensions parameter group); "hnsw"
@@ -88,22 +66,17 @@ export function resolveConfig(partial: Partial<HorizonFactsConfig> = {}): Horizo
         );
     }
 
-    let embedding = partial.embedding;
-    if (!embedding && process.env.HORIZON_EMBED_URL) {
-        embedding = {
-            url: process.env.HORIZON_EMBED_URL,
-            model: process.env.HORIZON_EMBED_MODEL ?? "text-embedding-3-small",
-            dim: Number.parseInt(process.env.HORIZON_EMBED_DIM ?? "1536", 10),
-            apiKey: process.env.HORIZON_EMBED_API_KEY,
-            apiKeyHeader: process.env.HORIZON_EMBED_API_KEY_HEADER ?? "api-key",
-        };
-    }
+    // The embedding endpoint must be passed EXPLICITLY (no env-var fallback):
+    // an implicit endpoint can silently conflict with the store's vector(N)
+    // dimension, and config provenance should be the host's choice (02 §1b).
+    const embedding = partial.embedding;
 
     return {
         connectionString,
         schema: partial.schema ?? DEFAULT_SCHEMA,
         graphName: partial.graphName ?? DEFAULT_GRAPH,
         embedding,
+        embeddingDim: partial.embeddingDim ?? embedding?.dim ?? 1536,
         annIndex: partial.annIndex
             ?? (process.env.HORIZON_ANN_INDEX as HorizonFactsConfig["annIndex"])
             ?? "auto",

@@ -1,23 +1,22 @@
 // @incubator/horizon-facts — open-graph quality core (DB-less, unit-tested).
 //
-// An LLM-built, ontology-free graph degenerates into noise without three pure
-// guards. These functions hold the policy; the HorizonDB adapter just applies
-// their output. See CRAWLER.md §5.
+// An LLM-built, ontology-free graph degenerates into noise without these pure
+// guards. These functions hold the policy; the typed Cypher layer just applies
+// their output. See docs/proposals/enhancedfactstore/01-functional-spec.md §6.
 
-import type { RelAssertion } from "./types.js";
-
-// ─── 5.1 Entity canonicalization ────────────────────────────────────────────
+// ─── Node canonicalization ───────────────────────────────────────────────────
 
 /**
  * Normalize a surface name for SURFACE-FORM dedup only (case, whitespace,
  * punctuation, diacritics). This does NOT solve semantic identity — "Tom Lane"
- * vs "tgl" is resolved by the crawler via searchEntities + mergeEntities, which
- * records an alias. Keep this conservative so we never collapse distinct people.
+ * vs "tgl" is resolved by the harvester via searchGraphNodes + mergeGraphNodes,
+ * which records an alias. Keep this conservative so we never collapse distinct
+ * people.
  */
 export function normalizeName(raw: string): string {
     return (raw ?? "")
         .normalize("NFKD")
-        .replace(/[\u0300-\u036f]/g, "") // strip diacritics
+        .replace(/[̀-ͯ]/g, "") // strip diacritics
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, " ")     // punctuation → space
         .trim()
@@ -25,7 +24,7 @@ export function normalizeName(raw: string): string {
 }
 
 /** Canonical dedup key: `<normalized-kind>:<normalized-name>`. */
-export function entityKey(kind: string, name: string): string {
+export function nodeKeyOf(kind: string, name: string): string {
     const k = normalizeName(kind).replace(/\s+/g, "_");
     const n = normalizeName(name).replace(/\s+/g, "-");
     return `${k}:${n}`;
@@ -44,7 +43,7 @@ export function mergeAliases(existing: string[], incoming: string[]): string[] {
     return out;
 }
 
-// ─── 5.2 Predicate normalization ────────────────────────────────────────────
+// ─── Predicate normalization ─────────────────────────────────────────────────
 
 // Tiny stopword set so "revives argument from" and "revives the argument from"
 // group together. Deliberately small — we group, we do NOT enforce a vocabulary.
@@ -54,8 +53,8 @@ const PREDICATE_STOPWORDS = new Set([
 ]);
 
 /**
- * Normalize a free-text predicate into a grouping key. The original predicate is
- * kept verbatim elsewhere; this is only for querying/analytics so the open
+ * Normalize a free-text predicate into a grouping key. The original predicate
+ * is kept verbatim on the edge; this is only for matching/analytics so the open
  * vocabulary stays queryable without being frozen.
  */
 export function predicateKey(predicate: string): string {
@@ -67,7 +66,7 @@ export function predicateKey(predicate: string): string {
     return stemmed.join("_");
 }
 
-// ─── 5.3 Confidence reinforcement (noisy-OR) ────────────────────────────────
+// ─── Confidence reinforcement (noisy-OR) ─────────────────────────────────────
 
 /**
  * Combine an existing edge confidence with a new independent observation.
@@ -79,77 +78,64 @@ export function reinforceConfidence(existing: number, observation: number): numb
     return 1 - (1 - a) * (1 - b);
 }
 
-function clamp01(x: number): number {
+export function clamp01(x: number): number {
     if (!Number.isFinite(x)) return 0;
     if (x < 0) return 0;
     if (x > 1) return 1;
     return x;
 }
 
-// ─── Assertion validation + edge-merge decision ─────────────────────────────
+// ─── Edge-upsert decision (evidence-aware reinforcement — 01 §6.3) ──────────
 
 export interface ExistingEdge {
-    fromKey: string;
-    toKey: string;
-    predicateKey: string;
     confidence: number;
     observations: number;
     evidence: string[];
 }
 
-export interface EdgeMergeResult {
-    action: "create" | "reinforce";
+export interface EdgeUpsertDecision {
+    /** create: no edge existed. reinforce: bump observations + noisy-OR.
+     * noop: re-assert carried only already-known evidence — idempotent. */
+    action: "create" | "reinforce" | "noop";
     confidence: number;
     observations: number;
     evidence: string[];
 }
 
 /**
- * Validate a relationship assertion. Returns an error string, or null if valid.
- * The structural guard against hallucinated edges: evidence is mandatory.
+ * Evidence is OPTIONAL (the graph stays permissive). Reinforcement counts only
+ * NOVEL observations: an assertion reinforces iff it carries ≥1 evidence
+ * scopeKey not already on the edge, or carries no evidence at all. Re-asserting
+ * with only already-known evidence is an idempotent no-op — a duplicate/replayed
+ * harvest of the same fact cannot inflate observations or confidence.
  */
-export function validateAssertion(r: RelAssertion): string | null {
-    if (!r.fromKey || !r.toKey) return "assertion requires fromKey and toKey";
-    if (r.fromKey === r.toKey) return "self-referential edge rejected";
-    if (!r.predicate || !r.predicate.trim()) return "assertion requires a predicate";
-    if (!Array.isArray(r.evidence) || r.evidence.length === 0) {
-        return "assertion rejected: at least one evidence fact is required";
-    }
-    if (typeof r.confidence !== "number" || r.confidence < 0 || r.confidence > 1) {
-        return "confidence must be in [0,1]";
-    }
-    if (!r.agentId) return "assertion requires an asserting agentId";
-    return null;
-}
+export function decideEdgeUpsert(
+    input: { confidence?: number; evidence?: string[] },
+    existing: ExistingEdge | null,
+): EdgeUpsertDecision {
+    const obsConfidence = clamp01(input.confidence ?? 1.0);
+    const incoming = [...new Set(input.evidence ?? [])];
 
-/**
- * Decide whether an assertion creates a new edge or reinforces an existing one.
- * Edges match on (fromKey, toKey, predicateKey) — i.e. surface variants of the
- * same predicate between the same nodes reinforce rather than duplicate.
- */
-export function decideEdgeMerge(r: RelAssertion, existing: ExistingEdge | null): EdgeMergeResult {
-    const pk = predicateKey(r.predicate);
-    if (
-        existing &&
-        existing.fromKey === r.fromKey &&
-        existing.toKey === r.toKey &&
-        existing.predicateKey === pk
-    ) {
+    if (!existing) {
+        return { action: "create", confidence: obsConfidence, observations: 1, evidence: incoming };
+    }
+
+    const known = new Set(existing.evidence ?? []);
+    const novel = incoming.filter((e) => !known.has(e));
+
+    if (incoming.length > 0 && novel.length === 0) {
         return {
-            action: "reinforce",
-            confidence: reinforceConfidence(existing.confidence, r.confidence),
-            observations: existing.observations + 1,
-            evidence: mergeEvidence(existing.evidence, r.evidence),
+            action: "noop",
+            confidence: existing.confidence,
+            observations: existing.observations,
+            evidence: existing.evidence,
         };
     }
-    return {
-        action: "create",
-        confidence: clamp01(r.confidence),
-        observations: 1,
-        evidence: [...new Set(r.evidence)],
-    };
-}
 
-function mergeEvidence(existing: string[], incoming: string[]): string[] {
-    return [...new Set([...(existing ?? []), ...(incoming ?? [])])];
+    return {
+        action: "reinforce",
+        confidence: reinforceConfidence(existing.confidence, obsConfidence),
+        observations: existing.observations + 1,
+        evidence: [...(existing.evidence ?? []), ...novel],
+    };
 }

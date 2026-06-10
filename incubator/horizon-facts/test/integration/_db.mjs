@@ -1,21 +1,19 @@
-// Integration test harness for HorizonFactStore against a real HorizonDB.
+// Integration harness — REAL SURFACE ONLY (06-provider-test-plan §0/§1).
 //
-// All integration suites SKIP automatically unless HORIZON_DATABASE_URL is set,
-// so `npm test` stays DB-less and green. To run them:
-//   HORIZON_DATABASE_URL=postgres://user:pw@host/db npm run test:integration
+// Every suite runs against the live HorizonDB named by HORIZON_DATABASE_URL
+// and SKIPs when it is unset — but a full-validation pass is defined as zero
+// skips. No stub endpoints, no marker facts, no simulated capabilities. The
+// only deterministic seams are DATA: hand-seeded unit vectors written into
+// the real embedding column (real pgvector executes every query).
 //
-// A local HTTP embedding stub stands in for the embeddings endpoint. It speaks
-// the OpenAI/AOAI response shape that both the Node EmbeddingClient and the
-// in-DB sql/006 pipeline expect. Embeddings are deterministic bag-of-keyword
-// vectors so semantic ordering is assertable.
+// Env:
+//   HORIZON_DATABASE_URL   — the HorizonDB (required by all suites)
+//   HORIZON_EMBED_URL/_API_KEY/_MODEL/_DIM — the real embeddings deployment
+//                            (embedder + semantic-pipeline suites)
+//   PLAIN_DATABASE_URL     — a real vanilla Postgres (preconditions negatives)
 
-import http from "node:http";
 import pg from "pg";
 
-// Normalize the connection string for managed Postgres (Azure HorizonDB) whose
-// cert chain isn't in Node's default trust store. `uselibpqcompat=true` makes
-// `sslmode=require` mean "encrypt, don't verify CA" (libpq semantics) instead of
-// pg's default verify-full, which rejects the chain with "self-signed certificate".
 function normalizeDbUrl(raw) {
     if (!raw) return "";
     if (!/[?&]sslmode=/.test(raw)) return raw;
@@ -25,75 +23,15 @@ function normalizeDbUrl(raw) {
 
 export const DB_URL = normalizeDbUrl(process.env.HORIZON_DATABASE_URL || "");
 export const HAS_DB = !!DB_URL;
-export const EMBED_DIM = 8;
-export const EMBED_MODEL = "stub-embed-8";
+export const PLAIN_DB_URL = normalizeDbUrl(process.env.PLAIN_DATABASE_URL || "");
+export const HAS_PLAIN_DB = !!PLAIN_DB_URL;
 
-const VOCAB = ["jsonb", "subscript", "patch", "vacuum", "planner", "index", "lock", "replication"];
-
-/** Deterministic keyword-bag embedding so similar texts get close vectors. */
-export function fakeEmbed(text, dim = EMBED_DIM) {
-    const t = String(text).toLowerCase();
-    const v = new Array(dim).fill(0);
-    for (let i = 0; i < VOCAB.length && i < dim; i++) {
-        // count occurrences of the keyword
-        let from = 0, n = 0, idx;
-        while ((idx = t.indexOf(VOCAB[i], from)) !== -1) { n++; from = idx + 1; }
-        v[i] = n;
-    }
-    // tiny base so all-zero texts still normalize
-    for (let i = 0; i < dim; i++) v[i] += 0.001;
-    const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
-    return v.map((x) => x / norm);
-}
-
-/** Start the local embedding stub. Returns { url, close, count() }. */
-export async function startEmbeddingStub() {
-    let count = 0;
-    const server = http.createServer((req, res) => {
-        let body = "";
-        req.on("data", (c) => (body += c));
-        req.on("end", () => {
-            count++;
-            let input;
-            try { input = JSON.parse(body).input; } catch { input = ""; }
-            const inputs = Array.isArray(input) ? input : [input];
-            const data = inputs.map((t) => ({ embedding: fakeEmbed(t) }));
-            res.writeHead(200, { "content-type": "application/json" });
-            res.end(JSON.stringify({ data }));
-        });
-    });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const port = server.address().port;
-    return {
-        url: `http://127.0.0.1:${port}/embeddings`,
-        close: () => new Promise((r) => server.close(r)),
-        count: () => count,
-    };
-}
-
-export function uniqueNames() {
-    const r = Math.random().toString(36).slice(2, 8);
-    // schema and graph must be distinct: AGE's create_graph() creates a Postgres
-    // schema named after the graph, which would collide with the facts schema if
-    // they shared a name ("schema ... already exists").
-    return { schema: `hf_test_${r}`, graph: `hf_graph_${r}` };
-}
-
-/** Embedding config pointed at the stub (no auth). */
-export function stubEmbedding(stubUrl) {
-    return { url: stubUrl, model: EMBED_MODEL, dim: EMBED_DIM, inputField: "input" };
-}
-
-// ── Real embedding endpoint (live Azure AI Foundry / AOAI) ───────────────────
-// Set HORIZON_EMBED_URL + HORIZON_EMBED_API_KEY in .env to exercise the in-DB
-// df.http() pipeline against the actual model. Without these, in-DB tests that
-// need a DB-reachable endpoint skip honestly.
 export const REAL_EMBED_DIM = Number(process.env.HORIZON_EMBED_DIM ?? "1536");
 export const REAL_EMBED_MODEL = process.env.HORIZON_EMBED_MODEL ?? "text-embedding-3-small";
 export const HAS_REAL_EMBED = !!(process.env.HORIZON_EMBED_URL && process.env.HORIZON_EMBED_API_KEY);
 
 /** Embedding config pointed at the live endpoint, from HORIZON_EMBED_* env. */
-export function realEmbedding() {
+export function realEmbedding(overrides = {}) {
     return {
         url: process.env.HORIZON_EMBED_URL,
         model: REAL_EMBED_MODEL,
@@ -101,16 +39,37 @@ export function realEmbedding() {
         apiKey: process.env.HORIZON_EMBED_API_KEY,
         apiKeyHeader: process.env.HORIZON_EMBED_API_KEY_HEADER ?? "api-key",
         inputField: "input",
+        ...overrides,
     };
 }
 
+/** Per-run names. Graph name MUST differ from the schema name (AGE's
+ * create_graph creates a Postgres schema named after the graph). */
+export function uniqueNames(tag = "t") {
+    const r = Math.random().toString(36).slice(2, 8);
+    return { schema: `hzt_${tag}_${r}`, graph: `hzg_${tag}_${r}` };
+}
+
+/** Build + initialize a store on a fresh per-run schema. */
+export async function makeStore({ tag = "t", embeddingDim = 4, embedding = undefined } = {}) {
+    const { HorizonFactStore } = await import("../../dist/src/index.js");
+    const names = uniqueNames(tag);
+    const store = await HorizonFactStore.create({
+        connectionString: DB_URL,
+        schema: names.schema,
+        graphName: names.graph,
+        embeddingDim,
+        embedding,
+    });
+    await store.initialize();
+    return { store, ...names };
+}
+
 /** Drop a test schema + AGE graph. Safe to call in teardown. */
-export async function dropSchemaAndGraph(connectionString, schema, graph) {
-    const pool = new pg.Pool({ connectionString, max: 1 });
+export async function dropSchemaAndGraph(schema, graph) {
+    const pool = new pg.Pool({ connectionString: DB_URL, max: 1 });
     try {
         try {
-            // `LOAD 'age'` is blocked on managed PG where age is preloaded via
-            // shared_preload_libraries; tolerate that and still drop the graph.
             try {
                 await pool.query(`LOAD 'age'`);
             } catch (err) {
@@ -125,7 +84,84 @@ export async function dropSchemaAndGraph(connectionString, schema, graph) {
     }
 }
 
-/** Convenience: a raw pool for direct psql-style assertions. */
-export function rawPool() {
-    return new pg.Pool({ connectionString: DB_URL, max: 1 });
+/** Raw pool for direct catalog/table assertions (test code is exempt from the
+ * provider's no-inline-SQL rule — that rule binds src/, not tests). */
+export function rawPool(url = DB_URL) {
+    return new pg.Pool({ connectionString: url, max: 2 });
+}
+
+/** Poll an async predicate until truthy or deadline (charter: no fixed sleeps). */
+export async function pollUntil(fn, { timeoutMs = 60_000, everyMs = 500, label = "condition" } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const v = await fn();
+        if (v) return v;
+        if (Date.now() > deadline) throw new Error(`pollUntil timed out after ${timeoutMs}ms waiting for ${label}`);
+        await new Promise((r) => setTimeout(r, everyMs));
+    }
+}
+
+/** Access-context builder. */
+export function aclOf(readerSessionId, grantedSessionIds = [], unrestricted = false) {
+    return { readerSessionId, grantedSessionIds, unrestricted };
+}
+
+// ── FX corpus (04 §1.1): deterministic dim-4 unit vectors seeded into the
+//    REAL embedding column. Expected ranks are computed from these vectors.
+
+export const FX_MODEL = "seeded-4";
+
+export const FX = [
+    { id: "F1", key: "skills/jsonb",           shared: true,  vec: [1, 0, 0, 0],        value: { name: "jsonb",            text: "jsonb fundamentals and subscripting" } },
+    { id: "F2", key: "skills/jsonb-subscript", shared: true,  vec: [0.97, 0.24, 0, 0],  value: { name: "jsonb subscript",  text: "jsonb subscript assignment semantics patch" } },
+    { id: "F3", key: "skills/vacuum",          shared: true,  vec: [0, 1, 0, 0],        value: { name: "vacuum",           text: "vacuum tuning for the planner" } },
+    { id: "F4", key: "skills/replication",     shared: true,  vec: [0, 0, 1, 0],        value: { name: "replication",      text: "logical replication slots" } },
+    { id: "F5", key: "notes/a", session: "S1", shared: false, vec: [0.9, 0.1, 0, 0],    value: { name: "private note a",   text: "jsonb subscript investigation notes" } },
+    { id: "F6", key: "notes/b", session: "S2", shared: false, vec: [0.95, 0.05, 0, 0],  value: { name: "private note b",   text: "jsonb subscript draft reply" } },
+];
+
+export function fxScopeKey(f) {
+    return f.shared ? `shared:${f.key}` : `session:${f.session}:${f.key}`;
+}
+
+export function cosine(a, b) {
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+    return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/** Seed the FX corpus through the provider API, then write the hand-authored
+ * vectors directly into the real embedding column (deterministic DATA). */
+export async function seedFX(store, schema, pool) {
+    for (const f of FX) {
+        await store.storeFact({
+            key: f.key, value: f.value, shared: f.shared,
+            sessionId: f.session ?? null, agentId: "fixture",
+        });
+    }
+    for (const f of FX) {
+        await pool.query(
+            `UPDATE "${schema}".facts
+               SET embedding = $1::vector, embedded_at = now(),
+                   embedding_model = $2, last_embedded_hash = content_hash
+             WHERE scope_key = $3`,
+            [`[${f.vec.join(",")}]`, FX_MODEL, fxScopeKey(f)],
+        );
+    }
+}
+
+// ── GX graph fixture (04 §1.3), built through the provider's own write API. ──
+
+export async function seedGX(store) {
+    const agentId = "fixture";
+    const n = {};
+    n.jsonbSub = await store.upsertGraphNode({ kind: "skill", name: "jsonb-subscript", agentId, evidence: [fxScopeKey(FX[0])] });
+    n.vacuum   = await store.upsertGraphNode({ kind: "skill", name: "vacuum", agentId, evidence: [fxScopeKey(FX[2])] });
+    n.planner  = await store.upsertGraphNode({ kind: "component", name: "planner", agentId });
+    n.moody    = await store.upsertGraphNode({ kind: "person", name: "moody", agentId });
+    n.alastor  = await store.upsertGraphNode({ kind: "person", name: "alastor-moody", agentId });
+    await store.upsertGraphEdge({ fromKey: n.jsonbSub.nodeKey, toKey: n.vacuum.nodeKey, predicate: "supersedes", agentId, evidence: [fxScopeKey(FX[0])] });
+    await store.upsertGraphEdge({ fromKey: n.vacuum.nodeKey, toKey: n.planner.nodeKey, predicate: "tunes", agentId, evidence: [fxScopeKey(FX[2])] });
+    await store.upsertGraphEdge({ fromKey: n.planner.nodeKey, toKey: n.moody.nodeKey, predicate: "owned_by", agentId });
+    return n;
 }

@@ -1,173 +1,301 @@
-// @incubator/horizon-facts — optional agent tools.
+// @incubator/horizon-facts — LLM-facing agent tools (05-tools-spec).
 //
-// The enhanced store can OPTIONALLY inject additional tools into an agent's
-// toolset. These wrap the additive retrieval + open-graph methods so an agent
-// can search facts semantically and harvest the open graph. They are plain,
-// host-agnostic descriptors (name + JSON-schema parameters + handler) that map
-// directly onto PilotSwarm's defineTool() shape — spread them into
-// worker.registerTools([...]) or a session's tools.
+// Tool names and contracts follow docs/proposals/enhancedfactstore/05-tools-spec.md
+// exactly: `facts_*` over the facts store, `graph_*` over the open graph. Two
+// role bundles over the same corpus:
 //
-// Nothing here is required for the drop-in FactStore behavior; an app opts in.
+//   READER    — facts_search / facts_similar / facts_read + the graph READ tools.
+//   HARVESTER — everything the reader gets, plus the PRIVILEGED crawl-queue
+//               tools (facts_read_uncrawled / facts_mark_crawled) and the graph
+//               WRITE tools. Crawling sees ALL facts across scopes by design
+//               (01 §6.6); only grant this bundle to the trusted harvester role.
+//
+// Descriptors are host-agnostic (name + JSON-schema + handler), mapping onto
+// PilotSwarm's defineTool() shape.
 
 import type {
-    AccessContext, EnhancedFactStore, GraphCrawlerInterface, SearchOpts,
+    AccessContext, EnhancedFactStore, GraphInterface, SearchOpts,
 } from "./types.js";
 
 export interface AgentTool {
     name: string;
     description: string;
-    /** JSON Schema for the tool arguments. */
     parameters: Record<string, unknown>;
     handler: (args: any) => Promise<unknown>;
 }
 
+export type Role = "reader" | "harvester";
+
 export interface FactsToolsOptions {
-    /** Retrieval tools (search_facts, related_facts). Default true. */
-    retrieval?: boolean;
-    /** Open-graph read tools (entities, neighbourhood, relationships). Default true. */
-    graphRead?: boolean;
-    /** Open-graph write/harvest tools (upsert_entity, assert_relationship, link_evidence). Default false. */
-    graphWrite?: boolean;
-    /** Tool name prefix to avoid collisions with SDK built-ins. Default "facts_". */
-    prefix?: string;
+    /** Which bundle to build. Default "reader". */
+    role?: Role;
     /**
-     * Access context resolver. Given the tool-call context, return the ACL
-     * context for the query. Default: unrestricted (suitable for trusted
-     * single-tenant harvesting agents). Override for multi-tenant sessions.
+     * Access context resolver for the READER-scoped tools. Default:
+     * unrestricted (single-tenant). Override for multi-tenant sessions.
+     * The crawl-queue tools never use it — they are privileged by contract.
      */
-    resolveAccess?: (ctx: any) => AccessContext;
+    resolveAccess?: (args: any) => AccessContext;
+    /** Agent identity recorded on graph writes. Default "harvester". */
+    agentId?: string;
 }
 
-type Store = EnhancedFactStore & GraphCrawlerInterface;
+type Store = EnhancedFactStore & GraphInterface;
 
-/**
- * Build the optional agent toolset for a HorizonFactStore. Returns an array of
- * AgentTool descriptors; the caller decides where to register them.
- */
 export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): AgentTool[] {
-    const prefix = opts.prefix ?? "facts_";
+    const role = opts.role ?? "reader";
     const access = opts.resolveAccess ?? (() => ({ unrestricted: true }));
-    const retrieval = opts.retrieval ?? true;
-    const graphRead = opts.graphRead ?? true;
-    const graphWrite = opts.graphWrite ?? false;
+    const agentId = opts.agentId ?? "harvester";
     const tools: AgentTool[] = [];
 
-    if (retrieval) {
-        tools.push({
-            name: `${prefix}search`,
-            description: "Search facts across lexical, semantic, and graph signals. Returns ranked facts.",
-            parameters: {
-                type: "object",
-                properties: {
-                    query: { type: "string", description: "Natural-language search query." },
-                    mode: { type: "string", enum: ["lexical", "semantic", "graph", "hybrid"], description: "Default hybrid." },
-                    namespace: { type: "string", description: "Optional key-prefix namespace (e.g. skills)." },
-                    limit: { type: "number", description: "Max results (default 20)." },
-                },
-                required: ["query"],
-            },
-            handler: async (a) => {
-                const o: SearchOpts = { mode: a.mode, namespace: a.namespace, limit: a.limit };
-                return store.searchFacts(a.query, o, access(a));
-            },
-        });
-        tools.push({
-            name: `${prefix}related`,
-            description: "Find facts semantically related to a known fact (by scope_key).",
-            parameters: {
-                type: "object",
-                properties: {
-                    scopeKey: { type: "string", description: "scope_key of the anchor fact." },
-                    k: { type: "number", description: "Top-k neighbours (default 8)." },
-                },
-                required: ["scopeKey"],
-            },
-            handler: (a) => store.relatedFacts(a.scopeKey, { k: a.k }, access(a)),
-        });
-    }
+    // ── §1 retrieval (reader + harvester) ────────────────────────────────────
 
-    if (graphRead) {
-        tools.push({
-            name: `${prefix}graph_search_entities`,
-            description: "Find graph entities by kind and/or name (anchor discovery).",
-            parameters: {
-                type: "object",
-                properties: {
-                    kind: { type: "string" }, nameLike: { type: "string" }, limit: { type: "number" },
-                },
+    tools.push({
+        name: "facts_search",
+        description:
+            "Search facts by a query over the FACTS STORE ONLY. The query shape depends on mode: " +
+            "lexical = BM25 — pass KEYWORDS/terms, not a sentence; semantic = natural language (embedded); " +
+            "hybrid = a short keyword-rich phrase, used both ways. There is NO graph mode — use graph_search_nodes. " +
+            "Returned scopeKey values are the natural seeds for graph_search_nodes.",
+        parameters: {
+            type: "object",
+            properties: {
+                query: { type: "string", description: "Keywords for lexical, natural language for semantic, keyword-rich phrase for hybrid." },
+                mode: { type: "string", enum: ["lexical", "semantic", "hybrid"], description: "Default hybrid." },
+                namespace: { type: "string", description: "Key-prefix filter, e.g. 'archive/pgsql-hackers'." },
+                tags: { type: "array", items: { type: "string" }, description: "Restrict to facts carrying all these tags." },
+                limit: { type: "number", description: "Max results (default 20)." },
             },
-            handler: (a) => store.searchEntities({ kind: a.kind, nameLike: a.nameLike, limit: a.limit }),
-        });
-        tools.push({
-            name: `${prefix}graph_neighbourhood`,
-            description: "Explore the edges around an entity to discover which predicates exist (anchor-and-explore).",
-            parameters: {
-                type: "object",
-                properties: { entityKey: { type: "string" }, depth: { type: "number", description: "1..5" } },
-                required: ["entityKey"],
-            },
-            handler: (a) => store.neighbourhood(a.entityKey, a.depth ?? 1),
-        });
-        tools.push({
-            name: `${prefix}graph_search_relationships`,
-            description: "Query relationships by EXACT predicate (agent-owned ontology) and/or endpoints.",
-            parameters: {
-                type: "object",
-                properties: {
-                    predicate: { type: "string" }, predicateKey: { type: "string" },
-                    fromKey: { type: "string" }, toKey: { type: "string" },
-                    minConfidence: { type: "number" }, limit: { type: "number" },
-                },
-            },
-            handler: (a) => store.searchRelationships(a),
-        });
-    }
+            required: ["query"],
+        },
+        handler: (a) => {
+            const o: SearchOpts = { mode: a.mode, namespace: a.namespace, tags: a.tags, limit: a.limit };
+            return store.searchFacts(a.query, o, access(a));
+        },
+    });
 
-    if (graphWrite) {
-        tools.push({
-            name: `${prefix}graph_upsert_entity`,
-            description: "Create or reuse a graph entity (search-first dedup by canonical key).",
-            parameters: {
-                type: "object",
-                properties: {
-                    kind: { type: "string" }, name: { type: "string" },
-                    aliases: { type: "array", items: { type: "string" } },
-                    agentId: { type: "string" },
-                },
-                required: ["kind", "name", "agentId"],
+    tools.push({
+        name: "facts_similar",
+        description:
+            "Given a fact you already have, return the semantically nearest other facts " +
+            "(vector kNN over the fact's stored embedding — no query text, no re-embedding). Anchor excluded.",
+        parameters: {
+            type: "object",
+            properties: {
+                scopeKey: { type: "string", description: "The anchor fact's scope_key." },
+                k: { type: "number", description: "Top-k neighbours (default 8)." },
+                minScore: { type: "number", description: "Drop neighbours below this cosine score (0..1)." },
             },
-            handler: (a) => store.upsertEntity(a),
-        });
-        tools.push({
-            name: `${prefix}graph_assert_relationship`,
-            description: "Assert a free-text relationship with MANDATORY evidence (fact scope_keys). Reinforces if it exists.",
-            parameters: {
-                type: "object",
-                properties: {
-                    fromKey: { type: "string" }, toKey: { type: "string" },
-                    predicate: { type: "string", description: "Free text, e.g. 'revives argument from'." },
-                    confidence: { type: "number", description: "0..1 for this observation." },
-                    evidence: { type: "array", items: { type: "string" }, description: "≥1 fact scope_key. Required." },
-                    agentId: { type: "string" }, model: { type: "string" },
-                },
-                required: ["fromKey", "toKey", "predicate", "confidence", "evidence", "agentId"],
+            required: ["scopeKey"],
+        },
+        handler: (a) => store.similarFacts(a.scopeKey, { k: a.k, minScore: a.minScore }, access(a)),
+    });
+
+    tools.push({
+        name: "facts_read",
+        description:
+            "Read facts directly by key/scopeKeys/tags/scope — no ranking. Use scopeKeys to resolve the " +
+            "evidence arrays returned by graph tools back into facts. scope: 'descendants' reads the spawn-tree (lineage).",
+        parameters: {
+            type: "object",
+            properties: {
+                keyPattern: { type: "string", description: "Key prefix/pattern filter." },
+                scopeKeys: { type: "array", items: { type: "string" }, description: "Explicit fact scope_keys (e.g. graph evidence). Inaccessible/unknown keys are silently omitted." },
+                tags: { type: "array", items: { type: "string" } },
+                scope: { type: "string", enum: ["accessible", "shared", "session", "descendants"], description: "Default accessible." },
+                limit: { type: "number" },
             },
-            handler: (a) => store.assertRelationship(a),
-        });
-        tools.push({
-            name: `${prefix}graph_link_evidence`,
-            description: "Attach evidence facts (scope_keys) to an entity or edge.",
-            parameters: {
-                type: "object",
-                properties: {
-                    key: { type: "string", description: "entity_key (or edge key)." },
-                    factScopeKeys: { type: "array", items: { type: "string" } },
-                },
-                required: ["key", "factScopeKeys"],
+        },
+        handler: (a) => store.readFacts(
+            { keyPattern: a.keyPattern, scopeKeys: a.scopeKeys, tags: a.tags, scope: a.scope, limit: a.limit },
+            access(a)),
+    });
+
+    // ── §3 graph read (reader + harvester) ───────────────────────────────────
+
+    tools.push({
+        name: "graph_search_nodes",
+        description:
+            "Find / expand graph nodes. RESOLVE step (does this entity exist? — use kind + nameLike before every " +
+            "create) and PIVOT step (seeds = fact scope_keys from facts_search pivot via EVIDENCED_BY; node keys " +
+            "expand directly; depth bounds the hops). Each hit carries its EVIDENCED_BY fact scope_keys — feed " +
+            "evidence straight into facts_read.",
+        parameters: {
+            type: "object",
+            properties: {
+                kind: { type: "string", description: "Free-text node kind filter ('person', 'patch', …)." },
+                nameLike: { type: "string", description: "Lexical match on node name or any alias. The resolve key." },
+                seeds: { type: "array", items: { type: "string" }, description: "Fact scope_keys OR node keys to anchor from." },
+                depth: { type: "number", description: "Hops to expand from seeds (1..5)." },
+                limit: { type: "number" },
             },
-            handler: (a) => store.linkEvidence(a.key, a.factScopeKeys),
-        });
-    }
+        },
+        handler: (a) => store.searchGraphNodes(
+            { kind: a.kind, nameLike: a.nameLike, seeds: a.seeds, depth: a.depth, limit: a.limit },
+            access(a)),
+    });
+
+    tools.push({
+        name: "graph_search_edges",
+        description:
+            "Find edges, two ways only: anchor-and-explore (set fromKey and/or toKey) or exact-predicate " +
+            "(predicate/predicateKey, exact equality — no fuzzy match).",
+        parameters: {
+            type: "object",
+            properties: {
+                predicate: { type: "string", description: "EXACT predicate text." },
+                predicateKey: { type: "string", description: "EXACT normalized key (preferred, surface-stable)." },
+                fromKey: { type: "string" },
+                toKey: { type: "string" },
+                minConfidence: { type: "number" },
+                limit: { type: "number" },
+            },
+        },
+        handler: (a) => store.searchGraphEdges(a, access(a)),
+    });
+
+    tools.push({
+        name: "graph_neighbourhood",
+        description: "Bounded subgraph around a node — 'show me everything connected to X'.",
+        parameters: {
+            type: "object",
+            properties: {
+                nodeKey: { type: "string" },
+                depth: { type: "number", description: "Hops (clamped 1..5)." },
+            },
+            required: ["nodeKey", "depth"],
+        },
+        handler: (a) => store.graphNeighbourhood(a.nodeKey, a.depth, access(a)),
+    });
+
+    if (role !== "harvester") return tools;
+
+    // ── §2 crawl queue (HARVESTER ONLY — privileged, all scopes) ─────────────
+
+    tools.push({
+        name: "facts_read_uncrawled",
+        description:
+            "PRIVILEGED work queue: facts not yet incorporated into the graph (new or edited since last crawl), " +
+            "across ALL scopes. Keep each fact's contentHash — it is the receipt facts_mark_crawled needs.",
+        parameters: {
+            type: "object",
+            properties: {
+                namespace: { type: "string", description: "Restrict the queue to a key prefix." },
+                limit: { type: "number", description: "Max facts this batch (default 20)." },
+            },
+        },
+        handler: (a) => store.readUncrawledFacts({ namespace: a.namespace, limit: a.limit }),
+    });
+
+    tools.push({
+        name: "facts_mark_crawled",
+        description:
+            "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey AND the contentHash " +
+            "you read. A skipped stamp means the fact changed under you — it stays queued; just move on.",
+        parameters: {
+            type: "object",
+            properties: {
+                stamps: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            scopeKey: { type: "string" },
+                            contentHash: { type: "string" },
+                        },
+                        required: ["scopeKey", "contentHash"],
+                    },
+                },
+            },
+            required: ["stamps"],
+        },
+        handler: (a) => store.markFactsCrawled(a.stamps),
+    });
+
+    // ── §4 graph write (HARVESTER ONLY) ──────────────────────────────────────
+
+    tools.push({
+        name: "graph_upsert_node",
+        description:
+            "Create a node, or merge into an existing one (idempotent; aliases and evidence union in). " +
+            "RESOLVE BEFORE YOU CREATE: graph_search_nodes by nameLike first. Evidence is optional in the " +
+            "contract, but pass the source fact's scope_key — it is the provenance, and what makes " +
+            "reinforcement dedup work. The graph is SHARED: anything you incorporate is visible to every reader.",
+        parameters: {
+            type: "object",
+            properties: {
+                kind: { type: "string", description: "Free text: person, patch, code_file, thread…" },
+                name: { type: "string", description: "Canonical surface form." },
+                aliases: { type: "array", items: { type: "string" }, description: "Other observed surface forms." },
+                evidence: { type: "array", items: { type: "string" }, description: "Fact scope_keys justifying this node. Pass the source fact." },
+            },
+            required: ["kind", "name"],
+        },
+        handler: (a) => store.upsertGraphNode({ ...a, agentId }),
+    });
+
+    tools.push({
+        name: "graph_upsert_edge",
+        description:
+            "Assert a free-text relationship, or reinforce an existing one. Re-stating the same " +
+            "(fromKey, predicate, toKey) does not duplicate — it bumps observations and combines confidence " +
+            "(noisy-OR) ONLY when you bring new evidence; same-evidence replays are harmless no-ops. " +
+            "Pass RESOLVED nodeKeys, not raw names. One verb per relationship.",
+        parameters: {
+            type: "object",
+            properties: {
+                fromKey: { type: "string", description: "Source node key (from graph_upsert_node / graph_search_nodes)." },
+                toKey: { type: "string", description: "Target node key." },
+                predicate: { type: "string", description: "Free-text verb, e.g. 'revives argument from'." },
+                confidence: { type: "number", description: "0..1 for THIS observation (default 1.0)." },
+                evidence: { type: "array", items: { type: "string" }, description: "Fact scope_keys justifying the edge. Pass the source fact." },
+            },
+            required: ["fromKey", "toKey", "predicate"],
+        },
+        handler: (a) => store.upsertGraphEdge({ ...a, agentId }),
+    });
+
+    tools.push({
+        name: "graph_merge_nodes",
+        description:
+            "Entity resolution: fold a duplicate node into the survivor (union aliases, repoint edges, delete " +
+            "the duplicate). Use when you discover two nodes are the same entity after the fact.",
+        parameters: {
+            type: "object",
+            properties: {
+                fromKey: { type: "string", description: "Duplicate to remove." },
+                intoKey: { type: "string", description: "Survivor to keep." },
+                reason: { type: "string", description: "Why they're the same (audit)." },
+            },
+            required: ["fromKey", "intoKey", "reason"],
+        },
+        handler: async (a) => { await store.mergeGraphNodes(a.fromKey, a.intoKey, a.reason); return { merged: true }; },
+    });
+
+    tools.push({
+        name: "graph_delete_node",
+        description: "Remove a node and all its edges (DETACH DELETE). No cascade to facts.",
+        parameters: {
+            type: "object",
+            properties: { nodeKey: { type: "string" } },
+            required: ["nodeKey"],
+        },
+        handler: async (a) => ({ deleted: await store.deleteGraphNode(a.nodeKey) }),
+    });
+
+    tools.push({
+        name: "graph_delete_edge",
+        description: "Remove one exact edge triple. Returns whether something matched.",
+        parameters: {
+            type: "object",
+            properties: {
+                fromKey: { type: "string" },
+                toKey: { type: "string" },
+                predicateKey: { type: "string" },
+            },
+            required: ["fromKey", "toKey", "predicateKey"],
+        },
+        handler: async (a) => ({ deleted: await store.deleteGraphEdge(a.fromKey, a.toKey, a.predicateKey) }),
+    });
 
     return tools;
 }

@@ -1,0 +1,436 @@
+// @incubator/horizon-facts — typed Cypher layer (AGE).
+//
+// ALL graph access goes through this module (03-design §1: graph access is a
+// typed Cypher layer in TypeScript, not plpgsql-wrapped Cypher). The data
+// model (03-design §2.2):
+//
+//   (:GraphNode {node_key, kind, name, aliases, created_by})
+//       -[:REL {predicate, predicate_key, confidence, observations,
+//               evidence[], asserted_by[], model}]-> (:GraphNode)
+//       -[:EVIDENCED_BY]-> (:Fact {scope_key})
+//
+// Evidence has two physical forms: a NODE's evidence is a real EVIDENCED_BY
+// edge to a content-free :Fact anchor (traversable — the seed pivot matches
+// it); a REL edge's evidence is a property array (property graphs have no
+// edge-to-edge links). Both surface as `evidence: string[]`, ACL-filtered to
+// the caller at result assembly (01 §6.1a). Inaccessible fact SEEDS are
+// ignored (treated as unknown).
+//
+// AGE quirks encapsulated here: no parameterized cypher (escaped literals via
+// sql-util), no `any(x IN ...)` predicate (list comprehension instead), no
+// startNode/endNode/UNWIND on var-length paths (edges re-matched over the
+// reachable key set).
+
+import type {
+    AccessContext, GraphEdgeHit, GraphEdgeInput, GraphEdgeQuery, GraphInterface,
+    GraphNodeHit, GraphNodeInput, GraphNodeQuery, GraphNodeRef, GraphEdgeRef, SubGraph,
+} from "./types.js";
+import { scopeKeyAccessible } from "./types.js";
+import { cypherStr, cypherNum, cypherStrList } from "./sql-util.js";
+import { nodeKeyOf, predicateKey as makePredicateKey, mergeAliases, decideEdgeUpsert, reinforceConfidence, clamp01 } from "./graph-model.js";
+
+const FACT_SEED = /^(shared|session):/;
+
+/**
+ * Load the AGE shared library for this session. On managed Postgres where age
+ * is preloaded via shared_preload_libraries, an explicit LOAD is rejected with
+ * `access to library "age" is not allowed` — tolerated, since preloaded means
+ * there is nothing to do.
+ */
+export async function prepareAgeSession(client: any): Promise<void> {
+    try {
+        await client.query(`LOAD 'age'`);
+    } catch (err: any) {
+        const msg = String(err?.message ?? "");
+        if (!/access to library "age" is not allowed/i.test(msg)) throw err;
+    }
+    await client.query(`SET search_path = ag_catalog, "$user", public`);
+}
+
+/** Parse a scalar agtype column value into a JS value. */
+export function ag(v: any): any {
+    if (v == null) return v;
+    if (typeof v !== "string") return v;
+    const stripped = v.replace(/::[a-z]+$/i, "");
+    try { return JSON.parse(stripped); } catch { return stripped; }
+}
+
+/** Parse an agtype array column into string[]. */
+export function agArr(v: any): string[] {
+    const parsed = ag(v);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+}
+
+export class GraphQueries implements GraphInterface {
+    constructor(private readonly pool: any, private readonly graphName: string) {}
+
+    private async withAge<T>(fn: (client: any) => Promise<T>): Promise<T> {
+        const client = await this.pool.connect();
+        try {
+            await prepareAgeSession(client);
+            return await fn(client);
+        } finally {
+            client.release();
+        }
+    }
+
+    private async cypher(client: any, query: string, columns: string[]): Promise<any[]> {
+        // AGE requires a non-empty column list even for write-only queries
+        // (DELETE/DETACH DELETE return no rows) — use a dummy column then.
+        const colDefs = (columns.length > 0 ? columns : ["_ok"]).map((c) => `${c} agtype`).join(", ");
+        const { rows } = await client.query(
+            `SELECT * FROM cypher(${cypherStr(this.graphName)}, $$ ${query} $$) AS (${colDefs})`);
+        return rows;
+    }
+
+    // ─── reads ────────────────────────────────────────────────────────────────
+
+    async searchGraphNodes(q: GraphNodeQuery, access?: AccessContext): Promise<GraphNodeHit[]> {
+        const limit = Math.max(1, Math.min(Math.trunc(q.limit ?? 50), 500));
+        const depth = Math.max(1, Math.min(Math.trunc(q.depth ?? 1), 5));
+
+        return this.withAge(async (c) => {
+            const found = new Map<string, { nodeKey: string; kind: string; name: string; aliases: string[] }>();
+            const collect = (rows: any[]) => {
+                for (const r of rows) {
+                    const nodeKey = ag(r.node_key);
+                    if (!found.has(nodeKey)) {
+                        found.set(nodeKey, { nodeKey, kind: ag(r.kind), name: ag(r.name), aliases: agArr(r.aliases) });
+                    }
+                }
+            };
+            const RET = `RETURN DISTINCT n.node_key, n.kind, n.name, n.aliases`;
+            const COLS = ["node_key", "kind", "name", "aliases"];
+
+            const seeds = q.seeds ?? [];
+            if (seeds.length > 0) {
+                // Inaccessible fact seeds are IGNORED — byte-identical to unknown
+                // seeds, so seeding cannot probe private facts (01 §6.5).
+                const factSeeds = seeds.filter((s) => FACT_SEED.test(s) && scopeKeyAccessible(s, access));
+                const nodeSeeds = seeds.filter((s) => !FACT_SEED.test(s));
+
+                const baseKeys = new Set<string>();
+                if (factSeeds.length > 0) {
+                    const rows = await this.cypher(c,
+                        `MATCH (f:Fact)<-[:EVIDENCED_BY]-(n:GraphNode)
+                         WHERE f.scope_key IN ${cypherStrList(factSeeds)} ${RET}`, COLS);
+                    collect(rows);
+                    for (const r of rows) baseKeys.add(ag(r.node_key));
+                }
+                if (nodeSeeds.length > 0) {
+                    const rows = await this.cypher(c,
+                        `MATCH (n:GraphNode) WHERE n.node_key IN ${cypherStrList(nodeSeeds)} ${RET}`, COLS);
+                    collect(rows);
+                    for (const r of rows) baseKeys.add(ag(r.node_key));
+                }
+                if (baseKeys.size > 0 && depth >= 1) {
+                    const rows = await this.cypher(c,
+                        `MATCH (s:GraphNode)-[:REL*1..${depth}]-(n:GraphNode)
+                         WHERE s.node_key IN ${cypherStrList([...baseKeys])} ${RET}`, COLS);
+                    collect(rows);
+                }
+                // kind/nameLike combine as post-filters when seeds anchor the query.
+                if (q.kind || q.nameLike) {
+                    const kindNorm = q.kind;
+                    const pat = q.nameLike?.toLowerCase();
+                    for (const [k, n] of [...found]) {
+                        if (kindNorm && n.kind !== kindNorm) { found.delete(k); continue; }
+                        if (pat) {
+                            const hay = [n.name, ...n.aliases].map((x) => x.toLowerCase());
+                            if (!hay.some((x) => x.includes(pat))) found.delete(k);
+                        }
+                    }
+                }
+            } else {
+                const filters: string[] = [];
+                if (q.kind) filters.push(`n.kind = ${cypherStr(q.kind)}`);
+                if (q.nameLike) {
+                    const pat = cypherStr(q.nameLike.toLowerCase());
+                    // AGE lacks `any(x IN list WHERE ...)`; use list comprehension.
+                    filters.push(`(toLower(n.name) CONTAINS ${pat} OR size([a IN n.aliases WHERE toLower(a) CONTAINS ${pat}]) > 0)`);
+                }
+                const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+                collect(await this.cypher(c,
+                    `MATCH (n:GraphNode) ${where} ${RET} LIMIT ${cypherNum(limit)}`, COLS));
+            }
+
+            const hits = [...found.values()].slice(0, limit);
+            const evidence = await this.evidenceFor(c, hits.map((h) => h.nodeKey), access);
+            return hits.map((h) => ({ ...h, evidence: evidence.get(h.nodeKey) ?? [] }));
+        });
+    }
+
+    /** EVIDENCED_BY scopeKeys per node, ACL-filtered (01 §6.1a). */
+    private async evidenceFor(client: any, nodeKeys: string[], access?: AccessContext): Promise<Map<string, string[]>> {
+        const out = new Map<string, string[]>();
+        if (nodeKeys.length === 0) return out;
+        const rows = await this.cypher(client,
+            `MATCH (n:GraphNode)-[:EVIDENCED_BY]->(f:Fact)
+             WHERE n.node_key IN ${cypherStrList(nodeKeys)}
+             RETURN n.node_key, f.scope_key`, ["node_key", "scope_key"]);
+        for (const r of rows) {
+            const nk = ag(r.node_key);
+            const sk = ag(r.scope_key);
+            if (!scopeKeyAccessible(sk, access)) continue;   // traversal saw it; the caller doesn't
+            const arr = out.get(nk) ?? [];
+            arr.push(sk);
+            out.set(nk, arr);
+        }
+        return out;
+    }
+
+    async searchGraphEdges(q: GraphEdgeQuery, access?: AccessContext): Promise<GraphEdgeHit[]> {
+        const filters: string[] = [];
+        const pk = q.predicateKey ?? (q.predicate ? makePredicateKey(q.predicate) : undefined);
+        if (pk) filters.push(`r.predicate_key = ${cypherStr(pk)}`);
+        if (q.fromKey) filters.push(`a.node_key = ${cypherStr(q.fromKey)}`);
+        if (q.toKey) filters.push(`b.node_key = ${cypherStr(q.toKey)}`);
+        if (q.minConfidence != null) filters.push(`r.confidence >= ${cypherNum(q.minConfidence)}`);
+        const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+        const limit = cypherNum(Math.max(1, Math.min(Math.trunc(q.limit ?? 50), 500)));
+        return this.withAge(async (c) => {
+            const rows = await this.cypher(c,
+                `MATCH (a:GraphNode)-[r:REL]->(b:GraphNode) ${where}
+                 RETURN a.node_key, b.node_key, r.predicate, r.predicate_key, r.confidence, r.observations, r.evidence
+                 LIMIT ${limit}`,
+                ["from_key", "to_key", "predicate", "predicate_key", "confidence", "observations", "evidence"]);
+            return rows.map((r) => ({
+                fromKey: ag(r.from_key), toKey: ag(r.to_key), predicate: ag(r.predicate),
+                predicateKey: ag(r.predicate_key), confidence: Number(ag(r.confidence)),
+                observations: Number(ag(r.observations)),
+                evidence: agArr(r.evidence).filter((sk) => scopeKeyAccessible(sk, access)),
+            }));
+        });
+    }
+
+    async graphNeighbourhood(nodeKey: string, depth: number, _access?: AccessContext): Promise<SubGraph> {
+        const d = Math.max(1, Math.min(Math.trunc(depth), 5));
+        return this.withAge(async (c) => {
+            const nodeRows = await this.cypher(c,
+                `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} })-[:REL*1..${d}]-(n:GraphNode)
+                 RETURN DISTINCT n.node_key, n.kind, n.name`,
+                ["node_key", "kind", "name"]);
+            const nodes = nodeRows.map((r) => ({ nodeKey: ag(r.node_key), kind: ag(r.kind), name: ag(r.name) }));
+            if (nodes.length === 0) return { nodes: [], edges: [] };
+
+            // Edges among the reachable set (+ anchor); avoids AGE-unsupported
+            // startNode/endNode/UNWIND on variable-length paths.
+            const keys = [...new Set([nodeKey, ...nodes.map((n) => n.nodeKey)])];
+            const list = cypherStrList(keys);
+            const edgeRows = await this.cypher(c,
+                `MATCH (a:GraphNode)-[r:REL]->(b:GraphNode)
+                 WHERE a.node_key IN ${list} AND b.node_key IN ${list}
+                 RETURN a.node_key, b.node_key, r.predicate, r.confidence`,
+                ["from_key", "to_key", "predicate", "confidence"]);
+            return {
+                nodes,
+                edges: edgeRows.map((r) => ({
+                    fromKey: ag(r.from_key), toKey: ag(r.to_key),
+                    predicate: ag(r.predicate), confidence: Number(ag(r.confidence)),
+                })),
+            };
+        });
+    }
+
+    // ─── writes ───────────────────────────────────────────────────────────────
+
+    async upsertGraphNode(n: GraphNodeInput): Promise<GraphNodeRef> {
+        if (!n.kind?.trim() || !n.name?.trim()) {
+            throw new Error("upsertGraphNode requires non-empty kind and name");
+        }
+        if (!n.agentId) throw new Error("upsertGraphNode requires agentId");
+        const key = nodeKeyOf(n.kind, n.name);
+        return this.withAge(async (c) => {
+            const existing = await this.cypher(c,
+                `MATCH (e:GraphNode { node_key: ${cypherStr(key)} }) RETURN e.aliases`, ["aliases"]);
+            const incomingAliases = mergeAliases(n.aliases ?? [], [n.name]);
+            let ref: GraphNodeRef;
+            if (existing.length > 0) {
+                const merged = mergeAliases(agArr(existing[0].aliases), incomingAliases);
+                await this.cypher(c,
+                    `MATCH (e:GraphNode { node_key: ${cypherStr(key)} })
+                     SET e.aliases = ${cypherStrList(merged)}, e.updated_at = timestamp()
+                     RETURN e.node_key`, ["node_key"]);
+                ref = { nodeKey: key, kind: n.kind, name: n.name, aliases: merged, created: false };
+            } else {
+                await this.cypher(c,
+                    `CREATE (e:GraphNode { node_key: ${cypherStr(key)}, kind: ${cypherStr(n.kind)},
+                        name: ${cypherStr(n.name)}, aliases: ${cypherStrList(incomingAliases)},
+                        created_by: ${cypherStr(n.agentId)} }) RETURN e.node_key`, ["node_key"]);
+                ref = { nodeKey: key, kind: n.kind, name: n.name, aliases: incomingAliases, created: true };
+            }
+            // Node evidence = real EVIDENCED_BY edges to lazy :Fact anchors
+            // (03-design §2.2). Unioned on every upsert; MERGE is idempotent.
+            for (const sk of new Set(n.evidence ?? [])) {
+                await this.cypher(c,
+                    `MATCH (e:GraphNode { node_key: ${cypherStr(key)} })
+                     MERGE (f:Fact { scope_key: ${cypherStr(sk)} })
+                     MERGE (e)-[:EVIDENCED_BY]->(f) RETURN f.scope_key`, ["scope_key"]);
+            }
+            return ref;
+        });
+    }
+
+    async upsertGraphEdge(e: GraphEdgeInput): Promise<GraphEdgeRef> {
+        if (!e.fromKey || !e.toKey) throw new Error("upsertGraphEdge requires fromKey and toKey");
+        if (e.fromKey === e.toKey) throw new Error("self-referential edge rejected");
+        if (!e.predicate?.trim()) throw new Error("upsertGraphEdge requires a predicate");
+        if (!e.agentId) throw new Error("upsertGraphEdge requires agentId");
+        const conf = e.confidence ?? 1.0;
+        if (typeof conf !== "number" || conf < 0 || conf > 1) throw new Error("confidence must be in [0,1]");
+        const pk = makePredicateKey(e.predicate);
+
+        return this.withAge(async (c) => {
+            // Both endpoints must exist (02 §6).
+            const ends = await this.cypher(c,
+                `MATCH (n:GraphNode) WHERE n.node_key IN ${cypherStrList([e.fromKey, e.toKey])}
+                 RETURN n.node_key`, ["node_key"]);
+            const present = new Set(ends.map((r) => ag(r.node_key)));
+            for (const k of [e.fromKey, e.toKey]) {
+                if (!present.has(k)) throw new Error(`upsertGraphEdge: endpoint node not found: ${k}`);
+            }
+
+            const MATCH_EDGE =
+                `MATCH (a:GraphNode { node_key: ${cypherStr(e.fromKey)} })` +
+                `-[rel:REL { predicate_key: ${cypherStr(pk)} }]->` +
+                `(b:GraphNode { node_key: ${cypherStr(e.toKey)} })`;
+
+            const existingRows = await this.cypher(c,
+                `${MATCH_EDGE} RETURN rel.confidence, rel.observations, rel.evidence`,
+                ["confidence", "observations", "evidence"]);
+            const existing = existingRows.length > 0
+                ? {
+                    confidence: Number(ag(existingRows[0].confidence)),
+                    observations: Number(ag(existingRows[0].observations)),
+                    evidence: agArr(existingRows[0].evidence),
+                  }
+                : null;
+
+            const d = decideEdgeUpsert({ confidence: conf, evidence: e.evidence }, existing);
+
+            if (d.action === "create") {
+                await this.cypher(c,
+                    `MATCH (a:GraphNode { node_key: ${cypherStr(e.fromKey)} }), (b:GraphNode { node_key: ${cypherStr(e.toKey)} })
+                     CREATE (a)-[rel:REL { predicate: ${cypherStr(e.predicate)}, predicate_key: ${cypherStr(pk)},
+                        confidence: ${cypherNum(d.confidence)}, observations: ${cypherNum(d.observations)},
+                        asserted_by: ${cypherStrList([e.agentId])}, evidence: ${cypherStrList(d.evidence)},
+                        model: ${cypherStr(e.model ?? "")}, first_seen: timestamp(), last_seen: timestamp() }]->(b)
+                     RETURN rel.predicate_key`, ["predicate_key"]);
+            } else if (d.action === "reinforce") {
+                await this.cypher(c,
+                    `${MATCH_EDGE}
+                     SET rel.confidence = ${cypherNum(d.confidence)}, rel.observations = ${cypherNum(d.observations)},
+                         rel.evidence = ${cypherStrList(d.evidence)}, rel.last_seen = timestamp()
+                     RETURN rel.predicate_key`, ["predicate_key"]);
+            }
+            // action === "noop": already-known evidence only — leave untouched (GR7).
+
+            return {
+                fromKey: e.fromKey, toKey: e.toKey, predicate: e.predicate, predicateKey: pk,
+                confidence: d.confidence, observations: d.observations,
+                reinforced: d.action === "reinforce",
+            };
+        });
+    }
+
+    async mergeGraphNodes(fromKey: string, intoKey: string, reason: string): Promise<void> {
+        await this.withAge(async (c) => {
+            const dup = await this.cypher(c,
+                `MATCH (e:GraphNode { node_key: ${cypherStr(fromKey)} }) RETURN e.aliases`, ["aliases"]);
+            if (dup.length === 0) return; // nothing to merge
+            const survivor = await this.cypher(c,
+                `MATCH (e:GraphNode { node_key: ${cypherStr(intoKey)} }) RETURN e.aliases`, ["aliases"]);
+            if (survivor.length === 0) throw new Error(`mergeGraphNodes: merge target not found: ${intoKey}`);
+
+            // 1. Union aliases onto the survivor (+ audit note).
+            const merged = mergeAliases(agArr(survivor[0].aliases), agArr(dup[0].aliases));
+            await this.cypher(c,
+                `MATCH (s:GraphNode { node_key: ${cypherStr(intoKey)} })
+                 SET s.aliases = ${cypherStrList(merged)}, s.merged_note = ${cypherStr(reason)}
+                 RETURN s.node_key`, ["node_key"]);
+
+            // 2. Repoint REL edges, HARDENED against duplicate triples (03 §7):
+            //    when the survivor already has the same (other, predicate_key)
+            //    edge, COMBINE (evidence union, observations sum, noisy-OR)
+            //    instead of creating a second edge. AGE has no APOC refactor,
+            //    so this is read-decide-write per edge.
+            const repoint = async (direction: "out" | "in") => {
+                const match = direction === "out"
+                    ? `MATCH (d:GraphNode { node_key: ${cypherStr(fromKey)} })-[r:REL]->(t:GraphNode)`
+                    : `MATCH (t:GraphNode)-[r:REL]->(d:GraphNode { node_key: ${cypherStr(fromKey)} })`;
+                const rows = await this.cypher(c,
+                    `${match} RETURN t.node_key, r.predicate, r.predicate_key, r.confidence, r.observations, r.evidence`,
+                    ["other_key", "predicate", "predicate_key", "confidence", "observations", "evidence"]);
+                for (const r of rows) {
+                    const other = ag(r.other_key);
+                    if (other === intoKey) continue; // dup↔survivor edge: drop, never self-loop
+                    const pk = ag(r.predicate_key);
+                    const fromK = direction === "out" ? intoKey : other;
+                    const toK = direction === "out" ? other : intoKey;
+                    const ex = await this.cypher(c,
+                        `MATCH (a:GraphNode { node_key: ${cypherStr(fromK)} })-[rel:REL { predicate_key: ${cypherStr(pk)} }]->(b:GraphNode { node_key: ${cypherStr(toK)} })
+                         RETURN rel.confidence, rel.observations, rel.evidence`,
+                        ["confidence", "observations", "evidence"]);
+                    if (ex.length > 0) {
+                        const conf = reinforceConfidence(Number(ag(ex[0].confidence)), Number(ag(r.confidence)));
+                        const obs = Number(ag(ex[0].observations)) + Number(ag(r.observations));
+                        const ev = [...new Set([...agArr(ex[0].evidence), ...agArr(r.evidence)])];
+                        await this.cypher(c,
+                            `MATCH (a:GraphNode { node_key: ${cypherStr(fromK)} })-[rel:REL { predicate_key: ${cypherStr(pk)} }]->(b:GraphNode { node_key: ${cypherStr(toK)} })
+                             SET rel.confidence = ${cypherNum(clamp01(conf))}, rel.observations = ${cypherNum(obs)},
+                                 rel.evidence = ${cypherStrList(ev)}
+                             RETURN rel.predicate_key`, ["predicate_key"]);
+                    } else {
+                        await this.cypher(c,
+                            `MATCH (a:GraphNode { node_key: ${cypherStr(fromK)} }), (b:GraphNode { node_key: ${cypherStr(toK)} })
+                             CREATE (a)-[rel:REL { predicate: ${cypherStr(ag(r.predicate))}, predicate_key: ${cypherStr(pk)},
+                                confidence: ${cypherNum(Number(ag(r.confidence)))}, observations: ${cypherNum(Number(ag(r.observations)))},
+                                evidence: ${cypherStrList(agArr(r.evidence))} }]->(b)
+                             RETURN rel.predicate_key`, ["predicate_key"]);
+                    }
+                }
+            };
+            await repoint("out");
+            await repoint("in");
+
+            // 3. Repoint node evidence (EVIDENCED_BY anchors) onto the survivor.
+            const anchors = await this.cypher(c,
+                `MATCH (d:GraphNode { node_key: ${cypherStr(fromKey)} })-[:EVIDENCED_BY]->(f:Fact)
+                 RETURN f.scope_key`, ["scope_key"]);
+            for (const r of anchors) {
+                await this.cypher(c,
+                    `MATCH (s:GraphNode { node_key: ${cypherStr(intoKey)} })
+                     MERGE (f:Fact { scope_key: ${cypherStr(ag(r.scope_key))} })
+                     MERGE (s)-[:EVIDENCED_BY]->(f) RETURN f.scope_key`, ["scope_key"]);
+            }
+
+            // 4. Remove the duplicate (and all its remaining edges).
+            await this.cypher(c,
+                `MATCH (d:GraphNode { node_key: ${cypherStr(fromKey)} }) DETACH DELETE d`, []);
+        });
+    }
+
+    async deleteGraphNode(nodeKey: string): Promise<boolean> {
+        return this.withAge(async (c) => {
+            const exists = await this.cypher(c,
+                `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} }) RETURN e.node_key`, ["node_key"]);
+            if (exists.length === 0) return false;
+            await this.cypher(c,
+                `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} }) DETACH DELETE e`, []);
+            return true;
+        });
+    }
+
+    async deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string): Promise<boolean> {
+        return this.withAge(async (c) => {
+            const MATCH =
+                `MATCH (a:GraphNode { node_key: ${cypherStr(fromKey)} })` +
+                `-[r:REL { predicate_key: ${cypherStr(predicateKey)} }]->` +
+                `(b:GraphNode { node_key: ${cypherStr(toKey)} })`;
+            const exists = await this.cypher(c, `${MATCH} RETURN r.predicate_key`, ["predicate_key"]);
+            if (exists.length === 0) return false;
+            await this.cypher(c, `${MATCH} DELETE r`, []);
+            return true;
+        });
+    }
+}

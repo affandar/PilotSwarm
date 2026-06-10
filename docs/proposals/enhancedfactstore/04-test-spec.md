@@ -44,8 +44,10 @@ directly into `facts.embedding` (no embed call). Use a tiny dimension (e.g.
 | F5 | `session:S1:notes/a` | false (S1) | `[0.9, 0.1, 0, 0]` | ACL-scoped |
 | F6 | `session:S2:notes/b` | false (S2) | `[0.95, 0.05, 0, 0]` | ACL-scoped, other session |
 
-Expected cosine order from F1: **F2 > F5/F6 > F3 ≈ F4**. Exact ranks are computed
-from the seeded vectors, not hard-coded magic numbers.
+Expected cosine order from F1 is **computed from the seeded vectors at assert
+time, never hard-coded** (for these vectors the actual order is F6 > F5 > F2 >
+F3 ≈ F4 — near-parallel low-magnitude vectors beat F2's larger off-axis
+component; cosine ignores magnitude).
 
 ### 1.2 Lexical corpus
 

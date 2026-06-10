@@ -1,0 +1,156 @@
+// @incubator/horizon-facts — vendored migration runner.
+//
+// VENDORED from packages/sdk/src/pg-migrator.ts (advisory-locked, versioned,
+// one transaction per migration). TODO(graduation): merge back into
+// pg-migrator.ts when this package moves into packages/* — do not let the two
+// copies drift.
+//
+// The loader half is horizon-specific: it reads the numbered migrations/*.sql
+// files that ship with the package and substitutes the deployment tokens
+// ({{SCHEMA}}, {{GRAPH_NAME}}, {{EMBEDDING_DIM}}) before handing them to the
+// runner. All DDL lives in those files — none in TypeScript (04 §6 M1 guard).
+
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+export interface MigrationEntry {
+    version: string;
+    name: string;
+    sql: string;
+}
+
+/** Seed for the advisory lock — distinct from the SDK CMS/facts seeds. */
+export const HORIZON_FACTS_LOCK_SEED = 0x48_5a_46; // "HZF"
+
+/**
+ * Run all pending migrations against the given schema.
+ *
+ * Uses a PostgreSQL advisory lock keyed on `lockSeed` + schema name to
+ * serialize concurrent workers. Each migration runs in its own transaction.
+ * Throws (never "repairs") when the migrations table records a version the
+ * code does not know — a newer deployment owns this schema.
+ */
+export async function runMigrations(
+    pool: any,
+    schema: string,
+    migrations: MigrationEntry[],
+    lockSeed: number,
+): Promise<void> {
+    const lockKey = hashSchemaName(schema, lockSeed);
+    const client = await pool.connect();
+    try {
+        await client.query("SELECT pg_advisory_lock($1)", [lockKey]);
+
+        await client.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
+
+        const migrationsTable = `"${schema}".schema_migrations`;
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS ${migrationsTable} (
+                version     TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        `);
+
+        const { rows: applied } = await client.query(
+            `SELECT version FROM ${migrationsTable} ORDER BY version`,
+        );
+        const appliedSet = new Set(applied.map((r: any) => r.version));
+        const knownSet = new Set(migrations.map((m) => m.version));
+        const unknown = [...appliedSet].filter((v) => !knownSet.has(v as string));
+        if (unknown.length > 0) {
+            throw new Error(
+                `horizon-facts migrations: schema "${schema}" records versions this build does not know ` +
+                `(${unknown.join(", ")}). A newer deployment owns this schema; refusing to continue.`,
+            );
+        }
+
+        for (const migration of migrations) {
+            if (appliedSet.has(migration.version)) continue;
+
+            try {
+                await client.query("BEGIN");
+                await client.query(migration.sql);
+                await client.query(
+                    `INSERT INTO ${migrationsTable} (version, name) VALUES ($1, $2)`,
+                    [migration.version, migration.name],
+                );
+                await client.query("COMMIT");
+            } catch (err) {
+                await client.query("ROLLBACK").catch(() => {});
+                throw err;
+            }
+        }
+    } finally {
+        await client.query("SELECT pg_advisory_unlock($1)", [lockKey]).catch(() => {});
+        client.release();
+    }
+}
+
+/** Stable 32-bit hash of a schema name combined with a per-system seed. */
+function hashSchemaName(schema: string, seed: number): number {
+    let hash = seed;
+    for (let i = 0; i < schema.length; i++) {
+        hash = ((hash << 5) - hash + schema.charCodeAt(i)) | 0;
+    }
+    return hash;
+}
+
+// ─── Horizon-specific loader ─────────────────────────────────────────────────
+
+export interface MigrationTokens {
+    schema: string;
+    graphName: string;
+    embeddingDim: number;
+}
+
+const MIGRATION_FILE = /^(\d{4})_([a-z0-9_]+)\.sql$/;
+
+/** Resolve the packaged migrations/ directory (works from src/ and dist/src/). */
+export function migrationsDir(): string {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    // src/ → ../migrations ; dist/src/ → ../../migrations
+    for (const rel of ["../migrations", "../../migrations"]) {
+        const dir = path.resolve(here, rel);
+        try {
+            readdirSync(dir);
+            return dir;
+        } catch { /* try next */ }
+    }
+    throw new Error(`horizon-facts: cannot locate migrations/ relative to ${here}`);
+}
+
+/** Load the numbered migrations, token-substituted for this deployment. */
+export function loadMigrations(tokens: MigrationTokens): MigrationEntry[] {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokens.schema)) {
+        throw new Error(`unsafe schema name: ${JSON.stringify(tokens.schema)}`);
+    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokens.graphName)) {
+        throw new Error(`unsafe graph name: ${JSON.stringify(tokens.graphName)}`);
+    }
+    const dim = Math.trunc(tokens.embeddingDim);
+    if (!Number.isFinite(dim) || dim < 1) {
+        throw new Error(`embeddingDim must be a positive integer, got ${tokens.embeddingDim}`);
+    }
+
+    const dir = migrationsDir();
+    const files = readdirSync(dir).filter((f) => MIGRATION_FILE.test(f)).sort();
+    if (files.length === 0) throw new Error(`horizon-facts: no migrations found in ${dir}`);
+
+    let last = 0;
+    return files.map((f) => {
+        const m = MIGRATION_FILE.exec(f)!;
+        const num = Number(m[1]);
+        if (num !== last + 1) {
+            throw new Error(`horizon-facts migrations: non-contiguous numbering at ${f} (expected ${String(last + 1).padStart(4, "0")})`);
+        }
+        last = num;
+        const raw = readFileSync(path.join(dir, f), "utf8");
+        const sql = raw
+            .replaceAll("{{SCHEMA}}", tokens.schema)
+            .replaceAll("{{GRAPH_NAME}}", tokens.graphName)
+            .replaceAll("{{EMBEDDING_DIM}}", String(dim));
+        return { version: m[1], name: m[2], sql };
+    });
+}
