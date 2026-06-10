@@ -181,6 +181,8 @@ Files are flat `KEY=value`, no quoting, no shell expansion.
 | `PORTAL_HOSTNAME` | manifests (portal) | Public hostname for AFD origin. |
 | `SSL_CERT_DOMAIN_SUFFIX`, `WAF_MODE`, `ACR_SKU`, `APP_GATEWAY_PRIVATE_IP` | bicep | Static infra params. |
 | `IMAGE` | manifests | Auto-composed from `ACR_LOGIN_SERVER` + service image repo + `--image-tag`; do **not** seed manually. |
+| `OBO_KEK_KID` | bicep (base-infra), manifests (worker + portal) | Un-versioned AKV key URL for the User OBO envelope KEK. Sourced from the `oboKekKid` bicep output (alias map) when `oboEnabled=true`; otherwise composed to the `__PS_UNSET__` sentinel and stripped at runtime. See [docs/operations/obo-kek-runbook.md](../../docs/operations/obo-kek-runbook.md). |
+| `OBO_SMOKE_ENABLED`, `OBO_SMOKE_WORKER_APP_*`, `OBO_SMOKE_TEST_USER_UPN` | manifests (worker overlay only) | Optional Phase 7 live-smoke harness toggle + per-stamp downstream-app config. Default `false`; when `true`, the worker registers the `obo.smoke.*` plugin tools. AKS uses workload-identity FIC (no `CLIENT_SECRET` in the overlay); local dev can set the secret out-of-band. **Never enable on production stamps.** See [docs/operations/live-smoke.md](../../docs/operations/live-smoke.md). |
 
 **Bicep outputs are never seeded.** `ACR_NAME`, `ACR_LOGIN_SERVER`, `KV_NAME`,
 `AKS_CLUSTER_NAME`, `BLOB_CONTAINER_ENDPOINT`, `DEPLOYMENT_STORAGE_ACCOUNT_NAME`,
@@ -473,4 +475,6 @@ hard-code the URL.
 
 - Enterprise / production path: handled by an internal-only orchestrator (out of scope for this OSS repo)
 - Imperative engineer-smoke path: [`docs/deploying-to-aks.md`](../../docs/deploying-to-aks.md)
+- User OBO envelope KEK provisioning + rotation: [`docs/operations/obo-kek-runbook.md`](../../docs/operations/obo-kek-runbook.md)
+- User OBO live-smoke harness (Phase 7, opt-in): [`docs/operations/live-smoke.md`](../../docs/operations/live-smoke.md)
 - Spec / plan / as-built record: [`.paw/work/oss-deploy-script/`](../../.paw/work/oss-deploy-script/)
