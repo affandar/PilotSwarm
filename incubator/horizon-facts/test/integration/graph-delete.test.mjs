@@ -1,16 +1,23 @@
 // §3.5 Graph deletes (GD1–GD5) — exact-triple delete, DETACH DELETE, no cascade.
 
-import test from "node:test";
+import { describe, it, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
 import { HAS_DB, makeStore, dropSchemaAndGraph } from "./_db.mjs";
 
-test("graph deletes (GD1–GD5)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }, async (t) => {
-    const { store, schema, graph } = await makeStore({ tag: "gdel" });
-    t.after(async () => { await store.close(); await dropSchemaAndGraph(schema, graph); });
+describe.skipIf(!HAS_DB)("graph deletes (GD1–GD5)", () => {
+    let store, schema, graph;
     const agentId = "tester";
     const all = { unrestricted: true };
 
-    await t.test("GD1 deleteGraphEdge exact triple", async () => {
+    beforeAll(async () => {
+        ({ store, schema, graph } = await makeStore({ tag: "gdel" }));
+    });
+    afterAll(async () => {
+        await store?.close();
+        if (schema) await dropSchemaAndGraph(schema, graph);
+    });
+
+    it("GD1 deleteGraphEdge exact triple", async () => {
         const a = await store.upsertGraphNode({ kind: "t", name: "a", agentId });
         const b = await store.upsertGraphNode({ kind: "t", name: "b", agentId });
         const e = await store.upsertGraphEdge({ fromKey: a.nodeKey, toKey: b.nodeKey, predicate: "links", agentId });
@@ -18,7 +25,7 @@ test("graph deletes (GD1–GD5)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not s
         assert.deepEqual(await store.searchGraphEdges({ fromKey: a.nodeKey }, all), []);
     });
 
-    await t.test("GD2 deleteGraphNode removes node + all incident edges (DETACH)", async () => {
+    it("GD2 deleteGraphNode removes node + all incident edges (DETACH)", async () => {
         const c = await store.upsertGraphNode({ kind: "t", name: "c", agentId });
         const d = await store.upsertGraphNode({ kind: "t", name: "d", agentId });
         await store.upsertGraphEdge({ fromKey: c.nodeKey, toKey: d.nodeKey, predicate: "links", agentId });
@@ -28,12 +35,12 @@ test("graph deletes (GD1–GD5)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not s
         assert.deepEqual(await store.searchGraphEdges({ fromKey: d.nodeKey }, all), [], "incident edges gone");
     });
 
-    await t.test("GD3/GD4 (neg) unknown triple / node → false", async () => {
+    it("GD3/GD4 (neg) unknown triple / node → false", async () => {
         assert.equal(await store.deleteGraphEdge("t:x", "t:y", "never"), false);
         assert.equal(await store.deleteGraphNode("t:never-was"), false);
     });
 
-    await t.test("GD5 NO cascade: deleteFact leaves graph provenance in place", async () => {
+    it("GD5 NO cascade: deleteFact leaves graph provenance in place", async () => {
         await store.storeFact({ key: "arch/gd5", value: { text: "evidence fact" }, shared: true });
         const node = await store.upsertGraphNode({ kind: "t", name: "evidenced", agentId, evidence: ["shared:arch/gd5"] });
         await store.deleteFact({ key: "arch/gd5", shared: true });

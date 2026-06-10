@@ -2,22 +2,33 @@
 // catalog assertions, idempotency, advisory-lock concurrency, partial-chain
 // resume, trigger semantics at the DB level, unknown-future-version refusal.
 
-import test from "node:test";
+import { describe, it, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
 import { HAS_DB, DB_URL, uniqueNames, dropSchemaAndGraph, rawPool } from "./_db.mjs";
 
-test("migrations (MG1–MG6)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }, async (t) => {
-    const { loadMigrations, runMigrations, HORIZON_FACTS_LOCK_SEED, HorizonFactStore } =
-        await import("../../dist/src/index.js");
-    const pool = rawPool();
-    t.after(async () => { await pool.end(); });
+describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
+    let pool, api;
+    const cleanups = [];
+
+    beforeAll(async () => {
+        api = await import("../../dist/src/index.js");
+        pool = rawPool();
+    });
+    afterAll(async () => {
+        for (const fn of cleanups.reverse()) await fn().catch(() => {});
+        await pool?.end();
+    });
 
     const tokens = (names) => ({ schema: names.schema, graphName: names.graph, embeddingDim: 4 });
+    const freshNames = (tag) => {
+        const names = uniqueNames(tag);
+        cleanups.push(() => dropSchemaAndGraph(names.schema, names.graph));
+        return names;
+    };
 
-    await t.test("MG1 fresh apply: versions recorded in order; expected objects exist (catalog-level)", async (tt) => {
-        const names = uniqueNames("mg1");
-        tt.after(async () => dropSchemaAndGraph(names.schema, names.graph));
-        await runMigrations(pool, names.schema, loadMigrations(tokens(names)), HORIZON_FACTS_LOCK_SEED);
+    it("MG1 fresh apply: versions recorded in order; expected objects exist (catalog-level)", async () => {
+        const names = freshNames("mg1");
+        await api.runMigrations(pool, names.schema, api.loadMigrations(tokens(names)), api.HORIZON_FACTS_LOCK_SEED);
 
         const { rows: vers } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
@@ -53,25 +64,24 @@ test("migrations (MG1–MG6)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set"
         const { rows: idx } = await pool.query(
             `SELECT indexname FROM pg_indexes WHERE schemaname = $1`, [names.schema]);
         assert.ok(idx.some((r) => r.indexname === "idx_facts_embedding"), "ANN index exists");
+        assert.ok(idx.some((r) => r.indexname === "idx_facts_lexical"), "BM25 index exists");
     });
 
-    await t.test("MG2 idempotent re-run is a no-op", async (tt) => {
-        const names = uniqueNames("mg2");
-        tt.after(async () => dropSchemaAndGraph(names.schema, names.graph));
-        const migs = loadMigrations(tokens(names));
-        await runMigrations(pool, names.schema, migs, HORIZON_FACTS_LOCK_SEED);
+    it("MG2 idempotent re-run is a no-op", async () => {
+        const names = freshNames("mg2");
+        const migs = api.loadMigrations(tokens(names));
+        await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         const { rows: before } = await pool.query(
             `SELECT version, applied_at FROM "${names.schema}".schema_migrations ORDER BY version`);
-        await runMigrations(pool, names.schema, migs, HORIZON_FACTS_LOCK_SEED);
+        await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         const { rows: after } = await pool.query(
             `SELECT version, applied_at FROM "${names.schema}".schema_migrations ORDER BY version`);
         assert.deepEqual(after, before, "version rows unchanged (incl. applied_at)");
     });
 
-    await t.test("MG3 two concurrent initializers don't corrupt the schema (advisory lock)", async (tt) => {
-        const names = uniqueNames("mg3");
-        tt.after(async () => dropSchemaAndGraph(names.schema, names.graph));
-        const mk = () => HorizonFactStore.create({
+    it("MG3 two concurrent initializers don't corrupt the schema (advisory lock)", async () => {
+        const names = freshNames("mg3");
+        const mk = () => api.HorizonFactStore.create({
             connectionString: DB_URL, schema: names.schema, graphName: names.graph, embeddingDim: 4 });
         const [s1, s2] = await Promise.all([mk(), mk()]);
         await Promise.all([s1.initialize(), s2.initialize()]);
@@ -81,21 +91,19 @@ test("migrations (MG1–MG6)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set"
         assert.equal(rows[0].n, 5, "each migration recorded exactly once");
     });
 
-    await t.test("MG4 partial-chain resume: only the missing tail is applied", async (tt) => {
-        const names = uniqueNames("mg4");
-        tt.after(async () => dropSchemaAndGraph(names.schema, names.graph));
-        const migs = loadMigrations(tokens(names));
-        await runMigrations(pool, names.schema, migs.slice(0, 3), HORIZON_FACTS_LOCK_SEED);
-        await runMigrations(pool, names.schema, migs, HORIZON_FACTS_LOCK_SEED);
+    it("MG4 partial-chain resume: only the missing tail is applied", async () => {
+        const names = freshNames("mg4");
+        const migs = api.loadMigrations(tokens(names));
+        await api.runMigrations(pool, names.schema, migs.slice(0, 3), api.HORIZON_FACTS_LOCK_SEED);
+        await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         const { rows } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
         assert.deepEqual(rows.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005"]);
     });
 
-    await t.test("MG5 trigger semantics (direct SQL probes)", async (tt) => {
-        const names = uniqueNames("mg5");
-        tt.after(async () => dropSchemaAndGraph(names.schema, names.graph));
-        await runMigrations(pool, names.schema, loadMigrations(tokens(names)), HORIZON_FACTS_LOCK_SEED);
+    it("MG5 trigger semantics (direct SQL probes)", async () => {
+        const names = freshNames("mg5");
+        await api.runMigrations(pool, names.schema, api.loadMigrations(tokens(names)), api.HORIZON_FACTS_LOCK_SEED);
         const T = `"${names.schema}".facts`;
 
         await pool.query(
@@ -119,15 +127,14 @@ test("migrations (MG1–MG6)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set"
             `INSERT INTO ${T} (scope_key, key, value, shared, transient) VALUES ('shared:k/bad', 'k/bad', '{}', true, true)`));
     });
 
-    await t.test("MG6 unknown future version → refuses loudly, never repairs", async (tt) => {
-        const names = uniqueNames("mg6");
-        tt.after(async () => dropSchemaAndGraph(names.schema, names.graph));
-        const migs = loadMigrations(tokens(names));
-        await runMigrations(pool, names.schema, migs, HORIZON_FACTS_LOCK_SEED);
+    it("MG6 unknown future version → refuses loudly, never repairs", async () => {
+        const names = freshNames("mg6");
+        const migs = api.loadMigrations(tokens(names));
+        await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         await pool.query(
             `INSERT INTO "${names.schema}".schema_migrations (version, name) VALUES ('9999', 'from_the_future')`);
         await assert.rejects(
-            () => runMigrations(pool, names.schema, migs, HORIZON_FACTS_LOCK_SEED),
+            () => api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED),
             /9999.*newer deployment|newer deployment.*9999/s);
     });
 });

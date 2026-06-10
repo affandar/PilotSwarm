@@ -1,47 +1,54 @@
 // §2.7 ACL scoping (A1–A5). A5 proves the ACL predicate lives INSIDE the
 // search proc, before rank/LIMIT — not a post-filter over a bounded pool.
 
-import test from "node:test";
+import { describe, it, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
 import { HAS_DB, makeStore, dropSchemaAndGraph, rawPool, aclOf, seedFX, fxScopeKey, FX } from "./_db.mjs";
 
-test("ACL scoping (A1–A5)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }, async (t) => {
-    const { store, schema, graph } = await makeStore({ tag: "acl", embeddingDim: 4 });
-    const pool = rawPool();
-    t.after(async () => { await store.close(); await pool.end(); await dropSchemaAndGraph(schema, graph); });
-
-    await seedFX(store, schema, pool);
+describe.skipIf(!HAS_DB)("ACL scoping (A1–A5)", () => {
+    let store, schema, graph, pool;
     const F5 = fxScopeKey(FX[4]); // session:S1
     const F6 = fxScopeKey(FX[5]); // session:S2
+
+    beforeAll(async () => {
+        ({ store, schema, graph } = await makeStore({ tag: "acl", embeddingDim: 4 }));
+        pool = rawPool();
+        await seedFX(store, schema, pool);
+    });
+    afterAll(async () => {
+        await store?.close();
+        await pool?.end();
+        if (schema) await dropSchemaAndGraph(schema, graph);
+    });
 
     const searchKeys = async (access) =>
         (await store.searchFacts("jsonb subscript", { mode: "lexical", limit: 50 }, access))
             .facts.map((f) => f.scopeKey);
 
-    await t.test("A1 S1 reader sees shared + S1, never S2's F6", async () => {
+    it("A1 S1 reader sees shared + S1, never S2's F6", async () => {
         const keys = await searchKeys(aclOf("S1"));
         assert.ok(keys.includes(F5));
         assert.ok(!keys.includes(F6));
         assert.ok(keys.includes(fxScopeKey(FX[0])), "shared visible");
     });
 
-    await t.test("A2 grantedSessionIds extends visibility", async () => {
+    it("A2 grantedSessionIds extends visibility", async () => {
         const keys = await searchKeys(aclOf("S1", ["S2"]));
         assert.ok(keys.includes(F6), "granted S2 fact now visible");
     });
 
-    await t.test("A3 unrestricted sees all", async () => {
+    it("A3 unrestricted sees all", async () => {
         const keys = await searchKeys(aclOf(null, [], true));
         assert.ok(keys.includes(F5) && keys.includes(F6));
     });
 
-    await t.test("A4 (neg) no reader context → session facts excluded", async () => {
+    it("A4 (neg) no reader context → session facts excluded", async () => {
         const keys = await searchKeys({});
         assert.ok(!keys.includes(F5) && !keys.includes(F6));
         assert.ok(keys.includes(fxScopeKey(FX[0])), "shared still visible");
     });
 
-    await t.test("A5 ACL precedes ranking: accessible match survives a pool of dominating inaccessible rows", async () => {
+    it("A5 ACL precedes ranking: accessible match survives a pool of dominating inaccessible rows", async () => {
         // Engineer >candidatePool inaccessible facts that all outrank the
         // caller's single accessible match for the term "starve".
         const POOL = 10;
@@ -65,7 +72,7 @@ test("ACL scoping (A1–A5)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" 
         assert.ok(!keys.some((k) => k.startsWith("session:S-OTHER:")), "no leakage of inaccessible rows");
     });
 
-    await t.test("readFacts scope=descendants returns spawn-tree facts only", async () => {
+    it("readFacts scope=descendants returns spawn-tree facts only", async () => {
         const { facts } = await store.readFacts({ scope: "descendants" }, aclOf("PARENT", ["S1", "S2"]));
         const keys = facts.map((f) => f.scopeKey).sort();
         assert.deepEqual(keys.filter((k) => k.startsWith("session:S1") || k.startsWith("session:S2")), keys,

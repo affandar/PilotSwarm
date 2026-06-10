@@ -1,39 +1,46 @@
 // §3.3 Graph queries (GQ1–GQ16) — resolve, seed pivot, evidence ACL filter,
 // neighbourhood. Also covers §2.5 (RF1–RF5: graph retrieval via seeds).
 
-import test from "node:test";
+import { describe, it, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
 import { HAS_DB, makeStore, dropSchemaAndGraph, rawPool, aclOf, seedFX, seedGX, fxScopeKey, FX } from "./_db.mjs";
 
-test("graph queries (GQ1–GQ16, RF1–RF5)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }, async (t) => {
-    const { store, schema, graph } = await makeStore({ tag: "gq", embeddingDim: 4 });
-    const pool = rawPool();
-    t.after(async () => { await store.close(); await pool.end(); await dropSchemaAndGraph(schema, graph); });
-
-    await seedFX(store, schema, pool);
-    const n = await seedGX(store);
+describe.skipIf(!HAS_DB)("graph queries (GQ1–GQ16, RF1–RF5)", () => {
+    let store, schema, graph, pool, n;
     const F1 = fxScopeKey(FX[0]);
     const all = { unrestricted: true };
 
-    await t.test("GQ1 by kind", async () => {
+    beforeAll(async () => {
+        ({ store, schema, graph } = await makeStore({ tag: "gq", embeddingDim: 4 }));
+        pool = rawPool();
+        await seedFX(store, schema, pool);
+        n = await seedGX(store);
+    });
+    afterAll(async () => {
+        await store?.close();
+        await pool?.end();
+        if (schema) await dropSchemaAndGraph(schema, graph);
+    });
+
+    it("GQ1 by kind", async () => {
         const hits = await store.searchGraphNodes({ kind: "skill" }, all);
         assert.deepEqual(hits.map((h) => h.nodeKey).sort(), ["skill:jsonb-subscript", "skill:vacuum"]);
     });
 
-    await t.test("GQ2 nameLike matches via alias (lexical, no embeddings)", async () => {
+    it("GQ2 nameLike matches via alias (lexical, no embeddings)", async () => {
         await store.upsertGraphNode({ kind: "person", name: "moody", aliases: ["mad-eye"], agentId: "fixture" });
         const hits = await store.searchGraphNodes({ nameLike: "mad-eye" }, all);
         assert.equal(hits.length, 1);
         assert.equal(hits[0].nodeKey, "person:moody");
     });
 
-    await t.test("GQ3 fact-scopeKey seeds pivot via EVIDENCED_BY", async () => {
+    it("GQ3 fact-scopeKey seeds pivot via EVIDENCED_BY", async () => {
         const hits = await store.searchGraphNodes({ seeds: [F1], depth: 1 }, all);
         const keys = hits.map((h) => h.nodeKey);
         assert.ok(keys.includes("skill:jsonb-subscript"), "F1 evidences jsonb-subscript");
     });
 
-    await t.test("GQ4 node-key seeds expand directly", async () => {
+    it("GQ4 node-key seeds expand directly", async () => {
         const hits = await store.searchGraphNodes({ seeds: [n.vacuum.nodeKey], depth: 1 }, all);
         const keys = hits.map((h) => h.nodeKey).sort();
         assert.ok(keys.includes("skill:vacuum"), "seed itself returned");
@@ -41,7 +48,7 @@ test("graph queries (GQ1–GQ16, RF1–RF5)", { skip: !HAS_DB && "HORIZON_DATABA
         assert.ok(keys.includes("component:planner"), "1-hop neighbour (tunes)");
     });
 
-    await t.test("GQ5 hits carry EVIDENCED_BY scopeKeys for the readFacts round-trip", async () => {
+    it("GQ5 hits carry EVIDENCED_BY scopeKeys for the readFacts round-trip", async () => {
         const hits = await store.searchGraphNodes({ seeds: [F1], depth: 1 }, all);
         const sub = hits.find((h) => h.nodeKey === "skill:jsonb-subscript");
         assert.deepEqual(sub.evidence, [F1]);
@@ -50,7 +57,7 @@ test("graph queries (GQ1–GQ16, RF1–RF5)", { skip: !HAS_DB && "HORIZON_DATABA
         assert.equal(facts[0].scopeKey, F1);
     });
 
-    await t.test("RF3 fact-pivot returns facts pure facts-search would miss", async () => {
+    it("RF3 fact-pivot returns facts pure facts-search would miss", async () => {
         // Lexical search for "jsonb" never finds F3 (vacuum). The graph path
         // (F1 → jsonb-subscript —supersedes→ vacuum, evidenced by F3) does.
         const direct = await store.searchFacts("jsonb", { mode: "lexical" }, aclOf(null, [], true));
@@ -61,7 +68,7 @@ test("graph queries (GQ1–GQ16, RF1–RF5)", { skip: !HAS_DB && "HORIZON_DATABA
         assert.ok(facts.some((f) => f.scopeKey === fxScopeKey(FX[2])), "graph expansion reaches F3");
     });
 
-    await t.test("GQ8/RF4 depth bounds traversal", async () => {
+    it("GQ8/RF4 depth bounds traversal", async () => {
         // jsonb-subscript -1-> vacuum -2-> planner -3-> moody
         const d1 = await store.searchGraphNodes({ seeds: [n.jsonbSub.nodeKey], depth: 1 }, all);
         const d3 = await store.searchGraphNodes({ seeds: [n.jsonbSub.nodeKey], depth: 3 }, all);
@@ -71,7 +78,7 @@ test("graph queries (GQ1–GQ16, RF1–RF5)", { skip: !HAS_DB && "HORIZON_DATABA
         assert.ok(k3.includes("person:moody"), "depth 3 reaches moody");
     });
 
-    await t.test("GQ6 searchGraphEdges exact predicateKey only", async () => {
+    it("GQ6 searchGraphEdges exact predicateKey only", async () => {
         const hits = await store.searchGraphEdges({ predicate: "supersedes" }, all);
         assert.equal(hits.length, 1);
         assert.equal(hits[0].fromKey, "skill:jsonb-subscript");
@@ -79,12 +86,12 @@ test("graph queries (GQ1–GQ16, RF1–RF5)", { skip: !HAS_DB && "HORIZON_DATABA
         assert.equal(none.length, 0, "no fuzzy match");
     });
 
-    await t.test("GQ7 anchor-and-explore by fromKey", async () => {
+    it("GQ7 anchor-and-explore by fromKey", async () => {
         const hits = await store.searchGraphEdges({ fromKey: n.vacuum.nodeKey }, all);
         assert.deepEqual(hits.map((h) => h.predicate), ["tunes"]);
     });
 
-    await t.test("GQ8 graphNeighbourhood depth 1: direct neighbours + connecting edges", async () => {
+    it("GQ8 graphNeighbourhood depth 1: direct neighbours + connecting edges", async () => {
         const sub = await store.graphNeighbourhood(n.vacuum.nodeKey, 1, all);
         const keys = sub.nodes.map((x) => x.nodeKey).sort();
         assert.deepEqual(keys, ["component:planner", "skill:jsonb-subscript"]);
@@ -92,21 +99,22 @@ test("graph queries (GQ1–GQ16, RF1–RF5)", { skip: !HAS_DB && "HORIZON_DATABA
         assert.ok(sub.edges.some((e) => e.predicate === "tunes"));
     });
 
-    await t.test("GQ9 neighbourhood depth clamped to 1..5", async () => {
+    it("GQ9 neighbourhood depth clamped to 1..5", async () => {
         const a = await store.graphNeighbourhood(n.vacuum.nodeKey, 99, all);
         const b = await store.graphNeighbourhood(n.vacuum.nodeKey, 5, all);
         assert.deepEqual(a.nodes.map((x) => x.nodeKey).sort(), b.nodes.map((x) => x.nodeKey).sort());
         const c = await store.graphNeighbourhood(n.vacuum.nodeKey, 0, all);
-        assert.deepEqual(c.nodes.map((x) => x.nodeKey).sort(), (await store.graphNeighbourhood(n.vacuum.nodeKey, 1, all)).nodes.map((x) => x.nodeKey).sort());
+        assert.deepEqual(c.nodes.map((x) => x.nodeKey).sort(),
+            (await store.graphNeighbourhood(n.vacuum.nodeKey, 1, all)).nodes.map((x) => x.nodeKey).sort());
     });
 
-    await t.test("GQ10/11/12 (neg) empties: unknown predicate / node / seeds", async () => {
+    it("GQ10/11/12 (neg) empties: unknown predicate / node / seeds", async () => {
         assert.deepEqual(await store.searchGraphEdges({ predicateKey: "never_predicate" }, all), []);
         assert.deepEqual(await store.graphNeighbourhood("skill:never-was", 2, all), { nodes: [], edges: [] });
         assert.deepEqual(await store.searchGraphNodes({ seeds: ["shared:never/was"] }, all), []);
     });
 
-    await t.test("GQ13 evidence arrays ACL-filtered per caller; traversal unaffected", async () => {
+    it("GQ13 evidence arrays ACL-filtered per caller; traversal unaffected", async () => {
         // Mixed-evidence node: shared + S1-private + S2-private.
         const sharedK = fxScopeKey(FX[0]);
         const s1K = fxScopeKey(FX[4]);
@@ -120,9 +128,9 @@ test("graph queries (GQ1–GQ16, RF1–RF5)", { skip: !HAS_DB && "HORIZON_DATABA
         assert.deepEqual([...asAll[0].evidence].sort(), [s1K, s2K, sharedK].sort(), "unrestricted sees all");
     });
 
-    await t.test("GQ14 connectivity THROUGH inaccessible evidence still works (topology shared)", async () => {
-        // S2-private fact evidences the mixed node; an S1 caller seeding with
-        // an accessible fact still reaches nodes connected via that node.
+    it("GQ14 connectivity THROUGH inaccessible evidence still works (topology shared)", async () => {
+        // S2-private fact evidences the hub; an S2 caller seeding with its own
+        // fact reaches nodes connected via that hub.
         const hub = await store.upsertGraphNode({ kind: "topic", name: "hub", agentId: "fixture", evidence: [fxScopeKey(FX[5])] }); // S2-only evidence
         const leaf = await store.upsertGraphNode({ kind: "topic", name: "leaf", agentId: "fixture" });
         await store.upsertGraphEdge({ fromKey: hub.nodeKey, toKey: leaf.nodeKey, predicate: "links to", agentId: "fixture" });
@@ -133,14 +141,14 @@ test("graph queries (GQ1–GQ16, RF1–RF5)", { skip: !HAS_DB && "HORIZON_DATABA
         assert.deepEqual(hubHit.evidence, [fxScopeKey(FX[5])], "S2 sees its own evidence key");
     });
 
-    await t.test("GQ15 inaccessible fact seed ≡ unknown seed (deep-equal, no probe oracle)", async () => {
+    it("GQ15 inaccessible fact seed ≡ unknown seed (deep-equal, no probe oracle)", async () => {
         const s2Seed = await store.searchGraphNodes({ seeds: [fxScopeKey(FX[5])], depth: 1 }, aclOf("S1"));
         const unknown = await store.searchGraphNodes({ seeds: ["session:S1:never/was"], depth: 1 }, aclOf("S1"));
         assert.deepEqual(s2Seed, unknown, "seeding another session's fact must behave exactly like an unknown key");
         assert.deepEqual(s2Seed, []);
     });
 
-    await t.test("GQ16 edge evidence is ACL-filtered too", async () => {
+    it("GQ16 edge evidence is ACL-filtered too", async () => {
         const x = await store.upsertGraphNode({ kind: "topic", name: "edge-ev-a", agentId: "fixture" });
         const y = await store.upsertGraphNode({ kind: "topic", name: "edge-ev-b", agentId: "fixture" });
         await store.upsertGraphEdge({

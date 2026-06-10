@@ -1,18 +1,27 @@
 // §2.1a Crawl tracking (C1–C7) — last_crawled_at, receipts, race guard.
+// Tests run sequentially and build on each other's state (C1→C2→C3→C4).
 
-import test from "node:test";
+import { describe, it, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
 import { HAS_DB, makeStore, dropSchemaAndGraph, rawPool } from "./_db.mjs";
 
-test("crawl tracking (C1–C7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }, async (t) => {
-    const { store, schema, graph } = await makeStore({ tag: "crawl" });
-    const pool = rawPool();
-    t.after(async () => { await store.close(); await pool.end(); await dropSchemaAndGraph(schema, graph); });
+describe.skipIf(!HAS_DB)("crawl tracking (C1–C7)", () => {
+    let store, schema, graph, pool;
+
+    beforeAll(async () => {
+        ({ store, schema, graph } = await makeStore({ tag: "crawl" }));
+        pool = rawPool();
+    });
+    afterAll(async () => {
+        await store?.close();
+        await pool?.end();
+        if (schema) await dropSchemaAndGraph(schema, graph);
+    });
 
     const uncrawledKeys = async (ns) =>
         (await store.readUncrawledFacts({ namespace: ns, limit: 100 })).facts.map((f) => f.scopeKey).sort();
 
-    await t.test("C1 new fact is uncrawled and carries contentHash", async () => {
+    it("C1 new fact is uncrawled and carries contentHash", async () => {
         await store.storeFact({ key: "arch/c1", value: { text: "hello" }, shared: true });
         const { facts } = await store.readUncrawledFacts({ limit: 100 });
         const f = facts.find((x) => x.scopeKey === "shared:arch/c1");
@@ -20,7 +29,7 @@ test("crawl tracking (C1–C7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not se
         assert.match(f.contentHash, /^[0-9a-f]{32}$/);
     });
 
-    await t.test("C2 markFactsCrawled with matching hash stamps and drains", async () => {
+    it("C2 markFactsCrawled with matching hash stamps and drains", async () => {
         const { facts } = await store.readUncrawledFacts({ limit: 100 });
         const f = facts.find((x) => x.scopeKey === "shared:arch/c1");
         const res = await store.markFactsCrawled([{ scopeKey: f.scopeKey, contentHash: f.contentHash }]);
@@ -28,12 +37,12 @@ test("crawl tracking (C1–C7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not se
         assert.ok(!(await uncrawledKeys()).includes("shared:arch/c1"));
     });
 
-    await t.test("C3 content change resets crawl state", async () => {
+    it("C3 content change resets crawl state", async () => {
         await store.storeFact({ key: "arch/c1", value: { text: "hello CHANGED" }, shared: true });
         assert.ok((await uncrawledKeys()).includes("shared:arch/c1"));
     });
 
-    await t.test("C4 identical-content write does NOT reset the stamp", async () => {
+    it("C4 identical-content write does NOT reset the stamp", async () => {
         const { facts } = await store.readUncrawledFacts({ limit: 100 });
         const f = facts.find((x) => x.scopeKey === "shared:arch/c1");
         await store.markFactsCrawled([{ scopeKey: f.scopeKey, contentHash: f.contentHash }]);
@@ -41,7 +50,7 @@ test("crawl tracking (C1–C7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not se
         assert.ok(!(await uncrawledKeys()).includes("shared:arch/c1"), "no-op write must not re-queue");
     });
 
-    await t.test("C5 privileged: spans ALL scopes; namespace + limit apply", async () => {
+    it("C5 privileged: spans ALL scopes; namespace + limit apply", async () => {
         await store.storeFact({ key: "arch/c5-shared", value: 1, shared: true });
         await store.storeFact({ key: "arch/c5-s1", value: 2, sessionId: "S1" });
         await store.storeFact({ key: "other/c5", value: 3, sessionId: "S2" });
@@ -53,7 +62,7 @@ test("crawl tracking (C1–C7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not se
         assert.equal(facts.length, 1, "limit applies");
     });
 
-    await t.test("C6 crawl reset does not clear an existing embedding (independent states)", async () => {
+    it("C6 crawl reset does not clear an existing embedding (independent states)", async () => {
         await store.storeFact({ key: "arch/c6", value: { text: "embed me" }, shared: true });
         await pool.query(
             `UPDATE "${schema}".facts SET embedding = $1::vector, embedding_model = 'seeded-4', last_embedded_hash = content_hash
@@ -68,7 +77,7 @@ test("crawl tracking (C1–C7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not se
         assert.equal(rows[0].embed_pending, true, "edit marks embedding pending");
     });
 
-    await t.test("C7 (race) edit between read and mark → stamp skipped, fact stays queued", async () => {
+    it("C7 (race) edit between read and mark → stamp skipped, fact stays queued", async () => {
         await store.storeFact({ key: "arch/c7", value: { text: "v1" }, shared: true });
         const { facts } = await store.readUncrawledFacts({ namespace: "arch", limit: 100 });
         const f = facts.find((x) => x.scopeKey === "shared:arch/c7");
@@ -79,7 +88,7 @@ test("crawl tracking (C1–C7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not se
         assert.ok((await uncrawledKeys("arch")).includes("shared:arch/c7"), "fact must remain queued");
     });
 
-    await t.test("markFactsCrawled validates receipts", async () => {
+    it("markFactsCrawled validates receipts", async () => {
         await assert.rejects(() => store.markFactsCrawled([{ scopeKey: "shared:x" }]), /contentHash/);
         assert.deepEqual(await store.markFactsCrawled([]), { marked: 0, skipped: 0 });
     });

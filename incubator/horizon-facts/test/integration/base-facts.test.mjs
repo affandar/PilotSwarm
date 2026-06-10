@@ -1,14 +1,21 @@
 // §2.1 Base FactStore regression (B1–B7) — drop-in parity + scopeKeys.
 
-import test from "node:test";
+import { describe, it, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
 import { HAS_DB, makeStore, dropSchemaAndGraph, aclOf } from "./_db.mjs";
 
-test("base facts (B1–B7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }, async (t) => {
-    const { store, schema, graph } = await makeStore({ tag: "base" });
-    t.after(async () => { await store.close(); await dropSchemaAndGraph(schema, graph); });
+describe.skipIf(!HAS_DB)("base facts (B1–B7)", () => {
+    let store, schema, graph;
 
-    await t.test("B1 store + read shared fact round-trips with shared: scope_key", async () => {
+    beforeAll(async () => {
+        ({ store, schema, graph } = await makeStore({ tag: "base" }));
+    });
+    afterAll(async () => {
+        await store?.close();
+        if (schema) await dropSchemaAndGraph(schema, graph);
+    });
+
+    it("B1 store + read shared fact round-trips with shared: scope_key", async () => {
         const res = await store.storeFact({ key: "skills/b1", value: { name: "b1" }, shared: true, agentId: "a1" });
         assert.deepEqual(res, { key: "skills/b1", shared: true, stored: true });
         const { facts } = await store.readFacts({ keyPattern: "skills/b1" }, aclOf(null, [], true));
@@ -18,7 +25,7 @@ test("base facts (B1–B7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }
         assert.deepEqual(facts[0].value, { name: "b1" });
     });
 
-    await t.test("B2 session fact requires sessionId; session: scope_key", async () => {
+    it("B2 session fact requires sessionId; session: scope_key", async () => {
         await assert.rejects(() => store.storeFact({ key: "notes/b2", value: 1 }), /sessionId/);
         await store.storeFact({ key: "notes/b2", value: { v: 2 }, sessionId: "S1" });
         const { facts } = await store.readFacts({ keyPattern: "notes/b2", scope: "session" }, aclOf("S1"));
@@ -26,7 +33,7 @@ test("base facts (B1–B7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }
         assert.equal(facts[0].scopeKey, "session:S1:notes/b2");
     });
 
-    await t.test("B3 delete fact: deleted true, gone on re-read", async () => {
+    it("B3 delete fact: deleted true, gone on re-read", async () => {
         await store.storeFact({ key: "skills/b3", value: 1, shared: true });
         const del = await store.deleteFact({ key: "skills/b3", shared: true });
         assert.equal(del.deleted, true);
@@ -36,7 +43,7 @@ test("base facts (B1–B7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }
         assert.equal(count, 0);
     });
 
-    await t.test("B4 deleteSessionFactsForSession removes only that session's non-shared facts", async () => {
+    it("B4 deleteSessionFactsForSession removes only that session's non-shared facts", async () => {
         await store.storeFact({ key: "notes/b4a", value: 1, sessionId: "SB4" });
         await store.storeFact({ key: "notes/b4b", value: 2, sessionId: "SB4" });
         await store.storeFact({ key: "notes/b4c", value: 3, sessionId: "SB4-other" });
@@ -48,7 +55,7 @@ test("base facts (B1–B7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }
         assert.deepEqual(keys, ["notes/b4c", "skills/b4shared"]);
     });
 
-    await t.test("B5 stats buckets: namespace bucketing and byte counts", async () => {
+    it("B5 stats buckets: namespace bucketing and byte counts", async () => {
         await store.storeFact({ key: "skills/b5", value: { pad: "x".repeat(10) }, sessionId: "SB5" });
         await store.storeFact({ key: "asks/b5", value: { pad: "y".repeat(20) }, sessionId: "SB5" });
         await store.storeFact({ key: "misc/b5", value: 1, sessionId: "SB5" });
@@ -68,7 +75,7 @@ test("base facts (B1–B7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }
         assert.equal(skills.factCount, 2, "aggregates across the session array");
     });
 
-    await t.test("B6 readFacts({scopeKeys}) returns exactly the accessible subset, with scopeKey exposed", async () => {
+    it("B6 readFacts({scopeKeys}) returns exactly the accessible subset, with scopeKey exposed", async () => {
         await store.storeFact({ key: "skills/b6", value: 1, shared: true });
         await store.storeFact({ key: "notes/b6", value: 2, sessionId: "SB6" });
         await store.storeFact({ key: "notes/b6x", value: 3, sessionId: "SB6-other" });
@@ -78,13 +85,13 @@ test("base facts (B1–B7)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }
         assert.deepEqual(got, ["session:SB6:notes/b6", "shared:skills/b6"]);
     });
 
-    await t.test("B7 (neg) inaccessible/unknown scopeKeys silently omitted, not an error", async () => {
+    it("B7 (neg) inaccessible/unknown scopeKeys silently omitted, not an error", async () => {
         const { count } = await store.readFacts(
             { scopeKeys: ["session:SOMEONE-ELSE:notes/zzz", "shared:never/was"] }, aclOf("SB7"));
         assert.equal(count, 0);
     });
 
-    await t.test("upsert: re-store overwrites in place (same scope_key)", async () => {
+    it("upsert: re-store overwrites in place (same scope_key)", async () => {
         await store.storeFact({ key: "skills/up", value: { v: 1 }, shared: true });
         await store.storeFact({ key: "skills/up", value: { v: 2 }, shared: true });
         const { facts } = await store.readFacts({ keyPattern: "skills/up" }, aclOf(null, [], true));

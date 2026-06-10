@@ -1,24 +1,17 @@
 // §4 Embedder outcomes (E4, E5, E13, E14) at the REAL dimension, plus the
 // end-to-end semantic/hybrid path over pipeline-embedded rows (S1-robust,
 // S2, S3, H1–H3 live twins). Real endpoint; outcome-polled (no df internals).
+// Tests are ORDERED: E4 seeds the corpus + starts the loop for the rest.
 
-import test from "node:test";
+import { describe, it, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
 import {
     HAS_DB, HAS_REAL_EMBED, REAL_EMBED_DIM, REAL_EMBED_MODEL, realEmbedding,
     makeStore, dropSchemaAndGraph, rawPool, pollUntil, aclOf,
 } from "./_db.mjs";
 
-const SKIP = (!HAS_DB && "HORIZON_DATABASE_URL not set")
-    || (!HAS_REAL_EMBED && "HORIZON_EMBED_URL/_API_KEY not set (full validation requires the real endpoint)");
-
-test("embedder outcomes (E4/E5/E13/E14) + live semantic/hybrid", { skip: SKIP, timeout: 600_000 }, async (t) => {
-    const { store, schema, graph } = await makeStore({ tag: "eout", embeddingDim: REAL_EMBED_DIM });
-    const pool = rawPool();
-    t.after(async () => {
-        await store.stopEmbedder("suite teardown").catch(() => {});
-        await store.close(); await pool.end(); await dropSchemaAndGraph(schema, graph);
-    });
+describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) + live semantic/hybrid", () => {
+    let store, schema, graph, pool;
     const all = aclOf(null, [], true);
 
     const CORPUS = [
@@ -26,6 +19,17 @@ test("embedder outcomes (E4/E5/E13/E14) + live semantic/hybrid", { skip: SKIP, t
         { key: "live/jsonb2", text: "subscript syntax for jsonb columns and missing keys" },
         { key: "live/cooking", text: "a recipe for slow-cooked lamb with rosemary" },
     ];
+
+    beforeAll(async () => {
+        ({ store, schema, graph } = await makeStore({ tag: "eout", embeddingDim: REAL_EMBED_DIM }));
+        pool = rawPool();
+    });
+    afterAll(async () => {
+        await store?.stopEmbedder("suite teardown").catch(() => {});
+        await store?.close();
+        await pool?.end();
+        if (schema) await dropSchemaAndGraph(schema, graph);
+    });
 
     const rowState = async (key) => {
         const { rows } = await pool.query(
@@ -35,7 +39,7 @@ test("embedder outcomes (E4/E5/E13/E14) + live semantic/hybrid", { skip: SKIP, t
         return rows[0];
     };
 
-    await t.test("E4 pending facts get embedded at the real dim; semantic search finds them; related outranks unrelated", async () => {
+    it("E4 pending facts get embedded at the real dim; semantic search finds them; related outranks unrelated", async () => {
         for (const c of CORPUS) await store.storeFact({ key: c.key, value: { text: c.text }, shared: true });
         await store.configureEmbedder(realEmbedding());
         await store.startEmbedder({ intervalSeconds: 1, batch: 16 });
@@ -62,7 +66,7 @@ test("embedder outcomes (E4/E5/E13/E14) + live semantic/hybrid", { skip: SKIP, t
         }
     });
 
-    await t.test("H1–H3 hybrid fusion over the live corpus", async () => {
+    it("H1–H3 hybrid fusion over the live corpus", async () => {
         const hybrid = await store.searchFacts("jsonb subscript", { mode: "hybrid", limit: 5 }, all);
         assert.ok(hybrid.facts.length > 0);
         assert.ok(hybrid.facts[0].signals.lexical !== undefined || hybrid.facts[0].signals.semantic !== undefined,
@@ -77,13 +81,13 @@ test("embedder outcomes (E4/E5/E13/E14) + live semantic/hybrid", { skip: SKIP, t
             "lexical weight 0 behaves like semantic-only");
     });
 
-    await t.test("S2 minSemanticScore cutoff excludes below-threshold facts", async () => {
+    it("S2 minSemanticScore cutoff excludes below-threshold facts", async () => {
         const res = await store.searchFacts("jsonb subscripting semantics",
             { mode: "semantic", minSemanticScore: 0.99, limit: 10 }, all);
         assert.equal(res.facts.filter((f) => f.key === "live/cooking").length, 0);
     });
 
-    await t.test("E5 edited fact is re-embedded (embedded_at advances, hash converges)", async () => {
+    it("E5 edited fact is re-embedded (embedded_at advances, hash converges)", async () => {
         const before = await rowState("live/jsonb2");
         await store.storeFact({ key: "live/jsonb2", value: { text: "subscript syntax for jsonb columns — REVISED edition" }, shared: true });
         assert.equal((await rowState("live/jsonb2")).fresh, false, "edit marks the row pending");
@@ -93,7 +97,7 @@ test("embedder outcomes (E4/E5/E13/E14) + live semantic/hybrid", { skip: SKIP, t
         }, { label: "re-embed after edit", timeoutMs: 120_000 });
     });
 
-    await t.test("E13 mid-flight edits converge: the FINAL content is what ends up embedded", async () => {
+    it("E13 mid-flight edits converge: the FINAL content is what ends up embedded", async () => {
         // Edit the fact repeatedly while the loop is actively embedding a batch;
         // once edits stop, the loop must converge on the final content — the
         // select-time-hash write-back makes it impossible to settle stale.
@@ -110,12 +114,12 @@ test("embedder outcomes (E4/E5/E13/E14) + live semantic/hybrid", { skip: SKIP, t
         assert.equal(st.fresh, true, "last_embedded_hash equals the FINAL content_hash");
     });
 
-    await t.test("E14 model rotation: reconfigured model re-embeds; mismatched rows vanish from semantic results", async () => {
+    it("E14 model rotation: reconfigured model re-embeds; mismatched rows vanish from semantic results", async () => {
         const ROTATED = `${REAL_EMBED_MODEL}-v2`; // same deployment (URL routes it); new model STAMP
         await store.configureEmbedder(realEmbedding({ model: ROTATED }));
-        // While mismatched, the old-model rows are invisible to semantic search (S5 live twin).
+        // While mismatched, the old-model rows are invisible to semantic search (S5 live twin) — shape-only check.
         const during = await store.searchFacts("jsonb subscripting semantics", { mode: "semantic", limit: 10 }, all);
-        assert.ok(during.facts.every((f) => !f.key.startsWith("live/") || false) || during.facts.length >= 0); // shape-only: no crash
+        assert.ok(Array.isArray(during.facts));
         await pollUntil(async () => {
             const st = await rowState("live/cooking");
             return st.embedding_model === ROTATED && st.fresh;
@@ -124,7 +128,7 @@ test("embedder outcomes (E4/E5/E13/E14) + live semantic/hybrid", { skip: SKIP, t
         assert.ok(res.facts.some((f) => f.key.startsWith("live/jsonb")), "rotated rows are searchable again");
     });
 
-    await t.test("S3 (neg) semantic with no endpoint configured throws (fresh store)", async () => {
+    it("S3 (neg) semantic with no endpoint configured throws (fresh store)", async () => {
         const fresh = await makeStore({ tag: "noembed", embeddingDim: 4 });
         try {
             await assert.rejects(

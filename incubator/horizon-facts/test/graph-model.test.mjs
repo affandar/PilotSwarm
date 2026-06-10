@@ -2,7 +2,7 @@
 // Spec: 01-functional-spec §6.3 — evidence OPTIONAL; reinforcement counts
 // only NOVEL evidence (known-evidence replays are no-ops). Run: npm test.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
 import {

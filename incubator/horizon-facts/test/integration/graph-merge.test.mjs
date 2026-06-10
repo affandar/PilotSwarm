@@ -1,25 +1,31 @@
 // §3.4 mergeGraphNodes (GM1–GM4) — entity resolution, hardened repoint.
 
-import test from "node:test";
+import { describe, it, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
 import { HAS_DB, makeStore, dropSchemaAndGraph } from "./_db.mjs";
 
-test("graph merge (GM1–GM4)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set" }, async (t) => {
-    const { store, schema, graph } = await makeStore({ tag: "gmerge" });
-    t.after(async () => { await store.close(); await dropSchemaAndGraph(schema, graph); });
+describe.skipIf(!HAS_DB)("graph merge (GM1–GM4)", () => {
+    let store, schema, graph, moody, alastor, planner, vacuum;
     const agentId = "tester";
     const all = { unrestricted: true };
 
-    const moody = await store.upsertGraphNode({ kind: "person", name: "moody", agentId });
-    const alastor = await store.upsertGraphNode({ kind: "person", name: "alastor-moody", aliases: ["Mad-Eye"], agentId });
-    const planner = await store.upsertGraphNode({ kind: "component", name: "planner", agentId });
-    const vacuum = await store.upsertGraphNode({ kind: "skill", name: "vacuum", agentId });
-    // duplicate's edges: in + out, one of which collides with a survivor edge
-    await store.upsertGraphEdge({ fromKey: planner.nodeKey, toKey: alastor.nodeKey, predicate: "owned_by", evidence: ["shared:e/1"], agentId });
-    await store.upsertGraphEdge({ fromKey: alastor.nodeKey, toKey: vacuum.nodeKey, predicate: "maintains", evidence: ["shared:e/2"], agentId });
-    await store.upsertGraphEdge({ fromKey: planner.nodeKey, toKey: moody.nodeKey, predicate: "owned_by", evidence: ["shared:e/3"], agentId }); // survivor already has owned_by
+    beforeAll(async () => {
+        ({ store, schema, graph } = await makeStore({ tag: "gmerge" }));
+        moody = await store.upsertGraphNode({ kind: "person", name: "moody", agentId });
+        alastor = await store.upsertGraphNode({ kind: "person", name: "alastor-moody", aliases: ["Mad-Eye"], agentId });
+        planner = await store.upsertGraphNode({ kind: "component", name: "planner", agentId });
+        vacuum = await store.upsertGraphNode({ kind: "skill", name: "vacuum", agentId });
+        // duplicate's edges: in + out, one of which collides with a survivor edge
+        await store.upsertGraphEdge({ fromKey: planner.nodeKey, toKey: alastor.nodeKey, predicate: "owned_by", evidence: ["shared:e/1"], agentId });
+        await store.upsertGraphEdge({ fromKey: alastor.nodeKey, toKey: vacuum.nodeKey, predicate: "maintains", evidence: ["shared:e/2"], agentId });
+        await store.upsertGraphEdge({ fromKey: planner.nodeKey, toKey: moody.nodeKey, predicate: "owned_by", evidence: ["shared:e/3"], agentId }); // survivor already has owned_by
+    });
+    afterAll(async () => {
+        await store?.close();
+        if (schema) await dropSchemaAndGraph(schema, graph);
+    });
 
-    await t.test("GM1–GM3 merge: aliases unioned, edges repointed (deduped), duplicate gone", async () => {
+    it("GM1–GM3 merge: aliases unioned, edges repointed (deduped), duplicate gone", async () => {
         await store.mergeGraphNodes(alastor.nodeKey, moody.nodeKey, "same person");
 
         const [hit] = await store.searchGraphNodes({ kind: "person", nameLike: "moody" }, all);
@@ -43,12 +49,12 @@ test("graph merge (GM1–GM4)", { skip: !HAS_DB && "HORIZON_DATABASE_URL not set
         assert.equal(maintains[0].fromKey, "person:moody", "outgoing edge repointed to survivor");
     });
 
-    await t.test("GM4 (neg) merge into missing target throws", async () => {
+    it("GM4 (neg) merge into missing target throws", async () => {
         const x = await store.upsertGraphNode({ kind: "person", name: "temp", agentId });
         await assert.rejects(() => store.mergeGraphNodes(x.nodeKey, "person:never-was", "r"), /target not found/);
     });
 
-    await t.test("merge with missing SOURCE is a silent no-op", async () => {
+    it("merge with missing SOURCE is a silent no-op", async () => {
         await store.mergeGraphNodes("person:never-was", moody.nodeKey, "r");
     });
 });

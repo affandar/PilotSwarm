@@ -3,7 +3,7 @@
 //   MGn numbered-migration file discipline
 //   interface-coverage: every public store method appears in some suite
 
-import test from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";

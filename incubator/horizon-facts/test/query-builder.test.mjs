@@ -3,7 +3,7 @@
 //
 // searchFacts is facts-store-only (01 §4.2): there is no graph signal.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
 import {
