@@ -113,6 +113,28 @@ to land the smoke tools — no worker image rebuild required. The
 document the full toggle-and-verify workflow alongside the existing
 OBO Phase 6 toggle.
 
+**Phase 8 — auto-provisioning the OBO smoke worker AAD app:** new
+opinionated wrapper `deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1`
+provisions the per-stamp downstream worker app in a single idempotent
+invocation: creates/finds the app, mints the OAuth2 delegated scope,
+declares Microsoft Graph `User.Read` as a delegated permission,
+overwrites `api.preAuthorizedApplications` with the per-stamp portal
+app's clientId, and create-or-patches the AKS workload-identity
+federated identity credential **on the Entra application itself**.
+Writes a sidecar JSON at
+`deploy/envs/local/<stamp>/obo-smoke-worker-app.json` and prints
+exactly four `.env` lines (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`,
+`OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE`) to paste
+into the per-stamp `.env`. The wrapper **never edits `.env`** —
+preserves the single-actor-on-`.env` invariant
+(`new-env.mjs` + `compose-env.mjs` + operator/agent are the only
+mutators). A new skill, `pilotswarm-obo-smoke-app-reg`, drives the
+wrapper from the `pilotswarm-npm-deployer` agent's new Step 0.b
+(sequenced after portal app-reg + bicep, before
+`worker manifests,rollout`). Closes the last manual gap in the
+Phase 7 live-smoke harness — `OBO_SMOKE_ENABLED=true` is now a
+true one-line opt-in.
+
 **Docs:**
 
 - New: [`docs/operations/obo-kek-runbook.md`](docs/operations/obo-kek-runbook.md)

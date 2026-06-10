@@ -207,11 +207,34 @@ User OBO Propagation (optional — opt-in feature for downstream consumers like 
 
 User OBO live-smoke (optional — only on dedicated smoke stamps; production stamps must leave OBO_SMOKE_ENABLED=false)
   OBO_SMOKE_ENABLED                  false (default)                              # set 'true' to register the obo_smoke_* tools on this stamp's worker
-  OBO_SMOKE_WORKER_APP_TENANT_ID     <empty> (default)                             # downstream AAD app tenant for the smoke plugin's auth backend
-  OBO_SMOKE_WORKER_APP_CLIENT_ID     <empty> (default)                             # downstream AAD app clientId — must match PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE
-  OBO_SMOKE_WORKER_APP_GRAPH_SCOPE   <empty> (default)                             # e.g. https://graph.microsoft.com/User.Read
-  OBO_SMOKE_TEST_USER_UPN            <empty> (default)                             # dedicated smoke test-user UPN; smoke driver asserts whoami returns this
+  OBO_SMOKE_WORKER_APP_TENANT_ID     <auto-provisioned by Setup-OboSmokeWorkerApp.ps1>   # downstream AAD app tenant
+  OBO_SMOKE_WORKER_APP_CLIENT_ID     <auto-provisioned by Setup-OboSmokeWorkerApp.ps1>   # downstream AAD app clientId — also drives PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE
+  OBO_SMOKE_WORKER_APP_GRAPH_SCOPE   <auto-provisioned, default https://graph.microsoft.com/User.Read>   # downstream resource scope the worker exchanges *to*
+  OBO_SMOKE_TEST_USER_UPN            <operator-supplied or empty>                  # dedicated smoke test-user UPN (optional in env; smoke CLI also takes --test-user)
 ```
+
+> **Auto-provisioning the OBO smoke worker app:** when
+> `OBO_SMOKE_ENABLED=true`, do **not** ask the user to pre-create the
+> downstream AAD app or fill in the four `OBO_SMOKE_*` /
+> `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` keys by hand. Invoke the
+> `pilotswarm-obo-smoke-app-reg` skill after Step 0 (portal app-reg)
+> and after the per-stamp bicep step has succeeded. The skill drives
+> `deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1`, which creates the
+> per-stamp worker app, mints the OAuth2 scope, declares Microsoft
+> Graph `User.Read` delegated permission, pre-authorizes the portal
+> app, create-or-patches the AKS workload-identity FIC on the new
+> Entra application, and prints exactly four `.env` lines for the
+> operator (or the agent via `edit`) to paste in. The wrapper never
+> writes `.env` directly — same single-actor invariant the portal
+> app-reg script preserves.
+>
+> Note also that `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` is the upstream
+> audience (`api://<worker-app-id>/.default offline_access`) the portal
+> acquires a token *for*, while `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE` is
+> the downstream resource scope (default
+> `https://graph.microsoft.com/User.Read`) the worker exchanges that
+> token *to*. They look similar; they are not interchangeable. See
+> `pilotswarm-obo-smoke-app-reg` for the full table.
 
 **About OBO User Context propagation:** opt-in feature (default off,
 backwards-compatible per FR-002 of the OBO spec). When `OBO_ENABLED=true`,

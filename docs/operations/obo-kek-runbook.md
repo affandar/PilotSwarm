@@ -6,6 +6,13 @@
 > [`docs/operations/live-smoke.md`](./live-smoke.md) — repeatable
 > `pilotswarm smoke <stamp> --profile obo` harness for verifying the
 > end-to-end OBO path on a deployed stamp after the KEK is in place.
+>
+> Per-stamp downstream worker AAD app provisioning for the live-smoke
+> harness is driven by `deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1`
+> (see `deploy/scripts/auth/README.md` § "OBO smoke worker app" and the
+> `pilotswarm-obo-smoke-app-reg` skill). The KEK runbook below focuses
+> on the **envelope-encryption key**; the smoke worker app and its FIC
+> are an orthogonal concern handled by the wrapper.
 
 ## Overview
 

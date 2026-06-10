@@ -24,26 +24,65 @@
 These are one-time-per-tenant or one-time-per-stamp setup costs.
 None of them are created automatically by the workflow or driver.
 
-### Smoke AAD app (one-time per tenant)
+### Smoke AAD app (per-stamp, auto-provisioned)
 
-A dedicated AAD app registration in the smoke tenant. It exposes a
-`.default` scope that the **portal** acquires on behalf of the
-signed-in user (admission scope is the portal's own client-id; the
-smoke app is the *downstream* worker app for OBO purposes).
+A dedicated AAD app registration **per smoke stamp** (one per
+deployment, not one shared across the tenant). It exposes a `.default`
+scope that the **portal** acquires on behalf of the signed-in user
+(admission scope is the portal's own client-id; the smoke app is the
+*downstream* worker app for OBO purposes).
 
-The smoke app needs:
+For new-env stamps on AKS, **do not create or wire this app by hand**.
+The repo ships an opinionated wrapper that auto-provisions the
+app + FIC + portal pre-authorization end-to-end:
 
-1. An exposed-API scope (e.g. `access_as_user`); the portal acquires
-   `api://<smoke-app-client-id>/.default`.
-2. Microsoft Graph `User.Read` (delegated) with admin consent.
-3. **For the local-developer backend**: a client secret stored in
-   `OBO_SMOKE_WORKER_APP_CLIENT_SECRET`.
-4. **For the AKS-deployed backend (FIC)**: a federated-credential
-   trust whose `subject` is
-   `system:serviceaccount:<namespace>:<worker-sa>` for the
-   target stamp. Add one trust per stamp the smoke runs against.
+```bash
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -ServiceTreeId <id> \
+  -EnvName <stamp>
+```
 
-### Per-stamp env (one-time per stamp)
+The wrapper produces exactly the shape the smoke harness expects:
+
+1. An exposed-API scope (`user_impersonation` by default) under
+   `identifierUri: api://<appId>`; the portal acquires
+   `api://<appId>/.default offline_access`.
+2. Microsoft Graph `User.Read` declared as a **delegated** permission
+   (`type=Scope`, not `type=Role`). Admin consent is required once
+   per tenant — pass `-GrantAdminConsent` to the wrapper if running
+   as a tenant Global Admin, otherwise grant consent out-of-band.
+3. `api.preAuthorizedApplications` populated with the per-stamp
+   portal app's clientId (read from
+   `deploy/envs/local/<stamp>/entra-app.json`), so the portal
+   doesn't trigger a runtime user-consent prompt.
+4. **On AKS (the default)**: an AKS workload-identity federated
+   identity credential on the *Application* itself (subject =
+   `system:serviceaccount:pilotswarm:copilot-runtime-worker`,
+   audience = `api://AzureADTokenExchange`) — no client secret
+   needed.
+5. **For the local-developer backend only**: a client secret stored
+   in `OBO_SMOKE_WORKER_APP_CLIENT_SECRET`. The wrapper does **not**
+   mint this secret; create it manually via `az ad app credential
+   reset` when running the worker outside a pod.
+
+See [`pilotswarm-obo-smoke-app-reg`](../../.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md)
+for the full skill (parameters, troubleshooting, sidecar shape) and
+the npm-deployer agent's Step 0.b for sequencing inside a new-env
+flow.
+
+> **Two scopes that look alike, but aren't.** Don't conflate
+> `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`
+> (`api://<worker-app-id>/.default offline_access` — the **upstream
+> audience** the portal acquires a token *for*) with
+> `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE`
+> (`https://graph.microsoft.com/User.Read` — the **downstream
+> resource** the worker exchanges that token *to*). They are different
+> ends of the two-hop OBO chain; swapping them produces
+> `AADSTS50013` (wrong audience) or `AADSTS65001` (missing delegated
+> permission) at runtime.
+
+### Per-stamp env (auto-populated by the wrapper)
 
 In the stamp's `deploy/envs/local/<stamp>/.env`:
 

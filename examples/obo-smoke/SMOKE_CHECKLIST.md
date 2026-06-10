@@ -171,14 +171,32 @@ the local-portal setup cost, use the
       `OBO_SMOKE_ENABLED=true`. The worker registers `obo_smoke_*`
       tools at startup; non-smoke stamps are unaffected (the toggle
       is worker-only and defaults to `false`).
-- [ ] Configure FIC trust on the smoke AAD app for the worker SA
-      (federated-credential subject =
-      `system:serviceaccount:<namespace>:<worker-sa>`). Per stamp,
-      one-time.
-- [ ] Set `OBO_SMOKE_WORKER_APP_TENANT_ID`,
-      `OBO_SMOKE_WORKER_APP_CLIENT_ID`, and
-      `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE` in the per-stamp `.env`.
-      No client secret needed — the FIC backend wins automatically.
+- [ ] Auto-provision the per-stamp OBO smoke worker AAD app **+ AKS
+      FIC** by invoking the
+      [`pilotswarm-obo-smoke-app-reg`](../../.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md)
+      skill, or running its wrapper directly:
+      `pwsh -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 -ServiceTreeId <id> -EnvName <stamp>`.
+      The wrapper creates/finds the worker app, mints the OAuth2
+      scope, declares Microsoft Graph `User.Read` delegated
+      permission, pre-authorizes the portal app (read from
+      `deploy/envs/local/<stamp>/entra-app.json`), and create-or-
+      patches the AKS workload-identity FIC on the Entra application
+      itself — no separate manual FIC step. Idempotent; re-runs are
+      no-ops.
+- [ ] Paste the four `.env` lines the wrapper prints into
+      `deploy/envs/local/<stamp>/.env`:
+      `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`,
+      `OBO_SMOKE_WORKER_APP_TENANT_ID`,
+      `OBO_SMOKE_WORKER_APP_CLIENT_ID`,
+      `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE`. The wrapper writes a
+      sidecar JSON at `deploy/envs/local/<stamp>/obo-smoke-worker-app.json`
+      but never edits `.env` itself (preserves the single-actor-on-
+      `.env` invariant). No client secret is needed on AKS — the FIC
+      backend wins automatically.
+- [ ] Verify with the tightened grep gate (zero matches required):
+      `grep -E '^(PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE|OBO_SMOKE_WORKER_APP_(TENANT_ID|CLIENT_ID|GRAPH_SCOPE))=(__PS_UNSET__)?$' deploy/envs/local/<stamp>/.env`.
+- [ ] Re-project the worker ConfigMap:
+      `node deploy/scripts/deploy.mjs worker <stamp> --steps manifests,rollout`.
 - [ ] Run `npx pilotswarm smoke <stamp> --profile obo`. The driver
       acquires user tokens via device-code, drives the deployed
       portal's `/api/rpc`, exercises both tools, and emits a JSON

@@ -507,6 +507,7 @@ output acrName string = acrName
 output keyVaultName string = KeyVault.outputs.keyVaultName
 output blobContainerEndpoint string = Storage.outputs.blobContainerEndpoint
 output aksClusterName string = Aks.outputs.aksClusterName
+output oidcIssuerUrl string = Aks.outputs.oidcIssuerUrl
 output postgresFqdn string = Postgres.outputs.fullyQualifiedDomainName
 output postgresAadAdminPrincipalName string = Postgres.outputs.aadAdminPrincipalName
 output frontDoorProfileName string = frontDoorProfileName

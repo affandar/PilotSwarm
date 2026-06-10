@@ -20,6 +20,7 @@ You can also invoke it directly.
 | `Create3PApplication.ps1` | Generic Azure AD application primitive. Useful if you need a non-portal app registration (e.g. a worker daemon with app roles). The PilotSwarm portal wrapper does **not** call this — it does its own SPA-shaped `az ad app create` so it can configure the SPA platform + implicit-grant + per-token-type groups claim, which the generic primitive doesn't expose. |
 | `Setup-PortalAuth.ps1` | Opinionated wrapper that creates the exact shape the PilotSwarm portal expects. See "Defaults" below. |
 | `Set-PortalAuthAssignments.ps1` | Add / remove / list user + group assignments against the `admin` / `user` app roles on an existing portal app. Idempotent. Re-runnable. See `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md` for full operator docs. |
+| `Setup-OboSmokeWorkerApp.ps1` | Opinionated wrapper that creates the per-stamp **OBO live-smoke downstream worker app** — required only when `OBO_SMOKE_ENABLED=true`. Creates the app, exposes an OAuth2 delegated scope, declares Microsoft Graph `User.Read` as a delegated permission, pre-authorizes the per-stamp portal app, and create-or-patches the AKS workload-identity federated identity credential on the Entra application itself. Writes a sidecar JSON and prints exactly four `.env` lines to paste. Idempotent. See "OBO smoke worker app" below + `.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md`. |
 
 ## Prerequisites
 
@@ -239,6 +240,84 @@ with an empty redirect-URI list. After deploy finishes, run again with
 | Signed-in user with no role gets `defaultRole` instead of being denied | The stamp has `PORTAL_AUTHZ_DEFAULT_ROLE=user` (legacy open posture) | Leave `PORTAL_AUTHZ_DEFAULT_ROLE` unset (defaults to `none` = deny-by-default since v0.1.33). With `-CreateAppRoles`, assigned users get `admin`/`user` via the JWT role claim; unassigned signed-in users are denied by the engine |
 | First sign-in fails with `AADSTS90094` admin-consent prompt after `-AssignmentRequired` | Tenant user-consent policy restricts non-verified-publisher apps; the OIDC sign-in flow can't create the user-consent grant for Microsoft Graph (`openid profile offline_access`) on the user's behalf while `appRoleAssignmentRequired=true` blocks them | One-time dance: `az ad sp update --id <sp-objectId> --set appRoleAssignmentRequired=false`, have each affected user sign in once to accept user-consent, then flip back to `true`. Or drop `-AssignmentRequired` entirely — with `-CreateAppRoles` + role assignments, the engine's deny-by-default behavior already enforces lockdown without needing the Entra-side gate |
 | `403` on portal admin routes | Signed-in user does not have the `admin` app role (or matching group via `PORTAL_AUTH_ENTRA_ADMIN_GROUPS`) | Assign the user to the `admin` role: `pwsh -File deploy/scripts/auth/Set-PortalAuthAssignments.ps1 -EnvName <stamp> -AdminAssignments <upn>` (or via Entra portal "Users and groups") |
+
+## OBO smoke worker app (`Setup-OboSmokeWorkerApp.ps1`)
+
+The OBO live-smoke harness (`pilotswarm smoke <stamp> --profile obo`)
+exercises the full two-hop OBO chain on a deployed stamp: portal
+acquires a worker-audienced token → worker exchanges that token via
+`acquireTokenOnBehalfOf` for a Microsoft Graph `User.Read` token →
+worker calls Graph as the signed-in user. That chain requires a
+**per-stamp downstream worker AAD app** distinct from the portal app
+and from the worker's own UAMI.
+
+`Setup-OboSmokeWorkerApp.ps1` provisions that app and its supporting
+infra in a single idempotent invocation. It is the OBO analog of
+`Setup-PortalAuth.ps1` and runs after both the portal app-reg and the
+per-stamp bicep step have succeeded.
+
+### What it does
+
+1. Creates (or finds, by display name) the app
+   `"PilotSwarm OBO Smoke Worker - <EnvName>"`.
+2. Mints (or re-reads) an OAuth2 delegated scope `user_impersonation`
+   under `identifierUri: api://<appId>` with
+   `requestedAccessTokenVersion = 2` (so issued tokens are v2 —
+   `@azure/msal-node`'s `acquireTokenOnBehalfOf` requires v2).
+3. Declares Microsoft Graph `User.Read` as a **delegated** permission
+   (`type=Scope`). Without this declaration, the worker's OBO exchange
+   returns `AADSTS65001` at runtime even with pre-authorization in
+   place.
+4. Overwrites `api.preAuthorizedApplications` with a single-element
+   array containing the per-stamp portal app's clientId (read from
+   `deploy/envs/local/<EnvName>/entra-app.json`, or supplied via
+   `-PortalClientId`). Overwrite (not merge) because each stamp has a
+   strict 1:1 portal-app → worker-app relationship.
+5. Create-or-patches the AKS workload-identity federated identity
+   credential **on the Entra application** (not on a UAMI). Subject
+   defaults to `system:serviceaccount:pilotswarm:copilot-runtime-worker`,
+   audience `api://AzureADTokenExchange`. The OIDC issuer URL is read
+   from `deploy/.tmp/<EnvName>/bicep-outputs.cache.json`.
+6. Optionally (`-GrantAdminConsent`) runs `az ad app permission
+   admin-consent` for Graph `User.Read`. Only meaningful when the
+   running principal is a tenant Global Admin.
+7. Writes a JSON sidecar at
+   `deploy/envs/local/<EnvName>/obo-smoke-worker-app.json`.
+8. Prints **exactly four** `.env` lines to stdout for the operator to
+   paste into `deploy/envs/local/<EnvName>/.env`:
+
+   ```
+   PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=api://<worker-app-id>/.default offline_access
+   OBO_SMOKE_WORKER_APP_TENANT_ID=<tenant-id>
+   OBO_SMOKE_WORKER_APP_CLIENT_ID=<worker-app-id>
+   OBO_SMOKE_WORKER_APP_GRAPH_SCOPE=https://graph.microsoft.com/User.Read
+   ```
+
+**The wrapper never edits `.env`** — same single-actor-on-`.env`
+invariant `Setup-PortalAuth.ps1` preserves. Paste the four lines
+yourself, or have the npm-deployer agent do it via its `edit` tool.
+
+### Invocation
+
+```bash
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -ServiceTreeId <id> \
+  -EnvName <stamp>
+```
+
+For full parameter reference, troubleshooting, and the
+upstream-audience-vs-downstream-resource scope distinction, see
+`.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md`.
+
+### When NOT to run it
+
+- Stamps with `OBO_SMOKE_ENABLED=false` (the default).
+- Stamps where the operator already has the four `OBO_SMOKE_*` /
+  `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` values filled in (e.g.
+  pointing at a manually-managed downstream app).
+- Stamps using `PORTAL_AUTH_PROVIDER=none` — the smoke harness
+  requires a signed-in portal user.
 
 ## Why `Create3PApplication.ps1` is included
 
