@@ -752,8 +752,9 @@ Write-Host "Wrote sidecar to $OutputFile" -ForegroundColor Green
 # --- Stdout paste-block: app-shell and all only (env doesn't change in patch-fic) ---
 if ($Mode -eq "patch-fic") {
     Write-Host ""
-    Write-Host "=== FIC patched. No .env changes needed in this phase. ===" -ForegroundColor Green
-    Write-Host "  Next: `node deploy/scripts/deploy.mjs worker $EnvName --steps manifests,rollout`" -ForegroundColor Cyan
+    Write-Host "=== FIC patched. No .env or k8s changes needed. ===" -ForegroundColor Green
+    Write-Host "  Worker pod accepts OBO exchanges as soon as AAD sees the FIC (no pod restart)." -ForegroundColor Cyan
+    Write-Host "  Next: pilotswarm smoke $EnvName --profile obo" -ForegroundColor Cyan
     return
 }
 
@@ -769,7 +770,8 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 if ($Mode -eq "app-shell") {
     Write-Host "Step 1 of 2 (app-shell): paste the five lines above into deploy/envs/local/$EnvName/.env" -ForegroundColor Cyan
-    Write-Host "  Then run bicep, then re-invoke with -Mode patch-fic to wire the AKS FIC." -ForegroundColor Cyan
+    Write-Host "  Then run the full deploy (bicep + manifests + rollout). When the stamp is up," -ForegroundColor Cyan
+    Write-Host "  re-invoke with -Mode patch-fic just before running 'pilotswarm smoke'." -ForegroundColor Cyan
 } else {
     Write-Host "Step 2 of 2: paste the five lines above into deploy/envs/local/$EnvName/.env" -ForegroundColor Cyan
     Write-Host "  Then re-run the deploy's worker manifests/rollout step so the new env values reach the pod."

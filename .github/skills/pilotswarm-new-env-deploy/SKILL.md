@@ -219,19 +219,24 @@ smoke-driver stamp marker; the worker loads smoke tools because
 > stamps that will run `pilotswarm smoke <stamp> --profile obo`, do
 > **not** ask the user to pre-create the downstream AAD app or fill in
 > the smoke env block by hand. Invoke the `pilotswarm-obo-smoke-app-reg`
-> skill in two phases so nothing has to wait for bicep:
+> skill in two phases so nothing in the deploy pipeline has to wait
+> on Entra:
 >
 > 1. **`-Mode app-shell`** runs alongside Step 0 (portal app-reg),
 >    **before** bicep. Creates the worker app, mints the OAuth2 scope,
 >    declares Graph `User.Read` delegated permission, pre-authorizes
 >    the portal app, and prints the `.env` paste block including
 >    `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`. No FIC, no OIDC
->    dependency.
-> 2. **`-Mode patch-fic`** runs **after** the per-stamp bicep step and
->    **before** `worker manifests,rollout`. Looks up the existing app
->    and create-or-patches the AKS workload-identity FIC against the
->    OIDC issuer URL bicep emitted into
->    `deploy/.tmp/<stamp>/bicep-outputs.cache.json`. No `.env` changes.
+>    dependency — bicep/manifests/rollout can all proceed from here.
+> 2. **`-Mode patch-fic`** runs **after the full deploy completes**
+>    (bicep + manifests + rollout), right before
+>    `pilotswarm smoke <stamp> --profile obo`. Looks up the existing
+>    app and create-or-patches the AKS workload-identity FIC against
+>    the OIDC issuer URL bicep emitted into
+>    `deploy/.tmp/<stamp>/bicep-outputs.cache.json`. No `.env` or k8s
+>    changes — the worker pod is already running and will start
+>    accepting OBO exchanges as soon as the FIC exists in AAD (no pod
+>    restart required).
 >
 > A single-shot `-Mode all` is also available for operator re-runs
 > against an already-deployed stamp. The wrapper never writes `.env`

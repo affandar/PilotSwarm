@@ -80,7 +80,7 @@ Match the change to a service and a minimal step set. Always invoke via `node de
 | Worker-t3 (StatefulSet) manifest change | `node deploy/scripts/deploy.mjs worker-t3 <stamp> --steps manifests,rollout` |
 | End-to-end re-render after multi-service change | `node deploy/scripts/deploy.mjs all <stamp>` (filters by EDGE_MODE/TLS_SOURCE automatically) |
 | Toggle OBO User Context on a stamp (`OBO_ENABLED=true`) | `node deploy/scripts/deploy.mjs base-infra <stamp> --steps bicep` then `node deploy/scripts/deploy.mjs all <stamp> --steps manifests,rollout` (re-renders overlay .env with the new `OBO_KEK_KID` bicep output and re-projects worker + portal ConfigMaps). Operator must edit `deploy/envs/local/<stamp>/.env` to set `OBO_ENABLED=true` and `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=api://<worker-app>/.default` before re-running base-infra. See `pilotswarm-new-env-deploy` §"User OBO Propagation" + `docs/operations/obo-kek-runbook.md`. |
-| Enable OBO live-smoke on a stamp | Build/push the worker image with `--variant smoke`, compose `deploy/envs/template.smoke.env` into `deploy/envs/local/<stamp>/.env`, then run **Step 0.b-early** (app-shell) before bicep to provision the worker app + scope + pre-auth and paste the emitted env lines (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`, `OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE`, and `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`). After bicep emits the AKS OIDC issuer, run **Step 0.b-late** (patch-fic) to wire the FIC. `OBO_SMOKE_ENABLED=true` is the smoke-driver marker; worker tool registration is governed by `PLUGIN_DIRS`. `OBO_SMOKE_TEST_USER_UPN` is an optional UPN-assertion knob — leave it empty to accept whichever user signs in. Then `node deploy/scripts/deploy.mjs worker <stamp> --steps manifests,rollout` to re-project the worker ConfigMap. After rollout, run `pilotswarm smoke <stamp> --profile obo` from a workstation; the default `--auth device-code` flow lets the operator sign in as themselves (no dedicated test user required — see `docs/operations/live-smoke.md` for MFA / Conditional Access notes). Default production stamps should use the default image and omit the smoke overlay. |
+| Enable OBO live-smoke on a stamp | Build/push the worker image with `--variant smoke`, compose `deploy/envs/template.smoke.env` into `deploy/envs/local/<stamp>/.env`, then run **Step 0.b-early** (app-shell) before bicep to provision the worker app + scope + pre-auth and paste the emitted env lines (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`, `OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE`, and `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`). Run the full deploy (bicep + manifests + rollout). When the stamp is up, run **Step 0.b-late** (patch-fic) just before `pilotswarm smoke` to wire the FIC on the Entra app — no `.env` or k8s changes, no pod restart. `OBO_SMOKE_ENABLED=true` is the smoke-driver marker; worker tool registration is governed by `PLUGIN_DIRS`. `OBO_SMOKE_TEST_USER_UPN` is an optional UPN-assertion knob — leave it empty to accept whichever user signs in. After patch-fic, run `pilotswarm smoke <stamp> --profile obo` from a workstation; the default `--auth device-code` flow lets the operator sign in as themselves (no dedicated test user required — see `docs/operations/live-smoke.md` for MFA / Conditional Access notes). Default production stamps should use the default image and omit the smoke overlay. |
 
 ### Pre-flight (mandatory before invoking)
 
@@ -271,13 +271,15 @@ replacing any `__PS_UNSET__` sentinels or empty values for these keys.
 If `PLUGIN_DIRS` already contains other plugin directories, append the
 smoke path comma-separated. Bicep can now run with the final overlay.
 
-#### Step 0.b-late — `-Mode patch-fic` (after bicep, before manifests,rollout)
+#### Step 0.b-late — `-Mode patch-fic` (after the full deploy completes; just before smoke)
 
 Looks up the worker app by display name (errors out if Step 0.b-early
 hasn't run) and create-or-patches the AKS workload-identity FIC against
 the OIDC issuer URL bicep emitted into
-`deploy/.tmp/<stamp>/bicep-outputs.cache.json`. **No `.env` changes** —
-env was finalized in 0.b-early.
+`deploy/.tmp/<stamp>/bicep-outputs.cache.json`. **No `.env` or k8s
+changes** — the worker pod is already running and will start accepting
+OBO exchanges as soon as the FIC exists in AAD (no pod restart
+required). Run this just before `pilotswarm smoke <stamp> --profile obo`.
 
 ```pwsh
 pwsh -NoProfile -ExecutionPolicy Bypass `

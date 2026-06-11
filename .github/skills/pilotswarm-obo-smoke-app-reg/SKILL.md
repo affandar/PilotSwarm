@@ -26,22 +26,30 @@ smoke also requires building the worker image with `--variant smoke` so
 ## Sequencing inside the new-env flow (two-phase)
 
 The wrapper supports two phases — **app-shell** and **patch-fic** — so
-nothing in the early-bring-up sequence has to wait for bicep:
+nothing in the deploy pipeline has to wait on Entra:
 
 1. **`-Mode app-shell`** runs alongside `pilotswarm-portal-app-reg`,
    **before** bicep. It creates/finds the app, mints the OAuth2 scope,
    declares Graph `User.Read` delegated permission, pre-authorizes the
    portal app, and emits the `.env` paste block. **No FIC** (and no
-   OIDC issuer dependency).
-2. **`-Mode patch-fic`** runs **after** the per-stamp bicep step and
-   **before** `worker manifests,rollout`. It looks up the existing app
-   by display name, reads the AKS OIDC issuer URL from
+   OIDC issuer dependency). Bicep/manifests/rollout can all proceed
+   from here.
+2. **`-Mode patch-fic`** runs **after the full deploy completes**
+   (bicep + manifests + rollout). It looks up the existing app by
+   display name, reads the AKS OIDC issuer URL from
    `deploy/.tmp/<stamp>/bicep-outputs.cache.json`, and create-or-patches
-   the FIC. No `.env` changes.
+   the FIC on the Entra application. No `.env` changes and no k8s
+   changes — the worker pod is already running and will start accepting
+   OBO exchanges as soon as the FIC exists in AAD. Run this just before
+   `pilotswarm smoke <stamp> --profile obo`.
 
-For one-shot operator use against an already-running cluster, the
+The worker pod boots fine without the FIC; the FIC is only consulted at
+runtime when a tool actually performs an OBO exchange. There is no pod
+restart between patch-fic and the smoke run.
+
+For one-shot operator use against an already-deployed cluster, the
 back-compat default `-Mode all` does both phases in one invocation
-(requires bicep to have run).
+(requires bicep outputs to be present).
 
 This mirrors how `pilotswarm-portal-app-reg` patches the portal-app's
 SPA redirect URIs after the AFD endpoint is known — the app is created
@@ -196,7 +204,7 @@ This:
    is `null` until patch-fic runs).
 6. Prints the smoke `.env` paste block to stdout — paste it now.
 
-**Phase 2 — `patch-fic` (after bicep, before worker manifests,rollout)**
+**Phase 2 — `patch-fic` (after the full deploy completes; just before smoke)**
 
 ```bash
 pwsh -NoProfile -ExecutionPolicy Bypass \
