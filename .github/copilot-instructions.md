@@ -169,7 +169,7 @@ Current overlap to preserve unless intentionally changed:
 
 ## User OBO (User-On-Behalf-Of) Propagation
 
-PilotSwarm propagates the signed-in portal user's identity (and, when configured, an envelope-encrypted downstream access token) to worker tool handlers so downstream consumers can perform OAuth2 OBO flows (e.g. Azure DevOps, Microsoft Graph) as the engineer rather than as the worker UAMI. This is a generic propagation surface; ADO is the first consumer (a downstream consumer app).
+PilotSwarm propagates the signed-in portal user's identity (and, when configured, an envelope-encrypted downstream access token) to worker tool handlers so downstream consumer apps can perform OAuth2 OBO flows (e.g. Microsoft Graph, Azure DevOps, or any Entra-protected resource) as the engineer rather than as the worker UAMI. This is a generic propagation surface — PilotSwarm itself does not call any specific downstream resource; consumer apps that build on PilotSwarm do.
 
 Architecture invariants — do not break these without an explicit cross-repo coordination:
 

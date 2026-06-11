@@ -12,7 +12,7 @@ Downstream consumers building agents that "act on behalf of the signed-in engine
 
 This work makes PilotSwarm a clean substrate for that pattern. The portal's existing Entra sign-in flow gets a deployment-configurable additional scope it acquires at sign-in and refreshes silently mid-session. Every worker-bound RPC carries an extended principal envelope that optionally includes the user's access token and an expiry hint. Worker tool handlers gain a stable lookup capability to resolve the active session's user context. And tools can emit a structured "interaction-required" outcome that the portal UI distinguishes from generic failures and uses to drive a re-authentication affordance, after which the session resumes.
 
-The work is generic. Azure DevOps is the first anticipated consumer, but no ADO-specific code, scope, or knowledge lives in PilotSwarm. The feature is gated on deployment configuration: stamps that don't configure a downstream worker scope continue to behave exactly as today.
+The work is generic. PilotSwarm itself does not target any specific downstream resource; consumer apps that build on PilotSwarm decide which Entra-protected resource to call (e.g. Microsoft Graph, Azure DevOps, etc.). The feature is gated on deployment configuration: stamps that don't configure a downstream worker scope continue to behave exactly as today.
 
 ## Objectives
 
@@ -270,7 +270,7 @@ The work is generic. Azure DevOps is the first anticipated consumer, but no ADO-
 
 - **Risk: Worker user-context store grows unboundedly across long-lived sessions.** *Impact*: Worker memory pressure. *Mitigation*: Entries keyed by session id; cleared on session terminal state via ordinary cleanup paths. Per-entry size is bounded (one principal + one token + expiry). Optional bounded LRU cap is a planning detail; the natural cleanup hook should suffice.
 
-- **Risk: Mid-session conditional-access drift produces frequent interaction-required outcomes that confuse the agent.** *Impact*: Agents may misclassify the outcome and retry pathologically. *Mitigation*: Distinct, machine-readable signal (FR-010); SDK propagates as a typed event, not as text the model might re-interpret. Agent prompt guidance for the outcome is the consumer's responsibility (covered in the consumer spec for ADO).
+- **Risk: Mid-session conditional-access drift produces frequent interaction-required outcomes that confuse the agent.** *Impact*: Agents may misclassify the outcome and retry pathologically. *Mitigation*: Distinct, machine-readable signal (FR-010); SDK propagates as a typed event, not as text the model might re-interpret. Agent prompt guidance for the outcome is the consumer's responsibility.
 
 - **Risk: Test coverage of the near-expiry refresh boundary is brittle to auth-library internals.** *Impact*: Tests pass against mocks but the real auth library diverges. *Mitigation*: Three test layers — unit (mocked auth), integration (HTTPS-level stubs against real auth code path), live-tenant smoke (release gate). The integration layer specifically catches auth-library-internal divergence.
 
