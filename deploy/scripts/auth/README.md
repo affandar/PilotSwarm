@@ -281,8 +281,11 @@ per-stamp bicep step have succeeded.
    audience `api://AzureADTokenExchange`. The OIDC issuer URL is read
    from `deploy/.tmp/<EnvName>/bicep-outputs.cache.json`.
 6. Optionally (`-GrantAdminConsent`) runs `az ad app permission
-   admin-consent` for Graph `User.Read`. Only meaningful when the
-   running principal is a tenant Global Admin.
+   admin-consent` for Graph `User.Read`. A shortcut that skips the
+   per-user consent prompt on first sign-in for every user; only
+   meaningful when the running principal is a tenant Global Admin (or
+   a Cloud Application Administrator). Per-user consent at portal
+   sign-in is the default path otherwise.
 7. Writes a JSON sidecar at
    `deploy/envs/local/<EnvName>/obo-smoke-worker-app.json`.
 8. Prints the smoke `.env` paste block to stdout for the operator to

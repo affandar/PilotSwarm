@@ -47,9 +47,14 @@ The wrapper produces exactly the shape the smoke harness expects:
    `identifierUri: api://<appId>`; the portal acquires
    `api://<appId>/.default offline_access`.
 2. Microsoft Graph `User.Read` declared as a **delegated** permission
-   (`type=Scope`, not `type=Role`). Admin consent is required once
-   per tenant — pass `-GrantAdminConsent` to the wrapper if running
-   as a tenant Global Admin, otherwise grant consent out-of-band.
+   (`type=Scope`, not `type=Role`). Per-user consent at portal sign-in
+   is the default path — each user accepts the consent prompt once
+   for themselves on their first OBO smoke sign-in, attached to the
+   worker app's service principal. Tenant-wide admin consent is an
+   optional shortcut: pass `-GrantAdminConsent` to the wrapper if
+   running as a Global Admin, or have a Cloud Application
+   Administrator grant it out-of-band. Mandatory only in tenants that
+   block user consent for Graph `User.Read`.
 3. `api.preAuthorizedApplications` populated with the per-stamp
    portal app's clientId (read from
    `deploy/envs/local/<stamp>/entra-app.json`), so the portal

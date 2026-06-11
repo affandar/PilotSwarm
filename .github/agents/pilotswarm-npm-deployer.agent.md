@@ -313,12 +313,17 @@ If any line matches, you forgot to paste — re-read the wrapper's
 stdout from Step 0.b-early and apply the paste block via `edit` before
 invoking `worker manifests,rollout`.
 
-**Admin consent**: the wrapper declares Microsoft Graph `User.Read`
-delegated permission on the worker app (without it the OBO exchange
-returns `AADSTS65001` at runtime). Consent is required once per tenant.
-If you are a tenant Global Admin, pass `-GrantAdminConsent` to the
-wrapper; otherwise have a tenant admin grant consent for the worker
-app's Graph `User.Read` out-of-band before the first smoke run.
+**Consent**: the wrapper declares Microsoft Graph `User.Read`
+delegated permission on the worker app. **Per-user consent at portal
+sign-in is the default and recommended path** — each user accepts the
+"Sign you in and read your profile" prompt once for themselves on
+their first OBO smoke sign-in. No tenant admin involvement required.
+For shared stamps, you can optionally pre-grant tenant-wide consent
+by passing `-GrantAdminConsent` (Global Admin) or by having a Cloud
+Application Administrator run `az ad app permission admin-consent
+--id <worker-app-id>` once. In highly restricted tenants where user
+consent is blocked even for Graph `User.Read`, admin consent becomes
+mandatory and the OBO exchange returns `AADSTS65001` until granted.
 
 **Re-runs**: idempotent by display name (`PilotSwarm OBO Smoke Worker -
 <stamp>`). The wrapper re-reads the existing OAuth2 scope id rather

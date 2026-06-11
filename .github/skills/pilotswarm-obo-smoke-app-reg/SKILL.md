@@ -90,9 +90,9 @@ contract the smoke harness depends on):
   `acquireTokenOnBehalfOf({ scopes: ["https://graph.microsoft.com/User.Read"] })`;
   without this declaration the exchange returns `AADSTS65001` at
   runtime even with pre-authorization in place. (`-GrantAdminConsent`
-  optionally runs `az ad app permission admin-consent` when the
-  running principal is Global Admin; otherwise the tenant admin
-  grants consent once out-of-band per tenant.)
+  is an optional shortcut for tenants where per-user consent is
+  blocked and a Global Admin / Cloud Application Administrator is
+  running the wrapper.)
 - **`api.preAuthorizedApplications`** populated with the per-stamp
   PORTAL app's clientId, pre-authorized for the new delegated scope.
   This avoids an `AADSTS65001` user-consent prompt at runtime when
@@ -166,7 +166,7 @@ AKS workload-identity FIC
 
 Optional
   ExistingAppId            <only when you want to point at a pre-existing app>
-  GrantAdminConsent        false (default)            # opt-in; only meaningful for tenant Global Admins
+  GrantAdminConsent        false (default)            # optional shortcut; per-user consent at sign-in is the default path
   OutputFile               deploy/envs/local/${EnvName}/obo-smoke-worker-app.json (default)
 ```
 
@@ -240,7 +240,7 @@ have already produced the OIDC issuer URL. Use for operator re-runs
 against an already-deployed stamp, or when you don't care about the
 two-phase ordering.
 
-### With tenant-admin consent (opt-in)
+### With tenant-admin consent (optional shortcut)
 
 ```bash
 pwsh -NoProfile -ExecutionPolicy Bypass \
@@ -250,10 +250,11 @@ pwsh -NoProfile -ExecutionPolicy Bypass \
   -GrantAdminConsent
 ```
 
-Only meaningful when the running principal is a tenant Global Admin.
-Harmless to set in lower-permission contexts — the consent call will
-warn and the script continues; a tenant admin can grant consent
-out-of-band later.
+Only meaningful when the running principal is a tenant Global Admin
+(or a Cloud Application Administrator scoped to this app). Skips the
+per-user consent prompt at first sign-in. Harmless to set in
+lower-permission contexts — the consent call will warn and the script
+continues; per-user consent at sign-in still works.
 
 ### Point at a pre-existing app
 
@@ -306,26 +307,43 @@ stdout and apply the paste block via `edit` before invoking
 sufficient for OBO smoke: it only checks key presence, not non-empty
 non-sentinel value.
 
-## Admin consent
+## Consent
 
 The worker app declares Microsoft Graph `User.Read` as a **delegated**
-permission. Consent is required once per tenant. Three paths:
+permission. The portal acquires `api://<worker-app-id>/.default
+offline_access` at sign-in — `.default` expands to every pre-configured
+permission on the worker app, so the user sees a sign-in prompt that
+includes "Sign you in and read your profile" (the Graph `User.Read`
+consent), attached to the worker app's service principal. When the user
+accepts, a per-user delegated grant is recorded against the worker SP
+and OBO works for that user on subsequent runs.
+
+**Per-user consent is the default and the recommended path** for OBO
+live-smoke. Each user (including the operator) consents for themselves
+once at first sign-in; no tenant admin involvement required. This is
+the same model the portal itself uses for OIDC sign-in.
+
+**Admin consent is an optional shortcut** (a one-time tenant-wide grant
+that skips per-user prompts on shared stamps). Three paths exist if you
+want it:
 
 1. **Tenant Global Admin running the wrapper**: pass
    `-GrantAdminConsent` — the wrapper invokes
    `az ad app permission admin-consent` after wiring the permission.
-2. **Tenant admin grants out-of-band**: the running principal is not a
-   Global Admin. Skip `-GrantAdminConsent`; have a tenant admin run
+2. **Cloud Application Administrator / Application Administrator
+   out-of-band**: these roles can grant consent for a single app
+   without being Global Admin. Run
    `az ad app permission admin-consent --id <worker-app-id>` once per
    tenant, or click "Grant admin consent" in Entra portal → App
    registrations → Worker app → API permissions.
-3. **Per-user consent**: in tenants where user consent for Graph
-   `User.Read` is allowed, the first OBO smoke run will trip a user
-   consent prompt. Acceptable for dev stamps; the recommended path for
-   shared/prod stamps is admin consent.
+3. **Skip admin consent entirely**: leave `-GrantAdminConsent` off.
+   Each user trips a per-user consent prompt on their first OBO smoke
+   sign-in and accepts. Fine for individual smoke runs.
 
-Without consent the worker's OBO exchange returns `AADSTS65001` at
-runtime — the smoke run fails clearly.
+In highly restricted tenants where user consent is blocked even for
+Microsoft Graph `User.Read` (rare — `User.Read` is normally the bare
+minimum sign-in scope), per-user consent fails with `AADSTS65001` at
+runtime and admin consent becomes mandatory.
 
 ## Idempotency
 
@@ -382,7 +400,7 @@ In two-phase use, `app-shell` writes all fields except `ficIssuer`
 | `patch-fic mode requires the app '...' to already exist` | You ran `-Mode patch-fic` without running `-Mode app-shell` first | Run `-Mode app-shell` first, or pass `-ExistingAppId <appId>` to point at a manually-managed app |
 | `Portal entra-app.json not found at ...` | Portal app-reg hasn't run yet (or stamp uses `PORTAL_AUTH_PROVIDER=none`) | Run `pilotswarm-portal-app-reg` first, or pass `-PortalClientId <appId>` explicitly. OBO smoke is incompatible with `PORTAL_AUTH_PROVIDER=none` — the smoke driver expects a portal-signed-in user. |
 | At smoke run: `AADSTS50013: Assertion audience does not match` | The portal acquired a token for the wrong audience | The `.env` key `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` is missing, empty, or `__PS_UNSET__`. Run the tightened grep above; paste the wrapper's stdout if it fails. |
-| At smoke run: `AADSTS65001: The user or administrator has not consented to use the application` | Worker app's Graph `User.Read` delegated permission hasn't been admin-consented in this tenant | Either re-run with `-GrantAdminConsent` as a Global Admin, OR have a tenant admin run `az ad app permission admin-consent --id <worker-app-id>` once. |
+| At smoke run: `AADSTS65001: The user or administrator has not consented to use the application` | The signed-in user hasn't yet consented to Graph `User.Read` on the worker app's service principal. Normally per-user consent is offered at portal sign-in; this only persists if the tenant blocks user consent for the worker app | Have each affected user sign out and back in to accept the consent prompt. If user consent is blocked tenant-wide for the worker app, grant admin consent once: re-run with `-GrantAdminConsent` as a Global Admin, OR have a Cloud Application Administrator run `az ad app permission admin-consent --id <worker-app-id>`. |
 | At smoke run: worker pod logs show `AADSTS70021: No matching federated identity record found` | FIC subject/audience/issuer don't match the worker pod's projected token | Confirm the worker pod's service-account is `copilot-runtime-worker` in namespace `pilotswarm` (or re-run wrapper with `-ServiceAccountNamespace` / `-ServiceAccountName` overrides). Re-run bicep if the AKS OIDC issuer URL changed. |
 | Re-run creates a duplicate app instead of reusing | The existing app's display name was changed | The wrapper looks up by display name. Either rename the app back, or pass `-ExistingAppId <appId>` to point at it explicitly. |
 

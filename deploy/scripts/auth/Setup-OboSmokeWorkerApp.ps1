@@ -18,10 +18,10 @@
       OBO exchange in the worker calls
       `acquireTokenOnBehalfOf({ scopes: ["https://graph.microsoft.com/User.Read"] })`;
       without this declaration the exchange returns AADSTS65001 even with
-      pre-authorization in place. (`-GrantAdminConsent` optionally runs
-      `az ad app permission admin-consent` when the running principal is
-      Global Admin; otherwise the tenant admin grants consent once
-      out-of-band per tenant.)
+      pre-authorization in place. Per-user consent at portal sign-in is
+      the default path; `-GrantAdminConsent` is an optional shortcut that
+      pre-grants tenant-wide consent when the running principal is a
+      Global Admin / Cloud Application Administrator.
     - api.preAuthorizedApplications: the per-stamp PORTAL app's clientId,
       pre-authorized for the new delegated scope. This avoids an
       AADSTS65001 user-consent prompt at runtime when the portal acquires
@@ -131,10 +131,12 @@
 .PARAMETER GrantAdminConsent
     Switch (default off). When set, runs
     `az ad app permission admin-consent --id <appId>` after wiring
-    Graph `User.Read`. Only meaningful when the running principal is
-    a tenant Global Admin; harmless to set in lower-permission contexts
-    (the consent call will warn and the script continues — the tenant
-    admin can grant consent out-of-band).
+    Graph `User.Read`. Optional shortcut that skips the per-user
+    consent prompt on every user's first sign-in. Only meaningful
+    when the running principal is a tenant Global Admin or Cloud
+    Application Administrator; harmless to set in lower-permission
+    contexts (the consent call will warn and the script continues —
+    per-user consent at sign-in remains the default path).
 
 .PARAMETER Owner
     Object ID of the user to set as application owner. Defaults to the
@@ -700,7 +702,7 @@ if ($Mode -ne "patch-fic") {
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  OK: Admin consent granted" -ForegroundColor Green
         } else {
-            Write-Warning "Admin-consent failed (likely insufficient permissions on signed-in principal). A tenant Global Admin must grant consent for Microsoft Graph User.Read on app $clientId once per tenant before the first smoke run. Continuing — the rest of the script does not depend on consent."
+            Write-Warning "Admin-consent failed (likely insufficient permissions on signed-in principal). This is OK — per-user consent at portal sign-in remains the default path; each user will accept the consent prompt for Graph User.Read on their first OBO smoke sign-in. To grant tenant-wide consent later, a Global Admin or Cloud Application Administrator can run 'az ad app permission admin-consent --id $clientId'. Continuing — the rest of the script does not depend on consent."
             Write-Warning "  $consentOut"
         }
     }
@@ -786,8 +788,10 @@ Write-Host "  or the pilotswarm-npm-deployer agent's Step 0.b via its 'edit' too
 Write-Host "  only actor that mutates the per-stamp .env file." -ForegroundColor DarkGray
 if (-not $GrantAdminConsent) {
     Write-Host ""
-    Write-Host "  NOTE: Microsoft Graph User.Read delegated consent is required before the" -ForegroundColor Yellow
-    Write-Host "        first smoke run. Either re-run with -GrantAdminConsent (if you are a" -ForegroundColor Yellow
-    Write-Host "        tenant Global Admin) or have a tenant admin grant consent for app" -ForegroundColor Yellow
-    Write-Host "        $clientId once per tenant." -ForegroundColor Yellow
+    Write-Host "  NOTE: Microsoft Graph User.Read delegated permission requires consent." -ForegroundColor Yellow
+    Write-Host "        Default path: each user accepts the per-user consent prompt at" -ForegroundColor Yellow
+    Write-Host "        their first portal sign-in (no tenant admin involvement needed)." -ForegroundColor Yellow
+    Write-Host "        Optional shortcut: re-run with -GrantAdminConsent (Global Admin /" -ForegroundColor Yellow
+    Write-Host "        Cloud Application Administrator) to pre-grant tenant-wide consent" -ForegroundColor Yellow
+    Write-Host "        for app $clientId." -ForegroundColor Yellow
 }
