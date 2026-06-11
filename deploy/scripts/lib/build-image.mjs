@@ -34,8 +34,11 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
     );
   }
   const { dockerImageRepo, dockerfile } = info;
-  const effectiveImageTag = variant === "smoke" ? `${imageTag}-smoke` : imageTag;
-  const localTag = `${dockerImageRepo}:${effectiveImageTag}`;
+  // imageTag is already variant-suffixed by the caller (deploy.mjs runOneService
+  // calls effectiveImageTag() before passing ctx.imageTag here). Build, push,
+  // manifest substitution, and rollout verification must all see the SAME
+  // string — see effectiveImageTag() in service-info.mjs.
+  const localTag = `${dockerImageRepo}:${imageTag}`;
   const dockerfileAbs = join(REPO_ROOT, dockerfile);
   if (!existsSync(dockerfileAbs)) {
     throw new Error(`Dockerfile not found: ${dockerfileAbs}`);

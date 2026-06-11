@@ -64,7 +64,7 @@ registerTools(worker);
 
 | Env present | Selected backend | Notes |
 |---|---|---|
-| `AZURE_FEDERATED_TOKEN_FILE` only | **`fic`** | Production-shape; AKS workload-identity. |
+| `WORKLOAD_IDENTITY_CLIENT_ID` only | **`fic`** | Production-shape; MSI-as-FIC through the worker UAMI. |
 | `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` only | **`client-secret`** | Local-developer path. |
 | Both | **`fic`** (precedence) | Secret logged once as ignored. |
 | Neither | _structured `serviceUnavailable` outcome_ | Plugin module load itself never throws. |
@@ -89,8 +89,10 @@ Required env (common to both backends):
 Backend-specific:
 
 - `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` — client-secret backend only.
-- `AZURE_FEDERATED_TOKEN_FILE` — FIC backend; auto-set inside AKS pods
-  with the workload-identity webhook.
+- `WORKLOAD_IDENTITY_CLIENT_ID` — FIC backend; the worker UAMI client id.
+  The plugin uses `ManagedIdentityCredential` to obtain a UAMI token for
+  `api://AzureADTokenExchange/.default` and supplies it to MSAL as the
+  worker app's `client_assertion`.
 - `AZURE_AUTHORITY_HOST` — optional override of the MSAL authority
   host (defaults to `https://login.microsoftonline.com`).
 

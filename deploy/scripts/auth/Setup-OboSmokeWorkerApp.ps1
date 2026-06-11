@@ -29,14 +29,16 @@
       with a single-element list — each stamp has a strict 1:1
       portal-app -> worker-app relationship, so merging would risk
       leaving orphaned trust for rotated/deleted portal apps.
-    - AKS workload-identity federated identity credential on the
-      *Application* (not on a UAMI), so the worker pod's projected
-      service-account token can be exchanged for a confidential-client
-      assertion against this app. Subject defaults to
-      `system:serviceaccount:pilotswarm:copilot-runtime-worker`, audience
-      `api://AzureADTokenExchange`. The script reads the AKS OIDC issuer
-      URL from `deploy/.tmp/<EnvName>/bicep-outputs.cache.json` (so run
-      bicep first).
+    - By default, an MSI-as-FIC federated identity credential on the
+      *Application*: issuer `https://login.microsoftonline.com/<tenant>/v2.0`,
+      subject = the worker UAMI's enterprise-app/service-principal object id,
+      audience `api://AzureADTokenExchange`. The worker pod first exchanges its
+      AKS service-account token for a UAMI token (using the existing AKS FIC on
+      the UAMI), then uses that UAMI token as the confidential-client assertion
+      for this app. This is the Microsoft CORP-compatible pattern.
+    - Optional `-FicPattern aks-direct` preserves the historical AKS-direct FIC
+      on the Application for tenants that allow it. That pattern uses the AKS
+      OIDC issuer URL and service-account subject directly.
 
     Idempotency: re-runs are no-ops. The script looks up by display name
     first (override with -ExistingAppId), reuses the existing
@@ -49,10 +51,10 @@
         NOT create the FIC.** Bicep does not need to have run. Emits the
         smoke env paste-block. Recommended as the first call, alongside
         the portal app-reg, before bicep.
-      - `patch-fic` — Looks up the existing app, reads the AKS OIDC
-        issuer URL from the bicep cache, create-or-patches the FIC.
-        Bicep MUST have run. Recommended after bicep, before
-        `worker manifests,rollout`. Does NOT touch app config or emit
+      - `patch-fic` — Looks up the existing app, resolves the selected
+        `-FicPattern` trust inputs from the bicep cache, create-or-patches the FIC.
+        Bicep MUST have run. Recommended after the full deploy completes,
+        just before OBO smoke. Does NOT touch app config or emit
         the paste-block (env was already correct from app-shell).
       - `all` (default, back-compat) — Runs app-shell + patch-fic in
         one invocation. Requires bicep to have run first.
@@ -60,7 +62,7 @@
     Side-effects (strictly):
       (a) creates/updates the Entra app with scope, Graph User.Read,
           and pre-authorization (app-shell, all);
-      (b) creates/patches the AKS-trust FIC (patch-fic, all);
+      (b) creates/patches the selected FIC pattern (patch-fic, all);
       (c) writes a JSON sidecar at -OutputFile (every mode updates the
           fields it knows about);
       (d) prints the smoke env KEY=value paste-block to stdout
@@ -79,8 +81,10 @@
       stops. Use as the early step alongside portal app-reg; does not
       require bicep to have run.
     - `patch-fic` looks up the existing app and create-or-patches the
-      AKS workload-identity FIC against the OIDC issuer cached by
-      bicep. Run after bicep, before `worker manifests,rollout`.
+      selected FIC pattern. Default `msi` reads WORKLOAD_IDENTITY_CLIENT_ID
+      from the bicep cache and uses that UAMI's object id as subject.
+      Optional `aks-direct` uses the OIDC issuer cached by bicep. Run after
+      the full deploy completes, just before OBO smoke.
     - `all` runs both phases in one invocation (current behavior).
 
 .PARAMETER ServiceTreeId
@@ -93,7 +97,7 @@
     REQUIRED. Stamp name (e.g. mystamp). Used to:
     - derive the default display name
     - derive the default sidecar output path
-    - locate the AKS OIDC issuer URL in the per-stamp bicep cache
+    - locate selected FIC inputs in the per-stamp bicep cache
     - locate the per-stamp portal entra-app.json (for portal clientId)
 
 .PARAMETER DisplayName
@@ -128,6 +132,18 @@
     "copilot-runtime-worker". Matches
     `deploy/gitops/worker/base/service-account.yaml`.
 
+.PARAMETER FicPattern
+    `msi` | `aks-direct`. Default `msi`.
+
+    - `msi` (default): CORP-compatible MSI-as-FIC pattern. Reads
+      WORKLOAD_IDENTITY_CLIENT_ID from the bicep cache, resolves the UAMI's
+      service-principal object id, and creates an eSTS FIC on the worker app:
+      issuer `https://login.microsoftonline.com/<tenant>/v2.0`, subject
+      `<uami-sp-object-id>`.
+    - `aks-direct`: historical AKS-direct FIC on the worker app. Uses the AKS
+      OIDC issuer and Kubernetes service-account subject directly. Only use in
+      tenants that explicitly allow AKS-direct FICs on 3P apps.
+
 .PARAMETER GrantAdminConsent
     Switch (default off). When set, runs
     `az ad app permission admin-consent --id <appId>` after wiring
@@ -145,7 +161,8 @@
 .PARAMETER OutputFile
     Path to write the JSON sidecar
     `{ tenantId, clientId, scope, graphScope, ficName, ficSubject,
-       portalClientId, displayName, envName, serviceTreeId, createdAt }`.
+       ficIssuer, fic, portalClientId, displayName, envName,
+       serviceTreeId, createdAt }`.
     Defaults to `deploy/envs/local/<EnvName>/obo-smoke-worker-app.json`.
 
 .EXAMPLE
@@ -155,7 +172,7 @@
     .\Setup-OboSmokeWorkerApp.ps1 -Mode app-shell `
         -ServiceTreeId <your-service-tree-id> -EnvName <env-name>
 
-    # Bicep runs (npm-deployer agent's bicep step), emitting the OIDC issuer.
+    # Bicep runs (npm-deployer agent's bicep step), emitting the UAMI client id.
 
     # Phase 2 — run AFTER bicep, BEFORE `worker manifests,rollout`:
     .\Setup-OboSmokeWorkerApp.ps1 -Mode patch-fic `
@@ -168,8 +185,8 @@
 
     Creates (or finds) "PilotSwarm OBO Smoke Worker - <env-name>", wires
     the OAuth2 scope, pre-authorizes the portal app from
-    deploy/envs/local/<env-name>/entra-app.json, creates the AKS FIC
-    against the OIDC issuer in deploy/.tmp/<env-name>/bicep-outputs.cache.json,
+    deploy/envs/local/<env-name>/entra-app.json, creates the default MSI-as-FIC
+    using WORKLOAD_IDENTITY_CLIENT_ID in deploy/.tmp/<env-name>/bicep-outputs.cache.json,
     writes deploy/envs/local/<env-name>/obo-smoke-worker-app.json, and
     prints the five .env lines to paste.
 
@@ -188,7 +205,8 @@
     - Azure CLI installed and logged in (`az login`) as a tenant member
       with permission to create/modify Azure AD applications.
     - For `-Mode patch-fic` or `-Mode all`: bicep must have run for the
-      stamp (so the AKS OIDC issuer URL is cached at
+      stamp (so WORKLOAD_IDENTITY_CLIENT_ID for default MSI-as-FIC, or the
+      AKS OIDC issuer for `-FicPattern aks-direct`, is cached at
       `deploy/.tmp/<EnvName>/bicep-outputs.cache.json`). `-Mode app-shell`
       has no bicep dependency.
     - For default `-PortalClientId` resolution (app-shell, all):
@@ -222,6 +240,7 @@ param(
     [Parameter(Mandatory=$false)][string]$GraphScope = "https://graph.microsoft.com/User.Read",
     [Parameter(Mandatory=$false)][string]$ServiceAccountNamespace = "pilotswarm",
     [Parameter(Mandatory=$false)][string]$ServiceAccountName = "copilot-runtime-worker",
+    [Parameter(Mandatory=$false)][ValidateSet("msi","aks-direct")][string]$FicPattern = "msi",
     [Parameter(Mandatory=$false)][switch]$GrantAdminConsent = $false,
     [Parameter(Mandatory=$false)][string]$Owner,
     [Parameter(Mandatory=$false)][string]$OutputFile
@@ -250,12 +269,21 @@ function Get-RepoRoot {
     return (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
 }
 
+function New-RepoScratchFile {
+    $repo = Get-RepoRoot
+    $scratch = Join-Path $repo "deploy/.tmp/auth-scratch"
+    if (-not (Test-Path $scratch)) {
+        New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+    }
+    return (Join-Path $scratch ("obo-smoke-" + [System.Guid]::NewGuid().ToString("N") + ".json"))
+}
+
 function Resolve-OidcIssuerFromEnv {
     param([string]$Env)
     $repo = Get-RepoRoot
     $cache = Join-Path $repo "deploy/.tmp/$Env/bicep-outputs.cache.json"
     if (-not (Test-Path $cache)) {
-        throw "AKS OIDC issuer URL is required for the workload-identity FIC, but $cache is missing. Run bicep first (the npm-deployer agent's bicep step) so the OIDC issuer URL is cached, then re-run this script."
+        throw "AKS OIDC issuer URL is required for -FicPattern aks-direct, but $cache is missing. Run bicep first (the npm-deployer agent's bicep step) so the OIDC issuer URL is cached, then re-run this script."
     }
     try {
         $outputs = Get-Content $cache -Raw | ConvertFrom-Json
@@ -272,6 +300,38 @@ function Resolve-OidcIssuerFromEnv {
         }
     }
     throw "Could not find OIDC issuer URL in $cache (looked for $($candidateKeys -join ', ')). Confirm the AKS bicep module ran and emitted the OIDC issuer."
+}
+
+function Resolve-WorkloadIdentityClientIdFromEnv {
+    param([string]$Env)
+    $repo = Get-RepoRoot
+    $cache = Join-Path $repo "deploy/.tmp/$Env/bicep-outputs.cache.json"
+    if (-not (Test-Path $cache)) {
+        throw "WORKLOAD_IDENTITY_CLIENT_ID is required for the MSI-as-FIC pattern, but $cache is missing. Run bicep first so the UAMI client id is cached, then re-run this script."
+    }
+    try {
+        $outputs = Get-Content $cache -Raw | ConvertFrom-Json
+    } catch {
+        throw "Failed to parse ${cache}: $_"
+    }
+    # csiIdentityClientId is aliased by deploy-bicep.mjs to WORKLOAD_IDENTITY_CLIENT_ID.
+    $candidateKeys = @('WORKLOAD_IDENTITY_CLIENT_ID', 'CSI_IDENTITY_CLIENT_ID', 'csiIdentityClientId')
+    foreach ($k in $candidateKeys) {
+        if ($outputs.PSObject.Properties.Name -contains $k) {
+            $v = [string]$outputs.$k
+            if (-not [string]::IsNullOrWhiteSpace($v)) { return $v.Trim() }
+        }
+    }
+    throw "Could not find WORKLOAD_IDENTITY_CLIENT_ID in $cache (looked for $($candidateKeys -join ', ')). Confirm base-infra bicep ran and emitted csiIdentityClientId."
+}
+
+function Resolve-ServicePrincipalObjectId {
+    param([string]$ClientId)
+    $spObjectId = az ad sp show --id $ClientId --query id -o tsv 2>&1
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($spObjectId)) {
+        throw "Failed to resolve service-principal object id for UAMI client id $ClientId via 'az ad sp show --id <client-id>': $spObjectId"
+    }
+    return ([string]$spObjectId).Trim()
 }
 
 function Resolve-PortalClientIdFromSidecar {
@@ -310,7 +370,7 @@ function Build-RequiredResourceAccessJson {
 
 function Invoke-GraphPatch {
     param([string]$ObjectId, [string]$BodyJson, [string]$Description)
-    $tempFile = [System.IO.Path]::GetTempFileName()
+    $tempFile = New-RepoScratchFile
     try {
         $BodyJson | Out-File -FilePath $tempFile -Encoding UTF8 -NoNewline
         $out = az rest --method PATCH `
@@ -340,13 +400,16 @@ function Get-ExistingOAuth2ScopeId {
     return $null
 }
 
-function Build-ApiPatchBodyJson {
-    param([string]$ScopeId, [string]$ScopeDisplayName, [string]$PortalAppId)
-    # Single PATCH that sets oauth2PermissionScopes, requestedAccessTokenVersion=2,
-    # and preAuthorizedApplications (overwritten with single-element array).
+function Build-ApiScopePatchBodyJson {
+    param([string]$ScopeId, [string]$ScopeDisplayName)
+    # Phase 1 PATCH: define oauth2PermissionScopes + requestedAccessTokenVersion=2.
+    # Microsoft Graph rejects a combined PATCH that *also* sets
+    # preAuthorizedApplications referencing $ScopeId in the same request because
+    # the scope id is not yet persisted at validation time. The pre-auth array
+    # must go in a follow-up PATCH (see Build-ApiPreAuthPatchBodyJson) once the
+    # scope exists.
     $description = "Allows the application to access $ScopeDisplayName on behalf of the signed-in user"
     $userConsent = "Allow the application to access $ScopeDisplayName on your behalf"
-    $portalEscaped = $PortalAppId.Replace('"', '\"')
     return @"
 {
   "api": {
@@ -362,7 +425,21 @@ function Build-ApiPatchBodyJson {
         "userConsentDisplayName": "Access $ScopeDisplayName",
         "value": "user_impersonation"
       }
-    ],
+    ]
+  }
+}
+"@
+}
+
+function Build-ApiPreAuthPatchBodyJson {
+    param([string]$ScopeId, [string]$PortalAppId)
+    # Phase 2 PATCH: set preAuthorizedApplications referencing the scope id that
+    # was persisted by the phase-1 PATCH above. Overwrites with a
+    # single-element array (idempotent on re-run).
+    $portalEscaped = $PortalAppId.Replace('"', '\"')
+    return @"
+{
+  "api": {
     "preAuthorizedApplications": [
       {
         "appId": "$portalEscaped",
@@ -439,21 +516,39 @@ function Invoke-FicCreateOrPatch {
         [string]$FicName,
         [string]$Issuer,
         [string]$Subject,
-        [string[]]$Audiences
+        [string[]]$Audiences,
+        [string]$Description
     )
     $listOut = az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications/$AppObjectId/federatedIdentityCredentials" 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to list federated identity credentials on app $AppObjectId : $listOut"
     }
+    Write-Host "  Existing federated identity credentials before patch:" -ForegroundColor DarkGray
     $existing = $null
+    $sameTrust = $null
     try {
         $list = ($listOut | ConvertFrom-Json).value
         if ($list) {
+            foreach ($fic in @($list)) {
+                Write-Host "    - $($fic.name): issuer=$($fic.issuer), subject=$($fic.subject)" -ForegroundColor DarkGray
+            }
             $existing = @($list) | Where-Object { $_.name -eq $FicName } | Select-Object -First 1
+            $desiredAudienceKey = (@($Audiences) | Sort-Object) -join ","
+            $sameTrust = @($list) | Where-Object {
+                $candidateAudienceKey = (@($_.audiences) | Sort-Object) -join ","
+                $_.issuer -eq $Issuer -and $_.subject -eq $Subject -and $candidateAudienceKey -eq $desiredAudienceKey
+            } | Select-Object -First 1
+        } else {
+            Write-Host "    (none)" -ForegroundColor DarkGray
         }
     } catch { }
 
     $audiencesJson = "[" + (($Audiences | ForEach-Object { "`"$_`"" }) -join ",") + "]"
+
+    if ($sameTrust) {
+        Write-Host "  OK: Federated identity credential '$($sameTrust.name)' already trusts issuer+subject (no change)" -ForegroundColor Green
+        return $false
+    }
 
     if ($null -eq $existing) {
         $body = @"
@@ -461,10 +556,11 @@ function Invoke-FicCreateOrPatch {
   "name": "$FicName",
   "issuer": "$Issuer",
   "subject": "$Subject",
+  "description": "$Description",
   "audiences": $audiencesJson
 }
 "@
-        $tempFile = [System.IO.Path]::GetTempFileName()
+        $tempFile = New-RepoScratchFile
         try {
             $body | Out-File -FilePath $tempFile -Encoding UTF8 -NoNewline
             $out = az rest --method POST `
@@ -475,6 +571,21 @@ function Invoke-FicCreateOrPatch {
                 throw "FIC create failed: $out"
             }
             Write-Host "  OK: Created federated identity credential '$FicName'" -ForegroundColor Green
+            $afterOut = az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications/$AppObjectId/federatedIdentityCredentials" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to list federated identity credentials on app $AppObjectId after create: $afterOut"
+            }
+            Write-Host "  Federated identity credentials after create:" -ForegroundColor DarkGray
+            try {
+                $afterList = ($afterOut | ConvertFrom-Json).value
+                if ($afterList) {
+                    foreach ($fic in @($afterList)) {
+                        Write-Host "    - $($fic.name): issuer=$($fic.issuer), subject=$($fic.subject)" -ForegroundColor DarkGray
+                    }
+                } else {
+                    Write-Host "    (none)" -ForegroundColor DarkGray
+                }
+            } catch { }
         } finally {
             Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
         }
@@ -493,11 +604,12 @@ function Invoke-FicCreateOrPatch {
 {
   "issuer": "$Issuer",
   "subject": "$Subject",
+  "description": "$Description",
   "audiences": $audiencesJson
 }
 "@
     $ficId = $existing.id
-    $tempFile = [System.IO.Path]::GetTempFileName()
+    $tempFile = New-RepoScratchFile
     try {
         $patchBody | Out-File -FilePath $tempFile -Encoding UTF8 -NoNewline
         $out = az rest --method PATCH `
@@ -511,6 +623,21 @@ function Invoke-FicCreateOrPatch {
     } finally {
         Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
     }
+    $afterOut = az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications/$AppObjectId/federatedIdentityCredentials" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to list federated identity credentials on app $AppObjectId after patch: $afterOut"
+    }
+    Write-Host "  Federated identity credentials after patch:" -ForegroundColor DarkGray
+    try {
+        $afterList = ($afterOut | ConvertFrom-Json).value
+        if ($afterList) {
+            foreach ($fic in @($afterList)) {
+                Write-Host "    - $($fic.name): issuer=$($fic.issuer), subject=$($fic.subject)" -ForegroundColor DarkGray
+            }
+        } else {
+            Write-Host "    (none)" -ForegroundColor DarkGray
+        }
+    } catch { }
     return $true
 }
 
@@ -518,6 +645,7 @@ function Invoke-FicCreateOrPatch {
 
 Write-Host "Setup-OboSmokeWorkerApp - Entra worker app for PilotSwarm OBO live-smoke" -ForegroundColor Green
 Write-Host "Mode: $Mode" -ForegroundColor Cyan
+Write-Host "FIC pattern: $FicPattern" -ForegroundColor Cyan
 Write-Host ""
 
 if (-not (Test-AzureCliReady)) { throw "Azure CLI not ready." }
@@ -567,17 +695,28 @@ if ($Mode -ne "patch-fic") {
     }
 }
 
-# Resolve OIDC issuer up front (fail fast if bicep hasn't run). Skipped in
+# Resolve FIC inputs up front (fail fast if bicep hasn't run). Skipped in
 # app-shell mode because that phase intentionally runs before bicep.
-$oidcIssuer = $null
+$ficIssuer = $null
+$ficSubject = $null
+$uamiClientId = $null
 if ($Mode -ne "app-shell") {
-    $oidcIssuer = Resolve-OidcIssuerFromEnv -Env $EnvName
-    Write-Host "AKS OIDC issuer: $oidcIssuer"
+    if ($FicPattern -eq "msi") {
+        $uamiClientId = Resolve-WorkloadIdentityClientIdFromEnv -Env $EnvName
+        $uamiObjectId = Resolve-ServicePrincipalObjectId -ClientId $uamiClientId
+        $ficIssuer = "https://login.microsoftonline.com/$tenantId/v2.0"
+        $ficSubject = $uamiObjectId
+        Write-Host "MSI-as-FIC UAMI client id: $uamiClientId"
+        Write-Host "MSI-as-FIC UAMI object id: $uamiObjectId"
+    } else {
+        $ficIssuer = Resolve-OidcIssuerFromEnv -Env $EnvName
+        $ficSubject = "system:serviceaccount:${ServiceAccountNamespace}:${ServiceAccountName}"
+        Write-Host "AKS OIDC issuer: $ficIssuer"
+    }
 }
 
 # FIC subject and name
-$ficSubject = "system:serviceaccount:${ServiceAccountNamespace}:${ServiceAccountName}"
-$ficName = "pilotswarm-worker-$EnvName"
+$ficName = if ($FicPattern -eq "msi") { "pilotswarm-obo-smoke-worker-$EnvName-msi" } else { "pilotswarm-worker-$EnvName" }
 
 # Decide create-or-find. In patch-fic mode the app MUST already exist.
 $clientId = $null
@@ -621,7 +760,7 @@ if (-not [string]::IsNullOrWhiteSpace($ExistingAppId)) {
         $tempFiles = @()
         try {
             $reqJson = Build-RequiredResourceAccessJson
-            $reqFile = [System.IO.Path]::GetTempFileName(); $tempFiles += $reqFile
+            $reqFile = New-RepoScratchFile; $tempFiles += $reqFile
             $reqJson | Out-File -FilePath $reqFile -Encoding UTF8 -NoNewline
 
             $createArgs = @(
@@ -684,7 +823,12 @@ if ($Mode -ne "patch-fic") {
         Write-Host "  OK: Graph User.Read delegated requiredResourceAccess already present (no change)" -ForegroundColor Green
     }
 
-    # --- OAuth2 scope + pre-authorization (single PATCH that touches api{}) ---
+    # --- OAuth2 scope + pre-authorization (two-phase PATCH on api{}) ---
+    # Microsoft Graph requires two separate PATCHes here:
+    #   1) Define oauth2PermissionScopes + requestedAccessTokenVersion=2.
+    #   2) Set preAuthorizedApplications (which references the scope id that was
+    #      persisted by step 1). A combined PATCH fails validation because the
+    #      scope id isn't yet persisted when preAuthorizedApplications is parsed.
     $scopeId = Get-ExistingOAuth2ScopeId -AppShowJson $existingAppShowJson
     if ([string]::IsNullOrWhiteSpace($scopeId)) {
         $scopeId = [System.Guid]::NewGuid().ToString()
@@ -692,8 +836,11 @@ if ($Mode -ne "patch-fic") {
     } else {
         Write-Host "Reusing existing OAuth2 scope id: $scopeId" -ForegroundColor Yellow
     }
-    $apiPatch = Build-ApiPatchBodyJson -ScopeId $scopeId -ScopeDisplayName $DisplayName -PortalAppId $PortalClientId
-    Invoke-GraphPatch -ObjectId $objectId -BodyJson $apiPatch -Description "Set OAuth2 scope (user_impersonation) + requestedAccessTokenVersion=2 + preAuthorizedApplications=[portal $PortalClientId]"
+    $scopePatch = Build-ApiScopePatchBodyJson -ScopeId $scopeId -ScopeDisplayName $DisplayName
+    Invoke-GraphPatch -ObjectId $objectId -BodyJson $scopePatch -Description "Set OAuth2 scope (user_impersonation) + requestedAccessTokenVersion=2"
+
+    $preAuthPatch = Build-ApiPreAuthPatchBodyJson -ScopeId $scopeId -PortalAppId $PortalClientId
+    Invoke-GraphPatch -ObjectId $objectId -BodyJson $preAuthPatch -Description "Set preAuthorizedApplications=[portal $PortalClientId]"
 
     # --- Optional admin consent for Graph User.Read ---
     if ($GrantAdminConsent) {
@@ -708,14 +855,19 @@ if ($Mode -ne "patch-fic") {
     }
 }
 
-# === Patch-FIC phase: AKS workload-identity federated credential on the app ===
+# === Patch-FIC phase: federated credential on the app ===
 if ($Mode -ne "app-shell") {
-    Write-Host "Configuring AKS workload-identity federated credential..." -ForegroundColor Yellow
+    Write-Host "Configuring $FicPattern federated identity credential..." -ForegroundColor Yellow
     Write-Host "  Name     : $ficName"
-    Write-Host "  Issuer   : $oidcIssuer"
+    Write-Host "  Issuer   : $ficIssuer"
     Write-Host "  Subject  : $ficSubject"
     Write-Host "  Audience : $AKS_WORKLOAD_IDENTITY_AUDIENCE"
-    $null = Invoke-FicCreateOrPatch -AppObjectId $objectId -FicName $ficName -Issuer $oidcIssuer -Subject $ficSubject -Audiences @($AKS_WORKLOAD_IDENTITY_AUDIENCE)
+    $ficDescription = if ($FicPattern -eq "msi") {
+        "PilotSwarm OBO smoke worker MSI-as-FIC trust for $EnvName (UAMI client id $uamiClientId)"
+    } else {
+        "PilotSwarm OBO smoke worker AKS-direct workload identity trust for $EnvName"
+    }
+    $null = Invoke-FicCreateOrPatch -AppObjectId $objectId -FicName $ficName -Issuer $ficIssuer -Subject $ficSubject -Audiences @($AKS_WORKLOAD_IDENTITY_AUDIENCE) -Description $ficDescription
 }
 
 # --- Sidecar JSON ---
@@ -729,7 +881,9 @@ if (Test-Path $OutputFile) {
 $scope = "api://$clientId/.default"
 # Phase-aware fields: app-shell knows scope/portalClientId; patch-fic knows ficIssuer.
 $resolvedPortalClientId = if ($Mode -eq "patch-fic" -and $existingSummary -and $existingSummary.portalClientId) { [string]$existingSummary.portalClientId } else { $PortalClientId }
-$resolvedFicIssuer = if ($Mode -eq "app-shell" -and $existingSummary -and $existingSummary.ficIssuer) { [string]$existingSummary.ficIssuer } else { $oidcIssuer }
+$resolvedFicIssuer = if ($Mode -eq "app-shell" -and $existingSummary -and $existingSummary.ficIssuer) { [string]$existingSummary.ficIssuer } else { $ficIssuer }
+$resolvedFicSubject = if ($Mode -eq "app-shell" -and $existingSummary -and $existingSummary.ficSubject) { [string]$existingSummary.ficSubject } else { $ficSubject }
+$resolvedFicPattern = if ($Mode -eq "app-shell" -and $existingSummary -and $existingSummary.fic -and $existingSummary.fic.pattern) { [string]$existingSummary.fic.pattern } else { $FicPattern }
 $summary = [ordered]@{
     tenantId        = $tenantId
     clientId        = $clientId
@@ -737,8 +891,15 @@ $summary = [ordered]@{
     scope           = $scope
     graphScope      = $GraphScope
     ficName         = $ficName
-    ficSubject      = $ficSubject
+    ficSubject      = $resolvedFicSubject
     ficIssuer       = $resolvedFicIssuer
+    fic             = [ordered]@{
+        pattern   = $resolvedFicPattern
+        name      = $ficName
+        issuer    = $resolvedFicIssuer
+        subject   = $resolvedFicSubject
+        audiences = @($AKS_WORKLOAD_IDENTITY_AUDIENCE)
+    }
     portalClientId  = $resolvedPortalClientId
     displayName     = $DisplayName
     envName         = $EnvName

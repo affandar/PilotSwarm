@@ -68,7 +68,7 @@ is governed by `PLUGIN_DIRS` and the smoke image variant.
 Use when you cannot deploy a stamp. Same end-to-end path but the
 worker runs locally with a confidential-client backend instead of AKS
 workload-identity FIC (the plugin's auto-selection picks the
-client-secret path when `AZURE_FEDERATED_TOKEN_FILE` is unset and
+client-secret path when `WORKLOAD_IDENTITY_CLIENT_ID` is unset and
 `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` is set — see the README's backend
 table).
 

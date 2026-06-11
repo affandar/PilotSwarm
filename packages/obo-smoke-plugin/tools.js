@@ -15,12 +15,14 @@
  * The plugin auto-selects between two OBO backends at *handler-call*
  * time (never at module load):
  *
- *   - **FIC** (workload-identity Federated Identity Credential):
- *     selected when `AZURE_FEDERATED_TOKEN_FILE` is present. The
- *     production-shape path used by deployed AKS pods. Wins precedence
- *     when both backends are configured; when both are present
- *     a single startup-style log line records that the secret was
- *     ignored.
+ *   - **FIC** (MSI-as-FIC via workload identity):
+ *     selected when `WORKLOAD_IDENTITY_CLIENT_ID` is present. The
+ *     production-shape path used by deployed AKS pods. The worker gets
+ *     a UAMI token for `api://AzureADTokenExchange` via
+ *     `ManagedIdentityCredential` and uses that token as the MSAL
+ *     confidential-client assertion. Wins precedence when both
+ *     backends are configured; when both are present a single
+ *     startup-style log line records that the secret was ignored.
  *
  *   - **client-secret**: selected when only the four
  *     `OBO_SMOKE_WORKER_APP_*` keys are set. The local-developer path.
@@ -33,9 +35,8 @@
  * `ConfidentialClientApplication.acquireTokenOnBehalfOf` so the OBO
  * request shape matches the production-shape MSAL path consumers
  * (e.g., ExampleApp) actually use. The FIC `clientAssertion` callback
- * re-reads `AZURE_FEDERATED_TOKEN_FILE` on **every** acquisition (the
- * projected SA token rotates); caching the assertion in the CCA
- * config would silently break after rotation.
+ * obtains a fresh UAMI token on **every** acquisition; caching the
+ * assertion in the CCA config would silently break after token expiry.
  *
  * # Smoke-plugin env namespace
  *
@@ -49,17 +50,16 @@
  *   - `OBO_SMOKE_WORKER_APP_CLIENT_ID`         (both backends)
  *   - `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE`       (both backends)
  *   - `OBO_SMOKE_WORKER_APP_CLIENT_SECRET`     (client-secret backend)
- *   - `AZURE_FEDERATED_TOKEN_FILE`             (FIC backend; auto-set
- *                                               by the AKS workload-identity
- *                                               webhook)
+ *   - `WORKLOAD_IDENTITY_CLIENT_ID`            (FIC backend; existing
+ *                                               worker UAMI client id)
  *   - `AZURE_AUTHORITY_HOST` (optional override; defaults to the
  *                             public cloud authority)
  *
  * @module
  */
 
-import fs from "node:fs/promises";
 import { defineTool, getUserContextForSession, interactionRequired, serviceUnavailable } from "pilotswarm-sdk";
+import { ManagedIdentityCredential } from "@azure/identity";
 import { ConfidentialClientApplication } from "@azure/msal-node";
 
 const COMMON_ENV_KEYS = [
@@ -69,7 +69,8 @@ const COMMON_ENV_KEYS = [
 ];
 
 const SECRET_BACKEND_KEY = "OBO_SMOKE_WORKER_APP_CLIENT_SECRET";
-const FIC_TOKEN_FILE_KEY = "AZURE_FEDERATED_TOKEN_FILE";
+const FIC_CLIENT_ID_KEY = "WORKLOAD_IDENTITY_CLIENT_ID";
+const FIC_TOKEN_SCOPE = "api://AzureADTokenExchange/.default";
 
 /**
  * Read the smoke-plugin env tuple from the live `env` map (always
@@ -94,8 +95,8 @@ export function selectAuthBackend(env) {
         }
     }
 
-    const ficTokenFile = (typeof env[FIC_TOKEN_FILE_KEY] === "string" && env[FIC_TOKEN_FILE_KEY].trim().length > 0)
-        ? env[FIC_TOKEN_FILE_KEY].trim()
+    const ficClientId = (typeof env[FIC_CLIENT_ID_KEY] === "string" && env[FIC_CLIENT_ID_KEY].trim().length > 0)
+        ? env[FIC_CLIENT_ID_KEY].trim()
         : null;
     const clientSecret = (typeof env[SECRET_BACKEND_KEY] === "string" && env[SECRET_BACKEND_KEY].trim().length > 0)
         ? env[SECRET_BACKEND_KEY].trim()
@@ -105,13 +106,13 @@ export function selectAuthBackend(env) {
     // preferred when its prerequisite is satisfied. The secret is
     // explicitly noted as ignored so an operator can see what
     // happened.
-    if (ficTokenFile && missingCommon.length === 0) {
+    if (ficClientId && missingCommon.length === 0) {
         return {
             backend: "fic",
-            values: { ...common, [FIC_TOKEN_FILE_KEY]: ficTokenFile },
+            values: { ...common, [FIC_CLIENT_ID_KEY]: ficClientId },
             missing: { fic: [], "client-secret": clientSecret ? [] : [SECRET_BACKEND_KEY] },
             secretIgnoredReason: clientSecret
-                ? "AZURE_FEDERATED_TOKEN_FILE is set; OBO_SMOKE_WORKER_APP_CLIENT_SECRET ignored due to FIC precedence."
+                ? "WORKLOAD_IDENTITY_CLIENT_ID is set; OBO_SMOKE_WORKER_APP_CLIENT_SECRET ignored due to FIC precedence."
                 : null,
         };
     }
@@ -119,7 +120,7 @@ export function selectAuthBackend(env) {
         return {
             backend: "client-secret",
             values: { ...common, [SECRET_BACKEND_KEY]: clientSecret },
-            missing: { fic: [FIC_TOKEN_FILE_KEY], "client-secret": [] },
+            missing: { fic: [FIC_CLIENT_ID_KEY], "client-secret": [] },
             secretIgnoredReason: null,
         };
     }
@@ -131,7 +132,7 @@ export function selectAuthBackend(env) {
         backend: null,
         values: common,
         missing: {
-            fic: [...missingCommon, ...(ficTokenFile ? [] : [FIC_TOKEN_FILE_KEY])],
+            fic: [...missingCommon, ...(ficClientId ? [] : [FIC_CLIENT_ID_KEY])],
             "client-secret": [...missingCommon, ...(clientSecret ? [] : [SECRET_BACKEND_KEY])],
         },
         secretIgnoredReason: null,
@@ -165,8 +166,9 @@ function authority(env, tenantId) {
  * Construct (or look up) the confidential-client app for the given
  * backend. Public for unit-test injection.
  */
-export function getCachedCca({ backend, tenantId, clientId, env }, { newCca = null } = {}) {
-    const key = `${backend}::${tenantId}::${clientId}`;
+export function getCachedCca({ backend, tenantId, clientId, env }, { newCca = null, newManagedIdentityCredential = null } = {}) {
+    const ficClientId = backend === "fic" ? env[FIC_CLIENT_ID_KEY] : "";
+    const key = `${backend}::${tenantId}::${clientId}::${ficClientId ?? ""}`;
     const cached = _ccaCache.get(key);
     if (cached) return cached;
 
@@ -177,17 +179,23 @@ export function getCachedCca({ backend, tenantId, clientId, env }, { newCca = nu
     if (backend === "client-secret") {
         auth.clientSecret = env[SECRET_BACKEND_KEY];
     } else if (backend === "fic") {
-        // CRITICAL invariant: re-read AZURE_FEDERATED_TOKEN_FILE on
-        // every acquisition. The projected SA token rotates on a
-        // schedule; capturing its contents here would break after the
-        // first rotation.
+        const uamiClientId = env[FIC_CLIENT_ID_KEY];
+        if (typeof uamiClientId !== "string" || uamiClientId.trim().length === 0) {
+            throw new Error("FIC backend: WORKLOAD_IDENTITY_CLIENT_ID missing at CCA construction time");
+        }
+        const credential = (typeof newManagedIdentityCredential === "function")
+            ? newManagedIdentityCredential(uamiClientId.trim())
+            : new ManagedIdentityCredential(uamiClientId.trim());
+        // CRITICAL invariant: request a fresh UAMI token for every
+        // clientAssertion invocation. The access token expires; caching
+        // it in the CCA config would break after expiry.
         auth.clientAssertion = async () => {
-            const tokenFile = env[FIC_TOKEN_FILE_KEY];
-            if (typeof tokenFile !== "string" || tokenFile.trim().length === 0) {
-                throw new Error("FIC backend: AZURE_FEDERATED_TOKEN_FILE missing at acquisition time");
+            const tokenResult = await credential.getToken(FIC_TOKEN_SCOPE);
+            const token = tokenResult?.token;
+            if (typeof token !== "string" || token.length === 0) {
+                throw new Error("FIC backend: ManagedIdentityCredential returned no AzureADTokenExchange token");
             }
-            const raw = await fs.readFile(tokenFile.trim(), "utf8");
-            return raw.trim();
+            return token;
         };
     } else {
         throw new Error(`getCachedCca: unsupported backend ${backend}`);

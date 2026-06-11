@@ -32,7 +32,7 @@ scope that the **portal** acquires on behalf of the signed-in user
 
 For new-env stamps on AKS, **do not create or wire this app by hand**.
 The repo ships an opinionated wrapper that auto-provisions the
-app + FIC + portal pre-authorization end-to-end:
+app + app FIC + portal pre-authorization end-to-end:
 
 ```bash
 pwsh -NoProfile -ExecutionPolicy Bypass \
@@ -59,11 +59,17 @@ The wrapper produces exactly the shape the smoke harness expects:
    portal app's clientId (read from
    `deploy/envs/local/<stamp>/entra-app.json`), so the portal
    doesn't trigger a runtime user-consent prompt.
-4. **On AKS (the default)**: an AKS workload-identity federated
-   identity credential on the *Application* itself (subject =
-   `system:serviceaccount:pilotswarm:copilot-runtime-worker`,
-   audience = `api://AzureADTokenExchange`) — no client secret
-   needed.
+4. **On AKS (the default)**: an MSI-as-FIC federated identity
+   credential on the *Application* itself. The worker pod uses its
+   existing AKS FIC on the UAMI (`WORKLOAD_IDENTITY_CLIENT_ID`) to
+   get a UAMI access token; the smoke plugin then uses that UAMI token
+   as the worker-app `client_assertion`. The app FIC has issuer
+   `https://login.microsoftonline.com/<tenant>/v2.0`, subject
+   `<uami-service-principal-object-id>`, and audience
+   `api://AzureADTokenExchange`. This is the Microsoft CORP-compatible
+   default. The wrapper still supports `-FicPattern aks-direct` for
+   tenants that explicitly allow direct AKS OIDC issuer + service-account
+   subject FICs on 3P apps.
 5. **For the local-developer backend only**: a client secret stored
    in `OBO_SMOKE_WORKER_APP_CLIENT_SECRET`. The wrapper does **not**
    mint this secret; create it manually via `az ad app credential
@@ -116,7 +122,7 @@ In the stamp's `deploy/envs/local/<stamp>/.env` after opt-in:
 | `OBO_SMOKE_WORKER_APP_TENANT_ID` | smoke app tenant id |
 | `OBO_SMOKE_WORKER_APP_CLIENT_ID` | smoke app client id |
 | `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE` | `https://graph.microsoft.com/User.Read` |
-| `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` | local-dev backend only; AKS pods use FIC via `AZURE_FEDERATED_TOKEN_FILE` |
+| `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` | local-dev backend only; AKS pods use MSI-as-FIC via `WORKLOAD_IDENTITY_CLIENT_ID` |
 | `OBO_SMOKE_TEST_USER_UPN` | optional UPN to assert against `graph.upn`; if unset, any non-empty UPN passes |
 | `PLUGIN_DIRS` | include `/app/packages/obo-smoke-plugin` (append to any existing comma-separated plugins) |
 
@@ -128,16 +134,18 @@ smoke plugin directory is absent, so a mistaken `PLUGIN_DIRS` entry
 fails closed at worker startup with a clear missing-directory error.
 
 On AKS, leave `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` unset — the plugin
-uses workload-identity FIC via `WORKLOAD_IDENTITY_CLIENT_ID` +
-`AZURE_FEDERATED_TOKEN_FILE`. For local-dev (running the worker outside
-a pod), set the secret in the local environment instead.
+uses `ManagedIdentityCredential(WORKLOAD_IDENTITY_CLIENT_ID)` to obtain
+a UAMI token for `api://AzureADTokenExchange/.default`, then supplies
+that token to MSAL as the worker app's `client_assertion`. For local-dev
+(running the worker outside a pod), set the secret in the local
+environment instead.
 
 The plugin auto-selects between the FIC and client-secret backends at
-**handler-call time**: when `AZURE_FEDERATED_TOKEN_FILE` is present,
+**handler-call time**: when `WORKLOAD_IDENTITY_CLIENT_ID` is present,
 the FIC backend wins precedence; the secret is logged once as ignored.
-AKS workload-identity sets `AZURE_FEDERATED_TOKEN_FILE` automatically
-when the worker pod has the `azure.workload.identity/use=true` label
-and the proper service-account annotation.
+AKS workload-identity still supplies the projected service-account
+token behind the scenes for `ManagedIdentityCredential`, but the
+smoke worker app trusts the UAMI token, not the AKS token directly.
 
 ### Sign-in user
 
@@ -317,15 +325,15 @@ These invariants are pinned by tests in `packages/sdk/test/local/`:
   This is the safe pattern for a plugin that may be loaded only on
   smoke-enabled stamps and configured by the stamp env overlay. (`obo-smoke-plugin-loadable.test.js`)
 
-- **FIC token-file re-read on every acquisition.** The
-  `clientAssertion` callback re-reads `AZURE_FEDERATED_TOKEN_FILE`
-  every call, never caches the contents at CCA-construction time.
-  AKS workload-identity rotates the projected SA token on a schedule;
-  caching would break ~60 minutes after a worker pod starts.
+- **FIC client assertion refresh on every acquisition.** The
+  `clientAssertion` callback asks `ManagedIdentityCredential` for a
+  fresh UAMI token for `api://AzureADTokenExchange/.default` every call,
+  never caches the assertion at CCA-construction time. UAMI access
+  tokens expire; caching would break after expiry.
   (`obo-smoke-auth-backend.test.js`)
 
 - **FIC precedence when both backends are configured.** The plugin
-  always prefers the FIC backend when `AZURE_FEDERATED_TOKEN_FILE` is
+  always prefers the FIC backend when `WORKLOAD_IDENTITY_CLIENT_ID` is
   present; the client secret is logged-once as ignored. This means a
   single per-stamp `.env` can carry both env shapes without
   surprising the operator. (`obo-smoke-auth-backend.test.js`)

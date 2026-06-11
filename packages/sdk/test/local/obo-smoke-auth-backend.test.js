@@ -8,16 +8,13 @@
  *   3. both set     → backend === "fic" (precedence) + secret-ignored log emitted once
  *   4. neither set  → handler returns serviceUnavailable({ reasonCode: "smoke_misconfigured" })
  *
- * Also pins the FIC token-file re-read invariant (SC-018(b)): when the
- * FIC backend's clientAssertion callback fires, it must re-read
- * AZURE_FEDERATED_TOKEN_FILE on EVERY invocation, never cache the
- * file's contents at CCA-construction time.
+ * Also pins the FIC assertion-refresh invariant (SC-018(b)): when the
+ * FIC backend's clientAssertion callback fires, it must request a fresh
+ * UAMI token on EVERY invocation, never cache an assertion at
+ * CCA-construction time.
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 const COMMON_ENV = {
     OBO_SMOKE_WORKER_APP_TENANT_ID: "fake-tenant",
@@ -44,14 +41,15 @@ describe("selectAuthBackend (FR-025)", () => {
         expect(sel.secretIgnoredReason).toBeNull();
     });
 
-    it("fic backend selected when only AZURE_FEDERATED_TOKEN_FILE is set", async () => {
+    it("fic backend selected when WORKLOAD_IDENTITY_CLIENT_ID is set", async () => {
         const { selectAuthBackend } = await importPlugin();
         const env = {
             ...COMMON_ENV,
-            AZURE_FEDERATED_TOKEN_FILE: "/var/run/secrets/azure/tokens/azure-identity-token",
+            WORKLOAD_IDENTITY_CLIENT_ID: "fake-uami-client-id",
         };
         const sel = selectAuthBackend(env);
         expect(sel.backend).toBe("fic");
+        expect(sel.values.WORKLOAD_IDENTITY_CLIENT_ID).toBe("fake-uami-client-id");
         expect(sel.secretIgnoredReason).toBeNull();
     });
 
@@ -60,7 +58,7 @@ describe("selectAuthBackend (FR-025)", () => {
         const env = {
             ...COMMON_ENV,
             OBO_SMOKE_WORKER_APP_CLIENT_SECRET: "fake-secret",
-            AZURE_FEDERATED_TOKEN_FILE: "/var/run/secrets/azure/tokens/azure-identity-token",
+            WORKLOAD_IDENTITY_CLIENT_ID: "fake-uami-client-id",
         };
         const sel = selectAuthBackend(env);
         expect(sel.backend).toBe("fic");
@@ -72,7 +70,7 @@ describe("selectAuthBackend (FR-025)", () => {
         const { selectAuthBackend } = await importPlugin();
         const sel = selectAuthBackend({ ...COMMON_ENV });
         expect(sel.backend).toBeNull();
-        expect(sel.missing.fic).toContain("AZURE_FEDERATED_TOKEN_FILE");
+        expect(sel.missing.fic).toContain("WORKLOAD_IDENTITY_CLIENT_ID");
         expect(sel.missing["client-secret"]).toContain("OBO_SMOKE_WORKER_APP_CLIENT_SECRET");
     });
 
@@ -84,7 +82,7 @@ describe("selectAuthBackend (FR-025)", () => {
             "OBO_SMOKE_WORKER_APP_TENANT_ID",
             "OBO_SMOKE_WORKER_APP_CLIENT_ID",
             "OBO_SMOKE_WORKER_APP_GRAPH_SCOPE",
-            "AZURE_FEDERATED_TOKEN_FILE",
+            "WORKLOAD_IDENTITY_CLIENT_ID",
         ]));
     });
 });
@@ -122,93 +120,86 @@ describe("handler returns serviceUnavailable when neither backend is configured 
     });
 });
 
-describe("FIC clientAssertion re-reads AZURE_FEDERATED_TOKEN_FILE on every acquisition (SC-018(b))", () => {
-    let tmpDir;
-    let tokenPath;
-
-    beforeEach(() => {
-        tmpDir = mkdtempSync(join(tmpdir(), "obo-smoke-fic-"));
-        tokenPath = join(tmpDir, "azure-identity-token");
+describe("FIC clientAssertion requests a fresh UAMI token on every acquisition (SC-018(b))", () => {
+    beforeEach(async () => {
+        const { _resetSmokePluginStateForTests } = await importPlugin();
+        _resetSmokePluginStateForTests();
     });
 
-    function cleanup() {
-        try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* */ }
-    }
-
-    it("clientAssertion callback returns the file's CURRENT contents (not a snapshot from CCA construction)", async () => {
+    it("clientAssertion callback returns the ManagedIdentityCredential's CURRENT token", async () => {
         const { getCachedCca, _resetSmokePluginStateForTests } = await importPlugin();
         _resetSmokePluginStateForTests();
 
-        writeFileSync(tokenPath, "first-token");
-
         // Capture the auth.clientAssertion callback when the fake CCA
-        // constructor runs so we can invoke it manually between file
-        // mutations.
+        // constructor runs so we can invoke it manually between token
+        // rotations.
         const captured = { auth: null };
         const fakeCca = {};
         const newCca = (config) => {
             captured.auth = config.auth;
             return fakeCca;
         };
+        const issuedTokens = ["first-token", "rotated-token"];
+        const seenClientIds = [];
+        const newManagedIdentityCredential = (clientId) => {
+            seenClientIds.push(clientId);
+            return {
+                getToken: async (scope) => ({ token: issuedTokens.shift(), scope }),
+            };
+        };
 
         const env = {
             ...COMMON_ENV,
-            AZURE_FEDERATED_TOKEN_FILE: tokenPath,
+            WORKLOAD_IDENTITY_CLIENT_ID: "fake-uami-client-id",
         };
         getCachedCca({
             backend: "fic",
             tenantId: COMMON_ENV.OBO_SMOKE_WORKER_APP_TENANT_ID,
             clientId: COMMON_ENV.OBO_SMOKE_WORKER_APP_CLIENT_ID,
             env,
-        }, { newCca });
+        }, { newCca, newManagedIdentityCredential });
 
         expect(typeof captured.auth.clientAssertion).toBe("function");
+        expect(seenClientIds).toEqual(["fake-uami-client-id"]);
 
         const first = await captured.auth.clientAssertion({});
         expect(first).toBe("first-token");
 
-        // Mutate the projected token file (simulates AKS rotation).
-        writeFileSync(tokenPath, "rotated-token");
-
         const second = await captured.auth.clientAssertion({});
         expect(second).toBe("rotated-token");
-        // The point: the callback re-reads the file every time. If it
-        // had cached the contents at CCA construction it would return
+        // The point: the callback asks the credential every time. If it
+        // had cached the assertion at CCA construction it would return
         // "first-token" again here.
-
-        cleanup();
     });
 
-    it("clientAssertion callback throws when AZURE_FEDERATED_TOKEN_FILE goes missing at acquisition time", async () => {
+    it("clientAssertion callback throws when ManagedIdentityCredential returns no token", async () => {
         const { getCachedCca, _resetSmokePluginStateForTests } = await importPlugin();
         _resetSmokePluginStateForTests();
 
-        writeFileSync(tokenPath, "tok");
         const captured = { auth: null };
         const newCca = (config) => {
             captured.auth = config.auth;
             return {};
         };
+        const newManagedIdentityCredential = () => ({
+            getToken: async () => ({ token: "" }),
+        });
         // Use a different (tenantId,clientId) tuple to bypass the
         // process-level CCA cache populated by the prior test.
         const env = {
             ...COMMON_ENV,
             OBO_SMOKE_WORKER_APP_TENANT_ID: "fake-tenant-2",
             OBO_SMOKE_WORKER_APP_CLIENT_ID: "fake-client-2",
-            AZURE_FEDERATED_TOKEN_FILE: tokenPath,
+            WORKLOAD_IDENTITY_CLIENT_ID: "fake-uami-client-id-2",
         };
         getCachedCca({
             backend: "fic",
             tenantId: env.OBO_SMOKE_WORKER_APP_TENANT_ID,
             clientId: env.OBO_SMOKE_WORKER_APP_CLIENT_ID,
             env,
-        }, { newCca });
+        }, { newCca, newManagedIdentityCredential });
 
-        // Now mutate env to drop the token-file path entirely.
-        delete env.AZURE_FEDERATED_TOKEN_FILE;
-        await expect(captured.auth.clientAssertion({})).rejects.toThrow(/AZURE_FEDERATED_TOKEN_FILE/);
-
-        cleanup();
+        await expect(captured.auth.clientAssertion({})).rejects.toThrow(/ManagedIdentityCredential returned no AzureADTokenExchange token/);
     });
 });
 

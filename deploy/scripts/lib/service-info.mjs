@@ -29,6 +29,16 @@ export const SERVICE_IMAGE_INFO = Object.fromEntries(
     ]),
 );
 
+// Compute the effective container image tag for a worker variant.
+// Worker `variant="smoke"` builds the `runtime-smoke` Dockerfile stage which
+// includes the OBO live-smoke plugin; we suffix `-smoke` so default and smoke
+// images never collide in ACR. Build, push, manifest substitution
+// (`IMAGE=<acr>/<repo>:<tag>`), and rollout verification all consume this same
+// helper to stay symmetric — see deploy.mjs runOneService().
+export function effectiveImageTag(imageTag, variant) {
+  return variant === "smoke" ? `${imageTag}-smoke` : imageTag;
+}
+
 // Service → ordered Bicep modules to deploy (single-service mode). For app
 // services this includes their dependencies (BaseInfra) so a stand-alone
 // `deploy worker` invocation guarantees the cluster is up to date.

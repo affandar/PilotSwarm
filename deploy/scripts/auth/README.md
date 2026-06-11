@@ -20,7 +20,7 @@ You can also invoke it directly.
 | `Create3PApplication.ps1` | Generic Azure AD application primitive. Useful if you need a non-portal app registration (e.g. a worker daemon with app roles). The PilotSwarm portal wrapper does **not** call this — it does its own SPA-shaped `az ad app create` so it can configure the SPA platform + implicit-grant + per-token-type groups claim, which the generic primitive doesn't expose. |
 | `Setup-PortalAuth.ps1` | Opinionated wrapper that creates the exact shape the PilotSwarm portal expects. See "Defaults" below. |
 | `Set-PortalAuthAssignments.ps1` | Add / remove / list user + group assignments against the `admin` / `user` app roles on an existing portal app. Idempotent. Re-runnable. See `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md` for full operator docs. |
-| `Setup-OboSmokeWorkerApp.ps1` | Opinionated wrapper that creates the per-stamp **OBO live-smoke downstream worker app** — required only when running OBO live-smoke against a stamp. Creates the app, exposes an OAuth2 delegated scope, declares Microsoft Graph `User.Read` as a delegated permission, pre-authorizes the per-stamp portal app, and create-or-patches the AKS workload-identity federated identity credential on the Entra application itself. Writes a sidecar JSON and prints the smoke `.env` paste block. Idempotent. See "OBO smoke worker app" below + `.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md`. |
+| `Setup-OboSmokeWorkerApp.ps1` | Opinionated wrapper that creates the per-stamp **OBO live-smoke downstream worker app** — required only when running OBO live-smoke against a stamp. Creates the app, exposes an OAuth2 delegated scope, declares Microsoft Graph `User.Read` as a delegated permission, pre-authorizes the per-stamp portal app, and create-or-patches the app federated identity credential (default MSI-as-FIC; optional AKS-direct). Writes a sidecar JSON and prints the smoke `.env` paste block. Idempotent. See "OBO smoke worker app" below + `.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md`. |
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ You can also invoke it directly.
 For OBO live-smoke, run the smoke worker image variant (`--variant smoke`) and compose the emitted smoke env overlay into the stamp env before worker rollout.
 
 The scripts use only cross-platform pwsh APIs (`Join-Path`, `Resolve-Path`,
-`[System.IO.Path]::GetTempFileName()`, `az`) and forward-slash path
+repo-local scratch files under `deploy/.tmp/`, `az`) and forward-slash path
 separators throughout, so the same invocation works in all three OSes.
 
 ## Service Tree ID is required
@@ -275,11 +275,18 @@ per-stamp bicep step have succeeded.
    `deploy/envs/local/<EnvName>/entra-app.json`, or supplied via
    `-PortalClientId`). Overwrite (not merge) because each stamp has a
    strict 1:1 portal-app → worker-app relationship.
-5. Create-or-patches the AKS workload-identity federated identity
-   credential **on the Entra application** (not on a UAMI). Subject
-   defaults to `system:serviceaccount:pilotswarm:copilot-runtime-worker`,
-   audience `api://AzureADTokenExchange`. The OIDC issuer URL is read
-   from `deploy/.tmp/<EnvName>/bicep-outputs.cache.json`.
+5. Create-or-patches the federated identity credential **on the Entra
+   application**. The default `-FicPattern msi` is CORP-compatible:
+   it reads `WORKLOAD_IDENTITY_CLIENT_ID` from
+   `deploy/.tmp/<EnvName>/bicep-outputs.cache.json`, resolves that
+   UAMI's enterprise-app/service-principal object id, then writes an
+   app FIC with issuer `https://login.microsoftonline.com/<tenant>/v2.0`,
+   subject `<uami-object-id>`, and audience
+   `api://AzureADTokenExchange`. The worker pod first exchanges its AKS
+   service-account token for a UAMI token through the existing UAMI FIC,
+   then uses the UAMI token as the worker-app `client_assertion`.
+   Optional `-FicPattern aks-direct` preserves the historical direct AKS
+   OIDC issuer + service-account subject app FIC for tenants that allow it.
 6. Optionally (`-GrantAdminConsent`) runs `az ad app permission
    admin-consent` for Graph `User.Read`. A shortcut that skips the
    per-user consent prompt on first sign-in for every user; only
@@ -315,7 +322,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass \
   -ServiceTreeId <id> \
   -EnvName <stamp>
 
-# Phase 2 — after bicep, before worker manifests,rollout:
+# Phase 2 — after the full deploy, just before OBO smoke:
 pwsh -NoProfile -ExecutionPolicy Bypass \
   -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
   -Mode patch-fic \
@@ -332,12 +339,29 @@ pwsh -NoProfile -ExecutionPolicy Bypass \
   -EnvName <stamp>
 ```
 
-`-Mode app-shell` skips the FIC and OIDC-issuer dependency; only the
+`-Mode app-shell` skips the FIC dependency; only the
 app + scope + pre-auth are created and the `.env` paste block is
-emitted. `-Mode patch-fic` looks up the existing app, reads the OIDC
-issuer from `deploy/.tmp/<EnvName>/bicep-outputs.cache.json`, and
-create-or-patches the FIC (no `.env` changes). `-Mode all` (default)
-does both.
+emitted. `-Mode patch-fic` looks up the existing app and creates or
+patches the selected FIC pattern (no `.env` changes). `-Mode all`
+(default) does both.
+
+FIC pattern selection:
+
+| Parameter | Pattern | When to use |
+|---|---|---|
+| `-FicPattern msi` (default) | MSI-as-FIC: eSTS issuer + UAMI object-id subject | Default everywhere; required in Microsoft CORP tenant. |
+| `-FicPattern aks-direct` | AKS OIDC issuer + Kubernetes service-account subject | Only in tenants/scenarios where policy explicitly allows direct AKS-on-app FICs for 3P apps. |
+
+Example explicit fallback:
+
+```bash
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -Mode patch-fic \
+  -FicPattern aks-direct \
+  -ServiceTreeId <id> \
+  -EnvName <stamp>
+```
 
 For full parameter reference, troubleshooting, and the
 upstream-audience-vs-downstream-resource scope distinction, see

@@ -9,8 +9,8 @@
     ".": "./tools.js"
   },
   "dependencies": {
+    "@azure/identity": "^4.13.1",
     "@azure/msal-node": "^5.1.0",
     "pilotswarm-sdk": "*"
   }
 }
-

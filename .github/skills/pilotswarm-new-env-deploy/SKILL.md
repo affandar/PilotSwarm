@@ -231,12 +231,17 @@ smoke-driver stamp marker; the worker loads smoke tools because
 > 2. **`-Mode patch-fic`** runs **after the full deploy completes**
 >    (bicep + manifests + rollout), right before
 >    `pilotswarm smoke <stamp> --profile obo`. Looks up the existing
->    app and create-or-patches the AKS workload-identity FIC against
->    the OIDC issuer URL bicep emitted into
->    `deploy/.tmp/<stamp>/bicep-outputs.cache.json`. No `.env` or k8s
->    changes — the worker pod is already running and will start
->    accepting OBO exchanges as soon as the FIC exists in AAD (no pod
->    restart required).
+>    app and create-or-patches the default MSI-as-FIC trust: reads
+>    `WORKLOAD_IDENTITY_CLIENT_ID` from
+>    `deploy/.tmp/<stamp>/bicep-outputs.cache.json`, resolves that
+>    UAMI's object id, and writes an eSTS FIC on the worker app
+>    (`issuer=https://login.microsoftonline.com/<tenant>/v2.0`,
+>    `subject=<uami-object-id>`). No `.env` or k8s changes — the worker
+>    pod is already using the UAMI and will start accepting OBO
+>    exchanges as soon as the app FIC exists in AAD (no pod restart
+>    required). Use `-FicPattern aks-direct` only in tenants where direct
+>    AKS-on-app FICs are explicitly allowed; Microsoft CORP requires the
+>    default MSI-as-FIC pattern.
 >
 > A single-shot `-Mode all` is also available for operator re-runs
 > against an already-deployed stamp. The wrapper never writes `.env`
@@ -277,8 +282,8 @@ the stamp `.env`, and ensure `PLUGIN_DIRS` includes
 that the smoke driver checks before running; worker registration is
 governed by `PLUGIN_DIRS` and by the plugin directory being present in
 the smoke image variant. **On AKS, leave the client-secret unset** — the
-plugin uses workload-identity FIC via the existing
-`WORKLOAD_IDENTITY_CLIENT_ID` / `AZURE_FEDERATED_TOKEN_FILE` machinery.
+plugin uses `ManagedIdentityCredential(WORKLOAD_IDENTITY_CLIENT_ID)` to
+obtain the UAMI token that backs the default MSI-as-FIC app trust.
 After building/pushing the smoke image and re-projecting the worker
 ConfigMap (`node deploy/scripts/deploy.mjs worker <stamp> --steps
 manifests,rollout`), drive the smoke from a workstation:

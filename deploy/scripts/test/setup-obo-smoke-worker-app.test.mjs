@@ -30,6 +30,7 @@
 //      the worker-app audience scope (a critical cycle-1 review fix —
 //      these are two different hops in the OBO chain).
 //   6. Required parameters match the documented contract.
+//   7. Default FIC pattern is MSI-as-FIC and the AKS-direct pattern remains explicit.
 //
 // Run: node --test deploy/scripts/test/setup-obo-smoke-worker-app.test.mjs
 
@@ -299,6 +300,7 @@ test("INV-6: all documented optional parameters are present", () => {
     "GraphScope",
     "ServiceAccountNamespace",
     "ServiceAccountName",
+    "FicPattern",
     "GrantAdminConsent",
     "Owner",
     "OutputFile",
@@ -306,14 +308,14 @@ test("INV-6: all documented optional parameters are present", () => {
   for (const p of optionalParams) {
     assert.match(
       src,
-      new RegExp(`\\[Parameter\\(Mandatory=\\$false\\)\\]\\[(?:string|switch)\\]\\$${p}\\b`),
+      new RegExp(`\\[Parameter\\(Mandatory=\\$false\\)\\](?:\\[ValidateSet\\([^\\)]*\\)\\])?\\[(?:string|switch)\\]\\$${p}\\b`),
       `Optional parameter -${p} is missing from the script contract`,
     );
   }
 });
 
 // --------------------------------------------------------------------------
-// Invariant 7: AKS workload-identity FIC subject + audience are canonical.
+// Invariant 7: FIC pattern contract.
 // --------------------------------------------------------------------------
 
 test("INV-7: FIC audience constant matches AKS workload-identity canonical value", () => {
@@ -326,7 +328,30 @@ test("INV-7: FIC audience constant matches AKS workload-identity canonical value
   );
 });
 
-test("INV-7: FIC subject defaults align with worker pod's service-account manifest", () => {
+test("INV-7: FicPattern defaults to MSI-as-FIC and allows explicit AKS-direct fallback", () => {
+  assert.match(
+    src,
+    /\[ValidateSet\("msi","aks-direct"\)\]\[string\]\$FicPattern\s*=\s*"msi"/,
+    "-FicPattern must default to 'msi' and allow only 'msi' or 'aks-direct'. " +
+      "MSI-as-FIC is the CORP-compatible default; AKS-direct is an explicit fallback.",
+  );
+});
+
+test("INV-7: MSI-as-FIC resolves UAMI object id and uses eSTS issuer", () => {
+  assert.match(
+    src,
+    /az ad sp show --id \$ClientId --query id -o tsv/,
+    "MSI-as-FIC subject must be the UAMI's enterprise-app/service-principal object id, " +
+      "resolved from WORKLOAD_IDENTITY_CLIENT_ID via az ad sp show.",
+  );
+  assert.match(
+    src,
+    /https:\/\/login\.microsoftonline\.com\/\$tenantId\/v2\.0/,
+    "MSI-as-FIC issuer must be the tenant eSTS v2 issuer.",
+  );
+});
+
+test("INV-7: AKS-direct fallback subject defaults align with worker pod's service-account manifest", () => {
   assert.match(
     src,
     /\$ServiceAccountNamespace\s*=\s*"pilotswarm"/,
@@ -358,9 +383,10 @@ test("INV-8: header comment block explicitly states the script never modifies .e
 });
 
 // -----------------------------------------------------------------------------
-// INV-9: cross-file contract — main.bicep emits oidcIssuerUrl as a TOP-LEVEL
-// output. This is what the wrapper reads (via the bicep-outputs cache) to wire
-// the AKS workload-identity FIC. ARM does not propagate nested-module outputs
+// INV-9: cross-file contract — main.bicep emits csiIdentityClientId and
+// oidcIssuerUrl as TOP-LEVEL outputs. The default MSI-as-FIC wrapper reads
+// csiIdentityClientId via the WORKLOAD_IDENTITY_CLIENT_ID cache alias; the
+// explicit aks-direct fallback reads oidcIssuerUrl. ARM does not propagate nested-module outputs
 // through `az deployment ... show --query properties.outputs`, so a submodule-
 // only output is invisible to the cache writer (deploy-bicep.mjs:271). If this
 // regresses, the wrapper fails at Resolve-OidcIssuerFromEnv on every fresh
@@ -371,7 +397,7 @@ test("INV-8: header comment block explicitly states the script never modifies .e
 // camelCase output name here therefore also pins the env-key the wrapper
 // resolves against.
 // -----------------------------------------------------------------------------
-test("INV-9: deploy/services/base-infra/bicep/main.bicep declares a top-level `output oidcIssuerUrl`", () => {
+test("INV-9: deploy/services/base-infra/bicep/main.bicep declares top-level FIC input outputs", () => {
   const bicepPath = join(REPO_ROOT, "deploy/services/base-infra/bicep/main.bicep");
   const bicepSrc = readFileSync(bicepPath, "utf8");
   // Top-level `output <name> string = ...` lines start at column 0; nested
@@ -387,5 +413,13 @@ test("INV-9: deploy/services/base-infra/bicep/main.bicep declares a top-level `o
       "declaration the bicep-outputs cache contains no OIDC issuer URL and " +
       "Setup-OboSmokeWorkerApp.ps1's Resolve-OidcIssuerFromEnv throws on every " +
       "fresh stamp.",
+  );
+  assert.match(
+    bicepSrc,
+    /^output\s+csiIdentityClientId\s+string\s*=/m,
+    "main.bicep must emit `output csiIdentityClientId string = Uami.outputs.csiIdentityClientId` " +
+      "as a TOP-LEVEL output. The deploy-bicep alias map folds it into " +
+      "WORKLOAD_IDENTITY_CLIENT_ID, which Setup-OboSmokeWorkerApp.ps1 reads for " +
+      "the default MSI-as-FIC pattern.",
   );
 });

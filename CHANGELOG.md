@@ -82,8 +82,9 @@ crypto backend; no runtime impact for stamps that don't enable OBO):
 **Reference plugin:** [`packages/obo-smoke-plugin/`](packages/obo-smoke-plugin/) ships
 `obo_smoke_whoami` (5 metadata-only modes including real Graph
 `/me` exchange via `@azure/msal-node`'s `acquireTokenOnBehalfOf` —
-auto-selects between client-secret and AKS workload-identity FIC
-backends, FIC winning precedence) and `obo_smoke_force_reauth`
+auto-selects between client-secret and MSI-as-FIC workload-identity
+backends via `WORKLOAD_IDENTITY_CLIENT_ID`, FIC winning precedence)
+and `obo_smoke_force_reauth`
 (always emits `interactionRequired`). The manual live-tenant smoke
 checklist ([`packages/obo-smoke-plugin/SMOKE_CHECKLIST.md`](packages/obo-smoke-plugin/SMOKE_CHECKLIST.md))
 remains the npm-publish release gate for changes touching the OBO
@@ -119,8 +120,12 @@ provisions the per-stamp downstream worker app in a single idempotent
 invocation: creates/finds the app, mints the OAuth2 delegated scope,
 declares Microsoft Graph `User.Read` as a delegated permission,
 overwrites `api.preAuthorizedApplications` with the per-stamp portal
-app's clientId, and create-or-patches the AKS workload-identity
+app's clientId, and create-or-patches the default MSI-as-FIC
 federated identity credential **on the Entra application itself**.
+The worker pod first uses the existing AKS-FIC-on-UAMI, then supplies
+the UAMI token as the worker-app `client_assertion`; the historical
+AKS-direct app FIC is retained only as an explicit fallback for tenants
+that allow it.
 Writes a sidecar JSON at
 `deploy/envs/local/<stamp>/obo-smoke-worker-app.json` and prints
 the smoke `.env` paste block (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`,

@@ -30,7 +30,7 @@ import { stageManifests } from "./lib/stage-manifests.mjs";
 import { publishManifests } from "./lib/publish-manifests.mjs";
 import { waitRollout } from "./lib/wait-rollout.mjs";
 import { seedSecrets } from "./lib/seed-secrets.mjs";
-import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
+import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES, effectiveImageTag } from "./lib/service-info.mjs";
 import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
@@ -45,6 +45,7 @@ function parseArgs(argv) {
     clean: false,
     force: false,
     forceModules: [],
+    variant: "default",
     help: false,
   };
 
@@ -76,6 +77,10 @@ function parseArgs(argv) {
       flags.imageTag = a.slice("--image-tag=".length);
     } else if (a === "--image-tag") {
       flags.imageTag = args[++i];
+    } else if (a.startsWith("--variant=")) {
+      flags.variant = a.slice("--variant=".length);
+    } else if (a === "--variant") {
+      flags.variant = args[++i];
     } else if (a.startsWith("--")) {
       throw new Error(`Unknown flag: ${a}`);
     } else {
@@ -90,12 +95,16 @@ function parseArgs(argv) {
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
         "  <service>    worker | portal | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
-        "Flags: --steps, --region, --image-tag, --clean, --force, --help",
+        "Flags: --steps, --region, --image-tag, --variant, --clean, --force, --help",
     );
   }
 
   const [service, envName, ...extra] = positional;
   if (extra.length) throw new Error(`Unexpected positional args: ${extra.join(" ")}`);
+
+  if (flags.variant !== "default" && flags.variant !== "smoke") {
+    throw new Error(`--variant must be "default" or "smoke" (got "${flags.variant}")`);
+  }
 
   return { service, envName, ...flags };
 }
@@ -122,6 +131,9 @@ function printHelp() {
       "                      Default: full pipeline for service.",
       "  --region <name>     Override LOCATION from <env>.env (e.g. westus3).",
       "  --image-tag <tag>   Explicit image tag. Default: <env>-<short-sha>[-dirty].",
+      "  --variant <name>    Worker image variant: default | smoke. Smoke includes",
+      "                      the OBO live-smoke plugin (worker only) and tags the image",
+      "                      with a -smoke suffix. Default: default.",
       "  --clean             Wipe deploy/.tmp/<service>-<env>/ before running.",
       "  --force             Ignore deploy markers; redeploy every Bicep module even if",
       "                      its template + rendered params are unchanged since last success.",
@@ -156,6 +168,7 @@ async function runStage(name, ctx) {
         envName: ctx.envName,
         imageTag: ctx.imageTag,
         stagingDir: ctx.stagingDir,
+        variant: ctx.variant,
       });
       return;
     case "push":
@@ -265,7 +278,7 @@ async function main() {
     return;
   }
 
-  const { service, envName, steps, region, imageTag, clean, force, forceModules } = parsed;
+  const { service, envName, steps, region, imageTag, clean, force, forceModules, variant } = parsed;
 
   // 1) Validate inputs (accepts the virtual `all` aggregate)
   validateService(service);
@@ -454,7 +467,7 @@ async function main() {
 
   // 7) Branch: `all` aggregates over the canonical sequence; otherwise single service.
   if (service === "all") {
-    await runAll({ envName, env, steps, imageTag: resolvedTag, clean, force, forceModules, edgeMode });
+    await runAll({ envName, env, steps, imageTag: resolvedTag, clean, force, forceModules, edgeMode, variant });
   } else {
     await runOneService({
       service,
@@ -465,6 +478,7 @@ async function main() {
       clean,
       force,
       forceModules,
+      variant,
       moduleListOverride: null,
     });
   }
@@ -474,7 +488,7 @@ async function main() {
 
 // Single-service execution path. Used directly for explicit `<service> <env>`
 // invocations and as the per-service step inside `runAll`.
-async function runOneService({ service, envName, env, steps, imageTag, clean, force, forceModules, moduleListOverride }) {
+async function runOneService({ service, envName, env, steps, imageTag, clean, force, forceModules, variant, moduleListOverride }) {
   if (clean) {
     const { rmSync } = await import("node:fs");
     const dir = stagingDir(service, envName);
@@ -506,11 +520,12 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
     envName,
     env,
     region: env.LOCATION,
-    imageTag,
+    imageTag: effectiveImageTag(imageTag, service === "worker" ? (variant || "default") : "default"),
     stagingDir: stage,
     moduleListOverride,
     force,
     forceModules,
+    variant: service === "worker" ? (variant || "default") : "default",
   };
 
   for (const step of effectiveSteps) {
@@ -533,7 +548,7 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
 // server, deployment storage account) cascade forward. Each service deploys
 // only its own Bicep module (ALL_MODE_MODULES) — dependencies were deployed
 // by an earlier item in the same invocation.
-async function runAll({ envName, env, steps, imageTag, clean, force, forceModules, edgeMode }) {
+async function runAll({ envName, env, steps, imageTag, clean, force, forceModules, edgeMode, variant }) {
   // Drop globalinfra from the sequence when AFD is disabled — the service is
   // entirely AFD provisioning and would otherwise create an empty RG with no
   // resources. Mirrors the single-service short-circuit above. cert-manager
@@ -559,6 +574,7 @@ async function runAll({ envName, env, steps, imageTag, clean, force, forceModule
       clean,
       force,
       forceModules,
+      variant,
       moduleListOverride: ALL_MODE_MODULES[svc],
     });
   }

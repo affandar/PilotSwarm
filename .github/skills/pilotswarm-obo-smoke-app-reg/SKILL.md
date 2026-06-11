@@ -1,6 +1,6 @@
 ---
 name: pilotswarm-obo-smoke-app-reg
-description: "Use when bringing up a PilotSwarm stamp that will run OBO live-smoke. Drives the Entra app-registration step for the per-stamp OBO live-smoke downstream worker app — creates/finds the app, declares Microsoft Graph `User.Read` delegated permission, mints an OAuth2 scope, pre-authorizes the portal app, and create-or-patches the AKS workload-identity federated identity credential (FIC). Skip entirely for default production stamps or stamps that do not run the OBO smoke profile."
+description: "Use when bringing up a PilotSwarm stamp that will run OBO live-smoke. Drives the Entra app-registration step for the per-stamp OBO live-smoke downstream worker app — creates/finds the app, declares Microsoft Graph `User.Read` delegated permission, mints an OAuth2 scope, pre-authorizes the portal app, and create-or-patches the federated identity credential (default MSI-as-FIC; optional AKS-direct). Skip entirely for default production stamps or stamps that do not run the OBO smoke profile."
 ---
 
 # pilotswarm-obo-smoke-app-reg
@@ -37,16 +37,19 @@ nothing in the deploy pipeline has to wait on Entra:
    from here.
 2. **`-Mode patch-fic`** runs **after the full deploy completes**
    (bicep + manifests + rollout). It looks up the existing app by
-   display name, reads the AKS OIDC issuer URL from
-   `deploy/.tmp/<stamp>/bicep-outputs.cache.json`, and create-or-patches
-   the FIC on the Entra application. No `.env` changes and no k8s
-   changes — the worker pod is already running and will start accepting
-   OBO exchanges as soon as the FIC exists in AAD. Run this just before
+   display name and create-or-patches the FIC on the Entra application.
+   The default `-FicPattern msi` reads `WORKLOAD_IDENTITY_CLIENT_ID` from
+   `deploy/.tmp/<stamp>/bicep-outputs.cache.json`, resolves that UAMI's
+   enterprise-app/service-principal object id, and writes an eSTS FIC
+   (`issuer=https://login.microsoftonline.com/<tenant>/v2.0`, `subject=<uami-object-id>`).
+   No `.env` changes and no k8s changes — the worker pod is already
+   using the UAMI and will start accepting OBO exchanges as soon as the
+   app FIC exists in AAD. Run this just before
    `pilotswarm smoke <stamp> --profile obo`.
 
-The worker pod boots fine without the FIC; the FIC is only consulted at
-runtime when a tool actually performs an OBO exchange. There is no pod
-restart between patch-fic and the smoke run.
+The worker pod boots fine without the app FIC; the app FIC is only
+consulted at runtime when a tool actually performs an OBO exchange.
+There is no pod restart between patch-fic and the smoke run.
 
 For one-shot operator use against an already-deployed cluster, the
 back-compat default `-Mode all` does both phases in one invocation
@@ -101,14 +104,17 @@ contract the smoke harness depends on):
   stamp has a strict 1:1 portal-app → worker-app relationship, so
   merging would risk leaving orphaned trust for rotated/deleted
   portal apps.
-- **AKS workload-identity federated identity credential** on the
-  *Application* (not on a UAMI), so the worker pod's projected
-  service-account token can be exchanged for a confidential-client
-  assertion against this app. Subject defaults to
-  `system:serviceaccount:pilotswarm:copilot-runtime-worker`, audience
-  `api://AzureADTokenExchange`. The script reads the AKS OIDC issuer
-  URL from `deploy/.tmp/<EnvName>/bicep-outputs.cache.json` — run
-  bicep first.
+- **Federated identity credential on the Application**, defaulting to
+  the CORP-compatible **MSI-as-FIC** pattern. The worker pod first uses
+  its existing AKS service-account FIC on the UAMI
+  (`WORKLOAD_IDENTITY_CLIENT_ID`) to get a UAMI token, then the smoke
+  plugin uses that UAMI token as the `client_assertion` for the worker
+  3P app. The app FIC is: issuer
+  `https://login.microsoftonline.com/<tenant>/v2.0`, subject
+  `<uami-service-principal-object-id>`, audience
+  `api://AzureADTokenExchange`. Optional `-FicPattern aks-direct`
+  preserves the historical AKS OIDC issuer + service-account subject
+  app FIC for tenants that explicitly allow it.
 
 ## The two OBO scope keys (read before invoking)
 
@@ -141,7 +147,9 @@ Also confirm:
   ran). If not, run the `pilotswarm-portal-app-reg` skill first, or
   pass `-PortalClientId <appId>` explicitly.
 - `deploy/.tmp/<stamp>/bicep-outputs.cache.json` exists and contains
-  an OIDC issuer URL. If not, run bicep first
+  `WORKLOAD_IDENTITY_CLIENT_ID` for the default MSI-as-FIC pattern
+  (or an OIDC issuer URL when using `-FicPattern aks-direct`). If not,
+  run bicep first
   (`node deploy/scripts/deploy.mjs base-infra <stamp> --steps bicep`).
 
 ## Present the input surface upfront
@@ -160,9 +168,11 @@ Portal trust (pre-authorization)
 Downstream scope
   GraphScope               https://graph.microsoft.com/User.Read (default)
 
-AKS workload-identity FIC
-  ServiceAccountNamespace  pilotswarm (default)
-  ServiceAccountName       copilot-runtime-worker (default)
+Federated identity credential
+  FicPattern               msi (default, CORP-compatible) | aks-direct
+  WORKLOAD_IDENTITY_CLIENT_ID  <auto-discover from bicep cache for msi>
+  ServiceAccountNamespace  pilotswarm (aks-direct only)
+  ServiceAccountName       copilot-runtime-worker (aks-direct only)
 
 Optional
   ExistingAppId            <only when you want to point at a pre-existing app>
@@ -201,8 +211,8 @@ This:
    array containing the per-stamp portal app's clientId (read from
    `deploy/envs/local/<stamp>/entra-app.json`).
 5. Writes a JSON sidecar at
-   `deploy/envs/local/<stamp>/obo-smoke-worker-app.json` (ficIssuer
-   is `null` until patch-fic runs).
+   `deploy/envs/local/<stamp>/obo-smoke-worker-app.json` (`fic.issuer`
+   and `fic.subject` are `null` until patch-fic runs).
 6. Prints the smoke `.env` paste block to stdout — paste it now.
 
 **Phase 2 — `patch-fic` (after the full deploy completes; just before smoke)**
@@ -219,11 +229,15 @@ This:
 
 1. Finds the existing app by display name (errors out if app-shell
    hasn't run; pass `-ExistingAppId` to bypass the lookup).
-2. Create-or-patches the AKS FIC against the OIDC issuer in
-   `deploy/.tmp/<stamp>/bicep-outputs.cache.json` (subject
-   `system:serviceaccount:pilotswarm:copilot-runtime-worker`,
-   audience `api://AzureADTokenExchange`).
-3. Patches `ficIssuer` into the existing sidecar JSON.
+2. Create-or-patches the default MSI-as-FIC trust using
+   `WORKLOAD_IDENTITY_CLIENT_ID` from
+   `deploy/.tmp/<stamp>/bicep-outputs.cache.json` (issuer
+   `https://login.microsoftonline.com/<tenant>/v2.0`, subject
+   `<uami-object-id>`, audience `api://AzureADTokenExchange`). Pass
+   `-FicPattern aks-direct` only in tenants where AKS-direct app FICs
+   are allowed.
+3. Patches `fic.pattern`, `fic.issuer`, and `fic.subject` into the
+   existing sidecar JSON while preserving legacy top-level fields.
 4. **No `.env` paste block** — env was finalized in app-shell.
 
 ### One-shot (back-compat default; `-Mode all`)
@@ -236,9 +250,24 @@ pwsh -NoProfile -ExecutionPolicy Bypass \
 ```
 
 Runs app-shell + patch-fic in a single invocation. Requires bicep to
-have already produced the OIDC issuer URL. Use for operator re-runs
+have already produced the selected FIC inputs. Use for operator re-runs
 against an already-deployed stamp, or when you don't care about the
 two-phase ordering.
+
+### FIC pattern override (rare)
+
+```bash
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -Mode patch-fic \
+  -FicPattern aks-direct \
+  -ServiceTreeId <your-service-tree-id> \
+  -EnvName <stamp-name>
+```
+
+Use `aks-direct` only in tenants/scenarios where policy explicitly
+allows AKS OIDC issuer + Kubernetes service-account subject FICs on 3P
+apps. Microsoft CORP requires the default `msi` pattern.
 
 ### With tenant-admin consent (optional shortcut)
 
@@ -357,8 +386,10 @@ Re-runs are no-ops:
   the old scope id).
 - `preAuthorizedApplications` is overwritten in place with the current
   portal clientId.
-- The FIC is create-or-patched by deterministic name
-  (`pilotswarm-worker-<stamp>`).
+- The FIC is create-or-patched by deterministic name (default
+  `pilotswarm-obo-smoke-worker-<stamp>-msi`; `pilotswarm-worker-<stamp>`
+  for explicit `-FicPattern aks-direct`) and skipped if an existing FIC
+  already has the desired issuer+subject+audience.
 
 If you renamed the app in the Entra portal, the wrapper will create a
 fresh app and the old one is orphaned — clean it up manually with
@@ -375,9 +406,16 @@ The sidecar at
   "clientId": "<worker-app-id>",
   "scope": "api://<worker-app-id>/.default",
   "graphScope": "https://graph.microsoft.com/User.Read",
-  "ficName": "pilotswarm-worker-<stamp>",
-  "ficSubject": "system:serviceaccount:pilotswarm:copilot-runtime-worker",
-  "ficIssuer": "<aks-oidc-issuer-url>",
+  "ficName": "pilotswarm-obo-smoke-worker-<stamp>-msi",
+  "ficSubject": "<uami-service-principal-object-id>",
+  "ficIssuer": "https://login.microsoftonline.com/<tenant>/v2.0",
+  "fic": {
+    "pattern": "msi",
+    "name": "pilotswarm-obo-smoke-worker-<stamp>-msi",
+    "issuer": "https://login.microsoftonline.com/<tenant>/v2.0",
+    "subject": "<uami-service-principal-object-id>",
+    "audiences": ["api://AzureADTokenExchange"]
+  },
   "portalClientId": "<portal-app-id>",
   "displayName": "PilotSwarm OBO Smoke Worker - <stamp>",
   "envName": "<stamp>",
@@ -388,20 +426,23 @@ The sidecar at
 
 The sidecar is purely informational — nothing in the deploy pipeline
 reads it. The smoke env overlay keys are the source of truth at runtime.
-In two-phase use, `app-shell` writes all fields except `ficIssuer`
-(which is `null`); `patch-fic` reads the sidecar back and merges in
-`ficIssuer`.
+Legacy top-level `ficName` / `ficSubject` / `ficIssuer` remain for
+back-compat; new consumers should prefer `fic.pattern`, `fic.issuer`,
+and `fic.subject`. In two-phase use, `app-shell` writes all fields
+except the resolved FIC issuer/subject (which are `null`);
+`patch-fic` reads the sidecar back and merges them in.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `AKS OIDC issuer URL is missing — run bicep first` | `deploy/.tmp/<stamp>/bicep-outputs.cache.json` doesn't exist or lacks the OIDC issuer key (you ran `-Mode patch-fic` or `-Mode all` too early) | Either run bicep first (`node deploy/scripts/deploy.mjs base-infra <stamp> --steps bicep`) and retry, or use `-Mode app-shell` for the pre-bicep phase and re-invoke with `-Mode patch-fic` after bicep |
+| `WORKLOAD_IDENTITY_CLIENT_ID is required for the MSI-as-FIC pattern` | `deploy/.tmp/<stamp>/bicep-outputs.cache.json` doesn't exist or lacks the UAMI client id key (you ran `-Mode patch-fic` or `-Mode all` too early) | Run bicep first (`node deploy/scripts/deploy.mjs base-infra <stamp> --steps bicep`) and retry, or use `-Mode app-shell` for the pre-bicep phase and re-invoke with `-Mode patch-fic` after bicep |
+| `AKS OIDC issuer URL is missing — run bicep first` | You used `-FicPattern aks-direct` and the bicep cache lacks the OIDC issuer key | Prefer default `-FicPattern msi` unless your tenant explicitly allows AKS-direct; otherwise run bicep and retry |
 | `patch-fic mode requires the app '...' to already exist` | You ran `-Mode patch-fic` without running `-Mode app-shell` first | Run `-Mode app-shell` first, or pass `-ExistingAppId <appId>` to point at a manually-managed app |
 | `Portal entra-app.json not found at ...` | Portal app-reg hasn't run yet (or stamp uses `PORTAL_AUTH_PROVIDER=none`) | Run `pilotswarm-portal-app-reg` first, or pass `-PortalClientId <appId>` explicitly. OBO smoke is incompatible with `PORTAL_AUTH_PROVIDER=none` — the smoke driver expects a portal-signed-in user. |
 | At smoke run: `AADSTS50013: Assertion audience does not match` | The portal acquired a token for the wrong audience | The `.env` key `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` is missing, empty, or `__PS_UNSET__`. Run the tightened grep above; paste the wrapper's stdout if it fails. |
 | At smoke run: `AADSTS65001: The user or administrator has not consented to use the application` | The signed-in user hasn't yet consented to Graph `User.Read` on the worker app's service principal. Normally per-user consent is offered at portal sign-in; this only persists if the tenant blocks user consent for the worker app | Have each affected user sign out and back in to accept the consent prompt. If user consent is blocked tenant-wide for the worker app, grant admin consent once: re-run with `-GrantAdminConsent` as a Global Admin, OR have a Cloud Application Administrator run `az ad app permission admin-consent --id <worker-app-id>`. |
-| At smoke run: worker pod logs show `AADSTS70021: No matching federated identity record found` | FIC subject/audience/issuer don't match the worker pod's projected token | Confirm the worker pod's service-account is `copilot-runtime-worker` in namespace `pilotswarm` (or re-run wrapper with `-ServiceAccountNamespace` / `-ServiceAccountName` overrides). Re-run bicep if the AKS OIDC issuer URL changed. |
+| At smoke run: worker pod logs show `AADSTS70021: No matching federated identity record found` | FIC subject/audience/issuer don't match the assertion token. For default MSI-as-FIC, the app FIC must trust the UAMI object id; for `aks-direct`, it must trust the AKS OIDC issuer + service-account subject. | Re-run `-Mode patch-fic` with default `-FicPattern msi`. If intentionally using `aks-direct`, confirm the worker pod's service account and namespace match the stamp's configured deployment values (or re-run wrapper with `-ServiceAccountNamespace` / `-ServiceAccountName` overrides). |
 | Re-run creates a duplicate app instead of reusing | The existing app's display name was changed | The wrapper looks up by display name. Either rename the app back, or pass `-ExistingAppId <appId>` to point at it explicitly. |
 
 ## See also

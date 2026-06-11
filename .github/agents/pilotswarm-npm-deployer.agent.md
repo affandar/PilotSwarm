@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.2.0
+version: 1.3.0
 name: pilotswarm-npm-deployer
 description: "Use when deploying PilotSwarm via the npm Bicep/GitOps orchestrator at `deploy/scripts/deploy.mjs` — bringing up a fresh isolated environment (new-env), rolling out updates against an already-deployed new-env stamp, or running the optional Entra app-registration pre-step. Routes between the fresh-scaffold and rollout-to-existing paths, enforces the DO NOT WIPE handshake on destructive ops, and drives interactive resource-naming + edge/TLS selection for new envs. For the legacy bash path (`scripts/deploy-aks.sh`, `scripts/deploy-portal.sh`), use `pilotswarm-aks-deployer` instead."
 ---
@@ -80,7 +80,7 @@ Match the change to a service and a minimal step set. Always invoke via `node de
 | Worker-t3 (StatefulSet) manifest change | `node deploy/scripts/deploy.mjs worker-t3 <stamp> --steps manifests,rollout` |
 | End-to-end re-render after multi-service change | `node deploy/scripts/deploy.mjs all <stamp>` (filters by EDGE_MODE/TLS_SOURCE automatically) |
 | Toggle OBO User Context on a stamp (`OBO_ENABLED=true`) | `node deploy/scripts/deploy.mjs base-infra <stamp> --steps bicep` then `node deploy/scripts/deploy.mjs all <stamp> --steps manifests,rollout` (re-renders overlay .env with the new `OBO_KEK_KID` bicep output and re-projects worker + portal ConfigMaps). Operator must edit `deploy/envs/local/<stamp>/.env` to set `OBO_ENABLED=true` and `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=api://<worker-app>/.default` before re-running base-infra. See `pilotswarm-new-env-deploy` §"User OBO Propagation" + `docs/operations/obo-kek-runbook.md`. |
-| Enable OBO live-smoke on a stamp | Build/push the worker image with `--variant smoke`, compose `deploy/envs/template.smoke.env` into `deploy/envs/local/<stamp>/.env`, then run **Step 0.b-early** (app-shell) before bicep to provision the worker app + scope + pre-auth and paste the emitted env lines (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`, `OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE`, and `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`). Run the full deploy (bicep + manifests + rollout). When the stamp is up, run **Step 0.b-late** (patch-fic) just before `pilotswarm smoke` to wire the FIC on the Entra app — no `.env` or k8s changes, no pod restart. `OBO_SMOKE_ENABLED=true` is the smoke-driver marker; worker tool registration is governed by `PLUGIN_DIRS`. `OBO_SMOKE_TEST_USER_UPN` is an optional UPN-assertion knob — leave it empty to accept whichever user signs in. After patch-fic, run `pilotswarm smoke <stamp> --profile obo` from a workstation; the default `--auth device-code` flow lets the operator sign in as themselves (no dedicated test user required — see `docs/operations/live-smoke.md` for MFA / Conditional Access notes). Default production stamps should use the default image and omit the smoke overlay. |
+| Enable OBO live-smoke on a stamp | Build/push the worker image with `--variant smoke`, compose `deploy/envs/template.smoke.env` into `deploy/envs/local/<stamp>/.env`, then run **Step 0.b-early** (app-shell) before bicep to provision the worker app + scope + pre-auth and paste the emitted env lines (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`, `OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE`, and `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`). Run the full deploy (bicep + manifests + rollout). When the stamp is up, run **Step 0.b-late** (patch-fic) just before `pilotswarm smoke` to wire the default MSI-as-FIC trust on the Entra app: `WORKLOAD_IDENTITY_CLIENT_ID` from the bicep cache → UAMI object id subject → eSTS issuer `https://login.microsoftonline.com/<tenant>/v2.0`. No `.env` or k8s changes, no pod restart. Use `-FicPattern aks-direct` only where direct AKS-on-app FICs are allowed; Microsoft CORP requires MSI-as-FIC. `OBO_SMOKE_ENABLED=true` is the smoke-driver marker; worker tool registration is governed by `PLUGIN_DIRS`. `OBO_SMOKE_TEST_USER_UPN` is an optional UPN-assertion knob — leave it empty to accept whichever user signs in. After patch-fic, run `pilotswarm smoke <stamp> --profile obo` from a workstation; the default `--auth device-code` flow lets the operator sign in as themselves (no dedicated test user required — see `docs/operations/live-smoke.md` for MFA / Conditional Access notes). Default production stamps should use the default image and omit the smoke overlay. |
 
 ### Pre-flight (mandatory before invoking)
 
@@ -253,8 +253,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 
 The script writes a sidecar JSON at
 `deploy/envs/local/<stamp>/obo-smoke-worker-app.json` (with
-`ficIssuer: null` until patch-fic runs) and prints the smoke `.env`
-paste block to stdout:
+`fic.issuer` / `fic.subject` null until patch-fic runs) and prints the
+smoke `.env` paste block to stdout:
 
 ```
 PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=api://<worker-app-id>/.default offline_access
@@ -274,12 +274,17 @@ smoke path comma-separated. Bicep can now run with the final overlay.
 #### Step 0.b-late — `-Mode patch-fic` (after the full deploy completes; just before smoke)
 
 Looks up the worker app by display name (errors out if Step 0.b-early
-hasn't run) and create-or-patches the AKS workload-identity FIC against
-the OIDC issuer URL bicep emitted into
-`deploy/.tmp/<stamp>/bicep-outputs.cache.json`. **No `.env` or k8s
-changes** — the worker pod is already running and will start accepting
-OBO exchanges as soon as the FIC exists in AAD (no pod restart
-required). Run this just before `pilotswarm smoke <stamp> --profile obo`.
+hasn't run) and create-or-patches the default MSI-as-FIC trust using
+`WORKLOAD_IDENTITY_CLIENT_ID` from
+`deploy/.tmp/<stamp>/bicep-outputs.cache.json`: eSTS issuer
+`https://login.microsoftonline.com/<tenant>/v2.0`, subject
+`<uami-object-id>`, audience `api://AzureADTokenExchange`. **No `.env`
+or k8s changes** — the worker pod is already using the UAMI and will
+start accepting OBO exchanges as soon as the app FIC exists in AAD (no
+pod restart required). Run this just before
+`pilotswarm smoke <stamp> --profile obo`. Use `-FicPattern aks-direct`
+only in tenants that explicitly allow direct AKS-on-app FICs; Microsoft
+CORP requires the default MSI-as-FIC pattern.
 
 ```pwsh
 pwsh -NoProfile -ExecutionPolicy Bypass `
@@ -289,14 +294,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -EnvName <stamp>
 ```
 
-The wrapper updates `ficIssuer` in the existing sidecar JSON and prints
-a short confirmation pointing at the next deploy step.
+The wrapper updates `fic.pattern`, `fic.issuer`, and `fic.subject` in
+the existing sidecar JSON and prints a short confirmation pointing at
+the smoke command.
 
 #### Single-shot fallback — `-Mode all` (back-compat default)
 
 For operator re-runs against an already-deployed stamp, omit `-Mode`
 to run both phases in a single invocation. Requires bicep to have
-produced the OIDC issuer URL already.
+produced the selected FIC inputs already (`WORKLOAD_IDENTITY_CLIENT_ID`
+for default MSI-as-FIC).
 
 **Tightened verification gate (before `worker manifests,rollout`)**:
 for OBO live-smoke stamps, the standard Step 3b grep is *not
