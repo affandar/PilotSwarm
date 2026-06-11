@@ -335,18 +335,30 @@ Minimal shape:
 {
   "name": "my-tool-plugin",
   "version": "1.0.0",
-  "tools": {
-    "module": "./index.js"
-  }
+  "tools": "./tools.js"
 }
 ```
 
-The referenced module exports `registerTools(worker)`. The loader calls
-that function at `PilotSwarmWorker.start()` for application-tier plugins
-only (`pluginDirs`). System and management plugins do not use this hook.
-The export receives the worker instance and must register tools through
-`worker.registerTools([...])`; direct mutation of internal registries is
-not supported.
+The `tools` value is a path (relative to the plugin directory) to a JS
+module that exports `registerTools(worker)`. The loader calls that
+function at `PilotSwarmWorker.start()` for application-tier plugins
+only (`pluginDirs`). System and management plugins ignore the field
+with a warning. The export receives the worker instance and must
+register tools through `worker.registerTools([...])`; direct mutation
+of internal registries is not supported.
+
+Plugin authors writing in TypeScript can import the typed manifest
+shape from the SDK to validate `plugin.json` at compile time:
+
+```ts
+import type { PluginManifest } from "pilotswarm-sdk";
+
+const manifest: PluginManifest = {
+    name: "my-tool-plugin",
+    version: "1.0.0",
+    tools: "./tools.js",
+};
+```
 
 Tool plugin loading is fail-closed:
 

@@ -5,11 +5,28 @@ import type { ReasoningEffort } from "./model-providers.js";
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
 /**
- * Internal manifest shape for a plugin's `plugin.json` file.
+ * Manifest shape for a plugin's `plugin.json` file.
  *
- * @internal Not part of the public SDK surface; documented here for
- * worker-internal contracts. Plugin authors should consult the plugin
- * architecture guide for authoritative field documentation.
+ * Plugin authors can import this type from `pilotswarm-sdk` to get
+ * TypeScript-level validation of their `plugin.json` contents. The
+ * loader treats unknown fields as opaque metadata, so adding extra
+ * keys is safe — but the typed fields below are the contract surface
+ * the worker reads.
+ *
+ * See `docs/plugin-architecture-guide.md` for the full contract,
+ * including loader semantics, tier policy, and failure modes.
+ *
+ * @example
+ * ```ts
+ * // packages/<your-plugin>/plugin.json (generate from this type)
+ * import type { PluginManifest } from "pilotswarm-sdk";
+ *
+ * const manifest: PluginManifest = {
+ *     name: "my-plugin",
+ *     version: "1.0.0",
+ *     tools: "./tools.js",
+ * };
+ * ```
  */
 export interface PluginManifest {
     /** Logical plugin name; defaults to directory basename when absent. */

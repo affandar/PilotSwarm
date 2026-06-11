@@ -151,6 +151,11 @@ export { SessionDumper } from "./session-dumper.js";
 // Re-export defineTool from Copilot SDK for convenience
 export { defineTool } from "@github/copilot-sdk";
 
+// Plugin authoring: public type for `plugin.json`. Plugin authors can
+// import this type to get TypeScript-level validation of their manifest.
+// See docs/plugin-architecture-guide.md for the full contract.
+export type { PluginManifest } from "./types.js";
+
 // User OBO: worker-side per-session user-context lookup.
 // Synchronous, importable. Returns null for system sessions, unknown
 // sessions, broken chains, and ambiguous multi-worker contexts.
