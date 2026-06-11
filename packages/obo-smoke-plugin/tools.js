@@ -318,9 +318,9 @@ function defineWhoamiTool(deps = {}) {
             const env = deps.env ?? process.env;
             const selection = selectAuthBackend(env);
             if (selection.backend === null) {
-                // Handler-time refusal as a structured outcome — matches
-                // the Phase-4 outcome family, three-way distinguishable
-                // from `interactionRequired` and generic failure.
+                // Handler-time refusal as a structured outcome —
+                // three-way distinguishable from `interactionRequired`
+                // and from a generic tool failure.
                 return serviceUnavailable({
                     reasonCode: "smoke_misconfigured",
                     message:
