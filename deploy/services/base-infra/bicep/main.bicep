@@ -374,14 +374,27 @@ module KeyVault './keyvault.bicep' = {
     appGwPrincipalId: Uami.outputs.appGwIdentityPrincipalId
     localDeploymentPrincipalId: localDeploymentPrincipalId
     localDeploymentPrincipalType: localDeploymentPrincipalType
-    oboEnabled: oboEnabled
-    // PilotSwarm reference deploy uses a single shared CSI UAMI federated
-    // to BOTH the worker and portal service accounts (uami-federation.bicep).
-    // Pass a 1-element array; the keyvault module's role-assignment loop
-    // expands to one Microsoft.Authorization/roleAssignments resource.
-    // Downstream consumers with a different UAMI topology (e.g. distinct
-    // portal vs worker UAMIs) override by passing an N-element array.
-    oboKekUamiPrincipalIds: oboEnabled ? [Uami.outputs.csiIdentityPrincipalId] : []
+  }
+}
+
+// ==============================================================================
+// OBO KEK + Key Vault Crypto User role assignments — conditional, kept in
+// a single-responsibility module so the AKV module stays focused on the
+// vault + secret-tier RBAC. Instantiated only when oboEnabled=true.
+//
+// PilotSwarm reference deploy uses a single shared CSI UAMI federated to
+// BOTH the worker and portal service accounts (uami-federation.bicep).
+// Pass a 1-element array; the module's role-assignment loop expands to
+// one Microsoft.Authorization/roleAssignments resource. Downstream
+// consumers with a different UAMI topology (e.g. distinct portal vs
+// worker UAMIs) override by passing an N-element array.
+// ==============================================================================
+
+module OboKek './obo-kek.bicep' = if (oboEnabled) {
+  name: '${resourceNamePrefix}-obo-kek-${dTime}'
+  params: {
+    keyVaultName: KeyVault.outputs.keyVaultName
+    oboKekUamiPrincipalIds: [Uami.outputs.csiIdentityPrincipalId]
   }
 }
 
@@ -528,14 +541,20 @@ output deploymentStorageAccountName string = Storage.outputs.storageAccountName
 // (deploy-bicep.mjs OUTPUT_ALIAS) into env key APPROVAL_MANAGED_IDENTITY_ID.
 output approverIdentityResourceId string = Uami.outputs.approverIdentityResourceId
 
-// OBO KEK un-versioned key URL (User OBO Propagation). Empty string when
-// `oboEnabled=false`. Captured by the OSS deploy script
-// (deploy-bicep.mjs OUTPUT_ALIAS) into env key OBO_KEK_KID and projected
-// into the worker + portal pods via the overlay-generated ConfigMaps. The
-// worker `AkvEnvelopeCrypto` (packages/sdk/src/envelope-crypto.ts) decrypts
-// per-RPC user access tokens against this key. The portal uses the same
-// key (`wrapKey`) when encrypting outbound envelopes.
-output oboKekKid string = KeyVault.outputs.oboKekKid
+// OBO KEK un-versioned key URL (User OBO Propagation). Emits the
+// substitute-env sentinel `__PS_UNSET__` when `oboEnabled=false` so the
+// overlay `.env` substitution stays satisfied without the operator
+// needing to set OBO_KEK_KID by hand (worker / portal runtime strips
+// the sentinel from process.env at startup, so the application sees
+// the key as truly unset and the existing principal-only envelope path
+// engages). When `oboEnabled=true`, the un-versioned URL is captured
+// by the OSS deploy script (deploy-bicep.mjs OUTPUT_ALIAS) into env
+// key OBO_KEK_KID and projected into the worker + portal pods via the
+// overlay-generated ConfigMaps. The worker `AkvEnvelopeCrypto`
+// (packages/sdk/src/envelope-crypto.ts) decrypts per-RPC user access
+// tokens against this key; the portal uses the same key (`wrapKey`)
+// when encrypting outbound envelopes.
+output oboKekKid string = oboEnabled ? OboKek!.outputs.oboKekKid : '__PS_UNSET__'
 
 // AKS VNet resource id — consumed by Portal Bicep in private mode for
 // the Private DNS Zone vnet link (`aksVnetId` param). Always emitted.
