@@ -5,13 +5,12 @@
  * Two tools:
  *   - `obo_smoke_whoami` — proves the worker-side lookup
  *     (`getUserContextForSession`) returns the portal-bound principal
- *     (SC-001) and, when env-configured, that the worker can perform
- *     a real OBO exchange against Microsoft Graph (SC-007).
+ *     and, when env-configured, that the worker can perform a real
+ *     OBO exchange against Microsoft Graph.
  *   - `obo_smoke_force_reauth` — always emits `interactionRequired(...)`
- *     so a maintainer can verify the portal re-auth UX path
- *     (SC-008 / FR-011 / SC-006).
+ *     so a maintainer can verify the portal re-auth UX path.
  *
- * # Auth-backend selection (FR-025)
+ * # Auth-backend selection
  *
  * The plugin auto-selects between two OBO backends at *handler-call*
  * time (never at module load):
@@ -19,7 +18,7 @@
  *   - **FIC** (workload-identity Federated Identity Credential):
  *     selected when `AZURE_FEDERATED_TOKEN_FILE` is present. The
  *     production-shape path used by deployed AKS pods. Wins precedence
- *     when both backends are configured (FR-025); when both are present
+ *     when both backends are configured; when both are present
  *     a single startup-style log line records that the secret was
  *     ignored.
  *
@@ -36,7 +35,7 @@
  * (e.g., ExampleApp) actually use. The FIC `clientAssertion` callback
  * re-reads `AZURE_FEDERATED_TOKEN_FILE` on **every** acquisition (the
  * projected SA token rotates); caching the assertion in the CCA
- * config would silently break after rotation. SC-018 pins this.
+ * config would silently break after rotation.
  *
  * # Smoke-plugin env namespace
  *
@@ -102,7 +101,7 @@ export function selectAuthBackend(env) {
         ? env[SECRET_BACKEND_KEY].trim()
         : null;
 
-    // FIC wins precedence (FR-025): the production-shape path is always
+    // FIC wins precedence: the production-shape path is always
     // preferred when its prerequisite is satisfied. The secret is
     // explicitly noted as ignored so an operator can see what
     // happened.
@@ -112,7 +111,7 @@ export function selectAuthBackend(env) {
             values: { ...common, [FIC_TOKEN_FILE_KEY]: ficTokenFile },
             missing: { fic: [], "client-secret": clientSecret ? [] : [SECRET_BACKEND_KEY] },
             secretIgnoredReason: clientSecret
-                ? "AZURE_FEDERATED_TOKEN_FILE is set; OBO_SMOKE_WORKER_APP_CLIENT_SECRET ignored due to FIC precedence (FR-025)."
+                ? "AZURE_FEDERATED_TOKEN_FILE is set; OBO_SMOKE_WORKER_APP_CLIENT_SECRET ignored due to FIC precedence."
                 : null,
         };
     }
@@ -181,7 +180,7 @@ export function getCachedCca({ backend, tenantId, clientId, env }, { newCca = nu
         // CRITICAL invariant: re-read AZURE_FEDERATED_TOKEN_FILE on
         // every acquisition. The projected SA token rotates on a
         // schedule; capturing its contents here would break after the
-        // first rotation. SC-018(b) pins this.
+        // first rotation.
         auth.clientAssertion = async () => {
             const tokenFile = env[FIC_TOKEN_FILE_KEY];
             if (typeof tokenFile !== "string" || tokenFile.trim().length === 0) {
@@ -410,6 +409,17 @@ export function registerOboSmokeTools(worker, deps = {}) {
         throw new Error("registerOboSmokeTools: worker.registerTools(...) is required");
     }
     worker.registerTools(buildOboSmokeTools(deps));
+}
+
+/**
+ * Plugin-contract entry point. The pilotswarm-sdk worker imports this
+ * module via `plugin.json.tools` and invokes `registerTools(worker)`
+ * during `worker.start()`. `worker` here is the per-plugin proxy the
+ * sdk constructs so tool registrations are automatically tagged with
+ * this plugin's name for collision diagnostics.
+ */
+export function registerTools(worker) {
+    registerOboSmokeTools(worker);
 }
 
 export default buildOboSmokeTools;

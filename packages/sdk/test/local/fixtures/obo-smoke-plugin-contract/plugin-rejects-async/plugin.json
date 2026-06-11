@@ -1,0 +1,4 @@
+{
+  "name": "plugin-rejects-async",
+  "tools": "./tools.js"
+}

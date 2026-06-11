@@ -3,44 +3,50 @@
 Reference plugin that exercises the **User OBO Propagation** feature
 end-to-end without any external consumer being present. It is the
 release-gate vehicle for the `pilotswarm-sdk` OBO surface
-(see [`SMOKE_CHECKLIST.md`](./SMOKE_CHECKLIST.md), Spec FR-018).
+(see [`SMOKE_CHECKLIST.md`](./SMOKE_CHECKLIST.md)).
 
 Two tools:
 
 | Tool | What it proves |
 |------|----------------|
-| `obo_smoke_whoami` | The worker-side lookup `getUserContextForSession()` returns the portal-bound principal (SC-001) and, when env-configured, the worker can perform a real Microsoft Graph On-Behalf-Of round-trip (SC-007). |
-| `obo_smoke_force_reauth` | The structured `interaction_required` outcome flows through SDK → orchestration → portal subscription, the portal renders a re-auth affordance, and the next RPC observes the fresh downstream token (SC-008 / FR-011 / SC-006). |
+| `obo_smoke_whoami` | The worker-side lookup `getUserContextForSession()` returns the portal-bound principal and, when env-configured, the worker can perform a real Microsoft Graph On-Behalf-Of round-trip. |
+| `obo_smoke_force_reauth` | The structured `interaction_required` outcome flows through SDK → orchestration → portal subscription, the portal renders a re-auth affordance, and the next RPC observes the fresh downstream token. |
 
 ## Install
 
-This is a workspace example — no separate npm install is required when
-working in the PilotSwarm monorepo. From any worker entry that already
-depends on `pilotswarm-sdk`:
+This plugin loads through the worker's standard plugin contract — no
+direct imports required. Point the worker at this directory via
+`PLUGIN_DIRS` (env) or the `pluginDirs` constructor option, and the
+worker will auto-register the plugin's tools at `start()`:
 
 ```js
 import { PilotSwarmWorker } from "pilotswarm-sdk";
-import { registerOboSmokeTools } from "../../examples/obo-smoke/index.js";
 
-const worker = new PilotSwarmWorker({ /* … */ });
-registerOboSmokeTools(worker);
+const worker = new PilotSwarmWorker({
+    // …other options…
+    pluginDirs: ["packages/obo-smoke-plugin"],
+});
 await worker.start();
 ```
 
-Or, if you want to build the tool array yourself:
+Or via env (the canonical AKS/Docker path):
 
-```js
-import { buildOboSmokeTools } from "../../examples/obo-smoke/index.js";
-worker.registerTools(buildOboSmokeTools());
+```bash
+PLUGIN_DIRS=/app/packages/obo-smoke-plugin
 ```
 
-## How `obo_smoke_whoami` decides what to do
+The provisioning script
+[`deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1`](../../deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1)
+emits this `PLUGIN_DIRS` line in its setup paste-block alongside the
+smoke AAD app's tenant/client/scope env keys.
 
-The tool reads `process.env` **at every invocation** (never at module
-import time, so contributors cannot accidentally bake smoke creds
-into a non-smoke worker by importing the module).
+Direct programmatic registration is also supported for unit-test
+contexts that bypass the plugin loader:
 
-It auto-selects between two OBO backends (FR-025):
+```js
+import { registerTools } from "pilotswarm-obo-smoke-plugin";
+registerTools(worker);
+```
 
 | Env present | Selected backend | Notes |
 |---|---|---|

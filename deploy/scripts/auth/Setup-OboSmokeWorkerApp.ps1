@@ -129,7 +129,7 @@
     deploy/envs/local/chkrawps10/entra-app.json, creates the AKS FIC
     against the OIDC issuer in deploy/.tmp/chkrawps10/bicep-outputs.cache.json,
     writes deploy/envs/local/chkrawps10/obo-smoke-worker-app.json, and
-    prints the four .env lines to paste.
+    prints the five .env lines to paste.
 
 .EXAMPLE
     .\Setup-OboSmokeWorkerApp.ps1 -ServiceTreeId <your-service-tree-id> `
@@ -687,10 +687,15 @@ Write-Host "PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=$scope offline_access"
 Write-Host "OBO_SMOKE_WORKER_APP_TENANT_ID=$tenantId"
 Write-Host "OBO_SMOKE_WORKER_APP_CLIENT_ID=$clientId"
 Write-Host "OBO_SMOKE_WORKER_APP_GRAPH_SCOPE=$GraphScope"
+Write-Host "PLUGIN_DIRS=/app/packages/obo-smoke-plugin"
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Step 2 of 2: paste the four lines above into deploy/envs/local/$EnvName/.env" -ForegroundColor Cyan
+Write-Host "Step 2 of 2: paste the five lines above into deploy/envs/local/$EnvName/.env" -ForegroundColor Cyan
 Write-Host "  Then re-run the deploy's worker manifests/rollout step so the new env values reach the pod."
+Write-Host ""
+Write-Host "  PLUGIN_DIRS points at the OBO smoke plugin inside the worker image." -ForegroundColor DarkGray
+Write-Host "  If you already set PLUGIN_DIRS for another plugin, append a comma-separated" -ForegroundColor DarkGray
+Write-Host "  entry rather than replacing the value." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  This script does NOT modify .env (single-actor invariant). The operator," -ForegroundColor DarkGray
 Write-Host "  or the pilotswarm-npm-deployer agent's Step 0.b via its 'edit' tool, is the" -ForegroundColor DarkGray

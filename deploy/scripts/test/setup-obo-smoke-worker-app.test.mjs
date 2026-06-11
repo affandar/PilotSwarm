@@ -23,9 +23,9 @@
 //      not merged. Per planning-docs-review consensus: each stamp has a
 //      strict 1:1 portal-worker relationship; merging would leave
 //      orphaned trust for rotated portal apps.
-//   4. Stdout paste-block prints exactly four KEY=value lines in the
+//   4. Stdout paste-block prints exactly five KEY=value lines in the
 //      documented order (PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE,
-//      OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE).
+//      OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE, PLUGIN_DIRS).
 //   5. Graph scope default is the Graph User.Read resource scope, NOT
 //      the worker-app audience scope (a critical cycle-1 review fix —
 //      these are two different hops in the OBO chain).
@@ -185,7 +185,7 @@ test("INV-3: no merge-style read-modify-write of preAuthorizedApplications", () 
 });
 
 // --------------------------------------------------------------------------
-// Invariant 4: Stdout paste-block — exactly four KEY=value lines.
+// Invariant 4: Stdout paste-block — exactly five KEY=value lines.
 // --------------------------------------------------------------------------
 
 test("INV-4: stdout paste-block declares 'Paste into' banner referencing per-stamp .env", () => {
@@ -224,16 +224,31 @@ test("INV-4: emits the three OBO_SMOKE_WORKER_APP_* lines", () => {
   );
 });
 
-test("INV-4: paste-block is exactly four KEY=value lines, no more no less", () => {
+test("INV-4: emits PLUGIN_DIRS line pointing at the in-image OBO smoke plugin path", () => {
+  // The smoke plugin loads via the worker's pluginDirs/PLUGIN_DIRS contract.
+  // The in-image path /app/packages/obo-smoke-plugin is a cross-cutting
+  // invariant: the Dockerfile places the plugin there, and this paste-block
+  // wires PLUGIN_DIRS to match. If either side drifts the smoke plugin
+  // silently fails to load.
+  assert.match(
+    src,
+    /Write-Host\s+"PLUGIN_DIRS=\/app\/packages\/obo-smoke-plugin"/,
+    "PLUGIN_DIRS line missing or path drifted from the in-image plugin location " +
+      "(/app/packages/obo-smoke-plugin). The Dockerfile worker stage that places " +
+      "the smoke plugin and this paste-block must agree on the path.",
+  );
+});
+
+test("INV-4: paste-block is exactly five KEY=value lines, no more no less", () => {
   // Count Write-Host lines that look like `KEY=...` directly (uppercase, _).
   const matches = src.match(/Write-Host\s+"[A-Z][A-Z0-9_]+=/g) ?? [];
   assert.equal(
     matches.length,
-    4,
-    `Expected exactly 4 KEY=value Write-Host lines in the paste-block; found ${matches.length}. ` +
+    5,
+    `Expected exactly 5 KEY=value Write-Host lines in the paste-block; found ${matches.length}. ` +
       "Lines should be (in order): PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE, " +
       "OBO_SMOKE_WORKER_APP_TENANT_ID, OBO_SMOKE_WORKER_APP_CLIENT_ID, " +
-      "OBO_SMOKE_WORKER_APP_GRAPH_SCOPE.",
+      "OBO_SMOKE_WORKER_APP_GRAPH_SCOPE, PLUGIN_DIRS.",
   );
 });
 

@@ -29,7 +29,7 @@ COPY packages/cli/plugins/ ./packages/cli/plugins/
 # copy keeps Dockerfile.worker single-shape. The plugin's only extra
 # dep (@azure/msal-node) is already pulled in by the workspace
 # `npm ci` above via packages/sdk/package.json.
-COPY examples/obo-smoke ./examples/obo-smoke
+COPY packages/obo-smoke-plugin ./packages/obo-smoke-plugin
 
 # Copy model providers config (if present)
 COPY .model_providers.json* ./

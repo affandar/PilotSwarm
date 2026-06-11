@@ -26,7 +26,7 @@ const COMMON_ENV = {
 };
 
 async function importPlugin() {
-    const mod = await import("../../../../examples/obo-smoke/index.js");
+    const mod = await import("../../../obo-smoke-plugin/tools.js");
     mod._resetSmokePluginStateForTests();
     return mod;
 }

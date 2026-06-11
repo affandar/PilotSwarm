@@ -49,6 +49,29 @@ function parsePositiveInt(raw: unknown): number | undefined {
     return Math.floor(normalized);
 }
 
+/**
+ * Thrown when two contributors attempt to register a tool with the same
+ * name on the worker's tool registry. The message names both the
+ * previous contributor and the new one, plus the colliding tool name,
+ * so operators can identify the conflict without grepping logs.
+ */
+export class ToolNameCollisionError extends Error {
+    public readonly toolName: string;
+    public readonly previousContributor: string;
+    public readonly newContributor: string;
+    constructor(toolName: string, previousContributor: string, newContributor: string) {
+        super(
+            `Tool name collision: "${toolName}" is already registered by "${previousContributor}"; ` +
+            `"${newContributor}" attempted to register the same name. ` +
+            `Rename one of the tools, or remove one of the contributors.`,
+        );
+        this.name = "ToolNameCollisionError";
+        this.toolName = toolName;
+        this.previousContributor = previousContributor;
+        this.newContributor = newContributor;
+    }
+}
+
 export { buildSystemAgentBootstrapPayload } from "./system-agents.js";
 
 /**
@@ -151,6 +174,21 @@ export class PilotSwarmWorker {
     private _appDefaultDescriptor: import("./prompt-layers.js").PromptLayerDescriptor | null = null;
     /** Session creation policy loaded from session-policy.json. */
     private _sessionPolicy: import("./types.js").SessionPolicy | null = null;
+    /**
+     * Plugin tool-module registrations captured during `_loadPlugins()`.
+     *
+     * Each entry records a plugin whose `plugin.json` declared a `tools`
+     * field. Modules are imported and invoked by `_registerPluginTools()`
+     * at the start of `worker.start()`, before duroxide initialization.
+     */
+    private _pluginToolModules: Array<{ pluginName: string; toolsModulePath: string; absDir: string }> = [];
+    /**
+     * Tracks which contributor registered each tool name. Used to produce
+     * actionable collision errors that name both the previous contributor
+     * and the new one. Contributor labels: plugin name, `"worker-builtin"`,
+     * or `"app-inline"`.
+     */
+    private _toolContributors = new Map<string, string>();
 
     constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
@@ -235,12 +273,34 @@ export class PilotSwarmWorker {
      * This is the primary mechanism for custom tools in remote/
      * separate-process mode where client and worker run on
      * different machines.
-     */
-    registerTools(tools: Tool<any>[]): void {
-        for (const tool of tools) {
-            this.toolRegistry.set((tool as any).name, tool);
-        }
-        this.sessionManager.setToolRegistry(this.toolRegistry);
+    *
+    * **Collision policy (single, fail-fast):** If any tool name in
+    * `tools` is already present in the worker's registry, this method
+    * throws a `ToolNameCollisionError` naming the previous contributor,
+    * the new contributor, and the colliding tool name. The optional
+    * `contributor` argument supplies a human-readable label for the
+    * caller; when omitted, `"app-inline"` is used (the typical label
+    * for direct callers from app code). Worker auto-tool registrations
+    * pass `"worker-builtin"`; the plugin loader passes the plugin's
+    * declared name. Policy is uniform across all callers.
+    */
+    registerTools(tools: Tool<any>[], contributor?: string): void {
+       const label = contributor ?? "app-inline";
+       // Pre-validate the whole batch BEFORE mutating the registry so a
+       // mid-batch collision can't leave half the tools registered.
+       for (const tool of tools) {
+           const name = (tool as any).name as string;
+           if (this.toolRegistry.has(name)) {
+               const previous = this._toolContributors.get(name) ?? "unknown";
+               throw new ToolNameCollisionError(name, previous, label);
+           }
+       }
+       for (const tool of tools) {
+           const name = (tool as any).name as string;
+           this.toolRegistry.set(name, tool);
+           this._toolContributors.set(name, label);
+       }
+       this.sessionManager.setToolRegistry(this.toolRegistry);
     }
 
     /** Store full config (with tools/hooks) for a session. */
@@ -307,6 +367,10 @@ export class PilotSwarmWorker {
 
     async start(): Promise<void> {
         if (this._started) return;
+
+        // Plugin-declared tools register before duroxide initialization so they
+        // are available to every session from the worker's first turn.
+        await this._registerPluginTools();
 
         const trace = this.config.traceWriter ?? (() => {});
         const store = this.config.store;
@@ -434,13 +498,13 @@ export class PilotSwarmWorker {
                 duroxideSchema: this.config.duroxideSchema,
                 storeUrl: this.config.store,
             });
-            this.registerTools(sweeperTools);
+            this.registerTools(sweeperTools, "worker-builtin");
         }
 
         // Auto-register artifact tools (blob storage or local filesystem)
         if (this.artifactStore) {
             const artifactTools = createArtifactTools({ blobStore: this.artifactStore });
-            this.registerTools(artifactTools);
+            this.registerTools(artifactTools, "worker-builtin");
         }
 
         // Auto-register resource manager tools
@@ -453,7 +517,7 @@ export class PilotSwarmWorker {
                 duroxideSchema: this.config.duroxideSchema,
                 cmsSchema: this.config.cmsSchema,
             });
-            this.registerTools(rmTools);
+            this.registerTools(rmTools, "worker-builtin");
         }
 
         // ps_list_agents tool — exposes user-creatable agents by default.
@@ -516,7 +580,7 @@ export class PilotSwarmWorker {
                 return JSON.stringify({ agents: filtered, total: filtered.length }, null, 2);
             },
         });
-        this.registerTools([listAgentsTool]);
+        this.registerTools([listAgentsTool], "worker-builtin");
 
         this.runtime.start().catch((err: any) => {
             console.error("[PilotSwarmWorker] Runtime error:", err);
@@ -620,8 +684,15 @@ export class PilotSwarmWorker {
         for (const pluginDir of pluginDirs) {
             const absDir = path.resolve(pluginDir);
             if (!fs.existsSync(absDir)) {
-                console.warn(`[PilotSwarmWorker] Plugin dir not found: ${absDir}`);
-                continue;
+                // Hard-fail: an explicit pluginDirs / PLUGIN_DIRS entry that points at a
+                // non-existent path is operator misconfiguration. Failing closed avoids
+                // silent partial-opt-in (worker boots without the plugin's tools/agents,
+                // sessions then misbehave).
+                throw new Error(
+                    `[PilotSwarmWorker] Plugin directory not found: ${absDir}. ` +
+                    `Remove the entry from pluginDirs/PLUGIN_DIRS, or ensure the path exists ` +
+                    `(e.g. confirm the container image stage that places the plugin is in use).`,
+                );
             }
             this._loadPluginDir(absDir, "app");
         }
@@ -714,6 +785,76 @@ export class PilotSwarmWorker {
     }
 
     /**
+     * Import each plugin's tools module and invoke its `registerTools(worker)`
+     * export. Runs once at the start of `worker.start()`, before duroxide
+     * initialization, so plugin tools are visible to every session from
+     * the worker's first turn.
+     *
+     * **Failure semantics:** sequential iteration; first failure aborts
+     * startup with a wrapped error naming the contributing plugin.
+     * Failure modes covered:
+     *   - tools file missing on disk
+     *   - dynamic import throws (syntax error, module-load failure, etc.)
+     *   - module exports no `registerTools` function
+     *   - `registerTools` throws synchronously
+     *   - `registerTools` returns a rejected promise
+     *
+     * Tool-name collisions surface as `ToolNameCollisionError` from
+     * `registerTools`; the wrapped error preserves that error chain.
+     */
+    private async _registerPluginTools(): Promise<void> {
+        for (const entry of this._pluginToolModules) {
+            const { pluginName, toolsModulePath, absDir } = entry;
+            const resolvedPath = path.resolve(absDir, toolsModulePath);
+
+            if (!fs.existsSync(resolvedPath)) {
+                throw new Error(
+                    `[PilotSwarmWorker] Plugin "${pluginName}": tools module not found on disk: ${resolvedPath}`,
+                );
+            }
+
+            let mod: any;
+            try {
+                const moduleUrl = new URL(`file://${resolvedPath.replace(/\\/g, "/")}`).href;
+                mod = await import(moduleUrl);
+            } catch (err: any) {
+                throw new Error(
+                    `[PilotSwarmWorker] Plugin "${pluginName}": failed to import tools module ${resolvedPath}: ${err?.message ?? err}`,
+                    { cause: err },
+                );
+            }
+
+            const registerFn = mod?.registerTools;
+            if (typeof registerFn !== "function") {
+                throw new Error(
+                    `[PilotSwarmWorker] Plugin "${pluginName}": tools module ${resolvedPath} does not export a "registerTools" function`,
+                );
+            }
+
+            try {
+                // Use a per-plugin proxy so registerTools auto-tags the contributor
+                // without requiring the plugin author to pass it explicitly.
+                const proxy: { registerTools: (tools: Tool<any>[]) => void } = {
+                    registerTools: (tools: Tool<any>[]) => this.registerTools(tools, pluginName),
+                };
+                await registerFn(proxy);
+            } catch (err: any) {
+                throw new Error(
+                    `[PilotSwarmWorker] Plugin "${pluginName}": registerTools() failed: ${err?.message ?? err}`,
+                    { cause: err },
+                );
+            }
+        }
+
+        if (this._pluginToolModules.length > 0) {
+            console.log(
+                `[PilotSwarmWorker] Registered tools from ${this._pluginToolModules.length} plugin module(s): ` +
+                this._pluginToolModules.map(p => p.pluginName).join(", "),
+            );
+        }
+    }
+
+    /**
      * Load agents, skills, MCP config, and session policy from a single plugin directory.
      */
     private _loadPluginDir(absDir: string, layer: "system" | "management" | "app"): void {
@@ -721,12 +862,34 @@ export class PilotSwarmWorker {
 
         // Determine namespace from plugin.json name or directory basename
         let namespace = path.basename(absDir);
+        let toolsField: string | undefined;
         const pluginJsonPath = path.join(absDir, "plugin.json");
         if (fs.existsSync(pluginJsonPath)) {
             try {
-                const pluginJson = JSON.parse(fs.readFileSync(pluginJsonPath, "utf-8"));
+                const pluginJson = JSON.parse(fs.readFileSync(pluginJsonPath, "utf-8")) as import("./types.js").PluginManifest;
                 if (pluginJson.name) namespace = pluginJson.name;
+                if (typeof pluginJson.tools === "string" && pluginJson.tools.trim().length > 0) {
+                    if (layer === "app") {
+                        toolsField = pluginJson.tools;
+                    } else {
+                        // tools is app-tier-only for now; warn and ignore on system/mgmt
+                        // so SDK-bundled plugins can't accidentally inject tools.
+                        console.warn(
+                            `[PilotSwarmWorker] Ignoring "tools" field in ${pluginJsonPath}: ` +
+                            `the tools contract is app-tier only (this plugin is loaded as "${layer}").`,
+                        );
+                    }
+                }
             } catch {}
+        }
+
+        // Capture tools module for deferred registration in worker.start()
+        if (toolsField) {
+            this._pluginToolModules.push({
+                pluginName: namespace,
+                toolsModulePath: toolsField,
+                absDir,
+            });
         }
 
         // Skills

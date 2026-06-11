@@ -1,0 +1,6 @@
+{
+  "name": "obo-smoke",
+  "version": "1.0.0",
+  "description": "Reference smoke plugin for the User OBO Propagation feature. Opt-in via PLUGIN_DIRS.",
+  "tools": "./tools.js"
+}

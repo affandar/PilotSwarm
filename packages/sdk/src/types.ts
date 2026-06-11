@@ -4,6 +4,44 @@ import type { ReasoningEffort } from "./model-providers.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
+/**
+ * Internal manifest shape for a plugin's `plugin.json` file.
+ *
+ * @internal Not part of the public SDK surface; documented here for
+ * worker-internal contracts. Plugin authors should consult the plugin
+ * architecture guide for authoritative field documentation.
+ */
+export interface PluginManifest {
+    /** Logical plugin name; defaults to directory basename when absent. */
+    name?: string;
+    /** Optional plugin version (free-form string). */
+    version?: string;
+    /**
+     * Reserved for future use; current loader discovers agents from an
+     * `agents/` subdirectory rather than a manifest field. Declaring it
+     * here keeps the interface forward-compatible.
+     */
+    agents?: string | string[];
+    /**
+     * Reserved for future use; current loader discovers skills from a
+     * `skills/` subdirectory rather than a manifest field. Declaring it
+     * here keeps the interface forward-compatible.
+     */
+    skills?: string | string[];
+    /**
+     * Optional path (relative to the plugin directory) to a JS module
+     * that exports `registerTools(worker)`. App-tier only; ignored on
+     * system/management tier with a warning.
+     */
+    tools?: string;
+    /** Portal branding/auth metadata (consumed by `packages/portal`). */
+    portal?: Record<string, unknown>;
+    /** TUI branding metadata (consumed by `packages/cli`). */
+    tui?: Record<string, unknown>;
+    /** Free-form additional metadata fields. */
+    [key: string]: unknown;
+}
+
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
 

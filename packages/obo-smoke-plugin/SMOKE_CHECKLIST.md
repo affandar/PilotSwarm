@@ -2,7 +2,7 @@
 
 Manual sign-off form a maintainer completes against a real Entra
 tenant before publishing any `pilotswarm-sdk` release that touches the
-User OBO Propagation surface (Spec FR-018). It is **not** automated
+User OBO Propagation surface. It is **not** automated
 CI; it is run by a maintainer and captured in the release PR
 description.
 
