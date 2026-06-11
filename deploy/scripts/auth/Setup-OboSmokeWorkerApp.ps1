@@ -122,18 +122,18 @@
     Defaults to `deploy/envs/local/<EnvName>/obo-smoke-worker-app.json`.
 
 .EXAMPLE
-    .\Setup-OboSmokeWorkerApp.ps1 -ServiceTreeId <your-service-tree-id> -EnvName chkrawps10
+    .\Setup-OboSmokeWorkerApp.ps1 -ServiceTreeId <your-service-tree-id> -EnvName <env-name>
 
-    Creates (or finds) "PilotSwarm OBO Smoke Worker - chkrawps10", wires
+    Creates (or finds) "PilotSwarm OBO Smoke Worker - <env-name>", wires
     the OAuth2 scope, pre-authorizes the portal app from
-    deploy/envs/local/chkrawps10/entra-app.json, creates the AKS FIC
-    against the OIDC issuer in deploy/.tmp/chkrawps10/bicep-outputs.cache.json,
-    writes deploy/envs/local/chkrawps10/obo-smoke-worker-app.json, and
+    deploy/envs/local/<env-name>/entra-app.json, creates the AKS FIC
+    against the OIDC issuer in deploy/.tmp/<env-name>/bicep-outputs.cache.json,
+    writes deploy/envs/local/<env-name>/obo-smoke-worker-app.json, and
     prints the five .env lines to paste.
 
 .EXAMPLE
     .\Setup-OboSmokeWorkerApp.ps1 -ServiceTreeId <your-service-tree-id> `
-        -EnvName chkrawps10 `
+        -EnvName <env-name> `
         -PortalClientId 11111111-2222-3333-4444-555555555555 `
         -GrantAdminConsent
 

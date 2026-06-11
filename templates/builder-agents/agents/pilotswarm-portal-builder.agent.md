@@ -83,8 +83,8 @@ When adding logo instructions or scaffolding, show the user the actual metadata 
 {
   "portal": {
     "branding": {
-      "title": "ExampleApp",
-      "pageTitle": "ExampleApp Portal",
+      "title": "Waldemort",
+      "pageTitle": "Waldemort Portal",
       "logoFile": "./assets/logo.svg",
       "faviconFile": "./assets/favicon.png"
     }

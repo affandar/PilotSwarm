@@ -9,18 +9,18 @@ Use this skill when the user wants to deploy PilotSwarm to AKS, refresh AKS env/
 
 Keep the workflow repo-specific and explicit. Prefer the repo-owned scripts, and treat secret/env changes as part of the deploy surface, not as an afterthought.
 
-This skill deploys `pilotswarm` only. Do not roll the same change into downstream projects or other clusters (for example `ExampleApp` or an app repo with a vendored PilotSwarm copy) unless the user explicitly asks for that separate deployment.
+This skill deploys `pilotswarm` only. Do not roll the same change into downstream projects or other clusters (for example `waldemort` or an app repo with a vendored PilotSwarm copy) unless the user explicitly asks for that separate deployment.
 
 ## Canonical Targets
 
-- Kubernetes context: `<aks-cluster>`
+- Kubernetes context: `waldemort-aks`
 - Namespace: `copilot-runtime`
 - Worker deployment: `copilot-runtime-worker`
 - Portal deployment: `pilotswarm-portal`
 - Worker image: `pilotswarmacr.azurecr.io/copilot-runtime-worker:latest`
 - Portal image: `pilotswarmacr.azurecr.io/pilotswarm-portal:latest`
 - ACR: `pilotswarmacr`
-- Resource group: `<resource-group>`
+- Resource group: `waldemort-rg`
 - Portal DNS: `pilotswarm-portal.westus3.cloudapp.azure.com` (verify against `deploy/k8s/portal-ingress.yaml`)
 - Postgres server: `pilotswarm-pg.postgres.database.azure.com` (verify against `.env.remote` `DATABASE_URL`)
 - Location: `westus2` (AKS); portal DNS label uses `westus3` — keep in sync with the ingress manifest
@@ -67,7 +67,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 - Portal listens on port 3001 (HTTP) internally; TLS termination happens at the app-routing nginx ingress.
 - Portal is publicly accessible with Entra ID as the sole access gate.
 - OBO live-smoke is opt-in via the smoke worker image variant (`--variant smoke`) plus the smoke env overlay (`deploy/envs/template.smoke.env`, including `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`). Default deploys are smoke-free; `OBO_SMOKE_ENABLED=true` is a smoke-driver marker, not a worker startup gate.
-- User OBO Propagation is opt-in and lives on the npm/Bicep deploy path, not on this legacy bash path. If you roll the new SDK forward to `<aks-cluster>` via `scripts/deploy-aks.sh`, the worker / portal start in non-OBO mode (backwards-compatible: `selectEnvelopeCrypto` returns null when `OBO_KEK_KID` is unset, principal-only envelopes engage). To enable OBO on this cluster, the operator must (a) provision the OBO KEK in Key Vault out-of-band (or migrate this stamp to the npm Bicep flow), and (b) add `OBO_KEK_KID=<un-versioned AKV key URL>` and `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=<api://<worker-app>/.default>` to `.env.remote` so the deploy script picks them up into the K8s secret. See `docs/operations/obo-kek-runbook.md` for the canonical rotation / RBAC checklist regardless of which deploy path provisioned the key.
+- User OBO Propagation is opt-in and lives on the npm/Bicep deploy path, not on this legacy bash path. If you roll the new SDK forward to `waldemort-aks` via `scripts/deploy-aks.sh`, the worker / portal start in non-OBO mode (backwards-compatible: `selectEnvelopeCrypto` returns null when `OBO_KEK_KID` is unset, principal-only envelopes engage). To enable OBO on this cluster, the operator must (a) provision the OBO KEK in Key Vault out-of-band (or migrate this stamp to the npm Bicep flow), and (b) add `OBO_KEK_KID=<un-versioned AKV key URL>` and `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=<api://<worker-app>/.default>` to `.env.remote` so the deploy script picks them up into the K8s secret. See `docs/operations/obo-kek-runbook.md` for the canonical rotation / RBAC checklist regardless of which deploy path provisioned the key.
 
 ## Default Deploy Workflow
 

@@ -217,7 +217,7 @@ If we want an even stronger separation, we can move the framework base prompt fr
 
 ## Consumer App Model
 
-Downstream consumer apps should depend on PilotSwarm and ship only app-specific assets.
+Apps like Waldemort should depend on PilotSwarm and ship only app-specific assets.
 
 Recommended responsibilities:
 

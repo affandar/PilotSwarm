@@ -214,7 +214,7 @@ The driver:
 {
   "pass": true,
   "profile": "obo",
-  "stamp": "chkrawps10",
+  "stamp": "<stamp>",
   "timestamp": "2026-06-09T...Z",
   "steps": [
     { "name": "portal-health", "ok": true, "result": { "ok": true } },
@@ -233,7 +233,7 @@ The driver:
 {
   "pass": false,
   "profile": "obo",
-  "stamp": "chkrawps10",
+  "stamp": "<stamp>",
   "timestamp": "...",
   "failedStep": "whoami",
   "reasonCode": "whoami_principal_only",

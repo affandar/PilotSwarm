@@ -3,7 +3,7 @@
 **Status:** Open  
 **Filed:** 2026-05-17  
 **Component:** `@pilotswarm/sdk` durable orchestration / sub-agent parent notification / cron wait handling  
-**Affected versions:** observed in a downstream consumer worker on durable session orchestration `v1.0.52`; equivalent behavior is present in `packages/sdk/src/orchestration_1_0_51.ts` and earlier versioned orchestration files  
+**Affected versions:** observed in live Waldemort worker on durable session orchestration `v1.0.52`; equivalent behavior is present in `packages/sdk/src/orchestration_1_0_51.ts` and earlier versioned orchestration files  
 **Severity:** Medium — monitoring stays correct, but parent sessions can be woken repeatedly for no-op heartbeats, causing noisy LLM turns and confirmation repings without user input
 
 ---
@@ -24,7 +24,7 @@ The parent did go idle after each message; the issue is that no-op child updates
 
 ## Observed Production Trace
 
-Downstream consumer session:
+Live Waldemort session:
 
 ```text
 parent session: b27bc130-549c-4010-affc-9669d21dcde0

@@ -132,5 +132,5 @@ After the rename + dist rebuild + `npm publish`:
 
 ## Related
 
-- Companion bug: a custom **`web_fetch`** in ExampleApp's `tools.js` collided with the same SDK's new built-in `web_fetch`. That one we resolved by deleting the custom tool — the SDK built-in is strictly better (markdown conversion, pagination). No similar shortcut exists for `list_agents` because the two implementations describe different things; deletion would lose the blueprint discovery.
+- Companion bug: a custom **`web_fetch`** in Waldemort's `tools.js` collided with the same SDK's new built-in `web_fetch`. That one we resolved by deleting the custom tool — the SDK built-in is strictly better (markdown conversion, pagination). No similar shortcut exists for `list_agents` because the two implementations describe different things; deletion would lose the blueprint discovery.
 - See also [`runTurn-session-not-found-infinite-retry.md`](./runTurn-session-not-found-infinite-retry.md) — `Connection is closed` errors observed concurrently are downstream of failed registrations, not a separate bug.
