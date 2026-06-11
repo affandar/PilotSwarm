@@ -53,11 +53,6 @@ test("__FOUNDRY_ENDPOINT__ in model_providers.json is substituted from FOUNDRY_E
       FOUNDRY_ENDPOINT: "https://pstest-aif.cognitiveservices.azure.com/",
       OBO_KEK_KID: "__PS_UNSET__",
       PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE: "__PS_UNSET__",
-      OBO_SMOKE_ENABLED: "__PS_UNSET__",
-      OBO_SMOKE_WORKER_APP_TENANT_ID: "__PS_UNSET__",
-      OBO_SMOKE_WORKER_APP_CLIENT_ID: "__PS_UNSET__",
-      OBO_SMOKE_WORKER_APP_GRAPH_SCOPE: "__PS_UNSET__",
-      OBO_SMOKE_TEST_USER_UPN: "__PS_UNSET__",
     };
     const stagedRoot = stageManifests({
       service: "worker",
@@ -112,11 +107,6 @@ test("__FOUNDRY_ENDPOINT__ stays unresolved when FOUNDRY_ENDPOINT is empty/unset
       FOUNDRY_ENDPOINT: "",
       OBO_KEK_KID: "__PS_UNSET__",
       PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE: "__PS_UNSET__",
-      OBO_SMOKE_ENABLED: "__PS_UNSET__",
-      OBO_SMOKE_WORKER_APP_TENANT_ID: "__PS_UNSET__",
-      OBO_SMOKE_WORKER_APP_CLIENT_ID: "__PS_UNSET__",
-      OBO_SMOKE_WORKER_APP_GRAPH_SCOPE: "__PS_UNSET__",
-      OBO_SMOKE_TEST_USER_UPN: "__PS_UNSET__",
     };
     const stagedRoot = stageManifests({
       service: "worker",
