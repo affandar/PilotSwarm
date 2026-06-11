@@ -267,12 +267,24 @@ plugin uses workload-identity FIC via the existing
 `WORKLOAD_IDENTITY_CLIENT_ID` / `AZURE_FEDERATED_TOKEN_FILE` machinery.
 After building/pushing the smoke image and re-projecting the worker
 ConfigMap (`node deploy/scripts/deploy.mjs worker <stamp> --steps
-manifests,rollout`), drive the smoke from a workstation with
-`pilotswarm smoke <stamp> --profile obo` (test-user tokens supplied via
-`OBO_SMOKE_USER_ADMISSION_TOKEN` + `OBO_SMOKE_USER_DOWNSTREAM_TOKEN` env
-vars or one of the other supported auth modes — see
+manifests,rollout`), drive the smoke from a workstation:
+
+```bash
+pilotswarm smoke <stamp> --profile obo
+```
+
+The default `--auth device-code` mode prints a code to stderr and
+opens an interactive sign-in. **Sign in as yourself** — any user the
+portal admits will do. No dedicated test-user provisioning is
+required. The optional `OBO_SMOKE_TEST_USER_UPN` env key only
+controls a `graph.upn` assertion in the driver: when set, the smoke
+fails if the signed-in user's UPN doesn't match; when unset, any
+non-empty UPN passes. (`--auth from-env` with
+`OBO_SMOKE_USER_ADMISSION_TOKEN` + `OBO_SMOKE_USER_DOWNSTREAM_TOKEN`
+is the CI fallback for unattended runs — not needed for hands-on
+operator smoke. See
 [`docs/operations/live-smoke.md`](../../../docs/operations/live-smoke.md)
-for test-user provisioning and MFA-exemption considerations). Default
+for MFA / Conditional Access considerations.) Default
 production stamps should use the default worker image and omit the smoke
 env overlay.
 
@@ -501,8 +513,8 @@ kubectl --context ps<name>-aks -n pilotswarm get configmap worker-env -o jsonpat
 for k in OBO_SMOKE_WORKER_APP_TENANT_ID OBO_SMOKE_WORKER_APP_CLIENT_ID OBO_SMOKE_WORKER_APP_GRAPH_SCOPE OBO_SMOKE_TEST_USER_UPN; do
   echo -n "$k="; kubectl --context ps<name>-aks -n pilotswarm get configmap worker-env -o jsonpath="{.data.$k}"; echo
 done
-# → app keys populated (NOT __PS_UNSET__); test-user UPN may be empty if supplied to the CLI
-# Then drive the smoke from a workstation with the dedicated test-user tokens:
+# → app keys populated (NOT __PS_UNSET__); test-user UPN may be empty if not asserting against a specific user
+# Then drive the smoke from a workstation; default --auth device-code prompts you to sign in as yourself:
 pilotswarm smoke <stamp> --profile obo
 # → JSON pass/fail; non-zero exit on failure
 ```

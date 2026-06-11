@@ -134,21 +134,37 @@ AKS workload-identity sets `AZURE_FEDERATED_TOKEN_FILE` automatically
 when the worker pod has the `azure.workload.identity/use=true` label
 and the proper service-account annotation.
 
-### Test user
+### Sign-in user
 
-Provision (or re-use) a test user in the smoke tenant. Two
-considerations:
+The smoke driver authenticates a real Entra user and proves the OBO
+chain end-to-end against that identity. For a hands-on operator run,
+**you sign in as yourself** with the default `--auth device-code` flow
+— no dedicated test-user provisioning is required. Any user the portal
+admits is sufficient.
+
+Provisioning a dedicated test user is only useful when you want to
+isolate the smoke from your everyday account (e.g. to dodge a strict
+Conditional Access policy on your primary identity, or to keep the
+smoke run reproducible across operators).
+
+Two considerations regardless of which user you sign in as:
 
 - **MFA / Conditional Access**. If the tenant requires MFA on every
   sign-in, the device-code flow blocks during the smoke run waiting
-  on a phone prompt. Either: (a) add the test user to a CA-policy
+  on a phone prompt. Either: (a) add the signing-in user to a CA-policy
   exclusion group for the smoke run window; (b) use a tenant where
-  the test user's CA policy permits a longer session token lifetime;
+  the user's CA policy permits a longer session token lifetime;
   (c) use the `--auth from-env` mode and pre-stage tokens in your
   fork's CI secrets.
-- **Token leak hygiene**. The test user's tokens never leave memory.
+- **Token leak hygiene**. The signed-in user's tokens never leave memory.
   The driver logs `upn`, `objectId`, and `mode` only — never the
   raw access tokens.
+
+The optional `OBO_SMOKE_TEST_USER_UPN` env key controls a `graph.upn`
+assertion: when set, the driver fails the smoke if the Graph response's
+`userPrincipalName` doesn't match. Useful when you want to pin the smoke
+to a specific identity. Leave it unset (or as `__PS_UNSET__`) to accept
+whichever user signs in.
 
 ### Repository CI service principal (only for the workflow scaffold)
 
