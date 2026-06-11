@@ -23,17 +23,29 @@ smoke also requires building the worker image with `--variant smoke` so
 | default production stamp / no live-smoke needed | NO — skip entirely |
 | User already pasted the smoke env overlay values, including `PLUGIN_DIRS`, with real values | NO — values flow straight through to deploy |
 
-## Sequencing inside the new-env flow
+## Sequencing inside the new-env flow (two-phase)
 
-This step runs **after** `pilotswarm-portal-app-reg` (the wrapper reads
-the portal app's clientId from
-`deploy/envs/local/<stamp>/entra-app.json` to pre-authorize it) and
-**after** the per-stamp bicep step (the FIC needs the AKS OIDC issuer
-URL, which only exists once bicep emits it into
-`deploy/.tmp/<stamp>/bicep-outputs.cache.json`). It must run **before**
-`node deploy/scripts/deploy.mjs worker <stamp> --steps manifests,rollout`,
-because the worker ConfigMap reads the smoke env overlay this skill
-produces.
+The wrapper supports two phases — **app-shell** and **patch-fic** — so
+nothing in the early-bring-up sequence has to wait for bicep:
+
+1. **`-Mode app-shell`** runs alongside `pilotswarm-portal-app-reg`,
+   **before** bicep. It creates/finds the app, mints the OAuth2 scope,
+   declares Graph `User.Read` delegated permission, pre-authorizes the
+   portal app, and emits the `.env` paste block. **No FIC** (and no
+   OIDC issuer dependency).
+2. **`-Mode patch-fic`** runs **after** the per-stamp bicep step and
+   **before** `worker manifests,rollout`. It looks up the existing app
+   by display name, reads the AKS OIDC issuer URL from
+   `deploy/.tmp/<stamp>/bicep-outputs.cache.json`, and create-or-patches
+   the FIC. No `.env` changes.
+
+For one-shot operator use against an already-running cluster, the
+back-compat default `-Mode all` does both phases in one invocation
+(requires bicep to have run).
+
+This mirrors how `pilotswarm-portal-app-reg` patches the portal-app's
+SPA redirect URIs after the AFD endpoint is known — the app is created
+early; deployment-derived bits are patched in later.
 
 ## Service Tree ID is required (no default)
 
@@ -157,11 +169,14 @@ WRITES to Entra and creates a permanent app reg plus an FIC.
 Always invoke `pwsh` directly. The shell-quoting and `-File`-vs-`-Command`
 rules from `pilotswarm-portal-app-reg` apply identically here.
 
-### Create new for a stamp (default)
+### Two-phase (recommended for new-env bring-up)
+
+**Phase 1 — `app-shell` (before bicep, alongside portal app-reg)**
 
 ```bash
 pwsh -NoProfile -ExecutionPolicy Bypass \
   -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -Mode app-shell \
   -ServiceTreeId <your-service-tree-id> \
   -EnvName <stamp-name>
 ```
@@ -170,19 +185,51 @@ This:
 
 1. Creates (or finds, by display name) the app
    `"PilotSwarm OBO Smoke Worker - <stamp-name>"`.
-2. Mints (or re-reads) the OAuth2 delegated scope
-   `user_impersonation` under `identifierUri: api://<appId>`.
+2. Mints (or re-reads) the OAuth2 delegated scope `user_impersonation`
+   under `identifierUri: api://<appId>`.
 3. Declares Graph `User.Read` delegated permission.
 4. Overwrites `api.preAuthorizedApplications` with a single-element
    array containing the per-stamp portal app's clientId (read from
    `deploy/envs/local/<stamp>/entra-app.json`).
-5. Create-or-patches the AKS FIC against the OIDC issuer in
+5. Writes a JSON sidecar at
+   `deploy/envs/local/<stamp>/obo-smoke-worker-app.json` (ficIssuer
+   is `null` until patch-fic runs).
+6. Prints the smoke `.env` paste block to stdout — paste it now.
+
+**Phase 2 — `patch-fic` (after bicep, before worker manifests,rollout)**
+
+```bash
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -Mode patch-fic \
+  -ServiceTreeId <your-service-tree-id> \
+  -EnvName <stamp-name>
+```
+
+This:
+
+1. Finds the existing app by display name (errors out if app-shell
+   hasn't run; pass `-ExistingAppId` to bypass the lookup).
+2. Create-or-patches the AKS FIC against the OIDC issuer in
    `deploy/.tmp/<stamp>/bicep-outputs.cache.json` (subject
    `system:serviceaccount:pilotswarm:copilot-runtime-worker`,
    audience `api://AzureADTokenExchange`).
-6. Writes a JSON sidecar at
-   `deploy/envs/local/<stamp>/obo-smoke-worker-app.json`.
-7. Prints the smoke `.env` paste block to stdout (see below).
+3. Patches `ficIssuer` into the existing sidecar JSON.
+4. **No `.env` paste block** — env was finalized in app-shell.
+
+### One-shot (back-compat default; `-Mode all`)
+
+```bash
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -ServiceTreeId <your-service-tree-id> \
+  -EnvName <stamp-name>
+```
+
+Runs app-shell + patch-fic in a single invocation. Requires bicep to
+have already produced the OIDC issuer URL. Use for operator re-runs
+against an already-deployed stamp, or when you don't care about the
+two-phase ordering.
 
 ### With tenant-admin consent (opt-in)
 
@@ -303,6 +350,7 @@ The sidecar at
   "graphScope": "https://graph.microsoft.com/User.Read",
   "ficName": "pilotswarm-worker-<stamp>",
   "ficSubject": "system:serviceaccount:pilotswarm:copilot-runtime-worker",
+  "ficIssuer": "<aks-oidc-issuer-url>",
   "portalClientId": "<portal-app-id>",
   "displayName": "PilotSwarm OBO Smoke Worker - <stamp>",
   "envName": "<stamp>",
@@ -313,12 +361,16 @@ The sidecar at
 
 The sidecar is purely informational — nothing in the deploy pipeline
 reads it. The smoke env overlay keys are the source of truth at runtime.
+In two-phase use, `app-shell` writes all fields except `ficIssuer`
+(which is `null`); `patch-fic` reads the sidecar back and merges in
+`ficIssuer`.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `AKS OIDC issuer URL is missing — run bicep first` | `deploy/.tmp/<stamp>/bicep-outputs.cache.json` doesn't exist or lacks the OIDC issuer key | Run `node deploy/scripts/deploy.mjs base-infra <stamp> --steps bicep` and retry |
+| `AKS OIDC issuer URL is missing — run bicep first` | `deploy/.tmp/<stamp>/bicep-outputs.cache.json` doesn't exist or lacks the OIDC issuer key (you ran `-Mode patch-fic` or `-Mode all` too early) | Either run bicep first (`node deploy/scripts/deploy.mjs base-infra <stamp> --steps bicep`) and retry, or use `-Mode app-shell` for the pre-bicep phase and re-invoke with `-Mode patch-fic` after bicep |
+| `patch-fic mode requires the app '...' to already exist` | You ran `-Mode patch-fic` without running `-Mode app-shell` first | Run `-Mode app-shell` first, or pass `-ExistingAppId <appId>` to point at a manually-managed app |
 | `Portal entra-app.json not found at ...` | Portal app-reg hasn't run yet (or stamp uses `PORTAL_AUTH_PROVIDER=none`) | Run `pilotswarm-portal-app-reg` first, or pass `-PortalClientId <appId>` explicitly. OBO smoke is incompatible with `PORTAL_AUTH_PROVIDER=none` — the smoke driver expects a portal-signed-in user. |
 | At smoke run: `AADSTS50013: Assertion audience does not match` | The portal acquired a token for the wrong audience | The `.env` key `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` is missing, empty, or `__PS_UNSET__`. Run the tightened grep above; paste the wrapper's stdout if it fails. |
 | At smoke run: `AADSTS65001: The user or administrator has not consented to use the application` | Worker app's Graph `User.Read` delegated permission hasn't been admin-consented in this tenant | Either re-run with `-GrantAdminConsent` as a Global Admin, OR have a tenant admin run `az ad app permission admin-consent --id <worker-app-id>` once. |

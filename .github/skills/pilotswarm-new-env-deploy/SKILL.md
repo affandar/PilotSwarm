@@ -215,19 +215,28 @@ per-stamp `.env`, and ensuring `PLUGIN_DIRS` includes
 smoke-driver stamp marker; the worker loads smoke tools because
 `PLUGIN_DIRS` points at an in-image plugin directory.
 
-> **Auto-provisioning the OBO smoke worker app:** for stamps that will
-> run `pilotswarm smoke <stamp> --profile obo`, do **not** ask the user
-> to pre-create the downstream AAD app or fill in the smoke env block by
-> hand. Invoke the `pilotswarm-obo-smoke-app-reg` skill after Step 0
-> (portal app-reg) and after the per-stamp bicep step has succeeded.
-> The skill drives `deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1`,
-> which creates the per-stamp worker app, mints the OAuth2 scope,
-> declares Microsoft Graph `User.Read` delegated permission,
-> pre-authorizes the portal app, create-or-patches the AKS
-> workload-identity FIC on the new Entra application, and prints the
-> `.env` paste block including `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`.
-> The wrapper never writes `.env` directly — same single-actor invariant
-> the portal app-reg script preserves.
+> **Auto-provisioning the OBO smoke worker app (two-phase):** for
+> stamps that will run `pilotswarm smoke <stamp> --profile obo`, do
+> **not** ask the user to pre-create the downstream AAD app or fill in
+> the smoke env block by hand. Invoke the `pilotswarm-obo-smoke-app-reg`
+> skill in two phases so nothing has to wait for bicep:
+>
+> 1. **`-Mode app-shell`** runs alongside Step 0 (portal app-reg),
+>    **before** bicep. Creates the worker app, mints the OAuth2 scope,
+>    declares Graph `User.Read` delegated permission, pre-authorizes
+>    the portal app, and prints the `.env` paste block including
+>    `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`. No FIC, no OIDC
+>    dependency.
+> 2. **`-Mode patch-fic`** runs **after** the per-stamp bicep step and
+>    **before** `worker manifests,rollout`. Looks up the existing app
+>    and create-or-patches the AKS workload-identity FIC against the
+>    OIDC issuer URL bicep emitted into
+>    `deploy/.tmp/<stamp>/bicep-outputs.cache.json`. No `.env` changes.
+>
+> A single-shot `-Mode all` is also available for operator re-runs
+> against an already-deployed stamp. The wrapper never writes `.env`
+> directly — same single-actor invariant the portal app-reg script
+> preserves.
 >
 > Note also that `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` is the upstream
 > audience (`api://<worker-app-id>/.default offline_access`) the portal

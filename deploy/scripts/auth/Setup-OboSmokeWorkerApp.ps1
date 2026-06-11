@@ -43,20 +43,45 @@
     OAuth2PermissionScope id rather than minting a fresh GUID, and
     create-or-patches the FIC by deterministic name.
 
+    Modes (`-Mode`):
+      - `app-shell` — Creates/updates the app + scope + Graph permission
+        + portal pre-authorization + (optional) admin consent. **Does
+        NOT create the FIC.** Bicep does not need to have run. Emits the
+        smoke env paste-block. Recommended as the first call, alongside
+        the portal app-reg, before bicep.
+      - `patch-fic` — Looks up the existing app, reads the AKS OIDC
+        issuer URL from the bicep cache, create-or-patches the FIC.
+        Bicep MUST have run. Recommended after bicep, before
+        `worker manifests,rollout`. Does NOT touch app config or emit
+        the paste-block (env was already correct from app-shell).
+      - `all` (default, back-compat) — Runs app-shell + patch-fic in
+        one invocation. Requires bicep to have run first.
+
     Side-effects (strictly):
       (a) creates/updates the Entra app with scope, Graph User.Read,
-          and pre-authorization;
-      (b) creates/patches the AKS-trust FIC;
-      (c) writes a JSON sidecar at -OutputFile;
-      (d) prints exactly four KEY=value lines to stdout that the
-          operator (or the npm-deployer agent via the `edit` tool) must
-          paste into the per-stamp .env file.
+          and pre-authorization (app-shell, all);
+      (b) creates/patches the AKS-trust FIC (patch-fic, all);
+      (c) writes a JSON sidecar at -OutputFile (every mode updates the
+          fields it knows about);
+      (d) prints the smoke env KEY=value paste-block to stdout
+          (app-shell, all only).
 
     NEVER MODIFIES .env. The single-actor-on-.env invariant is preserved:
     `new-env.mjs` (scaffold), `compose-env.mjs` (bicep-output fold), and
     the operator/agent (paste) are the only mutators. Adding a PowerShell
     .env editor — even a small reusable one — invites the same pattern in
     every future auth wrapper and erodes that invariant.
+
+.PARAMETER Mode
+    `app-shell` | `patch-fic` | `all`. Default `all` (back-compat).
+
+    - `app-shell` runs the app/scope/Graph/pre-auth/(consent) steps and
+      stops. Use as the early step alongside portal app-reg; does not
+      require bicep to have run.
+    - `patch-fic` looks up the existing app and create-or-patches the
+      AKS workload-identity FIC against the OIDC issuer cached by
+      bicep. Run after bicep, before `worker manifests,rollout`.
+    - `all` runs both phases in one invocation (current behavior).
 
 .PARAMETER ServiceTreeId
     REQUIRED. Service Tree ID for your service, written as the
@@ -122,6 +147,21 @@
     Defaults to `deploy/envs/local/<EnvName>/obo-smoke-worker-app.json`.
 
 .EXAMPLE
+    # Recommended two-phase pattern (mirrors portal-app-reg redirect-URI flow):
+
+    # Phase 1 — run early, alongside portal app-reg, BEFORE bicep:
+    .\Setup-OboSmokeWorkerApp.ps1 -Mode app-shell `
+        -ServiceTreeId <your-service-tree-id> -EnvName <env-name>
+
+    # Bicep runs (npm-deployer agent's bicep step), emitting the OIDC issuer.
+
+    # Phase 2 — run AFTER bicep, BEFORE `worker manifests,rollout`:
+    .\Setup-OboSmokeWorkerApp.ps1 -Mode patch-fic `
+        -ServiceTreeId <your-service-tree-id> -EnvName <env-name>
+
+.EXAMPLE
+    # Back-compat single-shot (default Mode=all): app-shell + patch-fic
+    # in one call. Requires bicep to have run first.
     .\Setup-OboSmokeWorkerApp.ps1 -ServiceTreeId <your-service-tree-id> -EnvName <env-name>
 
     Creates (or finds) "PilotSwarm OBO Smoke Worker - <env-name>", wires
@@ -145,23 +185,26 @@
     Prerequisites:
     - Azure CLI installed and logged in (`az login`) as a tenant member
       with permission to create/modify Azure AD applications.
-    - Bicep must have run for the stamp (so the AKS OIDC issuer URL is
-      cached at `deploy/.tmp/<EnvName>/bicep-outputs.cache.json`).
-    - For default `-PortalClientId` resolution, Setup-PortalAuth.ps1 must
-      have run first (so `deploy/envs/local/<EnvName>/entra-app.json`
-      exists).
+    - For `-Mode patch-fic` or `-Mode all`: bicep must have run for the
+      stamp (so the AKS OIDC issuer URL is cached at
+      `deploy/.tmp/<EnvName>/bicep-outputs.cache.json`). `-Mode app-shell`
+      has no bicep dependency.
+    - For default `-PortalClientId` resolution (app-shell, all):
+      Setup-PortalAuth.ps1 must have run first (so
+      `deploy/envs/local/<EnvName>/entra-app.json` exists).
 
     Outputs:
-    - JSON sidecar at -OutputFile.
-    - Stdout paste-block with exactly four KEY=value lines:
+    - JSON sidecar at -OutputFile (every mode updates fields it knows).
+    - Stdout paste-block (app-shell, all only) with five KEY=value lines:
         PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE
         OBO_SMOKE_WORKER_APP_TENANT_ID
         OBO_SMOKE_WORKER_APP_CLIENT_ID
         OBO_SMOKE_WORKER_APP_GRAPH_SCOPE
+        PLUGIN_DIRS
 
     This wrapper is intentionally NOT wired into `new-env.mjs`. The
     pilotswarm-npm-deployer agent's Step 0.b orchestrates the
-    invocation, then pastes the four printed lines into the per-stamp
+    invocation, then pastes the printed lines into the per-stamp
     .env using its `edit` tool — same workflow as the existing portal
     app-reg.
 #>
@@ -170,6 +213,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$ServiceTreeId,
     [Parameter(Mandatory=$true)][string]$EnvName,
+    [Parameter(Mandatory=$false)][ValidateSet("app-shell","patch-fic","all")][string]$Mode = "all",
     [Parameter(Mandatory=$false)][string]$DisplayName,
     [Parameter(Mandatory=$false)][string]$ExistingAppId,
     [Parameter(Mandatory=$false)][string]$PortalClientId,
@@ -471,6 +515,7 @@ function Invoke-FicCreateOrPatch {
 # ---- Main ----
 
 Write-Host "Setup-OboSmokeWorkerApp - Entra worker app for PilotSwarm OBO live-smoke" -ForegroundColor Green
+Write-Host "Mode: $Mode" -ForegroundColor Cyan
 Write-Host ""
 
 if (-not (Test-AzureCliReady)) { throw "Azure CLI not ready." }
@@ -500,37 +545,45 @@ if ([string]::IsNullOrWhiteSpace($OutputFile)) {
     $OutputFile = Join-Path $repo "deploy/envs/local/$EnvName/obo-smoke-worker-app.json"
 }
 
-# Resolve portal clientId (for pre-authorization)
-if ([string]::IsNullOrWhiteSpace($PortalClientId)) {
-    $PortalClientId = Resolve-PortalClientIdFromSidecar -Env $EnvName
-    if (-not [string]::IsNullOrWhiteSpace($PortalClientId)) {
-        Write-Host "Resolved portal clientId from entra-app.json: $PortalClientId"
+# Resolve portal clientId (for pre-authorization). Skipped in patch-fic mode
+# because pre-authorization is set during app-shell and the existing app
+# already has it on file.
+if ($Mode -ne "patch-fic") {
+    if ([string]::IsNullOrWhiteSpace($PortalClientId)) {
+        $PortalClientId = Resolve-PortalClientIdFromSidecar -Env $EnvName
+        if (-not [string]::IsNullOrWhiteSpace($PortalClientId)) {
+            Write-Host "Resolved portal clientId from entra-app.json: $PortalClientId"
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($PortalClientId)) {
+        throw "Portal clientId is required for pre-authorization, but neither -PortalClientId was supplied nor was deploy/envs/local/$EnvName/entra-app.json found. Run Setup-PortalAuth.ps1 first, or pass -PortalClientId explicitly."
+    }
+    # Validate the portal clientId actually exists
+    $portalShow = az ad app show --id $PortalClientId --query "id" -o tsv 2>&1
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($portalShow)) {
+        throw "Portal clientId $PortalClientId does not resolve to an existing app in this tenant. If the portal app was rotated, re-run Setup-PortalAuth.ps1 (which refreshes entra-app.json) or pass -PortalClientId explicitly with the current value."
     }
 }
-if ([string]::IsNullOrWhiteSpace($PortalClientId)) {
-    throw "Portal clientId is required for pre-authorization, but neither -PortalClientId was supplied nor was deploy/envs/local/$EnvName/entra-app.json found. Run Setup-PortalAuth.ps1 first, or pass -PortalClientId explicitly."
-}
-# Validate the portal clientId actually exists
-$portalShow = az ad app show --id $PortalClientId --query "id" -o tsv 2>&1
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($portalShow)) {
-    throw "Portal clientId $PortalClientId does not resolve to an existing app in this tenant. If the portal app was rotated, re-run Setup-PortalAuth.ps1 (which refreshes entra-app.json) or pass -PortalClientId explicitly with the current value."
-}
 
-# Resolve OIDC issuer up front (fail fast if bicep hasn't run)
-$oidcIssuer = Resolve-OidcIssuerFromEnv -Env $EnvName
-Write-Host "AKS OIDC issuer: $oidcIssuer"
+# Resolve OIDC issuer up front (fail fast if bicep hasn't run). Skipped in
+# app-shell mode because that phase intentionally runs before bicep.
+$oidcIssuer = $null
+if ($Mode -ne "app-shell") {
+    $oidcIssuer = Resolve-OidcIssuerFromEnv -Env $EnvName
+    Write-Host "AKS OIDC issuer: $oidcIssuer"
+}
 
 # FIC subject and name
 $ficSubject = "system:serviceaccount:${ServiceAccountNamespace}:${ServiceAccountName}"
 $ficName = "pilotswarm-worker-$EnvName"
 
-# Decide create-or-find
+# Decide create-or-find. In patch-fic mode the app MUST already exist.
 $clientId = $null
 $objectId = $null
-$mode = $null
+$findMode = $null
 if (-not [string]::IsNullOrWhiteSpace($ExistingAppId)) {
     Write-Host ""
-    Write-Host "Mode: USE EXPLICIT existing app (-ExistingAppId)" -ForegroundColor Cyan
+    Write-Host "App resolution: USE EXPLICIT existing app (-ExistingAppId)" -ForegroundColor Cyan
     Write-Host "  App ID: $ExistingAppId"
     $existing = az ad app show --id $ExistingAppId 2>$null
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($existing)) {
@@ -540,21 +593,23 @@ if (-not [string]::IsNullOrWhiteSpace($ExistingAppId)) {
     $clientId = $existingObj.appId
     $objectId = $existingObj.id
     $existingAppShowJson = $existing
-    $mode = "existing"
+    $findMode = "existing"
 } else {
     $found = Find-AppByDisplayName -Name $DisplayName
     if ($found) {
         Write-Host ""
-        Write-Host "Mode: FOUND existing app by display name '$DisplayName'" -ForegroundColor Cyan
+        Write-Host "App resolution: FOUND existing app by display name '$DisplayName'" -ForegroundColor Cyan
         Write-Host "  App ID: $($found.appId)"
         $clientId = $found.appId
         $objectId = $found.objectId
         $existingAppShowJson = az ad app show --id $clientId 2>$null
         if ($LASTEXITCODE -ne 0) { throw "Could not re-show app $clientId" }
-        $mode = "existing"
+        $findMode = "existing"
+    } elseif ($Mode -eq "patch-fic") {
+        throw "patch-fic mode requires the app '$DisplayName' to already exist (run -Mode app-shell first, or pass -ExistingAppId)."
     } else {
         Write-Host ""
-        Write-Host "Mode: CREATE NEW app registration" -ForegroundColor Cyan
+        Write-Host "App resolution: CREATE NEW app registration" -ForegroundColor Cyan
         Write-Host "  Display name        : $DisplayName"
         Write-Host "  Tenant              : $tenantId (single-tenant)"
         Write-Host "  Service Tree ID     : $ServiceTreeId"
@@ -604,60 +659,75 @@ if (-not [string]::IsNullOrWhiteSpace($ExistingAppId)) {
         } finally {
             foreach ($f in $tempFiles) { if (Test-Path $f) { Remove-Item $f -Force -ErrorAction SilentlyContinue } }
         }
-        $mode = "created"
+        $findMode = "created"
     }
 }
 
-# --- identifierUri: api://<appId> must be set before scopes can be patched ---
-if (-not (Test-IdentifierUriPresent -AppShowJson $existingAppShowJson -AppId $clientId)) {
-    $idJson = Build-IdentifierUrisPatchJson -AppId $clientId
-    Invoke-GraphPatch -ObjectId $objectId -BodyJson $idJson -Description "Set identifierUris = [api://$clientId]"
-    $existingAppShowJson = az ad app show --id $clientId 2>$null
-} else {
-    Write-Host "  OK: identifierUri api://$clientId already present (no change)" -ForegroundColor Green
-}
-
-# --- requiredResourceAccess: ensure Graph User.Read present on existing apps ---
-if ($mode -eq "existing" -and -not (Test-RequiredResourceAccessHasGraphUserRead -AppShowJson $existingAppShowJson)) {
-    $rraJson = Build-RequiredResourceAccessPatchJson
-    Invoke-GraphPatch -ObjectId $objectId -BodyJson $rraJson -Description "Add Graph User.Read delegated requiredResourceAccess"
-} elseif ($mode -eq "existing") {
-    Write-Host "  OK: Graph User.Read delegated requiredResourceAccess already present (no change)" -ForegroundColor Green
-}
-
-# --- OAuth2 scope + pre-authorization (single PATCH that touches api{}) ---
-$scopeId = Get-ExistingOAuth2ScopeId -AppShowJson $existingAppShowJson
-if ([string]::IsNullOrWhiteSpace($scopeId)) {
-    $scopeId = [System.Guid]::NewGuid().ToString()
-    Write-Host "Minting new OAuth2 scope id: $scopeId" -ForegroundColor Yellow
-} else {
-    Write-Host "Reusing existing OAuth2 scope id: $scopeId" -ForegroundColor Yellow
-}
-$apiPatch = Build-ApiPatchBodyJson -ScopeId $scopeId -ScopeDisplayName $DisplayName -PortalAppId $PortalClientId
-Invoke-GraphPatch -ObjectId $objectId -BodyJson $apiPatch -Description "Set OAuth2 scope (user_impersonation) + requestedAccessTokenVersion=2 + preAuthorizedApplications=[portal $PortalClientId]"
-
-# --- Optional admin consent for Graph User.Read ---
-if ($GrantAdminConsent) {
-    Write-Host "Granting tenant-wide admin consent for Graph User.Read..." -ForegroundColor Yellow
-    $consentOut = az ad app permission admin-consent --id $clientId 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  OK: Admin consent granted" -ForegroundColor Green
+# === App-shell phase: identifierUri / Graph perm / scope / pre-auth / consent ===
+if ($Mode -ne "patch-fic") {
+    # --- identifierUri: api://<appId> must be set before scopes can be patched ---
+    if (-not (Test-IdentifierUriPresent -AppShowJson $existingAppShowJson -AppId $clientId)) {
+        $idJson = Build-IdentifierUrisPatchJson -AppId $clientId
+        Invoke-GraphPatch -ObjectId $objectId -BodyJson $idJson -Description "Set identifierUris = [api://$clientId]"
+        $existingAppShowJson = az ad app show --id $clientId 2>$null
     } else {
-        Write-Warning "Admin-consent failed (likely insufficient permissions on signed-in principal). A tenant Global Admin must grant consent for Microsoft Graph User.Read on app $clientId once per tenant before the first smoke run. Continuing — the rest of the script does not depend on consent."
-        Write-Warning "  $consentOut"
+        Write-Host "  OK: identifierUri api://$clientId already present (no change)" -ForegroundColor Green
+    }
+
+    # --- requiredResourceAccess: ensure Graph User.Read present on existing apps ---
+    if ($findMode -eq "existing" -and -not (Test-RequiredResourceAccessHasGraphUserRead -AppShowJson $existingAppShowJson)) {
+        $rraJson = Build-RequiredResourceAccessPatchJson
+        Invoke-GraphPatch -ObjectId $objectId -BodyJson $rraJson -Description "Add Graph User.Read delegated requiredResourceAccess"
+    } elseif ($findMode -eq "existing") {
+        Write-Host "  OK: Graph User.Read delegated requiredResourceAccess already present (no change)" -ForegroundColor Green
+    }
+
+    # --- OAuth2 scope + pre-authorization (single PATCH that touches api{}) ---
+    $scopeId = Get-ExistingOAuth2ScopeId -AppShowJson $existingAppShowJson
+    if ([string]::IsNullOrWhiteSpace($scopeId)) {
+        $scopeId = [System.Guid]::NewGuid().ToString()
+        Write-Host "Minting new OAuth2 scope id: $scopeId" -ForegroundColor Yellow
+    } else {
+        Write-Host "Reusing existing OAuth2 scope id: $scopeId" -ForegroundColor Yellow
+    }
+    $apiPatch = Build-ApiPatchBodyJson -ScopeId $scopeId -ScopeDisplayName $DisplayName -PortalAppId $PortalClientId
+    Invoke-GraphPatch -ObjectId $objectId -BodyJson $apiPatch -Description "Set OAuth2 scope (user_impersonation) + requestedAccessTokenVersion=2 + preAuthorizedApplications=[portal $PortalClientId]"
+
+    # --- Optional admin consent for Graph User.Read ---
+    if ($GrantAdminConsent) {
+        Write-Host "Granting tenant-wide admin consent for Graph User.Read..." -ForegroundColor Yellow
+        $consentOut = az ad app permission admin-consent --id $clientId 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  OK: Admin consent granted" -ForegroundColor Green
+        } else {
+            Write-Warning "Admin-consent failed (likely insufficient permissions on signed-in principal). A tenant Global Admin must grant consent for Microsoft Graph User.Read on app $clientId once per tenant before the first smoke run. Continuing — the rest of the script does not depend on consent."
+            Write-Warning "  $consentOut"
+        }
     }
 }
 
-# --- AKS workload-identity federated credential on the app ---
-Write-Host "Configuring AKS workload-identity federated credential..." -ForegroundColor Yellow
-Write-Host "  Name     : $ficName"
-Write-Host "  Issuer   : $oidcIssuer"
-Write-Host "  Subject  : $ficSubject"
-Write-Host "  Audience : $AKS_WORKLOAD_IDENTITY_AUDIENCE"
-$null = Invoke-FicCreateOrPatch -AppObjectId $objectId -FicName $ficName -Issuer $oidcIssuer -Subject $ficSubject -Audiences @($AKS_WORKLOAD_IDENTITY_AUDIENCE)
+# === Patch-FIC phase: AKS workload-identity federated credential on the app ===
+if ($Mode -ne "app-shell") {
+    Write-Host "Configuring AKS workload-identity federated credential..." -ForegroundColor Yellow
+    Write-Host "  Name     : $ficName"
+    Write-Host "  Issuer   : $oidcIssuer"
+    Write-Host "  Subject  : $ficSubject"
+    Write-Host "  Audience : $AKS_WORKLOAD_IDENTITY_AUDIENCE"
+    $null = Invoke-FicCreateOrPatch -AppObjectId $objectId -FicName $ficName -Issuer $oidcIssuer -Subject $ficSubject -Audiences @($AKS_WORKLOAD_IDENTITY_AUDIENCE)
+}
 
 # --- Sidecar JSON ---
+# Read existing sidecar (if any) so patch-fic preserves portalClientId etc.
+# written by an earlier app-shell run, and so app-shell preserves ficIssuer
+# from any earlier patch-fic run.
+$existingSummary = $null
+if (Test-Path $OutputFile) {
+    try { $existingSummary = Get-Content $OutputFile -Raw | ConvertFrom-Json } catch { }
+}
 $scope = "api://$clientId/.default"
+# Phase-aware fields: app-shell knows scope/portalClientId; patch-fic knows ficIssuer.
+$resolvedPortalClientId = if ($Mode -eq "patch-fic" -and $existingSummary -and $existingSummary.portalClientId) { [string]$existingSummary.portalClientId } else { $PortalClientId }
+$resolvedFicIssuer = if ($Mode -eq "app-shell" -and $existingSummary -and $existingSummary.ficIssuer) { [string]$existingSummary.ficIssuer } else { $oidcIssuer }
 $summary = [ordered]@{
     tenantId        = $tenantId
     clientId        = $clientId
@@ -666,8 +736,8 @@ $summary = [ordered]@{
     graphScope      = $GraphScope
     ficName         = $ficName
     ficSubject      = $ficSubject
-    ficIssuer       = $oidcIssuer
-    portalClientId  = $PortalClientId
+    ficIssuer       = $resolvedFicIssuer
+    portalClientId  = $resolvedPortalClientId
     displayName     = $DisplayName
     envName         = $EnvName
     serviceTreeId   = $ServiceTreeId
@@ -679,7 +749,14 @@ if ($parent -and -not (Test-Path $parent)) { New-Item -ItemType Directory -Force
 Write-Host ""
 Write-Host "Wrote sidecar to $OutputFile" -ForegroundColor Green
 
-# --- Stdout paste-block: EXACTLY four KEY=value lines, in the documented order ---
+# --- Stdout paste-block: app-shell and all only (env doesn't change in patch-fic) ---
+if ($Mode -eq "patch-fic") {
+    Write-Host ""
+    Write-Host "=== FIC patched. No .env changes needed in this phase. ===" -ForegroundColor Green
+    Write-Host "  Next: `node deploy/scripts/deploy.mjs worker $EnvName --steps manifests,rollout`" -ForegroundColor Cyan
+    return
+}
+
 Write-Host ""
 Write-Host "=== PilotSwarm OBO Smoke Worker App ===" -ForegroundColor Green
 Write-Host "# Paste into deploy/envs/local/$EnvName/.env"
@@ -690,8 +767,13 @@ Write-Host "OBO_SMOKE_WORKER_APP_GRAPH_SCOPE=$GraphScope"
 Write-Host "PLUGIN_DIRS=/app/packages/obo-smoke-plugin"
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Step 2 of 2: paste the five lines above into deploy/envs/local/$EnvName/.env" -ForegroundColor Cyan
-Write-Host "  Then re-run the deploy's worker manifests/rollout step so the new env values reach the pod."
+if ($Mode -eq "app-shell") {
+    Write-Host "Step 1 of 2 (app-shell): paste the five lines above into deploy/envs/local/$EnvName/.env" -ForegroundColor Cyan
+    Write-Host "  Then run bicep, then re-invoke with -Mode patch-fic to wire the AKS FIC." -ForegroundColor Cyan
+} else {
+    Write-Host "Step 2 of 2: paste the five lines above into deploy/envs/local/$EnvName/.env" -ForegroundColor Cyan
+    Write-Host "  Then re-run the deploy's worker manifests/rollout step so the new env values reach the pod."
+}
 Write-Host ""
 Write-Host "  PLUGIN_DIRS points at the OBO smoke plugin inside the worker image." -ForegroundColor DarkGray
 Write-Host "  If you already set PLUGIN_DIRS for another plugin, append a comma-separated" -ForegroundColor DarkGray

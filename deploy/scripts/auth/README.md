@@ -302,12 +302,39 @@ yourself, or have the npm-deployer agent do it via its `edit` tool.
 
 ### Invocation
 
+Two-phase (recommended for new-env bring-up):
+
+```bash
+# Phase 1 — before bicep (alongside Setup-PortalAuth.ps1):
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -Mode app-shell \
+  -ServiceTreeId <id> \
+  -EnvName <stamp>
+
+# Phase 2 — after bicep, before worker manifests,rollout:
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -Mode patch-fic \
+  -ServiceTreeId <id> \
+  -EnvName <stamp>
+```
+
+Single-shot (back-compat default; requires bicep to have run):
+
 ```bash
 pwsh -NoProfile -ExecutionPolicy Bypass \
   -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
   -ServiceTreeId <id> \
   -EnvName <stamp>
 ```
+
+`-Mode app-shell` skips the FIC and OIDC-issuer dependency; only the
+app + scope + pre-auth are created and the `.env` paste block is
+emitted. `-Mode patch-fic` looks up the existing app, reads the OIDC
+issuer from `deploy/.tmp/<EnvName>/bicep-outputs.cache.json`, and
+create-or-patches the FIC (no `.env` changes). `-Mode all` (default)
+does both.
 
 For full parameter reference, troubleshooting, and the
 upstream-audience-vs-downstream-resource scope distinction, see

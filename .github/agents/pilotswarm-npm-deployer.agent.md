@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.1.1
+version: 1.2.0
 name: pilotswarm-npm-deployer
 description: "Use when deploying PilotSwarm via the npm Bicep/GitOps orchestrator at `deploy/scripts/deploy.mjs` — bringing up a fresh isolated environment (new-env), rolling out updates against an already-deployed new-env stamp, or running the optional Entra app-registration pre-step. Routes between the fresh-scaffold and rollout-to-existing paths, enforces the DO NOT WIPE handshake on destructive ops, and drives interactive resource-naming + edge/TLS selection for new envs. For the legacy bash path (`scripts/deploy-aks.sh`, `scripts/deploy-portal.sh`), use `pilotswarm-aks-deployer` instead."
 ---
@@ -80,7 +80,7 @@ Match the change to a service and a minimal step set. Always invoke via `node de
 | Worker-t3 (StatefulSet) manifest change | `node deploy/scripts/deploy.mjs worker-t3 <stamp> --steps manifests,rollout` |
 | End-to-end re-render after multi-service change | `node deploy/scripts/deploy.mjs all <stamp>` (filters by EDGE_MODE/TLS_SOURCE automatically) |
 | Toggle OBO User Context on a stamp (`OBO_ENABLED=true`) | `node deploy/scripts/deploy.mjs base-infra <stamp> --steps bicep` then `node deploy/scripts/deploy.mjs all <stamp> --steps manifests,rollout` (re-renders overlay .env with the new `OBO_KEK_KID` bicep output and re-projects worker + portal ConfigMaps). Operator must edit `deploy/envs/local/<stamp>/.env` to set `OBO_ENABLED=true` and `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=api://<worker-app>/.default` before re-running base-infra. See `pilotswarm-new-env-deploy` §"User OBO Propagation" + `docs/operations/obo-kek-runbook.md`. |
-| Enable OBO live-smoke on a stamp | Build/push the worker image with `--variant smoke`, compose `deploy/envs/template.smoke.env` into `deploy/envs/local/<stamp>/.env`, then run **Step 0.b** (below) to auto-provision the per-stamp OBO smoke worker app + AKS workload-identity FIC and paste the emitted env lines (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`, `OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE`, and `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`). `OBO_SMOKE_ENABLED=true` is the smoke-driver marker; worker tool registration is governed by `PLUGIN_DIRS`. `OBO_SMOKE_TEST_USER_UPN` is an optional UPN-assertion knob — leave it empty to accept whichever user signs in. Then `node deploy/scripts/deploy.mjs worker <stamp> --steps manifests,rollout` to re-project the worker ConfigMap. After rollout, run `pilotswarm smoke <stamp> --profile obo` from a workstation; the default `--auth device-code` flow lets the operator sign in as themselves (no dedicated test user required — see `docs/operations/live-smoke.md` for MFA / Conditional Access notes). Default production stamps should use the default image and omit the smoke overlay. |
+| Enable OBO live-smoke on a stamp | Build/push the worker image with `--variant smoke`, compose `deploy/envs/template.smoke.env` into `deploy/envs/local/<stamp>/.env`, then run **Step 0.b-early** (app-shell) before bicep to provision the worker app + scope + pre-auth and paste the emitted env lines (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`, `OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE`, and `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`). After bicep emits the AKS OIDC issuer, run **Step 0.b-late** (patch-fic) to wire the FIC. `OBO_SMOKE_ENABLED=true` is the smoke-driver marker; worker tool registration is governed by `PLUGIN_DIRS`. `OBO_SMOKE_TEST_USER_UPN` is an optional UPN-assertion knob — leave it empty to accept whichever user signs in. Then `node deploy/scripts/deploy.mjs worker <stamp> --steps manifests,rollout` to re-project the worker ConfigMap. After rollout, run `pilotswarm smoke <stamp> --profile obo` from a workstation; the default `--auth device-code` flow lets the operator sign in as themselves (no dedicated test user required — see `docs/operations/live-smoke.md` for MFA / Conditional Access notes). Default production stamps should use the default image and omit the smoke overlay. |
 
 ### Pre-flight (mandatory before invoking)
 
@@ -222,40 +222,39 @@ role-authoritative branch ignores it when `roles[]` is present in the
 JWT. Without the assignment step, every sign-in is denied at the
 portal engine (deny-by-default) because no one has a role claim yet.
 
-### Step 0.b — Auto-provision OBO smoke worker app (only for OBO live-smoke stamps)
+### Step 0.b — Auto-provision OBO smoke worker app (two-phase; only for OBO live-smoke stamps)
 
-Skip this step entirely for default production stamps or any stamp that will
-not run `pilotswarm smoke <stamp> --profile obo`. For smoke stamps, build
-the worker with `--variant smoke` and compose the smoke env overlay first.
-This step closes the last manual gap in the OBO live-smoke harness by
-auto-provisioning the per-stamp downstream worker AAD app, its OAuth2
-scope, the OBO pre-authorization for the portal app, and the AKS
-workload-identity FIC on the new app.
+Skip this step entirely for default production stamps or any stamp that
+will not run `pilotswarm smoke <stamp> --profile obo`. For smoke
+stamps, build the worker with `--variant smoke` and compose the smoke
+env overlay first. This step uses the two-phase wrapper so nothing has
+to wait for bicep.
 
-**Sequencing**: this step runs **after** bicep has succeeded for the
-stamp (FIC needs the AKS OIDC issuer URL, which only exists once bicep
-emits it into `deploy/.tmp/<stamp>/bicep-outputs.cache.json`), and
-**before** `worker manifests,rollout`. The smoke worker app's values are
-read by the smoke plugin at handler-call time, not at bicep substitution
-time, so the worker pod can boot during bicep without them.
+**Prerequisite (both phases)**: Step 0 (portal app-reg) must already
+have run for the stamp — the wrapper reads
+`deploy/envs/local/<stamp>/entra-app.json` to pre-authorize the portal
+app. (Operators can override via `-PortalClientId` if they have a
+non-standard portal-app source.)
 
-**Prerequisite**: Step 0 (portal app-reg) must already have run for the
-stamp — the wrapper reads `deploy/envs/local/<stamp>/entra-app.json` to
-pre-authorize the portal app. (Operators can override via
-`-PortalClientId` if they have a non-standard portal-app source.)
+#### Step 0.b-early — `-Mode app-shell` (before bicep)
 
-**Invocation** (idempotent; re-runs are no-ops):
+Runs alongside Step 0; **no OIDC dependency**. Creates the worker app,
+mints the OAuth2 scope, declares Microsoft Graph `User.Read` delegated
+permission, pre-authorizes the portal app, and emits the `.env` paste
+block.
 
 ```pwsh
 pwsh -NoProfile -ExecutionPolicy Bypass `
   -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 `
+  -Mode app-shell `
   -ServiceTreeId <id> `
   -EnvName <stamp>
 ```
 
 The script writes a sidecar JSON at
-`deploy/envs/local/<stamp>/obo-smoke-worker-app.json` and prints
-the smoke `.env` paste block to stdout:
+`deploy/envs/local/<stamp>/obo-smoke-worker-app.json` (with
+`ficIssuer: null` until patch-fic runs) and prints the smoke `.env`
+paste block to stdout:
 
 ```
 PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=api://<worker-app-id>/.default offline_access
@@ -265,12 +264,37 @@ OBO_SMOKE_WORKER_APP_GRAPH_SCOPE=https://graph.microsoft.com/User.Read
 PLUGIN_DIRS=/app/packages/obo-smoke-plugin
 ```
 
-**The script never edits `.env`** — that is the operator's (or your)
-job, same workflow as the portal `entra-app.json` paste step. Use the
-`edit` tool to paste the lines into
-`deploy/envs/local/<stamp>/.env` after the script returns. Replace any
-existing `__PS_UNSET__` sentinels or empty values for these keys
-in place. If `PLUGIN_DIRS` already contains other plugin directories, append the smoke path comma-separated.
+**The script never edits `.env`** — same workflow as the portal
+`entra-app.json` paste step. Use the `edit` tool to paste the lines
+into `deploy/envs/local/<stamp>/.env` after the script returns,
+replacing any `__PS_UNSET__` sentinels or empty values for these keys.
+If `PLUGIN_DIRS` already contains other plugin directories, append the
+smoke path comma-separated. Bicep can now run with the final overlay.
+
+#### Step 0.b-late — `-Mode patch-fic` (after bicep, before manifests,rollout)
+
+Looks up the worker app by display name (errors out if Step 0.b-early
+hasn't run) and create-or-patches the AKS workload-identity FIC against
+the OIDC issuer URL bicep emitted into
+`deploy/.tmp/<stamp>/bicep-outputs.cache.json`. **No `.env` changes** —
+env was finalized in 0.b-early.
+
+```pwsh
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 `
+  -Mode patch-fic `
+  -ServiceTreeId <id> `
+  -EnvName <stamp>
+```
+
+The wrapper updates `ficIssuer` in the existing sidecar JSON and prints
+a short confirmation pointing at the next deploy step.
+
+#### Single-shot fallback — `-Mode all` (back-compat default)
+
+For operator re-runs against an already-deployed stamp, omit `-Mode`
+to run both phases in a single invocation. Requires bicep to have
+produced the OIDC issuer URL already.
 
 **Tightened verification gate (before `worker manifests,rollout`)**:
 for OBO live-smoke stamps, the standard Step 3b grep is *not
@@ -284,8 +308,8 @@ grep -E '^(PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE|OBO_SMOKE_WORKER_APP_(TENANT_ID|CL
 ```
 
 If any line matches, you forgot to paste — re-read the wrapper's
-stdout and apply the paste block via `edit` before invoking
-`worker manifests,rollout`.
+stdout from Step 0.b-early and apply the paste block via `edit` before
+invoking `worker manifests,rollout`.
 
 **Admin consent**: the wrapper declares Microsoft Graph `User.Read`
 delegated permission on the worker app (without it the OBO exchange
