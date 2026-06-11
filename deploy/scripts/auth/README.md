@@ -343,11 +343,15 @@ upstream-audience-vs-downstream-resource scope distinction, see
 ### When NOT to run it
 
 - Default production stamps or any stamp that will not run OBO live-smoke. Runtime opt-in also requires a worker image built with `--variant smoke` and the smoke env overlay, including `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`.
-- Stamps where the operator already has the smoke `OBO_SMOKE_*` /
-  `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` / `PLUGIN_DIRS` values filled in (e.g.
-  pointing at a manually-managed downstream app).
 - Stamps using `PORTAL_AUTH_PROVIDER=none` — the smoke harness
   requires a signed-in portal user.
+
+For stamps that already have the smoke env values pasted, re-running
+the wrapper is a safe no-op (idempotent re-read of the OAuth2 scope
+GUID, FIC create-or-patch by deterministic name). To point at a
+manually-managed downstream app, pass `-ExistingAppId <appId>` rather
+than skipping the wrapper — the FIC + Graph perm + pre-auth still
+need to be patched on whatever app the smoke env points at.
 
 ## Why `Create3PApplication.ps1` is included
 

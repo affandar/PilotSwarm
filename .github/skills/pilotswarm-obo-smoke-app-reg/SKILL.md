@@ -20,8 +20,9 @@ smoke also requires building the worker image with `--variant smoke` so
 |---|---|
 | "enable OBO live-smoke on stamp X" / will run `pilotswarm smoke <stamp> --profile obo` | **YES** |
 | "set up the worker app for OBO smoke" / "need a downstream app for the smoke profile" | YES |
+| Re-running on a stamp that already has the smoke env values pasted | YES — the wrapper is idempotent (re-reads scope GUID, no-ops on existing FIC) |
+| Pointing at a manually-managed downstream app | YES — pass `-ExistingAppId <appId>`; the wrapper patches scope/pre-auth/FIC on whatever app you point at |
 | default production stamp / no live-smoke needed | NO — skip entirely |
-| User already pasted the smoke env overlay values, including `PLUGIN_DIRS`, with real values | NO — values flow straight through to deploy |
 
 ## Sequencing inside the new-env flow (two-phase)
 
