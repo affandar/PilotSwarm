@@ -1,6 +1,6 @@
 ---
 name: pilotswarm-obo-smoke-app-reg
-description: "Use when bringing up a PilotSwarm stamp with `OBO_SMOKE_ENABLED=true`. Drives the Entra app-registration step for the per-stamp OBO live-smoke downstream worker app — creates/finds the app, declares Microsoft Graph `User.Read` delegated permission, mints an OAuth2 scope, pre-authorizes the portal app, and create-or-patches the AKS workload-identity federated identity credential (FIC). Skip entirely when `OBO_SMOKE_ENABLED=false` (the default) or the stamp does not run the OBO smoke profile."
+description: "Use when bringing up a PilotSwarm stamp that will run OBO live-smoke. Drives the Entra app-registration step for the per-stamp OBO live-smoke downstream worker app — creates/finds the app, declares Microsoft Graph `User.Read` delegated permission, mints an OAuth2 scope, pre-authorizes the portal app, and create-or-patches the AKS workload-identity federated identity credential (FIC). Skip entirely for default production stamps or stamps that do not run the OBO smoke profile."
 ---
 
 # pilotswarm-obo-smoke-app-reg
@@ -8,19 +8,20 @@ description: "Use when bringing up a PilotSwarm stamp with `OBO_SMOKE_ENABLED=tr
 Drives the Entra app-registration step for the OBO live-smoke **downstream
 worker app** on a PilotSwarm stamp.
 
-This skill is **optional** — only invoke it when the stamp opts into
-`OBO_SMOKE_ENABLED=true`. Production stamps and any stamp that doesn't
-run `pilotswarm smoke <stamp> --profile obo` should leave
-`OBO_SMOKE_ENABLED=false` and skip this skill entirely.
+This skill is **optional** — only invoke it when the stamp will run
+`pilotswarm smoke <stamp> --profile obo`. It provisions the downstream
+worker app and emits the smoke env overlay block. Opting the worker into
+smoke also requires building the worker image with `--variant smoke` so
+`/app/packages/obo-smoke-plugin` exists in the image.
 
 ## When to use this skill
 
 | User signal | Use this skill? |
 |---|---|
-| "enable OBO live-smoke on stamp X" / sets `OBO_SMOKE_ENABLED=true` | **YES** |
+| "enable OBO live-smoke on stamp X" / will run `pilotswarm smoke <stamp> --profile obo` | **YES** |
 | "set up the worker app for OBO smoke" / "need a downstream app for the smoke profile" | YES |
-| `OBO_SMOKE_ENABLED=false` (default) / production stamp / no live-smoke needed | NO — skip entirely |
-| User already pasted all four OBO smoke env keys with real values | NO — values flow straight through to deploy |
+| default production stamp / no live-smoke needed | NO — skip entirely |
+| User already pasted the smoke env overlay values, including `PLUGIN_DIRS`, with real values | NO — values flow straight through to deploy |
 
 ## Sequencing inside the new-env flow
 
@@ -31,7 +32,7 @@ the portal app's clientId from
 URL, which only exists once bicep emits it into
 `deploy/.tmp/<stamp>/bicep-outputs.cache.json`). It must run **before**
 `node deploy/scripts/deploy.mjs worker <stamp> --steps manifests,rollout`,
-because the worker ConfigMap reads the four `.env` keys this skill
+because the worker ConfigMap reads the smoke env overlay this skill
 produces.
 
 ## Service Tree ID is required (no default)
@@ -181,7 +182,7 @@ This:
    audience `api://AzureADTokenExchange`).
 6. Writes a JSON sidecar at
    `deploy/envs/local/<stamp>/obo-smoke-worker-app.json`.
-7. Prints **exactly four** `.env` lines to stdout (see below).
+7. Prints the smoke `.env` paste block to stdout (see below).
 
 ### With tenant-admin consent (opt-in)
 
@@ -215,13 +216,14 @@ yourself.
 
 ## After the script runs
 
-The script prints exactly four lines for the operator to paste:
+The script prints the smoke env overlay lines for the operator to paste:
 
 ```
 PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=api://<worker-app-id>/.default offline_access
 OBO_SMOKE_WORKER_APP_TENANT_ID=<tenantId>
 OBO_SMOKE_WORKER_APP_CLIENT_ID=<worker-app-id>
 OBO_SMOKE_WORKER_APP_GRAPH_SCOPE=https://graph.microsoft.com/User.Read
+PLUGIN_DIRS=/app/packages/obo-smoke-plugin
 ```
 
 **The wrapper itself NEVER edits `.env`** — the single-actor-on-`.env`
@@ -231,19 +233,19 @@ invariant is sacred. The only `.env` mutators in this repo are:
 - `compose-env.mjs` (bicep-output fold)
 - the operator (or the agent using `edit`) pasting from a sidecar
 
-Use the `edit` tool to paste the four lines into
+Use the `edit` tool to paste these lines into
 `deploy/envs/local/<stamp>/.env`, replacing any existing
-`__PS_UNSET__` sentinels or empty values for these four keys in place.
+`__PS_UNSET__` sentinels or empty values for these keys in place. If `PLUGIN_DIRS` already has entries, append `/app/packages/obo-smoke-plugin` comma-separated rather than replacing them.
 
 **Verification (tightened gate)**: before invoking
 `worker manifests,rollout`, run this grep and require zero matches:
 
 ```bash
-grep -E '^(PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE|OBO_SMOKE_WORKER_APP_(TENANT_ID|CLIENT_ID|GRAPH_SCOPE))=(__PS_UNSET__)?$' deploy/envs/local/<stamp>/.env
+grep -E '^(PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE|OBO_SMOKE_WORKER_APP_(TENANT_ID|CLIENT_ID|GRAPH_SCOPE)|PLUGIN_DIRS)=(__PS_UNSET__)?$' deploy/envs/local/<stamp>/.env
 ```
 
 If any line matches, you forgot to paste — re-read the wrapper's
-stdout and apply the four lines via `edit` before invoking
+stdout and apply the paste block via `edit` before invoking
 `worker manifests,rollout`. The standard Step 3b grep is not
 sufficient for OBO smoke: it only checks key presence, not non-empty
 non-sentinel value.
@@ -310,7 +312,7 @@ The sidecar at
 ```
 
 The sidecar is purely informational — nothing in the deploy pipeline
-reads it. The four `.env` keys are the source of truth at runtime.
+reads it. The smoke env overlay keys are the source of truth at runtime.
 
 ## Troubleshooting
 

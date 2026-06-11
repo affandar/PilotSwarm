@@ -2,25 +2,20 @@
 
 > Repeatable, harness-driven verification that the User OBO Propagation
 > feature works end-to-end on a deployed PilotSwarm stamp. Used as a
-> release gate (FR-018), post-incident verification, and post-deploy
-> stamp-bringup check.
->
-> Feature spec (FR/SC numbering referenced throughout this document):
-> [`docs/specs/user-obo-propagation.md`](../specs/user-obo-propagation.md).
+> release gate, post-incident verification, and post-deploy stamp-bringup
+> check for stamps that explicitly opt into the smoke harness.
 
 ## When to run
 
 - **Release gate** before publishing a new `pilotswarm-sdk` /
-  `pilotswarm-cli` major or minor that touches the OBO surface
-  (Phases 1–6 of the User OBO Propagation feature). Required signoff
-  is a clean run on at least one designated smoke stamp.
+  `pilotswarm-cli` major or minor that touches the OBO surface. Required signoff is a clean run on at least one designated smoke stamp.
 - **Post-incident** when investigating a suspected portal-MSAL,
   envelope-encryption, or worker-side OBO regression. The harness
   pinpoints the failing step (preflight, auth, whoami, force-reauth)
   rather than leaving you with a generic "session hangs" symptom.
 - **Post-deploy bringup** for any new stamp opting in to OBO. Run
   immediately after `OBO_ENABLED=true` lands so you have a clean
-  baseline before any consumer (ExampleApp, etc.) wires in.
+  baseline before any downstream consumer wires in.
 
 ## Prerequisites
 
@@ -85,42 +80,59 @@ flow.
 > `AADSTS50013` (wrong audience) or `AADSTS65001` (missing delegated
 > permission) at runtime.
 
-### Per-stamp env (auto-populated by the wrapper)
+### Per-stamp smoke opt-in
 
-In the stamp's `deploy/envs/local/<stamp>/.env`:
+The live-smoke harness is not part of the default deploy surface. A
+stamp opts in only when all three pieces are present:
+
+1. **Smoke worker image variant.** Build the worker with
+   `--variant smoke`, which selects the Dockerfile's
+   `runtime-smoke` target and places `packages/obo-smoke-plugin/` in
+   the image. Default worker builds use the final `runtime` stage and
+   do not contain the smoke plugin directory.
+2. **Smoke env overlay.** Compose the keys from
+   `deploy/envs/template.smoke.env` into the stamp's
+   `deploy/envs/local/<stamp>/.env` (or run
+   `Setup-OboSmokeWorkerApp.ps1`, which emits the paste block for the
+   downstream worker app).
+3. **Plugin loader opt-in.** Ensure `PLUGIN_DIRS` includes
+   `/app/packages/obo-smoke-plugin` in the worker environment. The
+   worker loads the smoke tools because the plugin directory is listed
+   in `PLUGIN_DIRS`, not because `OBO_SMOKE_ENABLED` is set.
+
+In the stamp's `deploy/envs/local/<stamp>/.env` after opt-in:
 
 | Key | Value |
 |---|---|
 | `OBO_ENABLED` | `true` (envelope-encrypted token path) |
-| `OBO_SMOKE_ENABLED` | `true` (registers `obo_smoke_*` tools on worker startup) |
-| `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` | `api://<smoke-app-client-id>/.default` |
+| `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` | `api://<smoke-app-client-id>/.default offline_access` |
 | `PORTAL_AUTH_ENTRA_TENANT_ID` / `PORTAL_AUTH_ENTRA_CLIENT_ID` | Existing portal Entra config |
+| `OBO_SMOKE_ENABLED` | `true` marker that tells the smoke driver this stamp is smoke-configured |
 | `OBO_SMOKE_WORKER_APP_TENANT_ID` | smoke app tenant id |
 | `OBO_SMOKE_WORKER_APP_CLIENT_ID` | smoke app client id |
 | `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE` | `https://graph.microsoft.com/User.Read` |
-| `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` | (only for local-dev backend; FIC pods read from `AZURE_FEDERATED_TOKEN_FILE`) |
-| `OBO_SMOKE_TEST_USER_UPN` | (optional) UPN to assert against `graph.upn`; if unset, any non-empty UPN passes |
+| `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` | local-dev backend only; AKS pods use FIC via `AZURE_FEDERATED_TOKEN_FILE` |
+| `OBO_SMOKE_TEST_USER_UPN` | optional UPN to assert against `graph.upn`; if unset, any non-empty UPN passes |
+| `PLUGIN_DIRS` | include `/app/packages/obo-smoke-plugin` (append to any existing comma-separated plugins) |
 
-These keys are wired through the deploy pipeline so a `worker --steps
-manifests,rollout` re-render projects them into the worker pod's
-ConfigMap (`compose-env.mjs` falls them back to the `__PS_UNSET__`
-sentinel when a stamp omits any of them, and the worker overlay's
-`OBO_SMOKE_WORKER_APP_*` block strips the sentinel at startup so the
-smoke plugin treats absent values as `undefined`). On AKS, leave
-`OBO_SMOKE_WORKER_APP_CLIENT_SECRET` unset — the plugin uses the
-stamp's existing workload-identity FIC machinery
-(`WORKLOAD_IDENTITY_CLIENT_ID` + `AZURE_FEDERATED_TOKEN_FILE`). For
-local-dev (running the worker outside a pod), set the secret in the
-stamp's local `.env` instead. **Production stamps must leave
-`OBO_SMOKE_ENABLED=false`** — the smoke tools are not authz-gated and
-would otherwise expose a `force_reauth` path to any signed-in user.
+`OBO_SMOKE_ENABLED=true` is a stamp marker for the `pilotswarm smoke`
+driver preflight. It does **not** register tools by itself. Worker tool
+registration is governed by `PLUGIN_DIRS` and by whether the referenced
+plugin directory exists in the image. On a default worker image the
+smoke plugin directory is absent, so a mistaken `PLUGIN_DIRS` entry
+fails closed at worker startup with a clear missing-directory error.
+
+On AKS, leave `OBO_SMOKE_WORKER_APP_CLIENT_SECRET` unset — the plugin
+uses workload-identity FIC via `WORKLOAD_IDENTITY_CLIENT_ID` +
+`AZURE_FEDERATED_TOKEN_FILE`. For local-dev (running the worker outside
+a pod), set the secret in the local environment instead.
 
 The plugin auto-selects between the FIC and client-secret backends at
-**handler-call time** (FR-025): when `AZURE_FEDERATED_TOKEN_FILE` is
-present, the FIC backend wins precedence; the secret is logged once
-as ignored. AKS workload-identity sets `AZURE_FEDERATED_TOKEN_FILE`
-automatically when the worker pod has the
-`azure.workload.identity/use=true` label and the proper SA annotation.
+**handler-call time**: when `AZURE_FEDERATED_TOKEN_FILE` is present,
+the FIC backend wins precedence; the secret is logged once as ignored.
+AKS workload-identity sets `AZURE_FEDERATED_TOKEN_FILE` automatically
+when the worker pod has the `azure.workload.identity/use=true` label
+and the proper service-account annotation.
 
 ### Test user
 
@@ -281,9 +293,8 @@ These invariants are pinned by tests in `packages/sdk/test/local/`:
 
 - **Handler-time env reads.** The smoke plugin reads `process.env`
   inside the tool handler on every invocation, never at module load.
-  This is the only safe pattern for a plugin that ships in the
-  production image with `OBO_SMOKE_ENABLED=false` for non-smoke
-  stamps. (`obo-smoke-plugin-loadable.test.js`)
+  This is the safe pattern for a plugin that may be loaded only on
+  smoke-enabled stamps and configured by the stamp env overlay. (`obo-smoke-plugin-loadable.test.js`)
 
 - **FIC token-file re-read on every acquisition.** The
   `clientAssertion` callback re-reads `AZURE_FEDERATED_TOKEN_FILE`
@@ -300,7 +311,8 @@ These invariants are pinned by tests in `packages/sdk/test/local/`:
 
 - **Driver fails fast at preflight when `OBO_SMOKE_ENABLED=false` or
   `OBO_ENABLED=false`** rather than running a session that's
-  guaranteed to fail downstream. Saves a session-cleanup cycle on
+  guaranteed to fail downstream. The marker gates the driver only;
+  worker registration is controlled by `PLUGIN_DIRS`. Saves a session-cleanup cycle on
   the worker. (`obo-smoke-driver.test.js`)
 
 - **No ROPC.** The driver acquires user tokens via device-code or
@@ -312,12 +324,9 @@ These invariants are pinned by tests in `packages/sdk/test/local/`:
 
 - [`docs/operations/obo-kek-runbook.md`](./obo-kek-runbook.md) — KEK
   rotation runbook, AKV provisioning specifics.
-- [`examples/obo-smoke/SMOKE_CHECKLIST.md`](../../examples/obo-smoke/SMOKE_CHECKLIST.md)
+- [`packages/obo-smoke-plugin/SMOKE_CHECKLIST.md`](../../packages/obo-smoke-plugin/SMOKE_CHECKLIST.md)
   — manual operator checklist (still the source of truth for the
   one-time AAD app provisioning steps and the post-smoke token leak
   scan).
-- [`examples/obo-smoke/README.md`](../../examples/obo-smoke/README.md)
+- [`packages/obo-smoke-plugin/README.md`](../../packages/obo-smoke-plugin/README.md)
   — plugin reference, env tuple, mode matrix.
-- Spec FR-025 / FR-026 / FR-027 — the three requirements the
-  live-smoke harness implements (FR-028 is deferred — see "CI workflow
-  (future work)" above).

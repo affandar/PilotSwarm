@@ -20,7 +20,7 @@ You can also invoke it directly.
 | `Create3PApplication.ps1` | Generic Azure AD application primitive. Useful if you need a non-portal app registration (e.g. a worker daemon with app roles). The PilotSwarm portal wrapper does **not** call this — it does its own SPA-shaped `az ad app create` so it can configure the SPA platform + implicit-grant + per-token-type groups claim, which the generic primitive doesn't expose. |
 | `Setup-PortalAuth.ps1` | Opinionated wrapper that creates the exact shape the PilotSwarm portal expects. See "Defaults" below. |
 | `Set-PortalAuthAssignments.ps1` | Add / remove / list user + group assignments against the `admin` / `user` app roles on an existing portal app. Idempotent. Re-runnable. See `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md` for full operator docs. |
-| `Setup-OboSmokeWorkerApp.ps1` | Opinionated wrapper that creates the per-stamp **OBO live-smoke downstream worker app** — required only when `OBO_SMOKE_ENABLED=true`. Creates the app, exposes an OAuth2 delegated scope, declares Microsoft Graph `User.Read` as a delegated permission, pre-authorizes the per-stamp portal app, and create-or-patches the AKS workload-identity federated identity credential on the Entra application itself. Writes a sidecar JSON and prints exactly four `.env` lines to paste. Idempotent. See "OBO smoke worker app" below + `.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md`. |
+| `Setup-OboSmokeWorkerApp.ps1` | Opinionated wrapper that creates the per-stamp **OBO live-smoke downstream worker app** — required only when running OBO live-smoke against a stamp. Creates the app, exposes an OAuth2 delegated scope, declares Microsoft Graph `User.Read` as a delegated permission, pre-authorizes the per-stamp portal app, and create-or-patches the AKS workload-identity federated identity credential on the Entra application itself. Writes a sidecar JSON and prints the smoke `.env` paste block. Idempotent. See "OBO smoke worker app" below + `.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md`. |
 
 ## Prerequisites
 
@@ -35,6 +35,8 @@ You can also invoke it directly.
 - For `-EnvName` auto-discovery: the stamp's
   `deploy/.tmp/<EnvName>/bicep-outputs.cache.json` must exist (i.e. the
   bicep-publish step of `npm run deploy` has run at least once).
+
+For OBO live-smoke, run the smoke worker image variant (`--variant smoke`) and compose the emitted smoke env overlay into the stamp env before worker rollout.
 
 The scripts use only cross-platform pwsh APIs (`Join-Path`, `Resolve-Path`,
 `[System.IO.Path]::GetTempFileName()`, `az`) and forward-slash path
@@ -283,7 +285,7 @@ per-stamp bicep step have succeeded.
    running principal is a tenant Global Admin.
 7. Writes a JSON sidecar at
    `deploy/envs/local/<EnvName>/obo-smoke-worker-app.json`.
-8. Prints **exactly four** `.env` lines to stdout for the operator to
+8. Prints the smoke `.env` paste block to stdout for the operator to
    paste into `deploy/envs/local/<EnvName>/.env`:
 
    ```
@@ -291,10 +293,11 @@ per-stamp bicep step have succeeded.
    OBO_SMOKE_WORKER_APP_TENANT_ID=<tenant-id>
    OBO_SMOKE_WORKER_APP_CLIENT_ID=<worker-app-id>
    OBO_SMOKE_WORKER_APP_GRAPH_SCOPE=https://graph.microsoft.com/User.Read
+   PLUGIN_DIRS=/app/packages/obo-smoke-plugin
    ```
 
 **The wrapper never edits `.env`** — same single-actor-on-`.env`
-invariant `Setup-PortalAuth.ps1` preserves. Paste the four lines
+invariant `Setup-PortalAuth.ps1` preserves. Paste the lines
 yourself, or have the npm-deployer agent do it via its `edit` tool.
 
 ### Invocation
@@ -312,9 +315,9 @@ upstream-audience-vs-downstream-resource scope distinction, see
 
 ### When NOT to run it
 
-- Stamps with `OBO_SMOKE_ENABLED=false` (the default).
-- Stamps where the operator already has the four `OBO_SMOKE_*` /
-  `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` values filled in (e.g.
+- Default production stamps or any stamp that will not run OBO live-smoke. Runtime opt-in also requires a worker image built with `--variant smoke` and the smoke env overlay, including `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`.
+- Stamps where the operator already has the smoke `OBO_SMOKE_*` /
+  `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` / `PLUGIN_DIRS` values filled in (e.g.
   pointing at a manually-managed downstream app).
 - Stamps using `PORTAL_AUTH_PROVIDER=none` — the smoke harness
   requires a signed-in portal user.

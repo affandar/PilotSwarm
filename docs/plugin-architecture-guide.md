@@ -15,9 +15,8 @@ A plugin is a directory containing any combination of:
 | Agents | `agents/*.agent.md` | YAML frontmatter + markdown |
 | Skills | `skills/<name>/SKILL.md` | YAML frontmatter + markdown |
 | MCP servers | `.mcp.json` at directory root | JSON object |
+| In-process tools | `tools` in `plugin.json` + `registerTools(worker)` export | JavaScript module export |
 | Metadata + UI branding | `plugin.json` at directory root | JSON |
-
-Tools and model providers are configured in code or JSON rather than inside plugin directories.
 
 `plugin.json` is now used by the shipped UI layers for app branding. In addition to human-readable metadata, it may contain:
 
@@ -31,6 +30,7 @@ Tools and model providers are configured in code or JSON rather than inside plug
 - `portal.branding.faviconFile` — optional browser tab icon override; if omitted, the portal reuses `logoFile`
 - `portal.ui.loadingMessage` / `portal.ui.loadingCopy` — browser portal startup copy
 - `portal.auth.signInTitle` / `portal.auth.signInMessage` / `portal.auth.signInLabel` — browser sign-in screen copy
+- `tools` — optional in-process tool plugin declaration; see [In-process tool plugins](#7-in-process-tool-plugins)
 
 Flat legacy `portal.title` / `portal.pageTitle` / `portal.loadingMessage` keys
 are still accepted, but nested `portal.branding` / `portal.ui` is preferred.
@@ -323,7 +323,48 @@ Unresolved variables expand to empty strings.
 
 ---
 
-## 7. Tool Registration (Code Layer)
+## 7. In-process Tool Plugins
+
+Application plugin directories may declare worker-side tools in
+`plugin.json` with a `tools` field. This is for tools whose handler code
+ships with the plugin and should be registered when the worker starts.
+
+Minimal shape:
+
+```json
+{
+  "name": "my-tool-plugin",
+  "version": "1.0.0",
+  "tools": {
+    "module": "./index.js"
+  }
+}
+```
+
+The referenced module exports `registerTools(worker)`. The loader calls
+that function at `PilotSwarmWorker.start()` for application-tier plugins
+only (`pluginDirs`). System and management plugins do not use this hook.
+The export receives the worker instance and must register tools through
+`worker.registerTools([...])`; direct mutation of internal registries is
+not supported.
+
+Tool plugin loading is fail-closed:
+
+- missing or malformed plugin directories fail worker startup instead of
+  silently skipping the plugin;
+- missing modules or missing `registerTools(worker)` exports fail startup;
+- tool registration is collision-safe and atomic — if a plugin attempts
+  to register a tool name that already exists, no partial set of that
+  plugin's tools remains registered.
+
+Clients still reference plugin tools by name via `toolNames`. The client
+never loads handler code. For a complete reference, see
+[`packages/obo-smoke-plugin/`](../packages/obo-smoke-plugin/), which
+registers the OBO live-smoke tools through this contract.
+
+---
+
+## 8. Tool Registration (Code Layer)
 
 Tools add callable functions to the LLM's repertoire. Unlike agents and skills (file-based), tools are defined in TypeScript/JavaScript and registered on the worker.
 
@@ -389,7 +430,7 @@ The worker resolves these names against its tool registry at execution time. Thi
 
 ---
 
-## 8. Model Providers
+## 9. Model Providers
 
 Model providers configure which LLMs are available and how to authenticate with them.
 
@@ -462,7 +503,7 @@ Models are identified by `provider:model` strings (e.g. `github-copilot:claude-o
 
 ---
 
-## 9. Loading Order & Merge Semantics
+## 10. Loading Order & Merge Semantics
 
 The complete loading pipeline:
 
@@ -477,7 +518,7 @@ The complete loading pipeline:
 │    → sweeper skill                                  │
 ├─────────────────────────────────────────────────────┤
 │  Tier 3: Application plugins (pluginDirs)           │
-│    → custom agents, skills, MCP servers             │
+│    → custom agents, skills, MCP servers, tools      │
 ├─────────────────────────────────────────────────────┤
 │  Tier 4: Direct config (inline options)             │
 │    → skillDirectories, customAgents, mcpServers     │
@@ -494,7 +535,7 @@ The complete loading pipeline:
 | Agents | Name collision → **later tier wins** (agent is replaced) |
 | Skills | **Additive** — all skill directories are combined, no collision |
 | MCP servers | Name collision → **later tier wins** (server config is replaced) |
-| Tools | Last `registerTools()` call wins for the same tool name |
+| Tools | Plugin `registerTools()` is atomic; existing name collision fails the plugin load. Programmatic `worker.registerTools()` remains the explicit code-layer registration path. |
 | `default.agent.md` | Embedded framework base plus optional app overlay |
 
 ### Prompt Composition
@@ -519,7 +560,7 @@ PilotSwarm's own management agents use:
 
 ---
 
-## 10. Best Practices
+## 11. Best Practices
 
 **Keep plugins focused.** Each plugin directory should represent a single application or feature domain. Don't mix unrelated agents and skills in the same directory.
 
@@ -543,5 +584,7 @@ PilotSwarm's own management agents use:
   "author": "Your Name"
 }
 ```
+
+**Document in-process tool plugins.** When a plugin registers tools from `plugin.json.tools`, keep the manifest and `registerTools(worker)` export in the same package so remote workers can load the same tool surface as local development.
 
 **Test tool handlers independently.** Since tools are plain async functions wrapped in `defineTool()`, you can unit test them without standing up a full PilotSwarm worker.

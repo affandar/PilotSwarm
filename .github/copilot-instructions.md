@@ -183,14 +183,14 @@ Architecture invariants — do not break these without an explicit cross-repo co
 - **Single-tenant** assumption (configured `https://login.microsoftonline.com/<tenant-id>` authority). Scope minimization: only the configured `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` is acquired.
 - **System / non-portal sessions**: lookup returns `null`. Local-TUI hosts have no portal envelope and thus no user context.
 
-Trust boundary (FR-014): the portal-issued envelope is the trust root. Worker tools must not synthesize their own principal from CMS owner fields when an envelope is absent — they must refuse the operation or emit `serviceUnavailable`/`interactionRequired` per the outcome contract.
+Trust boundary: the portal-issued envelope is the trust root. Worker tools must not synthesize their own principal from CMS owner fields when an envelope is absent — they must refuse the operation or emit `serviceUnavailable`/`interactionRequired` per the outcome contract.
 
 Operator-visible config:
 - Portal: `PORTAL_AUTH_PROVIDER=entra`, `PORTAL_AUTH_ENTRA_TENANT_ID`, `PORTAL_AUTH_ENTRA_CLIENT_ID`, `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` (e.g. `api://<worker-app>/.default offline_access`).
 - Worker: `OBO_KEK_KID` (AKV key URL), `WORKLOAD_IDENTITY_CLIENT_ID` for the federated-credential exchange.
 - Both pods must hold `Key Vault Crypto User` on the OBO KEK AKV. Bicep accepts an array `oboKekUamiPrincipalIds` so single-UAMI deployments (single-UAMI shape) and dual-UAMI deployments (PilotSwarm reference shape) both work.
 
-Live-tenant smoke is the npm publish gate for OBO changes — see `examples/obo-smoke/` (`obo_smoke_whoami` against Graph `/me`, `obo_smoke_force_reauth`) and `docs/operations/obo-kek-runbook.md`. Reference smoke env vars are read at handler-time, not at module-load time, so a smoke plugin loaded before env is set still functions correctly once configured.
+Live-tenant smoke is the npm publish gate for OBO changes — see `packages/obo-smoke-plugin/` (`obo_smoke_whoami` against Graph `/me`, `obo_smoke_force_reauth`) and `docs/operations/obo-kek-runbook.md`. The smoke plugin is opt-in through the `--variant smoke` worker image plus `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`; `OBO_SMOKE_ENABLED=true` is only the smoke-driver stamp marker. Reference smoke env vars are read at handler-time, not at module-load time, so a loaded smoke plugin still functions correctly once configured.
 
 ## TUI Maintenance
 

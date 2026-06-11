@@ -27,9 +27,11 @@ This checklist is just the gate.
 
 ## AKS-deployed smoke (canonical release-gate path)
 
-Assumes a stamp with `OBO_ENABLED=true` and `OBO_SMOKE_ENABLED=true`
-exists. The worker registers `obo_smoke_*` tools only when the toggle
-is on; non-smoke stamps are unaffected.
+Assumes a dedicated smoke stamp with `OBO_ENABLED=true`, the worker image
+built with `--variant smoke`, the smoke env overlay composed into the
+stamp `.env`, and `PLUGIN_DIRS` including `/app/packages/obo-smoke-plugin`.
+`OBO_SMOKE_ENABLED=true` is the smoke-driver marker; worker tool registration
+is governed by `PLUGIN_DIRS` and the smoke image variant.
 
 - [ ] Auto-provision the per-stamp OBO smoke worker AAD app + AKS
       workload-identity FIC (idempotent — re-runs are no-ops):
@@ -37,17 +39,17 @@ is on; non-smoke stamps are unaffected.
       See
       [`pilotswarm-obo-smoke-app-reg` skill](../../.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md)
       for the agent-driven path.
-- [ ] Paste the four `.env` lines the wrapper prints into
+- [ ] Paste the smoke `.env` lines the wrapper prints into
       `deploy/envs/local/<stamp>/.env`:
       `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`,
       `OBO_SMOKE_WORKER_APP_TENANT_ID`,
       `OBO_SMOKE_WORKER_APP_CLIENT_ID`,
-      `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE`. (The wrapper never edits
+      `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE`, and `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`. (The wrapper never edits
       `.env` itself — single-actor invariant.)
 - [ ] Verify no sentinel/empty values remain on those keys:
-      `grep -E '^(PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE|OBO_SMOKE_WORKER_APP_(TENANT_ID|CLIENT_ID|GRAPH_SCOPE))=(__PS_UNSET__)?$' deploy/envs/local/<stamp>/.env`
+      `grep -E '^(PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE|OBO_SMOKE_WORKER_APP_(TENANT_ID|CLIENT_ID|GRAPH_SCOPE)|PLUGIN_DIRS)=(__PS_UNSET__)?$' deploy/envs/local/<stamp>/.env`
       returns **zero** matches.
-- [ ] Re-project the worker ConfigMap:
+- [ ] Build/push the smoke worker image (`--variant smoke`) if it is not already deployed, then re-project the worker ConfigMap:
       `node deploy/scripts/deploy.mjs worker <stamp> --steps manifests,rollout`.
 - [ ] Run the harness:
       `npx pilotswarm smoke <stamp> --profile obo`.

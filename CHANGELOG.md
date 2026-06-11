@@ -2,6 +2,10 @@
 
 ## 0.1.36 — 2026-06-08
 
+### Plugin contract and OBO live-smoke opt-in
+
+**Plugin contract**: `plugin.json` now supports a `tools` field for in-process tool plugins (collision-safe via atomic `registerTools()`). The OBO live-smoke harness moved into `packages/obo-smoke-plugin/` and is loaded via the standard plugin contract. Default deploy surface no longer carries smoke-specific configuration, code, or dependencies — smoke is opt-in via the `--variant smoke` worker-image build, the new `deploy/envs/template.smoke.env` env overlay, and `PLUGIN_DIRS` set to the in-image plugin directory.
+
 ### User OBO Propagation (new capability — backwards-compatible)
 
 Adds first-class support for per-RPC user identity + access-token
@@ -75,13 +79,13 @@ crypto backend; no runtime impact for stamps that don't enable OBO):
 - `@azure/keyvault-keys`
 - `@azure/identity`
 
-**Reference plugin:** [`examples/obo-smoke/`](examples/obo-smoke/) ships
+**Reference plugin:** [`packages/obo-smoke-plugin/`](packages/obo-smoke-plugin/) ships
 `obo_smoke_whoami` (5 metadata-only modes including real Graph
 `/me` exchange via `@azure/msal-node`'s `acquireTokenOnBehalfOf` —
 auto-selects between client-secret and AKS workload-identity FIC
 backends, FIC winning precedence) and `obo_smoke_force_reauth`
 (always emits `interactionRequired`). The manual live-tenant smoke
-checklist ([`examples/obo-smoke/SMOKE_CHECKLIST.md`](examples/obo-smoke/SMOKE_CHECKLIST.md))
+checklist ([`packages/obo-smoke-plugin/SMOKE_CHECKLIST.md`](packages/obo-smoke-plugin/SMOKE_CHECKLIST.md))
 remains the npm-publish release gate for changes touching the OBO
 path.
 
@@ -93,26 +97,21 @@ bearer and the encrypted-envelope downstream token, exercises both
 `obo_smoke_*` tools, and emits a structured pass/fail JSON record.
 New runbook at
 [`docs/operations/live-smoke.md`](docs/operations/live-smoke.md). The
-worker registers the smoke tools only when `OBO_SMOKE_ENABLED=true`
-is set on the stamp. A CI workflow wrapping the driver is deferred —
+smoke driver preflights `OBO_SMOKE_ENABLED=true` as a stamp marker;
+worker registration now happens through `PLUGIN_DIRS` pointing at the
+in-image smoke plugin. A CI workflow wrapping the driver is deferred —
 per-stamp `.env` files are gitignored, so a runner-side env loader and
 committed CI federated-credential trust are prerequisites for adding
 one later.
 
-**Live-smoke deploy-pipeline plumbing:** `deploy/envs/template.env`,
-`deploy/scripts/lib/compose-env.mjs`, and the worker overlay
-(`deploy/gitops/worker/overlays/default/.env`) project the smoke
-toggle plus the per-stamp downstream-app identity
-(`OBO_SMOKE_WORKER_APP_TENANT_ID` / `_CLIENT_ID` / `_GRAPH_SCOPE`,
-`OBO_SMOKE_TEST_USER_UPN`) into the worker ConfigMap with
-`__PS_UNSET__` sentinel defaults so a non-smoke stamp omitting any
-of them keeps the substitute-env contract green. Operators flip the
-toggle and re-run
-`node deploy/scripts/deploy.mjs worker <stamp> --steps manifests,rollout`
-to land the smoke tools — no worker image rebuild required. The
-`pilotswarm-npm-deployer` agent and `pilotswarm-new-env-deploy` skill
-document the full toggle-and-verify workflow alongside the existing
-OBO toggle.
+**Historical live-smoke deploy-pipeline plumbing (superseded):** early
+OBO smoke planning described projecting the smoke toggle plus per-stamp
+downstream-app identity into the default worker ConfigMap and using
+`OBO_SMOKE_ENABLED=true` as the worker registration gate. That posture
+has been superseded by the plugin-contract opt-in above: default env
+templates and default images stay smoke-free, the smoke image variant
+contains `packages/obo-smoke-plugin/`, and `PLUGIN_DIRS` controls worker
+registration.
 
 **Auto-provisioning the OBO smoke worker AAD app:** new
 opinionated wrapper `deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1`
@@ -124,8 +123,9 @@ app's clientId, and create-or-patches the AKS workload-identity
 federated identity credential **on the Entra application itself**.
 Writes a sidecar JSON at
 `deploy/envs/local/<stamp>/obo-smoke-worker-app.json` and prints
-exactly four `.env` lines (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`,
-`OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE`) to paste
+the smoke `.env` paste block (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`,
+`OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE`, and
+`PLUGIN_DIRS=/app/packages/obo-smoke-plugin`) to paste
 into the per-stamp `.env`. The wrapper **never edits `.env`** —
 preserves the single-actor-on-`.env` invariant
 (`new-env.mjs` + `compose-env.mjs` + operator/agent are the only
@@ -133,8 +133,7 @@ mutators). A new skill, `pilotswarm-obo-smoke-app-reg`, drives the
 wrapper from the `pilotswarm-npm-deployer` agent's new Step 0.b
 (sequenced after portal app-reg + bicep, before
 `worker manifests,rollout`). Closes the last manual gap in the
-live-smoke harness — `OBO_SMOKE_ENABLED=true` is now a
-true one-line opt-in.
+live-smoke harness; `OBO_SMOKE_ENABLED=true` is now the driver marker in the smoke overlay, while worker registration is handled by `PLUGIN_DIRS` and the smoke image variant.
 
 **Docs:**
 

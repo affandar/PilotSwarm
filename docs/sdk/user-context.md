@@ -169,6 +169,6 @@ the portal treats unknown reason codes as a generic
 - Configuration env reference: [`docs/configuration.md`](../configuration.md)
 - Operator runbook (KEK provisioning, rotation, revocation):
   [`docs/operations/obo-kek-runbook.md`](../operations/obo-kek-runbook.md)
-- Reference smoke plugin: [`examples/obo-smoke/`](../../examples/obo-smoke/)
+- Reference smoke plugin: [`packages/obo-smoke-plugin/`](../../packages/obo-smoke-plugin/)
 - Manual release-gate smoke checklist:
-  [`examples/obo-smoke/SMOKE_CHECKLIST.md`](../../examples/obo-smoke/SMOKE_CHECKLIST.md)
+  [`packages/obo-smoke-plugin/SMOKE_CHECKLIST.md`](../../packages/obo-smoke-plugin/SMOKE_CHECKLIST.md)

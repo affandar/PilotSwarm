@@ -182,14 +182,14 @@ Files are flat `KEY=value`, no quoting, no shell expansion.
 | `SSL_CERT_DOMAIN_SUFFIX`, `WAF_MODE`, `ACR_SKU`, `APP_GATEWAY_PRIVATE_IP` | bicep | Static infra params. |
 | `IMAGE` | manifests | Auto-composed from `ACR_LOGIN_SERVER` + service image repo + `--image-tag`; do **not** seed manually. |
 | `OBO_KEK_KID` | bicep (base-infra), manifests (worker + portal) | Un-versioned AKV key URL for the User OBO envelope KEK. Sourced from the `oboKekKid` bicep output (alias map) when `oboEnabled=true`; otherwise composed to the `__PS_UNSET__` sentinel and stripped at runtime. See [docs/operations/obo-kek-runbook.md](../../docs/operations/obo-kek-runbook.md). |
-| `OBO_SMOKE_ENABLED`, `OBO_SMOKE_WORKER_APP_*`, `OBO_SMOKE_TEST_USER_UPN` | manifests (worker overlay only) | Optional OBO live-smoke harness toggle + per-stamp downstream-app config. Default `false`; when `true`, the worker registers the `obo.smoke.*` plugin tools. AKS uses workload-identity FIC (no `CLIENT_SECRET` in the overlay); local dev can set the secret out-of-band. **Never enable on production stamps.** See [docs/operations/live-smoke.md](../../docs/operations/live-smoke.md). |
+| `OBO_SMOKE_ENABLED`, `OBO_SMOKE_WORKER_APP_*`, `OBO_SMOKE_TEST_USER_UPN`, `PLUGIN_DIRS` | smoke env overlay + manifests (worker overlay only) | Optional OBO live-smoke overlay, kept out of the default `template.env`. Compose `deploy/envs/template.smoke.env` only for dedicated smoke stamps, build the worker with `--variant smoke`, and set `PLUGIN_DIRS=/app/packages/obo-smoke-plugin` so the worker loads the in-image smoke plugin. `OBO_SMOKE_ENABLED=true` is the smoke-driver marker, not the worker registration gate. See [docs/operations/live-smoke.md](../../docs/operations/live-smoke.md). |
 
 **Bicep outputs are never seeded.** `ACR_NAME`, `ACR_LOGIN_SERVER`, `KV_NAME`,
 `AKS_CLUSTER_NAME`, `BLOB_CONTAINER_ENDPOINT`, `DEPLOYMENT_STORAGE_ACCOUNT_NAME`,
 `DEPLOYMENT_STORAGE_CONTAINER_NAME`, `WORKLOAD_IDENTITY_CLIENT_ID`,
 `APPROVAL_MANAGED_IDENTITY_ID`, `FRONT_DOOR_*`, `APPLICATION_GATEWAY_NAME`,
 `PRIVATE_LINK_CONFIGURATION_NAME`
-all cascade into the env Map at runtime via the FR-022 alias map. A full
+all cascade into the env Map at runtime via the Bicep-output alias map. A full
 `node deploy.mjs all <env>` invocation handles this end-to-end. Standalone
 split-step runs (e.g. `worker dev --steps manifests` without first running
 `--steps bicep` in the same process) fail fast with a clear "unresolved
@@ -234,7 +234,7 @@ literal `${VAR}` placeholders. The `bicep` step:
 ## Tests
 
 Stdlib-only unit tests cover the orchestrator's trickiest pieces (overlay
-substitution rules, FR-022 Bicep-output alias map, deploy-marker hashing,
+substitution rules, Bicep-output alias map, deploy-marker hashing,
 manifest publish atomicity, private-endpoint approval, and Dockerfile
 lockfile enforcement).
 
@@ -258,7 +258,7 @@ bypasses markers for every module.
 
 ### Manual verification protocol — private-endpoint approval
 
-After landing the FR-015 hardening of
+After landing the hardening of
 `deploy/services/common/bicep/approve-private-endpoint.bicep`, two
 operator-driven checks should be run against a real AFD-fronted stamp:
 

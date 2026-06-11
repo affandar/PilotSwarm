@@ -12,6 +12,20 @@ Two tools:
 | `obo_smoke_whoami` | The worker-side lookup `getUserContextForSession()` returns the portal-bound principal and, when env-configured, the worker can perform a real Microsoft Graph On-Behalf-Of round-trip. |
 | `obo_smoke_force_reauth` | The structured `interaction_required` outcome flows through SDK → orchestration → portal subscription, the portal renders a re-auth affordance, and the next RPC observes the fresh downstream token. |
 
+## Smoke image variant
+
+Default worker images do not contain this plugin directory. AKS smoke
+stamps must build the worker with `--variant smoke`, which selects the
+Dockerfile's `runtime-smoke` target and copies the plugin to
+`/app/packages/obo-smoke-plugin`. A default image with a mistaken
+`PLUGIN_DIRS=/app/packages/obo-smoke-plugin` entry fails closed at
+startup because the directory is absent.
+
+This package also serves as a reference architecture for downstream
+in-process tool plugins: declare tools in `plugin.json`, export
+`registerTools(worker)`, and let the worker plugin loader register the
+tools at startup.
+
 ## Install
 
 This plugin loads through the worker's standard plugin contract — no

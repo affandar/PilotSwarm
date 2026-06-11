@@ -176,6 +176,6 @@ sees `OBO_KEK_KID` as truly unset and `selectEnvelopeCrypto(env)` returns
 
 - Public SDK API: [`docs/sdk/user-context.md`](../sdk/user-context.md)
 - Configuration env reference: [`docs/configuration.md`](../configuration.md)
-- Reference smoke plugin: [`examples/obo-smoke/`](../../examples/obo-smoke/)
+- Reference smoke plugin: [`packages/obo-smoke-plugin/`](../../packages/obo-smoke-plugin/)
 - Release-gate manual smoke checklist:
-  [`examples/obo-smoke/SMOKE_CHECKLIST.md`](../../examples/obo-smoke/SMOKE_CHECKLIST.md)
+  [`packages/obo-smoke-plugin/SMOKE_CHECKLIST.md`](../../packages/obo-smoke-plugin/SMOKE_CHECKLIST.md)

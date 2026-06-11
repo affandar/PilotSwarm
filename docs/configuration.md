@@ -98,9 +98,9 @@ belongs in new app roles checked explicitly in code.
 > npm-orchestrator stamps, this is wired into the new-env flow by the
 > `pilotswarm-npm-deployer` agent.
 
-Portal branding and sign-in copy come from `plugin.json.portal`, with
+Portal branding, sign-in copy, and optional in-process tool plugin declarations come from `plugin.json`, with
 `plugin.json.tui` used as a fallback when the portal plugin metadata does not
-provide an override. Preferred portal metadata shape is nested under
+provide an override. Tool plugins use `plugin.json.tools`; see [Plugin Architecture & Layering Guide](./plugin-architecture-guide.md) for the full contract. Preferred portal metadata shape is nested under
 `portal.branding`, `portal.ui`, and `portal.auth`; browser logo assets can be
 supplied with `portal.branding.logoFile` and optional
 `portal.branding.faviconFile`.
