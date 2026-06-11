@@ -32,7 +32,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
 
         const { rows: vers } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
-        assert.deepEqual(vers.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005"]);
+        assert.deepEqual(vers.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006"]);
 
         const { rows: cols } = await pool.query(
             `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'facts'`,
@@ -88,7 +88,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         await s1.close(); await s2.close();
         const { rows } = await pool.query(
             `SELECT count(*)::int AS n FROM "${names.schema}".schema_migrations`);
-        assert.equal(rows[0].n, 5, "each migration recorded exactly once");
+        assert.equal(rows[0].n, 6, "each migration recorded exactly once");
     });
 
     it("MG4 partial-chain resume: only the missing tail is applied", async () => {
@@ -98,7 +98,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         const { rows } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
-        assert.deepEqual(rows.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005"]);
+        assert.deepEqual(rows.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006"]);
     });
 
     it("MG5 trigger semantics (direct SQL probes)", async () => {

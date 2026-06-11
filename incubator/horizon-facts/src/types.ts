@@ -195,7 +195,18 @@ export interface EnhancedFactStore extends FactStore {
      * (`last_crawled_at IS NULL`), across ALL scopes. Each returned fact
      * carries its contentHash — the receipt for markFactsCrawled.
      */
-    readUncrawledFacts(opts?: { namespace?: string; limit?: number }):
+    /**
+     * PRIVILEGED harvester read of the crawl queue: facts not yet incorporated
+     * (`last_crawled_at IS NULL`), across ALL scopes. Each returned fact
+     * carries its contentHash — the receipt for markFactsCrawled.
+     *
+     * `embeddedOnly` gates the queue to facts that already have an embedding
+     * (`embedding IS NOT NULL`): un-embedded facts are SKIPPED this read and
+     * stay queued, reappearing once the in-DB embed loop fills them in. Use it
+     * for similarity-refined harvesting, where a fact must be embedded before
+     * it can be similarity-searched.
+     */
+    readUncrawledFacts(opts?: { namespace?: string; limit?: number; embeddedOnly?: boolean }):
         Promise<{ count: number; facts: (FactRecord & { contentHash: string })[] }>;
 
     /**
@@ -206,10 +217,17 @@ export interface EnhancedFactStore extends FactStore {
     markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }>;
 
     /** Record/replace the endpoint config in durable variables. If the loop is
-     * running, RESTARTS it (vars are captured at df.start — pg_durable contract). */
-    configureEmbedder(endpoint: EmbeddingEndpointConfig): Promise<EmbedderStatus>;
+     * running, RESTARTS it to apply the new config (vars are captured at
+     * df.start — pg_durable contract), unless `restartIfRunning` is false. */
+    configureEmbedder(
+        endpoint: EmbeddingEndpointConfig,
+        opts?: { restartIfRunning?: boolean },
+    ): Promise<EmbedderStatus>;
 
-    /** Start the single eternal batch-embedding loop. Idempotent. */
+    /** Start the single eternal batch-embedding loop. Idempotent and
+     * advisory-locked: concurrent/repeated calls converge on exactly one
+     * running loop per schema. initialize() calls this automatically when an
+     * embedding endpoint is configured. */
     startEmbedder(opts?: { intervalSeconds?: number; batch?: number }): Promise<EmbedderStatus>;
 
     /** Cancel the loop. No-op if already stopped. */

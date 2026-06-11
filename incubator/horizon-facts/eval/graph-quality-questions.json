@@ -1,0 +1,119 @@
+{
+  "generated": "2026-06-11T14:01:50.657Z",
+  "model": "claude-haiku-4.5",
+  "corpus": "pgsql-hackers-recent.json",
+  "questions": [
+    {
+      "id": 1,
+      "question": "According to Tatsuo Ishii's PoC patch email, which of the two SQL:2016 Row Pattern Recognition features (R010 or R020) did his patch provide partial support for?",
+      "reference": "Tatsuo Ishii stated that SQL:2016 defines RPR in two places: Feature R010 ('Row pattern recognition: FROM clause') and Feature R020 ('Row pattern recognition: WINDOW clause'). His patch includes partial support for the R020 part (Row pattern recognition: WINDOW clause).",
+      "topic": "RPR-implementation",
+      "sourceId": "20230625.210509.1276733411677577841.t-ishii@sranhm.sra.co.jp",
+      "sourceSubject": "Row pattern recognition"
+    },
+    {
+      "id": 2,
+      "question": "According to Vik Fearing's explanation in this email, why does row pattern recognition need to be done when the window frame is calculated rather than when a function is applied over it?",
+      "reference": "Vik Fearing states: 'You are doing this as something that happens over a window frame, but it is actually something that *reduces* the window frame. The pattern matching needs to be done when the frame is calculated and not when any particular function is applied over it.' He explains that RPR actually reduces the window frame, and demonstrates this by showing how different rows are either included in or excluded from output results based on pattern matching.",
+      "topic": "row_pattern_recognition_architecture",
+      "sourceId": "90bff6fa-01b7-cf60-f4f4-3412514a7cd2@postgresfriends.org",
+      "sourceSubject": "Re: Row pattern recognition"
+    },
+    {
+      "id": 3,
+      "question": "In Jacob Champion's response about row pattern recognition, what specific concern does he raise regarding the relationship between RPR and window clauses, and which RPR features does he identify as having significant differences?",
+      "reference": "Jacob Champion asks whether there is a guaranteed equivalent window clause for RPR, noting that there seem to be many differences between the two approaches, especially when it comes to ONE ROW/ALL ROWS PER MATCH functionality.",
+      "topic": "RPR and window clause equivalence",
+      "sourceId": "07214b3a-5893-f6ce-ef55-0e5d24c94925@timescale.com",
+      "sourceSubject": "Re: Row pattern recognition"
+    },
+    {
+      "id": 4,
+      "question": "According to ls7777's patch submission, what two checkpoint parameters need to be updated in the new cluster when the pg_commit_ts directory is copied during pg_upgrade?",
+      "reference": "The patch copies the pg_commit_ts directory of the old cluster and updates the Latest checkpoints oldestCommitTsXid and Latest checkpoint's newestCommitTsXid for the new cluster.",
+      "topic": "pg_upgrade patch submission",
+      "sourceId": "182311743703924@mail.yandex.ru",
+      "sourceSubject": "Patch for migration of the pg_commit_ts directory"
+    },
+    {
+      "id": 5,
+      "question": "What did ls7777 decide regarding whether pg_upgrade should detect and issue warnings when track_commit_timestamp differs between the old and new instances during pg_commit_ts migration?",
+      "reference": "ls7777 stated that warnings are not needed because the loss of this data is not critical in most cases, and this data was previously lost with each migration if users did not manually migrate them. They emphasized that enabling track_commit_timestamp in the new instance is the responsibility of an experienced user.",
+      "topic": "pg_upgrade pg_commit_ts migration",
+      "sourceId": "5381759333107@mail.yandex.ru",
+      "sourceSubject": "Re: Patch for migration of the pg_commit_ts directory"
+    },
+    {
+      "id": 6,
+      "question": "What decision did ls7777 make regarding error handling in their pg_commit_ts migration patch, after acknowledging concerns about data loss and translation complexity?",
+      "reference": "I will do a parameter check and an ERROR message.",
+      "topic": "pg_commit_ts_migration_patch",
+      "sourceId": "23121759759185@mail.yandex.ru",
+      "sourceSubject": "Re: Patch for migration of the pg_commit_ts directory"
+    },
+    {
+      "id": 7,
+      "question": "According to Shveta Malik's email in the conflict log history proposal discussion, what is the default retention period for BDR's conflict_history table?",
+      "reference": "It has a default retention period of 30 days.",
+      "topic": "logical_replication_conflict_log",
+      "sourceId": "CAJpy0uB3y5Sd_LJyrhsyo48aP_WqTHC3oc0fz5m3obwGfc8JTQ@mail.gmail.com",
+      "sourceSubject": "Re: Proposal: Conflict log history table for Logical Replication"
+    },
+    {
+      "id": 8,
+      "question": "According to Shveta Malik's response, what position did she argue for regarding whether a system-maintained conflict log history table for logical replication should be implemented as a user table or a catalog table, and what distinction did she make between how extensions and core database statistics should handle this?",
+      "reference": "Shveta Malik argued that system-maintained statistics tables should be catalog tables rather than user tables when implemented as part of the core database, noting that she had never seen system-maintained statistics tables implemented as user tables. She distinguished this from extensions, which typically manage their own tables that are not part of the system catalog. She stated that if stats-related functionality is part of the core database, it makes more sense to implement it as a catalog table, provided there are no major obstacles.",
+      "topic": "logical_replication_conflict_logging_catalog_design",
+      "sourceId": "CAJpy0uBa-_s-BhdenXVz2uRy-n8JXfP3KY_P9yUfnE-=W_XFig@mail.gmail.com",
+      "sourceSubject": "Re: Proposal: Conflict log history table for Logical Replication"
+    },
+    {
+      "id": 9,
+      "question": "What specific grammar modification did Alvaro Herrera make to Antonin Houska's original patch for the REPACK command?",
+      "reference": "Alvaro modified the grammar to support 'REPACK [tab] USING INDEX' without specifying the index name. He stated this change allows all possibilities of the old commands to be covered, giving the chance to flag them as obsolete.",
+      "topic": "REPACK patch grammar changes",
+      "sourceId": "202507262156.sb455angijk6@alvherre.pgsql",
+      "sourceSubject": "Adding REPACK [concurrently]"
+    },
+    {
+      "id": 10,
+      "question": "What error message and hint did Fujii Masao receive when attempting REPACK (CONCURRENTLY) USING INDEX on the parallel_vacuum_table, and what did this indicate about table requirements?",
+      "reference": "Fujii Masao reported: 'REPACK (CONCURRENTLY) parallel_vacuum_table using index regular_sized_index; ERROR: cannot process relation \"parallel_vacuum_table\" HINT: Relation \"parallel_vacuum_table\" has no identity index.' This indicated that tables required an identity index to use REPACK CONCURRENTLY with the USING INDEX clause.",
+      "topic": "REPACK command testing and error handling",
+      "sourceId": "CAHGQGwHCeqXUoNaJuftWjOkB8_LSmyH7Md9qkR79sOtW9DJe2Q@mail.gmail.com",
+      "sourceSubject": "Re: Adding REPACK [concurrently]"
+    },
+    {
+      "id": 11,
+      "question": "What did Alvaro Herrera propose regarding the MVCC-safe mode implementation for REPACK, and what was his reasoning?",
+      "reference": "Alvaro proposed to leave the MVCC-safe mode part out initially, which is why it hasn't been reposted. He stated that having an MVCC-safe mode has drawbacks and that it should be made optional.",
+      "topic": "REPACK MVCC-safe mode design decision",
+      "sourceId": "202508091333.qvgvo7ikuezm@alvherre.pgsql",
+      "sourceSubject": "Re: Adding REPACK [concurrently]"
+    },
+    {
+      "id": 12,
+      "question": "What action did ZizhuanLiu decide to take regarding their patch for refactoring expression construction functions in makefuncs.c after receiving Tom Lane's feedback?",
+      "reference": "ZizhuanLiu agreed to drop the idea. After Tom Lane stated he didn't think the refactoring was worth the trouble, ZizhuanLiu responded: 'Thanks, you're right. Let's drop this idea for now.'",
+      "topic": "patch-review",
+      "sourceId": "tencent_1DA28D8E166122FEDBCC32815AA5B1157E05@qq.com",
+      "sourceSubject": "Re: [PATCH]Refactor and unify expression construction functions in makefuncs.c"
+    },
+    {
+      "id": 13,
+      "question": "In response to Surya Poondla's review, what timestamp function did Mats Kindahl switch to in the pg_rewind patch, and what was his reasoning for using 0 for sub-millisecond precision?",
+      "reference": "Switched to gettimeofday() and used 0 for sub-ms since this is not going to be critical. (We could use ns here as well, but that would only solve a race if you have two servers being promoted in the same ms, which I find unlikely, and there is a random number added for that situation.)",
+      "topic": "pg_rewind_timeline_promotion",
+      "sourceId": "CAN305gCcj4Mhr3uBQAnQCYsx6F-syp1rGtazoy=h+_EHO0xOXA@mail.gmail.com",
+      "sourceSubject": "Re: pg_rewind does not rewind diverging timelines"
+    },
+    {
+      "id": 14,
+      "question": "Who reviewed Mats Kindahl's pg_rewind patch, and did Mats accept their suggested changes?",
+      "reference": "Japin reviewed the patch addressing pg_rewind not rewinding diverging timelines, and Mats Kindahl accepted all of Japin's suggestions, providing an updated version of the patch with the changes incorporated.",
+      "topic": "pg_rewind patch review",
+      "sourceId": "CAN305gCaErXmG3fg48n50dWUC7=ETBBopuFL_cgyzutXUdp-5g@mail.gmail.com",
+      "sourceSubject": "Re: pg_rewind does not rewind diverging timelines"
+    }
+  ]
+}

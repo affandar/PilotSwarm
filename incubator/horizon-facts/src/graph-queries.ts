@@ -27,6 +27,7 @@ import type {
 } from "./types.js";
 import { scopeKeyAccessible } from "./types.js";
 import { cypherStr, cypherNum, cypherStrList } from "./sql-util.js";
+import { withDbRetry, isLabelCreationRaceError } from "./db-retry.js";
 import { nodeKeyOf, predicateKey as makePredicateKey, mergeAliases, decideEdgeUpsert, reinforceConfidence, clamp01 } from "./graph-model.js";
 
 const FACT_SEED = /^(shared|session):/;
@@ -62,24 +63,53 @@ export function agArr(v: any): string[] {
 }
 
 export class GraphQueries implements GraphInterface {
+    // Physical connections whose AGE session is already prepared (LOAD age +
+    // search_path). Keyed on the pg client object, which the pool reuses per
+    // physical connection — so the (otherwise per-checkout) setup runs ONCE per
+    // connection instead of on every graph op. On a remote cluster that removes
+    // ~2 round trips (a wasted LOAD attempt + SET) from every upsert. A reset
+    // connection yields a NEW client object → re-prepared automatically, and a
+    // stale-but-cached connection self-heals: its query fails transiently,
+    // withDbRetry re-acquires a fresh (unprepared) client, and we prepare that.
+    private readonly prepared = new WeakSet<object>();
+
     constructor(private readonly pool: any, private readonly graphName: string) {}
 
     private async withAge<T>(fn: (client: any) => Promise<T>): Promise<T> {
-        const client = await this.pool.connect();
-        try {
-            await prepareAgeSession(client);
-            return await fn(client);
-        } finally {
-            client.release();
-        }
+        // Retry the whole acquire+run on transient HorizonDB CONNECTION drops
+        // (needs a fresh client). The AGE label-creation race is handled one
+        // level down in cypher() — that one can retry on the same client.
+        return withDbRetry("graph_cypher", async () => {
+            const client = await this.pool.connect();
+            try {
+                if (!this.prepared.has(client)) {
+                    await prepareAgeSession(client);
+                    this.prepared.add(client);
+                }
+                return await fn(client);
+            } finally {
+                client.release();
+            }
+        });
     }
 
     private async cypher(client: any, query: string, columns: string[]): Promise<any[]> {
         // AGE requires a non-empty column list even for write-only queries
         // (DELETE/DETACH DELETE return no rows) — use a dummy column then.
         const colDefs = (columns.length > 0 ? columns : ["_ok"]).map((c) => `${c} agtype`).join(", ");
-        const { rows } = await client.query(
-            `SELECT * FROM cypher(${cypherStr(this.graphName)}, $$ ${query} $$) AS (${colDefs})`);
+        const sql = `SELECT * FROM cypher(${cypherStr(this.graphName)}, $$ ${query} $$) AS (${colDefs})`;
+        // AGE creates a label's backing table LAZILY on the first CREATE/MERGE
+        // that references it. Concurrent first-references to the same label race
+        // that internal CREATE TABLE; the loser aborts the whole statement
+        // (nothing persisted) with EITHER 42P07 `relation "<label>" already
+        // exists` OR 23505 on a pg_catalog index (e.g. pg_class_relname_nsp_index).
+        // The label now EXISTS, so re-running the SAME statement on the same
+        // client succeeds (each cypher call is its own autocommit statement, so a
+        // prior failure does not poison the connection). We only retry this
+        // label-race class — every other error surfaces. Label-agnostic on
+        // purpose: labels are owned by the layer above us.
+        const { rows } = await withDbRetry<{ rows: any[] }>(
+            "graph_label_race", () => client.query(sql), { isRetryable: isLabelCreationRaceError });
         return rows;
     }
 

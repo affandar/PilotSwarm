@@ -50,4 +50,24 @@ describe.skipIf(!HAS_DB)("graph nodes (GE1–GE5)", () => {
         await assert.rejects(() => store.upsertGraphNode({ kind: "person", name: "  ", agentId }), /kind and name/);
         await assert.rejects(() => store.upsertGraphNode({ kind: "person", name: "x" }), /agentId/);
     });
+
+    it("GE6 single quotes / backslashes in name + alias round-trip (Cypher escaping)", async () => {
+        // Regression: AGE's Cypher parser needs backslash-escaped quotes (\'),
+        // not SQL-style doubling (''). A name like "Andres's VM" previously threw
+        // `syntax error at or near "'s VM'"` and the node silently failed to persist.
+        const tricky = "Andres's VM \\ \"quote\"";
+        const ref = await store.upsertGraphNode({
+            kind: "concept", name: tricky, aliases: ["O'Brien's box"], agentId, evidence: ["shared:arch/m1"],
+        });
+        assert.equal(ref.created, true, "apostrophe/backslash node persists (not dropped by a syntax error)");
+        // It must be findable, and the exact name/alias must round-trip intact.
+        const hits = await store.searchGraphNodes({ kind: "concept", nameLike: "andres" }, { unrestricted: true });
+        assert.equal(hits.length, 1, "node with special chars is searchable");
+        assert.equal(hits[0].name, tricky, "name round-trips byte-for-byte");
+        assert.ok(hits[0].aliases.includes("O'Brien's box"), "apostrophe alias round-trips");
+        // Re-upsert resolves to the SAME node (escaping is stable across calls).
+        const again = await store.upsertGraphNode({ kind: "concept", name: tricky, agentId });
+        assert.equal(again.created, false, "re-upsert of special-char name merges, not duplicates");
+        assert.equal(again.nodeKey, ref.nodeKey);
+    });
 });

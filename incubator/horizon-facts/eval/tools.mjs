@@ -15,11 +15,15 @@ import { defineTool } from "@github/copilot-sdk";
  * Bridge the provider's AgentTool descriptors into Copilot SDK tools.
  *
  * @param {import("../dist/src/index.js").HorizonFactStore} store
- * @param {{ role: "reader"|"harvester", record?: Array<{name:string,args:any,result?:any,error?:string}> }} opts
+ * @param {{ role: "reader"|"harvester", embeddedOnly?: boolean, record?: Array<{name:string,args:any,result?:any,error?:string,durationMs?:number,startedAt?:number}> }} opts
  */
-export async function buildSdkTools(store, { role, record } = {}) {
+export async function buildSdkTools(store, { role, embeddedOnly, record } = {}) {
     const { createFactsTools } = await import("../dist/src/index.js");
-    const descriptors = createFactsTools(store, { role: role ?? "reader", agentId: `eval-${role}` });
+    const descriptors = createFactsTools(store, {
+        role: role ?? "reader",
+        agentId: `eval-${role}`,
+        embeddedOnly: embeddedOnly ?? false,
+    });
 
     // HARVESTER POLICY (05 golden rule #3): evidence is optional in the
     // provider CONTRACT, but this app's harvester norm is always-evidence —
@@ -50,13 +54,16 @@ export async function buildSdkTools(store, { role, record } = {}) {
             // the SDK wedging on parallel permission approvals for one tool.
             skipPermission: true,
             handler: async (args) => {
-                const entry = { name: d.name, args: args ?? {} };
+                const entry = { name: d.name, args: args ?? {}, startedAt: Date.now() };
+                const t0 = performance.now();
                 try {
                     const result = await d.handler(args ?? {});
+                    entry.durationMs = +(performance.now() - t0).toFixed(1);
                     entry.result = result;
                     record?.push(entry);
                     return result;
                 } catch (err) {
+                    entry.durationMs = +(performance.now() - t0).toFixed(1);
                     entry.error = String(err?.message ?? err);
                     record?.push(entry);
                     throw err;
@@ -109,11 +116,25 @@ export const HARVESTER_SYSTEM_PROMPT = [
     "     lowercase free-text predicate, and evidence: [<the email's scopeKey>]. One verb per",
     "     edge. Use 'authored' when a person wrote/submitted a patch, 'reviews' when a person",
     "     reviews a patch, 'comments on' for commentary — consistent verbs reinforce edges.",
+    "  5b. SIMILARITY REFINEMENT (do this for each email before marking it crawled): call",
+    "     facts_similar({ scopeKey: <this email's scopeKey>, k: 5 }) to find the semantically",
+    "     nearest OTHER emails already in the corpus. For each strong neighbour (score high",
+    "     enough to be clearly on the same topic/thread), RESOLVE the entities it points to via",
+    "     graph_search_nodes and, when this email and the neighbour genuinely relate (same patch,",
+    "     reply, revives an argument, supersedes a proposal), add a cross-email edge between the",
+    "     relevant nodes with a precise predicate and BOTH emails' scopeKeys as evidence. This is",
+    "     how cross-thread structure (not just within-email facts) gets into the graph. Do NOT",
+    "     invent relationships the texts do not support; skip weak/unrelated neighbours.",
     "  6. facts_mark_crawled with stamps: [{ scopeKey, contentHash }] — the EXACT contentHash",
     "     you read in step 1. NEVER mark an email crawled before you have incorporated it",
-    "     (steps 3-5): marking without incorporating permanently loses that email's knowledge.",
+    "     (steps 3-5b): marking without incorporating permanently loses that email's knowledge.",
     "     If a stamp is skipped the fact changed under you: that is fine, it stays queued and",
     "     you will see the new version on a later batch.",
+    "",
+    "NOTE: the queue only hands you facts that are already EMBEDDED (so facts_similar works on",
+    "them). If facts_read_uncrawled returns fewer than expected — or count:0 while you believe",
+    "emails remain — some are still being embedded in the background; just END YOUR TURN and you",
+    "will be re-prompted to pull them once their embeddings are ready.",
     "",
     "After finishing ONE batch of 5, END YOUR TURN with a one-line progress note — you will be",
     "prompted to continue. Always pass evidence. Keep predicates short. When the queue is empty,",

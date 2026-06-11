@@ -89,7 +89,7 @@ export async function runMigrations(
 }
 
 /** Stable 32-bit hash of a schema name combined with a per-system seed. */
-function hashSchemaName(schema: string, seed: number): number {
+export function hashSchemaName(schema: string, seed: number): number {
     let hash = seed;
     for (let i = 0; i < schema.length; i++) {
         hash = ((hash << 5) - hash + schema.charCodeAt(i)) | 0;

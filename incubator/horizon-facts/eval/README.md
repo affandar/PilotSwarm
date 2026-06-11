@@ -1,5 +1,10 @@
 # Scenario tier — Copilot SDK agents on the real provider surface
 
+> For a full system overview — how the harvester *builds* the knowledge base and
+> how the whole eval surface (system + quality tiers) fits together — see
+> [`docs/harvester-and-eval.md`](../docs/harvester-and-eval.md). This file
+> documents the scenario tier specifically.
+
 The [06-provider-test-plan §10](../../../docs/proposals/enhancedfactstore/06-provider-test-plan.md)
 scenario tier: **GitHub Copilot SDK** agents (no PilotSwarm) drive the
 provider's own LLM tool surface ([src/agent-tools.ts](../src/agent-tools.ts),

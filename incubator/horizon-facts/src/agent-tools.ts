@@ -37,6 +37,15 @@ export interface FactsToolsOptions {
     resolveAccess?: (args: any) => AccessContext;
     /** Agent identity recorded on graph writes. Default "harvester". */
     agentId?: string;
+    /**
+     * When true, the privileged `facts_read_uncrawled` queue tool only returns
+     * facts that already have an embedding; un-embedded facts are skipped this
+     * turn and reappear once the in-DB embed loop catches up. This is a HARVEST
+     * POLICY set by the host (not an LLM-controlled argument): enable it when
+     * embeddings are configured so the harvester can similarity-refine the
+     * graph from each fact's stored vector.
+     */
+    embeddedOnly?: boolean;
 }
 
 type Store = EnhancedFactStore & GraphInterface;
@@ -45,6 +54,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
     const role = opts.role ?? "reader";
     const access = opts.resolveAccess ?? (() => ({ unrestricted: true }));
     const agentId = opts.agentId ?? "harvester";
+    const embeddedOnly = opts.embeddedOnly ?? false;
     const tools: AgentTool[] = [];
 
     // ── §1 retrieval (reader + harvester) ────────────────────────────────────
@@ -183,7 +193,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
                 limit: { type: "number", description: "Max facts this batch (default 20)." },
             },
         },
-        handler: (a) => store.readUncrawledFacts({ namespace: a.namespace, limit: a.limit }),
+        handler: (a) => store.readUncrawledFacts({ namespace: a.namespace, limit: a.limit, embeddedOnly }),
     });
 
     tools.push({

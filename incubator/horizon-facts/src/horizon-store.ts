@@ -24,10 +24,11 @@ import type {
 import type { HorizonFactsConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { EmbeddingClient, toVectorLiteral } from "./embedding-client.js";
-import { loadMigrations, runMigrations, HORIZON_FACTS_LOCK_SEED } from "./horizon-migrator.js";
+import { loadMigrations, runMigrations, HORIZON_FACTS_LOCK_SEED, hashSchemaName } from "./horizon-migrator.js";
 import { assertExtensionsAvailable, assertDurableHttpUsable } from "./preconditions.js";
 import { GraphQueries } from "./graph-queries.js";
 import { ident } from "./sql-util.js";
+import { withDbRetry } from "./db-retry.js";
 import { buildLexicalQuery, namespacePrefix, fuseWeighted, type Candidate } from "./query-builder.js";
 
 function computeScopeKey(key: string, shared: boolean, sessionId?: string | null): string {
@@ -104,7 +105,14 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
         await assertDurableHttpUsable(this.pool);
         this.initialized = true;
         if (this.cfg.embedding) {
-            await this.configureEmbedder(this.cfg.embedding);
+            // Auto-start the eternal embed loop on init. configureEmbedder with
+            // restartIfRunning:false refreshes the durable config vars WITHOUT
+            // bouncing a loop another instance already started, and
+            // startEmbedder is idempotent + advisory-locked, so repeated /
+            // concurrent provider instantiations converge on exactly one
+            // running loop per schema rather than creating duplicates.
+            await this.configureEmbedder(this.cfg.embedding, { restartIfRunning: false });
+            await this.startEmbedder();
         }
     }
 
@@ -117,11 +125,11 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
     async storeFact(input: StoreFactInput): Promise<{ key: string; shared: boolean; stored: true }> {
         const shared = input.shared === true;
         const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
-        await this.pool.query(
+        await withDbRetry("facts_store", () => this.pool.query(
             `SELECT ${this.s}.facts_store($1, $2, $3::jsonb, $4, $5, $6, $7)`,
             [scopeKey, input.key, JSON.stringify(input.value), input.agentId ?? null,
              input.sessionId ?? null, shared, input.tags ?? []],
-        );
+        ));
         return { key: input.key, shared, stored: true };
     }
 
@@ -129,7 +137,7 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
         const keyPattern = query.keyPattern
             ? (query.keyPattern.includes("%") ? query.keyPattern : query.keyPattern.replaceAll("*", "%"))
             : null;
-        const { rows } = await this.pool.query(
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_read", () => this.pool.query(
             `SELECT * FROM ${this.s}.facts_read($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [
                 access?.readerSessionId ?? query.sessionId ?? null,
@@ -142,26 +150,27 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
                 query.agentId ?? null,
                 Math.min(query.limit ?? 50, 1000),
             ],
-        );
+        ));
         return { count: rows.length, facts: rows.map(mapFactRow) };
     }
 
     async deleteFact(input: DeleteFactInput): Promise<{ key: string; shared: boolean; deleted: boolean }> {
         const shared = input.shared === true;
         const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
-        const { rows } = await this.pool.query(`SELECT ${this.s}.facts_delete($1) AS deleted`, [scopeKey]);
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_delete", () => this.pool.query(
+            `SELECT ${this.s}.facts_delete($1) AS deleted`, [scopeKey]));
         return { key: input.key, shared, deleted: rows[0]?.deleted === true };
     }
 
     async deleteSessionFactsForSession(sessionId: string): Promise<number> {
-        const { rows } = await this.pool.query(
-            `SELECT ${this.s}.facts_delete_session($1) AS n`, [sessionId]);
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_delete_session", () => this.pool.query(
+            `SELECT ${this.s}.facts_delete_session($1) AS n`, [sessionId]));
         return Number(rows[0]?.n ?? 0);
     }
 
     private async stats(mode: "session" | "sessions" | "shared", sessionIds: string[]): Promise<FactsStatsRow[]> {
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.s}.facts_stats($1, $2)`, [mode, sessionIds]);
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_stats", () => this.pool.query(
+            `SELECT * FROM ${this.s}.facts_stats($1, $2)`, [mode, sessionIds]));
         return rows.map((r: any) => ({
             namespace: r.namespace,
             factCount: Number(r.fact_count),
@@ -240,23 +249,23 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
     }
 
     private async lexicalCandidates(query: string, opts: SearchOpts, access: AccessContext, poolN: number) {
-        const { rows } = await this.pool.query(
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_search_lexical", () => this.pool.query(
             `SELECT * FROM ${this.s}.facts_search_lexical($1, $2, $3, $4, $5, $6, $7, $8)`,
             [query, ...this.aclParams(access, opts.scope),
              namespacePrefix(opts.namespace), opts.tags?.length ? opts.tags : null, poolN],
-        );
+        ));
         return rows.map((r: any) => ({ fact: r, score: Number(r.rank) }));
     }
 
     private async semanticCandidates(query: string, opts: SearchOpts, access: AccessContext, poolN: number) {
         const embedder = await this.requireQueryEmbedder();
         const vec = toVectorLiteral(await embedder.client.embed(query));
-        const { rows } = await this.pool.query(
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_search_semantic", () => this.pool.query(
             `SELECT * FROM ${this.s}.facts_search_semantic($1::vector, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
             [vec, embedder.model, ...this.aclParams(access, opts.scope),
              namespacePrefix(opts.namespace), opts.tags?.length ? opts.tags : null,
              opts.minSemanticScore ?? 0, poolN],
-        );
+        ));
         return rows.map((r: any) => ({ fact: r, score: Number(r.sim) }));
     }
 
@@ -264,11 +273,11 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
         // The anchor is ACL-checked INSIDE the proc: an existing-but-inaccessible
         // anchor returns empty, byte-identical to an unknown key (01 §4.3).
         const model = this.embedConfig?.model ?? null;
-        const { rows } = await this.pool.query(
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_similar", () => this.pool.query(
             `SELECT * FROM ${this.s}.facts_similar($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [scopeKey, model, ...this.aclParams(access, "accessible"),
              namespacePrefix(opts.namespace), opts.minScore ?? 0, Math.max(1, Math.min(opts.k ?? 8, 100))],
-        );
+        ));
         const facts: ScoredFact[] = rows.map((r: any) => ({
             ...mapFactRow(r), score: Number(r.sim), signals: { semantic: Number(r.sim) },
         }));
@@ -277,12 +286,12 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
 
     // ─── crawl tracking (02 §3a — PRIVILEGED harvester surface) ──────────────
 
-    async readUncrawledFacts(opts: { namespace?: string; limit?: number } = {}):
+    async readUncrawledFacts(opts: { namespace?: string; limit?: number; embeddedOnly?: boolean } = {}):
         Promise<{ count: number; facts: (FactRecord & { contentHash: string })[] }> {
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.s}.facts_read_uncrawled($1, $2)`,
-            [namespacePrefix(opts.namespace), Math.min(opts.limit ?? 20, 500)],
-        );
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_read_uncrawled", () => this.pool.query(
+            `SELECT * FROM ${this.s}.facts_read_uncrawled($1, $2, $3)`,
+            [namespacePrefix(opts.namespace), Math.min(opts.limit ?? 20, 500), opts.embeddedOnly ?? false],
+        ));
         const facts = rows.map((r: any) => ({ ...mapFactRow(r), contentHash: r.content_hash }));
         return { count: facts.length, facts };
     }
@@ -294,8 +303,8 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
                 throw new Error("markFactsCrawled: every stamp requires { scopeKey, contentHash } (the receipt from readUncrawledFacts)");
             }
         }
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.s}.facts_mark_crawled($1::jsonb)`, [JSON.stringify(stamps)]);
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_mark_crawled", () => this.pool.query(
+            `SELECT * FROM ${this.s}.facts_mark_crawled($1::jsonb)`, [JSON.stringify(stamps)]));
         return { marked: Number(rows[0]?.marked ?? 0), skipped: Number(rows[0]?.skipped ?? 0) };
     }
 
@@ -314,7 +323,30 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
         return `hz-embed-cron:${this.schema}`;
     }
 
-    async configureEmbedder(endpoint: EmbeddingEndpointConfig): Promise<EmbedderStatus> {
+    /**
+     * Serialize embedder start/restart across processes. Two providers
+     * initializing the same schema concurrently must not both df.start (the
+     * design is ONE loop per schema, label hz-embed-cron:<schema>). Reuses the
+     * migrator's advisory-lock pattern: hold a session-level lock on a single
+     * checked-out client for the whole critical section, then release it.
+     */
+    private async withEmbedderLock<T>(fn: (client: any) => Promise<T>): Promise<T> {
+        const lockKey = hashSchemaName(this.embedderLabel, HORIZON_FACTS_LOCK_SEED);
+        const client = await this.pool.connect();
+        try {
+            await client.query("SELECT pg_advisory_lock($1)", [lockKey]);
+            return await fn(client);
+        } finally {
+            await client.query("SELECT pg_advisory_unlock($1)", [lockKey]).catch(() => {});
+            client.release();
+        }
+    }
+
+    async configureEmbedder(
+        endpoint: EmbeddingEndpointConfig,
+        opts: { restartIfRunning?: boolean } = {},
+    ): Promise<EmbedderStatus> {
+        const restartIfRunning = opts.restartIfRunning ?? true;
         if (!endpoint?.url || !endpoint?.model) {
             throw new Error("configureEmbedder requires { url, model, dim }");
         }
@@ -345,15 +377,19 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
         this.embedConfig = { ...endpoint, url };
         this.queryEmbedder = undefined;
 
-        // Restart-on-configure: a running loop never sees new config otherwise.
-        const st = await this.embedderStatus();
-        if (st.running && st.instanceId) {
-            await this.pool.query(`SELECT df.cancel($1, $2)`, [st.instanceId, "reconfigured"]);
+        // Restart-on-configure: a running loop never sees new config otherwise
+        // (pg_durable captures vars at df.start). Skipped when restartIfRunning
+        // is false — the auto-start path on initialize() must not bounce a loop
+        // another instance is already running.
+        if (!restartIfRunning) return this.embedderStatus();
+        return this.withEmbedderLock(async (client) => {
+            const st = await this.embedderStatus(client);
+            if (!st.running || !st.instanceId) return st;
+            await client.query(`SELECT df.cancel($1, $2)`, [st.instanceId, "reconfigured"]);
             const interval = await this.getvar("interval");
             const batch = await this.getvar("batch");
-            return this.startLoop(Number(interval ?? 5), Number(batch ?? 128));
-        }
-        return st;
+            return this.startLoop(Number(interval ?? 5), Number(batch ?? 128), client);
+        });
     }
 
     async startEmbedder(opts: { intervalSeconds?: number; batch?: number } = {}): Promise<EmbedderStatus> {
@@ -366,19 +402,24 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
         if (!url) {
             throw new Error("startEmbedder: embedder not configured — call configureEmbedder(endpoint) first.");
         }
-        const existing = await this.embedderStatus();
-        if (existing.running) return existing;   // idempotent (E3)
-        return this.startLoop(intervalSeconds, batch);
+        // Advisory-locked check-then-start so concurrent callers can't both
+        // df.start: re-check status UNDER the lock and only start if no loop is
+        // already running (E3 idempotent).
+        return this.withEmbedderLock(async (client) => {
+            const existing = await this.embedderStatus(client);
+            if (existing.running) return existing;
+            return this.startLoop(intervalSeconds, batch, client);
+        });
     }
 
-    private async startLoop(intervalSeconds: number, batch: number): Promise<EmbedderStatus> {
-        await this.pool.query(`SELECT df.setvar($1, $2)`, [this.varName("interval"), String(intervalSeconds)]);
-        await this.pool.query(`SELECT df.setvar($1, $2)`, [this.varName("batch"), String(batch)]);
-        await this.pool.query(
+    private async startLoop(intervalSeconds: number, batch: number, exec: any = this.pool): Promise<EmbedderStatus> {
+        await exec.query(`SELECT df.setvar($1, $2)`, [this.varName("interval"), String(intervalSeconds)]);
+        await exec.query(`SELECT df.setvar($1, $2)`, [this.varName("batch"), String(batch)]);
+        await exec.query(
             `SELECT df.start(${this.s}.embedder_workflow($1, $2), $3, NULL) AS iid`,
             [intervalSeconds, batch, this.embedderLabel],
         );
-        return this.embedderStatus();
+        return this.embedderStatus(exec);
     }
 
     async stopEmbedder(reason = "stopped by host"): Promise<EmbedderStatus> {
@@ -389,8 +430,8 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
         return this.embedderStatus();
     }
 
-    async embedderStatus(): Promise<EmbedderStatus> {
-        const { rows } = await this.pool.query(
+    async embedderStatus(exec: any = this.pool): Promise<EmbedderStatus> {
+        const { rows } = await exec.query(
             `SELECT id, status FROM df.instances
              WHERE label = $1 ORDER BY created_at DESC LIMIT 1`,
             [this.embedderLabel]);

@@ -30,7 +30,8 @@ export interface HorizonFactsConfig {
      * Embedding endpoint (provider-neutral, see EmbeddingEndpointConfig).
      * Required for semantic/hybrid search and for this provider's in-DB embedding
      * pipeline. Lexical + graph work without it. When provided, initialize()
-     * calls configureEmbedder() with it automatically.
+     * configures AND auto-starts the eternal in-DB embed loop (idempotent +
+     * advisory-locked, so repeated/concurrent instantiations never duplicate it).
      */
     embedding?: EmbeddingEndpointConfig;
     /**
@@ -46,7 +47,14 @@ export interface HorizonFactsConfig {
      * back to hnsw when pg_diskann is unavailable.
      */
     annIndex?: "diskann" | "hnsw" | "auto";
-    /** Max pool connections. Default 3. */
+    /**
+     * Max pool connections. Default 10. The graph layer issues several
+     * sequential Cypher statements per upsert, and the harvester fires graph
+     * tool calls in parallel; a small pool serializes those behind a few
+     * connections and connection-queue wait dominates latency (a pool of 3 was
+     * measured ~2-4x slower than 10 under concurrency=8). Override per-cluster
+     * with HORIZON_POOL_MAX, bearing in mind the cluster's max_connections.
+     */
     poolMax?: number;
     /** AAD / managed-identity auth (mirrors PilotSwarm's PgFactStore). */
     useManagedIdentity?: boolean;
@@ -55,7 +63,7 @@ export interface HorizonFactsConfig {
 
 export const DEFAULT_SCHEMA = "horizon_facts";
 export const DEFAULT_GRAPH = "horizon_facts";
-export const DEFAULT_POOL_MAX = 3;
+export const DEFAULT_POOL_MAX = 10;
 
 /** Resolve config from explicit values, falling back to HORIZON_* env vars. */
 export function resolveConfig(partial: Partial<HorizonFactsConfig> = {}): HorizonFactsConfig {
@@ -80,7 +88,9 @@ export function resolveConfig(partial: Partial<HorizonFactsConfig> = {}): Horizo
         annIndex: partial.annIndex
             ?? (process.env.HORIZON_ANN_INDEX as HorizonFactsConfig["annIndex"])
             ?? "auto",
-        poolMax: partial.poolMax ?? DEFAULT_POOL_MAX,
+        poolMax: partial.poolMax
+            ?? (process.env.HORIZON_POOL_MAX ? Number(process.env.HORIZON_POOL_MAX) : undefined)
+            ?? DEFAULT_POOL_MAX,
         useManagedIdentity: partial.useManagedIdentity,
         aadUser: partial.aadUser,
     };

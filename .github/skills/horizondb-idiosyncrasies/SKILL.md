@@ -23,6 +23,10 @@ vanilla Postgres. This skill captures the verified facts and the workarounds.
 | `access to library "age" is not allowed` | `age` is in `shared_preload_libraries`; explicit `LOAD 'age'` is forbidden | tolerate that error — the library is already preloaded |
 | `syntax error at or near "WHERE"` from `cypher_parser.c` | AGE doesn't support `any(x IN list WHERE pred)` | use `size([x IN list WHERE pred]) > 0` |
 | `schema "..." already exists` creating an AGE graph | graph name collides with an existing schema (`create_graph` makes a schema) | give the graph a name distinct from every other schema |
+| `relation "<label>" already exists` (`42P07`) **or** `duplicate key … "pg_class_relname_nsp_index"` (`23505`) under concurrent graph writes | AGE creates a label's backing table lazily on first `CREATE`/`MERGE`; concurrent first-references race the DDL (two detection points) | re-run the same idempotent statement — the label now exists (see §3 concurrency) |
+| `cannot cast type agtype to jsonb` | `agtype` has no jsonb cast | `RETURN` scalars/`label()`/`type()`, parse client-side |
+| `ECONNRESET` / `Connection terminated unexpectedly` mid-workload | HorizonDB resets idle pooled TLS connections | guard + bounded retry on a **fresh** connection (§1.1) |
+| AGE writes are 600 ms–2 s each under concurrency | small connection pool → ops queue (connection-queue wait, not query cost) | raise `poolMax` for the parallelism (default now 10, `HORIZON_POOL_MAX`); per-connection AGE setup; fewer round-trips per upsert (§3 performance) |
 
 ## 1. Connection & TLS
 
@@ -46,6 +50,35 @@ For production trust verification, install the Azure CA bundle and use
 clusters, `uselibpqcompat=true` is the pragmatic path. The horizon-facts test
 harness normalizes this automatically — see `normalizeDbUrl()` in
 `incubator/horizon-facts/test/integration/_db.mjs`.
+
+### 1.1 Idle pooled connections get reset — guard + retry on a fresh connection
+
+HorizonDB (preview) intermittently drops **idle pooled TLS connections**. Under a
+sustained workload this surfaces two ways:
+
+- an **uncaught** `error` event on a checked-out client (`ECONNRESET`) — this
+  crashes a long-running Node process unless you attach a pool/client `error`
+  handler;
+- a **rejected** query (`ENOTCONN` / `EPIPE` / `Connection terminated
+  unexpectedly`) from `pool.query`.
+
+Neither partially commits, so re-running on a **fresh** connection is safe.
+Pattern (see `incubator/horizon-facts/src/db-retry.ts`):
+
+- `pool.on("error", …)` and a process-level guard that swallow **only** this
+  transient socket class;
+- a bounded retry (`withDbRetry`) that re-acquires a connection and re-runs.
+
+**Keep two retry classifiers distinct** — they target different recovery actions:
+
+| Classifier | Matches | Retry action |
+| --- | --- | --- |
+| `isTransientDbError` | `ECONNRESET`/`ENOTCONN`/`EPIPE`/`Connection terminated` + pg `08xxx`/`57P0x` | re-run on a **fresh** connection |
+| `isLabelCreationRaceError` | `42P07` **or** `23505` on a `pg_catalog` index (`pg_class_*`/`pg_type_*`/`pg_namespace_*`) | re-run the **same** statement (AGE label race, §3) |
+
+Do **not** lump the label race into the connection regex, and do **not** retry a
+bare `23505` — a unique violation on a *user* constraint is a real error; only
+the **system-catalog** index variant is the label race.
 
 ## 2. Extension allow-list (the #1 blocker)
 
@@ -205,6 +238,149 @@ throwaway graph before committing to a query shape.
   into the `cypher('graph', $$ ... $$)` literal. Use a strict escaping helper
   (see `cypherStr` / `cypherStrList` / `cypherNum` in horizon-facts `sql-util.ts`)
   and never interpolate untrusted text without it.
+- `agtype` has **no cast to `jsonb`** (`cannot cast type agtype to jsonb`). Don't
+  return a whole node/edge and cast it — `RETURN` the scalars you need, or
+  `label(x)` / `type(r)`, and parse the agtype scalars client-side.
+
+### AGE concurrency: lazy label creation races (SQLSTATE 42P07)
+
+AGE creates a label's backing **table** *lazily* — on the first `CREATE`/`MERGE`
+that references a label that doesn't exist yet. That internal check-then-`CREATE
+TABLE` is **not atomic and not serialized**. Any concurrent writer (a
+connection-per-call pool, or an LLM agent issuing parallel tool calls) that
+races the *first* reference to the same label hits the collision in **one of two
+forms**, depending on where the duplicate is detected:
+
+```
+relation "GraphNode" already exists                                  -- 42P07 duplicate_table
+duplicate key value violates unique constraint "pg_class_relname_nsp_index"  -- 23505 unique_violation
+```
+
+The `42P07` form is caught at the relation level; the `23505` form fires when two
+`CREATE TABLE` for the same label race into the **`pg_class` system catalog**
+before either registered. **Both are the same race** and both **abort the whole
+statement** (the MERGE/CREATE persisted nothing). Errors are **front-loaded** —
+they cluster on the first touch of each label, then disappear once the backing
+tables exist.
+
+> ⚠️ The `23505` form is easy to miss: the "already exists" text is in
+> `err.detail`, **not** `err.message` (the message is "duplicate key value …").
+> A message-only regex will silently let it through. Key off the SQLSTATE +
+> the catalog constraint name (`pg_class_*` / `pg_type_*` / `pg_namespace_*`).
+
+**Do not "fix" this in a migration by pre-creating labels.** In an open graph the
+label set (node kinds, edge predicates) is owned by the *application/agent layer*,
+not infrastructure — it's unbounded and unknowable at migrate time. Pre-creating
+a fixed set only masks the case you thought of.
+
+**Correct, label-agnostic fix:** the statement is idempotent, so on the label
+race, **re-run the same statement** — the label now exists and the re-run
+succeeds. Match **both** manifestations, and for `23505` retry **only** when the
+violated constraint is a system catalog index (never a user constraint):
+
+```ts
+const CATALOG_RACE_CONSTRAINT = /pg_(class|type|namespace)_/i;
+function isLabelCreationRaceError(err: any): boolean {
+  if (String(err?.code) === "42P07") return true;                     // duplicate_table
+  if (String(err?.code) === "23505") {                                // unique_violation…
+    const c = String(err?.constraint ?? ""), m = String(err?.message ?? "");
+    if (CATALOG_RACE_CONSTRAINT.test(c) || CATALOG_RACE_CONSTRAINT.test(m)) return true;  // …on a pg_catalog index
+  }
+  return /already exists/i.test(String(err?.message ?? ""));
+}
+```
+
+Implement it at the single point where Cypher is executed, so it covers every
+label automatically:
+
+```ts
+// in the one cypher(client, query) helper:
+const { rows } = await withDbRetry(
+  "graph_label_race",
+  () => client.query(sql),
+  { isRetryable: isLabelCreationRaceError });   // 42P07 OR 23505-on-catalog
+```
+
+Safe because each `cypher()` call is its own autocommit statement (a prior
+failure doesn't poison the connection) and all graph writes are idempotent MERGE.
+
+> **Ask of AGE/HorizonDB:** make first-reference label creation atomic
+> (advisory-lock or true `CREATE TABLE IF NOT EXISTS` semantics) so callers don't
+> have to retry DDL races on the hot path.
+
+### AGE concurrency: no unique constraints → MERGE can duplicate
+
+AGE vertices/edges have **no unique indexes/constraints**, so a naive
+`MERGE (f:Fact {scope_key}) MERGE (e)-[:EVIDENCED_BY]->(f)` can, under
+concurrency, create **duplicate** `:Fact` anchors; a later MERGE then binds every
+duplicate and multiplies edges. Use read-decide-write instead: check whether the
+edge already exists, bind exactly one anchor (`WITH … LIMIT 1`), and only create
+when none exists (see `linkEvidenceAnchor` in `graph-queries.ts`).
+
+### AGE performance: write latency = round-trips × RTT
+
+On a remote cluster, AGE write latency is dominated by the **number of round
+trips**, not query cost. Measured in a 119-fact agent harvest:
+
+| op | p50 | why |
+| --- | --- | --- |
+| `graph_upsert_edge` | ~610 ms | endpoint check + existing-edge read + create/reinforce = 3+ statements |
+| `graph_upsert_node` | ~730 ms | existence read + create/update + per-evidence anchor link |
+| single stored proc (`facts_mark_crawled`) | ~67 ms | one round trip |
+
+A single round trip to the remote cluster is ~45–100 ms, so a multi-statement
+upsert is a half-second of pure latency. **The agent-driven harvest is too noisy
+to measure tuning changes** (every run issues a different number of calls with
+different concurrency; unrelated ops like `facts_similar` swing 5× between runs
+from DB contention). Use a **deterministic microbenchmark** instead — see
+`incubator/horizon-facts/eval/bench-graph.mjs`, which drives a fixed set of
+upserts directly (no LLM) and reports clean p50/p95 plus the RTT and
+`age-prep` primitives.
+
+Three compounding causes and their fixes, **biggest lever first**:
+
+1. **Connection-pool starvation (the dominant cost).** The harvester fires graph
+   tool calls in **parallel**, but a small pool serializes them — the measured
+   per-op p50 is then mostly **connection-queue wait**, not work. Deterministic
+   sweep (80 nodes + 80 edges, concurrency 8):
+
+   | `poolMax` | node wall | node p50 | edge wall |
+   | --- | --- | --- | --- |
+   | 3 (old default) | 6017 ms | 407 ms | 4517 ms |
+   | 8 | 3415 ms | 224 ms | 1997 ms |
+   | 16 | 1506 ms | 97 ms | 2669 ms |
+
+   Pool 3→8 is **~45–55% faster**; 3→16 is **~75% faster** on nodes. The
+   "round-trips/op" estimate (`p50 / RTT`) collapses from ~9 to ~2 as the pool
+   grows — proving the apparent "9 round trips" was queue wait; the real work is
+   ~2 round trips (existence-check + create). **Fix:** size the pool for the
+   expected parallelism. horizon-facts now defaults `poolMax` to **10** (was 3),
+   overridable via `HORIZON_POOL_MAX` — bounded by the cluster's
+   `max_connections`.
+
+2. **Per-checkout session setup.** Running `LOAD 'age'` (a wasted *failed* round
+   trip when preloaded) + `SET search_path` on every graph-op checkout adds ~2
+   round trips (measured `age-prep` p50 ≈ 93 ms). **Fix:** do AGE session setup
+   **once per physical connection** — horizon-facts caches prepared connections
+   in a `WeakSet<client>` in `GraphQueries` (a reset connection yields a new
+   client object → re-prepared automatically). Measured **~17–18% faster** per
+   op. A pg-pool `connect`-event handler is the equivalent if you don't hold a
+   client wrapper:
+
+   ```ts
+   pool.on("connect", (client) => {
+     client.query("LOAD 'age'").catch(() => {});              // tolerate preloaded
+     client.query(`SET search_path = ag_catalog, "$user", public`).catch(() => {});
+   });
+   ```
+
+3. **Multi-statement upserts.** Collapse existence-check + write into a single
+   `MERGE … ON CREATE SET … ON MATCH SET …` where it's race-safe, and batch
+   independent upserts. Fewer statements = fewer round trips.
+
+> **Ask of AGE:** the `cypher()` SRF wrapper carries per-call overhead; a way to
+> issue multiple graph mutations per round trip (or a lighter write path) would
+> materially help write-heavy workloads.
 
 ## 4. AI / embeddings — two paths
 
