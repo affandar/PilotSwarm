@@ -242,7 +242,11 @@ async function exchangeAndCallGraph({
             scopes: [graphScope],
         });
     } catch (err) {
-        return { ok: false, reason: `OBO exchange failed: ${err?.errorCode || err?.message || err}` };
+        const code = err?.errorCode || "";
+        const msg = err?.errorMessage || err?.message || String(err);
+        const cid = err?.correlationId ? ` correlationId=${err.correlationId}` : "";
+        const sub = err?.subError ? ` subError=${err.subError}` : "";
+        return { ok: false, reason: `OBO exchange failed: ${code}${sub}${cid} :: ${msg}`.slice(0, 800) };
     }
     const downstreamAccessToken = tokenResult?.accessToken;
     if (typeof downstreamAccessToken !== "string" || downstreamAccessToken.length === 0) {

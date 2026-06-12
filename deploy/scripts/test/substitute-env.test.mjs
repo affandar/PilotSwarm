@@ -137,3 +137,59 @@ test("preserves CRLF input by re-emitting LF (Windows-friendly)", () => {
     assert.ok(out.includes("ACR_NAME=v2"));
   });
 });
+
+test("__PS_UNSET__ placeholder is treated as optional (passthrough on missing envMap value)", () => {
+  withTmp((dir) => {
+    const src = join(dir, "in.env");
+    const dst = join(dir, "out.env");
+    writeFileSync(
+      src,
+      "OBO_SMOKE_ENABLED=__PS_UNSET__\nPLUGIN_DIRS=__PS_UNSET__\nKV_NAME=placeholder\n",
+    );
+    const res = substituteOverlayEnv({
+      srcPath: src,
+      dstPath: dst,
+      envMap: { KV_NAME: "real-kv" },
+    });
+    assert.deepEqual(res.substituted.sort(), ["KV_NAME", "OBO_SMOKE_ENABLED", "PLUGIN_DIRS"]);
+    assert.deepEqual(res.unresolved, []);
+    const out = readFileSync(dst, "utf8");
+    assert.ok(out.includes("OBO_SMOKE_ENABLED=__PS_UNSET__"));
+    assert.ok(out.includes("PLUGIN_DIRS=__PS_UNSET__"));
+    assert.ok(out.includes("KV_NAME=real-kv"));
+  });
+});
+
+test("__PS_UNSET__ placeholder is overridden when envMap supplies a value", () => {
+  withTmp((dir) => {
+    const src = join(dir, "in.env");
+    const dst = join(dir, "out.env");
+    writeFileSync(src, "OBO_SMOKE_ENABLED=__PS_UNSET__\n");
+    substituteOverlayEnv({
+      srcPath: src,
+      dstPath: dst,
+      envMap: { OBO_SMOKE_ENABLED: "true" },
+    });
+    const out = readFileSync(dst, "utf8");
+    assert.ok(out.includes("OBO_SMOKE_ENABLED=true"));
+    assert.ok(!out.includes("__PS_UNSET__"));
+  });
+});
+
+test("non-__PS_UNSET__ placeholders still fail closed when envMap is missing", () => {
+  withTmp((dir) => {
+    const src = join(dir, "in.env");
+    const dst = join(dir, "out.env");
+    writeFileSync(src, "KV_NAME=placeholder\nOBO_SMOKE_ENABLED=__PS_UNSET__\n");
+    // KV_NAME has a non-sentinel placeholder → must remain required.
+    assert.throws(
+      () =>
+        substituteOverlayEnv({
+          srcPath: src,
+          dstPath: dst,
+          envMap: {},
+        }),
+      /Unresolved overlay \.env keys.*KV_NAME/,
+    );
+  });
+});

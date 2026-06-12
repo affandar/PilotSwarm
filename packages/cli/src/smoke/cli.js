@@ -27,7 +27,7 @@ Options:
                                              intended for CI)
   --portal-base-url <url>    Override portal base URL (default: derived
                              from the stamp env / DNS).
-  --skip-kube-bootstrap      Skip the implicit `az aks get-credentials`
+  --skip-kube-bootstrap      Skip the implicit 'az aks get-credentials'
                              step. Use this in CI where kubeconfig is
                              already loaded explicitly.
   --json                     Emit only the result JSON record on stdout.

@@ -349,7 +349,16 @@ export function assertSubscription(expected) {
 
 // Resolve the image tag for an `--image-tag` argument:
 //   - explicit value: returned verbatim
-//   - omitted:        `<env>-<short-sha>`, with `-dirty` suffix if working tree is dirty
+//   - omitted clean: `<env>-<short-sha>`
+//   - omitted dirty: `<env>-<short-sha>-dirty-<utc-timestamp>` so each build
+//                    from an uncommitted working tree produces a unique tag.
+//                    Without the timestamp, repeated dev iterations against
+//                    the same commit produce byte-identical kustomize manifests
+//                    and `kubectl apply` is a no-op even though a fresh image
+//                    was pushed under the same tag — requiring a manual
+//                    `kubectl rollout restart` to roll. Clean tags stay
+//                    deterministic (content-addressed by commit) so committed
+//                    rollouts remain reproducible.
 //
 // `git rev-parse --short HEAD` and `git status --porcelain` provide the inputs.
 export function resolveImageTag({ envName, explicit }) {
@@ -358,7 +367,10 @@ export function resolveImageTag({ envName, explicit }) {
   if (!sha) throw new Error("Unable to resolve git short SHA for image tag (is this a git repo?).");
   const status = run("git", ["status", "--porcelain"], { capture: true }).stdout;
   const dirty = status.trim().length > 0;
-  return dirty ? `${envName}-${sha}-dirty` : `${envName}-${sha}`;
+  if (!dirty) return `${envName}-${sha}`;
+  const now = new Date();
+  const ts = `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}${String(now.getUTCDate()).padStart(2, "0")}T${String(now.getUTCHours()).padStart(2, "0")}${String(now.getUTCMinutes()).padStart(2, "0")}${String(now.getUTCSeconds()).padStart(2, "0")}`;
+  return `${envName}-${sha}-dirty-${ts}`;
 }
 
 // ───────────────────────── Staging dir (FR-019) ─────────────────────────

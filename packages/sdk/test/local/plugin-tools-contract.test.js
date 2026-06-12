@@ -258,3 +258,37 @@ describe("plugin tools contract — worker auto-tool collision smoke check", () 
         }
     });
 });
+
+describe("plugin tools contract — orphan-name startup warning", () => {
+    it("warns when a plugin registers a tool name with no overlay claiming it", async () => {
+        const worker = makeWorker([fixture("plugin-with-tools")]);
+        const warnings = [];
+        const origWarn = console.warn;
+        console.warn = (msg) => { warnings.push(String(msg)); };
+        try {
+            await worker._registerPluginTools();
+        } finally {
+            console.warn = origWarn;
+        }
+        const orphanWarning = warnings.find(w => w.includes("registered with no overlay"));
+        expect(orphanWarning, `expected an orphan-name warning, got: ${JSON.stringify(warnings)}`).toBeDefined();
+        expect(orphanWarning).toContain("plugin-with-tools");
+        expect(orphanWarning).toContain("fixture_fake_tool_a");
+    });
+
+    it("stays silent when the plugin's own default.agent.md claims the registered tool names", async () => {
+        const worker = makeWorker([fixture("plugin-with-claimed-tools")]);
+        const warnings = [];
+        const origWarn = console.warn;
+        console.warn = (msg) => { warnings.push(String(msg)); };
+        try {
+            await worker._registerPluginTools();
+        } finally {
+            console.warn = origWarn;
+        }
+        const orphanWarning = warnings.find(w => w.includes("registered with no overlay"));
+        expect(orphanWarning, `expected no orphan-name warning, got: ${JSON.stringify(warnings)}`).toBeUndefined();
+        expect(worker.toolRegistry.has("fixture_claimed_tool")).toBe(true);
+        expect(worker._appDefaultToolNames).toContain("fixture_claimed_tool");
+    });
+});

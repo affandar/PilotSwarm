@@ -116,6 +116,26 @@ contract the smoke harness depends on):
   preserves the historical AKS OIDC issuer + service-account subject
   app FIC for tenants that explicitly allow it.
 
+> ⚠️ **OBO + MSI-as-FIC limitation (AAD policy).** When the worker UAMI
+> is itself federated via AKS workload identity (the standard PilotSwarm
+> deployment shape), the UAMI token AAD issues carries an `xms_ficinfo`
+> claim. AAD rejects FIC-derived tokens as `client_assertion` for an
+> OBO grant — the OBO step fails with **AADSTS700231**
+> ("NoMatchingFederatedIdentityRecordFound") even though the FIC
+> issuer/subject/audience match the token exactly. This is independent
+> of FIC config correctness and the audience must be the URI form
+> `api://AzureADTokenExchange` (the GUID form yields AADSTS700214).
+>
+> Therefore MSI-as-FIC works for **direct downstream resource access**
+> from the worker UAMI, but **not** for OBO grants. To run OBO smoke
+> green-path on a CORP-tenant stamp, fall back to a client secret on
+> the worker app (or, where tenant policy permits, `-FicPattern
+> aks-direct` which presents the projected SA token directly with no
+> UAMI hop and no `xms_ficinfo`).
+>
+> Full diagnostic recipe and unblock options:
+> [`docs/operations/obo-fic-limitations.md`](../../../docs/operations/obo-fic-limitations.md).
+
 ## The two OBO scope keys (read before invoking)
 
 The wrapper produces two scope-shaped values that look similar but

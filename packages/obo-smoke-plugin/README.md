@@ -26,6 +26,28 @@ in-process tool plugins: declare tools in `plugin.json`, export
 `registerTools(worker)`, and let the worker plugin loader register the
 tools at startup.
 
+## Visibility: handler registration vs. name declaration
+
+The worker plugin contract has two halves and **both are required** for a
+tool to actually appear in a session's LLM toolset:
+
+1. **Handler registration** — `plugin.json.tools` points at a `tools.js`
+   that exports `registerTools(worker)`. The plugin loader auto-invokes
+   it at `worker.start()` and inserts the handlers into the worker's
+   internal tool registry.
+2. **Name declaration** — a `default.agent.md` overlay (or any other
+   loaded `.agent.md` / `tools.json`) lists the tool names in its
+   `tools:` frontmatter. The session manager auto-attaches those names
+   to every session's effective tool list via the canonical
+   `appDefaultToolNames` path.
+
+Registering handlers without declaring names produces a runtime that
+holds callable code nobody can reach — chat sessions never see the
+tool, and `worker.start()` emits a warning to flag the gap. This plugin
+ships [`agents/default.agent.md`](./agents/default.agent.md) precisely
+to satisfy the second half of the contract; copy that pattern in your
+own plugin.
+
 ## Install
 
 This plugin loads through the worker's standard plugin contract — no

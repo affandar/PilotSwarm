@@ -34,9 +34,23 @@ export function substituteOverlayEnv({ srcPath, dstPath, envMap }) {
       outLines.push(line);
       continue;
     }
-    const [, key] = m;
+    const [, key, originalValue] = m;
     const v = envMap[key];
     if (v === undefined || v === null || v === "") {
+      // Keys whose overlay placeholder is exactly `__PS_UNSET__` are
+      // declared optional: when the stamp env doesn't supply a value we
+      // pass the sentinel through to the rendered .env. The worker /
+      // portal runtime strips `__PS_UNSET__` values at startup, so
+      // optional features (e.g. OBO smoke plugin keys, OBO_KEK_KID on
+      // non-OBO stamps) stay disabled rather than fail-closing the
+      // deploy. Required overlay keys must use any other placeholder
+      // (e.g. `placeholder`, an example value) so they remain caught by
+      // the fail-closed gate below.
+      if (originalValue === "__PS_UNSET__") {
+        outLines.push(line);
+        substituted.push(key);
+        continue;
+      }
       unresolved.add(key);
       outLines.push(line); // keep original placeholder so the file remains coherent on failure
       continue;

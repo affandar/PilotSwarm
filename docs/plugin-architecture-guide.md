@@ -374,6 +374,30 @@ never loads handler code. For a complete reference, see
 [`packages/obo-smoke-plugin/`](../packages/obo-smoke-plugin/), which
 registers the OBO live-smoke tools through this contract.
 
+### Visibility declaration (REQUIRED)
+
+A plugin's `plugin.json.tools` only injects **handlers** into the worker
+tool registry. It does **not** make those tools visible to any session's
+LLM. Visibility flows through the session manager's `inheritedToolNames`
+path, which is the union of:
+
+- `frameworkBaseToolNames` — from the system-tier `default.agent.md`
+  `tools:` frontmatter (PilotSwarm-owned).
+- `appDefaultToolNames` — from the app-tier `default.agent.md`
+  `tools:` frontmatter (your plugin's overlay).
+- `serializableConfig.toolNames` — the explicit list a caller passes on
+  `createSession({ toolNames: [...] })` (typically used by named system
+  agents declaring their own tool surface).
+
+To make a plugin tool callable from a chat session, the plugin must
+**also** ship a `default.agent.md` (or another agent / skill `tools.json`)
+that names the tool in its `tools:` frontmatter. Registering handlers
+without claiming names is a half-finished contract — the LLM will never
+see those tools, and the worker emits a startup warning to flag the
+orphan names. See
+[`packages/obo-smoke-plugin/agents/default.agent.md`](../packages/obo-smoke-plugin/agents/default.agent.md)
+for the canonical pattern.
+
 ---
 
 ## 8. Tool Registration (Code Layer)

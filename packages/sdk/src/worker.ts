@@ -851,7 +851,70 @@ export class PilotSwarmWorker {
                 `[PilotSwarmWorker] Registered tools from ${this._pluginToolModules.length} plugin module(s): ` +
                 this._pluginToolModules.map(p => p.pluginName).join(", "),
             );
+            this._warnOrphanPluginTools();
         }
+    }
+
+    /**
+     * Emit a startup warning for plugin-registered tool names that no
+     * loaded agent overlay or `.agent.md` `tools:` frontmatter claims.
+     *
+     * Plugin handler registration (`plugin.json.tools` → `registerTools()`)
+     * and tool-name declaration (`default.agent.md` `tools:` frontmatter)
+     * are two halves of the same contract. A name registered without a
+     * declaration is callable code that no LLM can reach. Warning loudly
+     * makes the gap discoverable instead of leaving authors to chase
+     * "tool not in toolset" failures at runtime.
+     *
+     * The check is best-effort and only inspects the names known at
+     * `worker.start()` time:
+     *   - framework + app default `.agent.md` tools (auto-attached to all
+     *     sessions via `inheritedToolNames`)
+     *   - loaded named/system agents' `tools:` frontmatter
+     *
+     * Callers that opt sessions in dynamically via
+     * `client.createSession({ toolNames: [...] })` are not visible here,
+     * so this is a warning rather than an error.
+     */
+    private _warnOrphanPluginTools(): void {
+        const pluginContributors = new Set(
+            this._pluginToolModules.map(p => p.pluginName),
+        );
+        const pluginToolNames: string[] = [];
+        for (const [name, contributor] of this._toolContributors.entries()) {
+            if (pluginContributors.has(contributor)) pluginToolNames.push(name);
+        }
+        if (pluginToolNames.length === 0) return;
+
+        const claimed = new Set<string>();
+        for (const n of this._frameworkBaseToolNames) claimed.add(n);
+        for (const n of this._appDefaultToolNames) claimed.add(n);
+        for (const agent of this._rawLoadedAgents) {
+            for (const n of agent.tools ?? []) claimed.add(n);
+        }
+        for (const agent of this._loadedSystemAgents) {
+            for (const n of agent.tools ?? []) claimed.add(n);
+        }
+
+        const orphans = pluginToolNames.filter(n => !claimed.has(n));
+        if (orphans.length === 0) return;
+
+        const byPlugin = new Map<string, string[]>();
+        for (const name of orphans) {
+            const contributor = this._toolContributors.get(name) ?? "unknown";
+            const list = byPlugin.get(contributor) ?? [];
+            list.push(name);
+            byPlugin.set(contributor, list);
+        }
+        const details = Array.from(byPlugin.entries())
+            .map(([plugin, names]) => `${plugin}: [${names.join(", ")}]`)
+            .join("; ");
+        console.warn(
+            `[PilotSwarmWorker] Plugin tool name(s) registered with no overlay claiming them — ` +
+            `these handlers are callable but no session will see them in its toolset. ` +
+            `Ship a default.agent.md (or named-agent .agent.md) with these names in the ` +
+            `"tools:" frontmatter. Orphans by plugin: ${details}`,
+        );
     }
 
     /**
