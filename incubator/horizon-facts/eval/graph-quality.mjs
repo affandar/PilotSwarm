@@ -15,16 +15,19 @@
 // reference answer grounded in the source email, so "correct" is well-defined.
 //
 // MODES:
-//   node eval/graph-quality.mjs gen   — sample corpus → questions JSON (corpus only)
-//   node eval/graph-quality.mjs run   — run both arms + judge → report (needs graph)
+//   node eval/graph-quality.mjs gen     — sample corpus → questions JSON (corpus only)
+//   node eval/graph-quality.mjs answer  — run both arms (QUERY_MODEL), persist transcripts (needs graph; NO judging)
+//   node eval/graph-quality.mjs judge   — score a transcripts file with JUDGE_MODEL (NO DB/web)
+//   node eval/graph-quality.mjs run     — single-cell answer+judge+console report (needs graph)
 //
-// Gates (SKIP, exit 0): GITHUB_TOKEN always; HORIZON_DATABASE_URL for `run`.
-// Env: EVAL_MODEL (arms, default claude-haiku-4.5), JUDGE_MODEL (default EVAL_MODEL),
-//   GEN_MODEL (default EVAL_MODEL), HARVEST_SCHEMA/HARVEST_GRAPH (default hz_eval/hzg_eval),
-//   HARVEST_CORPUS (default pgsql-hackers-recent.json), QGEN (gen count, default 14),
+// Gates (SKIP, exit 0): GITHUB_TOKEN always; HORIZON_DATABASE_URL for `run`/`answer`.
+// Env: EVAL_MODEL (base default), QUERY_MODEL (arms), JUDGE_MODEL, GEN_MODEL,
+//   HARVEST_SCHEMA/HARVEST_GRAPH (default hz_eval/hzg_eval), HARVEST_CORPUS
+//   (default pgsql-hackers-recent.json), QGEN (gen count, default 14),
 //   QLIMIT (run subset), QUESTIONS_FILE (default eval/graph-quality-questions.json).
+//   Sweep: HARVESTER_LABEL/QUERY_LABEL/JUDGE_LABEL, SWEEP_DIR, TRANSCRIPTS_FILE, SCORES_FILE.
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -56,6 +59,10 @@ function resolveGhToken() {
 }
 const GH_TOKEN = resolveGhToken();
 const MODEL = process.env.EVAL_MODEL || "claude-haiku-4.5";
+// QUERY_MODEL drives the two answer arms; JUDGE_MODEL the grader; GEN_MODEL the
+// question writer. All default to MODEL so single-cell runs need only EVAL_MODEL,
+// while the sweep sets them independently to fill the 3x3x3 tensor.
+const QUERY_MODEL = process.env.QUERY_MODEL || MODEL;
 const JUDGE_MODEL = process.env.JUDGE_MODEL || MODEL;
 const GEN_MODEL = process.env.GEN_MODEL || MODEL;
 const SCHEMA = process.env.HARVEST_SCHEMA || "hz_eval";
@@ -67,8 +74,20 @@ const QGEN = Number(process.env.QGEN || 14);
 const QLIMIT = process.env.QLIMIT ? Number(process.env.QLIMIT) : Infinity;
 const IDLE_MS = Number(process.env.EVAL_ARM_IDLE_MS || 90_000);
 
+// Sweep wiring: short labels for filenames + a sweep dir. answer writes
+// transcripts/<harvester>__<query>.json; judge writes
+// scores/<harvester>__<query>__<judge>.json. Defaults keep ad-hoc runs tidy.
+const HARVESTER_LABEL = process.env.HARVESTER_LABEL || "harv";
+const QUERY_LABEL = process.env.QUERY_LABEL || "query";
+const JUDGE_LABEL = process.env.JUDGE_LABEL || "judge";
+const SWEEP_DIR = process.env.SWEEP_DIR || path.join(__dirname, "sweep");
+const TRANSCRIPTS_FILE = process.env.TRANSCRIPTS_FILE
+    || path.join(SWEEP_DIR, "transcripts", `${HARVESTER_LABEL}__${QUERY_LABEL}.json`);
+const SCORES_FILE = process.env.SCORES_FILE
+    || path.join(SWEEP_DIR, "scores", `${HARVESTER_LABEL}__${QUERY_LABEL}__${JUDGE_LABEL}.json`);
+
 if (!GH_TOKEN) { console.log("SKIP graph-quality — missing GITHUB_TOKEN."); process.exit(0); }
-if (MODE === "run" && !DB_URL) { console.log("SKIP graph-quality run — missing HORIZON_DATABASE_URL."); process.exit(0); }
+if ((MODE === "run" || MODE === "answer") && !DB_URL) { console.log(`SKIP graph-quality ${MODE} — missing HORIZON_DATABASE_URL.`); process.exit(0); }
 
 const truncate = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n) + "…" : s; };
 const corpusPath = path.isAbsolute(CORPUS_FILE) ? CORPUS_FILE : path.join(__dirname, "corpus", CORPUS_FILE);
@@ -93,9 +112,9 @@ function parseJsonObject(text) {
 
 /** Send one prompt, let the model loop through tools until idle, return the final
  * assistant text + per-arm telemetry (wall time, tool-call count, tool names). */
-async function answerOnce(sdk, { systemMessage, tools, availableTools, prompt, label }) {
+async function answerOnce(sdk, { model, systemMessage, tools, availableTools, prompt, label }) {
     const session = await sdk.createSession({
-        model: MODEL,
+        model: model || MODEL,
         systemMessage: { mode: "replace", content: systemMessage },
         tools: tools ?? [],
         availableTools,
@@ -115,9 +134,15 @@ async function answerOnce(sdk, { systemMessage, tools, availableTools, prompt, l
             if (n) toolNames.add(n);
         }
     });
-    const done = new Promise((resolve, reject) => {
+    // Resolve-with-sentinel on terminal session error rather than reject: the
+    // SDK dispatches session.error synchronously from its own event loop, so a
+    // reject here escapes the try/catch around Promise.race and crashes the
+    // process. Returning a sentinel lets answerOnce report an error row and the
+    // caller continue to the next question.
+    let sessionErr = null;
+    const done = new Promise((resolve) => {
         session.on("session.idle", () => resolve());
-        session.on("session.error", (e) => reject(new Error(e?.data?.message || "session error")));
+        session.on("session.error", (e) => { sessionErr = new Error(e?.data?.message || "session error"); resolve(); });
     });
     const watchdog = new Promise((_, reject) => {
         const iv = setInterval(() => {
@@ -129,6 +154,7 @@ async function answerOnce(sdk, { systemMessage, tools, availableTools, prompt, l
     session.send({ prompt });
     try { await Promise.race([done, watchdog]); }
     catch (err) { return { text: text || `(no answer — ${err.message})`, toolCalls, toolNames: [...toolNames], wallMs: performance.now() - t0, error: err.message }; }
+    if (sessionErr) { return { text: text || `(no answer — ${sessionErr.message})`, toolCalls, toolNames: [...toolNames], wallMs: performance.now() - t0, error: sessionErr.message }; }
     return { text, toolCalls, toolNames: [...toolNames], wallMs: performance.now() - t0 };
 }
 
@@ -160,6 +186,7 @@ async function runGen(sdk) {
         if (out.length >= QGEN) break;
         const emailText = `From: ${m.from}\nSubject: ${m.subject}\nDate: ${m.date}\nMessage-ID: ${m.id}\n\n${truncate(m.body, 3500)}`;
         const r = await answerOnce(sdk, {
+            model: GEN_MODEL,
             systemMessage: GEN_SYSTEM,
             tools: [], availableTools: [],
             prompt: `Email:\n\n${emailText}\n\nWrite the question + reference JSON now.`,
@@ -180,11 +207,24 @@ async function runGen(sdk) {
 
 // ── RUN: baseline vs graph + judge ─────────────────────────────────────────────
 
+// Per-question web_fetch budget for the baseline arm. Applied as a soft prompt
+// instruction AND a hard cap enforced inside web-tools.mjs, so it actually
+// holds. Override via EVAL_WEB_FETCH_BUDGET.
+const WEB_FETCH_BUDGET = Number(process.env.EVAL_WEB_FETCH_BUDGET || 8);
+
+// Per-question web_search budget for the baseline arm. Same soft+hard scheme as
+// the fetch budget. Slow models (gpt-5.5) otherwise issue ~20 searches/question,
+// blowing up wall time and tripping the idle watchdog. Override via
+// EVAL_WEB_SEARCH_BUDGET.
+const WEB_SEARCH_BUDGET = Number(process.env.EVAL_WEB_SEARCH_BUDGET || 2);
+
 const BASELINE_SYSTEM = [
     "You are a PostgreSQL internals expert answering a question about the pgsql-hackers mailing list.",
     "Answer from your own knowledge of PostgreSQL and its development. You MAY use the web_fetch tool to",
     "retrieve public pages — e.g. postgresql.org docs, or the public pgsql-hackers archive at",
     "https://www.postgresql.org/message-id/<message-id> and https://www.postgresql.org/list/pgsql-hackers/ .",
+    `Budget your web access: call web_search at most ${WEB_SEARCH_BUDGET} times and web_fetch at most ${WEB_FETCH_BUDGET} times for this question. Prefer the`,
+    "monthly archive index, then the most relevant message permalinks, then answer with what you have.",
     "Give a SPECIFIC, factual answer naming people/patches/threads where relevant. If you cannot determine",
     "the answer, say so honestly rather than guessing.",
 ].join("\n");
@@ -215,7 +255,7 @@ const JUDGE_SYSTEM = [
     '{ "a_score": 1-5, "b_score": 1-5, "winner": "A"|"B"|"tie", "reason": "one sentence" }',
 ].join("\n");
 
-async function judge(sdk, q, ansA, ansB) {
+async function judge(sdk, q, ansA, ansB, model) {
     const prompt = [
         `QUESTION:\n${q.question}`, ``,
         `REFERENCE (ground truth):\n${q.reference}`, ``,
@@ -223,7 +263,7 @@ async function judge(sdk, q, ansA, ansB) {
         `ANSWER B:\n${truncate(ansB, 1800)}`, ``,
         `Grade now as JSON.`,
     ].join("\n");
-    const r = await answerOnce(sdk, { systemMessage: JUDGE_SYSTEM, tools: [], availableTools: [], prompt, label: "judge" });
+    const r = await answerOnce(sdk, { model: model || JUDGE_MODEL, systemMessage: JUDGE_SYSTEM, tools: [], availableTools: [], prompt, label: "judge" });
     const obj = parseJsonObject(r.text) || {};
     return {
         aScore: Number(obj.a_score) || 0, bScore: Number(obj.b_score) || 0,
@@ -232,49 +272,165 @@ async function judge(sdk, q, ansA, ansB) {
     };
 }
 
-async function runEval(sdk) {
+function loadQuestions() {
     if (!existsSync(QUESTIONS_FILE)) {
         console.log(`No questions file at ${QUESTIONS_FILE}. Run \`node eval/graph-quality.mjs gen\` first.`);
         process.exit(1);
     }
     const { questions } = JSON.parse(readFileSync(QUESTIONS_FILE, "utf8"));
-    const subset = questions.slice(0, Math.min(questions.length, QLIMIT));
-    console.log(`graph-quality RUN — ${subset.length} questions  arms model=${MODEL}  judge=${JUDGE_MODEL}`);
-    console.log(`  graph: schema=${SCHEMA} graph=${GRAPH}\n`);
+    return questions.slice(0, Math.min(questions.length, QLIMIT));
+}
 
+async function openStore() {
     const { HorizonFactStore } = await import("../dist/src/index.js");
-    const store = await HorizonFactStore.create({ connectionString: DB_URL, schema: SCHEMA, graphName: GRAPH, embeddingDim: 1536 });
-    // No initialize() — we read an already-harvested store. Confirm it exists.
+    // No initialize() — we read an already-harvested store. Dim must match the
+    // harvested schema (set QUALITY_EMBED_DIM to the harvest's embedding dim).
+    const dim = Number(process.env.QUALITY_EMBED_DIM || 1536);
+    return HorizonFactStore.create({ connectionString: DB_URL, schema: SCHEMA, graphName: GRAPH, embeddingDim: dim });
+}
+
+/** Run BOTH arms for a question subset with QUERY_MODEL; fix a random A/B
+ * assignment per question (persisted so judging is reproducible). Returns rows
+ * of { q, baseline, graph, graphIsA }. Shared by `run` and `answer`. */
+async function produceAnswers(sdk, subset, store, onProgress) {
     const { buildSdkTools } = await import("./tools.mjs");
     const { tools: graphTools, toolNames: graphToolNames } = await buildSdkTools(store, { role: "reader" });
     // Real web tools for the baseline (the SDK's built-ins are broken here).
     const { buildWebTools } = await import("./web-tools.mjs");
-    const { tools: webTools, toolNames: webToolNames } = buildWebTools();
 
     const rows = [];
-    try {
-        for (const q of subset) {
-            console.log(`Q${q.id}: ${truncate(q.question, 90)}`);
-            // Run both arms (sequential — keeps DB/LLM load clean and comparable).
+    for (const q of subset) {
+        console.log(`Q${q.id}: ${truncate(q.question, 90)}`);
+        try {
+            // Fresh web tools per question so the web_fetch budget resets each
+            // question (the cap lives inside the tool instance).
+            const { tools: webTools, toolNames: webToolNames } = buildWebTools({ maxFetches: WEB_FETCH_BUDGET, maxSearches: WEB_SEARCH_BUDGET });
+            // Sequential arms — keeps DB/LLM load clean and comparable.
             const baseline = await answerOnce(sdk, {
-                systemMessage: BASELINE_SYSTEM, tools: webTools, availableTools: webToolNames,
+                model: QUERY_MODEL, systemMessage: BASELINE_SYSTEM, tools: webTools, availableTools: webToolNames,
                 prompt: q.question, label: "baseline",
             });
             const graph = await answerOnce(sdk, {
-                systemMessage: GRAPH_SYSTEM, tools: graphTools, availableTools: graphToolNames,
+                model: QUERY_MODEL, systemMessage: GRAPH_SYSTEM, tools: graphTools, availableTools: graphToolNames,
                 prompt: q.question, label: "graph",
             });
-            // Blind + randomize A/B to remove position bias.
             const graphIsA = Math.random() < 0.5;
-            const ansA = graphIsA ? graph.text : baseline.text;
-            const ansB = graphIsA ? baseline.text : graph.text;
-            const j = await judge(sdk, q, ansA, ansB);
-            const graphScore = graphIsA ? j.aScore : j.bScore;
-            const baseScore = graphIsA ? j.bScore : j.aScore;
-            const winner = j.winner === "tie" ? "tie" : ((j.winner === "A") === graphIsA ? "graph" : "baseline");
-            rows.push({ q, baseline, graph, graphScore, baseScore, winner, reason: j.reason });
-            console.log(`   graph ${graphScore}/5 (${graph.toolCalls} tools, ${(graph.wallMs / 1000).toFixed(1)}s)  ` +
-                `baseline ${baseScore}/5 (${baseline.toolCalls} tools${baseline.toolNames.includes("web_fetch") ? "+web" : ""}, ${(baseline.wallMs / 1000).toFixed(1)}s)  → ${winner}`);
+            rows.push({ q, baseline, graph, graphIsA });
+            const webTag = (baseline.toolNames.includes("web_fetch") || baseline.toolNames.includes("web_search")) ? "+web" : "";
+            console.log(`   graph(${graph.toolCalls} tools, ${(graph.wallMs / 1000).toFixed(1)}s)  ` +
+                `baseline(${baseline.toolCalls} tools${webTag}, ${(baseline.wallMs / 1000).toFixed(1)}s)` +
+                `${graph.error ? " graph-ERR" : ""}${baseline.error ? " baseline-ERR" : ""}`);
+        } catch (err) {
+            // One question's hard failure (e.g. transient model/connection
+            // error) must NOT abort the whole cell. Record an error row and
+            // keep going so the rest of the run survives.
+            const msg = String(err?.message ?? err);
+            console.log(`   Q${q.id} FAILED: ${truncate(msg, 120)} — recording error row, continuing`);
+            const errArm = () => ({ text: `(no answer — ${msg})`, toolCalls: 0, toolNames: [], wallMs: 0, error: msg });
+            rows.push({ q, baseline: errArm(), graph: errArm(), graphIsA: true });
+        }
+        // Checkpoint after every question so a later failure never discards
+        // completed work.
+        try { onProgress?.(rows); } catch { /* checkpoint best-effort */ }
+    }
+    return rows;
+}
+
+// ── ANSWER: produce + persist transcripts (NO judging) ─────────────────────────
+
+async function runAnswer(sdk) {
+    const subset = loadQuestions();
+    console.log(`graph-quality ANSWER — ${subset.length} questions  query=${QUERY_MODEL}  harvester=${HARVESTER_LABEL}`);
+    console.log(`  graph: schema=${SCHEMA} graph=${GRAPH}\n`);
+    mkdirSync(path.dirname(TRANSCRIPTS_FILE), { recursive: true });
+    const serialize = (rows) => ({
+        generated: new Date().toISOString(),
+        harvester: HARVESTER_LABEL, query: QUERY_LABEL, queryModel: QUERY_MODEL,
+        schema: SCHEMA, graph: GRAPH, corpus: CORPUS_FILE, questionsFile: path.basename(QUESTIONS_FILE),
+        rows: rows.map((r) => ({
+            id: r.q.id, question: r.q.question, reference: r.q.reference, topic: r.q.topic, sourceId: r.q.sourceId,
+            graphIsA: r.graphIsA,
+            graph: { text: r.graph.text, toolCalls: r.graph.toolCalls, toolNames: r.graph.toolNames, wallMs: Math.round(r.graph.wallMs), error: r.graph.error || null },
+            baseline: { text: r.baseline.text, toolCalls: r.baseline.toolCalls, toolNames: r.baseline.toolNames, wallMs: Math.round(r.baseline.wallMs), error: r.baseline.error || null },
+        })),
+    });
+    // Checkpoint to a temp file after each question, then atomically promote to
+    // the final path only when all questions are done. A crash leaves the
+    // partial in .partial (inspectable) but never a truncated "final" file that
+    // the resumable driver would treat as complete.
+    const partialPath = TRANSCRIPTS_FILE + ".partial";
+    const checkpoint = (rows) => { try { writeFileSync(partialPath, JSON.stringify(serialize(rows), null, 2)); } catch { /* best-effort */ } };
+    const store = await openStore();
+    let rows;
+    try { rows = await produceAnswers(sdk, subset, store, checkpoint); }
+    finally { await store.close?.(); }
+
+    writeFileSync(TRANSCRIPTS_FILE, JSON.stringify(serialize(rows), null, 2));
+    try { if (existsSync(partialPath)) rmSync(partialPath); } catch { /* ignore */ }
+    const failed = rows.filter((r) => r.graph.error || r.baseline.error).length;
+    console.log(`\nwrote ${rows.length} transcripts → ${path.relative(process.cwd(), TRANSCRIPTS_FILE)}${failed ? ` (${failed} with errors)` : ""}`);
+}
+
+// ── JUDGE: score a transcripts file (NO DB, NO web — cheap + parallelizable) ────
+
+async function runJudge(sdk) {
+    if (!existsSync(TRANSCRIPTS_FILE)) {
+        console.log(`No transcripts at ${TRANSCRIPTS_FILE}. Run \`answer\` first.`); process.exit(1);
+    }
+    const t = JSON.parse(readFileSync(TRANSCRIPTS_FILE, "utf8"));
+    console.log(`graph-quality JUDGE — ${t.rows.length} Qs  judge=${JUDGE_MODEL}  (harvester=${t.harvester} query=${t.query})`);
+    const scored = [];
+    for (const row of t.rows) {
+        // Honor the transcript's persisted A/B assignment so the judge sees the
+        // exact same blinded layout regardless of which judge model runs.
+        const ansA = row.graphIsA ? row.graph.text : row.baseline.text;
+        const ansB = row.graphIsA ? row.baseline.text : row.graph.text;
+        const j = await judge(sdk, { question: row.question, reference: row.reference }, ansA, ansB, JUDGE_MODEL);
+        const graphScore = row.graphIsA ? j.aScore : j.bScore;
+        const baseScore = row.graphIsA ? j.bScore : j.aScore;
+        const winner = j.winner === "tie" ? "tie" : ((j.winner === "A") === row.graphIsA ? "graph" : "baseline");
+        scored.push({
+            id: row.id, question: row.question, topic: row.topic,
+            graphScore, baseScore, winner, reason: j.reason,
+            // bias-analysis signals (verbosity + abstention proxies):
+            graphLen: row.graph.text.length, baseLen: row.baseline.text.length,
+            graphTools: row.graph.toolCalls,
+            baseWeb: row.baseline.toolNames.includes("web_fetch") || row.baseline.toolNames.includes("web_search"),
+        });
+        console.log(`  Q${String(row.id).padStart(2)} g${graphScore} b${baseScore} → ${winner}`);
+    }
+    mkdirSync(path.dirname(SCORES_FILE), { recursive: true });
+    const n = scored.length || 1;
+    const gMean = scored.reduce((a, r) => a + r.graphScore, 0) / n;
+    const bMean = scored.reduce((a, r) => a + r.baseScore, 0) / n;
+    const wins = { graph: 0, baseline: 0, tie: 0 }; for (const r of scored) wins[r.winner]++;
+    writeFileSync(SCORES_FILE, JSON.stringify({
+        judged: new Date().toISOString(),
+        harvester: t.harvester, query: t.query, judge: JUDGE_LABEL, judgeModel: JUDGE_MODEL,
+        graphMean: +gMean.toFixed(3), baselineMean: +bMean.toFixed(3), wins, rows: scored,
+    }, null, 2));
+    console.log(`\ngraph ${gMean.toFixed(2)} / baseline ${bMean.toFixed(2)}  wins g${wins.graph}/b${wins.baseline}/t${wins.tie}`);
+    console.log(`wrote scores → ${path.relative(process.cwd(), SCORES_FILE)}`);
+}
+
+// ── RUN: single-cell answer + judge + console report (backward compatible) ─────
+
+async function runEval(sdk) {
+    const subset = loadQuestions();
+    console.log(`graph-quality RUN — ${subset.length} questions  arms model=${QUERY_MODEL}  judge=${JUDGE_MODEL}`);
+    console.log(`  graph: schema=${SCHEMA} graph=${GRAPH}\n`);
+    const store = await openStore();
+    const rows = [];
+    try {
+        const produced = await produceAnswers(sdk, subset, store);
+        for (const r of produced) {
+            const ansA = r.graphIsA ? r.graph.text : r.baseline.text;
+            const ansB = r.graphIsA ? r.baseline.text : r.graph.text;
+            const j = await judge(sdk, r.q, ansA, ansB, JUDGE_MODEL);
+            const graphScore = r.graphIsA ? j.aScore : j.bScore;
+            const baseScore = r.graphIsA ? j.bScore : j.aScore;
+            const winner = j.winner === "tie" ? "tie" : ((j.winner === "A") === r.graphIsA ? "graph" : "baseline");
+            rows.push({ q: r.q, baseline: r.baseline, graph: r.graph, graphScore, baseScore, winner, reason: j.reason });
         }
     } finally {
         await store.close?.();
@@ -296,7 +452,7 @@ function report(rows) {
     console.log(`\n${"═".repeat(78)}`);
     console.log("GRAPH-QUALITY EVAL — graph-grounded vs parametric+web");
     console.log("═".repeat(78));
-    console.log(`questions: ${rows.length}   arms: ${MODEL}   judge: ${JUDGE_MODEL}`);
+    console.log(`questions: ${rows.length}   arms: ${QUERY_MODEL}   judge: ${JUDGE_MODEL}`);
     console.log("");
     console.log(`mean score /5     graph ${gMean.toFixed(2)}     baseline ${bMean.toFixed(2)}     Δ ${(gMean - bMean >= 0 ? "+" : "")}${(gMean - bMean).toFixed(2)}`);
     console.log(`head-to-head      graph wins ${wins.graph}   baseline wins ${wins.baseline}   ties ${wins.tie}`);
@@ -329,8 +485,10 @@ async function main() {
     await sdk.start();
     try {
         if (MODE === "gen") await runGen(sdk);
+        else if (MODE === "answer") await runAnswer(sdk);
+        else if (MODE === "judge") await runJudge(sdk);
         else if (MODE === "run") await runEval(sdk);
-        else { console.log(`Unknown mode '${MODE}'. Use 'gen' or 'run'.`); process.exit(1); }
+        else { console.log(`Unknown mode '${MODE}'. Use 'gen' | 'answer' | 'judge' | 'run'.`); process.exit(1); }
     } finally {
         try { await sdk.stop(); } catch { /* ignore */ }
     }

@@ -1,0 +1,135 @@
+{
+  "generated": "2026-06-11T22:13:37.013Z",
+  "model": "claude-opus-4.8",
+  "corpus": "pgsql-hackers-recent.json",
+  "questions": [
+    {
+      "id": 1,
+      "question": "In Tatsuo Ishii's June 2023 PoC patch proposal for Row Pattern Recognition (RPR), which of the two SQL:2016 RPR features did the patch provide partial support for, and what clauses did he identify as the key parts of RPR?",
+      "reference": "Tatsuo Ishii's PoC patch provided partial support for Feature R020 (\"Row pattern recognition: WINDOW clause\"), as opposed to Feature R010 (\"Row pattern recognition: FROM clause\"). He identified PATTERN and DEFINE as the key clauses of RPR: DEFINE defines row pattern variables (e.g., START, UP, DOWN) associated with logical expressions, while PATTERN uses those variables with regular expression syntax (such as '+' for one or more) to create the matching pattern. He also noted the use of the PREV function to reference a column value in the previous row.",
+      "topic": "row pattern recognition patch",
+      "sourceId": "20230625.210509.1276733411677577841.t-ishii@sranhm.sra.co.jp",
+      "sourceSubject": "Row pattern recognition"
+    },
+    {
+      "id": 2,
+      "question": "In Tatsuo Ishii's v2 patch for row pattern recognition, what is the default AFTER MATCH SKIP behavior, and how do the rpr(i) results differ between SKIP PAST LAST ROW and SKIP TO NEXT ROW for the example query over VALUES (1),(2),(3),(4) with PATTERN (A B), A AS i<=2, B AS i<=3?",
+      "reference": "The default is AFTER MATCH SKIP PAST LAST ROW (matching the SQL standard default). With SKIP PAST LAST ROW, after matching i=1 (A) and i=2 (B), processing resumes at i=3, which doesn't satisfy A, so results are: 1 -> 1, and 2, 3, 4 -> NULL. With SKIP TO NEXT ROW, after the same match starting at i=1, rpr moves to i=2 rather than i=3, giving results: 1 -> 1, 2 -> 2, and 3, 4 -> NULL.",
+      "topic": "row pattern recognition",
+      "sourceId": "20230626.174507.2071661484706170221.t-ishii@sranhm.sra.co.jp",
+      "sourceSubject": "Re: Row pattern recognition"
+    },
+    {
+      "id": 3,
+      "question": "In the Row pattern recognition thread, what small correction did Tatsuo Ishii suggest regarding an expression, proposing it should read 'LAST(DOWN.price) AS lowest'?",
+      "reference": "Tatsuo Ishii raised a small question/correction suggesting that the expression should be written as 'LAST(DOWN.price) AS lowest' (presumably correcting a typo or different value in the original example in the Row pattern recognition discussion).",
+      "topic": "row pattern recognition",
+      "sourceId": "20230628.211700.191321983330956034.t-ishii@sranhm.sra.co.jp",
+      "sourceSubject": "Re: Row pattern recognition"
+    },
+    {
+      "id": 4,
+      "question": "In Tatsuo Ishii's row pattern recognition patch, how did he implement the PREV/NEXT functions in DEFINE expressions like \"price > PREV(price)\", and what did he say about this approach?",
+      "reference": "He prepared the DEFINE expression in ExecInitWindowAgg using ExecInitExpr, tweaking var->varno in the Var node so that PREV uses OUTER_VAR and NEXT uses INNER_VAR. Then in ExecWindowAgg he evaluated the expression with ExecEvalExpr, setting the previous row's TupleSlot to ExprContext->ecxt_outertuple and the next row's TupleSlot to ExprContext->ecxt_innertuple. He described this as a temporary hack that should be removed before v1 is committed, and asked for better ideas.",
+      "topic": "row pattern recognition",
+      "sourceId": "20230720.141513.1986681389874528348.t-ishii@sranhm.sra.co.jp",
+      "sourceSubject": "Re: Row pattern recognition"
+    },
+    {
+      "id": 5,
+      "question": "In the pgsql-hackers thread started by ls7777 (ls7777@yandex.ru) on 2025-04-03, what specific problem with pg_upgrade did the proposed patch aim to fix, and what two checkpoint values did it update for the new cluster?",
+      "reference": "ls7777 reported that during a pg_upgrade migration, the pg_commit_ts directory is not copied when track_commit_timestamp = on is set. The proposed patch copies the pg_commit_ts directory from the old cluster and updates the new cluster's 'Latest checkpoint's oldestCommitTsXid' and 'Latest checkpoint's newestCommitTsXid' values (if required). The author noted the patch applies to the master branch, was unsure what tests were needed, and observed that pg_upgrade time would increase by the time taken to copy the pg_commit_ts catalog.",
+      "topic": "pg_upgrade pg_commit_ts",
+      "sourceId": "182311743703924@mail.yandex.ru",
+      "sourceSubject": "Patch for migration of the pg_commit_ts directory"
+    },
+    {
+      "id": 6,
+      "question": "In the thread about the patch for migrating the pg_commit_ts directory during pg_upgrade, what did Hayato Kuroda (Fujitsu) suggest the test case should verify, and what question did he raise to Maxim about test placement?",
+      "reference": "Hayato Kuroda said it would be enough for the test to check whether the oldest/newest transactions on the old cluster can be tracked (i.e., commit timestamps remain trackable). He also asked Maxim where the test code should be placed, noting that pg_upgrade already has a 006 test while commit_ts does not yet have a 005 test.",
+      "topic": "pg_commit_ts migration test",
+      "sourceId": "OSCPR01MB149662EADD1EDA9811E7DF2B6F5E6A@OSCPR01MB14966.jpnprd01.prod.outlook.com",
+      "sourceSubject": "RE: Patch for migration of the pg_commit_ts directory"
+    },
+    {
+      "id": 7,
+      "question": "In the pg_upgrade thread about migrating the pg_commit_ts directory, what specific precedent did Amit Kapila suggest following when track_commit_timestamp is not enabled on the new server but there is valid commit_ts data to copy?",
+      "reference": "Amit Kapila suggested following what is done in check_new_cluster_replication_slots(): just as that function errors out when trying to copy slots while wal_level on the new server is minimal, pg_upgrade should error out if track_commit_timestamp is not enabled on the new server and there is valid commit_ts data to copy.",
+      "topic": "pg_upgrade commit_ts",
+      "sourceId": "CAA4eK1+Zayox=x84upet_gc4hrCKSwZSpnO9=Q4vH8rrJbsBOg@mail.gmail.com",
+      "sourceSubject": "Re: Patch for migration of the pg_commit_ts directory"
+    },
+    {
+      "id": 8,
+      "question": "In the thread about the patch for migration of the pg_commit_ts directory, what advice did Bruce Momjian give the patch author regarding translations of a message?",
+      "reference": "Bruce Momjian told the author that they don't need to worry about translations, because each language team will make sure the English message gets translated.",
+      "topic": "translations advice",
+      "sourceId": "aOPkC1kdXHasrJ3Z@momjian.us",
+      "sourceSubject": "Re: Patch for migration of the pg_commit_ts directory"
+    },
+    {
+      "id": 9,
+      "question": "In the thread proposing a conflict log history table for logical replication, what existing implementation did shveta malik cite as a precedent, and what specific characteristics (retention period, partitioning) did she note about it?",
+      "reference": "shveta malik pointed out that BDR (referenced via EnterpriseDB's PGD documentation) already has a conflict-log table called 'bdr.conflict_history'. She noted it is a catalog table that is partitioned on time and has a default retention period of 30 days.",
+      "topic": "conflict log history table",
+      "sourceId": "CAJpy0uB3y5Sd_LJyrhsyo48aP_WqTHC3oc0fz5m3obwGfc8JTQ@mail.gmail.com",
+      "sourceSubject": "Re: Proposal: Conflict log history table for Logical Replication"
+    },
+    {
+      "id": 10,
+      "question": "In the thread proposing a conflict log history table for logical replication, what does Dilip Kumar say about how permissions are typically handled for extension-managed tables that behave like catalogs, and how does he suggest applying this to the conflict log table?",
+      "reference": "Dilip Kumar states that in his experience, for extension-managed tables intended to behave like catalogs, users are generally granted only SELECT permission, so even though such a table is not a real catalog, it is catalog-like in terms of accessibility for non-admin users. He suggests that even if a user table is chosen for the conflict log history, its permissions could be controlled similarly (granting non-admin users only SELECT access).",
+      "topic": "logical replication conflict log table permissions",
+      "sourceId": "CAFiTN-tddmj=URKbUe=-nV_AKs9gFer1N1ivEne498Se9Tz5oA@mail.gmail.com",
+      "sourceSubject": "Re: Proposal: Conflict log history table for Logical Replication"
+    },
+    {
+      "id": 11,
+      "question": "In the thread proposing a conflict log history table for Logical Replication, what suggestion did Alastair Turner make regarding how to protect the error table from removal, and what additional benefit did he suggest this mechanism could provide?",
+      "reference": "Alastair Turner suggested that rather than constraining permissions on the table, the CREATE SUBSCRIPTION command could create a dependency relationship between the error table and the subscription. This would prevent removal of the table, even by a superuser. He further proposed that this dependency relationship could potentially be used as a basis for filtering the error tables out of FOR ALL TABLES subscriptions. He also recommended using CREATE ... IF NOT EXISTS semantics so an existing table of the right type could be reused or a new one created, giving the user control over having one table per subscription, one central table, or anything in between, and noted this is similar to how CloudBerry's load error tables behave.",
+      "topic": "logical replication conflict log table",
+      "sourceId": "CAC0GmyyLiNY1HQRc9mHjDOx4e0L7wxsANvLcA9hAkyPd6ySTQA@mail.gmail.com",
+      "sourceSubject": "Re: Proposal: Conflict log history table for Logical Replication"
+    },
+    {
+      "id": 12,
+      "question": "In Robert Treat's review of the 'Adding REPACK [concurrently]' patch, what specific bug did he point out in the switch statement in src/backend/commands/cluster.c that mapped command enums to their string names?",
+      "reference": "Robert Treat noted that in the switch statement converting command codes to strings, the REPACK_COMMAND_CLUSTER case incorrectly returned \"VACUUM\" (the same as REPACK_COMMAND_VACUUMFULL), when it should return \"CLUSTER\" instead.",
+      "topic": "REPACK patch review",
+      "sourceId": "CABV9wwMjm_8GQ_6A7WZkXzEkbz5ZPurB3ijxu74MbFJ4+XrWUg@mail.gmail.com",
+      "sourceSubject": "Re: Adding REPACK [concurrently]"
+    },
+    {
+      "id": 13,
+      "question": "In Fujii Masao's August 2025 testing of the REPACK patch, what specific error did running 'REPACK (CONCURRENTLY) USING INDEX' produce that the same command without CONCURRENTLY did not, and what was the HINT message?",
+      "reference": "Fujii Masao reported that 'REPACK (CONCURRENTLY) parallel_vacuum_table using index regular_sized_index;' failed with the error 'cannot process relation \"parallel_vacuum_table\"' and the HINT 'Relation \"parallel_vacuum_table\" has no identity index.', while the same command without CONCURRENTLY completed successfully. He also observed other issues: an 'ERROR: StartTransactionCommand: unexpected state STARTED' when repeatedly running REPACK during make installcheck, a syntax error at or near \";\" for 'REPACK (VERBOSE);', and logical decoding LOG messages (\"logical decoding found consistent point\") when running REPACK (CONCURRENTLY) on a logical replication target table.",
+      "topic": "REPACK concurrently testing",
+      "sourceId": "CAHGQGwHCeqXUoNaJuftWjOkB8_LSmyH7Md9qkR79sOtW9DJe2Q@mail.gmail.com",
+      "sourceSubject": "Re: Adding REPACK [concurrently]"
+    },
+    {
+      "id": 14,
+      "question": "In Mikhail Nikalayeu's review of the REPACK concurrently patch, what two options did he propose to address the MVCC-related correctness concerns during the swap, and which one did he prefer?",
+      "reference": "Mikhail proposed two options. Option 1: terminate all connections with old snapshots during the ExclusiveLock period for the swap (adding a flag to do this), plus a short exclusive lock on ProcArrayLock to prevent new snapshots from being taken during the swap transaction — he likened this to a primary switch from the application's perspective. Option 2: an MVCC-safe two-phase approach inspired by CREATE INDEX, using a 'shadow table' mechanism where T2 receives all changes applied to T1 with the same XIDs, then waiting until older snapshots no longer treat the recorded XID as uncommitted before swapping and dropping T1. He noted Option 2 is more complex and might not be worth the effort, and said Option 1 felt more appealing to him.",
+      "topic": "REPACK concurrently MVCC",
+      "sourceId": "CADzfLwXx46j8KwQjjM1ZcqNBsx-k6GxHOzDJkm4SHjh+cv31Rw@mail.gmail.com",
+      "sourceSubject": "Re: Adding REPACK [concurrently]"
+    },
+    {
+      "id": 15,
+      "question": "In ZizhuanLiu X-MAN's makefuncs.c refactoring patch, which commit's review prompted the discovery of the near-duplicate functions, and what three specific wrapper/duplication changes does the patch make?",
+      "reference": "The author found the near-duplicate implementations while reviewing commit cf6723 (\"Make transformAExprIn() return a flattened bool expression directly\"). The patch makes three changes: (1) reworks make_andclause()/make_orclause()/make_notclause() to directly call makeBoolExpr(), aligning them with the existing makeAndExpr()/makeOrExpr()/makeNotExpr() logic in gram.y; (2) removes the trivial wrapper makeSimpleA_Expr() in favor of using the core makeA_Expr() directly; and (3) removes the makeDefElemExtended() wrapper, adopting makeDefElem() uniformly. The author states all changes are pure code cleanup with zero functional change.",
+      "topic": "makefuncs.c refactor",
+      "sourceId": "tencent_99476336BC701B21ADDC44E2B7BE25147506@qq.com",
+      "sourceSubject": "[PATCH]Refactor and unify expression construction functions in makefuncs.c"
+    },
+    {
+      "id": 16,
+      "question": "In Mats Kindahl's pg_rewind divergence report, what specific fix did he propose to allow pg_rewind to detect that two servers on the same numeric timeline (TLI 2) actually diverged, and how would the comparison logic change?",
+      "reference": "He proposed adding a UUID to the XLOG_END_OF_RECOVERY (EOR) record and to the history file. When comparing timelines, pg_rewind would not only check the TLI number but also check the UUID; if both don't match, it would go back further until finding a timeline where both the TLI and the timeline UUID match, then proceed with the usual logic to find the correct LSN to rewind to.",
+      "topic": "pg_rewind timeline UUID",
+      "sourceId": "CAN305gBeJr8m7ZRW9mH0zakEFR4hDUPDo8fJRKJOHWMORG5_Bg@mail.gmail.com",
+      "sourceSubject": "pg_rewind does not rewind diverging timelines"
+    }
+  ]
+}

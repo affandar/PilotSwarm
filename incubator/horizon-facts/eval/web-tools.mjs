@@ -89,8 +89,14 @@ function parseArchiveIndex(html) {
     return out;
 }
 
-export function buildWebTools({ record } = {}) {
+export function buildWebTools({ record, maxFetches = Infinity, maxSearches = Infinity } = {}) {
     const rec = (entry) => { record?.push(entry); };
+    // Hard caps on web tool calls for this tool instance. The eval builds a
+    // fresh tool set per question, so these bound calls PER QUESTION. A soft
+    // prompt instruction alone does not hold — models overshoot badly (a single
+    // question was observed making 56 tool calls), so we enforce them here too.
+    let fetchCount = 0;
+    let searchCount = 0;
 
     const webFetch = defineTool("web_fetch", {
         description:
@@ -116,6 +122,12 @@ export function buildWebTools({ record } = {}) {
             const max = Math.min(Math.max(Number(a?.max_length) || 6000, 500), 20000);
             const t0 = performance.now();
             const entry = { name: "web_fetch", args: { url }, startedAt: Date.now() };
+            if (fetchCount >= maxFetches) {
+                entry.skipped = "budget";
+                rec(entry);
+                return { error: `web_fetch budget exhausted (max ${maxFetches} for this question). Do not fetch again — answer now using what you have already retrieved.` };
+            }
+            fetchCount++;
             try {
                 if (!/^https?:\/\//i.test(url)) throw new Error("url must be absolute http(s)");
                 const { status, text } = await httpGet(url);
@@ -155,6 +167,12 @@ export function buildWebTools({ record } = {}) {
             const month = String(a?.month || "").trim();
             const t0 = performance.now();
             const entry = { name: "web_search", args: { query, month }, startedAt: Date.now() };
+            if (searchCount >= maxSearches) {
+                entry.skipped = "budget";
+                rec(entry);
+                return { error: `web_search budget exhausted (max ${maxSearches} for this question). Do not search again — use web_fetch on the archive entry points or answer now with what you have.` };
+            }
+            searchCount++;
             try {
                 const web = await duckduckgo(query.includes("pgsql") || query.includes("postgres") ? query : `${query} postgresql pgsql-hackers`);
                 // Always offer the authoritative archive as navigable entry points.

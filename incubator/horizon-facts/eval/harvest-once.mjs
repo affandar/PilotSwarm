@@ -57,6 +57,10 @@ const ROUND_TIMEOUT_MS = Number(process.env.EVAL_ROUND_TIMEOUT_MS || 120_000);
 const HARD_TIMEOUT_MS = Number(process.env.EVAL_HARD_TIMEOUT_MS || 1_800_000);
 const VERBOSE = process.env.EVAL_VERBOSE !== "0";
 const MAX_ROUNDS = Number(process.env.EVAL_MAX_ROUNDS || 24);
+// Consecutive stalled rounds tolerated before giving up. Slow agentic models
+// (e.g. gpt-5.5 going idle for minutes mid-loop) need a longer leash; raise via
+// EVAL_MAX_STALLS. Default 3 preserves the historical behavior.
+const MAX_STALLS = Number(process.env.EVAL_MAX_STALLS || 3);
 const EVAL_LIMIT = process.env.EVAL_LIMIT ? Number(process.env.EVAL_LIMIT) : Infinity;
 const HAS_EMBED = !!(process.env.HORIZON_EMBED_URL && process.env.HORIZON_EMBED_API_KEY);
 
@@ -72,7 +76,9 @@ if (!DB_URL || !GH_TOKEN) {
 // this long-running driver. Swallow ONLY transient socket errors here: any
 // in-flight query rejection still surfaces to the agent as a tool error and is
 // retried, and the durable crawl queue makes the harvest loop resumable.
-const TRANSIENT_NET = /ECONNRESET|ENOTCONN|EPIPE|ETIMEDOUT|Connection terminated/i;
+// Includes DNS/port-exhaustion classes (EADDRNOTAVAIL / ENOTFOUND / EAI_AGAIN /
+// getaddrinfo) seen when many connections churn against the cluster under load.
+const TRANSIENT_NET = /ECONNRESET|ENOTCONN|EPIPE|ETIMEDOUT|Connection terminated|EADDRNOTAVAIL|ENOTFOUND|EAI_AGAIN|getaddrinfo/i;
 process.on("uncaughtException", (err) => {
     if (err && (TRANSIENT_NET.test(String(err.code)) || TRANSIENT_NET.test(String(err.message)))) {
         console.log(`  (ignored transient connection error ${err.code || err.message} — continuing)`);
@@ -156,8 +162,8 @@ async function runAgent({ sdk, systemMessage, tools, toolNames, firstPrompt, con
             consecutiveStalls = 0;
         } catch (err) {
             consecutiveStalls++;
-            console.log(`  [${label}] round ${round} stalled (${err.message}) — re-prompting (${consecutiveStalls}/3)`);
-            if (consecutiveStalls >= 3) throw new Error(`${label}: 3 consecutive stalled rounds — giving up`);
+            console.log(`  [${label}] round ${round} stalled (${err.message}) — re-prompting (${consecutiveStalls}/${MAX_STALLS})`);
+            if (consecutiveStalls >= MAX_STALLS) throw new Error(`${label}: ${MAX_STALLS} consecutive stalled rounds — giving up`);
         }
         if (await isDone()) {
             console.log(`  [${label}] done after round ${round} (${toolCalls} tool calls)`);

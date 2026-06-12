@@ -106,5 +106,49 @@ export HORIZON_DATABASE_URL=postgres://user:pw@host/db
 npm run test:integration # pg_durable HTTP embeddings, AGE Cypher, full provider
 ```
 
-See [SPEC.md](./SPEC.md) for the base design, [CRAWLER.md](./CRAWLER.md) /
-[CRAWLER-SPEC.md](./CRAWLER-SPEC.md) for the open-graph crawler.
+## Evaluation
+
+The incubator ships a two-axis evaluation surface — **system** evals (is the
+harvest correct, durable, fast?) and **quality** evals (does the graph actually
+help an LLM answer better than parametric knowledge + live web?). The full system
+overview — how the harvester builds the KB and how every eval tier fits together —
+is in [docs/harvester-and-eval.md](./docs/harvester-and-eval.md).
+
+| Tier | Where | What it proves |
+| --- | --- | --- |
+| Scenario (system) | [eval/README.md](./eval/README.md) | Cold/incremental harvest, replay determinism, scoped publication, reader fact-pivot |
+| Quality (single model) | [eval/graph-quality.mjs](./eval/graph-quality.mjs) | Graph arm vs parametric+web baseline, blind-judged against corpus ground truth |
+| **Quality (cross-model sweep)** | [eval/sweep/](./eval/sweep/) | A 3×3×3 **harvester × query × judge** tensor that isolates judge bias |
+
+### Cross-model sweep
+
+The sweep answers "is the graph really better, or just a lucky model / biased
+judge?" by sweeping three independent axes into a score tensor and generating a
+bias-aware report grounded in a deterministic numeric summary. Latest run
+(`pgsql-hackers-recent`, N=8 questions/cell, 216 graded rows):
+
+> **graph 4.76 vs baseline 2.42** (Δ +2.34 on a 1–5 scale), graph winning 163/216
+> head-to-head with no judge able to flip the verdict — and it holds with the
+> graph answers being *shorter* than the baseline. Honestly deflated to a
+> ~+1.8–2.0 *substantive* edge once baseline web-timeout failures are separated
+> out (see the report's methodology + caveats).
+
+- Results: [eval/sweep/REPORT.md](./eval/sweep/REPORT.md) (narrative) + [eval/sweep/summary.json](./eval/sweep/summary.json) (authoritative numbers).
+- Run + interpret: skill [horizon-facts-eval-sweep/SKILL.md](../../.github/skills/horizon-facts-eval-sweep/SKILL.md) and agent [horizon-facts-eval-sweep.agent.md](../../.github/agents/horizon-facts-eval-sweep.agent.md) (commands + manual graph-validation queries).
+- The bulky per-cell intermediates (`scores/`, `transcripts/`, `logs/`) are gitignored and regenerable; the driver, config, pinned `questions.json`, and final `REPORT.md` / `summary.json` are tracked, so any run reproduces.
+
+## Specs & docs
+
+**Enhanced facts store (this incubator):**
+[SPEC.md](./SPEC.md) (base design) ·
+[CRAWLER.md](./CRAWLER.md) / [CRAWLER-SPEC.md](./CRAWLER-SPEC.md) (open-graph crawler) ·
+[GAP-ANALYSIS.md](./GAP-ANALYSIS.md).
+Upstream provider contract + tool/test specs:
+[docs/proposals/enhancedfactstore/](../../docs/proposals/enhancedfactstore/)
+(`01-functional-spec` · `02-api-reference` · `03-design` · `04-test-spec` ·
+`05-tools-spec` · `06-provider-test-plan`).
+
+**Harvester & evaluation:**
+[docs/harvester-and-eval.md](./docs/harvester-and-eval.md) (full system overview) ·
+[eval/README.md](./eval/README.md) (scenario tier) ·
+[eval/sweep/REPORT.md](./eval/sweep/REPORT.md) (latest cross-model sweep).
