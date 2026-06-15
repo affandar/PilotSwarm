@@ -40,7 +40,7 @@ import type {
     ChildOutcomeRow,
 } from "./cms.js";
 import type { FactStore, FactsStatsRow } from "./facts-store.js";
-import { createFactStoreForUrl, resolveFactsTarget } from "./facts-store.js";
+import { createFactStoreForUrl, resolveFactsTarget, isEnhancedFactStore } from "./facts-store.js";
 import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
 import { SessionDumper } from "./session-dumper.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort } from "./model-providers.js";
@@ -1522,6 +1522,23 @@ export class PilotSwarmManagementClient {
             totalCount: rows.reduce((acc, r) => acc + r.factCount, 0),
             totalBytes: rows.reduce((acc, r) => acc + r.totalValueBytes, 0),
         };
+    }
+
+    /**
+     * Durable embedder status (enhancedfactstore 07 P5): whether the in-DB
+     * batch-embedding loop is running for the configured EnhancedFactStore.
+     * Returns `{ supported: false }` for the base PgFactStore (no embedder) or a
+     * store that was not provisioned for embedding. Powers the agent-tuner
+     * `read_embedder_status` tool and operator dashboards — semantic/hybrid
+     * search only returns semantic hits while this is running.
+     */
+    async getEmbedderStatus(): Promise<{ supported: boolean; running?: boolean; instanceId?: string; status?: string }> {
+        this._ensureStarted();
+        if (!this._factStore || !isEnhancedFactStore(this._factStore) || !this._factStore.capabilities.embedder) {
+            return { supported: false };
+        }
+        const st = await this._factStore.embedderStatus();
+        return { supported: true, running: st.running, instanceId: st.instanceId, status: st.status };
     }
 
     async pruneDeletedSummaries(olderThan: Date): Promise<number> {

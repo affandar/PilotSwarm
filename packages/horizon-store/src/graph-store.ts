@@ -43,6 +43,16 @@ export class HorizonDBGraphStore implements GraphStore {
 
     static async create(config: Partial<HorizonFactsConfig> = {}): Promise<HorizonDBGraphStore> {
         const cfg = resolveConfig(config);
+        // Managed-identity / AAD token auth is not yet implemented in this
+        // provider (07 P5) — keep the runtime dep surface to `pg` only. Fail
+        // FAST rather than silently ignoring the request (mirrors the fact store).
+        if (cfg.useManagedIdentity) {
+            throw new Error(
+                "HorizonDBGraphStore does not support managed-identity (AAD token) auth yet. " +
+                "Provide a connection string with embedded credentials, or run without a graph store " +
+                "for managed-identity deployments. (enhancedfactstore 07 P5)",
+            );
+        }
         const { default: pg } = await import("pg");
         const pool = new pg.Pool({ connectionString: cfg.connectionString, max: cfg.poolMax });
         pool.on("error", (err: Error) => console.error("[horizon-graph] pool error (non-fatal):", err.message));
@@ -105,5 +115,11 @@ export class HorizonDBGraphStore implements GraphStore {
     }
     deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string): Promise<boolean> {
         return this.graphQueries.deleteGraphEdge(fromKey, toKey, predicateKey);
+    }
+
+    /** Cheap whole-graph counts for graph_stats (07 P5) — single count() Cypher
+     * per axis, no client-side fan-out. The SDK tool adds the crawl backlog. */
+    graphStats(): Promise<{ nodeCount: number; edgeCount: number }> {
+        return this.graphQueries.graphStats();
     }
 }

@@ -296,6 +296,22 @@ export class GraphQueries {
         });
     }
 
+    /**
+     * Cheap whole-graph counts for `graph_stats` (enhancedfactstore 07 P5):
+     * a single `count()` Cypher per axis instead of a client-side fan-out.
+     * AGE has no edge-only catalog, so edges are counted via a directed match.
+     */
+    async graphStats(): Promise<{ nodeCount: number; edgeCount: number }> {
+        return this.withAge(async (c) => {
+            const nodeRows = await this.cypher(c, `MATCH (n:GraphNode) RETURN count(n) AS c`, ["c"]);
+            const edgeRows = await this.cypher(c, `MATCH (:GraphNode)-[r]->() RETURN count(r) AS c`, ["c"]);
+            return {
+                nodeCount: Number(ag(nodeRows[0]?.c) ?? 0),
+                edgeCount: Number(ag(edgeRows[0]?.c) ?? 0),
+            };
+        });
+    }
+
     // ─── writes ───────────────────────────────────────────────────────────────
 
     async upsertGraphNode(n: GraphNodeInput): Promise<GraphNodeRef> {

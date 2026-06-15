@@ -57,4 +57,27 @@ describe.skipIf(!HAS_DB)("lexical search (L1–L4)", () => {
     it("(neg) unknown mode throws (no graph mode)", async () => {
         await assert.rejects(() => store.searchFacts("jsonb", { mode: "graph" }, all), /no "graph" mode/);
     });
+
+    // ─── HIGH#5 hybrid-degrade (enhancedfactstore 07 P5) ─────────────────────
+    // This suite's store has NO embedding endpoint configured, so the semantic
+    // signal cannot run. HYBRID (the default facts_search mode) must degrade to
+    // lexical-only instead of throwing; an EXPLICIT semantic request still errs.
+
+    it("hybrid with no embedder degrades to lexical (does not throw)", async () => {
+        const res = await store.searchFacts("jsonb", { mode: "hybrid" }, all);
+        const keys = res.facts.map((f) => f.scopeKey);
+        assert.ok(keys.includes(fxScopeKey(FX[0])), "F1 still returned via the lexical signal");
+        assert.ok(keys.includes(fxScopeKey(FX[1])), "F2 still returned via the lexical signal");
+        for (const f of res.facts) {
+            assert.ok(typeof f.signals.lexical === "number" && f.signals.lexical > 0, "lexical signal present");
+            assert.equal(f.signals.semantic, undefined, "no semantic signal when the embedder is absent");
+        }
+    });
+
+    it("explicit semantic with no embedder still throws (explicit intent preserved)", async () => {
+        await assert.rejects(
+            () => store.searchFacts("jsonb", { mode: "semantic" }, all),
+            /configured embedding endpoint|configureEmbedder/,
+        );
+    });
 });

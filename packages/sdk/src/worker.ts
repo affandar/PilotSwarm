@@ -14,7 +14,7 @@ import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
-import { createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, PgFactStore, type FactStore } from "./facts-store.js";
+import { createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
@@ -368,6 +368,40 @@ export class PilotSwarmWorker {
         );
         await this.factStore.initialize();
 
+        // ── Durable embedder lifecycle (enhancedfactstore 07 P5) ────────────
+        //   When horizonEmbed is configured AND the store is an enhanced store
+        //   that was provisioned for embedding, ensure the single eternal in-DB
+        //   embed loop is running. The provider already configures + starts it
+        //   idempotently inside initialize() (advisory-locked → one loop per
+        //   schema across all workers); here the worker OBSERVES that state and
+        //   ENSURES recovery if the loop is somehow not running, logging the
+        //   outcome for operators. This is lifecycle control only — the loop
+        //   itself runs inside HorizonDB (pg_durable), never inline in
+        //   orchestration (determinism boundary).
+        //
+        //   It is INTENTIONAL that worker shutdown does NOT stop the loop (see
+        //   stop()): the loop is a SHARED durable resource. Stopping it on one
+        //   worker's shutdown would halt embedding for the whole fleet, and a
+        //   rolling restart would leave it stopped. It is started idempotently
+        //   and only ever stopped by an explicit operator action.
+        if (this.config.horizonEmbed && isEnhancedFactStore(this.factStore) && this.factStore.capabilities.embedder) {
+            try {
+                let st = await this.factStore.embedderStatus();
+                if (!st.running) {
+                    // Recovery: the provider's boot start did not take (or a
+                    // prior loop was stopped). startEmbedder is idempotent +
+                    // advisory-locked, so this converges on exactly one loop.
+                    st = await this.factStore.startEmbedder();
+                }
+                trace(`[worker] durable embedder: running=${st.running}${st.instanceId ? `, instance=${st.instanceId}` : ""}`);
+            } catch (err) {
+                // Non-fatal: without the embedder, semantic/hybrid search simply
+                // degrades to lexical (provider hybrid-degrade). Do not take the
+                // worker down over an embedder hiccup.
+                console.error("[PilotSwarmWorker] durable embedder start/verify failed (semantic search degraded to lexical):", err);
+            }
+        }
+
         // ── Graph store: SEPARATE, opt-in provider (07 D2). Present iff
         //    graphDatabaseUrl is configured. Never selected implicitly.
         if (this.config.graphDatabaseUrl) {
@@ -607,6 +641,12 @@ export class PilotSwarmWorker {
             this._catalog = null;
         }
         if (this.factStore) {
+            // NOTE: deliberately NOT calling stopEmbedder() here. The durable
+            // embed loop is a SHARED, fleet-wide resource (one per schema inside
+            // HorizonDB via pg_durable); stopping it on a single worker's
+            // shutdown would halt embedding for every other worker and survive a
+            // rolling restart as a stopped loop. It is started idempotently on
+            // boot and only ever stopped by an explicit operator action.
             try { await this.factStore.close(); } catch {}
             this.factStore = null;
         }

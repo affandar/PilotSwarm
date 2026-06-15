@@ -61,19 +61,38 @@ export class HorizonDBFactStore implements EnhancedFactStore {
     private embedConfig?: EmbeddingEndpointConfig;
     private queryEmbedder?: EmbeddingClient;
 
-    /** Capability descriptor (enhancedfactstore 07 §1.4) — HorizonDB backs both
-     * multi-signal search and the durable in-DB embedder. */
-    readonly capabilities = { search: true, embedder: true } as const;
+    /** Capability descriptor (enhancedfactstore 07 §1.4) — HorizonDB always
+     * backs multi-signal search (lexical works with no endpoint). `embedder`
+     * reflects whether an embedding endpoint was provisioned at construction:
+     * the durable in-DB embed loop only runs (and semantic/hybrid return
+     * semantic hits) when one is configured. A store created without
+     * `embedding` reports `embedder:false` so the runtime can gate the embedder
+     * lifecycle on real configuration rather than a hardcoded `true`. */
+    readonly capabilities: { search: boolean; embedder: boolean };
 
     private constructor(
         pool: any,
         private readonly cfg: Required<Pick<HorizonFactsConfig, "schema" | "graphName" | "embeddingDim">> & HorizonFactsConfig,
     ) {
         this.pool = pool;
+        this.capabilities = { search: true, embedder: !!cfg.embedding };
     }
 
     static async create(config: Partial<HorizonFactsConfig> = {}): Promise<HorizonDBFactStore> {
         const cfg = resolveConfig(config);
+        // Managed-identity / AAD token auth is not yet implemented in this
+        // provider — it would require minting AAD tokens via @azure/identity in
+        // a pg `password` callback, and the provider deliberately keeps its
+        // runtime dependency surface to `pg` only (07 P2). Fail FAST and loud
+        // rather than silently building a pool that ignores the request and
+        // authenticates with whatever (if anything) the URL carries.
+        if (cfg.useManagedIdentity) {
+            throw new Error(
+                "HorizonDBFactStore does not support managed-identity (AAD token) auth yet. " +
+                "Provide a connection string with embedded credentials, or use the default " +
+                "PgFactStore for managed-identity deployments. (enhancedfactstore 07 P5)",
+            );
+        }
         const { default: pg } = await import("pg");
         const pool = new pg.Pool({ connectionString: cfg.connectionString, max: cfg.poolMax });
         pool.on("error", (err: Error) => console.error("[horizon-facts] pool error (non-fatal):", err.message));
@@ -222,7 +241,23 @@ export class HorizonDBFactStore implements EnhancedFactStore {
         // ranking), and saves the fetch.
         const w = { lexical: opts.weights?.lexical ?? 1, semantic: opts.weights?.semantic ?? 1 };
         const doLexical = mode === "lexical" || (mode === "hybrid" && w.lexical !== 0);
-        const doSemantic = mode === "semantic" || (mode === "hybrid" && w.semantic !== 0);
+        let doSemantic = mode === "semantic" || (mode === "hybrid" && w.semantic !== 0);
+
+        // Hybrid-degrade (enhancedfactstore 07 P5 / HIGH#5): when no embedding
+        // endpoint is configured, the semantic signal cannot run. For HYBRID
+        // (the default mode) degrade gracefully to lexical-only instead of
+        // throwing — a deployment with search but no embedder must still serve
+        // facts_search. For an EXPLICIT `semantic` request we preserve the
+        // clear error (the caller asked for something the store can't provide).
+        if (doSemantic && !(await this.hasEmbedder())) {
+            if (mode === "semantic") {
+                throw new Error(
+                    "semantic search requires a configured embedding endpoint — " +
+                    "configure horizonEmbed / call configureEmbedder(endpoint) first, or use mode 'lexical'/'hybrid'.",
+                );
+            }
+            doSemantic = false; // hybrid → lexical-only
+        }
 
         if (doLexical) {
             for (const r of await this.lexicalCandidates(normalized, opts, access, pool)) {
@@ -454,6 +489,20 @@ export class HorizonDBFactStore implements EnhancedFactStore {
     /** Query-time embedding client, resolved from the configured endpoint
      * (memory snapshot → durable vars). Throws when semantic search is
      * attempted with no endpoint configured (02 §6). */
+    /**
+     * Whether an embedding endpoint is available to this store — either the
+     * in-memory snapshot or the durable config vars written by configureEmbedder
+     * (possibly by another process). Non-throwing; used by searchFacts to decide
+     * whether HYBRID can include the semantic signal or must degrade to lexical.
+     */
+    private async hasEmbedder(): Promise<boolean> {
+        if (this.embedConfig || this.queryEmbedder) return true;
+        const [url, model, dim] = await Promise.all([
+            this.getvar("url"), this.getvar("model"), this.getvar("dim"),
+        ]);
+        return !!(url && model && dim);
+    }
+
     private async requireQueryEmbedder(): Promise<{ client: EmbeddingClient; model: string }> {
         if (!this.queryEmbedder) {
             let cfg = this.embedConfig;

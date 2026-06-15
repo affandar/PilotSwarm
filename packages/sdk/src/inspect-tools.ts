@@ -23,6 +23,7 @@
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
+import { isEnhancedFactStore } from "./facts-store.js";
 import { formatOwnerBucketLabel, formatSessionOwnerLabel, getSessionOwnerKind, matchesOwnerBucketFilters, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 
 const TUNER_AGENT_ID = "agent-tuner";
@@ -733,6 +734,28 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                     };
                 } catch (err: any) {
                     return { error: `read_shared_facts_stats: ${err?.message || String(err)}` };
+                }
+            },
+        }));
+
+        // Durable embedder status (07 P5) — semantic/hybrid search only returns
+        // semantic hits while the in-DB embed loop is running. Base PgFactStore
+        // (or an enhanced store with no embedding endpoint) reports unsupported.
+        factsTools.push(defineTool("read_embedder_status", {
+            description:
+                "Read the durable embedder status for the facts store: whether the in-database batch-embedding " +
+                "loop is running. Semantic and hybrid facts_search only return semantic hits while it runs; if it " +
+                "is stopped or unsupported, search is lexical-only. Use when diagnosing why semantic search returns nothing.",
+            parameters: { type: "object" as const, properties: {} },
+            handler: async () => {
+                try {
+                    if (!isEnhancedFactStore(factStore) || !factStore.capabilities.embedder) {
+                        return { supported: false, note: "facts store has no durable embedder (lexical-only search)." };
+                    }
+                    const st = await factStore.embedderStatus();
+                    return { supported: true, running: st.running, instanceId: st.instanceId, status: st.status };
+                } catch (err: any) {
+                    return { error: `read_embedder_status: ${err?.message || String(err)}` };
                 }
             },
         }));
