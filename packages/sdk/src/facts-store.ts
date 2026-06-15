@@ -302,15 +302,125 @@ function normalizeLikePattern(pattern?: string): string | undefined {
 export async function createFactStoreForUrl(
     storeUrl: string,
     schema?: string,
-    opts: { useManagedIdentity?: boolean; aadUser?: string } = {},
+    opts: {
+        useManagedIdentity?: boolean;
+        aadUser?: string;
+        /** Provider selector. "pg" (default) = PgFactStore. "horizon" =
+         * dynamically import @pilotswarm/horizon-store's HorizonDBFactStore. */
+        provider?: "pg" | "horizon";
+        /** Embedding endpoint for the horizon provider's durable embedder. */
+        embedding?: EmbeddingEndpointConfig;
+    } = {},
 ): Promise<FactStore> {
-    if (storeUrl.startsWith("postgres://") || storeUrl.startsWith("postgresql://")) {
-        return PgFactStore.create(storeUrl, schema, opts);
+    if (!(storeUrl.startsWith("postgres://") || storeUrl.startsWith("postgresql://"))) {
+        throw new Error(
+            "PilotSwarm facts require a PostgreSQL store. " +
+            `Received unsupported store URL: ${storeUrl}`,
+        );
     }
-    throw new Error(
-        "PilotSwarm facts require a PostgreSQL store. " +
-        `Received unsupported store URL: ${storeUrl}`,
-    );
+
+    if (opts.provider === "horizon") {
+        // Guarded dynamic import: the SDK builds/runs without the provider
+        // package. A missing package is a clear, actionable error ONLY when the
+        // horizon provider is explicitly selected.
+        let mod: any;
+        try {
+            mod = await import("@pilotswarm/horizon-store");
+        } catch (err: any) {
+            throw new Error(
+                "factsProvider 'horizon' requires the @pilotswarm/horizon-store package, " +
+                `which could not be loaded: ${err?.message || String(err)}. ` +
+                "Install it, or unset enhancedFactsDatabaseUrl / factsProvider to use the default PgFactStore.",
+            );
+        }
+        const HorizonDBFactStore = mod.HorizonDBFactStore;
+        if (!HorizonDBFactStore?.create) {
+            throw new Error("@pilotswarm/horizon-store did not export HorizonDBFactStore.create");
+        }
+        return HorizonDBFactStore.create({
+            connectionString: storeUrl,
+            schema,
+            graphName: schema,
+            embedding: opts.embedding,
+            embeddingDim: opts.embedding?.dim,
+            useManagedIdentity: opts.useManagedIdentity,
+            aadUser: opts.aadUser,
+        });
+    }
+
+    return PgFactStore.create(storeUrl, schema, {
+        useManagedIdentity: opts.useManagedIdentity,
+        aadUser: opts.aadUser,
+    });
+}
+
+/**
+ * Construct an optional `GraphStore` provider (enhancedfactstore 07 D2/P3).
+ *
+ * SYMMETRIC peer of `createFactStoreForUrl` — its own URL, its own provider, no
+ * `factStore` argument and no instance reuse. Returns `undefined` when no graph
+ * URL is configured (⇒ no graph store, no graph tools). The only provider today
+ * is `@pilotswarm/horizon-store`'s AGE-backed `HorizonDBGraphStore`, loaded via a
+ * guarded dynamic import so the SDK builds/runs without it.
+ */
+export async function createGraphStoreForUrl(
+    graphUrl: string | undefined,
+    schema?: string,
+    opts: { useManagedIdentity?: boolean; aadUser?: string } = {},
+): Promise<import("./graph-store.js").GraphStore | undefined> {
+    if (!graphUrl) return undefined;
+    if (!(graphUrl.startsWith("postgres://") || graphUrl.startsWith("postgresql://"))) {
+        throw new Error(
+            "PilotSwarm graph store requires a PostgreSQL (Apache AGE) URL. " +
+            `Received unsupported graph URL: ${graphUrl}`,
+        );
+    }
+    let mod: any;
+    try {
+        mod = await import("@pilotswarm/horizon-store");
+    } catch (err: any) {
+        throw new Error(
+            "graphDatabaseUrl requires the @pilotswarm/horizon-store package, " +
+            `which could not be loaded: ${err?.message || String(err)}. ` +
+            "Install it, or unset graphDatabaseUrl to run without a graph store.",
+        );
+    }
+    const HorizonDBGraphStore = mod.HorizonDBGraphStore;
+    if (!HorizonDBGraphStore?.create) {
+        throw new Error("@pilotswarm/horizon-store did not export HorizonDBGraphStore.create");
+    }
+    return HorizonDBGraphStore.create({
+        connectionString: graphUrl,
+        schema,
+        graphName: schema,
+        useManagedIdentity: opts.useManagedIdentity,
+        aadUser: opts.aadUser,
+    });
+}
+
+/**
+ * Resolve where the facts store physically lives + which provider serves it,
+ * shared by the worker, client, and management-client so they cannot drift
+ * (enhancedfactstore 07 P3). Resolution is most-specific-first:
+ *   url      = enhancedFactsDatabaseUrl ?? cmsFactsDatabaseUrl ?? store
+ *   provider = factsProvider ?? (enhancedFactsDatabaseUrl ? "horizon" : "pg")
+ *   schema   = horizon ? (enhancedFactsSchema ?? factsSchema) : factsSchema
+ */
+export function resolveFactsTarget(cfg: {
+    store: string;
+    cmsFactsDatabaseUrl?: string;
+    enhancedFactsDatabaseUrl?: string;
+    factsProvider?: "pg" | "horizon";
+    factsSchema?: string;
+    enhancedFactsSchema?: string;
+}): { url: string; provider: "pg" | "horizon"; schema?: string } {
+    const cmsFactsUrl = cfg.cmsFactsDatabaseUrl ?? cfg.store;
+    const url = cfg.enhancedFactsDatabaseUrl ?? cmsFactsUrl;
+    const provider = cfg.factsProvider ?? (cfg.enhancedFactsDatabaseUrl ? "horizon" : "pg");
+    const schema = provider === "horizon"
+        ? (cfg.enhancedFactsSchema ?? cfg.factsSchema)
+        : cfg.factsSchema;
+    return { url, provider, schema };
 }
 
 export class PgFactStore implements FactStore {

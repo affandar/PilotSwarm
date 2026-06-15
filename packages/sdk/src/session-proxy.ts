@@ -626,6 +626,15 @@ export function registerActivities(
     clientConfig?: {
         duroxideSchema?: string;
         factsSchema?: string;
+        // Full facts/CMS target so activity-layer clients resolve the SAME store
+        // as the worker (07 P3 — otherwise parent-triggered deleteSession /
+        // cleanup / reads hit the wrong DB when facts live on HorizonDB).
+        cmsFactsDatabaseUrl?: string;
+        enhancedFactsDatabaseUrl?: string;
+        factsProvider?: "pg" | "horizon";
+        enhancedFactsSchema?: string;
+        useManagedIdentity?: boolean;
+        aadDbUser?: string;
     },
     /** Loaded system agents — used by resolveAgentConfig activity. */
     systemAgents?: AgentConfig[],
@@ -640,6 +649,24 @@ export function registerActivities(
     /** Worker node identifier — written on every CMS event for worker tracking. */
     workerNodeId?: string,
 ) {
+    // Shared config for every activity-layer internal PilotSwarmClient /
+    // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
+    // these clients resolve the SAME store as the worker — otherwise
+    // parent-triggered deleteSession / cleanup / reads would hit the wrong DB
+    // when facts live on an enhanced (HorizonDB) store.
+    const internalClientConfig = () => ({
+        store: storeUrl!,
+        cmsSchema,
+        ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
+        ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
+        ...(clientConfig?.cmsFactsDatabaseUrl != null && { cmsFactsDatabaseUrl: clientConfig.cmsFactsDatabaseUrl }),
+        ...(clientConfig?.enhancedFactsDatabaseUrl != null && { enhancedFactsDatabaseUrl: clientConfig.enhancedFactsDatabaseUrl }),
+        ...(clientConfig?.factsProvider != null && { factsProvider: clientConfig.factsProvider }),
+        ...(clientConfig?.enhancedFactsSchema != null && { enhancedFactsSchema: clientConfig.enhancedFactsSchema }),
+        ...(clientConfig?.useManagedIdentity != null && { useManagedIdentity: clientConfig.useManagedIdentity }),
+        ...(clientConfig?.aadDbUser != null && { aadDbUser: clientConfig.aadDbUser }),
+    });
+
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
         activityCtx: any,
@@ -799,12 +826,7 @@ export function registerActivities(
             if (inlineSdkClientPromise) return await inlineSdkClientPromise;
             if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
             inlineSdkClientPromise = (async () => {
-                const startedClient = new PilotSwarmClient({
-                    store: storeUrl,
-                    cmsSchema,
-                    ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-                    ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-                });
+                const startedClient = new PilotSwarmClient(internalClientConfig());
                 await startedClient.start();
                 inlineSdkClient = startedClient;
                 return startedClient;
@@ -2295,10 +2317,7 @@ export function registerActivities(
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
         const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
+            ...internalClientConfig(),
             traceWriter: (message: string) => trace(message),
         });
         try {
@@ -2434,12 +2453,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[sendToSession] session=${input.sessionId} msg="${input.message.slice(0, 60)}"`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const info = await (sdkClient as any)._getSessionInfo(input.sessionId);
@@ -2482,12 +2496,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const orchestrationId = `session-${input.sessionId}`;
@@ -2511,12 +2520,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[getSessionStatus] session=${input.sessionId}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const info = await sdkClient._getSessionInfo(input.sessionId);
@@ -2542,12 +2546,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[getOrchestrationStats] session=${input.sessionId}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmManagementClient");
 
-        const managementClient = new PilotSwarmManagementClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const managementClient = new PilotSwarmManagementClient(internalClientConfig());
         try {
             await managementClient.start();
             return await managementClient.getOrchestrationStats(input.sessionId);
@@ -2565,12 +2564,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[listSessions]`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const sessions = (await sdkClient.listSessions()).filter((session) => matchesSessionOwnerFilters(session, input));
@@ -2598,12 +2592,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[listChildSessions] parent=${input.parentSessionId}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const sessions = await sdkClient.listSessions();
@@ -2689,12 +2678,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[cancelSession] session=${input.sessionId} reason=${input.reason ?? "none"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const orchestrationId = `session-${input.sessionId}`;
@@ -2732,12 +2716,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[deleteSession] session=${input.sessionId} reason=${input.reason ?? "none"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             // This does both: CMS soft-delete + duroxide cancel

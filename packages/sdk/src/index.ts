@@ -39,7 +39,7 @@ export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
-export { PgFactStore, createFactStoreForUrl, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
+export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
 export { PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, TopEventEmitterRow, InsertTurnMetricInput, TurnMetricRow, HourlyTokenBucketRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, UserProfile, UserPrincipal } from "./cms.js";
 export type {

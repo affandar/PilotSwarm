@@ -14,7 +14,8 @@ import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
-import { createFactStoreForUrl, PgFactStore, type FactStore } from "./facts-store.js";
+import { createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, PgFactStore, type FactStore } from "./facts-store.js";
+import type { GraphStore } from "./graph-store.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
@@ -115,6 +116,7 @@ export class PilotSwarmWorker {
     private blobStore: SessionBlobStore | null = null;
     private artifactStore: ArtifactStore | null = null;
     private factStore: FactStore | null = null;
+    private graphStore: GraphStore | null = null;
     private runtime: any = null;
     private _provider: any = null;
     private _catalog: SessionCatalogProvider | null = null;
@@ -343,17 +345,71 @@ export class PilotSwarmWorker {
                 this._catalog = null;
             }
         }
+        // ── Facts store: base PgFactStore (default) or an EnhancedFactStore
+        //    provider (enhancedfactstore 07 P3). Shared resolver keeps the
+        //    worker/client/management in lockstep.
+        const factsTarget = resolveFactsTarget({
+            store,
+            cmsFactsDatabaseUrl: this.config.cmsFactsDatabaseUrl,
+            enhancedFactsDatabaseUrl: this.config.enhancedFactsDatabaseUrl,
+            factsProvider: this.config.factsProvider,
+            factsSchema: this.config.factsSchema,
+            enhancedFactsSchema: this.config.enhancedFactsSchema,
+        });
         this.factStore = await createFactStoreForUrl(
-            cmsFactsUrl,
-            this.config.factsSchema,
-            { useManagedIdentity: useMi, aadUser },
+            factsTarget.url,
+            factsTarget.schema,
+            {
+                useManagedIdentity: useMi,
+                aadUser,
+                provider: factsTarget.provider,
+                embedding: this.config.horizonEmbed,
+            },
         );
         await this.factStore.initialize();
+
+        // ── Graph store: SEPARATE, opt-in provider (07 D2). Present iff
+        //    graphDatabaseUrl is configured. Never selected implicitly.
+        if (this.config.graphDatabaseUrl) {
+            // The graph name must DIFFER from the facts schema — AGE's
+            // create_graph() makes a PG schema named after the graph, so a
+            // collision with the facts schema corrupts both. Default to a
+            // dedicated "horizon_graph" rather than the facts schema, and
+            // fail-fast on an explicit same-name-same-DB collision.
+            const graphSchema = this.config.graphSchema ?? "horizon_graph";
+            const sameDbAsFacts = this.config.graphDatabaseUrl === factsTarget.url;
+            if (sameDbAsFacts && graphSchema === (factsTarget.schema ?? "pilotswarm_facts")) {
+                throw new Error(
+                    `graphSchema "${graphSchema}" collides with the facts schema on the same database. ` +
+                    `Apache AGE creates a PG schema named after the graph; choose a distinct graphSchema.`,
+                );
+            }
+            let candidate: GraphStore | undefined;
+            try {
+                candidate = await createGraphStoreForUrl(
+                    this.config.graphDatabaseUrl,
+                    graphSchema,
+                    { useManagedIdentity: useMi, aadUser },
+                );
+                if (candidate) await candidate.initialize();
+                this.graphStore = candidate ?? null;
+            } catch (err) {
+                // A failed graph init disables graph tools without taking down
+                // facts — graph is optional and isolated. Close the half-open
+                // pool the provider opened before initialize() threw.
+                await candidate?.close().catch(() => {});
+                this.graphStore = null;
+                console.error("[PilotSwarmWorker] graph store initialization failed (graph tools disabled):", err);
+            }
+        }
+
         trace(
-            `[worker] postgres pools: duroxidePgPoolMax=${process.env.DUROXIDE_PG_POOL_MAX ?? "(unset)"}, ` +
+            `[worker] facts provider=${factsTarget.provider}, graph=${this.graphStore ? "on" : "off"}; ` +
+            `postgres pools: duroxidePgPoolMax=${process.env.DUROXIDE_PG_POOL_MAX ?? "(unset)"}, ` +
             `cmsPoolMax=${cmsPoolMax}, factsPoolMax=${factsPoolMax}`,
         );
         this.sessionManager.setFactStore(this.factStore);
+        this.sessionManager.setGraphStore(this.graphStore);
         if (this._catalog) {
             this.sessionManager.setSessionCatalog(this._catalog);
             this.sessionManager.setLineageSessionLookup(async (sessionId) => (
@@ -401,6 +457,12 @@ export class PilotSwarmWorker {
             {
                 duroxideSchema: this.config.duroxideSchema,
                 factsSchema: this.config.factsSchema,
+                cmsFactsDatabaseUrl: this.config.cmsFactsDatabaseUrl,
+                enhancedFactsDatabaseUrl: this.config.enhancedFactsDatabaseUrl,
+                factsProvider: this.config.factsProvider,
+                enhancedFactsSchema: this.config.enhancedFactsSchema,
+                useManagedIdentity: this.config.useManagedIdentity,
+                aadDbUser: this.config.aadDbUser,
             },
             this._loadedSystemAgents,
             this._sessionPolicy,
@@ -547,6 +609,10 @@ export class PilotSwarmWorker {
         if (this.factStore) {
             try { await this.factStore.close(); } catch {}
             this.factStore = null;
+        }
+        if (this.graphStore) {
+            try { await this.graphStore.close(); } catch {}
+            this.graphStore = null;
         }
         this._provider = null;
         this._started = false;

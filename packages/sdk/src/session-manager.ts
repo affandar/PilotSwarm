@@ -7,6 +7,7 @@ import { createFactTools } from "./facts-tools.js";
 import { createInspectTools } from "./inspect-tools.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
+import type { GraphStore } from "./graph-store.js";
 import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
@@ -183,6 +184,9 @@ export class SessionManager {
     private sessionStateDir: string;
     /** Shared facts store used to build always-on facts tools. */
     private factStore: FactStore | null = null;
+    /** Optional, separately-injected graph store (07 D2). Present iff a
+     * graphDatabaseUrl was configured; gates graph-tool registration. */
+    private graphStore: GraphStore | null = null;
     /** Shared CMS catalog used to build always-on inspect tools. */
     private sessionCatalog: SessionCatalogProvider | null = null;
     /** Duroxide client used by tuner-only inspect tools. */
@@ -256,6 +260,11 @@ export class SessionManager {
     /** Set the cluster facts store for always-on facts tools. */
     setFactStore(factStore: FactStore | null): void {
         this.factStore = factStore;
+    }
+
+    /** Set the optional graph store (07 D2). `null`/absent ⇒ no graph tools. */
+    setGraphStore(graphStore: GraphStore | null): void {
+        this.graphStore = graphStore;
     }
 
     /** Set the CMS catalog for always-on inspect tools (e.g. read_agent_events). */

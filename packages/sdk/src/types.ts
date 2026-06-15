@@ -1,6 +1,7 @@
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
 import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort } from "./model-providers.js";
+import type { EmbeddingEndpointConfig } from "./facts-store.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
@@ -601,6 +602,48 @@ export interface PilotSwarmWorkerOptions {
      */
     factsSchema?: string;
 
+    // ─── EnhancedFactStore + GraphStore (optional, enhancedfactstore 07 P3) ──
+
+    /**
+     * Connection URL for an EnhancedFactStore provider (multi-signal search +
+     * durable embedder), e.g. a HorizonDB cluster with pgvector/pg_textsearch/
+     * pg_durable. When set (or `factsProvider: "horizon"`), the worker constructs
+     * the enhanced provider instead of the default `PgFactStore`.
+     * Resolution: `enhancedFactsDatabaseUrl ?? cmsFactsDatabaseUrl ?? store`.
+     * Unset ⇒ today's behaviour (plain `PgFactStore`).
+     */
+    enhancedFactsDatabaseUrl?: string;
+    /**
+     * Explicit facts-store provider selector. Default inferred: `"horizon"` iff
+     * `enhancedFactsDatabaseUrl` is set, else `"pg"`. Selecting `"horizon"`
+     * dynamically imports `@pilotswarm/horizon-store`; a missing package is a
+     * clear startup error only when horizon is explicitly selected.
+     */
+    factsProvider?: "pg" | "horizon";
+    /**
+     * Schema for the enhanced facts store. Default: `"horizon_facts"`.
+     */
+    enhancedFactsSchema?: string;
+    /**
+     * Embedding endpoint for the enhanced provider's durable in-DB embedder.
+     * Sourced from env (`HORIZON_EMBED_*`). When omitted, semantic search returns
+     * nothing for un-embedded facts (lexical still works).
+     */
+    horizonEmbed?: EmbeddingEndpointConfig;
+
+    /**
+     * OPT-IN graph store target (Apache AGE). When set, the worker constructs a
+     * separate `GraphStore` provider (`HorizonDBGraphStore`) and graph tools light
+     * up (`!!graphStore`). May be the SAME URL as `enhancedFactsDatabaseUrl` (one
+     * HorizonDB) or a distinct database. Unset ⇒ no graph store, no graph tools —
+     * never selected implicitly.
+     */
+    graphDatabaseUrl?: string;
+    /**
+     * Schema/graph name for the graph store. Default: `"horizon_facts"`.
+     */
+    graphSchema?: string;
+
     // ─── Building Blocks ─────────────────────────────────────
     // Workers own the building blocks. Clients are thin proxies.
 
@@ -709,6 +752,18 @@ export interface PilotSwarmClientOptions {
      * Default: `"pilotswarm_facts"`. Must match the worker's `factsSchema`.
      */
     factsSchema?: string;
+
+    /**
+     * EnhancedFactStore connection URL (enhancedfactstore 07 P3). Must match the
+     * worker's `enhancedFactsDatabaseUrl` so the client's facts cleanup targets
+     * the same store. Unset ⇒ facts live on `cmsFactsDatabaseUrl ?? store`.
+     */
+    enhancedFactsDatabaseUrl?: string;
+    /** Facts provider selector — must match the worker. Inferred from
+     * `enhancedFactsDatabaseUrl` when omitted. */
+    factsProvider?: "pg" | "horizon";
+    /** Enhanced facts schema — must match the worker's `enhancedFactsSchema`. */
+    enhancedFactsSchema?: string;
 
     /**
      * Session creation policy. Typically set by the worker and forwarded

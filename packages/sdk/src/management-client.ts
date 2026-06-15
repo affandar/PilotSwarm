@@ -40,7 +40,7 @@ import type {
     ChildOutcomeRow,
 } from "./cms.js";
 import type { FactStore, FactsStatsRow } from "./facts-store.js";
-import { createFactStoreForUrl } from "./facts-store.js";
+import { createFactStoreForUrl, resolveFactsTarget } from "./facts-store.js";
 import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
 import { SessionDumper } from "./session-dumper.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort } from "./model-providers.js";
@@ -344,6 +344,13 @@ export interface PilotSwarmManagementClientOptions {
     cmsSchema?: string;
     /** PostgreSQL schema for durable facts. Default: "pilotswarm_facts". */
     factsSchema?: string;
+    /** EnhancedFactStore URL (07 P3) — must match the worker so facts reads/
+     * stats target the same store. Unset ⇒ facts on cmsFactsDatabaseUrl ?? store. */
+    enhancedFactsDatabaseUrl?: string;
+    /** Facts provider selector — must match the worker. */
+    factsProvider?: "pg" | "horizon";
+    /** Enhanced facts schema — must match the worker's enhancedFactsSchema. */
+    enhancedFactsSchema?: string;
     /** Path to model_providers.json. Auto-discovers if not set. */
     modelProvidersPath?: string;
     /** App plugin dirs used to discover app-defined system agents for restart operations. */
@@ -445,12 +452,19 @@ export class PilotSwarmManagementClient {
         }
 
         _trace("[mgmt] facts create start...");
+        const factsTarget = resolveFactsTarget({
+            store,
+            cmsFactsDatabaseUrl: this.config.cmsFactsDatabaseUrl,
+            enhancedFactsDatabaseUrl: this.config.enhancedFactsDatabaseUrl,
+            factsProvider: this.config.factsProvider,
+            factsSchema: this.config.factsSchema,
+            enhancedFactsSchema: this.config.enhancedFactsSchema,
+        });
         this._factStore = await createFactStoreForUrl(
-            cmsFactsUrl,
-            this.config.factsSchema,
-            { useManagedIdentity: useMi, aadUser },
+            factsTarget.url,
+            factsTarget.schema,
+            { useManagedIdentity: useMi, aadUser, provider: factsTarget.provider },
         );
-        _trace("[mgmt] facts initialize start...");
         await this._factStore.initialize();
         _trace("[mgmt] facts initialize done");
 

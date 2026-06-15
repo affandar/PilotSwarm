@@ -21,7 +21,7 @@ import type {
 import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
-import { createFactStoreForUrl } from "./facts-store.js";
+import { createFactStoreForUrl, resolveFactsTarget } from "./facts-store.js";
 import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 
@@ -457,12 +457,19 @@ export class PilotSwarmClient {
         }
 
         trace("[client] facts create start...");
+        const factsTarget = resolveFactsTarget({
+            store,
+            cmsFactsDatabaseUrl: this.config.cmsFactsDatabaseUrl,
+            enhancedFactsDatabaseUrl: this.config.enhancedFactsDatabaseUrl,
+            factsProvider: this.config.factsProvider,
+            factsSchema: this.config.factsSchema,
+            enhancedFactsSchema: this.config.enhancedFactsSchema,
+        });
         this._factStore = await createFactStoreForUrl(
-            cmsFactsUrl,
-            this.config.factsSchema,
-            { useManagedIdentity: useMi, aadUser },
+            factsTarget.url,
+            factsTarget.schema,
+            { useManagedIdentity: useMi, aadUser, provider: factsTarget.provider },
         );
-        trace("[client] facts initialize start...");
         await this._factStore.initialize();
         trace("[client] facts initialize done");
 
