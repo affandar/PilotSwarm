@@ -202,7 +202,7 @@ const runId = `r${Date.now().toString(36)}`;
 const UNRESTRICTED = { unrestricted: true };
 
 async function makeEvalStore(tag) {
-    const { HorizonFactStore } = await import("../dist/src/index.js");
+    const { makeEvalStore: makeStores } = await import("./_store.mjs");
     const schema = `hzev_${tag}_${runId}`;
     const graphName = `hzevg_${tag}_${runId}`;
     const embedding = HAS_EMBED ? {
@@ -213,11 +213,10 @@ async function makeEvalStore(tag) {
         apiKeyHeader: process.env.HORIZON_EMBED_API_KEY_HEADER ?? "api-key",
         inputField: "input",
     } : undefined;
-    const store = await HorizonFactStore.create({
+    const { store } = await makeStores({
         connectionString: DB_URL, schema, graphName,
         embedding, embeddingDim: embedding?.dim ?? 4,
     });
-    await store.initialize();
     return { store, schema, graphName };
 }
 

@@ -70,7 +70,7 @@ export function resolveConfig(partial: Partial<HorizonFactsConfig> = {}): Horizo
     const connectionString = partial.connectionString ?? process.env.HORIZON_DATABASE_URL ?? "";
     if (!connectionString) {
         throw new Error(
-            "HorizonFactStore requires a connectionString (or HORIZON_DATABASE_URL env var).",
+            "HorizonDBFactStore requires a connectionString (or HORIZON_DATABASE_URL env var).",
         );
     }
 

@@ -70,19 +70,49 @@ export function uniqueNames(tag = "t") {
     return { schema: `hzt_${tag}_${r}`, graph: `hzg_${tag}_${r}` };
 }
 
-/** Build + initialize a store on a fresh per-run schema. */
+/** Build + initialize a store on a fresh per-run schema. Constructs the two
+ *  SEPARATE providers (07 D2) — HorizonDBFactStore + HorizonDBGraphStore over
+ *  one HorizonDB — and returns them individually plus a combined test facade so
+ *  existing integration tests can drive facts + graph through one object. */
 export async function makeStore({ tag = "t", embeddingDim = 4, embedding = undefined } = {}) {
-    const { HorizonFactStore } = await import("../../dist/src/index.js");
+    const { HorizonDBFactStore, HorizonDBGraphStore } = await import("../../dist/src/index.js");
     const names = uniqueNames(tag);
-    const store = await HorizonFactStore.create({
+    const cfg = {
         connectionString: DB_URL,
         schema: names.schema,
         graphName: names.graph,
         embeddingDim,
         embedding,
-    });
-    await store.initialize();
-    return { store, ...names };
+    };
+    const factStore = await HorizonDBFactStore.create(cfg);
+    await factStore.initialize();
+    const graphStore = await HorizonDBGraphStore.create(cfg);
+    await graphStore.initialize();
+    const store = combinedStore(factStore, graphStore);
+    return { store, factStore, graphStore, ...names };
+}
+
+/** Test convenience: a thin facade over the two separate providers so existing
+ *  tests can call both facts and graph methods on one `store`. Production wires
+ *  factStore and graphStore independently (07 D2). close() ends both pools. */
+function combinedStore(factStore, graphStore) {
+    const FACT = [
+        "storeFact", "readFacts", "deleteFact", "deleteSessionFactsForSession",
+        "getSessionFactsStats", "getFactsStatsForSessions", "getSharedFactsStats",
+        "searchFacts", "similarFacts", "readUncrawledFacts", "markFactsCrawled",
+        "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
+    ];
+    const GRAPH = [
+        "searchGraphNodes", "searchGraphEdges", "graphNeighbourhood",
+        "upsertGraphNode", "upsertGraphEdge", "mergeGraphNodes",
+        "deleteGraphNode", "deleteGraphEdge",
+    ];
+    const s = {};
+    for (const m of FACT) if (typeof factStore[m] === "function") s[m] = (...a) => factStore[m](...a);
+    for (const m of GRAPH) if (typeof graphStore[m] === "function") s[m] = (...a) => graphStore[m](...a);
+    s.initialize = async () => { await factStore.initialize(); await graphStore.initialize(); };
+    s.close = async () => { await factStore.close(); await graphStore.close(); };
+    return s;
 }
 
 /** Drop a test schema + AGE graph. Safe to call in teardown. */

@@ -81,14 +81,16 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
 
     it("MG3 two concurrent initializers don't corrupt the schema (advisory lock)", async () => {
         const names = freshNames("mg3");
-        const mk = () => api.HorizonFactStore.create({
+        const mk = () => api.HorizonDBFactStore.create({
             connectionString: DB_URL, schema: names.schema, graphName: names.graph, embeddingDim: 4 });
         const [s1, s2] = await Promise.all([mk(), mk()]);
         await Promise.all([s1.initialize(), s2.initialize()]);
         await s1.close(); await s2.close();
         const { rows } = await pool.query(
             `SELECT count(*)::int AS n FROM "${names.schema}".schema_migrations`);
-        assert.equal(rows[0].n, 6, "each migration recorded exactly once");
+        // The FACT provider runs 5 migrations; the 0003 AGE bootstrap belongs to
+        // HorizonDBGraphStore (07 D2) and is not recorded in the facts schema.
+        assert.equal(rows[0].n, 5, "each FACT migration recorded exactly once");
     });
 
     it("MG4 partial-chain resume: only the missing tail is applied", async () => {

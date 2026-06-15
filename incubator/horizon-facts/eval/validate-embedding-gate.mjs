@@ -85,7 +85,7 @@ async function dropAll() {
 
 async function main() {
     console.log(`validate-embedding-gate  schema=${SCHEMA}`);
-    const { HorizonFactStore } = await import("../dist/src/index.js");
+    const { makeEvalStore } = await import("./_store.mjs");
     const embedding = {
         url: process.env.HORIZON_EMBED_URL,
         model: process.env.HORIZON_EMBED_MODEL ?? "text-embedding-3-small",
@@ -94,11 +94,10 @@ async function main() {
         apiKeyHeader: process.env.HORIZON_EMBED_API_KEY_HEADER ?? "api-key",
         inputField: "input",
     };
-    const store = await HorizonFactStore.create({
+    const { store } = await makeEvalStore({
         connectionString: DB_URL, schema: SCHEMA, graphName: GRAPH,
         embedding, embeddingDim: embedding.dim,
     });
-    await store.initialize();
 
     try {
         // initialize() auto-starts the embed loop. Stop it FIRST so we control

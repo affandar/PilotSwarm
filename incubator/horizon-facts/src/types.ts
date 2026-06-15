@@ -322,7 +322,7 @@ export interface SubGraph {
     edges: { fromKey: string; toKey: string; predicate: string; confidence: number }[];
 }
 
-export interface GraphInterface {
+export interface GraphStore {
     // read (evidence arrays ACL-filtered; inaccessible fact seeds ignored)
     searchGraphNodes(q: GraphNodeQuery, access?: AccessContext): Promise<GraphNodeHit[]>;
     searchGraphEdges(q: GraphEdgeQuery, access?: AccessContext): Promise<GraphEdgeHit[]>;
@@ -338,6 +338,12 @@ export interface GraphInterface {
     deleteGraphNode(nodeKey: string): Promise<boolean>;
     deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string): Promise<boolean>;
 }
+
+/**
+ * @deprecated Renamed to `GraphStore` (07 D2 — the graph is a separate injected
+ * provider). Kept as an alias for back-compat; prefer `GraphStore`.
+ */
+export type GraphInterface = GraphStore;
 
 // ─── ACL helper (syntactic scope_key check — 01 §6.1a/§6.5) ──────────────────
 

@@ -22,7 +22,7 @@
 // reachable key set).
 
 import type {
-    AccessContext, GraphEdgeHit, GraphEdgeInput, GraphEdgeQuery, GraphInterface,
+    AccessContext, GraphEdgeHit, GraphEdgeInput, GraphEdgeQuery, GraphStore,
     GraphNodeHit, GraphNodeInput, GraphNodeQuery, GraphNodeRef, GraphEdgeRef, SubGraph,
 } from "./types.js";
 import { scopeKeyAccessible } from "./types.js";
@@ -62,7 +62,7 @@ export function agArr(v: any): string[] {
     return Array.isArray(parsed) ? parsed.map(String) : [];
 }
 
-export class GraphQueries implements GraphInterface {
+export class GraphQueries implements GraphStore {
     // Physical connections whose AGE session is already prepared (LOAD age +
     // search_path). Keyed on the pg client object, which the pool reuses per
     // physical connection — so the (otherwise per-checkout) setup runs ONCE per

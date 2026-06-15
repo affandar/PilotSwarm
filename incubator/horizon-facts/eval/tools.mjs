@@ -14,12 +14,14 @@ import { defineTool } from "@github/copilot-sdk";
 /**
  * Bridge the provider's AgentTool descriptors into Copilot SDK tools.
  *
- * @param {import("../dist/src/index.js").HorizonFactStore} store
+ * @param {import("./_store.mjs").combinedStore extends (...a:any)=>infer R ? R : any} store combined facade (facts + graph)
  * @param {{ role: "reader"|"harvester", embeddedOnly?: boolean, record?: Array<{name:string,args:any,result?:any,error?:string,durationMs?:number,startedAt?:number}> }} opts
  */
 export async function buildSdkTools(store, { role, embeddedOnly, record } = {}) {
     const { createFactsTools } = await import("../dist/src/index.js");
-    const descriptors = createFactsTools(store, {
+    // The eval facade carries both facts + graph methods, so it serves as both
+    // the factStore and the graphStore for the (now separate, 07 D2) tool surface.
+    const descriptors = createFactsTools(store, store, {
         role: role ?? "reader",
         agentId: `eval-${role}`,
         embeddedOnly: embeddedOnly ?? false,

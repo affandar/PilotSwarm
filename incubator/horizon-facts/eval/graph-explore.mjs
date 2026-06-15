@@ -323,8 +323,11 @@ async function runEval(sdk) {
     console.log(`graph-explore RUN — ${subset.length} tasks  arms=${MODEL}  judge=${JUDGE_MODEL}`);
     console.log(`  graph: schema=${SCHEMA} graph=${GRAPH}\n`);
 
-    const { HorizonFactStore } = await import("../dist/src/index.js");
-    const store = await HorizonFactStore.create({ connectionString: DB_URL, schema: SCHEMA, graphName: GRAPH, embeddingDim: EMBED_DIM });
+    const { makeEvalStore } = await import("./_store.mjs");
+    // Reads an already-harvested store (no initialize / migrations).
+    const { store } = await makeEvalStore(
+        { connectionString: DB_URL, schema: SCHEMA, graphName: GRAPH, embeddingDim: EMBED_DIM },
+        { initialize: false });
     const { buildSdkTools } = await import("./tools.mjs");
     const { tools: graphTools, toolNames: graphToolNames } = await buildSdkTools(store, { role: "reader" });
     // Real web tools for the baseline (the SDK's built-ins are broken here).

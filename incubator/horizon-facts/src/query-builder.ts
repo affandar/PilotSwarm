@@ -4,7 +4,7 @@
 //   - query/namespace fragment normalization (unit-testable)
 //   - candidate fusion (combining lexical/semantic candidates into a single
 //     ranked list). There is NO graph signal: searchFacts is facts-store-only
-//     (01-functional-spec §4.2); graph retrieval is the separate GraphInterface.
+//     (01-functional-spec §4.2); graph retrieval is the separate GraphStore.
 //
 // Keeping these pure makes the fusion algorithm A/B-testable offline and keeps
 // the HorizonDB adapter thin.

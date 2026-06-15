@@ -6,7 +6,9 @@
 //   - similarFacts (semantic kNN of a known fact; inaccessible anchor ≡ unknown)
 //   - crawl tracking (readUncrawledFacts / markFactsCrawled — PRIVILEGED)
 //   - the embedder lifecycle (configure/start/stop/status; restart-on-configure)
-//   - the open-graph GraphInterface (delegated to the typed Cypher layer)
+//
+// The open knowledge graph is a SEPARATE provider — HorizonDBGraphStore in
+// graph-store.ts (07 D2). This class implements EnhancedFactStore only.
 //
 // Layering (03-design §1): ALL relational + vector data access goes through
 // stored procedures created by the numbered migrations — no inline SQL here
@@ -17,16 +19,14 @@
 import type {
     AccessContext, CrawledFactStamp, DeleteFactInput, EmbedderStatus,
     EmbeddingEndpointConfig, EnhancedFactStore, FactRecord, FactsStatsRow,
-    GraphEdgeHit, GraphEdgeInput, GraphEdgeQuery, GraphInterface, GraphNodeHit,
-    GraphNodeInput, GraphNodeQuery, GraphNodeRef, GraphEdgeRef, ReadFactsQuery,
-    ScoredFact, SearchOpts, SearchResult, SimilarOpts, StoreFactInput, SubGraph,
+    ReadFactsQuery, ScoredFact, SearchOpts, SearchResult, SimilarOpts,
+    StoreFactInput,
 } from "./types.js";
 import type { HorizonFactsConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { EmbeddingClient, toVectorLiteral } from "./embedding-client.js";
 import { loadMigrations, runMigrations, HORIZON_FACTS_LOCK_SEED, hashSchemaName } from "./horizon-migrator.js";
-import { assertExtensionsAvailable, assertDurableHttpUsable } from "./preconditions.js";
-import { GraphQueries } from "./graph-queries.js";
+import { assertFactExtensions, assertDurableHttpUsable } from "./preconditions.js";
 import { ident } from "./sql-util.js";
 import { withDbRetry } from "./db-retry.js";
 import { buildLexicalQuery, namespacePrefix, fuseWeighted, type Candidate } from "./query-builder.js";
@@ -54,10 +54,9 @@ export function toAllowlistedAzureHost(url: string): { url: string; rewritten: b
 const EMBED_VAR_SUFFIXES = ["url", "model", "dim", "key", "keyhdr", "bearer", "inputfield", "timeout", "interval", "batch"] as const;
 type EmbedVarSuffix = (typeof EMBED_VAR_SUFFIXES)[number];
 
-export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
+export class HorizonDBFactStore implements EnhancedFactStore {
     private pool: any;
     private initialized = false;
-    private readonly graphQueries: GraphQueries;
     /** Snapshot of the configured endpoint (mirrors the durable vars). */
     private embedConfig?: EmbeddingEndpointConfig;
     private queryEmbedder?: EmbeddingClient;
@@ -67,15 +66,14 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
         private readonly cfg: Required<Pick<HorizonFactsConfig, "schema" | "graphName" | "embeddingDim">> & HorizonFactsConfig,
     ) {
         this.pool = pool;
-        this.graphQueries = new GraphQueries(pool, cfg.graphName);
     }
 
-    static async create(config: Partial<HorizonFactsConfig> = {}): Promise<HorizonFactStore> {
+    static async create(config: Partial<HorizonFactsConfig> = {}): Promise<HorizonDBFactStore> {
         const cfg = resolveConfig(config);
         const { default: pg } = await import("pg");
         const pool = new pg.Pool({ connectionString: cfg.connectionString, max: cfg.poolMax });
         pool.on("error", (err: Error) => console.error("[horizon-facts] pool error (non-fatal):", err.message));
-        return new HorizonFactStore(pool, cfg as any);
+        return new HorizonDBFactStore(pool, cfg as any);
     }
 
     private get schema() { return this.cfg.schema!; }
@@ -91,15 +89,18 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
      */
     async initialize(): Promise<void> {
         if (this.initialized) return;
-        await assertExtensionsAvailable(this.pool);
+        await assertFactExtensions(this.pool);
         await runMigrations(
             this.pool,
             this.schema,
+            // Facts provider runs the facts migrations only — the 0003 AGE
+            // bootstrap belongs to HorizonDBGraphStore (07 D2). graphName is
+            // still passed for token validation; the filtered set excludes it.
             loadMigrations({
                 schema: this.schema,
                 graphName: this.cfg.graphName!,
                 embeddingDim: this.cfg.embeddingDim,
-            }),
+            }).filter((m) => m.version !== "0003"),
             HORIZON_FACTS_LOCK_SEED,
         );
         await assertDurableHttpUsable(this.pool);
@@ -477,32 +478,7 @@ export class HorizonFactStore implements EnhancedFactStore, GraphInterface {
         return { client: this.queryEmbedder, model: this.embedConfig!.model };
     }
 
-    // ─── GraphInterface (delegated to the typed Cypher layer) ────────────────
-
-    searchGraphNodes(q: GraphNodeQuery, access?: AccessContext): Promise<GraphNodeHit[]> {
-        return this.graphQueries.searchGraphNodes(q, access);
-    }
-    searchGraphEdges(q: GraphEdgeQuery, access?: AccessContext): Promise<GraphEdgeHit[]> {
-        return this.graphQueries.searchGraphEdges(q, access);
-    }
-    graphNeighbourhood(nodeKey: string, depth: number, access?: AccessContext): Promise<SubGraph> {
-        return this.graphQueries.graphNeighbourhood(nodeKey, depth, access);
-    }
-    upsertGraphNode(n: GraphNodeInput): Promise<GraphNodeRef> {
-        return this.graphQueries.upsertGraphNode(n);
-    }
-    upsertGraphEdge(e: GraphEdgeInput): Promise<GraphEdgeRef> {
-        return this.graphQueries.upsertGraphEdge(e);
-    }
-    mergeGraphNodes(fromKey: string, intoKey: string, reason: string): Promise<void> {
-        return this.graphQueries.mergeGraphNodes(fromKey, intoKey, reason);
-    }
-    deleteGraphNode(nodeKey: string): Promise<boolean> {
-        return this.graphQueries.deleteGraphNode(nodeKey);
-    }
-    deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string): Promise<boolean> {
-        return this.graphQueries.deleteGraphEdge(fromKey, toKey, predicateKey);
-    }
+    // ─── GraphStore lives in graph-store.ts (separate provider, 07 D2) ───────
 }
 
 // ─── row mapping ─────────────────────────────────────────────────────────────

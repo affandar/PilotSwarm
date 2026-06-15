@@ -4,7 +4,7 @@
 // (every run does a different number of calls with different concurrency, and
 // unrelated ops like facts_similar swing 5x between runs from DB contention).
 // This benchmark removes the LLM entirely: it drives a fixed, scripted set of
-// graph upserts directly against HorizonFactStore and reports clean p50/p95.
+// graph upserts directly against HorizonDBGraphStore and reports clean p50/p95.
 //
 // It also measures the two primitives that explain WHERE the time goes on a
 // remote cluster:
@@ -77,11 +77,10 @@ async function main() {
     console.log(`bench-graph  schema=${SCHEMA} graph=${GRAPH}`);
     console.log(`  nodes=${N_NODES} edges=${N_EDGES} concurrency=${CONCURRENCY} poolMax=${POOL_MAX} samples=${SAMPLES}\n`);
 
-    const { HorizonFactStore } = await import("../dist/src/index.js");
-    const store = await HorizonFactStore.create({
+    const { makeEvalStore } = await import("./_store.mjs");
+    const { store } = await makeEvalStore({
         connectionString: DB_URL, schema: SCHEMA, graphName: GRAPH, embeddingDim: 4, poolMax: POOL_MAX,
     });
-    await store.initialize();
 
     // A separate raw pool for the primitive measurements (RTT, age-prep), so we
     // measure the cluster, not the store's pool state.

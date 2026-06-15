@@ -282,11 +282,14 @@ function loadQuestions() {
 }
 
 async function openStore() {
-    const { HorizonFactStore } = await import("../dist/src/index.js");
+    const { makeEvalStore } = await import("./_store.mjs");
     // No initialize() — we read an already-harvested store. Dim must match the
     // harvested schema (set QUALITY_EMBED_DIM to the harvest's embedding dim).
     const dim = Number(process.env.QUALITY_EMBED_DIM || 1536);
-    return HorizonFactStore.create({ connectionString: DB_URL, schema: SCHEMA, graphName: GRAPH, embeddingDim: dim });
+    const { store } = await makeEvalStore(
+        { connectionString: DB_URL, schema: SCHEMA, graphName: GRAPH, embeddingDim: dim },
+        { initialize: false });
+    return store;
 }
 
 /** Run BOTH arms for a question subset with QUERY_MODEL; fix a random A/B

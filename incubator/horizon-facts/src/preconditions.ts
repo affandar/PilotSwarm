@@ -5,16 +5,15 @@
 // pg_textsearch (ts_rank is not a substitute), semantic needs pgvector, the
 // graph needs AGE, and the embedder needs pg_durable with df.http granted.
 
-const REQUIRED: { name: string; why: string; fix: string }[] = [
+interface Ext { name: string; why: string; fix: string; }
+
+/** Extensions the enhanced FACT provider (HorizonDBFactStore) needs (07 D2):
+ *  pgvector + pg_textsearch + pg_durable. NOT age — graph is a separate provider. */
+const FACT_REQUIRED: Ext[] = [
     {
         name: "vector",
         why: "semantic kNN over facts.embedding (pgvector)",
         fix: "install pgvector / add 'vector' to the cluster's allow-listed extensions",
-    },
-    {
-        name: "age",
-        why: "the open knowledge graph (Apache AGE)",
-        fix: "install Apache AGE / add 'age' to shared_preload_libraries and the extension allow-list",
     },
     {
         name: "pg_textsearch",
@@ -28,30 +27,71 @@ const REQUIRED: { name: string; why: string; fix: string }[] = [
     },
 ];
 
-/** Pieces missing BEFORE migrations run (extension availability). */
-export async function missingExtensions(pool: any): Promise<string[]> {
+/** Extensions the GRAPH provider (HorizonDBGraphStore) needs (07 D2): AGE only,
+ *  so it can pair with a plain PgFactStore (base-facts + graph tier). */
+const GRAPH_REQUIRED: Ext[] = [
+    {
+        name: "age",
+        why: "the open knowledge graph (Apache AGE)",
+        fix: "install Apache AGE / add 'age' to shared_preload_libraries and the extension allow-list",
+    },
+];
+
+/** Union — the full bundled HorizonDB surface (back-compat). */
+const REQUIRED: Ext[] = [...FACT_REQUIRED, ...GRAPH_REQUIRED];
+
+async function missingFrom(pool: any, required: Ext[]): Promise<string[]> {
     const { rows } = await pool.query(
         `SELECT name FROM pg_available_extensions WHERE name = ANY($1)`,
-        [REQUIRED.map((r) => r.name)],
+        [required.map((r) => r.name)],
     );
     const available = new Set(rows.map((r: any) => r.name));
-    return REQUIRED.filter((r) => !available.has(r.name)).map((r) => r.name);
+    return required.filter((r) => !available.has(r.name)).map((r) => r.name);
 }
 
-/** Throw the itemized fail-fast error if any required extension is unavailable. */
-export async function assertExtensionsAvailable(pool: any): Promise<void> {
-    const missing = await missingExtensions(pool);
+function assertFrom(missing: string[], required: Ext[], surface: string): void {
     if (missing.length === 0) return;
     const lines = missing.map((name) => {
-        const r = REQUIRED.find((x) => x.name === name)!;
+        const r = required.find((x) => x.name === name)!;
         return `  - ${name}: ${r.why}. Fix: ${r.fix}`;
     });
     throw new Error(
-        `EnhancedFactStore preconditions failed — this database is missing ${missing.length} required ` +
+        `${surface} preconditions failed — this database is missing ${missing.length} required ` +
         `extension(s):\n${lines.join("\n")}\n` +
-        `The EnhancedFactStore requires HorizonDB (or equivalent). There are no fallbacks; ` +
-        `point enhancedFactsDatabaseUrl at a capable cluster.`,
+        `${surface} requires HorizonDB (or equivalent). There are no fallbacks; ` +
+        `point the connection string at a capable cluster.`,
     );
+}
+
+/** Pieces missing BEFORE migrations run — full bundled surface (back-compat). */
+export async function missingExtensions(pool: any): Promise<string[]> {
+    return missingFrom(pool, REQUIRED);
+}
+
+/** Fact-provider missing extensions (vector / pg_textsearch / pg_durable). */
+export async function missingFactExtensions(pool: any): Promise<string[]> {
+    return missingFrom(pool, FACT_REQUIRED);
+}
+
+/** Graph-provider missing extensions (age). */
+export async function missingGraphExtensions(pool: any): Promise<string[]> {
+    return missingFrom(pool, GRAPH_REQUIRED);
+}
+
+/** Throw the itemized fail-fast error if any required extension is unavailable
+ *  (full bundled surface — back-compat). */
+export async function assertExtensionsAvailable(pool: any): Promise<void> {
+    assertFrom(await missingExtensions(pool), REQUIRED, "EnhancedFactStore");
+}
+
+/** Fail-fast for the enhanced FACT provider (vector / pg_textsearch / pg_durable). */
+export async function assertFactExtensions(pool: any): Promise<void> {
+    assertFrom(await missingFactExtensions(pool), FACT_REQUIRED, "HorizonDBFactStore");
+}
+
+/** Fail-fast for the GRAPH provider (age only). */
+export async function assertGraphExtensions(pool: any): Promise<void> {
+    assertFrom(await missingGraphExtensions(pool), GRAPH_REQUIRED, "HorizonDBGraphStore");
 }
 
 /** Post-migration checks: df.http present and usable by this role. */

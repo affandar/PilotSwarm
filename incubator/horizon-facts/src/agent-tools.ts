@@ -14,7 +14,7 @@
 // PilotSwarm's defineTool() shape.
 
 import type {
-    AccessContext, EnhancedFactStore, GraphInterface, SearchOpts,
+    AccessContext, EnhancedFactStore, GraphStore, SearchOpts,
 } from "./types.js";
 
 export interface AgentTool {
@@ -48,9 +48,11 @@ export interface FactsToolsOptions {
     embeddedOnly?: boolean;
 }
 
-type Store = EnhancedFactStore & GraphInterface;
-
-export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): AgentTool[] {
+export function createFactsTools(
+    factStore: EnhancedFactStore,
+    graphStore: GraphStore | undefined,
+    opts: FactsToolsOptions = {},
+): AgentTool[] {
     const role = opts.role ?? "reader";
     const access = opts.resolveAccess ?? (() => ({ unrestricted: true }));
     const agentId = opts.agentId ?? "harvester";
@@ -79,7 +81,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
         },
         handler: (a) => {
             const o: SearchOpts = { mode: a.mode, namespace: a.namespace, tags: a.tags, limit: a.limit };
-            return store.searchFacts(a.query, o, access(a));
+            return factStore.searchFacts(a.query, o, access(a));
         },
     });
 
@@ -97,7 +99,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
             },
             required: ["scopeKey"],
         },
-        handler: (a) => store.similarFacts(a.scopeKey, { k: a.k, minScore: a.minScore }, access(a)),
+        handler: (a) => factStore.similarFacts(a.scopeKey, { k: a.k, minScore: a.minScore }, access(a)),
     });
 
     tools.push({
@@ -115,13 +117,14 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
                 limit: { type: "number" },
             },
         },
-        handler: (a) => store.readFacts(
+        handler: (a) => factStore.readFacts(
             { keyPattern: a.keyPattern, scopeKeys: a.scopeKeys, tags: a.tags, scope: a.scope, limit: a.limit },
             access(a)),
     });
 
-    // ── §3 graph read (reader + harvester) ───────────────────────────────────
+    // ── §3 graph read (reader + harvester) — only when a graph is configured ──
 
+    if (graphStore) {
     tools.push({
         name: "graph_search_nodes",
         description:
@@ -139,7 +142,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
                 limit: { type: "number" },
             },
         },
-        handler: (a) => store.searchGraphNodes(
+        handler: (a) => graphStore!.searchGraphNodes(
             { kind: a.kind, nameLike: a.nameLike, seeds: a.seeds, depth: a.depth, limit: a.limit },
             access(a)),
     });
@@ -160,7 +163,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
                 limit: { type: "number" },
             },
         },
-        handler: (a) => store.searchGraphEdges(a, access(a)),
+        handler: (a) => graphStore!.searchGraphEdges(a, access(a)),
     });
 
     tools.push({
@@ -174,10 +177,15 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
             },
             required: ["nodeKey", "depth"],
         },
-        handler: (a) => store.graphNeighbourhood(a.nodeKey, a.depth, access(a)),
+        handler: (a) => graphStore!.graphNeighbourhood(a.nodeKey, a.depth, access(a)),
     });
+    }
 
     if (role !== "harvester") return tools;
+
+    // Crawl-queue + graph-write are harvester tools that only make sense with a
+    // graph to harvest into (07 §1.5) — gate them on graphStore presence.
+    if (graphStore) {
 
     // ── §2 crawl queue (HARVESTER ONLY — privileged, all scopes) ─────────────
 
@@ -193,7 +201,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
                 limit: { type: "number", description: "Max facts this batch (default 20)." },
             },
         },
-        handler: (a) => store.readUncrawledFacts({ namespace: a.namespace, limit: a.limit, embeddedOnly }),
+        handler: (a) => factStore.readUncrawledFacts({ namespace: a.namespace, limit: a.limit, embeddedOnly }),
     });
 
     tools.push({
@@ -218,7 +226,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
             },
             required: ["stamps"],
         },
-        handler: (a) => store.markFactsCrawled(a.stamps),
+        handler: (a) => factStore.markFactsCrawled(a.stamps),
     });
 
     // ── §4 graph write (HARVESTER ONLY) ──────────────────────────────────────
@@ -240,7 +248,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
             },
             required: ["kind", "name"],
         },
-        handler: (a) => store.upsertGraphNode({ ...a, agentId }),
+        handler: (a) => graphStore!.upsertGraphNode({ ...a, agentId }),
     });
 
     tools.push({
@@ -261,7 +269,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
             },
             required: ["fromKey", "toKey", "predicate"],
         },
-        handler: (a) => store.upsertGraphEdge({ ...a, agentId }),
+        handler: (a) => graphStore!.upsertGraphEdge({ ...a, agentId }),
     });
 
     tools.push({
@@ -278,7 +286,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
             },
             required: ["fromKey", "intoKey", "reason"],
         },
-        handler: async (a) => { await store.mergeGraphNodes(a.fromKey, a.intoKey, a.reason); return { merged: true }; },
+        handler: async (a) => { await graphStore!.mergeGraphNodes(a.fromKey, a.intoKey, a.reason); return { merged: true }; },
     });
 
     tools.push({
@@ -289,7 +297,7 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
             properties: { nodeKey: { type: "string" } },
             required: ["nodeKey"],
         },
-        handler: async (a) => ({ deleted: await store.deleteGraphNode(a.nodeKey) }),
+        handler: async (a) => ({ deleted: await graphStore!.deleteGraphNode(a.nodeKey) }),
     });
 
     tools.push({
@@ -304,8 +312,9 @@ export function createFactsTools(store: Store, opts: FactsToolsOptions = {}): Ag
             },
             required: ["fromKey", "toKey", "predicateKey"],
         },
-        handler: async (a) => ({ deleted: await store.deleteGraphEdge(a.fromKey, a.toKey, a.predicateKey) }),
+        handler: async (a) => ({ deleted: await graphStore!.deleteGraphEdge(a.fromKey, a.toKey, a.predicateKey) }),
     });
+    }
 
     return tools;
 }

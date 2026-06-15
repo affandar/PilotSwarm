@@ -369,7 +369,7 @@ async function main() {
     console.log(`harvest-once model=${MODEL} embed=${HAS_EMBED ? "real" : "none (lexical only)"}`);
     console.log(`  schema=${SCHEMA} graph=${GRAPH}`);
 
-    const { HorizonFactStore } = await import("../dist/src/index.js");
+    const { makeEvalStore } = await import("./_store.mjs");
     const embedding = HAS_EMBED ? {
         url: process.env.HORIZON_EMBED_URL,
         model: process.env.HORIZON_EMBED_MODEL ?? "text-embedding-3-small",
@@ -379,11 +379,10 @@ async function main() {
         inputField: "input",
     } : undefined;
 
-    const store = await HorizonFactStore.create({
+    const { store } = await makeEvalStore({
         connectionString: DB_URL, schema: SCHEMA, graphName: GRAPH,
         embedding, embeddingDim: embedding?.dim ?? 4,
     });
-    await store.initialize();
 
     // Record store-level transient retries so the perf report can show how many
     // HorizonDB connection drops were silently papered over.
