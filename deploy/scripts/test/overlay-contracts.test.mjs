@@ -16,6 +16,7 @@ import {
   resolveOverlayKey,
   getContract,
   validateRequiredEnv,
+  validateVpnGatewayCombo,
   applyStubKeys,
   EDGE_MODES,
   TLS_SOURCES,
@@ -210,4 +211,103 @@ test("bicep portal main.bicep tlsSource default matches DEFAULT_TLS_SOURCE", () 
     DEFAULT_TLS_SOURCE,
     `bicep tlsSource default '${m[1]}' must match overlay-contracts DEFAULT_TLS_SOURCE '${DEFAULT_TLS_SOURCE}'`,
   );
+});
+
+// === validateVpnGatewayCombo (Spec FR-001/FR-008/FR-014) ====================
+
+const VPN_BASE_ENV = Object.freeze({
+  VPN_GATEWAY_ENABLED: "true",
+  SSL_CERT_DOMAIN_SUFFIX: "portal.example.com",
+  VPN_CLIENT_ADDRESS_POOL: "172.16.200.0/24",
+});
+
+test("validateVpnGatewayCombo: disabled (unset) → empty regardless of other VPN env", () => {
+  const env = {
+    EDGE_MODE: "private",
+    TLS_SOURCE: "letsencrypt",
+    VPN_CLIENT_ADDRESS_POOL: "10.20.50.0/24", // would overlap default VNet
+  };
+  assert.deepEqual(
+    validateVpnGatewayCombo({ edgeMode: "private", tlsSource: "letsencrypt", env }),
+    [],
+  );
+});
+
+test("validateVpnGatewayCombo: disabled (literal 'false') → empty", () => {
+  const env = { ...VPN_BASE_ENV, VPN_GATEWAY_ENABLED: "false" };
+  assert.deepEqual(
+    validateVpnGatewayCombo({ edgeMode: "private", tlsSource: "letsencrypt", env }),
+    [],
+  );
+});
+
+test("validateVpnGatewayCombo: valid combo (afd + akv + suffix + non-overlapping pool) → empty", () => {
+  const env = { ...VPN_BASE_ENV };
+  assert.deepEqual(
+    validateVpnGatewayCombo({ edgeMode: "afd", tlsSource: "akv", env }),
+    [],
+  );
+});
+
+test("validateVpnGatewayCombo: TLS_SOURCE=letsencrypt → vpn-requires-akv", () => {
+  const env = { ...VPN_BASE_ENV };
+  const errs = validateVpnGatewayCombo({ edgeMode: "afd", tlsSource: "letsencrypt", env });
+  assert.ok(errs.includes("vpn-requires-akv"), `got: ${errs.join(",")}`);
+});
+
+test("validateVpnGatewayCombo: EDGE_MODE=private → vpn-requires-afd", () => {
+  const env = { ...VPN_BASE_ENV };
+  const errs = validateVpnGatewayCombo({ edgeMode: "private", tlsSource: "akv", env });
+  assert.ok(errs.includes("vpn-requires-afd"), `got: ${errs.join(",")}`);
+});
+
+test("validateVpnGatewayCombo: missing SSL_CERT_DOMAIN_SUFFIX → vpn-requires-domain-suffix", () => {
+  const env = { ...VPN_BASE_ENV, SSL_CERT_DOMAIN_SUFFIX: "" };
+  const errs = validateVpnGatewayCombo({ edgeMode: "afd", tlsSource: "akv", env });
+  assert.ok(errs.includes("vpn-requires-domain-suffix"), `got: ${errs.join(",")}`);
+});
+
+test("validateVpnGatewayCombo: overlapping pool (10.20.50.0/24 inside default 10.20.0.0/16) → vpn-pool-overlap", () => {
+  const env = { ...VPN_BASE_ENV, VPN_CLIENT_ADDRESS_POOL: "10.20.50.0/24" };
+  const errs = validateVpnGatewayCombo({ edgeMode: "afd", tlsSource: "akv", env });
+  assert.ok(errs.includes("vpn-pool-overlap"), `got: ${errs.join(",")}`);
+});
+
+test("validateVpnGatewayCombo: non-overlapping pool (172.16.200.0/24) → no overlap error", () => {
+  const env = { ...VPN_BASE_ENV };
+  const errs = validateVpnGatewayCombo({ edgeMode: "afd", tlsSource: "akv", env });
+  assert.ok(!errs.includes("vpn-pool-overlap"), `got: ${errs.join(",")}`);
+});
+
+test("validateVpnGatewayCombo: malformed pool CIDR → vpn-pool-overlap (fail-closed)", () => {
+  const env = { ...VPN_BASE_ENV, VPN_CLIENT_ADDRESS_POOL: "not-a-cidr" };
+  const errs = validateVpnGatewayCombo({ edgeMode: "afd", tlsSource: "akv", env });
+  assert.ok(errs.includes("vpn-pool-overlap"), `got: ${errs.join(",")}`);
+});
+
+test("validateVpnGatewayCombo: respects VNET_CIDR override when supplied", () => {
+  // If operator overrides VNET_CIDR to 10.99.0.0/16, the default-pool
+  // 172.16.200.0/24 still doesn't overlap. Sanity: 10.99.50.0/24 would.
+  const env = { ...VPN_BASE_ENV, VNET_CIDR: "10.99.0.0/16", VPN_CLIENT_ADDRESS_POOL: "10.99.50.0/24" };
+  const errs = validateVpnGatewayCombo({ edgeMode: "afd", tlsSource: "akv", env });
+  assert.ok(errs.includes("vpn-pool-overlap"), `got: ${errs.join(",")}`);
+});
+
+test("validateRequiredEnv aggregates vpn-* errors into the returned 'missing' array", () => {
+  // afd-akv overlay so the baseline required key (SSL_CERT_DOMAIN_SUFFIX)
+  // is exercised; with VPN enabled and TLS_SOURCE=letsencrypt we'd switch
+  // overlays, so use afd-akv + letsencrypt? No — overlay is resolved from
+  // (edgeMode,tlsSource). Use afd-akv overlay = (afd, akv); but then the
+  // VPN combo is satisfied. To get a vpn-* error through the validator
+  // entrypoint, flip EDGE_MODE to 'private' and use the private-akv
+  // overlay which requires HOST/PRIVATE_DNS_ZONE/AKS_VNET_ID anyway.
+  const env = {
+    VPN_GATEWAY_ENABLED: "true",
+    SSL_CERT_DOMAIN_SUFFIX: "portal.example.com",
+    HOST: "h",
+    PRIVATE_DNS_ZONE: "z",
+    AKS_VNET_ID: "v",
+  };
+  const missing = validateRequiredEnv({ edgeMode: "private", tlsSource: "akv", env });
+  assert.ok(missing.includes("vpn-requires-afd"), `got: ${missing.join(",")}`);
 });

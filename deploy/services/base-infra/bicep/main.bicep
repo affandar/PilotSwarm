@@ -112,6 +112,9 @@ param appgwWafCustomRules array = []
 @description('AFD frontDoorId GUID emitted by global-infra/bicep/main.bicep, threaded as FRONT_DOOR_ID via the deploy-bicep.mjs aliasFor() pipeline. Used by the AllowAfd WAF guard rule when VPN ingress is enabled.')
 param frontDoorId string = ''
 
+@description('Microsoft Entra (AAD) tenant ID threaded from the deploy-time AZURE_TENANT_ID env var via the base-infra params template. Currently consumed only by the VPN gateway module (Spec FR-001/FR-008); the keyvault/postgres modules keep their own subscription().tenantId defaults. Empty default keeps non-VPN stamps byte-equivalent at the param layer.')
+param tenantId string = ''
+
 // ==============================================================================
 // Derived names
 // ==============================================================================
@@ -299,9 +302,13 @@ module VpnGateway './vpn-gateway.bicep' = if (vpnGatewayEnabled) {
     gatewaySubnetId: Vnet.outputs.gatewaySubnetId
     vpnGatewaySku: vpnGatewaySku
     vpnClientAddressPool: vpnClientAddressPool
-    // tenantId is not a stamp-level param today; subscription().tenantId is the
-    // tenant the deployment runs against and matches what KV/Postgres use.
-    tenantId: subscription().tenantId
+    // tenantId is threaded from AZURE_TENANT_ID via the base-infra params
+    // template (deploy-bicep.mjs render pipeline). This aligns the VPN
+    // gateway's Entra ID authentication with the rest of the stamp's tenant
+    // assumption (Spec FR-001/FR-008). The keyvault/postgres modules continue
+    // to default to subscription().tenantId — same value today, but their
+    // bicep contract is unchanged by this fix.
+    tenantId: tenantId
     vpnAadAudience: vpnAadAudience
     logAnalyticsWorkspaceId: LogAnalytics.outputs.workspaceId
   }

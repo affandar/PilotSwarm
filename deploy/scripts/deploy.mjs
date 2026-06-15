@@ -133,6 +133,12 @@ function printHelp() {
       "",
       "Spec: .paw/work/oss-deploy-script/Spec.md",
       "",
+      "Notes:",
+      "  • VPN_GATEWAY_ENABLED=true adds 45+ min to the first `bicep` step",
+      "    and ~$140/mo (VpnGw1) to the running stamp. Coexists with the",
+      "    AFD edge mode — does NOT replace it. See deploy/envs/template.env",
+      "    for the full env-var roster and the AKV-only constraint.",
+      "",
     ].join("\n"),
   );
 }

@@ -221,6 +221,25 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
       baseArgs.push("--parameters", `foundryDeployments=@${abs}`);
       log("info", `[${moduleName}] applying Foundry deployments from ${abs}`);
     }
+    // AppGw WAF custom rules: optional JSON array file at
+    // APPGW_WAF_CUSTOM_RULES_FILE. Mirrors the AFD-side WAF_CUSTOM_RULES_FILE
+    // pattern below (gitignored location, same error shape on missing file).
+    // When VPN_GATEWAY_ENABLED=true the bicep auto-seeds three guard rules
+    // at priorities 90/91/92 — operator rules from this file MUST start at
+    // priority >= 100. The bicep param defaults to [] so this is purely
+    // additive for non-VPN stamps.
+    if (env.APPGW_WAF_CUSTOM_RULES_FILE) {
+      const raw = env.APPGW_WAF_CUSTOM_RULES_FILE;
+      const abs = isAbsolute(raw) ? raw : join(REPO_ROOT, raw);
+      if (!existsSync(abs)) {
+        throw new Error(
+          `APPGW_WAF_CUSTOM_RULES_FILE points to a missing file: ${abs}. ` +
+            `Either unset it or create the JSON array file (gitignored under deploy/envs/local/).`,
+        );
+      }
+      baseArgs.push("--parameters", `appgwWafCustomRules=@${abs}`);
+      log("info", `[${moduleName}] applying AppGw WAF custom rules from ${abs}`);
+    }
   }
 
   // global-infra optionally accepts a custom-rules JSON file via env var

@@ -58,6 +58,9 @@
     },
     "frontDoorId": {
       "value": "${FRONT_DOOR_ID}"
+    },
+    "tenantId": {
+      "value": "${AZURE_TENANT_ID}"
     }
   }
 }
