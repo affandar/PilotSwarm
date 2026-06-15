@@ -128,6 +128,17 @@ export interface GraphStore {
     // delete (no cross-store cascade)
     deleteGraphNode(nodeKey: string): Promise<boolean>;
     deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string): Promise<boolean>;
+
+    /**
+     * OPTIONAL cheap aggregate for `graph_stats` (enhancedfactstore 07 P4):
+     * total node + edge counts via a single store-side query (e.g. an AGE
+     * `MATCH (n) RETURN count(n)` / `MATCH ()-[r]->() RETURN count(r)`), NOT a
+     * client-side fan-out traversal. When a provider does not implement this,
+     * the graph_stats tool falls back to a bounded node sample and omits the
+     * exact edge count. `uncrawledFacts` is optional here — the tool reads the
+     * crawl backlog from the base FactStore when the provider omits it.
+     */
+    graphStats?(): Promise<{ nodeCount: number; edgeCount: number; uncrawledFacts?: number }>;
 }
 
 /**

@@ -21,8 +21,15 @@ export interface CreateGraphToolsOptions {
      * receives these tools (dormant), and agent-tuner never does.
      */
     isHarvester?: boolean;
-    /** Resolve the caller's ACL context for graph reads (evidence filtering). */
-    resolveAccess?: (sessionId: string | undefined) => AccessContext;
+    /**
+     * Resolve the caller's ACL context for graph reads (evidence filtering +
+     * seed gating). REQUIRED for correct isolation: without it, a reader would
+     * see every session's evidence. Mirrors the read_facts lineage model —
+     * returns { readerSessionId, grantedSessionIds } (or { unrestricted: true }
+     * for the tuner). If omitted, graph reads FAIL CLOSED to the caller's own
+     * session only (never unrestricted).
+     */
+    resolveAccess?: (sessionId: string | undefined) => Promise<AccessContext>;
     /** Agent id recorded on graph writes. */
     agentId?: string;
     /**
@@ -42,9 +49,17 @@ export interface CreateGraphToolsOptions {
 export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
     const { graphStore, factStore, agentIdentity, isHarvester, recordEvent } = opts;
     const agentId = opts.agentId ?? agentIdentity ?? "harvester";
-    const resolveAccess = opts.resolveAccess ?? (() => ({ unrestricted: true }));
     const isTuner = agentIdentity === TUNER_AGENT_ID;
     const isFactsManager = agentIdentity === FACTS_MANAGER_AGENT_ID;
+    // ACL resolver. FAIL CLOSED: with no resolver, restrict reads to the
+    // caller's own session (readerSessionId only) — never unrestricted. The
+    // tuner is always unrestricted (privileged read-only investigator), matching
+    // the read_facts model.
+    const resolveAccess = async (sessionId: string | undefined): Promise<AccessContext> => {
+        if (isTuner) return { unrestricted: true };
+        if (opts.resolveAccess) return opts.resolveAccess(sessionId);
+        return { readerSessionId: sessionId ?? null, grantedSessionIds: [] };
+    };
     // Harvester powers: the app-assigned harvester role OR the facts-manager
     // (which holds them dormant). Never the tuner.
     const canHarvest = !isTuner && (isHarvester === true || isFactsManager);
@@ -81,9 +96,10 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             },
         },
         handler: async (a: any, ctx: any) => {
+            const access = await resolveAccess(ctx?.sessionId);
             const hits = await graphStore.searchGraphNodes(
                 { kind: a.kind, nameLike: a.nameLike, seeds: a.seeds, depth: a.depth, limit: a.limit },
-                resolveAccess(ctx?.sessionId),
+                access,
             );
             recordSearch(ctx?.sessionId, "search_nodes", { kind: a.kind, nameLike: a.nameLike, seeds: a.seeds, depth: a.depth }, hits.length);
             return hits;
@@ -106,7 +122,8 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             },
         },
         handler: async (a: any, ctx: any) => {
-            const hits = await graphStore.searchGraphEdges(a, resolveAccess(ctx?.sessionId));
+            const access = await resolveAccess(ctx?.sessionId);
+            const hits = await graphStore.searchGraphEdges(a, access);
             recordSearch(ctx?.sessionId, "search_edges", a, hits.length);
             return hits;
         },
@@ -123,7 +140,8 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             required: ["nodeKey", "depth"] as const,
         },
         handler: async (a: any, ctx: any) => {
-            const sub = await graphStore.graphNeighbourhood(a.nodeKey, a.depth, resolveAccess(ctx?.sessionId));
+            const access = await resolveAccess(ctx?.sessionId);
+            const sub = await graphStore.graphNeighbourhood(a.nodeKey, a.depth, access);
             recordSearch(ctx?.sessionId, "neighbourhood", { nodeKey: a.nodeKey, depth: a.depth }, sub.nodes.length);
             return sub;
         },
@@ -137,19 +155,33 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                 "uncrawled). Use for status/health reporting — it never mutates the graph.",
             parameters: { type: "object" as const, properties: {} },
             handler: async () => {
-                // Node/edge counts via broad reads (bounded); crawl backlog from the base store.
-                const nodes = await graphStore.searchGraphNodes({ limit: 100000 }, { unrestricted: true });
-                let edgeCount = 0;
-                // Sample edges across found nodes (bounded — avoids a full scan on huge graphs).
-                for (const n of nodes.slice(0, 5000)) {
-                    const sub = await graphStore.graphNeighbourhood(n.nodeKey, 1, { unrestricted: true });
-                    edgeCount += sub.edges.length;
+                // Prefer a provider aggregate (single cheap query). If the store
+                // does not implement graphStats(), fall back to a BOUNDED count —
+                // never a fan-out traversal (that would be a multi-minute DoS on a
+                // large graph). The crawl backlog comes from the base store, which
+                // already returns its own bounded `count`.
+                const statsFn = (graphStore as any).graphStats;
+                const uncrawled = await factStore.readUncrawledFacts({ limit: 1 });
+                if (typeof statsFn === "function") {
+                    const s = await statsFn.call(graphStore);
+                    return {
+                        nodeCount: s.nodeCount,
+                        edgeCount: s.edgeCount,
+                        uncrawledFacts: s.uncrawledFacts ?? uncrawled.count,
+                    };
                 }
-                const uncrawled = await factStore.readUncrawledFacts({ limit: 100000 });
+                // Bounded fallback: report whether the graph is non-empty + the
+                // crawl backlog, without an O(N) traversal. nodeCount is a lower
+                // bound (capped sample) so callers know it is approximate.
+                const SAMPLE = 1000;
+                const sample = await graphStore.searchGraphNodes({ limit: SAMPLE }, { unrestricted: true });
                 return {
-                    nodeCount: nodes.length,
-                    edgeCountSampled: edgeCount,
+                    nodeCountAtLeast: sample.length,
+                    nodeCountExact: sample.length < SAMPLE ? sample.length : undefined,
                     uncrawledFacts: uncrawled.count,
+                    note: typeof statsFn !== "function"
+                        ? "Provider has no graphStats(); nodeCount is a bounded sample. Edge count omitted to avoid fan-out."
+                        : undefined,
                 };
             },
         }));

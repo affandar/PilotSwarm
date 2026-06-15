@@ -670,7 +670,7 @@ export class SessionManager {
                     }
                 }
                 : undefined,
-            }).filter((tool: any) => !isTunerSession || tool.name === "read_facts" || tool.name === "facts_search" || tool.name === "facts_similar");
+            }).filter((tool: any) => !isTunerSession || tool.name === "read_facts" || tool.name === "facts_search" || tool.name === "facts_similar" || tool.name === "search_skills");
         // Graph tools (07 P4) — registered ONLY when a graph store is configured.
         // Reader tools go to every session; crawl-queue + write/delete go to the
         // app harvester role and the facts-manager (dormant); graph_stats to
@@ -682,6 +682,17 @@ export class SessionManager {
                 agentIdentity: effectiveSerializableConfig.agentIdentity,
                 isHarvester: effectiveSerializableConfig.isHarvester === true,
                 agentId: effectiveSerializableConfig.agentIdentity,
+                // Graph reads use the SAME lineage visibility as read_facts. The
+                // tuner branch inside createGraphTools forces unrestricted; for
+                // everyone else this resolves their granted lineage sessions.
+                resolveAccess: this._getLineageSessionIds
+                    ? async (sessionId: string | undefined) => {
+                        if (!sessionId) return { readerSessionId: null, grantedSessionIds: [] };
+                        const raw = await this._getLineageSessionIds!(sessionId);
+                        const granted = [...new Set((raw || []).filter((sid) => Boolean(sid) && sid !== sessionId))];
+                        return { readerSessionId: sessionId, grantedSessionIds: granted };
+                    }
+                    : undefined,
                 recordEvent: this.sessionCatalog
                     ? async (sid, eventType, data) => {
                         try {

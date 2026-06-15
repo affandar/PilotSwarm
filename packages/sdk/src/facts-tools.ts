@@ -311,11 +311,52 @@ export function createFactTools(opts: {
 
     const enhancedTools: Tool<any>[] = [];
     if (enhancedFactStore && enhancedFactStore.capabilities.search) {
-        const accessOf = (ctx?: { sessionId?: string }) => ({
-            readerSessionId: ctx?.sessionId ?? null,
-            grantedSessionIds: [] as string[],
-            unrestricted: agentIdentity === TUNER_AGENT_ID,
-        });
+        const isTuner = agentIdentity === TUNER_AGENT_ID;
+        // Resolve the SAME lineage visibility read_facts uses: the tuner is an
+        // unrestricted investigator; everyone else sees their own session plus
+        // granted lineage sessions (ancestors/descendants). FAIL CLOSED — with
+        // no lineage resolver, a non-tuner sees only its own session.
+        const resolveSearchAccess = async (ctx?: { sessionId?: string }) => {
+            if (isTuner) return { readerSessionId: ctx?.sessionId ?? null, grantedSessionIds: [] as string[], unrestricted: true };
+            let granted: string[] = [];
+            if (ctx?.sessionId && getLineageSessionIds) {
+                const raw = await getLineageSessionIds(ctx.sessionId);
+                granted = [...new Set((raw || []).filter((sid) => Boolean(sid) && sid !== ctx.sessionId))];
+            } else if (ctx?.sessionId && getDescendantSessionIds) {
+                const raw = await getDescendantSessionIds(ctx.sessionId);
+                granted = [...new Set((raw || []).filter((sid) => Boolean(sid) && sid !== ctx.sessionId))];
+            }
+            return { readerSessionId: ctx?.sessionId ?? null, grantedSessionIds: granted, unrestricted: false };
+        };
+
+        // Reserved-namespace gate for SEARCH — the same rule read_facts enforces.
+        // Without this, facts_search/facts_similar would be a hole around the
+        // intake/* (and skills/asks-write) ACL: a task agent could query
+        // namespace:"intake" or a broad term and receive reserved values.
+        // Note: the `namespace` arg is a bare key PREFIX (e.g. "intake", not
+        // "intake/*"), so match it against the reserved prefixes' leading
+        // segment as well as the slash form checkNamespaceRead expects.
+        const blockReservedSearch = (namespace?: string) => {
+            if (!namespace || agentIdentity === FACTS_MANAGER_AGENT_ID || agentIdentity === TUNER_AGENT_ID) return null;
+            const ns = namespace.replace(/\/+$/, "");
+            const hitsReserved = RESERVED_READ_PREFIXES.some((p) => {
+                const seg = p.replace(/\/+$/, "");
+                return ns === seg || ns.startsWith(seg + "/") || seg.startsWith(ns + "/");
+            });
+            if (hitsReserved) {
+                return `Error: the '${ns}' key namespace is not readable by task agents. ` +
+                    `Search curated skills (namespace 'skills') or open asks (namespace 'asks') instead.`;
+            }
+            // Fall back to the shared slash-form check for any other shape.
+            return checkNamespaceRead(namespace, agentIdentity);
+        };
+        const stripReserved = (result: any) => {
+            if (agentIdentity === FACTS_MANAGER_AGENT_ID || agentIdentity === TUNER_AGENT_ID) return result;
+            if (!result || !Array.isArray(result.facts)) return result;
+            const facts = result.facts.filter((f: any) =>
+                !RESERVED_READ_PREFIXES.some((p) => String(f?.key || "").startsWith(p)));
+            return { ...result, count: facts.length, facts };
+        };
 
         enhancedTools.push(defineTool("facts_search", {
             description:
@@ -334,8 +375,13 @@ export function createFactTools(opts: {
                 },
                 required: ["query"] as const,
             },
-            handler: (a: { query: string; mode?: any; namespace?: string; tags?: string[]; limit?: number }, ctx?: { sessionId?: string }) =>
-                enhancedFactStore.searchFacts(a.query, { mode: a.mode, namespace: a.namespace, tags: a.tags, limit: a.limit }, accessOf(ctx)),
+            handler: async (a: { query: string; mode?: any; namespace?: string; tags?: string[]; limit?: number }, ctx?: { sessionId?: string }) => {
+                const nsError = blockReservedSearch(a.namespace);
+                if (nsError) return { error: nsError };
+                const access = await resolveSearchAccess(ctx);
+                const result = await enhancedFactStore.searchFacts(a.query, { mode: a.mode, namespace: a.namespace, tags: a.tags, limit: a.limit }, access);
+                return stripReserved(result);
+            },
         }));
 
         enhancedTools.push(defineTool("facts_similar", {
@@ -352,8 +398,14 @@ export function createFactTools(opts: {
                 },
                 required: ["scopeKey"] as const,
             },
-            handler: (a: { scopeKey: string; k?: number; minScore?: number }, ctx?: { sessionId?: string }) =>
-                enhancedFactStore.similarFacts(a.scopeKey, { k: a.k, minScore: a.minScore }, accessOf(ctx)),
+            handler: async (a: { scopeKey: string; k?: number; minScore?: number }, ctx?: { sessionId?: string }) => {
+                const access = await resolveSearchAccess(ctx);
+                const result = await enhancedFactStore.similarFacts(a.scopeKey, { k: a.k, minScore: a.minScore }, access);
+                // Post-filter reserved keys — similarFacts has no namespace arg, so
+                // a kNN from an accessible anchor could still surface intake/* near
+                // neighbours for a task agent.
+                return stripReserved(result);
+            },
         }));
 
         // search_skills — skills-scoped pull (07 §1.6). The facts-manager owns the
@@ -375,10 +427,14 @@ export function createFactTools(opts: {
                     required: ["query"] as const,
                 },
                 handler: async (a: { query: string; limit?: number }, ctx?: { sessionId?: string }) => {
+                    // Skills are SHARED + curated; access is the shared scope (no
+                    // private-session leakage possible — namespace is pinned to
+                    // 'skills' and scope to 'shared').
+                    const access = await resolveSearchAccess(ctx);
                     const res = await enhancedFactStore.searchFacts(
                         a.query,
                         { mode: "hybrid", namespace: "skills", scope: "shared", limit: a.limit ?? 8 },
-                        accessOf(ctx),
+                        access,
                     );
                     // Hint shape only — the agent loads full content via read_facts.
                     return {

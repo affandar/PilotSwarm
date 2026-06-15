@@ -47,6 +47,7 @@ function fakeGraphStore() {
 }
 
 const names = (tools) => new Set(tools.map((t) => t.name));
+const byName = (tools, n) => tools.find((t) => t.name === n);
 
 describe("P4: enhanced facts tool gating (createFactTools)", () => {
     it("base store → only store_fact/read_facts/delete_fact (no search tools)", () => {
@@ -73,6 +74,34 @@ describe("P4: enhanced facts tool gating (createFactTools)", () => {
         const n = names(createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "facts-manager" }));
         assert(n.has("facts_search"), "facts-manager gets facts_search");
         assert(!n.has("search_skills"), "facts-manager does NOT get search_skills");
+    });
+
+    it("agent-tuner → factory yields facts_search + facts_similar + search_skills (read-only)", () => {
+        const enh = fakeEnhancedStore();
+        const n = names(createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "agent-tuner" }));
+        assert(n.has("facts_search") && n.has("facts_similar"), "tuner search tools present");
+        assert(n.has("search_skills"), "tuner DOES get search_skills (MED#5 — it is a read)");
+    });
+
+    it("HIGH#3: facts_search blocks the reserved intake/* namespace for a task agent", async () => {
+        const enh = fakeEnhancedStore();
+        const tools = createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "default" });
+        const res = await byName(tools, "facts_search").handler({ query: "x", namespace: "intake" }, { sessionId: "s1" });
+        assert(res && typeof res.error === "string" && /intake/.test(res.error), "intake namespace search is rejected for a task agent");
+    });
+
+    it("HIGH#3: facts_search strips reserved-prefix hits a task agent should not see", async () => {
+        const enh = fakeEnhancedStore();
+        // Store returns a mix of allowed + reserved-prefixed facts.
+        enh.searchFacts = async () => ({
+            count: 2, mode: "hybrid",
+            facts: [{ key: "skills/azure", value: "{}", score: 0.9 }, { key: "intake/secret/s9", value: "{}", score: 0.8 }],
+        });
+        const tools = createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "default" });
+        const res = await byName(tools, "facts_search").handler({ query: "x" }, { sessionId: "s1" });
+        const keys = res.facts.map((f) => f.key);
+        assert(keys.includes("skills/azure"), "allowed skills fact kept");
+        assert(!keys.some((k) => k.startsWith("intake/")), "reserved intake fact stripped from results");
     });
 });
 
@@ -107,5 +136,47 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         assert(n.has("graph_stats"), "tuner gets graph_stats");
         assert(!n.has("graph_upsert_node") && !n.has("graph_delete_node") && !n.has("graph_merge_nodes"), "tuner gets NO graph writes");
         assert(!n.has("facts_read_uncrawled") && !n.has("facts_mark_crawled"), "tuner gets NO crawl queue (even with isHarvester)");
+    });
+
+    it("BLOCKER#1: with no resolveAccess, a reader's graph search FAILS CLOSED (own session only, never unrestricted)", async () => {
+        let seenAccess;
+        const gs = fakeGraphStore();
+        gs.searchGraphNodes = async (_q, access) => { seenAccess = access; return []; };
+        const tools = createGraphTools({ graphStore: gs, factStore: fakeBaseStore(), agentIdentity: "default" });
+        await byName(tools, "graph_search_nodes").handler({ nameLike: "x" }, { sessionId: "s1" });
+        assert(seenAccess && seenAccess.unrestricted !== true, "reader access is NOT unrestricted");
+        assertEqual(seenAccess.readerSessionId, "s1", "reader access scoped to caller session");
+    });
+
+    it("BLOCKER#1: agent-tuner graph search resolves UNRESTRICTED (privileged investigator)", async () => {
+        let seenAccess;
+        const gs = fakeGraphStore();
+        gs.searchGraphNodes = async (_q, access) => { seenAccess = access; return []; };
+        const tools = createGraphTools({ graphStore: gs, factStore: fakeBaseStore(), agentIdentity: "agent-tuner" });
+        await byName(tools, "graph_search_nodes").handler({ nameLike: "x" }, { sessionId: "tuner1" });
+        assertEqual(seenAccess.unrestricted, true, "tuner graph reads are unrestricted");
+    });
+
+    it("HIGH#4: graph_stats does NOT fan out — uses provider graphStats() when present", async () => {
+        const gs = fakeGraphStore();
+        let neighbourhoodCalls = 0;
+        gs.graphNeighbourhood = async () => { neighbourhoodCalls++; return { nodes: [], edges: [] }; };
+        gs.graphStats = async () => ({ nodeCount: 42, edgeCount: 99, uncrawledFacts: 7 });
+        const tools = createGraphTools({ graphStore: gs, factStore: fakeBaseStore(), agentIdentity: "facts-manager" });
+        const res = await byName(tools, "graph_stats").handler({}, {});
+        assertEqual(res.nodeCount, 42, "node count from provider aggregate");
+        assertEqual(res.edgeCount, 99, "edge count from provider aggregate");
+        assertEqual(neighbourhoodCalls, 0, "no per-node neighbourhood fan-out");
+    });
+
+    it("HIGH#4: graph_stats fallback (no graphStats()) uses a bounded sample, still no fan-out", async () => {
+        const gs = fakeGraphStore();
+        let neighbourhoodCalls = 0;
+        gs.graphNeighbourhood = async () => { neighbourhoodCalls++; return { nodes: [], edges: [] }; };
+        gs.searchGraphNodes = async () => [{ nodeKey: "n1" }, { nodeKey: "n2" }];
+        const tools = createGraphTools({ graphStore: gs, factStore: fakeBaseStore(), agentIdentity: "facts-manager" });
+        const res = await byName(tools, "graph_stats").handler({}, {});
+        assertEqual(neighbourhoodCalls, 0, "fallback must not fan out neighbourhood queries");
+        assert(typeof res.uncrawledFacts === "number", "fallback still reports crawl backlog");
     });
 });
