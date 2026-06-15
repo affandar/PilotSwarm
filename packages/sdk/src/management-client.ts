@@ -1534,7 +1534,14 @@ export class PilotSwarmManagementClient {
      */
     async getEmbedderStatus(): Promise<{ supported: boolean; running?: boolean; instanceId?: string; status?: string }> {
         this._ensureStarted();
-        if (!this._factStore || !isEnhancedFactStore(this._factStore) || !this._factStore.capabilities.embedder) {
+        // Gate ONLY on whether this is an EnhancedFactStore (which guarantees an
+        // embedderStatus() method). Do NOT gate on construction-time
+        // `capabilities.embedder`: this control-plane store may be built without
+        // an embedding endpoint while the durable loop is configured + running
+        // for the schema by the workers. embedderStatus() reads the durable
+        // df.instances state, so it reports the truth regardless of how THIS
+        // store instance was constructed.
+        if (!this._factStore || !isEnhancedFactStore(this._factStore)) {
             return { supported: false };
         }
         const st = await this._factStore.embedderStatus();

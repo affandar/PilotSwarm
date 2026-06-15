@@ -7,6 +7,7 @@
 import { describe, it } from "vitest";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { createFactTools, createGraphTools } from "../../src/index.ts";
+import { resolveHarvesterRole } from "../../src/session-proxy.ts";
 
 // Minimal fakes — the factories only read `.capabilities` and call methods on
 // demand; registration itself does no I/O.
@@ -179,4 +180,113 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         assertEqual(neighbourhoodCalls, 0, "fallback must not fan out neighbourhood queries");
         assert(typeof res.uncrawledFacts === "number", "fallback still reports crawl backlog");
     });
+
+    it("HIGH#1: graph_stats reports the REAL crawl backlog (not capped at 0/1)", async () => {
+        // Regression: graph_stats used readUncrawledFacts({ limit: 1 }) whose
+        // `count` is the returned-row count — so the backlog was always 0 or 1.
+        const gs = fakeGraphStore();
+        gs.graphStats = async () => ({ nodeCount: 5, edgeCount: 3 }); // provider omits uncrawledFacts
+        const BACKLOG = 137;
+        const factStore = {
+            ...fakeBaseStore(),
+            readUncrawledFacts: async ({ limit } = {}) => {
+                const n = Math.min(limit ?? 20, BACKLOG);
+                return { count: n, facts: Array.from({ length: n }, (_, i) => ({ key: `intake/x/${i}`, contentHash: String(i) })) };
+            },
+        };
+        const tools = createGraphTools({ graphStore: gs, factStore, agentIdentity: "facts-manager" });
+        const res = await byName(tools, "graph_stats").handler({}, {});
+        assertEqual(res.uncrawledFacts, BACKLOG, "reports the real backlog when below the probe cap");
+        assert(!res.uncrawledFactsCapped, "not flagged capped when backlog < probe");
+    });
+
+    it("HIGH#1: graph_stats flags a backlog deeper than the bounded probe", async () => {
+        const gs = fakeGraphStore();
+        gs.graphStats = async () => ({ nodeCount: 5, edgeCount: 3 });
+        const factStore = {
+            ...fakeBaseStore(),
+            // Queue deeper than any probe → always returns the full requested limit.
+            readUncrawledFacts: async ({ limit } = {}) => {
+                const n = limit ?? 20;
+                return { count: n, facts: Array.from({ length: n }, (_, i) => ({ key: `intake/x/${i}`, contentHash: String(i) })) };
+            },
+        };
+        const tools = createGraphTools({ graphStore: gs, factStore, agentIdentity: "facts-manager" });
+        const res = await byName(tools, "graph_stats").handler({}, {});
+        assert(res.uncrawledFacts >= 500, "reports at least the probe depth");
+        assertEqual(res.uncrawledFactsCapped, true, "flags that the real backlog exceeds the probe");
+    });
 });
+
+// ─── BLOCKER#2: harvester role derives from the agent definition ─────────────
+// The harvester role is a property of the AGENT, resolved from static worker
+// config every turn — never inherited from a parent, never trusted from a stale
+// serialized config. resolveHarvesterRole is the single authoritative derive.
+describe("BLOCKER#2: resolveHarvesterRole (agent-definition-derived)", () => {
+    const userAgents = [
+        { name: "crawler", id: "crawler", title: "Knowledge Crawler", harvester: true },
+        { name: "researcher", id: "researcher", title: "Researcher", harvester: false },
+        { name: "writer", id: "writer", title: "Writer" }, // no harvester field
+    ];
+    const systemAgents = [
+        { name: "facts-manager", id: "facts-manager", title: "Facts Manager" },
+        { name: "harvest-sys", id: "harvest-sys", title: "System Harvester", harvester: true },
+    ];
+
+    it("a top-level harvester agent resolves true (by id)", () => {
+        assertEqual(resolveHarvesterRole("crawler", undefined, userAgents, systemAgents), true);
+    });
+
+    it("a non-harvester agent resolves false", () => {
+        assertEqual(resolveHarvesterRole("researcher", undefined, userAgents, systemAgents), false);
+    });
+
+    it("an agent with no harvester field resolves false (fail-closed)", () => {
+        assertEqual(resolveHarvesterRole("writer", undefined, userAgents, systemAgents), false);
+    });
+
+    it("SECURITY: title is NOT an authorization key — a title match does not grant the role", () => {
+        // 'Knowledge Crawler' is the crawler's TITLE (display metadata). Identity
+        // is always the canonical id/name, never the title; matching on title
+        // would be a privilege vector. So a title string must resolve false.
+        assertEqual(resolveHarvesterRole("Knowledge Crawler", undefined, userAgents, systemAgents), false);
+        // ...but the canonical name/id still grants.
+        assertEqual(resolveHarvesterRole(undefined, "crawler", userAgents, systemAgents), true);
+    });
+
+    it("SECURITY: fail closed on a normalized-id collision (no false-positive escalation)", () => {
+        // Two agents whose ids normalize to the SAME target, one harvester and
+        // one not. An ambiguous match must NOT escalate to the privileged role.
+        const colliding = [
+            { name: "data-crawler", id: "data-crawler", harvester: true },
+            { name: "datacrawler", id: "datacrawler", harvester: false }, // normalizes identically
+        ];
+        assertEqual(resolveHarvesterRole("datacrawler", undefined, colliding, undefined), false);
+        // All-harvester collisions are unambiguous → grant.
+        const allHarvest = [
+            { name: "data-crawler", id: "data-crawler", harvester: true },
+            { name: "datacrawler", id: "datacrawler", harvester: true },
+        ];
+        assertEqual(resolveHarvesterRole("datacrawler", undefined, allHarvest, undefined), true);
+    });
+
+    it("a system agent can carry the role too", () => {
+        assertEqual(resolveHarvesterRole("harvest-sys", undefined, userAgents, systemAgents), true);
+    });
+
+    it("NO inheritance: an unknown identity resolves false even when a harvester exists in the list", () => {
+        // Simulates a child whose own identity is not a harvester agent — the
+        // presence of a harvester agent elsewhere in worker config must not leak.
+        assertEqual(resolveHarvesterRole("some-child-id", undefined, userAgents, systemAgents), false);
+    });
+
+    it("empty / missing identity resolves false", () => {
+        assertEqual(resolveHarvesterRole(undefined, undefined, userAgents, systemAgents), false);
+        assertEqual(resolveHarvesterRole("", "", userAgents, systemAgents), false);
+    });
+
+    it("no agent lists → false (a deployment with no loaded agents has no harvesters)", () => {
+        assertEqual(resolveHarvesterRole("crawler", undefined, undefined, undefined), false);
+    });
+});
+

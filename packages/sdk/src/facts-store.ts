@@ -337,14 +337,24 @@ export async function createFactStoreForUrl(
         if (!HorizonDBFactStore?.create) {
             throw new Error("@pilotswarm/horizon-store did not export HorizonDBFactStore.create");
         }
+        // Do NOT forward the global `useManagedIdentity` flag into the horizon
+        // provider. MI is the auth axis for the duroxide/CMS/PgFactStore layer;
+        // the horizon enhanced-facts store is a SEPARATE URL that carries its
+        // own embedded credentials and does not support AAD token auth yet
+        // (it would reject the flag, hard-crashing a valid global-MI + horizon
+        // deployment). Warn so the operator knows the horizon URL must carry creds.
+        if (opts.useManagedIdentity) {
+            console.warn(
+                "[facts] useManagedIdentity is set globally but the horizon facts provider does not " +
+                "support managed identity; the enhancedFactsDatabaseUrl must carry embedded credentials.",
+            );
+        }
         return HorizonDBFactStore.create({
             connectionString: storeUrl,
             schema,
             graphName: schema,
             embedding: opts.embedding,
             embeddingDim: opts.embedding?.dim,
-            useManagedIdentity: opts.useManagedIdentity,
-            aadUser: opts.aadUser,
         });
     }
 
@@ -389,12 +399,19 @@ export async function createGraphStoreForUrl(
     if (!HorizonDBGraphStore?.create) {
         throw new Error("@pilotswarm/horizon-store did not export HorizonDBGraphStore.create");
     }
+    // As with the facts provider: never forward the global MI flag into the
+    // horizon graph store. The graph URL carries its own credentials; horizon
+    // does not support AAD token auth and would reject the flag.
+    if (opts.useManagedIdentity) {
+        console.warn(
+            "[graph] useManagedIdentity is set globally but the horizon graph provider does not " +
+            "support managed identity; the graphDatabaseUrl must carry embedded credentials.",
+        );
+    }
     return HorizonDBGraphStore.create({
         connectionString: graphUrl,
         schema,
         graphName: schema,
-        useManagedIdentity: opts.useManagedIdentity,
-        aadUser: opts.aadUser,
     });
 }
 

@@ -135,8 +135,22 @@ export class HorizonDBFactStore implements EnhancedFactStore {
             // startEmbedder is idempotent + advisory-locked, so repeated /
             // concurrent provider instantiations converge on exactly one
             // running loop per schema rather than creating duplicates.
-            await this.configureEmbedder(this.cfg.embedding, { restartIfRunning: false });
-            await this.startEmbedder();
+            //
+            // NON-FATAL (07 P5): the durable embedder is a best-effort enhancement.
+            // If configure/start fails (endpoint unreachable, df.http hiccup,
+            // transient lock contention), the store must still come up so the
+            // worker boots — semantic/hybrid search simply degrades to lexical
+            // until a later boot or an explicit configureEmbedder() succeeds.
+            // `initialized` is already true above, so migrations are never re-run.
+            try {
+                await this.configureEmbedder(this.cfg.embedding, { restartIfRunning: false });
+                await this.startEmbedder();
+            } catch (err: any) {
+                console.error(
+                    "[horizon-facts] embedder auto-start failed (non-fatal; search degrades to lexical): " +
+                    (err?.message || String(err)),
+                );
+            }
         }
     }
 

@@ -126,7 +126,7 @@ export class PilotSwarmWorker {
     /** Loaded skill directories from plugins + direct config. */
     private _loadedSkillDirs: string[] = [];
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
-    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
+    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
     /** Loaded agent configs from plugins + direct config, composed for SDK customAgents. */
     private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string }> = [];
     /** Loaded MCP server configs from plugins + direct config. */

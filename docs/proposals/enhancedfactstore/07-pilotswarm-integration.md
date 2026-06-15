@@ -693,11 +693,21 @@ change to the default path.
 **Goal:** facts get embedded asynchronously so semantic/hybrid search returns
 real results.
 
-- On worker boot, when `horizonEmbed` is configured: `configureEmbedder()` then
-  `startEmbedder()`; `stopEmbedder()` on graceful shutdown. The loop itself is
-  durable/idempotent **inside** HorizonDB (`pg_durable`), so this is just
-  lifecycle control — it must **never** run inline in orchestration (determinism
-  boundary, [§3](#3-cross-cutting-invariants)).
+- On worker boot, when `horizonEmbed` is configured: **observe then ensure** —
+  read `embedderStatus()` and only `configureEmbedder()` + `startEmbedder()` when
+  the durable loop is not already running, so a rolling fleet converges on
+  exactly one loop per schema. This is **non-fatal**: if configure/start fails
+  (endpoint down, transient lock), the worker still boots and semantic/hybrid
+  search degrades to lexical until a later boot or explicit configure succeeds.
+- **No stop on worker shutdown.** The embed loop is a **shared, fleet-wide
+  durable resource** (one per schema in `pg_durable`), not owned by any single
+  worker. Stopping it when one worker drains would halt embedding for the whole
+  fleet and a rolling restart would leave it stopped. It is therefore an
+  **operator-owned** resource: stop it explicitly (`stopEmbedder()`) only when
+  decommissioning the schema, never as part of ordinary `worker.stop()`.
+- The loop itself is durable/idempotent **inside** HorizonDB (`pg_durable`), so
+  this is just lifecycle control — it must **never** run inline in orchestration
+  (determinism boundary, [§3](#3-cross-cutting-invariants)).
 - Secrets: the embedder API key lives in a durable var (plaintext-at-rest) — an
   accepted incubation TODO; do not log it; source from env/k8s only.
 - **Tests:** an embedder-status integration test against a real endpoint

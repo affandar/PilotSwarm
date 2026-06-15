@@ -749,7 +749,12 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             parameters: { type: "object" as const, properties: {} },
             handler: async () => {
                 try {
-                    if (!isEnhancedFactStore(factStore) || !factStore.capabilities.embedder) {
+                    // Gate ONLY on EnhancedFactStore (guarantees embedderStatus()).
+                    // NOT on construction-time capabilities.embedder — the durable
+                    // loop may be running for the schema even if THIS store was
+                    // built without an embedding endpoint. embedderStatus() reads
+                    // durable df.instances state (the truth).
+                    if (!isEnhancedFactStore(factStore)) {
                         return { supported: false, note: "facts store has no durable embedder (lexical-only search)." };
                     }
                     const st = await factStore.embedderStatus();

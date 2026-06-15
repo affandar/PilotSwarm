@@ -127,7 +127,26 @@ describe.skipIf(!HAS_HDB)("P3: horizon provider construction (live HDB)", () => 
         await factStore.initialize();
         assert(isEnhancedFactStore(factStore), "horizon fact store is an EnhancedFactStore");
         assertEqual(factStore.capabilities.search, true, "advertises search capability");
-        assertEqual(factStore.capabilities.embedder, true, "advertises embedder capability");
+        // P5: capabilities.embedder REFLECTS whether an embedding endpoint was
+        // provided at construction (!!cfg.embedding). No endpoint here → false;
+        // search still works (lexical, and hybrid degrades to lexical).
+        assertEqual(factStore.capabilities.embedder, false, "no embedding endpoint → embedder capability false");
+    });
+
+    it("createFactStoreForUrl(provider:horizon, embedding) advertises embedder capability", { timeout: 120_000 }, async () => {
+        // capabilities.embedder is set at construction from !!cfg.embedding and
+        // does not require the endpoint to be reachable, so we can assert it
+        // without initialize() (which would start the durable loop).
+        const store = await createFactStoreForUrl(HDB_URL, names.schema, {
+            provider: "horizon",
+            embedding: { url: "http://embed.invalid/v1/embeddings", model: "text-embedding-3-small", dim: 1536 },
+        });
+        try {
+            assertEqual(store.capabilities.embedder, true, "embedding endpoint provided → embedder capability true");
+            assertEqual(store.capabilities.search, true, "search capability still advertised");
+        } finally {
+            await store.close().catch(() => {});
+        }
     });
 
     it("createGraphStoreForUrl builds a separate GraphStore + cross-provider round-trip", { timeout: 120_000 }, async () => {

@@ -10,7 +10,7 @@ import type { SessionCatalogProvider } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { isEnhancedFactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
-import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
+import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhancedRetrievalPromptBlock, buildGraphReaderPromptBlock } from "./knowledge-index.js";
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
@@ -1304,11 +1304,38 @@ export class SessionManager {
     private _buildKnowledgeToolInstructionsSection(agentIdentity?: string): SectionOverride | undefined {
         if (!this.factStore || agentIdentity === "facts-manager") return undefined;
 
+        // Capability-aware knowledge block (enhancedfactstore 07 §1.5/§1.6). Three
+        // independent axes drive the content: enhanced-search facts, whether an
+        // embedder is available (semantic), and graph presence. The base path is
+        // byte-for-byte today's block.
+        const enhancedSearch = isEnhancedFactStore(this.factStore) && this.factStore.capabilities.search;
+        const hasEmbedder = isEnhancedFactStore(this.factStore) && this.factStore.capabilities.embedder === true;
+        const hasGraph = !!this.graphStore;
+
         return {
             action: async (currentContent: string) => {
+                if (enhancedSearch) {
+                    // Enhanced: DROP the capped-50 skills push — the agent pulls
+                    // ranked skills via search_skills every turn, so skip the
+                    // skills read entirely (includeSkills:false). Open asks still
+                    // surface on their small push path, but without the namespace
+                    // rules (the enhanced block owns them, avoiding duplication).
+                    // The semantic wording is gated on an actual embedder: with
+                    // search-only/lexical-degrade, the block must not promise
+                    // semantic recall.
+                    const knowledgeIndex = await loadKnowledgeIndexFromFactStore(this.factStore!, 50, { includeSkills: false });
+                    const { askBlock } = buildKnowledgePromptBlocks(knowledgeIndex, { includeNamespaceRules: false });
+                    const enhancedBlock = buildEnhancedRetrievalPromptBlock({ semantic: hasEmbedder });
+                    const graphBlock = hasGraph ? buildGraphReaderPromptBlock({ semanticSeed: hasEmbedder }) : undefined;
+                    return mergePromptSections([currentContent, askBlock, enhancedBlock, graphBlock]) ?? currentContent;
+                }
+                // Base store: today's block unchanged (skills + asks push). When a
+                // graph is configured on a base-facts deployment, add the graph
+                // read block too (no semantic-seed sentence).
                 const knowledgeIndex = await loadKnowledgeIndexFromFactStore(this.factStore!, 50);
                 const { askBlock, skillBlock } = buildKnowledgePromptBlocks(knowledgeIndex);
-                return mergePromptSections([currentContent, askBlock, skillBlock]) ?? currentContent;
+                const graphBlock = hasGraph ? buildGraphReaderPromptBlock({ semanticSeed: false }) : undefined;
+                return mergePromptSections([currentContent, askBlock, skillBlock, graphBlock]) ?? currentContent;
             },
         };
     }

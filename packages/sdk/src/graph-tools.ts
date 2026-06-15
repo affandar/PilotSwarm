@@ -152,22 +152,33 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         tools.push(defineTool("graph_stats", {
             description:
                 "Read-only graph report: node + edge counts and crawl-queue status (how many facts remain " +
-                "uncrawled). Use for status/health reporting — it never mutates the graph.",
+                "uncrawled, reported up to a bounded probe). Use for status/health reporting — it never mutates the graph.",
             parameters: { type: "object" as const, properties: {} },
             handler: async () => {
                 // Prefer a provider aggregate (single cheap query). If the store
                 // does not implement graphStats(), fall back to a BOUNDED count —
                 // never a fan-out traversal (that would be a multi-minute DoS on a
-                // large graph). The crawl backlog comes from the base store, which
-                // already returns its own bounded `count`.
+                // large graph).
+                //
+                // Crawl backlog: read a BOUNDED probe of the pending queue and
+                // report its size. readUncrawledFacts returns `count = rows
+                // returned` (capped by `limit`), so a limit:1 read would always
+                // report 0 or 1 — useless as a backlog signal. We probe up to
+                // BACKLOG_PROBE and flag `uncrawledFactsCapped` when the queue is
+                // at least that deep ("harvester is well behind"); the exact depth
+                // beyond the probe is not needed for a health report.
+                const BACKLOG_PROBE = 500;
                 const statsFn = (graphStore as any).graphStats;
-                const uncrawled = await factStore.readUncrawledFacts({ limit: 1 });
+                const uncrawled = await factStore.readUncrawledFacts({ limit: BACKLOG_PROBE });
+                const uncrawledFacts = uncrawled.count;
+                const uncrawledFactsCapped = uncrawled.count >= BACKLOG_PROBE;
                 if (typeof statsFn === "function") {
                     const s = await statsFn.call(graphStore);
                     return {
                         nodeCount: s.nodeCount,
                         edgeCount: s.edgeCount,
-                        uncrawledFacts: s.uncrawledFacts ?? uncrawled.count,
+                        uncrawledFacts: s.uncrawledFacts ?? uncrawledFacts,
+                        uncrawledFactsCapped: s.uncrawledFacts != null ? undefined : uncrawledFactsCapped,
                     };
                 }
                 // Bounded fallback: report whether the graph is non-empty + the
@@ -178,7 +189,8 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                 return {
                     nodeCountAtLeast: sample.length,
                     nodeCountExact: sample.length < SAMPLE ? sample.length : undefined,
-                    uncrawledFacts: uncrawled.count,
+                    uncrawledFacts,
+                    uncrawledFactsCapped,
                     note: typeof statsFn !== "function"
                         ? "Provider has no graphStats(); nodeCount is a bounded sample. Edge count omitted to avoid fan-out."
                         : undefined,
