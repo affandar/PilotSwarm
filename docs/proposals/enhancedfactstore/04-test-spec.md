@@ -2,6 +2,12 @@
 
 > Status: Proposal · Companion: [01-functional-spec.md](./01-functional-spec.md) ·
 > [02-api-reference.md](./02-api-reference.md) · [03-design.md](./03-design.md)
+>
+> **Shape alignment ([07-pilotswarm-integration.md](./07-pilotswarm-integration.md) is
+> canonical):** the graph is a **separate injected `GraphStore`** (provider
+> `HorizonDBGraphStore`), the crawl queue lives on the **base `FactStore`**, the
+> enhanced provider is **`HorizonDBFactStore`**, the package is
+> **`@pilotswarm/horizon-store`**. Read `GraphInterface` as `GraphStore` below.
 
 ## 0. Philosophy
 
@@ -175,7 +181,7 @@ Lineage is the base API's `readFacts({ scope: "descendants" })`; ranking is via
 | LN2 | rank lineage keys via `searchFacts` | ranked within the lineage set |
 | LN3 | **(neg)** unknown session | empty |
 
-## 3. GraphInterface — functional matrix
+## 3. GraphStore — functional matrix
 
 ### 3.1 upsertGraphNode
 

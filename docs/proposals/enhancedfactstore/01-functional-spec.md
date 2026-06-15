@@ -1,8 +1,15 @@
 # EnhancedFactStore — Functional Specification
 
-> Status: Proposal · Incubation package: `@incubator/horizon-facts`
+> Status: Proposal · Incubation package: `@pilotswarm/horizon-store`
 > Companion docs: [02-api-reference.md](./02-api-reference.md) ·
 > [03-design.md](./03-design.md) · [04-test-spec.md](./04-test-spec.md)
+>
+> **Shape alignment (canonical: [07-pilotswarm-integration.md](./07-pilotswarm-integration.md)).**
+> The graph is a **separate, independently injected `GraphStore`** (own provider
+> `HorizonDBGraphStore` + `graphDatabaseUrl`), not bundled into
+> `EnhancedFactStore`; the **crawl queue** lives on the **base `FactStore`**; the
+> enhanced fact provider is **`HorizonDBFactStore`**. Read `GraphInterface` /
+> bundled-provider wording below through that shape.
 
 ## 1. Purpose
 

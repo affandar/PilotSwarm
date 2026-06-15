@@ -3,11 +3,14 @@
 > Status: Proposal · Companion to [01-functional-spec.md](./01-functional-spec.md) ·
 > [02-api-reference.md](./02-api-reference.md) · [03-design.md](./03-design.md) ·
 > [04-test-spec.md](./04-test-spec.md)
-
-This document is the **LLM-facing** contract for the EnhancedFactStore. It
-describes the tools an agent sees, written so a model can use them correctly
+>
+> **Shape alignment ([07-pilotswarm-integration.md](./07-pilotswarm-integration.md) is
+> canonical):** the graph is a **separate injected `GraphStore`** (provider
+> `HorizonDBGraphStore`), the crawl queue lives on the **base `FactStore`**, the
+> enhanced provider is **`HorizonDBFactStore`**, the package is
+> **`@pilotswarm/horizon-store`**. Read `GraphInterface` as `GraphStore` below.
 without reading the TypeScript API. Each tool maps 1:1 onto an EnhancedFactStore
-/ GraphInterface method (02-api-reference). Tool names below use the default
+/ GraphStore method (02-api-reference). Tool names below use the default
 prefixes `facts_` (facts store) and `graph_` (open graph); a host may rechoose
 the prefix.
 

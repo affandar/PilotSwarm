@@ -2,6 +2,15 @@
 
 > Status: Proposal · Companion: [01-functional-spec.md](./01-functional-spec.md) ·
 > [02-api-reference.md](./02-api-reference.md) · [04-test-spec.md](./04-test-spec.md)
+>
+> **Shape alignment (canonical: [07-pilotswarm-integration.md](./07-pilotswarm-integration.md)).**
+> The graph is a **separate provider** (`HorizonDBGraphStore`, AGE-only, its own
+> `graphDatabaseUrl`), not bundled with the enhanced fact provider
+> (`HorizonDBFactStore`); the **crawl queue** (`last_crawled_at` /
+> `readUncrawledFacts` / `markFactsCrawled`) lives on the **base `FactStore`**; the
+> package is **`@pilotswarm/horizon-store`**. The diagrams below still draw one
+> bundled provider box — read them as two independent providers over one (or
+> separate) HorizonDB.
 
 ## 1. Component overview
 
@@ -12,8 +21,8 @@ flowchart TB
     HA["Harvester agent<br/>(facts KV + graph, separate lifecycles)"]
   end
 
-  subgraph Provider["@incubator/horizon-facts (provider)"]
-    API["EnhancedFactStore + GraphInterface"]
+  subgraph Provider["@pilotswarm/horizon-store (providers)"]
+    API["HorizonDBFactStore (EnhancedFactStore)<br/>+ HorizonDBGraphStore (GraphStore)"]
     PROCS["Stored-proc layer<br/>(relational + vector)"]
     GRAPH["Typed Cypher layer<br/>(AGE)"]
     EMB["Embedder lifecycle<br/>(configure/start/stop/status)"]

@@ -1,9 +1,21 @@
 # EnhancedFactStore Proposal
 
 Design and specification set for the **EnhancedFactStore** — a strict superset of
-PilotSwarm's `FactStore` that adds multi-signal retrieval, an open knowledge
-graph, and a durable in-database embedding generator. First provider:
-**HorizonDB** (`@incubator/horizon-facts`).
+PilotSwarm's `FactStore` that adds multi-signal retrieval and a durable
+in-database embedding generator — **and**, as a **separate optional surface**, an
+open knowledge graph (`GraphStore`). First providers: **HorizonDB**
+(`@pilotswarm/horizon-store`) — `HorizonDBFactStore` (enhanced facts) and
+`HorizonDBGraphStore` (AGE-only graph).
+
+> **Canonical shape: [07-pilotswarm-integration.md](./07-pilotswarm-integration.md).**
+> Docs 01–06 were first written with the graph bundled into `EnhancedFactStore`.
+> The agreed shape splits them: the graph is a **separate, independently injected
+> `GraphStore`** (its own provider `HorizonDBGraphStore` + `graphDatabaseUrl`); the
+> **crawl queue** (`last_crawled_at` / `readUncrawledFacts` / `markFactsCrawled`)
+> lives on the **base `FactStore`**; the enhanced fact provider is
+> **`HorizonDBFactStore`**; the package is **`@pilotswarm/horizon-store`**. Where a
+> doc still says `GraphInterface` or implies one bundled provider, read it through
+> that shape.
 
 ## Documents
 
@@ -15,6 +27,7 @@ graph, and a durable in-database embedding generator. First provider:
 | 04 | [Test Specification](./04-test-spec.md) | Deterministic datasets, functional matrices, negative cases, embedder lifecycle, fail-fast, layout. |
 | 05 | [Agent Tools Spec](./05-tools-spec.md) | LLM-facing tool contract (`facts_*` / `graph_*`), harvester loop, a **worked graph example** (§5a, diagrammed over the real pgsql-hackers corpus), and the Phase 2 context tools. |
 | 06 | [Provider Test Plan](./06-provider-test-plan.md) | Executable plan for 04: no-mocks/full-validation ground rule, suite order, live-HorizonDB lifecycle, migration tests, real-endpoint embedder validation, and the Copilot-SDK harvester scenarios on the pgsql-hackers corpus. |
+| 07 | [PilotSwarm Integration Plan](./07-pilotswarm-integration.md) | Execution plan for landing the contract in `packages/sdk`: dependency inversion (SDK owns `EnhancedFactStore`, HorizonDB implements it), provider injection, capability-gated tools, phased PR sequence (P0–P6), risks/rollback, and open decisions. |
 
 ## Phasing
 
@@ -50,13 +63,15 @@ graph, and a durable in-database embedding generator. First provider:
   `content_hash`; rows embedded under another model count as un-embedded
   (pending + invisible to semantic search), so model rotation is a rolling
   re-embed.
-- **Crawl tracking:** the facts table gains `last_crawled_at` (marks graph
-  incorporation). It resets to `NULL` on any `storeFact` content
+- **Crawl tracking (base `FactStore`):** the facts table gains `last_crawled_at`
+  (marks graph incorporation). It resets to `NULL` on any `storeFact` content
   change (trigger), so pending-crawl = `last_crawled_at IS NULL`. Harvester
-  support: `readUncrawledFacts` (work queue) + `markFactsCrawled` (stamp done).
-  **Crawling is privileged** — the harvester reads all facts across scopes —
-  and `markFactsCrawled` takes `{ scopeKey, contentHash }` receipts, stamping
-  only when the hash still matches (mid-crawl edits stay queued).
+  support — `readUncrawledFacts` (work queue) + `markFactsCrawled` (stamp done) —
+  lives on the **base `FactStore`** (not the enhanced interface), so a base-facts
+  deployment can feed a separate `GraphStore`. **Crawling is privileged** — the
+  harvester reads all facts across scopes — and `markFactsCrawled` takes
+  `{ scopeKey, contentHash }` receipts, stamping only when the hash still matches
+  (mid-crawl edits stay queued).
 - **Fail-fast:** `initialize()` requires `vector`, `age`,
   `pg_textsearch` (BM25), `pg_durable`+`df.http`; no feature flags, no Node
   fallback.
@@ -64,7 +79,8 @@ graph, and a durable in-database embedding generator. First provider:
   `similarGraphContext` (known fact → similar cluster → graph, with derived
   `factLinks`) compose the Phase 1 primitives into one ACL-checked, deduped
   bundle. Read-only; gated behind a harvested graph (`EVIDENCED_BY`).
-- **Graph:** `GraphInterface` with `upsertGraphNode` + `upsertGraphEdge` (evidence
+- **Graph:** `GraphStore` (a **separate provider**, `HorizonDBGraphStore`) with
+  `upsertGraphNode` + `upsertGraphEdge` (evidence
   **optional**, merge/union semantics; `upsertGraphEdge` absorbs `linkEvidence`;
   reinforcement counts only novel evidence); `mergeGraphNodes`;
   `deleteGraphNode` / `deleteGraphEdge`; reads

@@ -4,6 +4,12 @@
 > matrices — the *what*) · [05-tools-spec.md](./05-tools-spec.md) ·
 > [03-design.md](./03-design.md)
 >
+> **Shape alignment ([07-pilotswarm-integration.md](./07-pilotswarm-integration.md) is
+> canonical):** the graph is a **separate injected `GraphStore`** (provider
+> `HorizonDBGraphStore`), the crawl queue lives on the **base `FactStore`**, the
+> enhanced provider is **`HorizonDBFactStore`**, the package is
+> **`@pilotswarm/horizon-store`**. Read `GraphInterface` as `GraphStore` below.
+>
 > This document is the *how*: a methodical, unit-test-style execution plan for
 > the full provider surface against a **real HorizonDB**, including the
 > database-level migrations, plus the scenario tier that exercises the
@@ -190,7 +196,7 @@ Surface inventory the plan must cover (and suite 19 cross-checks against the
 exported interface so a future method can't ship untested): the 9 base
 `FactStore` methods (incl. `scopeKeys` reads), `searchFacts`, `similarFacts`,
 `readUncrawledFacts`, `markFactsCrawled`, `configureEmbedder`, `startEmbedder`,
-`stopEmbedder`, `embedderStatus`, and the 8 `GraphInterface` methods.
+`stopEmbedder`, `embedderStatus`, and the 8 `GraphStore` methods.
 
 ## 7. Embedder — real endpoint, end to end (suites 15–16)
 
@@ -255,7 +261,7 @@ a precomputed visibility table. Key cases beyond the matrix rows:
 - **Numbered-migration guard:** files in `migrations/` match
   `^\d{4}_[a-z0-9_]+\.sql$`, strictly increasing, no gaps.
 - **Interface-coverage guard:** every method on the exported
-  `EnhancedFactStore` + `GraphInterface` types appears in at least one suite
+  `EnhancedFactStore` + `GraphStore` types appears in at least one suite
   (simple static cross-check, fails when someone adds a method without tests).
 - **04 exit criteria** re-asserted: every interface has ≥1 positive and ≥1
   negative test; semantic ordering from seeded vectors only.

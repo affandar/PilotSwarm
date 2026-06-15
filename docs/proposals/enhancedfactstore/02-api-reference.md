@@ -5,6 +5,14 @@
 >
 > This is the API contract for the EnhancedFactStore. TypeScript signatures are
 > illustrative.
+>
+> **Shape alignment ([07-pilotswarm-integration.md](./07-pilotswarm-integration.md) is
+> canonical):** the graph is a **separate injected `GraphStore`** (its own provider
+> `HorizonDBGraphStore` + `graphDatabaseUrl`), not bundled into `EnhancedFactStore`;
+> the **crawl queue** (`readUncrawledFacts` / `markFactsCrawled`) lives on the **base
+> `FactStore`**; the enhanced provider is **`HorizonDBFactStore`**; the package is
+> **`@pilotswarm/horizon-store`**. Read `GraphInterface` / `factsStoreProvider` /
+> "one bundled provider" wording below through that shape.
 
 ## 1. Configuration
 
@@ -138,7 +146,7 @@ interface EnhancedFactStore extends FactStore {
   /** Semantic nearest-neighbours of a known fact (pgvector cosine kNN, no re-embed). */
   similarFacts(scopeKey: string, opts: SimilarOpts, access: AccessContext): Promise<SearchResult>;
 
-  // Graph retrieval/relatedness is NOT here — see §5 GraphInterface.
+  // Graph retrieval/relatedness is NOT here — see §5 GraphStore.
   // There is no `relatedFacts`: compose searchGraphNodes({ seeds }) + readFacts.
   // There is no `lineageFacts`: use base readFacts({ scope: "descendants" }), rank via searchFacts.
 }
@@ -183,7 +191,12 @@ interface SearchResult { count: number; mode: SearchMode; facts: ScoredFact[]; }
 /** A crawled-fact receipt: the scope key plus the content hash that was read. */
 interface CrawledFactStamp { scopeKey: string; contentHash: string; }
 
-interface EnhancedFactStore {
+// NOTE (07 D3): the crawl queue lives on the BASE `FactStore`, not the enhanced
+// interface — it is vanilla facts-table bookkeeping (a nullable `last_crawled_at`
+// column + two procs, no extension), so a base-facts deployment can feed a
+// separate `GraphStore`. Shown here for locality with the rest of the harvester
+// surface.
+interface FactStore {
   /**
    * Facts not yet incorporated into the graph (last_crawled_at IS NULL).
    * PRIVILEGED: the crawler is a trusted role; this read spans ALL facts
@@ -262,7 +275,11 @@ interface EnhancedFactStore {
   mismatched-model vectors. Changing `dim` still requires a migration of the
   `vector(N)` column.
 
-## 5. GraphInterface
+## 5. GraphStore
+
+> **Separate provider (07 D2).** `GraphStore` is its own interface, implemented by
+> a **separate provider** `HorizonDBGraphStore` (AGE-only) and injected
+> independently of the fact store. It is **not** part of `EnhancedFactStore`.
 
 > **Shared-scope surface (ingestion contract).** The graph has no per-node/edge
 > ACL: incorporating a fact **publishes** its extracted entities/relationships
@@ -275,7 +292,7 @@ interface EnhancedFactStore {
 > reads `unrestricted`.
 
 ```ts
-interface GraphInterface {
+interface GraphStore {
   // read (evidence arrays ACL-filtered; inaccessible seeds ignored)
   searchGraphNodes(q: GraphNodeQuery, access: AccessContext): Promise<GraphNodeHit[]>;   // takes seeds[] for fact-pivot
   searchGraphEdges(q: GraphEdgeQuery, access: AccessContext): Promise<GraphEdgeHit[]>;
