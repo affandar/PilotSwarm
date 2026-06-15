@@ -137,11 +137,13 @@ test("buildMergedCustomRules: tolerates undefined operatorRules", () => {
 // Bicep ↔ JS shape parity (lightweight string-shape guard)
 //
 // Asserts the bicep file still contains the three rule names + priorities
-// in the expected order. Catches a divergent edit to either side that
-// doesn't update both. Not a substitute for a full snapshot harness, but
-// it makes the lockstep requirement testable.
+// AND the literal tokens that make each rule meaningful (header selector,
+// match operator, action, IP address parameters, catch-all CIDR). Catches
+// a divergent edit to either side that doesn't update both. Not a substitute
+// for a full snapshot harness, but it makes the lockstep requirement testable
+// at the level the JS helper actually relies on.
 // ===========================================================================
-test("bicep application-gateway.bicep autoSeed rules match JS helper names + priorities", async () => {
+test("bicep application-gateway.bicep autoSeed rules match JS helper names + priorities + tokens", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
   const { dirname } = await import("node:path");
@@ -163,6 +165,53 @@ test("bicep application-gateway.bicep autoSeed rules match JS helper names + pri
   // Priorities 90/91/92 appear in order.
   const prios = [...block.matchAll(/priority:\s+(\d+)/g)].map((mm) => Number(mm[1]));
   assert.deepEqual(prios, [90, 91, 92], "bicep autoSeedRules priorities drifted from JS helper");
+
+  // Per-rule literal-token guards. Slice the block by name boundaries so a
+  // token from rule N can't satisfy the assertion for rule N+1.
+  function sliceForRule(name) {
+    const start = block.indexOf(`name: '${name}'`);
+    assert.ok(start >= 0, `rule ${name} not found in autoSeedRules`);
+    // Find the next rule's name marker (or end of block) to scope the slice.
+    let end = block.length;
+    for (const other of namesInOrder) {
+      if (other === name) continue;
+      const oi = block.indexOf(`name: '${other}'`, start + 1);
+      if (oi > start && oi < end) end = oi;
+    }
+    return block.slice(start, end);
+  }
+
+  const allowAfd = sliceForRule("AllowAfd");
+  assert.match(allowAfd, /action:\s*'Allow'/, "AllowAfd action must be 'Allow'");
+  assert.ok(
+    allowAfd.includes("'X-Azure-FDID'"),
+    "AllowAfd must select on the X-Azure-FDID request header",
+  );
+  assert.match(allowAfd, /operator:\s*'Equal'/, "AllowAfd operator must be 'Equal'");
+  assert.ok(
+    /\bfrontDoorId\b/.test(allowAfd),
+    "AllowAfd must reference the frontDoorId parameter as the match value",
+  );
+
+  const allowVpn = sliceForRule("AllowVpn");
+  assert.match(allowVpn, /action:\s*'Allow'/, "AllowVpn action must be 'Allow'");
+  assert.match(allowVpn, /operator:\s*'IPMatch'/, "AllowVpn operator must be 'IPMatch'");
+  assert.ok(
+    /\bRemoteAddr\b/.test(allowVpn),
+    "AllowVpn must match on the RemoteAddr variable",
+  );
+  assert.ok(
+    /\bvpnClientAddressPool\b/.test(allowVpn),
+    "AllowVpn must reference the vpnClientAddressPool parameter as the match value",
+  );
+
+  const blockOther = sliceForRule("BlockOther");
+  assert.match(blockOther, /action:\s*'Block'/, "BlockOther action must be 'Block'");
+  assert.match(blockOther, /operator:\s*'IPMatch'/, "BlockOther operator must be 'IPMatch'");
+  assert.ok(
+    blockOther.includes("'0.0.0.0/0'"),
+    "BlockOther must use the 0.0.0.0/0 catch-all CIDR as its match value",
+  );
 });
 
 // ===========================================================================

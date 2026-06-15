@@ -876,7 +876,7 @@ async function main() {
   // scaffolded .env carries valid `unused` sentinels for off-path keys,
   // matching what deploy.mjs would seed.
   applyStubKeys({ edgeMode: targets.EDGE_MODE, tlsSource: targets.TLS_SOURCE, env: targets });
-  const missingRequired = validateRequiredEnv({
+  const { missing: missingRequired, combo: comboErrors } = validateRequiredEnv({
     edgeMode: targets.EDGE_MODE,
     tlsSource: targets.TLS_SOURCE,
     env: targets,
@@ -888,6 +888,9 @@ async function main() {
         `Hand-edit deploy/envs/local/${inputs.name}/.env to fill them in before running deploy. ` +
         `See deploy/scripts/lib/overlay-contracts.mjs for the per-overlay roster.`,
     );
+  }
+  for (const e of comboErrors) {
+    log("warn", `[${e.code}] ${e.message} ${e.hint}`);
   }
 
   const dst = envFilePath(inputs.name);
