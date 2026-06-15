@@ -1,9 +1,9 @@
 {
-  "name": "@incubator/horizon-facts",
+  "name": "@pilotswarm/horizon-store",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "INCUBATING — Enhanced facts interface implemented on top of Azure HorizonDB (pg_textsearch + AI pipelines + AGE graph + pg_durable). Not wired into PilotSwarm. Lives outside packages/* on purpose.",
+  "description": "HorizonDB-backed providers for PilotSwarm: HorizonDBFactStore (EnhancedFactStore — pg_textsearch + pgvector + pg_durable embedder) and HorizonDBGraphStore (GraphStore — Apache AGE). Implements the @pilotswarm/sdk fact/graph contracts.",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "exports": {
@@ -29,11 +29,15 @@
   "dependencies": {
     "pg": "^8.13.1"
   },
+  "peerDependencies": {
+    "pilotswarm-sdk": "*"
+  },
   "devDependencies": {
     "@github/copilot": "^1.0.50",
     "@github/copilot-sdk": "^1.0.0-beta.4",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.11.10",
+    "pilotswarm-sdk": "*",
     "typescript": "^5.6.0"
   },
   "engines": {

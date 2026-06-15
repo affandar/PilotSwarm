@@ -1,4 +1,4 @@
-// @incubator/horizon-facts — small SQL helpers for the adapter.
+// @pilotswarm/horizon-store — small SQL helpers for the adapter.
 //
 // AGE Cypher cannot be fully parameterized through pg bind params (the cypher()
 // function takes a literal query string), so the adapter must build Cypher with

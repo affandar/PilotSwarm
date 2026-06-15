@@ -1,4 +1,4 @@
-// @incubator/horizon-facts — provider configuration.
+// @pilotswarm/horizon-store — provider configuration.
 //
 // The EnhancedFactStore is configured with a connection string and, optionally,
 // an EMBEDDING ENDPOINT. The embedding endpoint is a DATABASE-AGNOSTIC contract:

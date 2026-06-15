@@ -13,7 +13,7 @@
     "test:mcp-server": "npm test --workspace=pilotswarm-mcp-server",
     "test:mcp-server:integration": "npm run test:integration --workspace=pilotswarm-mcp-server",
     "test:mcp-server:integration:all": "npm run test:integration:all --workspace=pilotswarm-mcp-server",
-    "build": "npm run build --workspace=packages/sdk && npm run build --workspace=pilotswarm-cli && npm run build --workspace=pilotswarm-mcp-server && npm run build --workspace=pilotswarm-web && npm run build --workspace=pilotswarm-ui-core && npm run build --workspace=pilotswarm-ui-react",
+    "build": "npm run build --workspace=packages/sdk && npm run build --workspace=@pilotswarm/horizon-store && npm run build --workspace=pilotswarm-cli && npm run build --workspace=pilotswarm-mcp-server && npm run build --workspace=pilotswarm-web && npm run build --workspace=pilotswarm-ui-core && npm run build --workspace=pilotswarm-ui-react",
     "dev": "npm run dev --workspace=packages/sdk",
     "test": "npm test --workspace=packages/sdk",
     "test:local": "npm run test:local --workspace=packages/sdk",

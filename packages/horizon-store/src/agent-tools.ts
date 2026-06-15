@@ -1,4 +1,4 @@
-// @incubator/horizon-facts — LLM-facing agent tools (05-tools-spec).
+// @pilotswarm/horizon-store — LLM-facing agent tools (05-tools-spec).
 //
 // Tool names and contracts follow docs/proposals/enhancedfactstore/05-tools-spec.md
 // exactly: `facts_*` over the facts store, `graph_*` over the open graph. Two
@@ -14,8 +14,9 @@
 // PilotSwarm's defineTool() shape.
 
 import type {
-    AccessContext, EnhancedFactStore, GraphStore, SearchOpts,
+    AccessContext, GraphStore, SearchOpts,
 } from "./types.js";
+import type { HorizonDBFactStore } from "./horizon-store.js";
 
 export interface AgentTool {
     name: string;
@@ -49,7 +50,7 @@ export interface FactsToolsOptions {
 }
 
 export function createFactsTools(
-    factStore: EnhancedFactStore,
+    factStore: HorizonDBFactStore,
     graphStore: GraphStore | undefined,
     opts: FactsToolsOptions = {},
 ): AgentTool[] {

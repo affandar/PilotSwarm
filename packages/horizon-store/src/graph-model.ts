@@ -1,4 +1,4 @@
-// @incubator/horizon-facts — open-graph quality core (DB-less, unit-tested).
+// @pilotswarm/horizon-store — open-graph quality core (DB-less, unit-tested).
 //
 // An LLM-built, ontology-free graph degenerates into noise without these pure
 // guards. These functions hold the policy; the typed Cypher layer just applies

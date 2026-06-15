@@ -1,4 +1,4 @@
-// @incubator/horizon-facts — typed Cypher layer (AGE).
+// @pilotswarm/horizon-store — typed Cypher layer (AGE).
 //
 // ALL graph access goes through this module (03-design §1: graph access is a
 // typed Cypher layer in TypeScript, not plpgsql-wrapped Cypher). The data
@@ -22,7 +22,7 @@
 // reachable key set).
 
 import type {
-    AccessContext, GraphEdgeHit, GraphEdgeInput, GraphEdgeQuery, GraphStore,
+    AccessContext, GraphEdgeHit, GraphEdgeInput, GraphEdgeQuery,
     GraphNodeHit, GraphNodeInput, GraphNodeQuery, GraphNodeRef, GraphEdgeRef, SubGraph,
 } from "./types.js";
 import { scopeKeyAccessible } from "./types.js";
@@ -62,7 +62,13 @@ export function agArr(v: any): string[] {
     return Array.isArray(parsed) ? parsed.map(String) : [];
 }
 
-export class GraphQueries implements GraphStore {
+/**
+ * Typed Cypher layer (AGE). Provides the GraphStore READ/WRITE method bodies;
+ * `HorizonDBGraphStore` wraps this with the lifecycle (initialize/close) to form
+ * the full `GraphStore` provider (07 D2). This inner class deliberately does NOT
+ * implement the lifecycle, so it is not itself a `GraphStore`.
+ */
+export class GraphQueries {
     // Physical connections whose AGE session is already prepared (LOAD age +
     // search_path). Keyed on the pg client object, which the pool reuses per
     // physical connection — so the (otherwise per-checkout) setup runs ONCE per

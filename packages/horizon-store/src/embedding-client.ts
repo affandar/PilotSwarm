@@ -1,4 +1,4 @@
-// @incubator/horizon-facts — Node-side embedding client.
+// @pilotswarm/horizon-store — Node-side embedding client.
 //
 // Two roles:
 //   1. QUERY-TIME embedding for semantic/hybrid search (the adapter embeds the

@@ -44,8 +44,8 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const EVAL_DIR = path.resolve(__dirname, "..");          // incubator/horizon-facts/eval
-const ROOT = path.resolve(EVAL_DIR, "..");               // incubator/horizon-facts
+const EVAL_DIR = path.resolve(__dirname, "..");          // packages/horizon-store/eval
+const ROOT = path.resolve(EVAL_DIR, "..");               // packages/horizon-store
 
 // Load .env into the driver's own process so warnIfNoEmbed/status reflect the
 // same config the child evals see (children also load it via --env-file-if-exists).

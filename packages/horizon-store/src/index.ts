@@ -1,11 +1,11 @@
-// @incubator/horizon-facts — public exports (incubating).
+// @pilotswarm/horizon-store — public exports.
 //
-// Spec-conformant EnhancedFactStore + GraphStore providers for HorizonDB. The
-// DB-less core (query-builder, graph-model) and the type contracts are the
-// stable, unit-tested surface; HorizonDBFactStore (facts + search + embedder)
-// and HorizonDBGraphStore (separate AGE-only graph provider, 07 D2) are the live
-// providers validated by the integration suite (04-test-spec /
-// 06-provider-test-plan) against a real HorizonDB.
+// HorizonDB-backed providers implementing the @pilotswarm/sdk fact/graph
+// contracts. The DB-less core (query-builder, graph-model) and the re-exported
+// type contracts are the stable, unit-tested surface; HorizonDBFactStore (facts
+// + search + embedder) and HorizonDBGraphStore (separate AGE-only graph provider,
+// 07 D2) are the live providers validated by the integration suite against a real
+// HorizonDB.
 
 export * from "./types.js";
 export * from "./query-builder.js";

@@ -1,4 +1,4 @@
-// @incubator/horizon-facts — HorizonDB-backed EnhancedFactStore provider.
+// @pilotswarm/horizon-store — HorizonDB-backed EnhancedFactStore provider.
 //
 // DROP-IN: implements the full FactStore API with identical semantics, so it
 // can replace PgFactStore anywhere a FactStore is expected. It ADDS:
@@ -60,6 +60,10 @@ export class HorizonDBFactStore implements EnhancedFactStore {
     /** Snapshot of the configured endpoint (mirrors the durable vars). */
     private embedConfig?: EmbeddingEndpointConfig;
     private queryEmbedder?: EmbeddingClient;
+
+    /** Capability descriptor (enhancedfactstore 07 §1.4) — HorizonDB backs both
+     * multi-signal search and the durable in-DB embedder. */
+    readonly capabilities = { search: true, embedder: true } as const;
 
     private constructor(
         pool: any,
