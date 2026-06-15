@@ -34,6 +34,16 @@ export function FACTS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "facts_read_unrestricted",
             sql: migration_0004_facts_read_unrestricted(schema),
         },
+        {
+            version: "0005",
+            name: "facts_read_scope_keys",
+            sql: migration_0005_facts_read_scope_keys(schema),
+        },
+        {
+            version: "0006",
+            name: "crawl_queue",
+            sql: migration_0006_crawl_queue(schema),
+        },
     ];
 }
 
@@ -446,5 +456,223 @@ BEGIN
     RETURN QUERY EXECUTE final_sql;
 END;
 $$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0005: facts_read_facts exposes scope_key + accepts scopeKeys ──
+
+function migration_0005_facts_read_scope_keys(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0005_facts_read_scope_keys (enhancedfactstore 02 §1c): the read proc now
+-- (a) RETURNS the canonical scope_key (so graph 'evidence' arrays can reference
+--     a real fact and resolve back), and
+-- (b) accepts an optional p_scope_keys TEXT[] for bulk read-by-key — the way
+--     graph evidence resolves into facts. ACL still applies; the scope_keys
+--     filter only narrows. Additive + idempotent.
+--
+-- The return shape changes (adds scope_key), so the previous 9-arg proc must be
+-- DROPped before recreating.
+
+DROP FUNCTION IF EXISTS ${s}.facts_read_facts(TEXT, TEXT, TEXT[], TEXT, TEXT[], TEXT, TEXT, INT, BOOLEAN) CASCADE;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_read_facts(
+    p_scope              TEXT,
+    p_reader_session_id  TEXT,
+    p_granted_ids        TEXT[],
+    p_key_pattern        TEXT,
+    p_tags               TEXT[],
+    p_session_id         TEXT,
+    p_agent_id           TEXT,
+    p_limit              INT,
+    p_unrestricted       BOOLEAN DEFAULT FALSE,
+    p_scope_keys         TEXT[]  DEFAULT NULL
+) RETURNS TABLE (
+    scope_key  TEXT,
+    key        TEXT,
+    value      JSONB,
+    agent_id   TEXT,
+    session_id TEXT,
+    shared     BOOLEAN,
+    tags       TEXT[],
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+) AS $$
+DECLARE
+    base_sql TEXT;
+    where_clauses TEXT[] := ARRAY[]::TEXT[];
+    final_sql TEXT;
+BEGIN
+    base_sql := 'SELECT f.scope_key, f.key, f.value, f.agent_id, f.session_id, f.shared, f.tags, f.created_at, f.updated_at FROM ${t} f WHERE ';
+
+    IF p_unrestricted THEN
+        -- Bypass visibility entirely; only optional filters apply.
+        where_clauses := array_append(where_clauses, 'TRUE');
+    ELSIF p_scope = 'shared' THEN
+        where_clauses := array_append(where_clauses, 'f.shared = TRUE');
+    ELSIF p_scope = 'session' THEN
+        IF p_reader_session_id IS NULL THEN
+            RETURN;
+        END IF;
+        where_clauses := array_append(where_clauses,
+            'f.shared = FALSE AND f.session_id = ' || quote_literal(p_reader_session_id));
+    ELSIF p_reader_session_id IS NOT NULL THEN
+        -- "accessible" or "descendants"
+        DECLARE
+            vis_parts TEXT[] := ARRAY[
+                'f.shared = TRUE',
+                '(f.shared = FALSE AND f.session_id = ' || quote_literal(p_reader_session_id) || ')'
+            ];
+        BEGIN
+            IF p_granted_ids IS NOT NULL AND array_length(p_granted_ids, 1) > 0 THEN
+                vis_parts := array_append(vis_parts,
+                    '(f.shared = FALSE AND f.session_id = ANY(' || quote_literal(p_granted_ids)::TEXT || '::TEXT[]))');
+            END IF;
+            where_clauses := array_append(where_clauses, '(' || array_to_string(vis_parts, ' OR ') || ')');
+        END;
+    ELSE
+        where_clauses := array_append(where_clauses, 'f.shared = TRUE');
+    END IF;
+
+    -- Bulk read-by-key (narrows within the visibility filter above). A non-null
+    -- but EMPTY array matches nothing (caller asked for zero facts), so it can
+    -- only narrow — never widen — what the visibility clause already permits.
+    IF p_scope_keys IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.scope_key = ANY(' || quote_literal(p_scope_keys)::TEXT || '::TEXT[])');
+    END IF;
+
+    -- Optional filters
+    IF p_key_pattern IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.key LIKE ' || quote_literal(p_key_pattern));
+    END IF;
+    IF p_tags IS NOT NULL AND array_length(p_tags, 1) > 0 THEN
+        where_clauses := array_append(where_clauses,
+            'f.tags @> ' || quote_literal(p_tags)::TEXT || '::TEXT[]');
+    END IF;
+    IF p_session_id IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.session_id = ' || quote_literal(p_session_id));
+    END IF;
+    IF p_agent_id IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.agent_id = ' || quote_literal(p_agent_id));
+    END IF;
+
+    final_sql := base_sql || array_to_string(where_clauses, ' AND ')
+        || ' ORDER BY f.updated_at DESC LIMIT ' || p_limit;
+
+    RETURN QUERY EXECUTE final_sql;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0006: crawl queue (base-store, vanilla PG — no extension) ─────
+
+function migration_0006_crawl_queue(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0006_crawl_queue (enhancedfactstore 07 D3): the facts↔graph crawl bridge lives
+-- on the BASE facts store as plain facts-table bookkeeping — so a base-Postgres
+-- deployment can feed a separate GraphStore harvester. Vanilla PG, no extension.
+--
+--   - content_hash     : trigger-maintained md5 of (key, value); the receipt
+--                        key for the read→mark race guard.
+--   - last_crawled_at  : NULL ⇒ pending crawl. Reset to NULL whenever content
+--                        changes (the facts_touch trigger).
+--   - facts_read_uncrawled / facts_mark_crawled : the harvester work queue.
+--
+-- Additive + idempotent. Inert unless a graph harvester runs.
+
+ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS content_hash    TEXT;
+ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS last_crawled_at TIMESTAMPTZ;
+
+-- Backfill content_hash for rows that predate this migration. last_crawled_at
+-- stays NULL (pending) — correct: nothing has crawled them yet.
+UPDATE ${t}
+SET content_hash = md5(coalesce(key, '') || E'\\x1f' || coalesce(value::text, ''))
+WHERE content_hash IS NULL;
+
+-- Work-queue index: only the pending rows.
+CREATE INDEX IF NOT EXISTS idx_${schema}_facts_uncrawled
+    ON ${t} (id) WHERE last_crawled_at IS NULL;
+
+-- Write-resets-pending-state: recompute content_hash on every write; when it
+-- CHANGES, reset last_crawled_at → NULL so a harvester re-crawls. Identical
+-- content writes change nothing (so re-storing an unchanged fact is a no-op for
+-- the queue).
+CREATE OR REPLACE FUNCTION ${s}.facts_touch() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    new_hash TEXT;
+BEGIN
+    new_hash := md5(coalesce(NEW.key, '') || E'\\x1f' || coalesce(NEW.value::text, ''));
+    -- Keep content_hash authoritative on every write (defends against any
+    -- direct content_hash tampering by other code paths).
+    NEW.content_hash := new_hash;
+    -- Re-queue (reset crawl stamp) ONLY when the embeddable content changed.
+    IF TG_OP = 'INSERT' OR new_hash IS DISTINCT FROM OLD.content_hash THEN
+        NEW.last_crawled_at := NULL;
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS facts_touch ON ${t};
+CREATE TRIGGER facts_touch
+    BEFORE INSERT OR UPDATE ON ${t}
+    FOR EACH ROW EXECUTE FUNCTION ${s}.facts_touch();
+
+-- Harvester work queue: pending facts (last_crawled_at IS NULL), across ALL
+-- scopes (privileged), optionally narrowed by a key prefix. Returns the
+-- content_hash so the caller can produce a mark receipt.
+CREATE OR REPLACE FUNCTION ${s}.facts_read_uncrawled(
+    p_ns_prefix TEXT,
+    p_limit     INT
+) RETURNS TABLE (
+    scope_key    TEXT,
+    key          TEXT,
+    value        JSONB,
+    agent_id     TEXT,
+    session_id   TEXT,
+    shared       BOOLEAN,
+    tags         TEXT[],
+    created_at   TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ,
+    content_hash TEXT
+) LANGUAGE sql STABLE AS $$
+    SELECT f.scope_key, f.key, f.value, f.agent_id, f.session_id, f.shared,
+           f.tags, f.created_at, f.updated_at, f.content_hash
+    FROM ${t} f
+    WHERE f.last_crawled_at IS NULL
+      AND (p_ns_prefix IS NULL OR starts_with(f.key, p_ns_prefix))
+    ORDER BY f.id
+    LIMIT p_limit;
+$$;
+
+-- Stamp last_crawled_at = now(), but ONLY where content_hash still matches the
+-- supplied receipt (a fact edited mid-crawl keeps last_crawled_at = NULL and
+-- re-enters the queue). Mismatches are skipped, not errors.
+CREATE OR REPLACE FUNCTION ${s}.facts_mark_crawled(p_stamps JSONB)
+RETURNS TABLE (marked INT, skipped INT)
+LANGUAGE sql AS $$
+    WITH stamps AS (
+        SELECT e->>'scopeKey' AS scope_key, e->>'contentHash' AS content_hash
+        FROM jsonb_array_elements(p_stamps) e
+    ),
+    upd AS (
+        UPDATE ${t} f
+           SET last_crawled_at = now()
+          FROM stamps s
+         WHERE f.scope_key = s.scope_key
+           AND f.content_hash = s.content_hash
+        RETURNING f.scope_key
+    )
+    SELECT (SELECT count(*) FROM upd)::int AS marked,
+           ((SELECT count(*) FROM stamps) - (SELECT count(*) FROM upd))::int AS skipped;
+$$;
 `;
 }

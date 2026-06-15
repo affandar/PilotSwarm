@@ -39,7 +39,7 @@ export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
-export { PgFactStore, createFactStoreForUrl } from "./facts-store.js";
+export { PgFactStore, createFactStoreForUrl, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
 export { PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, TopEventEmitterRow, InsertTurnMetricInput, TurnMetricRow, HourlyTokenBucketRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, UserProfile, UserPrincipal } from "./cms.js";
 export type {
@@ -50,7 +50,33 @@ export type {
     DeleteFactInput,
     FactsStatsRow,
     FactsNamespace,
+    AccessContext,
+    CrawledFactStamp,
+    EnhancedFactStore,
+    FactsCapabilities,
+    SearchMode,
+    SearchWeights,
+    SearchOpts,
+    SimilarOpts,
+    ScoredFact,
+    SearchResult,
+    EmbedderStatus,
+    EmbeddingEndpointConfig,
 } from "./facts-store.js";
+// Graph store contract (optional, separately injected — enhancedfactstore 07 D2)
+export { isGraphStore, scopeKeyAccessible } from "./graph-store.js";
+export type {
+    GraphStore,
+    GraphNodeInput,
+    GraphEdgeInput,
+    GraphNodeQuery,
+    GraphEdgeQuery,
+    GraphNodeRef,
+    GraphNodeHit,
+    GraphEdgeRef,
+    GraphEdgeHit,
+    SubGraph,
+} from "./graph-store.js";
 export type {
     SessionStateStore,
     SessionMetadata,
