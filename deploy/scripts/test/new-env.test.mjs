@@ -399,3 +399,219 @@ test("scaffolder accepts private + akv-selfsigned with HOST and PRIVATE_DNS_ZONE
     cleanup();
   }
 });
+
+// ─── Phase 3: VPN Gateway P2S scaffolder UX ───────────────────────────────
+//
+// VPN questions are asked only after edge/tls have been selected. The
+// declarative INPUTS pipeline drives the prompts; a hard combo gate in
+// main() refuses with a named error before any .env is written when the
+// requested edge/tls combo is incompatible with VPN. CIDR-overlap checks
+// reuse Phase 2's validateVpnGatewayCombo (no duplicated arithmetic).
+//
+// VPN_GATEWAY_SKU and VPN_AAD_AUDIENCE are NOT prompted — they flow
+// through unchanged from template.env defaults (VpnGw1, c632b3df-...).
+// The dropped-from-spec keys VPN_AAD_TENANT_ID, VPN_PRIVATE_DNS_MODE,
+// PRIVATE_DNS_ZONE_ID, VPN_AAD_USERS_GROUP_NAME_HINT must NEVER be emitted.
+
+test("deriveTargets emits VPN_GATEWAY_ENABLED=true with custom pool when vpnEnabled=y", () => {
+  const t = deriveTargets({
+    name: "foo",
+    location: "westus3",
+    regionShort: "wus3",
+    edgeMode: "afd",
+    tlsSource: "akv",
+    vpnEnabled: "y",
+    vpnClientAddressPool: "172.16.222.0/24",
+  });
+  assert.equal(t.VPN_GATEWAY_ENABLED, "true");
+  assert.equal(t.VPN_CLIENT_ADDRESS_POOL, "172.16.222.0/24");
+  // SKU and AAD audience are NOT in deriveTargets' return — they flow
+  // from template.env so the operator gets the documented defaults.
+  assert.ok(!("VPN_GATEWAY_SKU" in t), "VPN_GATEWAY_SKU must come from template.env");
+  assert.ok(!("VPN_AAD_AUDIENCE" in t), "VPN_AAD_AUDIENCE must come from template.env");
+  // Dropped-from-spec keys must never be threaded.
+  for (const dropped of [
+    "VPN_AAD_TENANT_ID",
+    "VPN_PRIVATE_DNS_MODE",
+    "PRIVATE_DNS_ZONE_ID",
+    "VPN_AAD_USERS_GROUP_NAME_HINT",
+  ]) {
+    assert.ok(!(dropped in t), `${dropped} was dropped from the spec — must not be emitted`);
+  }
+});
+
+test("deriveTargets emits VPN_GATEWAY_ENABLED=false and omits pool override when vpnEnabled=n", () => {
+  const t = deriveTargets({
+    name: "foo",
+    location: "westus3",
+    regionShort: "wus3",
+    vpnEnabled: "n",
+  });
+  assert.equal(t.VPN_GATEWAY_ENABLED, "false");
+  assert.ok(!("VPN_CLIENT_ADDRESS_POOL" in t),
+    "pool override should be omitted when VPN is disabled (template default flows through)");
+});
+
+test("scaffolder writes VPN keys at expected defaults on afd+akv with --vpn-enabled y", () => {
+  cleanup();
+  try {
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "afd",
+      "--tls-source", "akv",
+      "--vpn-enabled", "y",
+    ]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const content = readFileSync(TEST_FILE, "utf8");
+    // Two prompted keys land at their defaults.
+    assert.match(content, /^VPN_GATEWAY_ENABLED=true$/m);
+    assert.match(content, /^VPN_CLIENT_ADDRESS_POOL=172\.16\.200\.0\/24$/m);
+    // Two template-default keys flow through verbatim.
+    assert.match(content, /^VPN_GATEWAY_SKU=VpnGw1\b/m);
+    assert.match(content, /^VPN_AAD_AUDIENCE=c632b3df-fb67-4d84-bdcf-b95ad541b5c8\b/m);
+    // Dropped-from-spec keys must NOT be present.
+    for (const dropped of [
+      "VPN_AAD_TENANT_ID",
+      "VPN_PRIVATE_DNS_MODE",
+      "PRIVATE_DNS_ZONE_ID",
+      "VPN_AAD_USERS_GROUP_NAME_HINT",
+    ]) {
+      assert.doesNotMatch(content, new RegExp(`^${dropped}=`, "m"),
+        `${dropped} was dropped from the spec but appeared in scaffolded .env`);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("scaffolder refuses VPN on afd+letsencrypt with a named [vpn-incompatible-combo] error", () => {
+  cleanup();
+  try {
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "afd",
+      "--tls-source", "letsencrypt",
+      "--vpn-enabled", "y",
+    ]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /\[vpn-incompatible-combo\]/);
+    assert.match(r.stderr, /TLS_SOURCE must be 'akv'/);
+    // Hard refusal: no .env written.
+    assert.ok(!existsSync(TEST_FILE), "scaffolder must not write .env when VPN combo is rejected");
+  } finally {
+    cleanup();
+  }
+});
+
+test("scaffolder refuses VPN on private+akv with a named [vpn-incompatible-combo] error", () => {
+  cleanup();
+  try {
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "private",
+      "--tls-source", "akv",
+      "--host", "portal",
+      "--private-dns-zone", "pilotswarm.internal",
+      "--vpn-enabled", "y",
+    ]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /\[vpn-incompatible-combo\]/);
+    assert.match(r.stderr, /EDGE_MODE must be 'afd'/);
+    assert.ok(!existsSync(TEST_FILE), "scaffolder must not write .env when VPN combo is rejected");
+  } finally {
+    cleanup();
+  }
+});
+
+test("scaffolder accepts a custom non-overlapping VPN_CLIENT_ADDRESS_POOL", () => {
+  cleanup();
+  try {
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "afd",
+      "--tls-source", "akv",
+      "--vpn-enabled", "y",
+      "--vpn-client-address-pool", "192.168.99.0/24",
+    ]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const content = readFileSync(TEST_FILE, "utf8");
+    assert.match(content, /^VPN_GATEWAY_ENABLED=true$/m);
+    assert.match(content, /^VPN_CLIENT_ADDRESS_POOL=192\.168\.99\.0\/24$/m);
+  } finally {
+    cleanup();
+  }
+});
+
+test("scaffolder rejects an overlapping VPN_CLIENT_ADDRESS_POOL with a pool-overlap error", () => {
+  cleanup();
+  try {
+    // Default VNet CIDR is 10.20.0.0/16; this /24 sits inside it.
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "afd",
+      "--tls-source", "akv",
+      "--vpn-enabled", "y",
+      "--vpn-client-address-pool", "10.20.50.0/24",
+    ]);
+    assert.notEqual(r.status, 0);
+    const out = `${r.stdout}\n${r.stderr}`;
+    assert.match(
+      out,
+      /VPN_CLIENT_ADDRESS_POOL .*overlaps the stamp VNet CIDR/,
+      `expected pool-overlap error in scaffolder output:\n${out}`,
+    );
+    assert.ok(!existsSync(TEST_FILE), "scaffolder must not write .env when pool overlaps VNet");
+  } finally {
+    cleanup();
+  }
+});
+
+test("scaffolder emits the post-scaffold VPN reminder block on success", () => {
+  cleanup();
+  try {
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "afd",
+      "--tls-source", "akv",
+      "--vpn-enabled", "y",
+    ]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const out = `${r.stdout}\n${r.stderr}`;
+    // Reminder header is unmistakable.
+    assert.match(out, /VPN Gateway P2S — required out-of-band setup/);
+    // CA policy: target app id, named-users-group, MFA, do-not-require-compliance.
+    assert.match(out, /c632b3df-fb67-4d84-bdcf-b95ad541b5c8/);
+    assert.match(out, /Conditional Access/i);
+    assert.match(out, /NAMED users group/);
+    assert.match(out, /require MFA/);
+    assert.match(out, /do NOT require device compliance/);
+    // Legacy audience override.
+    assert.match(out, /41b23e61-6c1e-4545-b367-cd054e0ed4b4/);
+    // Cost + time disclosure.
+    assert.match(out, /\$140\/month/);
+    assert.match(out, /45\+ minutes/);
+    // Docs pointer (referenced by section name; Phase 4 writes the section).
+    assert.match(out, /docs\/deploying-to-aks\.md/);
+    assert.match(out, /Optional: VPN Gateway P2S/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("scaffolder VPN=no path emits no VPN reminder block (regression guard)", () => {
+  cleanup();
+  try {
+    // Default for --vpn-enabled is n; we still pass it explicitly to make
+    // intent obvious to future readers.
+    const r = runScript([...FULL_ARGS(), "--vpn-enabled", "n"]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const out = `${r.stdout}\n${r.stderr}`;
+    assert.doesNotMatch(out, /VPN Gateway P2S — required out-of-band setup/);
+    assert.doesNotMatch(out, /Conditional Access/);
+    const content = readFileSync(TEST_FILE, "utf8");
+    // Template default carries through unchanged.
+    assert.match(content, /^VPN_GATEWAY_ENABLED=false$/m);
+  } finally {
+    cleanup();
+  }
+});
