@@ -141,3 +141,6 @@ output logAnalyticsWorkspaceId string = LogAnalytics.outputs.workspaceId
 
 @description('Global Log Analytics workspace name.')
 output logAnalyticsWorkspaceName string = LogAnalytics.outputs.workspaceName
+
+@description('Front Door profile ID GUID (the value Azure compares against the X-Azure-FDID origin header). Threaded into base-infra deploys (as FRONT_DOOR_ID via the default aliasFor() rule in deploy-bicep.mjs) so AppGw WAF custom rules can allow-list AFD when VPN ingress is enabled.')
+output frontDoorId string = frontDoorProfile.outputs.frontDoorId

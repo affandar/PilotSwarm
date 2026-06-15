@@ -28,10 +28,52 @@ param appGatewaySubnetPrefix string = '10.20.16.0/24'
 @description('Application Gateway Private Link subnet prefix (must be distinct from the App Gateway subnet).')
 param appGatewayPrivateLinkSubnetPrefix string = '10.20.17.0/24'
 
+@description('Whether to provision a GatewaySubnet (required for the Azure VPN Gateway). False by default — additive ingress, see Spec FR-001 / FR-013.')
+param vpnGatewayEnabled bool = false
+
+@description('GatewaySubnet prefix. Azure requires this subnet to be literally named "GatewaySubnet"; the name is fixed and not configurable. /27 minimum for VpnGw1+ (RouteBased).')
+param gatewaySubnetPrefix string = '10.20.18.0/27'
+
 var vnetName = '${resourceNamePrefix}-vnet'
 var aksSubnetName = 'aks-subnet'
 var appGatewaySubnetName = 'appgw-subnet'
 var appGatewayPrivateLinkSubnetName = 'appgw-pls-subnet'
+// Azure requirement: VPN Gateway only attaches to a subnet named exactly
+// "GatewaySubnet". Do not parameterise this name.
+var gatewaySubnetName = 'GatewaySubnet'
+
+var baseSubnets = [
+  {
+    name: aksSubnetName
+    properties: {
+      addressPrefix: aksSubnetPrefix
+    }
+  }
+  {
+    name: appGatewaySubnetName
+    properties: {
+      addressPrefix: appGatewaySubnetPrefix
+    }
+  }
+  {
+    name: appGatewayPrivateLinkSubnetName
+    properties: {
+      addressPrefix: appGatewayPrivateLinkSubnetPrefix
+      privateLinkServiceNetworkPolicies: 'Disabled'
+    }
+  }
+]
+
+var gatewaySubnetEntry = [
+  {
+    name: gatewaySubnetName
+    properties: {
+      addressPrefix: gatewaySubnetPrefix
+    }
+  }
+]
+
+var allSubnets = vpnGatewayEnabled ? concat(baseSubnets, gatewaySubnetEntry) : baseSubnets
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
@@ -42,27 +84,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         addressSpace
       ]
     }
-    subnets: [
-      {
-        name: aksSubnetName
-        properties: {
-          addressPrefix: aksSubnetPrefix
-        }
-      }
-      {
-        name: appGatewaySubnetName
-        properties: {
-          addressPrefix: appGatewaySubnetPrefix
-        }
-      }
-      {
-        name: appGatewayPrivateLinkSubnetName
-        properties: {
-          addressPrefix: appGatewayPrivateLinkSubnetPrefix
-          privateLinkServiceNetworkPolicies: 'Disabled'
-        }
-      }
-    ]
+    subnets: allSubnets
   }
 }
 
@@ -73,3 +95,6 @@ output aksSubnetName string = aksSubnetName
 output appGatewaySubnetId string = vnet.properties.subnets[1].id
 output appGatewaySubnetName string = appGatewaySubnetName
 output appGatewayPrivateLinkSubnetId string = vnet.properties.subnets[2].id
+// GatewaySubnet ID only when VPN ingress is enabled — empty string keeps the
+// output shape stable for non-VPN stamps (Spec FR-013).
+output gatewaySubnetId string = vpnGatewayEnabled ? vnet.properties.subnets[3].id : ''

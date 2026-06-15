@@ -43,6 +43,21 @@
     },
     "foundrySku": {
       "value": "${FOUNDRY_SKU}"
+    },
+    "vpnGatewayEnabled": {
+      "value": ${VPN_GATEWAY_ENABLED}
+    },
+    "vpnGatewaySku": {
+      "value": "${VPN_GATEWAY_SKU}"
+    },
+    "vpnClientAddressPool": {
+      "value": "${VPN_CLIENT_ADDRESS_POOL}"
+    },
+    "vpnAadAudience": {
+      "value": "${VPN_AAD_AUDIENCE}"
+    },
+    "frontDoorId": {
+      "value": "${FRONT_DOOR_ID}"
     }
   }
 }

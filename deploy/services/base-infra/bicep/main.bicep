@@ -91,6 +91,27 @@ param foundrySku string = 'S0'
 @description('Array of Foundry model deployments to provision. Each entry: { name, model: { format, name, version }, sku: { name, capacity } }. Threaded by the deploy orchestrator from a per-stamp JSON file (deploy/envs/local/<env>/foundry-deployments.json) via `--parameters foundryDeployments=@<file>`. Empty array → account is provisioned with no deployments, useful for incremental opt-in. Ignored when foundryEnabled=false.')
 param foundryDeployments array = []
 
+// ----- VPN P2S ingress (additive, optional) ---------------------------------
+// All defaults preserve byte-equivalent param shape for non-VPN stamps.
+
+@description('Whether to provision the Azure VPN Gateway (P2S, AAD-authenticated) as an additive ingress alongside AFD. False by default — see Spec FR-001.')
+param vpnGatewayEnabled bool = false
+
+@description('VPN Gateway SKU. See vpn-gateway.bicep for allowed values; Basic is excluded (no OpenVPN/AAD support).')
+param vpnGatewaySku string = 'VpnGw1'
+
+@description('VPN client address pool (must not overlap the VNet or any reachable on-prem range).')
+param vpnClientAddressPool string = '172.16.200.0/24'
+
+@description('AAD application audience for VPN client tokens. Default is the public Azure VPN client app ID; override only if you have registered a custom Azure VPN app.')
+param vpnAadAudience string = 'c632b3df-fb67-4d84-bdcf-b95ad541b5c8'
+
+@description('Operator-supplied AppGw WAF custom rules (priority >= 100). Threaded by deploy-bicep.mjs from APPGW_WAF_CUSTOM_RULES_FILE; empty by default. The auto-seeded AFD/VPN guard rules at priorities 90-92 are added by application-gateway.bicep when vpnGatewayEnabled=true.')
+param appgwWafCustomRules array = []
+
+@description('AFD frontDoorId GUID emitted by global-infra/bicep/main.bicep, threaded as FRONT_DOOR_ID via the deploy-bicep.mjs aliasFor() pipeline. Used by the AllowAfd WAF guard rule when VPN ingress is enabled.')
+param frontDoorId string = ''
+
 // ==============================================================================
 // Derived names
 // ==============================================================================
@@ -156,6 +177,7 @@ module Vnet './vnet.bicep' = {
   params: {
     location: location
     resourceNamePrefix: resourceNamePrefix
+    vpnGatewayEnabled: vpnGatewayEnabled
   }
 }
 
@@ -209,6 +231,10 @@ module AppGateway './application-gateway.bicep' = if (edgeMode == 'afd') {
     userAssignedIdentityId: Uami.outputs.appGwIdentityResourceId
     appGwExists: ApplicationGatewayExistsCheck!.outputs.exists
     logAnalyticsWorkspaceResourceId: LogAnalytics.outputs.workspaceId
+    appgwWafCustomRules: appgwWafCustomRules
+    vpnGatewayEnabled: vpnGatewayEnabled
+    vpnClientAddressPool: vpnClientAddressPool
+    frontDoorId: frontDoorId
   }
 }
 
@@ -256,6 +282,45 @@ module LogAnalytics '../../common/bicep/log-analytics.bicep' = {
     location: location
     workspaceName: logAnalyticsName
     retentionInDays: logAnalyticsRetentionDays
+  }
+}
+
+// ==============================================================================
+// VPN P2S Gateway (optional, additive ingress). Provisioned after VNet +
+// LogAnalytics so the GatewaySubnet exists and diagnostic logs have a sink.
+// Skipped entirely when vpnGatewayEnabled=false (default).
+// ==============================================================================
+
+module VpnGateway './vpn-gateway.bicep' = if (vpnGatewayEnabled) {
+  name: '${resourceNamePrefix}-vpngw-${dTime}'
+  params: {
+    location: location
+    resourceName: resourceNamePrefix
+    gatewaySubnetId: Vnet.outputs.gatewaySubnetId
+    vpnGatewaySku: vpnGatewaySku
+    vpnClientAddressPool: vpnClientAddressPool
+    // tenantId is not a stamp-level param today; subscription().tenantId is the
+    // tenant the deployment runs against and matches what KV/Postgres use.
+    tenantId: subscription().tenantId
+    vpnAadAudience: vpnAadAudience
+    logAnalyticsWorkspaceId: LogAnalytics.outputs.workspaceId
+  }
+}
+
+// ==============================================================================
+// Private DNS zone for portal resolution over the VPN tunnel (managed-only).
+// Provisioned after AppGw so the AppGw private FE IP is available.
+// Skipped when vpnGatewayEnabled=false or edgeMode != 'afd' (no AppGw to point to).
+// ==============================================================================
+
+module PortalPrivateDns './private-dns-portal.bicep' = if (vpnGatewayEnabled && edgeMode == 'afd') {
+  name: '${resourceNamePrefix}-portal-pdns-${dTime}'
+  params: {
+    vpnGatewayEnabled: vpnGatewayEnabled
+    dnsZoneName: sslCertificateDomainSuffix
+    recordName: resourceNamePrefix
+    appGatewayPrivateIp: appGatewayPrivateIpAddress
+    vnetId: Vnet.outputs.vnetId
   }
 }
 
@@ -536,3 +601,9 @@ output logAnalyticsWorkspaceName string = LogAnalytics.outputs.workspaceName
 // manifest-staging time (placeholder `__FOUNDRY_ENDPOINT__`).
 output foundryEndpoint string = foundryEnabled ? Foundry!.outputs.endpoint : ''
 output foundryAccountName string = foundryEnabled ? Foundry!.outputs.accountName : ''
+
+// ----- VPN P2S ingress outputs (empty strings when disabled) ---------------
+output vpnGatewayId string = vpnGatewayEnabled ? VpnGateway!.outputs.vpnGatewayId : ''
+output vpnGatewayPublicIp string = vpnGatewayEnabled ? VpnGateway!.outputs.vpnGatewayPublicIp : ''
+output vpnClientAddressPool string = vpnGatewayEnabled ? vpnClientAddressPool : ''
+output vpnPrivateDnsZoneId string = (vpnGatewayEnabled && edgeMode == 'afd') ? PortalPrivateDns!.outputs.dnsZoneId : ''
