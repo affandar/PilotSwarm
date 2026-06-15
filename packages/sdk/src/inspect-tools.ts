@@ -491,6 +491,36 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
     });
 
+    const readSessionGraphSearchesTool = defineTool("read_session_graph_searches", {
+        description:
+            "Graph-search forensics: the `graph.searched` events a session emitted — what graph queries it ran " +
+            "(search_nodes / search_edges / neighbourhood, with the query args) and how many results each returned. " +
+            "Use to answer 'what did session X search the graph for, and what did it get back?'",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_id: { type: "string" },
+                limit: { type: "number", description: "Max session events to scan (default 500)." },
+            },
+            required: ["session_id"],
+        },
+        handler: async (args: { session_id: string; limit?: number }) => {
+            const id = normalizeSessionId(args.session_id);
+            try {
+                const events = await catalog.getSessionEvents(id, undefined, args.limit ?? 500);
+                const searches = events
+                    .filter((e: any) => e.eventType === "graph.searched")
+                    .map((e: any) => {
+                        const d = e.data ?? {};
+                        return { seq: e.seq, at: d.at ?? "", kind: d.kind ?? "", query: d.query, resultCount: d.resultCount ?? 0 };
+                    });
+                return { sessionId: id, count: searches.length, searches };
+            } catch (err: any) {
+                return { error: `read_session_graph_searches: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
     const readSessionTreeStatsTool = defineTool("read_session_tree_stats", {
         description:
             "Read rolled-up stats across the spawn tree rooted at the given session: " +
@@ -712,6 +742,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         readAgentEventsTool,
         ...systemReadTools,
         readSessionMetricSummaryTool,
+        readSessionGraphSearchesTool,
         readSessionTreeStatsTool,
         readFleetStatsTool,
         readSessionSkillUsageTool,

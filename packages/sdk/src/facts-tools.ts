@@ -1,6 +1,6 @@
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
-import type { FactStore } from "./facts-store.js";
+import type { EnhancedFactStore, FactStore } from "./facts-store.js";
 
 // ─── Knowledge Pipeline Namespace Access Control ────────────────────────────
 const FACTS_MANAGER_AGENT_ID = "facts-manager";
@@ -62,8 +62,15 @@ export function createFactTools(opts: {
     recordEvent?: (sessionId: string, eventType: string, data: unknown) => Promise<void>;
     /** Optional hook invoked after a successful shared intake/* write. */
     onSharedIntakeFactStored?: (input: { key: string; sourceSessionId: string | null; agentId: string | null }) => Promise<void>;
+    /**
+     * When the store is an EnhancedFactStore (search capability), the search
+     * tools (`facts_search`, `facts_similar`) and the skills-scoped
+     * `search_skills` pull tool are appended (enhancedfactstore 07 P4/§1.6).
+     * `search_skills` is omitted for the facts-manager (it owns the namespace).
+     */
+    enhancedFactStore?: EnhancedFactStore;
 }): Tool<any>[] {
-    const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent, onSharedIntakeFactStored } = opts;
+    const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent, onSharedIntakeFactStored, enhancedFactStore } = opts;
 
     const filterReservedReadFacts = (result: any) => {
         if (agentIdentity === FACTS_MANAGER_AGENT_ID || agentIdentity === TUNER_AGENT_ID) return result;
@@ -302,5 +309,93 @@ export function createFactTools(opts: {
         },
     });
 
-    return [storeTool, readTool, deleteTool];
+    const enhancedTools: Tool<any>[] = [];
+    if (enhancedFactStore && enhancedFactStore.capabilities.search) {
+        const accessOf = (ctx?: { sessionId?: string }) => ({
+            readerSessionId: ctx?.sessionId ?? null,
+            grantedSessionIds: [] as string[],
+            unrestricted: agentIdentity === TUNER_AGENT_ID,
+        });
+
+        enhancedTools.push(defineTool("facts_search", {
+            description:
+                "Search your durable facts/memory by relevance (lexical / semantic / hybrid) — often more effective " +
+                "than read_facts, which only matches literal keys. The query shape depends on mode: lexical = BM25 " +
+                "keyword terms (not a sentence); semantic = natural language; hybrid = a short keyword-rich phrase. " +
+                "Returned scopeKey values seed graph_search_nodes.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    query: { type: "string", description: "Keywords for lexical, natural language for semantic, keyword-rich phrase for hybrid." },
+                    mode: { type: "string", enum: ["lexical", "semantic", "hybrid"], description: "Default hybrid." },
+                    namespace: { type: "string", description: "Key-prefix filter, e.g. 'skills'." },
+                    tags: { type: "array", items: { type: "string" } },
+                    limit: { type: "number", description: "Max results (default 20)." },
+                },
+                required: ["query"] as const,
+            },
+            handler: (a: { query: string; mode?: any; namespace?: string; tags?: string[]; limit?: number }, ctx?: { sessionId?: string }) =>
+                enhancedFactStore.searchFacts(a.query, { mode: a.mode, namespace: a.namespace, tags: a.tags, limit: a.limit }, accessOf(ctx)),
+        }));
+
+        enhancedTools.push(defineTool("facts_similar", {
+            description:
+                "Given a fact you already have, return the semantically nearest other facts (vector kNN over the " +
+                "fact's stored embedding — no query text, no re-embedding). Use for clustering, dedup hunting, or " +
+                "expanding context around a known fact.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    scopeKey: { type: "string", description: "The anchor fact's scopeKey." },
+                    k: { type: "number", description: "Top-k neighbours (default 8)." },
+                    minScore: { type: "number", description: "Drop neighbours below this cosine score (0..1)." },
+                },
+                required: ["scopeKey"] as const,
+            },
+            handler: (a: { scopeKey: string; k?: number; minScore?: number }, ctx?: { sessionId?: string }) =>
+                enhancedFactStore.similarFacts(a.scopeKey, { k: a.k, minScore: a.minScore }, accessOf(ctx)),
+        }));
+
+        // search_skills — skills-scoped pull (07 §1.6). The facts-manager owns the
+        // skills namespace and curates it directly, so it does not get this tool.
+        if (agentIdentity !== FACTS_MANAGER_AGENT_ID) {
+            enhancedTools.push(defineTool("search_skills", {
+                description:
+                    "Find the curated skills most relevant to your current task (ranked semantic + lexical search " +
+                    "over the shared 'skills' namespace). Call this at the start of a turn with a task-derived query " +
+                    "(e.g. 'azure deployments', 'horizondb connection errors', 'terraform s3 backend') — as many times " +
+                    "as needed for different facets. Returns ranked skill hints; load a skill's full instructions with " +
+                    "read_facts(key_pattern=\"<key>\", scope=\"shared\") before applying it.",
+                parameters: {
+                    type: "object" as const,
+                    properties: {
+                        query: { type: "string", description: "What the task is about (natural language or keywords)." },
+                        limit: { type: "number", description: "Max skill hints (default 8)." },
+                    },
+                    required: ["query"] as const,
+                },
+                handler: async (a: { query: string; limit?: number }, ctx?: { sessionId?: string }) => {
+                    const res = await enhancedFactStore.searchFacts(
+                        a.query,
+                        { mode: "hybrid", namespace: "skills", scope: "shared", limit: a.limit ?? 8 },
+                        accessOf(ctx),
+                    );
+                    // Hint shape only — the agent loads full content via read_facts.
+                    return {
+                        count: res.count,
+                        skills: res.facts.map((f: any) => {
+                            const v = typeof f.value === "string" ? safeParse(f.value) : f.value;
+                            return { key: f.key, name: v?.name ?? f.key, description: v?.description ?? "", score: f.score };
+                        }),
+                    };
+                },
+            }));
+        }
+    }
+
+    return [storeTool, readTool, deleteTool, ...enhancedTools];
+}
+
+function safeParse(s: string): any {
+    try { return JSON.parse(s); } catch { return undefined; }
 }

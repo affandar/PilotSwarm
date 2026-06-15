@@ -120,6 +120,7 @@ export { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
 export { createSweeperTools } from "./sweeper-tools.js";
 // Fact tools
 export { createFactTools } from "./facts-tools.js";
+export { createGraphTools } from "./graph-tools.js";
 // Inspect tools (read_agent_events, etc.)
 export { createInspectTools } from "./inspect-tools.js";
 // Resource Manager Agent tools

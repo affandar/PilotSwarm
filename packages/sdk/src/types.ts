@@ -137,6 +137,15 @@ export interface SerializableSessionConfig {
      * to enforce knowledge pipeline namespace restrictions.
      */
     agentIdentity?: string;
+    /**
+     * Internal: when `true`, this session holds the app-assigned HARVESTER role
+     * (enhancedfactstore 07 §1.5) and receives the privileged crawl-queue +
+     * graph write/delete tools (only when a graph store is configured). Graph
+     * extraction is app-specific, so the app sets this on its own harvester
+     * agent. The facts-manager receives those tools regardless (dormant), and
+     * agent-tuner never does.
+     */
+    isHarvester?: boolean;
 }
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */

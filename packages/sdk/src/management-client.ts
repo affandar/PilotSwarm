@@ -1199,6 +1199,24 @@ export class PilotSwarmManagementClient {
     }
 
     /**
+     * Graph-search forensics (enhancedfactstore 07 P4): the `graph.searched`
+     * events a session emitted — what graph queries it ran and how many results
+     * each returned. Powers the agent-tuner graph-debug skill. Reads the latest
+     * page of session events and filters to `graph.searched`.
+     */
+    async getSessionGraphSearches(sessionId: string, limit?: number): Promise<Array<{ seq: number; at: string; kind: string; query: unknown; resultCount: number }>> {
+        this._ensureStarted();
+        // Pull a generous page and filter; graph searches are sparse vs. all events.
+        const events = await this._catalog!.getSessionEvents(sessionId, undefined, limit ?? 500);
+        return events
+            .filter((e: any) => e.eventType === "graph.searched")
+            .map((e: any) => {
+                const d = e.data ?? {};
+                return { seq: e.seq, at: d.at ?? "", kind: d.kind ?? "", query: d.query, resultCount: d.resultCount ?? 0 };
+            });
+    }
+
+    /**
      * Get a provider-capped older page before a sequence number, ordered by seq.
      * Call repeatedly with the oldest returned seq to drain complete history.
      */

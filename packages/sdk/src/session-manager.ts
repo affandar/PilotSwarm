@@ -4,9 +4,11 @@ import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
+import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools } from "./inspect-tools.js";
 import type { SessionCatalogProvider } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
+import { isEnhancedFactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
 import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
@@ -631,6 +633,11 @@ export class SessionManager {
             factStore: this.factStore,
             getLineageSessionIds: this._getLineageSessionIds ?? undefined,
             agentIdentity: effectiveSerializableConfig.agentIdentity,
+            // Enhanced search tools (facts_search / facts_similar / search_skills)
+            // light up only when the store is an EnhancedFactStore with search.
+            enhancedFactStore: isEnhancedFactStore(this.factStore) && this.factStore.capabilities.search
+                ? this.factStore
+                : undefined,
             recordEvent: this.sessionCatalog
                 ? async (sid, eventType, data) => {
                     try {
@@ -663,7 +670,29 @@ export class SessionManager {
                     }
                 }
                 : undefined,
-            }).filter((tool: any) => !isTunerSession || tool.name === "read_facts");
+            }).filter((tool: any) => !isTunerSession || tool.name === "read_facts" || tool.name === "facts_search" || tool.name === "facts_similar");
+        // Graph tools (07 P4) — registered ONLY when a graph store is configured.
+        // Reader tools go to every session; crawl-queue + write/delete go to the
+        // app harvester role and the facts-manager (dormant); graph_stats to
+        // facts-manager + agent-tuner. Tuner never gets a mutating tool.
+        const graphTools = this.graphStore
+            ? createGraphTools({
+                graphStore: this.graphStore,
+                factStore: this.factStore,
+                agentIdentity: effectiveSerializableConfig.agentIdentity,
+                isHarvester: effectiveSerializableConfig.isHarvester === true,
+                agentId: effectiveSerializableConfig.agentIdentity,
+                recordEvent: this.sessionCatalog
+                    ? async (sid, eventType, data) => {
+                        try {
+                            await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
+                        } catch {
+                            // Best-effort telemetry.
+                        }
+                    }
+                    : undefined,
+            })
+            : [];
         const inspectTools = this.sessionCatalog
             ? createInspectTools({
                 catalog: this.sessionCatalog,
@@ -673,12 +702,13 @@ export class SessionManager {
             })
             : [];
         const SYSTEM_TOOL_NAMES = new Set([
-            ...systemTools, ...subAgentTools, ...factTools, ...inspectTools,
+            ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
         ].map((t: any) => t.name));
         const persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...factTools,
             ...inspectTools,
+            ...graphTools,
         ];
         const allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
@@ -686,6 +716,7 @@ export class SessionManager {
             ...subAgentTools,
             ...factTools,
             ...inspectTools,
+            ...graphTools,
         ];
         config.tools = persistentSessionTools;
 
