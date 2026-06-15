@@ -27,7 +27,7 @@ open knowledge graph (`GraphStore`). First providers: **HorizonDB**
 | 04 | [Test Specification](./04-test-spec.md) | Deterministic datasets, functional matrices, negative cases, embedder lifecycle, fail-fast, layout. |
 | 05 | [Agent Tools Spec](./05-tools-spec.md) | LLM-facing tool contract (`facts_*` / `graph_*`), harvester loop, a **worked graph example** (§5a, diagrammed over the real pgsql-hackers corpus), and the Phase 2 context tools. |
 | 06 | [Provider Test Plan](./06-provider-test-plan.md) | Executable plan for 04: no-mocks/full-validation ground rule, suite order, live-HorizonDB lifecycle, migration tests, real-endpoint embedder validation, and the Copilot-SDK harvester scenarios on the pgsql-hackers corpus. |
-| 07 | [PilotSwarm Integration Plan](./07-pilotswarm-integration.md) | Execution plan for landing the contract in `packages/sdk`: dependency inversion (SDK owns `EnhancedFactStore`, HorizonDB implements it), provider injection, capability-gated tools, phased PR sequence (P0–P6), risks/rollback, and open decisions. |
+| 07 | [PilotSwarm Integration Plan](./07-pilotswarm-integration.md) | Execution plan for landing the contract in `packages/sdk`: dependency inversion (SDK owns `EnhancedFactStore`, HorizonDB implements it), provider injection, capability-gated tools, phased PR sequence (P0–P8, where **P0 — the incubator provider split — is done**), risks/rollback, and open decisions. |
 
 ## Phasing
 

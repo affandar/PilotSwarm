@@ -1,7 +1,8 @@
 # 07 — PilotSwarm Integration Plan
 
-> **Status:** Proposal — execution plan, pending review. No product code has
-> been changed by this document.
+> **Status:** Proposal — execution plan, pending review. No `packages/sdk`
+> product code has been changed by this document; the incubator-side provider
+> split (**P0**) has since been implemented and validated — see P0 below.
 >
 > This is the **PilotSwarm-core execution plan** that operationalizes the design
 > captured in [01](./01-functional-spec.md)–[06](./06-provider-test-plan.md) and
@@ -93,7 +94,7 @@ DTOs: SearchOpts, SearchResult, ScoredFact, SimilarOpts,
 - The **crawl queue** (`readUncrawledFacts` / `markFactsCrawled` + the
   `last_crawled_at` column) is part of the **base `FactStore`**, not the enhanced
   one — it is facts-table bookkeeping that feeds whatever `GraphStore` is
-  configured (§1.4, P0). Vanilla PG, no extension.
+  configured (§1.4, P1). Vanilla PG, no extension.
 
 ### 1.2 The injection seam already exists
 
@@ -159,7 +160,7 @@ export function isEnhancedFactStore(s: FactStore): s is EnhancedFactStore {
 
 - **Structural, not a flag.** No `factsProvider` string is consulted at the call
   sites; the guard is the single source of truth. (A `factsProvider` config knob
-  may still *select* which provider to construct — §2 P2 — but detection
+  may still *select* which provider to construct — §2 P3 — but detection
   downstream is always the guard.)
 - **`capabilities` lives on the enhanced interface only**, and now covers just the
   retrieval axis: `EnhancedFactStore` exposes
@@ -220,7 +221,7 @@ tiers they compose into:
 
 **Why base-facts + graph composes (the payoff of the split).** A graph store
 needs only two things from the fact layer, and both are on the **base**
-`FactStore` (§1.1, P0), never on the enhanced one:
+`FactStore` (§1.1, P1), never on the enhanced one:
 
 1. `FactRecord.scopeKey` + `ReadFactsQuery.scopeKeys` — so graph `evidence`
    arrays reference real facts and resolve back to values
@@ -288,7 +289,7 @@ extract entities/edges* is domain knowledge it cannot supply generically. So:
   session delete and nothing more. It **never deletes graph nodes** — graph
   deletion is a harvester-only capability. As a corollary, an app that wants graph
   cleanup adds the `graph_delete_*` tools to **its own harvester sessions**
-  (documented in the builder templates, P6).
+  (documented in the builder templates, P7).
 
 This is realized exactly where role-gating already lives: `createFactTools()`
 (+ a sibling `createGraphTools()`) plus the `agentIdentity` / config filter in
@@ -369,7 +370,7 @@ one builder that already owns this block.
   - Its loop is the standard one: `facts_read_uncrawled` → extract entities/edges
     with app logic → `graph_upsert_*` → `facts_mark_crawled`. PilotSwarm supplies
     the **tools and the crawl queue**; the app supplies the **extraction policy**.
-    A harvester builder-agent template + a crawling guide (P6) bootstrap this.
+    A harvester builder-agent template + a crawling guide (P7) bootstrap this.
   - This works on **base-facts + graph** too — harvesting needs the crawl queue
     and the graph, not vectors.
 
@@ -383,7 +384,7 @@ one builder that already owns this block.
     session ran and what it returned*. That forensic requires graph searches to be
     recorded as durable session events and surfaced via a management API + a
     tuner-only inspect tool, per the observability rule in copilot-instructions
-    (P3). Still **no** write / delete / crawl tools — the read-only invariant
+    (P4). Still **no** write / delete / crawl tools — the read-only invariant
     holds, now over the full read surface.
 
 - **sweeper** (fact housekeeping)
@@ -393,7 +394,7 @@ one builder that already owns this block.
     so a deleted session's facts disappear while any graph provenance they backed
     stays until a harvester prunes it (no cross-store cascade, §3 #7). An app that
     wants graph cleanup adds the `graph_delete_*` tools to **its own harvester
-    sessions** — covered by the builder templates (P6).
+    sessions** — covered by the builder templates (P7).
 
 - **pilotswarm / resourcemgr** (orchestration & housekeeping)
   - Facts are incidental to their roles. They keep base KV always and receive the
@@ -487,7 +488,7 @@ quality on top (below).
      questions about graph structure and `graph_stats` on demand.
    - **agent-tuner** uses it for **forensics**: "what graph-search query did
      session X run, and what did it get back?" This relies on the graph-search
-     observability wiring (P3): each graph search emits a durable `graph.searched`
+     observability wiring (P4): each graph search emits a durable `graph.searched`
      event (query + result digest), exposed via a `PilotSwarmManagementClient`
      read method and a tuner-only `read_*` inspect tool.
    - It is the **same** skill content for both, scoped by the tools each role
@@ -503,8 +504,8 @@ quality on top (below).
 
 #### Sequencing
 
-None of these are required for the core seam (P0–P4). They are a natural,
-clearly-bounded follow-on once an enhanced store is live, tracked as **P7**
+None of these are required for the core seam (P1–P5). They are a natural,
+clearly-bounded follow-on once an enhanced store is live, tracked as **P8**
 (optional). Enhancement 1 (the `search_skills` tool + the per-turn base
 instruction) is the recommended first target; enhancement 3 (graph harvest) is the
 most speculative and adds facts-manager prompt surface, so it must go through
@@ -518,7 +519,37 @@ bump per the repo rules.
 Each phase is independently reviewable and, except where noted, independently
 shippable. File references are starting points, not exhaustive.
 
-### P0 — SDK contract + base-API prerequisites (no HorizonDB needed)
+### P0 — Incubator provider split (DONE)
+
+**Goal:** prove the D1/D2/D3 shape in the incubator before any SDK/runtime work,
+by splitting the single bundled provider into the two segregated providers the
+rest of this plan hoists.
+
+**Status: complete** in [`incubator/horizon-facts`](../../../incubator/horizon-facts)
+— not yet hoisted to the SDK contract (that is P1/P2) and not wired into
+PilotSwarm.
+
+- Split `HorizonFactStore` → **`HorizonDBFactStore`** (implements
+  `EnhancedFactStore` only: facts + search/similar + crawl queue + embedder) and a
+  new **`HorizonDBGraphStore`** (implements `GraphStore`) — a **separate AGE-only
+  provider** with its own pool whose `initialize()` asserts only `age` and runs
+  only the graph bootstrap migration.
+- Each provider's fail-fast is scoped to **only its own extensions** (facts →
+  `vector` / `pg_textsearch` / `pg_durable`; graph → `age`), which is what makes
+  the **base-facts + graph** tier real. The graph provider never reads the facts
+  table — evidence→value resolution stays the tool-layer composition
+  (`graphStore.searchGraphNodes(...)` → `factStore.readFacts({ scopeKeys })`).
+- `GraphInterface` renamed to **`GraphStore`** (deprecated alias retained); the
+  tool factory is now `createFactsTools(factStore, graphStore, …)` with the graph
+  + crawl-queue tools gated on `!!graphStore`.
+- **Validated on live HorizonDB:** 105/105 integration + 18/18 DB-less unit; a
+  scoped agentic harvest built 16 nodes / 24 edges with 0 tool errors; and the
+  **cross-provider evidence round-trip** (graph node evidence resolved through the
+  separate fact provider) + the seed pivot both pass.
+- **Risk:** n/a (landed). **Reversible:** incubator-only; nothing in `packages/sdk`
+  or the runtime changed yet.
+
+### P1 — SDK contract + base-API prerequisites (no HorizonDB needed)
 
 **Goal:** establish `EnhancedFactStore` as the SDK's canonical contract and land
 the base-API widenings every enhanced round-trip depends on, with zero behavior
@@ -559,27 +590,22 @@ change to the default path.
 - **Risk:** low. **Reversible:** trivially (additive types + two additive,
   nullable migrations).
 
-### P1 — Promote the incubator to a workspace package
+### P2 — Promote the incubator to a workspace package
 
 **Goal:** make the HorizonDB provider a buildable monorepo package that
 **imports** the SDK contract instead of mirroring it.
 
 - Move `incubator/horizon-facts` → `packages/horizon-store` (decision 4, §6),
   rename `@incubator/horizon-facts` → `@pilotswarm/horizon-store` — the package
-  now ships **both** the facts and graph providers, hence `horizon-store` not
-  `horizon-facts`.
-- Replace its local `types.ts` contract with `import { … } from "@pilotswarm/sdk"`,
-  and **split the provider in two** so each maps to one SDK interface:
-  `HorizonDBFactStore implements EnhancedFactStore` (facts + search + embedder; its
-  `initialize()` asserts only `vector` / `pg_textsearch` / `pg_durable`) and a new
-  `HorizonDBGraphStore implements GraphStore` (AGE-only; its `initialize()` asserts
-  only `age` and runs only the graph migrations). Each owns its own pool. This is
-  what makes the **base-facts + graph** tier real (a graph store that needs only
-  AGE, paired with `PgFactStore`) and keeps each provider's fail-fast scoped to
-  exactly its extensions. The graph store never reads the facts table — evidence
-  scopeKeys are opaque to it; evidence→value resolution is the tool-layer
-  `graphStore.searchGraphNodes(...)` → `factStore.readFacts({ scopeKeys })`
-  composition.
+  ships **both** the (already-split, P0) facts and graph providers, hence
+  `horizon-store` not `horizon-facts`.
+- Replace its local `types.ts` contract with `import { … } from "@pilotswarm/sdk"`
+  so `HorizonDBFactStore implements EnhancedFactStore` and `HorizonDBGraphStore
+  implements GraphStore` bind to the **hoisted SDK contract** (P1) instead of the
+  mirrored copy. The two-provider split itself is **already done (P0)**; P2 only
+  moves the package and inverts the type dependency. Each provider keeps its own
+  pool and its extension-scoped fail-fast, and the graph provider still never
+  reads the facts table.
 - Keep it self-contained at runtime (its only runtime dep stays `pg`); the SDK
   dependency is **type-only** where possible to avoid a cycle.
 - Keep the vendored migrator for now; plan the merge-back into
@@ -588,9 +614,9 @@ change to the default path.
 - **Tests:** the package's DB-less unit tests run in CI; the live integration
   tests stay gated on `HORIZON_DATABASE_URL`.
 - **Risk:** medium (workspace wiring, potential type cycle). **Reversible:** yes
-  (revert the move; the SDK contract from P0 stands alone).
+  (revert the move; the SDK contract from P1 stands alone).
 
-### P2 — Provider selection + injection + schema isolation
+### P3 — Provider selection + injection + schema isolation
 
 **Goal:** booting with the enhanced provider configured yields a real
 `HorizonDBFactStore`; the default path is unchanged.
@@ -624,7 +650,7 @@ change to the default path.
   provider selection yes; the schema rename is guarded/online but is a forward
   migration — gate behind the rename-verification script before deploy.
 
-### P3 — Enhanced + graph tools (capability-gated)
+### P4 — Enhanced + graph tools (capability-gated)
 
 **Goal:** agents can search and traverse when the provider supports it; base
 `store_fact` / `read_facts` / `delete_fact` are unchanged everywhere.
@@ -662,7 +688,7 @@ change to the default path.
   `PgFactStore`); an enhanced-tools integration test gated on `HORIZON_DATABASE_URL`.
 - **Risk:** medium. **Reversible:** yes (tools are additive and gated).
 
-### P4 — Durable embedder lifecycle
+### P5 — Durable embedder lifecycle
 
 **Goal:** facts get embedded asynchronously so semantic/hybrid search returns
 real results.
@@ -680,7 +706,7 @@ real results.
 - **Risk:** medium. **Reversible:** yes (don't configure the embedder → semantic
   search simply returns nothing for un-embedded facts).
 
-### P5 — Test strategy
+### P6 — Test strategy
 
 **Goal:** prove drop-in equivalence and exercise the new surface, with everything
 runnable via [`scripts/run-tests.sh`](../../../scripts/run-tests.sh).
@@ -704,7 +730,7 @@ runnable via [`scripts/run-tests.sh`](../../../scripts/run-tests.sh).
   weakened assertions** ([test integrity rules](../../../.github/copilot-instructions.md)).
 - **Risk:** low. **Reversible:** n/a.
 
-### P6 — Docs, sample, templates (the significant-rollout rule)
+### P7 — Docs, sample, templates (the significant-rollout rule)
 
 - Update [`docs/configuration.md`](../../../docs/configuration.md) (new
   `enhancedFactsDatabaseUrl` / `factsProvider` / `HORIZON_EMBED_*`),
@@ -731,7 +757,7 @@ runnable via [`scripts/run-tests.sh`](../../../scripts/run-tests.sh).
   `facts_context_*`) remain **deferred** — gated behind a harvested graph, per
   the series README. Not in this integration.
 
-### P7 — Knowledge-pipeline enhancement (optional, gated on an enhanced store)
+### P8 — Knowledge-pipeline enhancement (optional, gated on an enhanced store)
 
 **Goal:** let the existing shared-skills pipeline *use* the enhanced surface. The
 pipeline's contract is unchanged (§1.6) — this phase is purely additive quality,
@@ -759,7 +785,7 @@ and only runs when `isEnhancedFactStore(store)` is true.
   the **facts-manager** (graph → Markdown/Mermaid artifact, structure/stats Q&A)
   and the **agent-tuner** (session graph-search forensics), injected only when
   `!!graphStore`. Requires the `graph.searched` event + management API + tuner
-  inspect tool from P3.
+  inspect tool from P4.
 - **Agent versioning:** bump `facts-manager.agent.md`, `agent-tuner.agent.md`, and
   the default agent's knowledge-pipeline section, and record the change in both
   agent-tuning logs per the repo rules.
@@ -792,7 +818,7 @@ These hold across all phases and are non-negotiable (carried from the series +
    `facts` rows.
 5. **Default path is sacred.** No change selects HorizonDB or a graph implicitly;
    vanilla Postgres deployments keep working with `PgFactStore` and **no new
-   extensions**. The P0 crawl-queue migration adds one nullable column + a trigger
+   extensions**. The P1 crawl-queue migration adds one nullable column + a trigger
    in vanilla PG (no extension) and is inert unless a graph harvester runs.
 6. **Stored procs + numbered migrations only.** No new inline SQL; every
    migration ships a companion `NNNN_diff.md`.
@@ -806,23 +832,27 @@ These hold across all phases and are non-negotiable (carried from the series +
 ## 4. Sequencing & dependencies
 
 ```
-P0 ──▶ P1 ──▶ P2 ──▶ P3 ──▶ P4 ──▶ P7 (optional: knowledge-pipeline enhancement)
+P0 (incubator provider split — DONE) ──▶ hoisted by P2
+P1 ──▶ P2 ──▶ P3 ──▶ P4 ──▶ P5 ──▶ P8 (optional: knowledge-pipeline enhancement)
  │             │
- └─────────────┴────────────────▶ P5 (tests track each phase)  ──▶ P6 (docs)
+ └─────────────┴────────────────▶ P6 (tests track each phase)  ──▶ P7 (docs)
 ```
 
-- P0 is a safe standalone PR (contract + base-API widening); it can merge before
+- P0 (incubator provider split) is **done** — it gates the package move (P2), not
+  the SDK contract (P1).
+- P1 is a safe standalone PR (contract + base-API widening); it can merge before
   the package exists.
-- P1 depends on P0 (imports the hoisted contract).
-- P2 depends on P1 (constructs the provider) and carries the `ps_duroxide`
+- P2 depends on P0 (hoists the already-split providers) and P1 (imports the
+  hoisted contract).
+- P3 depends on P2 (constructs the provider) and carries the `ps_duroxide`
   rename.
-- P3 depends on P2 (needs a live capability-advertising provider).
-- P4 depends on P2 (embedder lives in the provider) and makes P3's semantic
+- P4 depends on P3 (needs a live capability-advertising provider).
+- P5 depends on P3 (embedder lives in the provider) and makes P4's semantic
   search meaningful.
-- P7 (optional) depends on P3 + P4 — the knowledge-pipeline enhancement only has
+- P8 (optional) depends on P4 + P5 — the knowledge-pipeline enhancement only has
   teeth once reader tools exist and facts are actually embedded (§1.6).
-- A **thin vertical slice** (P0–P2 + the parity slice of P5) de-risks the seam
-  before investing in P3–P4. Recommended first PR boundary.
+- A **thin vertical slice** (P1–P3 + the parity slice of P6) de-risks the seam
+  before investing in P4–P5. Recommended first PR boundary.
 
 ---
 
@@ -834,7 +864,7 @@ P0 ──▶ P1 ──▶ P2 ──▶ P3 ──▶ P4 ──▶ P7 (optional: k
 | `last_crawled_at` migration touches the default facts schema | Additive nullable column + trigger in vanilla PG (no extension); inert unless a harvester runs; idempotent migration + diff file | Column is nullable and unused on base deployments; drop in a down-migration if ever needed |
 | Graph store misconfigured or unreachable | Graph is opt-in and isolated — unset `graphDatabaseUrl` → no graph tools; a failed graph init disables graph tools without affecting facts | Unset `graphDatabaseUrl` → facts run exactly as before |
 | `ps_duroxide` rename disrupts orchestration | Online single-transaction advisory-locked `ALTER SCHEMA` with recreation guard; pre-verified 9/9 on live HorizonDB | Forward migration — gate on the verification script; keep old workers failing loud (never recreate old store) |
-| Type cycle between SDK and provider package | Type-only imports across the boundary; provider runtime dep stays `pg` | Revert P1 move; P0 contract stands alone |
+| Type cycle between SDK and provider package | Type-only imports across the boundary; provider runtime dep stays `pg` | Revert P2 move; P1 contract stands alone |
 | Tool-name collision with SDK built-ins | `facts_*`/`graph_*` prefixes + run the collision regression every SDK bump | Rename offending tool to `ps_<name>` per contributor rule |
 | Embedder API key at rest | Durable var, env-sourced, never logged; flagged incubation TODO | Don't configure embedder → feature dark |
 | In-flight orchestration replay after schema/tool changes | Follow duroxide orchestration-versioning skill; reset DB on orchestration changes per deploy convention | Standard duroxide version-freeze + DB reset |
@@ -866,7 +896,7 @@ P0 ──▶ P1 ──▶ P2 ──▶ P3 ──▶ P4 ──▶ P7 (optional: k
    code consume the injected `GraphStore` later — the injected interface makes
    that possible without re-plumbing.
 3. **D3 (crawl bridge):** resolved to *put the crawl queue on the base
-   `FactStore`* via an additive vanilla-PG migration (§1.1, P0), so **base-facts +
+   `FactStore`* via an additive vanilla-PG migration (§1.1, P1), so **base-facts +
    graph** harvests incrementally. Alternative: leave it on the enhanced store —
    simpler (no base-schema change) but base + graph would then full-scan to
    harvest. Override if the base-schema migration is unwanted.
@@ -874,10 +904,10 @@ P0 ──▶ P1 ──▶ P2 ──▶ P3 ──▶ P4 ──▶ P7 (optional: k
    `packages/horizon-store` as `@pilotswarm/horizon-store`, pulled out of
    `incubator/`. It is named `horizon-store` (not `horizon-facts`) because it ships
    **both** the `HorizonDBFactStore` and `HorizonDBGraphStore` providers. The
-   directory move itself is the P1 deliverable; the class split + renames land
-   first (and can land in the incubator before the move).
-5. **First PR boundary:** full P0–P6 vs. the recommended thin slice (P0–P2 +
-   parity tests) first, then layer P3–P6.
+   class split + renames are **P0 — done in the incubator** (validated 105/105 on
+   live HorizonDB); the directory move itself is the **P2** deliverable.
+5. **First PR boundary:** full P1–P7 vs. the recommended thin slice (P1–P3 +
+   parity tests) first, then layer P4–P7.
 
 ---
 
