@@ -615,3 +615,168 @@ test("scaffolder VPN=no path emits no VPN reminder block (regression guard)", ()
     cleanup();
   }
 });
+
+// ─── Phase 3 review fixes: yes/true normalisation drift ──────────────────
+//
+// Regression guard for the BLOCKING finding: --vpn-enabled accepts
+// y|yes|true (and JS boolean true from programmatic callers), but
+// deriveTargets() previously only honoured literal "y" / boolean true,
+// so `--vpn-enabled yes` and `--vpn-enabled true` silently scaffolded
+// VPN_GATEWAY_ENABLED=false with no reminder. main() and deriveTargets()
+// must agree, via normaliseYesNo(), on every yes/no input.
+
+for (const truthy of ["yes", "true"]) {
+  test(`scaffolder --vpn-enabled ${truthy} enables VPN and emits the reminder block`, () => {
+    cleanup();
+    try {
+      const r = runScript([
+        ...FULL_ARGS(),
+        "--edge-mode", "afd",
+        "--tls-source", "akv",
+        "--vpn-enabled", truthy,
+      ]);
+      assert.equal(r.status, 0, r.stderr || r.stdout);
+      const content = readFileSync(TEST_FILE, "utf8");
+      assert.match(content, /^VPN_GATEWAY_ENABLED=true$/m,
+        `--vpn-enabled ${truthy} must scaffold VPN_GATEWAY_ENABLED=true`);
+      const out = `${r.stdout}\n${r.stderr}`;
+      assert.match(out, /VPN Gateway P2S — required out-of-band setup/,
+        `--vpn-enabled ${truthy} must emit the post-scaffold reminder block`);
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+test("deriveTargets honours boolean vpnEnabled=true (programmatic callers)", () => {
+  const t = deriveTargets({
+    name: "foo",
+    location: "westus3",
+    regionShort: "wus3",
+    vpnEnabled: true,
+    vpnClientAddressPool: "172.16.222.0/24",
+  });
+  assert.equal(t.VPN_GATEWAY_ENABLED, "true");
+  assert.equal(t.VPN_CLIENT_ADDRESS_POOL, "172.16.222.0/24");
+});
+
+test("deriveTargets honours string 'yes' / 'true' for vpnEnabled (CLI normalisation)", () => {
+  for (const v of ["yes", "true", "YES"]) {
+    const t = deriveTargets({
+      name: "foo",
+      location: "westus3",
+      regionShort: "wus3",
+      vpnEnabled: v,
+    });
+    assert.equal(t.VPN_GATEWAY_ENABLED, "true",
+      `vpnEnabled='${v}' must yield VPN_GATEWAY_ENABLED=true`);
+  }
+});
+
+test("deriveTargets honours boolean foundryEnabled=true and string 'yes' (audit fix)", () => {
+  // Sister-key normalisation audit: foundryEnabled exhibited the same
+  // drift as vpnEnabled. Both now route through normaliseYesNo().
+  for (const v of [true, "yes", "true", "y", "YES"]) {
+    const t = deriveTargets({
+      name: "foo",
+      location: "westus3",
+      regionShort: "wus3",
+      foundryEnabled: v,
+    });
+    assert.equal(t.FOUNDRY_ENABLED, "true",
+      `foundryEnabled='${v}' must yield FOUNDRY_ENABLED=true`);
+    assert.equal(t.FOUNDRY_DEPLOYMENTS_FILE, "deploy/envs/local/foo/foundry-deployments.json");
+  }
+});
+
+// ─── Phase 3 review fixes: reminder block VPN client profile download ────
+
+test("VPN reminder block includes Azure portal download path for VPN client profile", () => {
+  cleanup();
+  try {
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "afd",
+      "--tls-source", "akv",
+      "--vpn-enabled", "y",
+    ]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const out = `${r.stdout}\n${r.stderr}`;
+    // Portal navigation path: Resource group → <gateway> → Point-to-site → Download.
+    assert.match(out, /VPN client profile/i);
+    assert.match(out, /Resource group/);
+    assert.match(out, /Point-to-site configuration/);
+    assert.match(out, /Download VPN client/);
+    // CLI alternative is documented for scriptability.
+    assert.match(out, /az network vnet-gateway vpn-client generate-url/);
+  } finally {
+    cleanup();
+  }
+});
+
+// ─── Phase 3 review fixes: INPUTS prompt-order placement ─────────────────
+//
+// vpnEnabled / vpnClientAddressPool must come immediately after tlsSource
+// so the [vpn-incompatible-combo] gate fires before any secret prompts.
+// Previously they sat at the end of INPUTS, which let the operator type
+// secrets only to be refused after.
+
+test("INPUTS places vpnEnabled / vpnClientAddressPool immediately after tlsSource", () => {
+  const order = INPUTS.map((i) => i.argKey);
+  const tlsIdx = order.indexOf("tlsSource");
+  const vpnIdx = order.indexOf("vpnEnabled");
+  const poolIdx = order.indexOf("vpnClientAddressPool");
+  assert.ok(tlsIdx >= 0, "tlsSource must exist in INPUTS");
+  assert.equal(vpnIdx, tlsIdx + 1,
+    "vpnEnabled must immediately follow tlsSource so the combo gate fires before secrets");
+  assert.equal(poolIdx, tlsIdx + 2,
+    "vpnClientAddressPool must immediately follow vpnEnabled");
+  // And both must come BEFORE foundryEnabled / host / acmeEmail (which
+  // are downstream of the early gate).
+  const downstreamKeys = ["host", "privateDnsZone", "portalHostname", "acmeEmail", "foundryEnabled"];
+  for (const k of downstreamKeys) {
+    const idx = order.indexOf(k);
+    if (idx >= 0) {
+      assert.ok(idx > poolIdx, `${k} must come after vpnClientAddressPool, got ${idx} <= ${poolIdx}`);
+    }
+  }
+});
+
+// ─── Phase 3 review fixes: help/error wording — akv-only ─────────────────
+
+test("--vpn-enabled help text does not advertise akv-selfsigned as compatible", () => {
+  const vpn = INPUTS.find((i) => i.argKey === "vpnEnabled");
+  assert.ok(vpn, "vpnEnabled INPUT must exist");
+  const helpText = Array.isArray(vpn.help) ? vpn.help.join(" ") : String(vpn.help ?? "");
+  assert.doesNotMatch(helpText, /akv-selfsigned/,
+    "spec mandates TLS_SOURCE=akv only; akv-selfsigned must not appear in VPN help text");
+  const yDesc = vpn.choiceDescriptions?.y ?? "";
+  assert.doesNotMatch(yDesc, /akv\*/,
+    "menu choice description must not use akv* (which suggested akv|akv-selfsigned)");
+  assert.doesNotMatch(yDesc, /akv-selfsigned/);
+});
+
+test("[vpn-incompatible-combo] error wording does not allow akv-selfsigned", () => {
+  cleanup();
+  try {
+    // akv-selfsigned forces edge-mode=private (per unsupportedReason),
+    // so we exercise the akv-selfsigned-incompatible path explicitly.
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "private",
+      "--host", "portal",
+      "--private-dns-zone", "pilotswarm.internal",
+      "--tls-source", "akv-selfsigned",
+      "--vpn-enabled", "y",
+    ]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /\[vpn-incompatible-combo\]/);
+    // Must NOT advertise akv-selfsigned as a way to satisfy the gate.
+    assert.doesNotMatch(r.stderr, /akv-selfsigned\)/,
+      "error message must not say '(or akv-selfsigned)' — spec mandates akv only");
+    assert.doesNotMatch(r.stderr, /'akv' or 'akv-selfsigned'/,
+      "error message must not list akv-selfsigned as an acceptable TLS_SOURCE for VPN");
+  } finally {
+    cleanup();
+  }
+});

@@ -143,15 +143,15 @@ function assertVpnGatewayCombo(edgeMode, tlsSource) {
       "EDGE_MODE must be 'afd' (got '" + (edgeMode ?? "") + "')",
     );
   }
-  if (ts !== "akv" && ts !== "akv-selfsigned") {
+  if (ts !== "akv") {
     reasons.push(
-      "TLS_SOURCE must be 'akv' or 'akv-selfsigned' (got '" + (tlsSource ?? "") + "')",
+      "TLS_SOURCE must be 'akv' (got '" + (tlsSource ?? "") + "')",
     );
   }
   if (reasons.length === 0) return;
   throw new Error(
-    "[vpn-incompatible-combo] VPN gateway requires EDGE_MODE=afd + TLS_SOURCE=akv " +
-      "(or akv-selfsigned). " + reasons.join("; ") + ". " +
+    "[vpn-incompatible-combo] VPN gateway requires EDGE_MODE=afd + TLS_SOURCE=akv. " +
+      reasons.join("; ") + ". " +
       "Re-run scaffolder with --edge-mode afd --tls-source akv, or omit " +
       "--vpn-enabled (defaults to no). See deploy/docs/vpn-p2s.md.",
   );
@@ -391,6 +391,48 @@ export const INPUTS = [
       "akv-selfsigned": "AKV `Self` issuer; bicep auto-creates a self-signed cert (OSS private demo)",
     }),
   },
+  // VPN gateway prompts are placed immediately after tlsSource so the
+  // [vpn-incompatible-combo] gate fires BEFORE any secret prompts —
+  // operators don't waste time entering secrets only to be refused. The
+  // cross-field combo check runs in gatherInputs() right after the
+  // vpnEnabled answer is captured (see Phase 3 review SHOULD-FIX 2).
+  // main() repeats the same check as defense-in-depth for fully
+  // non-interactive paths where this loop is bypassed.
+  {
+    argKey: "vpnEnabled",
+    flag: "--vpn-enabled",
+    metavar: "<y|n>",
+    help: [
+      "Provision an Azure VPN Gateway P2S (Microsoft Entra ID auth, OpenVPN)",
+      "as an additive ingress alongside AFD. Requires --edge-mode afd and",
+      "--tls-source akv. Adds ~$140/mo and 45+ min to the first deploy.",
+      "Default no.",
+    ],
+    cliChoices: ["y", "n", "yes", "no", "true", "false"],
+    nonInteractiveDefault: () => "n",
+    type: "menu",
+    prompt: "Enable Azure VPN Gateway P2S (additive VPN ingress)?",
+    default: "n",
+    choices: ["n", "y"],
+    choiceDescriptions: {
+      n: "No VPN gateway (default)",
+      y: "Provision VPN Gateway P2S (~$140/mo, 45+ min first deploy; requires EDGE_MODE=afd + TLS_SOURCE=akv)",
+    },
+    transform: (v) => normaliseYesNo(v),
+  },
+  {
+    argKey: "vpnClientAddressPool",
+    flag: "--vpn-client-address-pool",
+    metavar: "<cidr>",
+    help: [
+      "VPN client address pool (IPv4 CIDR). Required when --vpn-enabled y.",
+      "MUST NOT overlap the stamp VNet CIDR (default 10.20.0.0/16).",
+    ],
+    prompt: "VPN client address pool (IPv4 CIDR; must not overlap VNet 10.20.0.0/16)",
+    default: "172.16.200.0/24",
+    promptIf: (ctx) => normaliseYesNo(ctx.vpnEnabled) === "y",
+    validate: (v) => validateVpnClientAddressPool(v, null),
+  },
   {
     argKey: "host",
     flag: "--host",
@@ -465,45 +507,6 @@ export const INPUTS = [
       y: "Provision Foundry account + write azure-oai-key into KV",
     },
     transform: (v) => normaliseYesNo(v),
-  },
-  {
-    argKey: "vpnEnabled",
-    flag: "--vpn-enabled",
-    metavar: "<y|n>",
-    help: [
-      "Provision an Azure VPN Gateway P2S (Microsoft Entra ID auth, OpenVPN)",
-      "as an additive ingress alongside AFD. Requires --edge-mode afd and",
-      "--tls-source akv (or akv-selfsigned). Adds ~$140/mo and 45+ min to",
-      "the first deploy. Default no.",
-    ],
-    cliChoices: ["y", "n", "yes", "no", "true", "false"],
-    nonInteractiveDefault: () => "n",
-    type: "menu",
-    prompt: "Enable Azure VPN Gateway P2S (additive VPN ingress)?",
-    default: "n",
-    choices: ["n", "y"],
-    choiceDescriptions: {
-      n: "No VPN gateway (default)",
-      y: "Provision VPN Gateway P2S (~$140/mo, 45+ min first deploy; requires EDGE_MODE=afd + TLS_SOURCE=akv*)",
-    },
-    transform: (v) => normaliseYesNo(v),
-    // promptIf is intentionally unconditional — we want every operator to
-    // see the prompt with a clear default of `n`. The combo gate runs
-    // separately in main() after gatherInputs so the named error fires
-    // identically on both interactive and non-interactive paths.
-  },
-  {
-    argKey: "vpnClientAddressPool",
-    flag: "--vpn-client-address-pool",
-    metavar: "<cidr>",
-    help: [
-      "VPN client address pool (IPv4 CIDR). Required when --vpn-enabled y.",
-      "MUST NOT overlap the stamp VNet CIDR (default 10.20.0.0/16).",
-    ],
-    prompt: "VPN client address pool (IPv4 CIDR; must not overlap VNet 10.20.0.0/16)",
-    default: "172.16.200.0/24",
-    promptIf: (ctx) => normaliseYesNo(ctx.vpnEnabled) === "y",
-    validate: (v) => validateVpnClientAddressPool(v, null),
   },
 ];
 
@@ -605,14 +608,19 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
   if (!derivedPortalHostname && resolvedEdgeMode === "private" && host && privateDnsZone) {
     derivedPortalHostname = `${host}.${privateDnsZone}`;
   }
-  const foundryOn = foundryEnabled === "y" || foundryEnabled === true;
+  // Normalise yes/no inputs the same way main() does (normaliseYesNo).
+  // The CLI accepts y|n|yes|no|true|false (and JS boolean true from
+  // programmatic callers), so a plain `=== "y"` check would silently
+  // disable the feature on `--foundry-enabled yes` / `--vpn-enabled true`
+  // and friends. Boolean `true` is normalised via String(v).
+  const foundryOn = normaliseYesNo(foundryEnabled) === "y";
   // VPN_GATEWAY_SKU and VPN_AAD_AUDIENCE flow through from template.env
   // defaults (VpnGw1 and the Microsoft-registered Azure VPN Client app id
   // c632b3df-... respectively); we don't prompt for them and don't
   // override here. When VPN is disabled the template's
   // VPN_GATEWAY_ENABLED=false default flows through unchanged — we still
   // emit it explicitly to keep the rendered .env deterministic.
-  const vpnOn = vpnEnabled === "y" || vpnEnabled === true;
+  const vpnOn = normaliseYesNo(vpnEnabled) === "y";
   return {
     SUBSCRIPTION_ID: subscription ?? "",
     LOCATION: location,
@@ -816,12 +824,34 @@ async function gatherInputs(args, existingSecrets, existingPortalConfig) {
     for (const i of INPUTS) {
       if (args[i.argKey] != null) {
         ctx[i.argKey] = args[i.argKey];
-        continue;
+      } else {
+        // Custom imperative override wins; otherwise drive the declarative runner.
+        ctx[i.argKey] = i.interactive
+          ? await i.interactive(rl, ctx)
+          : await runDeclarativePrompt(rl, ctx, i);
       }
-      // Custom imperative override wins; otherwise drive the declarative runner.
-      ctx[i.argKey] = i.interactive
-        ? await i.interactive(rl, ctx)
-        : await runDeclarativePrompt(rl, ctx, i);
+
+      // Early VPN combo gate — fires immediately after the vpnEnabled
+      // value is resolved (whether from --vpn-enabled flag or from the
+      // interactive prompt) so the operator sees the
+      // [vpn-incompatible-combo] error BEFORE being asked for
+      // vpnClientAddressPool, secrets, or portal config. main() repeats
+      // this check (and the pool-overlap check) for fully
+      // non-interactive invocations where this loop is bypassed
+      // entirely. See Phase 3 review SHOULD-FIX 2.
+      if (i.argKey === "vpnEnabled" && normaliseYesNo(ctx.vpnEnabled) === "y") {
+        assertVpnGatewayCombo(ctx.edgeMode, ctx.tlsSource);
+      }
+      // Pool-overlap re-check immediately after the pool input is
+      // resolved. The declarative `validate` hook already loops on bad
+      // input in the interactive path; this catches the case where
+      // --vpn-client-address-pool was supplied via flag (runDeclarativePrompt
+      // is skipped when args[argKey] != null).
+      if (i.argKey === "vpnClientAddressPool" && normaliseYesNo(ctx.vpnEnabled) === "y") {
+        const pool = ctx.vpnClientAddressPool || "172.16.200.0/24";
+        const r = validateVpnClientAddressPool(pool, null);
+        if (r !== true) throw new Error("[vpn-pool-overlap] " + r);
+      }
     }
 
     // Defensive cross-field check — covers the case where the user passed
@@ -1107,6 +1137,15 @@ async function main() {
     console.log("");
     console.log("💰  Cost:                    ~$140/month (VpnGw1 SKU + Public IP + gateway hours)");
     console.log("⏱  First-deploy time:        45+ minutes (VPN gateway provisioning is the long pole)");
+    console.log("");
+    console.log("⬇  VPN client profile (after first deploy completes):");
+    console.log(`     • Azure portal:        Resource group → ${targets.RESOURCE_GROUP}`);
+    console.log("                             → <vpn-gateway-name> → Point-to-site configuration");
+    console.log("                             → Download VPN client");
+    console.log(`     • Or via az CLI:       az network vnet-gateway vpn-client generate-url \\`);
+    console.log(`                               --resource-group ${targets.RESOURCE_GROUP} \\`);
+    console.log("                               --name <vpn-gateway-name>");
+    console.log("                             Then import the .zip into the Azure VPN Client app.");
     console.log("");
     console.log("📖  Full guidance:           docs/deploying-to-aks.md → 'Optional: VPN Gateway P2S' section");
     console.log("                             (also: pilotswarm-new-env-deploy skill VPN matrix entry).");
