@@ -356,9 +356,15 @@ OpenVPN, Microsoft Entra ID auth) that terminates at the same AppGw
 private listener as the AFD path, with the same AKV cert — a "trusted-
 bypass" lane for the same stamp.
 
-- **Constraints**: `EDGE_MODE=afd` and `TLS_SOURCE=akv` are required.
-  `SSL_CERT_DOMAIN_SUFFIX` must be set (the managed Private DNS zone uses
-  it). `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet (default
+- **Constraints**: `EDGE_MODE=afd` is required (code: `vpn-requires-afd`).
+  `validateVpnGatewayCombo()` accepts any AKV-family `TLS_SOURCE` (`akv`
+  or `akv-selfsigned`; code: `vpn-requires-akv`); however,
+  `akv-selfsigned` is also rejected on AFD stamps end-to-end by
+  `deploy.mjs` `UNSUPPORTED_COMBOS`, so the only effective combo for the
+  trusted-bypass is `TLS_SOURCE=akv`. `letsencrypt` is rejected because
+  ACME HTTP-01 cannot reach a VPN-only client.
+  `SSL_CERT_DOMAIN_SUFFIX` must be set (the managed Private DNS zone
+  uses it). `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet (default
   `10.20.0.0/16`). VPN uses the existing stamp `AZURE_TENANT_ID` — same
   Entra tenant as the rest of the deploy.
 - **Cost / time**: ~$140/month for `VpnGw1` (PIP + gateway hours).

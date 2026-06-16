@@ -35,8 +35,10 @@ containers. Public entry points:
 
 ### Topology Matrix
 
-The IaC path supports a `(EDGE_MODE × TLS_SOURCE)` matrix. Four
-combinations are supported; two are blocked:
+The IaC path supports an `(EDGE_MODE × TLS_SOURCE)` matrix plus the
+optional `VPN_GATEWAY_ENABLED` axis. Five combinations are supported;
+the rest are blocked at preflight (see [Unsupported Combinations](#unsupported-combinations)
+and the named diagnostic codes in [Optional: VPN Gateway P2S](#optional-vpn-gateway-p2s-hybrid-afd--vpn)):
 
 | `EDGE_MODE` | `TLS_SOURCE`     | Edge ingress                                  | Cert source                                            | Notes                                          |
 |-------------|------------------|-----------------------------------------------|--------------------------------------------------------|------------------------------------------------|
@@ -207,12 +209,17 @@ below).
 
 #### Required preconditions
 
-- `EDGE_MODE=afd` + `TLS_SOURCE=akv` — enforced by
-  `validateVpnGatewayCombo()` in `deploy/scripts/lib/overlay-contracts.mjs`
-  (codes `vpn-requires-afd`, `vpn-requires-akv`). `letsencrypt` is
-  rejected because ACME HTTP-01 cannot reach a VPN-only client; `private`
-  mode is rejected because the auto-seeded WAF guards assume AFD as the
-  public ingress.
+- `EDGE_MODE=afd` + `TLS_SOURCE=akv` — `validateVpnGatewayCombo()` in
+  `deploy/scripts/lib/overlay-contracts.mjs` requires AFD (code:
+  `vpn-requires-afd`) and an AKV-family `TLS_SOURCE` — `akv` or
+  `akv-selfsigned` (code: `vpn-requires-akv`); `letsencrypt` is
+  rejected because ACME HTTP-01 cannot reach a VPN-only client. The
+  `akv-selfsigned` variant is **also** rejected end-to-end on AFD stamps
+  by `UNSUPPORTED_COMBOS` in `deploy/scripts/deploy.mjs` (AFD rejects
+  self-signed origin certs at TLS validation), so the only effective
+  combo for the AFD+VPN trusted-bypass is `EDGE_MODE=afd` +
+  `TLS_SOURCE=akv`. `private` mode is rejected because the auto-seeded
+  WAF guards assume AFD as the public ingress.
 - `SSL_CERT_DOMAIN_SUFFIX` must be set — the managed Private DNS zone
   uses it (code: `vpn-requires-domain-suffix`).
 - `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet `BASE_VNET_CIDR`
