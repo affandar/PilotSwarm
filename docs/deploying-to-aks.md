@@ -222,7 +222,7 @@ below).
   WAF guards assume AFD as the public ingress.
 - `SSL_CERT_DOMAIN_SUFFIX` must be set — the managed Private DNS zone
   uses it (code: `vpn-requires-domain-suffix`).
-- `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet `BASE_VNET_CIDR`
+- `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet `VNET_CIDR`
   (default `10.20.0.0/16`); validated against both endpoints (code:
   `vpn-pool-overlap`). Default pool is `172.16.200.0/24` (~250 concurrent
   clients).

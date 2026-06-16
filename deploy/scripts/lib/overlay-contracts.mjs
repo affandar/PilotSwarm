@@ -159,7 +159,7 @@ const VPN_COMBO_ERROR_DETAILS = Object.freeze({
       "AppGw is the private front-end).",
     hint:
       "Set EDGE_MODE=afd in deploy/envs/local/<env>/.env, or disable the VPN " +
-      "gateway by setting VPN_GATEWAY_ENABLED=false. See deploy/docs/vpn-p2s.md.",
+      "gateway by setting VPN_GATEWAY_ENABLED=false. See docs/deploying-to-aks.md.",
   }),
   "vpn-requires-akv": Object.freeze({
     message:
@@ -168,7 +168,7 @@ const VPN_COMBO_ERROR_DETAILS = Object.freeze({
     hint:
       "Set TLS_SOURCE=akv (or akv-selfsigned) in deploy/envs/local/<env>/.env, " +
       "or disable the VPN gateway by setting VPN_GATEWAY_ENABLED=false. " +
-      "See deploy/docs/vpn-p2s.md.",
+      "See docs/deploying-to-aks.md.",
   }),
   "vpn-requires-domain-suffix": Object.freeze({
     message:
@@ -176,7 +176,7 @@ const VPN_COMBO_ERROR_DETAILS = Object.freeze({
       "Private DNS zone is named from this suffix).",
     hint:
       "Set SSL_CERT_DOMAIN_SUFFIX in deploy/envs/local/<env>/.env. " +
-      "See deploy/docs/vpn-p2s.md.",
+      "See docs/deploying-to-aks.md.",
   }),
   "vpn-pool-overlap": Object.freeze({
     message:
@@ -186,7 +186,7 @@ const VPN_COMBO_ERROR_DETAILS = Object.freeze({
     hint:
       "Pick a non-overlapping IPv4 CIDR for VPN_CLIENT_ADDRESS_POOL in " +
       "deploy/envs/local/<env>/.env (the default stamp VNet is 10.20.0.0/16; " +
-      "set VNET_CIDR if you've customised it). See deploy/docs/vpn-p2s.md.",
+      "set VNET_CIDR if you've customised it). See docs/deploying-to-aks.md.",
   }),
   "vpn-requires-tenant-id": Object.freeze({
     message:
@@ -195,7 +195,7 @@ const VPN_COMBO_ERROR_DETAILS = Object.freeze({
       "through to bicep's empty default and produce a confusing late failure).",
     hint:
       "Set AZURE_TENANT_ID in deploy/envs/local/<env>/.env (it ships populated " +
-      "in template.env — restore it if it was blanked). See deploy/docs/vpn-p2s.md.",
+      "in template.env — restore it if it was blanked). See docs/deploying-to-aks.md.",
   }),
 });
 
@@ -208,7 +208,7 @@ function describeVpnComboError(code) {
     return {
       code,
       message: `VPN gateway combo error: ${code}.`,
-      hint: "See deploy/docs/vpn-p2s.md.",
+      hint: "See docs/deploying-to-aks.md.",
     };
   }
   return { code, message: detail.message, hint: detail.hint };

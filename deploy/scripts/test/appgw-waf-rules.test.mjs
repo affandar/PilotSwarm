@@ -284,3 +284,44 @@ test("aliasFor: frontDoorId → FRONT_DOOR_ID (auto-derived, no explicit OUTPUT_
   // … so it flows via the default camelCase → UPPER_SNAKE rule.
   assert.equal(aliasFor("frontDoorId"), "FRONT_DOOR_ID");
 });
+
+// ===========================================================================
+// deploy-bicep.mjs wiring guard (Final-review S-2 follow-up)
+//
+// resolveAppgwWafCustomRulesFile() validates that APPGW_WAF_CUSTOM_RULES_FILE
+// parses as JSON and is an array — but it only matters if the deploy path
+// actually invokes it before shelling out to `az`. The deploy code does not
+// expose a hook we can unit-test in isolation (deployBicep() shells out to
+// `az` and touches the filesystem); guard the wiring with a source scan
+// instead, matching the bicep ↔ JS shape parity test above.
+// ===========================================================================
+test("deploy-bicep.mjs invokes resolveAppgwWafCustomRulesFile in the APPGW_WAF_CUSTOM_RULES_FILE branch", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { dirname } = await import("node:path");
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  const src = readFileSync(
+    join(REPO_ROOT, "deploy", "scripts", "lib", "deploy-bicep.mjs"),
+    "utf8",
+  );
+  // (1) The helper is imported.
+  assert.match(
+    src,
+    /import\s*\{\s*resolveAppgwWafCustomRulesFile\s*\}\s*from\s*["']\.\/appgw-waf-rules\.mjs["']/,
+    "deploy-bicep.mjs must import resolveAppgwWafCustomRulesFile from ./appgw-waf-rules.mjs",
+  );
+  // (2) It is invoked inside the APPGW_WAF_CUSTOM_RULES_FILE branch — i.e.,
+  //     the helper call sits between the env-var guard and the
+  //     `--parameters appgwWafCustomRules=@...` line that hands the file to az.
+  const branchMatch = src.match(
+    /if\s*\(\s*env\.APPGW_WAF_CUSTOM_RULES_FILE\s*\)\s*\{([\s\S]*?)appgwWafCustomRules=@/,
+  );
+  assert.ok(
+    branchMatch,
+    "could not locate the APPGW_WAF_CUSTOM_RULES_FILE branch in deploy-bicep.mjs",
+  );
+  assert.ok(
+    /resolveAppgwWafCustomRulesFile\s*\(/.test(branchMatch[1]),
+    "APPGW_WAF_CUSTOM_RULES_FILE branch must call resolveAppgwWafCustomRulesFile before invoking az",
+  );
+});

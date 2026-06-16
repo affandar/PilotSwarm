@@ -21,6 +21,7 @@ import {
   saveMarker,
 } from "./deploy-marker.mjs";
 import { assertFoundryDeploymentsValid } from "./validate-foundry-deployments.mjs";
+import { resolveAppgwWafCustomRulesFile } from "./appgw-waf-rules.mjs";
 
 // Bicep main.bicep paths and params templates are derived by convention from
 // the module name: deploy/services/<Module>/bicep/{main.bicep,<Module>.params.template.json}.
@@ -237,6 +238,13 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
             `Either unset it or create the JSON array file (gitignored under deploy/envs/local/).`,
         );
       }
+      // Parse + structural validation BEFORE we shell out to `az`. Mirrors
+      // the AFD-side WAF_CUSTOM_RULES_FILE precedent (fail-closed, named
+      // error). The existsSync check above stays as the first gate so a
+      // missing-file diagnostic is distinct from a malformed-JSON one.
+      // Final-review S-2 follow-up — wires the validated helper into the
+      // deploy path (was previously dead code reachable only via tests).
+      resolveAppgwWafCustomRulesFile(raw);
       baseArgs.push("--parameters", `appgwWafCustomRules=@${abs}`);
       log("info", `[${moduleName}] applying AppGw WAF custom rules from ${abs}`);
     }
