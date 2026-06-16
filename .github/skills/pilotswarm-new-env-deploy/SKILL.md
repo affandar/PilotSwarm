@@ -34,6 +34,7 @@ updated in lockstep with the code, this skill is a procedural overlay:
 | T2 | Control AKS, ACR, Postgres Flex, Storage, Key Vault, UAMIs, Flux | Always |
 | T2 edge (afd) | AppGw v2 + WAF + Private Link Service + AGIC | `EDGE_MODE=afd` |
 | T2 edge (private) | AKS web-app-routing (NGINX) on ILB + Private DNS Zone | `EDGE_MODE=private` |
+| T2 ingress (vpn) | Azure VPN Gateway P2S (OpenVPN + Entra ID) + `GatewaySubnet` + managed Private DNS zone + auto-seeded AppGw WAF guard rules | `VPN_GATEWAY_ENABLED=true` (additive; requires `EDGE_MODE=afd` + `TLS_SOURCE=akv`) |
 | T3 | Ephemeral worker AKS + workload-SA UAMI + Flux + `worker-t3-manifests` blob container | Always |
 | Cross-cluster | T2 csi UAMI gets `AKS Cluster User Role` on T3 | For T2 worker → T3 kubeconfig minting |
 
@@ -330,17 +331,73 @@ after non-interactive runs too.
 
 ## Step 4 — Edge mode × TLS source selection
 
-| `EDGE_MODE` | `TLS_SOURCE` | Supported? | When |
-|---|---|---|---|
-| `afd` | `letsencrypt` | ✅ default | OSS-friendly public endpoint, ACME HTTP-01. |
-| `afd` | `akv` | ✅ | Enterprise-internal OneCertV2-PublicCA cert via AKV. |
-| `afd` | `akv-selfsigned` | ❌ | AppGw can't consume an AKV `Self` chain end-to-end. |
-| `private` | `akv` | ✅ | Enterprise-internal OneCertV2-PrivateCA via AKV. |
-| `private` | `akv-selfsigned` | ✅ | OSS-friendly private demo; AKV `Self`-issued cert. |
-| `private` | `letsencrypt` | ❌ | ACME HTTP-01 cannot reach a private/ILB endpoint. |
+| `EDGE_MODE` | `TLS_SOURCE` | `VPN_GATEWAY_ENABLED` | Supported? | When |
+|---|---|---|---|---|
+| `afd` | `letsencrypt` | `false` | ✅ default | OSS-friendly public endpoint, ACME HTTP-01. |
+| `afd` | `akv` | `false` | ✅ | Enterprise-internal OneCertV2-PublicCA cert via AKV. |
+| `afd` | `akv` | `true` | ✅ | Hybrid AFD + VPN P2S (trusted-bypass for off-CorpNet users). AKV-only — see "Optional: VPN Gateway P2S" below. |
+| `afd` | `akv-selfsigned` | any | ❌ | AppGw can't consume an AKV `Self` chain end-to-end. |
+| `afd` | `letsencrypt` | `true` | ❌ | VPN path requires an AKV cert; ACME HTTP-01 cannot reach a VPN-only client. Preflight error: `vpn-requires-akv`. |
+| `private` | `akv` | `false` | ✅ | Enterprise-internal OneCertV2-PrivateCA via AKV. |
+| `private` | `akv-selfsigned` | `false` | ✅ | OSS-friendly private demo; AKV `Self`-issued cert. |
+| `private` | `letsencrypt` | any | ❌ | ACME HTTP-01 cannot reach a private/ILB endpoint. |
+| `private` | any | `true` | ❌ | VPN path is additive to AFD only (its WAF guard rules assume AFD as the public ingress). Preflight error: `vpn-requires-afd`. |
 
 The orchestrator validates the combo against `UNSUPPORTED_COMBOS` in
-`deploy.mjs` before any Bicep runs.
+`deploy.mjs` and `validateVpnGatewayCombo()` in
+`deploy/scripts/lib/overlay-contracts.mjs` before any Bicep runs.
+
+### Optional: VPN Gateway P2S (hybrid AFD + VPN)
+
+Off-CorpNet employees with a valid Entra ID token can be blocked by the
+AFD WAF service-tag allow-lists (`CorpNetPublic` / `CorpNetSAW`). Enabling
+`VPN_GATEWAY_ENABLED=true` adds an Azure VPN Gateway (Point-to-Site,
+OpenVPN, Microsoft Entra ID auth) that terminates at the same AppGw
+private listener as the AFD path, with the same AKV cert — a "trusted-
+bypass" lane for the same stamp.
+
+- **Constraints**: `EDGE_MODE=afd` and `TLS_SOURCE=akv` are required.
+  `SSL_CERT_DOMAIN_SUFFIX` must be set (the managed Private DNS zone uses
+  it). `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet (default
+  `10.20.0.0/16`). VPN uses the existing stamp `AZURE_TENANT_ID` — same
+  Entra tenant as the rest of the deploy.
+- **Cost / time**: ~$140/month for `VpnGw1` (PIP + gateway hours).
+  First-deploy time is **45+ minutes** (gateway provisioning is the long
+  pole). Subsequent param changes are still measured in minutes.
+- **AAD audience**: defaults to `c632b3df-fb67-4d84-bdcf-b95ad541b5c8`
+  (current Microsoft-registered Azure VPN Client app). Set
+  `VPN_AAD_AUDIENCE=41b23e61-6c1e-4545-b367-cd054e0ed4b4` in `.env` only on
+  tenants that must interop with older Azure VPN client builds registered
+  against the legacy audience.
+- **Auto-seeded AppGw WAF guards**: when `VPN_GATEWAY_ENABLED=true` the
+  base-infra bicep prepends three custom rules at priorities 90/91/92 to
+  the AppGw WAF policy — `AllowAfd` (matches `X-Azure-FDID =
+  <frontDoorId>`), `AllowVpn` (matches `RemoteAddr ∈
+  VPN_CLIENT_ADDRESS_POOL`), and `BlockOther` (catch-all `Block`).
+  Operator rules loaded from `APPGW_WAF_CUSTOM_RULES_FILE` (mirrors the
+  AFD-side `WAF_CUSTOM_RULES_FILE`) MUST start at priority ≥ 100 — the
+  90–92 band is reserved.
+
+#### Setting up Conditional Access
+
+Required out-of-band step before first VPN connect (tenant admin only).
+Create one CA policy targeting the Azure VPN Client app
+`c632b3df-fb67-4d84-bdcf-b95ad541b5c8` (or the legacy
+`41b23e61-6c1e-4545-b367-cd054e0ed4b4` if you set the override above),
+assigned to a NAMED users group (do not target "all users"), with the
+grant control set to **require MFA**. Explicitly do **NOT** require device
+compliance — the VPN client cannot satisfy that grant and the connect
+attempt will fail with an opaque AAD error. The post-scaffold reminder
+block in `new-env.mjs` re-prints these requirements when `VPN_GATEWAY_ENABLED=true`.
+
+#### Distributing the VPN client profile
+
+After the first deploy completes, hand operators the OpenVPN client
+profile via either the Azure portal — `Resource group → <gateway-name> →
+Point-to-site configuration → Download VPN client` — or the CLI
+`az network vnet-gateway vpn-client generate-url --resource-group <rg>
+--name <gateway-name>`. Both paths emit a `.zip` that imports directly
+into the Azure VPN Client app (Windows / macOS / iOS / Android).
 
 ## Step 5 — Deploy
 

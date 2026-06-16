@@ -42,6 +42,7 @@ combinations are supported; two are blocked:
 |-------------|------------------|-----------------------------------------------|--------------------------------------------------------|------------------------------------------------|
 | `afd`       | `letsencrypt`    | AFD → AppGw (Private Link) + AGIC             | cert-manager + Let's Encrypt prod (HTTP-01)            | OSS default. Zero CA setup.                    |
 | `afd`       | `akv`            | AFD → AppGw (Private Link) + AGIC             | OneCertV2-PublicCA via AKV (registered automatically)  | enterprise default. BYO public CA.                    |
+| `afd` + VPN | `akv`            | AFD → AppGw (Private Link) **and** Azure VPN Gateway P2S → same AppGw private FE | OneCertV2-PublicCA via AKV (shared with AFD path) | Hybrid trusted-bypass; opt-in via `VPN_GATEWAY_ENABLED=true`. AKV-only. See [Optional: VPN Gateway P2S](#optional-vpn-gateway-p2s-hybrid-afd--vpn). |
 | `private`   | `akv`            | AKS web-app-routing addon (NGINX) + ILB       | OneCertV2-PrivateCA via AKV (registered automatically) | Enterprise / AME. No AFD, no AppGw, no AGIC.   |
 | `private`   | `akv-selfsigned` | AKS web-app-routing addon (NGINX) + ILB       | AKV `Self` issuer (auto-generated, in-place)           | No CA; private-VNet smoke tests.               |
 
@@ -168,6 +169,186 @@ zone is **not** publicly resolvable.
   with a public CA (e.g. OneCertV2-PublicCA).
 
 `new-env.mjs` and `deploy.mjs` both refuse these combos at preflight.
+
+### Optional: VPN Gateway P2S (hybrid AFD + VPN)
+
+The IaC path supports an optional, additive Azure VPN Gateway
+(Point-to-Site, OpenVPN protocol, Microsoft Entra ID authentication) that
+coexists with `EDGE_MODE=afd`. The VPN tunnel terminates inside the stamp
+VNet and reaches the **same AppGw private listener** as the AFD path, with
+the **same AKV cert** — so a CorpNet user (through AFD) and an off-CorpNet
+user (through VPN) both reach `https://<resourceName>.<SSL_CERT_DOMAIN_SUFFIX>`
+and observe an identical cert chain. This is the "trusted-bypass" pattern
+for off-CorpNet employees with valid Entra ID who would otherwise be
+blocked by the AFD WAF service-tag allow-lists (`CorpNetPublic` /
+`CorpNetSAW`). VPN is **not** a replacement for any existing edge mode.
+
+#### Architecture
+
+```
+                                  (CorpNet user)
+                                  ────────────►  AFD Premium
+                                                    │  (Private Link)
+                                                    ▼
+                                            AppGw v2 (private FE, WAF_v2)
+                                                    │  (single AKV cert)
+                                                    ▼
+                                                AKS portal pod
+                                                    ▲
+                                                    │
+                                  (off-CorpNet user)│
+                                  ────────────►  Azure VPN Gateway P2S
+                                  Entra ID + MFA   (GatewaySubnet, OpenVPN)
+```
+
+Both paths share one AppGw, one WAF policy, one cert. The AppGw WAF
+custom-rules pipeline disambiguates them at L7 (see "WAF guard rules"
+below).
+
+#### Required preconditions
+
+- `EDGE_MODE=afd` + `TLS_SOURCE=akv` — enforced by
+  `validateVpnGatewayCombo()` in `deploy/scripts/lib/overlay-contracts.mjs`
+  (codes `vpn-requires-afd`, `vpn-requires-akv`). `letsencrypt` is
+  rejected because ACME HTTP-01 cannot reach a VPN-only client; `private`
+  mode is rejected because the auto-seeded WAF guards assume AFD as the
+  public ingress.
+- `SSL_CERT_DOMAIN_SUFFIX` must be set — the managed Private DNS zone
+  uses it (code: `vpn-requires-domain-suffix`).
+- `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet `BASE_VNET_CIDR`
+  (default `10.20.0.0/16`); validated against both endpoints (code:
+  `vpn-pool-overlap`). Default pool is `172.16.200.0/24` (~250 concurrent
+  clients).
+- `AZURE_TENANT_ID` must be set — VPN runs in the **same Entra ID tenant**
+  as the rest of the stamp (code: `vpn-requires-tenant-id`).
+- Tenant admin access to author the Conditional Access policy below.
+
+#### Env vars
+
+| Var | Default | Notes |
+|---|---|---|
+| `VPN_GATEWAY_ENABLED` | `false` | Master switch. `true` provisions the gateway + GatewaySubnet + managed Private DNS zone and seeds the WAF guard rules. |
+| `VPN_GATEWAY_SKU` | `VpnGw1` | `VpnGw{1,2,3}` or `VpnGw{1,2,3}AZ`. Basic SKU is rejected (no OpenVPN / AAD support). |
+| `VPN_CLIENT_ADDRESS_POOL` | `172.16.200.0/24` | CIDR assigned to connected clients. MUST NOT overlap the VNet. |
+| `VPN_AAD_AUDIENCE` | `c632b3df-fb67-4d84-bdcf-b95ad541b5c8` | Microsoft-registered Azure VPN Client app. Set to `41b23e61-6c1e-4545-b367-cd054e0ed4b4` only on tenants that must interop with older Azure VPN client builds. |
+| `APPGW_WAF_CUSTOM_RULES_FILE` | unset | See [AppGw WAF custom rules](#appgw-waf-custom-rules-applies-to-any-afd-stamp) below — a general-purpose facility, not VPN-specific. |
+
+#### Conditional Access policy (tenant admin, required before first connect)
+
+Create one CA policy targeting the Azure VPN Client app:
+
+- **Target app**: `c632b3df-fb67-4d84-bdcf-b95ad541b5c8` (default), or
+  `41b23e61-6c1e-4545-b367-cd054e0ed4b4` if you set `VPN_AAD_AUDIENCE` to
+  the legacy override.
+- **Assignment**: a NAMED users group. Do not target "all users" — every
+  Entra principal in your tenant would otherwise inherit VPN reachability
+  to the AppGw private FE.
+- **Grant**: require **MFA**.
+- **Grant**: do **NOT** require device compliance — the OpenVPN client
+  cannot satisfy that grant and connect attempts will fail with an opaque
+  AAD error.
+
+The post-scaffold reminder block in `new-env.mjs` re-prints these
+requirements when `VPN_GATEWAY_ENABLED=true`. The full skill-side
+reference lives in `pilotswarm-new-env-deploy` (`Step 4 → Optional: VPN
+Gateway P2S`).
+
+#### Distributing the VPN client profile
+
+After the first deploy completes, hand operators the OpenVPN client
+profile via either path:
+
+- **Azure portal**: `Resource group → <gateway-name> → Point-to-site
+  configuration → Download VPN client`.
+- **CLI**: `az network vnet-gateway vpn-client generate-url
+  --resource-group <rg> --name <gateway-name>`.
+
+Both emit a `.zip` that imports directly into the Azure VPN Client app
+(Windows / macOS / iOS / Android). The profile embeds the AAD audience
+and the gateway public IP — re-issue it if you rotate `VPN_AAD_AUDIENCE`.
+
+#### WAF guard rules (auto-seeded at priorities 90 / 91 / 92)
+
+When `VPN_GATEWAY_ENABLED=true`, base-infra bicep
+(`deploy/services/base-infra/bicep/application-gateway.bicep`) prepends
+three custom rules to the AppGw WAF policy's `customRules.rules` array:
+
+| Priority | Name | Action | Match |
+|---|---|---|---|
+| 90 | `AllowAfd` | `Allow` | `RequestHeaders[X-Azure-FDID] == <frontDoorId>` (threaded from `global-infra`) |
+| 91 | `AllowVpn` | `Allow` | `RemoteAddr ∈ VPN_CLIENT_ADDRESS_POOL` (`IPMatch`) |
+| 92 | `BlockOther` | `Block` | `RemoteAddr ∈ 0.0.0.0/0` (catch-all) |
+
+Together: AFD-origin-authenticity check (90) + VPN-pool allow-list (91) +
+catch-all block (92). The catch-all is belt-and-braces against future
+NSG/route changes accidentally exposing the AppGw private FE outside
+both paths.
+
+The 90–92 priority band is **reserved**. Operator-supplied rules from
+`APPGW_WAF_CUSTOM_RULES_FILE` (next section) MUST start at priority ≥ 100;
+the bicep concats them after the auto-seeded set.
+
+When `VPN_GATEWAY_ENABLED=false`, no auto-seeded rules are emitted — a
+VPN-off stamp's AppGw WAF policy diff vs a no-VPN baseline is empty.
+
+#### AppGw WAF custom rules (applies to any AFD stamp)
+
+`APPGW_WAF_CUSTOM_RULES_FILE` is a **general-purpose** facility, parallel
+to the AFD-side `WAF_CUSTOM_RULES_FILE`, and works on any
+`EDGE_MODE=afd` stamp regardless of whether VPN is enabled. Point it at a
+JSON array file containing AppGw WAF custom rule objects; the orchestrator
+resolves the path (relative-to-repo-root or absolute), parses the JSON,
+and threads it into the bicep deploy as `appgwWafCustomRules`.
+
+```bash
+# Recommended location (gitignored under deploy/envs/local/<stamp>/):
+APPGW_WAF_CUSTOM_RULES_FILE=deploy/envs/local/<stamp>/appgw-waf-custom-rules.json
+```
+
+```jsonc
+// Example contents — operator priorities start at 100 to leave
+// 90–92 free for the auto-seeded VPN guards.
+[
+  {
+    "name": "BlockExploitUA",
+    "priority": 100,
+    "ruleType": "MatchRule",
+    "action": "Block",
+    "matchConditions": [
+      {
+        "matchVariables": [
+          { "variableName": "RequestHeaders", "selector": "User-Agent" }
+        ],
+        "operator": "Contains",
+        "matchValues": ["sqlmap", "nikto"]
+      }
+    ]
+  }
+]
+```
+
+The merge logic mirrors the bicep exactly in
+`deploy/scripts/lib/appgw-waf-rules.mjs` so test cases can assert merged
+rule shape without shelling out to `az`. Missing-file or non-JSON-array
+inputs fail loudly at preflight with a single named diagnostic.
+
+#### Cost and time
+
+- **Cost**: ~$140/month for `VpnGw1` (Public IP + gateway hours). Higher
+  SKUs (`VpnGw2` / `VpnGw3` / their AZ variants) scale linearly — see
+  Azure VPN Gateway pricing for current rates.
+- **First-deploy time**: **45+ minutes**. Gateway provisioning is the
+  long pole; the rest of the stamp finishes well before the gateway
+  reports `Succeeded`. Subsequent param-change deploys are minutes, not
+  45+.
+
+#### See also
+
+- `pilotswarm-new-env-deploy` skill — full step-by-step including the
+  `EDGE_MODE × TLS_SOURCE × VPN_GATEWAY_ENABLED` matrix, scaffolder
+  prompts, and the post-scaffold reminder.
+- `pilotswarm-aks-deploy` skill — legacy bash deploy path; surfaces VPN
+  cost / time as operator context but does not orchestrate VPN itself.
 
 ### Model Providers (LLM catalog)
 
