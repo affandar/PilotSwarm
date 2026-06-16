@@ -29,5 +29,8 @@ deploy/.tmp/
 .pr-*.diff
 .pr-*.txt
 
+# Horizon Harvester sample: generated graph export (regenerate with export-horizon-harvester-graph.sh)
+examples/horizon-harvester/graph.md
+
 # Claude Code local tooling (scheduled-task lock, machine-local settings)
 .claude/

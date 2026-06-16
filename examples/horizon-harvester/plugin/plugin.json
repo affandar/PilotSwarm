@@ -1,0 +1,20 @@
+{
+  "name": "horizon-harvester",
+  "description": "Horizon Harvester — ingests a knowledge source into durable facts and an open knowledge graph, then answers questions over it. Demonstrates PilotSwarm's optional EnhancedFactStore + GraphStore providers.",
+  "version": "1.0.0",
+  "tui": {
+    "title": "Horizon Harvester",
+    "splashFile": "./tui-splash.txt"
+  },
+  "portal": {
+    "branding": {
+      "title": "Horizon Harvester",
+      "pageTitle": "Horizon Harvester Portal",
+      "splashFile": "./tui-splash.txt"
+    },
+    "ui": {
+      "loadingMessage": "Preparing the knowledge workspace",
+      "loadingCopy": "Connecting the facts store, knowledge graph, and agent sessions..."
+    }
+  }
+}

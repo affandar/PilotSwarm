@@ -246,11 +246,37 @@ When you add or materially change a user-facing or builder-facing feature, updat
 
 - the canonical docs in `docs/` for the relevant SDK, CLI, plugin, or packaging behavior
 - the DevOps sample in `examples/devops-command-center/`
+- the Horizon Harvester sample in `examples/horizon-harvester/` (see its dedicated section below)
 - the builder templates in `templates/builder-agents/`
 - `.github/copilot-instructions.md` if the change affects contributor workflow or maintenance expectations
 - package names, install examples, and CI publish/release wiring if the npm surface changes
 
 Do not treat proposal docs as sufficient once behavior ships. If the product changed, the canonical docs, sample app, and builder templates should reflect it too.
+
+## Horizon Harvester Sample
+
+`examples/horizon-harvester/` is the maintained worked example for the optional
+EnhancedFactStore + knowledge-graph providers (`@pilotswarm/horizon-store`). Treat it as
+a product surface, not a throwaway demo — keep it current when harvester, facts, graph,
+or embedder behavior changes.
+
+It ships three repo-root entry-point scripts; all three must keep working:
+
+- `scripts/run-horizon-harvester-sample.sh` — harvest and/or ask (`HARVESTER_SCENARIO=full|harvest|ask`)
+- `scripts/export-horizon-harvester-graph.sh` — export the graph to a Markdown/Mermaid file (`examples/horizon-harvester/scripts/graph-to-mermaid.mjs`)
+- `scripts/clean-horizon-harvester-sample.sh` — clean up; `--facts` / `--drop` escalate to HorizonDB teardown (`examples/horizon-harvester/scripts/cleanup-local-db.js`)
+
+When you change harvester-relevant behavior, keep these in sync in the same change:
+
+- the sample agents `plugin/agents/source-harvester.agent.md` (`harvester: true`) and `plugin/agents/librarian.agent.md` (reader), bumping each agent's `version` per the `agent-versioning` skill
+- the three scripts above and the sample `README.md` (Run / Visualize / Cleanup sections)
+- the builder skill `templates/builder-agents/skills/pilotswarm-knowledge-harvester/SKILL.md` and `docs/harvester-deployment.md`, which teach the same patterns
+
+Load-bearing conventions to preserve:
+
+- **Namespaces are not interchangeable.** The harvester writes raw source captures under its own `corpus/*` namespace; `intake/*` is the system Facts Manager's curation queue for short task-agent observations. Never route harvester documents through `intake/*`.
+- **Embedder wiring.** `HORIZON_EMBED_*` (in repo-root `.env`) configures the durable in-DB embed loop; without it the `embedding` column stays NULL and `facts_similar` returns nothing. The embed input is `key + value::text` (horizon-store migration `0007`), so any value shape embeds — keep new value shapes embeddable rather than widening the `search_text` cherry-pick.
+- **The durable embed loop survives a schema drop.** Any teardown must cancel it first (the `--drop` path does); never leave a stale loop running against a dropped schema.
 
 ## Agent Prompt Tuning & Model Compatibility
 

@@ -127,8 +127,22 @@ docker run --rm --name pilotswarm-pg \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=pilotswarm \
   -p 5432:5432 \
-  postgres:16
+  postgres:17 -c max_connections=500
 ```
+
+> **`max_connections=500` is required, not optional.** `./scripts/run-tests.sh`
+> runs up to 8 suite forks in parallel (`maxWorkers = min(8, cores)`), and each
+> co-located worker opens a duroxide pool + CMS pool + facts pool. The
+> restart-heavy suites (chaos / reliability / multi-worker) transiently hold the
+> old and new worker instances at once, so the peak briefly approaches ~300+
+> connections. Postgres' default `max_connections=100` — and even 300 — is
+> exhausted under that load and the heavy suites fail with
+> `FATAL: sorry, too many clients already`, even though each suite passes in
+> isolation. The test runner also caps per-worker pool sizes (see
+> `packages/sdk/vitest.config.js`: `DUROXIDE_PG_POOL_MAX`,
+> `PILOTSWARM_CMS_PG_POOL_MAX`, `PILOTSWARM_FACTS_PG_POOL_MAX`) to keep the peak
+> bounded. If you must keep a lower server limit, reduce parallelism with
+> `PS_TEST_MAX_WORKERS=3 ./scripts/run-tests.sh` instead.
 
 Example env:
 

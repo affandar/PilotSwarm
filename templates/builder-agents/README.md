@@ -17,6 +17,7 @@ They are not active in this repository. Copy them into the target repository you
 - `pilotswarm-portal-builder` — portal branding, `plugin.json.portal`, auth add-ons, and deployment wiring
 - `pilotswarm-sdk-builder` — SDK app scaffold guidance, client/worker split, tests
 - `pilotswarm-agent-versioning` — `.agent.md` schema/version frontmatter and version bump guidance
+- `pilotswarm-knowledge-harvester` — optional EnhancedFactStore + knowledge-graph wiring, `harvester: true` agent template, crawl→graph→reader flow, ACL/evidence model, tests
 - `pilotswarm-duroxide-versioning` — durable orchestration versioning, continue-as-new upgrades, compatibility rules
 - `pilotswarm-azure-deployer` — deployment workflow, manifests, env checklist, `RUST_LOG` observability
 - `pilotswarm-aks-identity` — cross-cluster AKS access, Workload Identity, kubectl patterns

@@ -306,6 +306,109 @@ new PilotSwarmWorker({
   PostgreSQL pool sizing and runtime concurrency are intentionally **not** part of
   `PilotSwarmWorkerOptions`. Configure them with the env vars above.
 
+## Enhanced Facts & Knowledge Graph (optional)
+
+By default the facts store is plain Postgres (`PgFactStore`) — every session gets
+the `store_fact` / `read_facts` / `delete_fact` tools. Two **optional, independently
+injected** providers extend this without changing the default:
+
+- **EnhancedFactStore** — multi-signal retrieval (lexical + semantic + hybrid) plus
+  a durable in-DB embedder, backed by a HorizonDB (preview) cluster with
+  `pgvector` + `pg_textsearch` + `pg_durable`. Lights up `facts_search`,
+  `facts_similar`, and a per-turn `search_skills` tool.
+- **GraphStore** — an open knowledge graph (Apache AGE) for entities/edges with
+  fact-`scopeKey` evidence anchors. Lights up the graph read tools
+  (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood`) plus a
+  harvester-only crawl-queue + graph-write surface.
+
+The two axes are orthogonal: enhanced-facts works without a graph, and a graph
+works over a base fact store (you get graph tools but no search tools). Graph
+tools key off **graph presence alone** (`graphDatabaseUrl` set), never the facts
+capability.
+
+```typescript
+new PilotSwarmWorker({
+    store: process.env.DATABASE_URL,
+
+    // ── EnhancedFactStore (optional) ──
+    // Setting enhancedFactsDatabaseUrl alone constructs the enhanced provider
+    // (factsProvider inferred "horizon"). Resolution for the facts URL is
+    // enhancedFactsDatabaseUrl ?? cmsFactsDatabaseUrl ?? store.
+    enhancedFactsDatabaseUrl: process.env.HORIZON_DATABASE_URL,
+    factsProvider: "horizon",            // optional; inferred when the URL is set
+    enhancedFactsSchema: "horizon_facts", // default: "horizon_facts"
+    horizonEmbed: {                       // optional; omit ⇒ lexical-only search
+        url: process.env.HORIZON_EMBED_URL,
+        model: process.env.HORIZON_EMBED_MODEL,
+        dim: Number(process.env.HORIZON_EMBED_DIM),
+        apiKey: process.env.HORIZON_EMBED_API_KEY,
+    },
+
+    // ── GraphStore (optional, opt-in) ──
+    // Unset ⇒ no graph, no graph tools. May reuse the enhanced facts URL.
+    graphDatabaseUrl: process.env.HORIZON_GRAPH_DATABASE_URL,
+    graphSchema: "horizon_graph",         // default: "horizon_graph"
+});
+```
+
+> **Schema-collision guard.** Apache AGE creates a Postgres schema named after the
+> graph. When `graphDatabaseUrl` is the **same** database as the facts store, the
+> `graphSchema` MUST differ from the facts schema — the worker fails fast at start
+> if they collide. The defaults (`horizon_facts` vs `horizon_graph`) are already
+> distinct.
+
+> **Env shortcut.** The shipped worker entrypoints (the CLI/portal embedded worker
+> and the standalone K8s worker) wire all of the above from the canonical
+> `HORIZON_*` env vars via the SDK helper `horizonConfigFromEnv()`. Custom apps can
+> use the same one-liner — it returns `{}` when `HORIZON_DATABASE_URL` is unset, so
+> default deployments are unaffected:
+>
+> ```typescript
+> import { PilotSwarmWorker, horizonConfigFromEnv } from "pilotswarm-sdk";
+>
+> const worker = new PilotSwarmWorker({
+>     store: process.env.DATABASE_URL,
+>     githubToken: process.env.GITHUB_TOKEN,
+>     ...horizonConfigFromEnv(), // HORIZON_DATABASE_URL / _GRAPH_DATABASE_URL / _EMBED_* / _*_SCHEMA
+> });
+> ```
+>
+> See [`.env.example`](../.env.example) for the full list of `HORIZON_*` vars.
+
+The **client** and **management client** must resolve the **same** facts target as
+the worker, or session cleanup hits the wrong database. Pass the matching fields:
+
+```typescript
+new PilotSwarmClient({
+    store: process.env.DATABASE_URL,
+    enhancedFactsDatabaseUrl: process.env.HORIZON_DATABASE_URL, // match the worker
+    factsProvider: "horizon",
+    enhancedFactsSchema: "horizon_facts",
+});
+```
+
+To run a `harvester: true` ingestion agent continuously as its own service over a
+shared HorizonDB, see [Deploying a Knowledge Harvester](./harvester-deployment.md).
+
+### Role-based tool exposure
+
+Which enhanced/graph tools a session sees is the cross product of capability,
+graph presence, and **session role** (`agentIdentity`):
+
+| Tool group | Who gets it | Gated on |
+|------------|-------------|----------|
+| `store_fact` / `read_facts` / `delete_fact` | every session | always |
+| `facts_search` / `facts_similar` | every reader (incl. `agent-tuner`) | enhanced + `capabilities.search` |
+| `search_skills` | every reader **except `facts-manager`** (it owns the namespace) | enhanced + `capabilities.search` |
+| `graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood` | every reader | `graphDatabaseUrl` set |
+| `graph_stats` (read-only) | `facts-manager` + `agent-tuner` | `graphDatabaseUrl` set |
+| crawl queue + `graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*` | app **harvester role** + `facts-manager` (dormant) | `graphDatabaseUrl` set |
+
+`agent-tuner` is **strictly read-only**: it gets every read tool (including
+`graph_stats`) but never a write, delete, crawl, or mutating control tool — even
+if a stale config sets the harvester flag. See [Facts Table](./facts-table.md) for
+the full capability/role model and the harvester crawl protocol.
+
 ## Client Options
 
 ```typescript

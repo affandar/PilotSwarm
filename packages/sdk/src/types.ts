@@ -649,7 +649,10 @@ export interface PilotSwarmWorkerOptions {
      */
     graphDatabaseUrl?: string;
     /**
-     * Schema/graph name for the graph store. Default: `"horizon_facts"`.
+     * Schema/graph name for the graph store. Default: `"horizon_graph"`.
+     * Apache AGE creates a Postgres schema named after the graph, so on a shared
+     * database this MUST differ from the facts schema — the worker fails fast if
+     * `graphSchema` collides with the facts schema on the same `graphDatabaseUrl`.
      */
     graphSchema?: string;
 

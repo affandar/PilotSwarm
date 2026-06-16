@@ -23,7 +23,7 @@ import type {
     StoreFactInput,
 } from "./types.js";
 import type { HorizonFactsConfig } from "./config.js";
-import { resolveConfig } from "./config.js";
+import { resolveConfig, buildPoolConfig } from "./config.js";
 import { EmbeddingClient, toVectorLiteral } from "./embedding-client.js";
 import { loadMigrations, runMigrations, HORIZON_FACTS_LOCK_SEED, hashSchemaName } from "./horizon-migrator.js";
 import { assertFactExtensions, assertDurableHttpUsable } from "./preconditions.js";
@@ -94,7 +94,7 @@ export class HorizonDBFactStore implements EnhancedFactStore {
             );
         }
         const { default: pg } = await import("pg");
-        const pool = new pg.Pool({ connectionString: cfg.connectionString, max: cfg.poolMax });
+        const pool = new pg.Pool(buildPoolConfig(cfg.connectionString, cfg.poolMax!));
         pool.on("error", (err: Error) => console.error("[horizon-facts] pool error (non-fatal):", err.message));
         return new HorizonDBFactStore(pool, cfg as any);
     }

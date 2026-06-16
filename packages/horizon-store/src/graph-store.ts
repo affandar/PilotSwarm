@@ -20,7 +20,7 @@ import type {
     GraphNodeInput, GraphNodeQuery, GraphNodeRef, GraphEdgeRef, GraphStore, SubGraph,
 } from "./types.js";
 import type { HorizonFactsConfig } from "./config.js";
-import { resolveConfig } from "./config.js";
+import { resolveConfig, buildPoolConfig } from "./config.js";
 import { loadMigrations } from "./horizon-migrator.js";
 import { assertGraphExtensions } from "./preconditions.js";
 import { GraphQueries } from "./graph-queries.js";
@@ -54,7 +54,7 @@ export class HorizonDBGraphStore implements GraphStore {
             );
         }
         const { default: pg } = await import("pg");
-        const pool = new pg.Pool({ connectionString: cfg.connectionString, max: cfg.poolMax });
+        const pool = new pg.Pool(buildPoolConfig(cfg.connectionString, cfg.poolMax!));
         pool.on("error", (err: Error) => console.error("[horizon-graph] pool error (non-fatal):", err.message));
         return new HorizonDBGraphStore(pool, cfg as any);
     }

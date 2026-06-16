@@ -224,6 +224,127 @@ The `default.agent.md` includes a `## Facts Table` section that instructs the LL
 - Respond to user "remember" / "forget" requests via facts tools immediately.
 - During multi-agent work, use `read_facts(session_id=<tree-member>)` or `scope=descendants` to pull facts from peers and descendants in the same spawn tree.
 
+## Enhanced Facts & Knowledge Graph (optional)
+
+The base facts table above is always present. Two **optional, independently
+injected** providers extend it. They are wired through config only — code that
+uses `store_fact` / `read_facts` / `delete_fact` is unchanged whether or not they
+are present. See [Configuration](./configuration.md#enhanced-facts--knowledge-graph-optional)
+for the worker/client knobs, and [Deploying a Knowledge Harvester](./harvester-deployment.md)
+to run ingestion as a dedicated service over a shared HorizonDB.
+
+### Two orthogonal axes
+
+| Axis | Provider | Lights up |
+|------|----------|-----------|
+| **Facts capability** | `EnhancedFactStore` (HorizonDB: pgvector + pg_textsearch + pg_durable) | `facts_search`, `facts_similar`, `search_skills` |
+| **Graph presence** | `GraphStore` (Apache AGE) | `graph_search_nodes`, `graph_search_edges`, `graph_neighbourhood`, + harvester crawl/write surface |
+
+They are **independent**: an enhanced fact store with no graph gets search tools
+but no graph tools; a base fact store with a graph gets the full graph surface
+but no search tools. Graph tools key off **graph presence alone**
+(`graphDatabaseUrl` set / `!!graphStore`) — never the facts capability. The
+runtime asks `isEnhancedFactStore(store)` once at boot and threads the answer
+through; it never sniffs per turn.
+
+```typescript
+// Capability descriptor the runtime reads to gate enhanced tools.
+interface FactsCapabilities { search: boolean; embedder: boolean; }
+```
+
+`facts_search` / `facts_similar` / `search_skills` register only when the store
+is an `EnhancedFactStore` **and** `capabilities.search` is true. The embedder
+only affects semantic ranking and prompt wording — with `embedder: false`,
+search still registers and runs in lexical/hybrid mode.
+
+### Enhanced retrieval replaces the capped skills push
+
+On a base store, the framework injects a capped slice of curated skills into the
+system prompt every turn. On an enhanced store that push is **dropped**; instead
+the agent gets a dedicated `search_skills` tool and is instructed to call it at
+the start of every turn with a task-derived query. Same per-turn DB cost, but it
+returns *ranked relevant* skills instead of an arbitrary slice, and the agent can
+also retrieve its own past `intake/*` observations via `facts_search`.
+
+### The knowledge graph
+
+The graph stores **ids + structure only** — never fact values or ACLs. Nodes
+(`kind`, `name`, `aliases`) and edges (free-text `predicate`, `confidence`,
+`observations`) carry optional **evidence**: fact `scopeKey` pointers that anchor
+a node/edge to the facts that justify it. Resolving evidence back to fact values
+is a tool-layer composition across the two separate providers:
+
+```
+graph_search_nodes(...) -> node.evidence (scopeKeys) -> read_facts({ scopeKeys })
+```
+
+- **Seeds pivot.** A query seeded with a fact `scopeKey` pivots into the graph via
+  the `EVIDENCED_BY` anchor; a node-key seed expands directly.
+- **Reinforcement.** Re-asserting the same `(fromKey, predicate, toKey)` does not
+  duplicate — it bumps `observations` and combines confidence (noisy-OR) only
+  when **new** evidence is supplied; same-evidence replays are harmless no-ops.
+
+### The crawl queue (harvester work queue)
+
+Every base fact carries a `scopeKey` and a `contentHash`, and a `last_crawled_at`
+stamp. Facts with `last_crawled_at IS NULL` (new or edited since the last crawl)
+are the **harvester work queue**:
+
+- `facts_read_uncrawled({ namespace?, limit? })` — returns queued facts, each with
+  its `scopeKey` **and** `contentHash` receipt.
+- `facts_mark_crawled({ stamps: [{ scopeKey, contentHash }] })` — stamps facts as
+  incorporated so they leave the queue. The `contentHash` is a **receipt**: if the
+  fact changed under the harvester between read and mark, the stamp is **skipped**
+  (returned in `skipped`, not `marked`) and the fact stays queued. This makes the
+  read→incorporate→mark loop safe against concurrent edits.
+
+### The harvester role
+
+Active graph harvesting is **app-specific** (deciding *what* to crawl and *how* to
+extract entities/edges is domain knowledge PilotSwarm cannot supply generically),
+but the **tools** are shipped by PilotSwarm:
+
+- An **app harvester agent** (an agent the operator marks with `harvester: true`)
+  is the active crawler — it is granted the crawl queue + `graph_upsert_*` /
+  `graph_merge_nodes` / `graph_delete_*` tools **and** prompted to crawl with
+  app-specific extraction.
+- The **`facts-manager`** holds the same harvester tools but is **dormant** — not
+  prompted to crawl, so nothing is harvested out of the box. It additionally gets
+  read-only `graph_stats` to *report* on graph size / last-crawled time.
+- A harvester should **resolve before it creates**: `graph_search_nodes` by
+  `nameLike` first, then `graph_upsert_node` with the source fact's `scopeKey` as
+  evidence — this is what makes reinforcement dedup work.
+
+### Access control (evidence is ACL-filtered, topology is shared)
+
+Graph **topology** (which nodes/edges exist, how they connect) is shared across
+all readers. Graph **evidence arrays** are ACL-filtered per caller exactly like
+facts: a reader sees only the evidence `scopeKey`s it could read via `read_facts`
+(its own session, its spawn-tree lineage, and shared facts). An inaccessible fact
+seed is treated as unknown — indistinguishable from a non-existent seed, so it is
+not an existence oracle.
+
+Graph reads use the **same lineage resolver as `read_facts`**: the runtime threads
+the caller's `AccessContext` (`readerSessionId` + granted lineage `sessionIds`,
+self-excluded and deduped) into every graph read. A reader with no lineage sees
+its own session only — never an unrestricted/wildcard scope.
+
+### agent-tuner is strictly read-only
+
+The `agent-tuner` investigator gets **every read tool** — base `read_facts`,
+`facts_search` / `facts_similar`, `search_skills`, the graph reads, and
+`graph_stats` — with graph reads resolving **unrestricted** (it is the privileged
+investigator). It is **never** granted a write, delete, crawl, or mutating control
+tool, even if a stale config sets the harvester flag. The sweeper is unchanged: it
+sweeps facts via the existing cascading session delete and never touches graph
+nodes.
+
+### Testing
+
+- Provider-level conformance + ACL/crawl/graph semantics: `packages/horizon-store/test/integration/*` (gated on `HORIZON_DATABASE_URL`).
+- SDK capability×role tool gating + prompt adaptation (DB-less): [`packages/sdk/test/local/enhanced-tool-gating.test.js`](../packages/sdk/test/local/enhanced-tool-gating.test.js) and [`graph-tools-gating.test.js`](../packages/sdk/test/local/graph-tools-gating.test.js).
+- SDK real-provider composition (base PgFactStore + real graph, crawl→harvest→resolve round-trip, gated on `HORIZON_DATABASE_URL`): [`packages/sdk/test/local/enhanced-composition.integration.test.js`](../packages/sdk/test/local/enhanced-composition.integration.test.js).
+
 ## Constraints
 
 - **PostgreSQL only.** The `createFactStoreForUrl()` factory rejects non-Postgres URLs. SQLite is not supported for facts.
@@ -239,6 +360,14 @@ From `src/index.ts`:
 export { PgFactStore, createFactStoreForUrl } from "./facts-store.js";
 export type { FactStore, FactRecord, StoreFactInput, ReadFactsQuery, DeleteFactInput } from "./facts-store.js";
 export { createFactTools } from "./facts-tools.js";
+
+// Enhanced facts + knowledge graph (optional providers)
+export { isEnhancedFactStore, resolveFactsTarget, createGraphStoreForUrl } from "./facts-store.js";
+export type { EnhancedFactStore, FactsCapabilities, AccessContext } from "./facts-store.js";
+export type { GraphStore } from "./graph-store.js";
+export { createGraphTools } from "./graph-tools.js";
 ```
 
-These are available to applications that need direct fact store access outside of the tool layer.
+These are available to applications that need direct fact store access outside of
+the tool layer. The concrete enhanced/graph providers ship separately in
+`@pilotswarm/horizon-store` and are loaded by the worker only when configured.

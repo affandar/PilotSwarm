@@ -18,6 +18,7 @@
 // re-exported here for back-compat with existing imports.
 import type { EmbeddingEndpointConfig } from "./types.js";
 export type { EmbeddingEndpointConfig } from "./types.js";
+import type { PoolConfig } from "pg";
 
 export interface HorizonFactsConfig {
     /** PostgreSQL/HorizonDB connection string. */
@@ -93,5 +94,54 @@ export function resolveConfig(partial: Partial<HorizonFactsConfig> = {}): Horizo
             ?? DEFAULT_POOL_MAX,
         useManagedIdentity: partial.useManagedIdentity,
         aadUser: partial.aadUser,
+    };
+}
+
+/** sslmode values that mean "use TLS" (mirrors the PilotSwarm SDK pg-pool-factory). */
+const SSL_REQUIRING_MODES = ["require", "prefer", "verify-ca", "verify-full"];
+
+/**
+ * Build a `pg.PoolConfig` from a HorizonDB connection string, normalizing TLS
+ * the same way the PilotSwarm SDK's `pg-pool-factory` does for the CMS / facts
+ * pools, so a HorizonDB URL behaves here exactly like `DATABASE_URL` does there.
+ *
+ * Why this is needed: HorizonDB requires SSL, but its certificate chain is not in
+ * Node's default trust store, and `pg` v8 treats `sslmode=require` (and
+ * `prefer` / `verify-ca` / `verify-full`) as `verify-full` — which rejects the
+ * chain with `self-signed certificate in certificate chain`. The SDK factory
+ * handles this for `DATABASE_URL` by stripping `sslmode` from the URL and setting
+ * `ssl: { rejectUnauthorized: false }` on the pool config. This provider builds
+ * its OWN raw pools (it keeps its runtime dep surface to `pg` only and does not
+ * import the SDK), so without this helper a natural `?sslmode=require` URL fails
+ * here while the identical URL works for `DATABASE_URL` — the asymmetry that
+ * previously forced callers to hand-append `uselibpqcompat=true`.
+ *
+ * Encrypt-but-don't-verify matches libpq's `sslmode=require` semantics and the
+ * SDK's existing posture (this is not a new weakening — it is the same choice the
+ * CMS/facts pools already make). For full CA verification against a non-preview
+ * cluster, present a trusted chain and pass a URL without an `sslmode` param.
+ */
+export function buildPoolConfig(connectionString: string, max: number): PoolConfig {
+    let needsSsl = false;
+    let sanitized = connectionString;
+    try {
+        const url = new URL(connectionString);
+        needsSsl = SSL_REQUIRING_MODES.includes(url.searchParams.get("sslmode") ?? "");
+        if (needsSsl) {
+            // Control SSL via the config object, not the URL. Drop sslmode so pg
+            // does not re-apply verify-full, and drop the now-redundant
+            // uselibpqcompat hint so the effective URL is clean either way.
+            url.searchParams.delete("sslmode");
+            url.searchParams.delete("uselibpqcompat");
+            sanitized = url.toString();
+        }
+    } catch {
+        // Not a parseable URL (unexpected for a real DSN). Leave it untouched and
+        // let pg surface a clear connection error rather than masking it here.
+    }
+    return {
+        connectionString: sanitized,
+        max,
+        ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
     };
 }

@@ -299,6 +299,16 @@ function normalizeLikePattern(pattern?: string): string | undefined {
     return pattern;
 }
 
+// Specifier for the OPTIONAL horizon provider peer. The `: string` annotation is
+// load-bearing: it widens the type away from a string literal so TypeScript does
+// NOT eagerly type-resolve `import(HORIZON_STORE_PACKAGE)` at compile time.
+// Resolving it would pull @pilotswarm/horizon-store's emitted .d.ts into this
+// compile, which re-imports `pilotswarm-sdk` and cycles back onto THIS package's
+// own dist/ — a TS5055 self-overwrite once dist/ exists. The peer is loaded
+// purely structurally at runtime (`mod` is `any`), so nothing is lost. Do NOT
+// inline this back to a string literal.
+const HORIZON_STORE_PACKAGE: string = "@pilotswarm/horizon-store";
+
 export async function createFactStoreForUrl(
     storeUrl: string,
     schema?: string,
@@ -325,7 +335,7 @@ export async function createFactStoreForUrl(
         // horizon provider is explicitly selected.
         let mod: any;
         try {
-            mod = await import("@pilotswarm/horizon-store");
+            mod = await import(HORIZON_STORE_PACKAGE);
         } catch (err: any) {
             throw new Error(
                 "factsProvider 'horizon' requires the @pilotswarm/horizon-store package, " +
@@ -387,7 +397,7 @@ export async function createGraphStoreForUrl(
     }
     let mod: any;
     try {
-        mod = await import("@pilotswarm/horizon-store");
+        mod = await import(HORIZON_STORE_PACKAGE);
     } catch (err: any) {
         throw new Error(
             "graphDatabaseUrl requires the @pilotswarm/horizon-store package, " +

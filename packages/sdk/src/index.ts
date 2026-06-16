@@ -40,6 +40,9 @@ export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
 export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
+// Convenience: map HORIZON_* env vars to worker enhanced-facts/graph config.
+export { horizonConfigFromEnv } from "./horizon-env.js";
+export type { HorizonEnvConfig } from "./horizon-env.js";
 export { PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, TopEventEmitterRow, InsertTurnMetricInput, TurnMetricRow, HourlyTokenBucketRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, UserProfile, UserPrincipal } from "./cms.js";
 export type {

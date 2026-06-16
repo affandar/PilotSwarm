@@ -1,0 +1,11 @@
+{bold}{cyan-fg}
+  _   _           _                  _   _                       _
+ | | | | ___  ___(_)___ ___  _ __   | | | | __ _ _ ____   _____ ___| |_ ___ _ __
+ | |_| |/ _ \/ __| |_  / _ \| '_ \  | |_| |/ _` | '__\ \ / / _ / __| __/ _ \ '__|
+ |  _  | (_) \__ \ |/ / (_) | | | | |  _  | (_| | |   \ V /  __\__ \ ||  __/ |
+ |_| |_|\___/|___/_/___\___/|_| |_| |_| |_|\__,_|_|    \_/ \___|___/\__\___|_|
+{/cyan-fg}{/bold}
+    {bold}{white-fg}Knowledge Harvester{/white-fg}{/bold}
+    {cyan-fg}Crawl{/cyan-fg} · {green-fg}Graph{/green-fg} · {yellow-fg}Search{/yellow-fg} · {magenta-fg}Pivot{/magenta-fg}
+
+    {cyan-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/cyan-fg}
