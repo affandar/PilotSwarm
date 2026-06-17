@@ -11,7 +11,7 @@
 // Cross-reference: deploy/services/portal/bicep/main.bicep:239-261 hosts a
 // similar private-DNS pattern, but that module is `edgeMode='private'`-only
 // and lives in the portal service (not reused here — different lifecycle,
-// different RG semantics, different trigger condition; see Spec FR-015).
+// different RG semantics, different trigger condition).
 //
 // "Managed-only" — BYO Private DNS path was dropped during planning. If a
 // future requirement to support customer-supplied zones surfaces, gate this

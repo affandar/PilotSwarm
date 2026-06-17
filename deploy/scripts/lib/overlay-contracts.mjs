@@ -219,9 +219,8 @@ function describeVpnComboError(code) {
 //             ACME_EMAIL when malformed on letsencrypt). These render as
 //             "requires <keys> to be set" with a scaffolder hint.
 //   combo   — array of `{ code, message, hint }` objects describing VPN
-//             gateway combo errors (Spec FR-001/FR-008/FR-014). These
-//             render distinctly: a named error + a hint that does NOT
-//             point at the scaffolder.
+//             gateway combo errors. These render distinctly: a named
+//             error + a hint that does NOT point at the scaffolder.
 // Callers decide whether to throw or log — deploy.mjs throws via
 // process.exit(1); new-env.mjs warn-and-continues at scaffold time.
 export function validateRequiredEnv({ edgeMode, tlsSource, env }) {
@@ -242,8 +241,8 @@ export function validateRequiredEnv({ edgeMode, tlsSource, env }) {
       missing.push("ACME_EMAIL"); // present but malformed → treat as missing
     }
   }
-  // VPN gateway combo validation (Spec FR-001/FR-008/FR-014). Returned as
-  // a SEPARATE channel from `missing` because the rendering and remediation
+  // VPN gateway combo validation. Returned as a SEPARATE channel from
+  // `missing` because the rendering and remediation
   // differ — combo errors are not "set this key" errors and should not
   // direct operators at the scaffolder. Gated on VPN_GATEWAY_ENABLED=true
   // inside validateVpnGatewayCombo so non-VPN stamps are unaffected.
@@ -253,7 +252,7 @@ export function validateRequiredEnv({ edgeMode, tlsSource, env }) {
 }
 
 // ===========================================================================
-// VPN gateway combo validator (Spec FR-001/FR-008/FR-014).
+// VPN gateway combo validator.
 //
 // Gated on `env.VPN_GATEWAY_ENABLED === 'true'`. Returns an array of error
 // codes (empty = OK). Codes:

@@ -125,15 +125,15 @@ function normaliseYesNo(v) {
 
 // VPN gateway combo refusal at scaffold time. Mirrors the
 // validateVpnGatewayCombo() error-code style used by deploy.mjs at
-// pre-deploy time (Phase 2). Throws a single named error covering BOTH
+// pre-deploy time. Throws a single named error covering BOTH
 // edge-mode and tls-source mismatches in one message — the operator
 // shouldn't have to bounce the prompt twice to discover both.
 //
 // Called from interactive flow (after vpnEnabled is captured) AND from
 // the non-interactive --vpn-enabled path so flags-only invocations
 // (tests, CI) hit the same hard gate. Refusal is a hard error before any
-// .env file is written, matching the Phase 3 plan ("exit without writing
-// a partial env file").
+// .env file is written, so operators never end up with a partial env
+// file on disk.
 function assertVpnGatewayCombo(edgeMode, tlsSource) {
   const em = String(edgeMode ?? "").toLowerCase();
   const ts = String(tlsSource ?? "").toLowerCase();
@@ -157,7 +157,7 @@ function assertVpnGatewayCombo(edgeMode, tlsSource) {
   );
 }
 
-// VPN client-address-pool overlap check. Reuses Phase 2's
+// VPN client-address-pool overlap check. Reuses
 // validateVpnGatewayCombo() so the overlap arithmetic stays in one place
 // (cidrsOverlap is module-private to overlay-contracts.mjs, so we drive
 // the public helper with a stub env that satisfies every other gate and
@@ -395,9 +395,9 @@ export const INPUTS = [
   // [vpn-incompatible-combo] gate fires BEFORE any secret prompts —
   // operators don't waste time entering secrets only to be refused. The
   // cross-field combo check runs in gatherInputs() right after the
-  // vpnEnabled answer is captured (see Phase 3 review SHOULD-FIX 2).
-  // main() repeats the same check as defense-in-depth for fully
-  // non-interactive paths where this loop is bypassed.
+  // vpnEnabled answer is captured. main() repeats the same check as
+  // defense-in-depth for fully non-interactive paths where this loop is
+  // bypassed.
   {
     argKey: "vpnEnabled",
     flag: "--vpn-enabled",
@@ -653,7 +653,7 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
     // through as their disabled values.
     FOUNDRY_ENABLED: foundryOn ? "true" : "false",
     FOUNDRY_DEPLOYMENTS_FILE: foundryOn ? `deploy/envs/local/${name}/foundry-deployments.json` : "",
-    // VPN gateway (Phase 3). Only the two prompted keys are threaded;
+    // VPN gateway. Only the two prompted keys are threaded;
     // VPN_GATEWAY_SKU and VPN_AAD_AUDIENCE remain at their template
     // defaults (VpnGw1 / c632b3df-... respectively) and the operator
     // overrides them by hand-editing the .env if needed (e.g. legacy
@@ -838,7 +838,7 @@ async function gatherInputs(args, existingSecrets, existingPortalConfig) {
       // vpnClientAddressPool, secrets, or portal config. main() repeats
       // this check (and the pool-overlap check) for fully
       // non-interactive invocations where this loop is bypassed
-      // entirely. See Phase 3 review SHOULD-FIX 2.
+      // entirely.
       if (i.argKey === "vpnEnabled" && normaliseYesNo(ctx.vpnEnabled) === "y") {
         assertVpnGatewayCombo(ctx.edgeMode, ctx.tlsSource);
       }
@@ -1021,8 +1021,8 @@ async function main() {
   assertSupportedCombo(inputs.edgeMode, inputs.tlsSource);
   // VPN combo gate — refuse with a named error before any .env is
   // written when --vpn-enabled y is paired with an incompatible
-  // edge/tls combo (Phase 3). Mirrors validateVpnGatewayCombo's error
-  // style so the scaffolder and deploy.mjs speak the same language.
+  // edge/tls combo. Mirrors validateVpnGatewayCombo's error style so
+  // the scaffolder and deploy.mjs speak the same language.
   if (normaliseYesNo(inputs.vpnEnabled) === "y") {
     assertVpnGatewayCombo(inputs.edgeMode, inputs.tlsSource);
     // Pool-overlap gate — declarative `validate` hook only runs in the
@@ -1117,8 +1117,8 @@ async function main() {
   console.log(`  ${stepNum++}. az login && az account set --subscription ${subForCmd}`);
   console.log(`  ${stepNum}. npm run deploy -- all ${inputs.name}`);
 
-  // Post-scaffold VPN reminder block (Phase 3). Surfaces the
-  // out-of-band requirements deploy.mjs cannot enforce: tenant Conditional
+  // Post-scaffold VPN reminder block. Surfaces the out-of-band
+  // requirements deploy.mjs cannot enforce: tenant Conditional
   // Access policy, audience override, cost / first-deploy-time disclosure,
   // and a docs pointer. Skipped silently when VPN is disabled — keeps the
   // VPN=no path's stdout unchanged so existing tests (and operators in

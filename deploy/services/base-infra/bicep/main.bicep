@@ -94,7 +94,7 @@ param foundryDeployments array = []
 // ----- VPN P2S ingress (additive, optional) ---------------------------------
 // All defaults preserve byte-equivalent param shape for non-VPN stamps.
 
-@description('Whether to provision the Azure VPN Gateway (P2S, AAD-authenticated) as an additive ingress alongside AFD. False by default — see Spec FR-001.')
+@description('Whether to provision the Azure VPN Gateway (P2S, AAD-authenticated) as an additive ingress alongside AFD. False by default.')
 param vpnGatewayEnabled bool = false
 
 @description('VPN Gateway SKU. See vpn-gateway.bicep for allowed values; Basic is excluded (no OpenVPN/AAD support).')
@@ -112,7 +112,7 @@ param appgwWafCustomRules array = []
 @description('AFD frontDoorId GUID emitted by global-infra/bicep/main.bicep, threaded as FRONT_DOOR_ID via the deploy-bicep.mjs aliasFor() pipeline. Used by the AllowAfd WAF guard rule when VPN ingress is enabled.')
 param frontDoorId string = ''
 
-@description('Microsoft Entra (AAD) tenant ID threaded from the deploy-time AZURE_TENANT_ID env var via the base-infra params template. Currently consumed only by the VPN gateway module (Spec FR-001/FR-008); the keyvault/postgres modules keep their own subscription().tenantId defaults. Empty default keeps non-VPN stamps byte-equivalent at the param layer.')
+@description('Microsoft Entra (AAD) tenant ID threaded from the deploy-time AZURE_TENANT_ID env var via the base-infra params template. Currently consumed only by the VPN gateway module; the keyvault/postgres modules keep their own subscription().tenantId defaults. Empty default keeps non-VPN stamps byte-equivalent at the param layer.')
 param tenantId string = ''
 
 // ==============================================================================
@@ -305,9 +305,9 @@ module VpnGateway './vpn-gateway.bicep' = if (vpnGatewayEnabled) {
     // tenantId is threaded from AZURE_TENANT_ID via the base-infra params
     // template (deploy-bicep.mjs render pipeline). This aligns the VPN
     // gateway's Entra ID authentication with the rest of the stamp's tenant
-    // assumption (Spec FR-001/FR-008). The keyvault/postgres modules continue
-    // to default to subscription().tenantId — same value today, but their
-    // bicep contract is unchanged by this fix.
+    // assumption. The keyvault/postgres modules continue to default to
+    // subscription().tenantId — same value today, but their bicep contract
+    // is unchanged.
     tenantId: tenantId
     vpnAadAudience: vpnAadAudience
     logAnalyticsWorkspaceId: LogAnalytics.outputs.workspaceId

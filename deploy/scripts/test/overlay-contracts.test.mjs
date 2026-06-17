@@ -215,7 +215,7 @@ test("bicep portal main.bicep tlsSource default matches DEFAULT_TLS_SOURCE", () 
   );
 });
 
-// === validateVpnGatewayCombo (Spec FR-001/FR-008/FR-014) ====================
+// === validateVpnGatewayCombo ================================================
 
 const VPN_BASE_ENV = Object.freeze({
   VPN_GATEWAY_ENABLED: "true",

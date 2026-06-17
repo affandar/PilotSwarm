@@ -400,17 +400,17 @@ test("scaffolder accepts private + akv-selfsigned with HOST and PRIVATE_DNS_ZONE
   }
 });
 
-// ─── Phase 3: VPN Gateway P2S scaffolder UX ───────────────────────────────
+// ─── VPN Gateway P2S scaffolder UX ────────────────────────────────────────
 //
 // VPN questions are asked only after edge/tls have been selected. The
 // declarative INPUTS pipeline drives the prompts; a hard combo gate in
 // main() refuses with a named error before any .env is written when the
 // requested edge/tls combo is incompatible with VPN. CIDR-overlap checks
-// reuse Phase 2's validateVpnGatewayCombo (no duplicated arithmetic).
+// reuse validateVpnGatewayCombo (no duplicated arithmetic).
 //
 // VPN_GATEWAY_SKU and VPN_AAD_AUDIENCE are NOT prompted — they flow
 // through unchanged from template.env defaults (VpnGw1, c632b3df-...).
-// The dropped-from-spec keys VPN_AAD_TENANT_ID, VPN_PRIVATE_DNS_MODE,
+// The unsupported keys VPN_AAD_TENANT_ID, VPN_PRIVATE_DNS_MODE,
 // PRIVATE_DNS_ZONE_ID, VPN_AAD_USERS_GROUP_NAME_HINT must NEVER be emitted.
 
 test("deriveTargets emits VPN_GATEWAY_ENABLED=true with custom pool when vpnEnabled=y", () => {
@@ -590,7 +590,7 @@ test("scaffolder emits the post-scaffold VPN reminder block on success", () => {
     // Cost + time disclosure.
     assert.match(out, /\$140\/month/);
     assert.match(out, /45\+ minutes/);
-    // Docs pointer (referenced by section name; Phase 4 writes the section).
+    // Docs pointer (referenced by section name in deploying-to-aks.md).
     assert.match(out, /docs\/deploying-to-aks\.md/);
     assert.match(out, /Optional: VPN Gateway P2S/);
   } finally {
@@ -616,13 +616,13 @@ test("scaffolder VPN=no path emits no VPN reminder block (regression guard)", ()
   }
 });
 
-// ─── Phase 3 review fixes: yes/true normalisation drift ──────────────────
+// ─── yes/true normalisation drift ────────────────────────────────────────
 //
-// Regression guard for the BLOCKING finding: --vpn-enabled accepts
-// y|yes|true (and JS boolean true from programmatic callers), but
-// deriveTargets() previously only honoured literal "y" / boolean true,
-// so `--vpn-enabled yes` and `--vpn-enabled true` silently scaffolded
-// VPN_GATEWAY_ENABLED=false with no reminder. main() and deriveTargets()
+// Regression guard: --vpn-enabled accepts y|yes|true (and JS boolean true
+// from programmatic callers), but deriveTargets() previously only
+// honoured literal "y" / boolean true, so `--vpn-enabled yes` and
+// `--vpn-enabled true` silently scaffolded VPN_GATEWAY_ENABLED=false with
+// no reminder. main() and deriveTargets()
 // must agree, via normaliseYesNo(), on every yes/no input.
 
 for (const truthy of ["yes", "true"]) {
@@ -689,7 +689,7 @@ test("deriveTargets honours boolean foundryEnabled=true and string 'yes' (audit 
   }
 });
 
-// ─── Phase 3 review fixes: reminder block VPN client profile download ────
+// ─── Reminder block: VPN client profile download ─────────────────────────
 
 test("VPN reminder block includes Azure portal download path for VPN client profile", () => {
   cleanup();
@@ -714,7 +714,7 @@ test("VPN reminder block includes Azure portal download path for VPN client prof
   }
 });
 
-// ─── Phase 3 review fixes: INPUTS prompt-order placement ─────────────────
+// ─── INPUTS prompt-order placement ───────────────────────────────────────
 //
 // vpnEnabled / vpnClientAddressPool must come immediately after tlsSource
 // so the [vpn-incompatible-combo] gate fires before any secret prompts.
@@ -742,7 +742,7 @@ test("INPUTS places vpnEnabled / vpnClientAddressPool immediately after tlsSourc
   }
 });
 
-// ─── Phase 3 review fixes: help/error wording — akv-only ─────────────────
+// ─── Help/error wording — akv-only ───────────────────────────────────────
 
 test("--vpn-enabled help text does not advertise akv-selfsigned as compatible", () => {
   const vpn = INPUTS.find((i) => i.argKey === "vpnEnabled");

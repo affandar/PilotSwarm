@@ -1,6 +1,6 @@
 // Unit tests for deploy/scripts/lib/appgw-waf-rules.mjs.
 //
-// Covers (Plan §"Phase 2 / Tests for AppGw WAF custom-rules wiring"):
+// Covers:
 //   * File path resolution (relative → absolute; missing → named error;
 //     unset → null; malformed JSON → named error).
 //   * Bicep merged-output shape — four cases:
@@ -274,7 +274,8 @@ test("resolveAppgwWafCustomRulesFile: non-array JSON → named error", () => {
 
 // ===========================================================================
 // Alias mapping: frontDoorId → FRONT_DOOR_ID via deploy-bicep.mjs aliasFor()
-// (covers the global-infra → base-infra flow added in Phase 1).
+// (covers the global-infra → base-infra threading used by the AppGw WAF
+// AllowAfd guard rule).
 // ===========================================================================
 
 test("aliasFor: frontDoorId → FRONT_DOOR_ID (auto-derived, no explicit OUTPUT_ALIAS needed)", () => {

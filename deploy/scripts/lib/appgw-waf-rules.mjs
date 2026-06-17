@@ -7,10 +7,9 @@
 // code review — any change to the bicep `autoSeedRules` / `mergedCustomRules`
 // vars MUST be reflected here, and vice versa.
 //
-// Phase 2 of vpn-p2s-ingress (Plan §"Phase 2 / Tests for AppGw WAF custom-
-// rules wiring"): bicep `var` shape is mirrored exactly so the four merged-
-// shape cases (VPN on/off × operator rules present/absent) can assert the
-// exact rule objects rather than just lengths.
+// The bicep `var` shape is mirrored exactly so the four merged-shape cases
+// (VPN on/off × operator rules present/absent) can assert the exact rule
+// objects rather than just lengths.
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";

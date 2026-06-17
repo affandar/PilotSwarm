@@ -59,7 +59,7 @@ param frontDoorId string = ''
 // ---------------------------------------------------------------------------
 // WAF custom rules — hybrid AFD + VPN trusted-bypass.
 // ---------------------------------------------------------------------------
-// Priority bands (Spec FR-009 / FR-010):
+// Priority bands:
 //   * 90-92  — reserved for the auto-seeded VPN guard rules below.
 //   * >= 100 — operator-supplied rules via APPGW_WAF_CUSTOM_RULES_FILE.
 //
