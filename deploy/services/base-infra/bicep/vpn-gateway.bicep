@@ -47,8 +47,17 @@ param logAnalyticsWorkspaceId string = ''
 param tags object = {}
 
 // ---------------------------------------------------------------------------
-// Public IP for the gateway frontend (Standard SKU + Static is required for
-// VpnGw1+ — Basic PIPs are no longer supported on RouteBased gateways).
+// VPN Gateway Public IP frontend.
+//
+// Zone-redundancy: AZ VPN gateway SKUs (VpnGw1AZ / VpnGw2AZ / VpnGw3AZ)
+// REQUIRE their associated Public IP to be zone-redundant. Without
+// `zones: ['1', '2', '3']` Azure rejects the gateway deployment with
+// VmssVpnGatewayPublicIpsMustHaveZonesConfigured. Since the gateway SKU
+// list is AZ-only (non-AZ SKUs are deprecated), the PIP is unconditionally
+// zone-redundant.
+//
+// SKU: Standard + Static is required for RouteBased gateways (Basic PIPs
+// are not supported).
 // ---------------------------------------------------------------------------
 resource vpnGatewayPip 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
   name: '${resourceName}-vpngw-pip'
@@ -58,6 +67,11 @@ resource vpnGatewayPip 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
     name: 'Standard'
     tier: 'Regional'
   }
+  zones: [
+    '1'
+    '2'
+    '3'
+  ]
   properties: {
     publicIPAllocationMethod: 'Static'
     publicIPAddressVersion: 'IPv4'
