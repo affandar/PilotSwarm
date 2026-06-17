@@ -368,7 +368,10 @@ unmanaged-device users).
   trusted-bypass is `TLS_SOURCE=akv`. `letsencrypt` is rejected because
   ACME HTTP-01 cannot reach a VPN-only client.
   `SSL_CERT_DOMAIN_SUFFIX` must be set (the managed Private DNS zone
-  uses it). `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet (default
+  uses it). The scaffolder prompts for it interactively when
+  `TLS_SOURCE=akv`, or pass `--ssl-cert-domain-suffix <suffix>` for
+  non-interactive runs (e.g. `--ssl-cert-domain-suffix
+  dev.contoso.example`). `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet (default
   `10.20.0.0/16`). VPN uses the existing stamp `AZURE_TENANT_ID` — same
   Entra tenant as the rest of the deploy.
 - **Cost / time**: ~$140/month for `VpnGw1` (PIP + gateway hours).

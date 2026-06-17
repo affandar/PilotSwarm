@@ -434,6 +434,25 @@ export const INPUTS = [
     validate: (v) => validateVpnClientAddressPool(v, null),
   },
   {
+    argKey: "sslCertDomainSuffix",
+    flag: "--ssl-cert-domain-suffix",
+    metavar: "<suffix>",
+    help: [
+      "DNS suffix the portal cert is issued for. Required when",
+      "--tls-source akv (cert subject = <resourceName>.<suffix>). Must be",
+      "a domain your AKV cert issuer (e.g. OneCertV2-PublicCA) is",
+      "authorized to issue for. Also used as the managed Private DNS",
+      "zone name when --vpn-enabled y.",
+    ],
+    prompt: "SSL cert domain suffix (e.g. dev.pilotswarm.example.com — must be authorized for your AKV cert issuer)",
+    promptIf: (ctx) => ctx.tlsSource === "akv",
+    validate: (v) =>
+      /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(v) && v.includes(".")
+        ? true
+        : "must be a valid DNS suffix (lowercase, must contain at least one dot)",
+    transform: "lowercase",
+  },
+  {
     argKey: "host",
     flag: "--host",
     metavar: "<label>",
@@ -594,7 +613,7 @@ function usage() {
 
 // Derive deployment-target values from a small set of inputs, matching the enterprise path
 // serviceModel.json naming patterns. Pure function — no I/O.
-export function deriveTargets({ name, subscription, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, foundryEnabled, vpnEnabled, vpnClientAddressPool }) {
+export function deriveTargets({ name, subscription, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, sslCertDomainSuffix, foundryEnabled, vpnEnabled, vpnClientAddressPool }) {
   const prefix = `ps${name}`;
   const globalPrefix = `${prefix}global`;
   const resolvedEdgeMode = edgeMode ?? DEFAULT_EDGE_MODE;
@@ -662,6 +681,12 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
     // (172.16.200.0/24) flows through unchanged.
     VPN_GATEWAY_ENABLED: vpnOn ? "true" : "false",
     ...(vpnOn && vpnClientAddressPool ? { VPN_CLIENT_ADDRESS_POOL: vpnClientAddressPool } : {}),
+    // SSL_CERT_DOMAIN_SUFFIX is userRequired by the afd-akv overlay (and
+    // by the VPN combo gate when VPN is enabled). The scaffolder prompts
+    // for it whenever tlsSource=akv; we override the template's empty
+    // default with the captured value. Other tlsSources don't consume it
+    // and the template's empty default flows through unchanged.
+    ...(sslCertDomainSuffix ? { SSL_CERT_DOMAIN_SUFFIX: sslCertDomainSuffix } : {}),
   };
 }
 

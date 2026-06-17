@@ -780,3 +780,114 @@ test("[vpn-incompatible-combo] error wording does not allow akv-selfsigned", () 
     cleanup();
   }
 });
+
+// ─── SSL_CERT_DOMAIN_SUFFIX prompt (akv + VPN) ────────────────────────────
+//
+// SSL_CERT_DOMAIN_SUFFIX is userRequired on the afd-akv overlay (cert
+// subject = <resourceName>.<suffix>) AND is consumed by the VPN combo
+// gate as the managed Private DNS zone name. The scaffolder prompts for
+// it whenever tlsSource=akv so operators don't have to hand-edit the
+// .env between scaffold and deploy.
+
+test("--ssl-cert-domain-suffix flows through to SSL_CERT_DOMAIN_SUFFIX in scaffolded .env", () => {
+  cleanup();
+  try {
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "afd",
+      "--tls-source", "akv",
+      "--ssl-cert-domain-suffix", "dev.example.com",
+    ]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const content = readFileSync(TEST_FILE, "utf8");
+    assert.match(content, /^SSL_CERT_DOMAIN_SUFFIX=dev\.example\.com$/m);
+  } finally {
+    cleanup();
+  }
+});
+
+test("--ssl-cert-domain-suffix INPUT has lowercase transform (validates interactive UX)", () => {
+  const ssl = INPUTS.find((i) => i.argKey === "sslCertDomainSuffix");
+  assert.ok(ssl, "sslCertDomainSuffix INPUT must exist");
+  assert.equal(ssl.transform, "lowercase",
+    "interactive prompt should lowercase free-form input (matches host/privateDnsZone)");
+});
+
+test("--ssl-cert-domain-suffix flows through on afd+akv+VPN combo", () => {
+  cleanup();
+  try {
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "afd",
+      "--tls-source", "akv",
+      "--vpn-enabled", "y",
+      "--ssl-cert-domain-suffix", "stamp.contoso.test",
+    ]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const content = readFileSync(TEST_FILE, "utf8");
+    assert.match(content, /^SSL_CERT_DOMAIN_SUFFIX=stamp\.contoso\.test$/m);
+    // VPN is also enabled — the suffix doubles as the managed Private
+    // DNS zone name. Both must coexist in the rendered .env.
+    assert.match(content, /^VPN_GATEWAY_ENABLED=true$/m);
+  } finally {
+    cleanup();
+  }
+});
+
+test("scaffolder warns when tlsSource=akv but no --ssl-cert-domain-suffix is supplied", () => {
+  cleanup();
+  try {
+    // Non-interactive run without the new flag — promptIf is gated on
+    // tlsSource=akv but readline is closed, so the value lands empty.
+    // Contract validation in main() must warn (not throw) so the
+    // operator gets a .env they can fix by hand if needed. deploy.mjs
+    // is the hard gate.
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "afd",
+      "--tls-source", "akv",
+    ]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const out = `${r.stdout}\n${r.stderr}`;
+    assert.match(out, /SSL_CERT_DOMAIN_SUFFIX/,
+      "scaffolder must warn that SSL_CERT_DOMAIN_SUFFIX is unset for tlsSource=akv");
+    const content = readFileSync(TEST_FILE, "utf8");
+    // Template default flows through unchanged (empty).
+    assert.match(content, /^SSL_CERT_DOMAIN_SUFFIX=$/m);
+  } finally {
+    cleanup();
+  }
+});
+
+test("scaffolder does NOT prompt for ssl-cert-domain-suffix on tlsSource=letsencrypt", () => {
+  cleanup();
+  try {
+    const r = runScript([
+      ...FULL_ARGS(),
+      "--edge-mode", "afd",
+      "--tls-source", "letsencrypt",
+      "--acme-email", "ops@example.com",
+    ]);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const content = readFileSync(TEST_FILE, "utf8");
+    // On afd-letsencrypt the overlay contract stubs SSL_CERT_DOMAIN_SUFFIX
+    // to "unused" — that's a deploy-time concern, not a scaffolder one.
+    // The key point is that the scaffolder did not prompt for it (which
+    // would have stalled the non-interactive run waiting for input).
+    assert.match(content, /^SSL_CERT_DOMAIN_SUFFIX=unused$/m);
+    // No warning about a missing suffix — letsencrypt doesn't consume it.
+    const out = `${r.stdout}\n${r.stderr}`;
+    assert.doesNotMatch(out, /requires SSL_CERT_DOMAIN_SUFFIX/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("--ssl-cert-domain-suffix INPUT is gated on tlsSource=akv (promptIf)", () => {
+  const ssl = INPUTS.find((i) => i.argKey === "sslCertDomainSuffix");
+  assert.ok(ssl, "sslCertDomainSuffix INPUT must exist");
+  assert.ok(typeof ssl.promptIf === "function", "sslCertDomainSuffix must be gated by promptIf");
+  assert.equal(ssl.promptIf({ tlsSource: "akv" }), true);
+  assert.equal(ssl.promptIf({ tlsSource: "letsencrypt" }), false);
+  assert.equal(ssl.promptIf({ tlsSource: "akv-selfsigned" }), false);
+});
