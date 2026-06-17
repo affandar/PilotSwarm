@@ -165,6 +165,12 @@ Edge / TLS
   host                          portal (default)      # only when edge-mode=private
   private-dns-zone              <required>            # only when edge-mode=private
 
+VPN (optional — only when user asks for VPN access / off-network ingress)
+  vpn-enabled                   n (default)           # n | y; when 'y', auto-implies edge-mode=afd + tls-source=akv
+  ssl-cert-domain-suffix        <required when tls-source=akv>  # DNS suffix whose AKV cert this stamp will serve (e.g. dev.contoso.example)
+  vpn-client-address-pool       172.16.200.0/24 (default)       # must not overlap VNet 10.20.0.0/16
+  vpn-aad-audience              c632b3df-fb67-4d84-bdcf-b95ad541b5c8 (default)  # current Azure VPN Client app; override only for legacy-audience tenants
+
 Per-stamp secrets (Key Vault)
   GITHUB_TOKEN                  <offer `gh auth token`>  # optional; sentinel if empty
   AZURE_MODEL_ROUTER_KEY        <skip / sentinel>       # optional
@@ -202,6 +208,19 @@ Portal auth (ConfigMap) — fields depend on auth posture
   ADMIN_ASSIGNMENTS                  <suggested: ${user}; CONFIRM OR OVERRIDE>   # UPNs / object ids / group display names, comma-separated
   USER_ASSIGNMENTS                   <empty>                                       # UPNs / object ids / group display names, comma-separated
 ```
+
+**When the user asks for VPN access (e.g. "spin up a VPN-enabled env",
+"I need off-network access", "trusted-bypass lane"):** populate the VPN
+block above and **auto-fill `edge-mode=afd` + `tls-source=akv` as the
+defaults** for the Edge/TLS block — these are the only values that pass
+the VPN combo gate, so the user shouldn't have to discover that
+separately. Then ask for `ssl-cert-domain-suffix` (the one new value the
+agent cannot infer), confirm `vpn-client-address-pool` (default is fine
+unless their corp VPN already uses 172.16.200.0/24), and leave
+`vpn-aad-audience` at the default unless they explicitly mention legacy
+VPN client builds. Surface the 45-min provisioning lead time and the
+tenant-admin Conditional Access requirement (see §"Optional: VPN
+Gateway P2S" for both) *before* invoking the scaffolder, not after.
 
 **Pick one mechanism per stamp; don't mix roles + email allowlist.**
 The portal authz engine treats the JWT `roles` claim as authoritative
