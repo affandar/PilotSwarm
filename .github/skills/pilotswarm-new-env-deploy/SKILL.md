@@ -335,7 +335,7 @@ after non-interactive runs too.
 |---|---|---|---|---|
 | `afd` | `letsencrypt` | `false` | ✅ default | OSS-friendly public endpoint, ACME HTTP-01. |
 | `afd` | `akv` | `false` | ✅ | Enterprise-internal OneCertV2-PublicCA cert via AKV. |
-| `afd` | `akv` | `true` | ✅ | Hybrid AFD + VPN P2S (trusted-bypass for off-CorpNet users). AKV-only — see "Optional: VPN Gateway P2S" below. |
+| `afd` | `akv` | `true` | ✅ | Hybrid AFD + VPN P2S (trusted-bypass for authenticated users not matched by the AFD WAF allow-list). AKV-only — see "Optional: VPN Gateway P2S" below. |
 | `afd` | `akv-selfsigned` | any | ❌ | AppGw can't consume an AKV `Self` chain end-to-end. |
 | `afd` | `letsencrypt` | `true` | ❌ | VPN path requires an AKV cert; ACME HTTP-01 cannot reach a VPN-only client. Preflight error: `vpn-requires-akv`. |
 | `private` | `akv` | `false` | ✅ | Enterprise-internal OneCertV2-PrivateCA via AKV. |
@@ -349,12 +349,16 @@ The orchestrator validates the combo against `UNSUPPORTED_COMBOS` in
 
 ### Optional: VPN Gateway P2S (hybrid AFD + VPN)
 
-Off-CorpNet employees with a valid Entra ID token can be blocked by the
-AFD WAF service-tag allow-lists (`CorpNetPublic` / `CorpNetSAW`). Enabling
+Tenant users with a valid Entra ID token can still be blocked at the
+public edge by AFD WAF allow-lists that the operator configures
+(typically service-tag, IP-range, or header-based rules that gate the
+public ingress to a known managed-network population). Enabling
 `VPN_GATEWAY_ENABLED=true` adds an Azure VPN Gateway (Point-to-Site,
 OpenVPN, Microsoft Entra ID auth) that terminates at the same AppGw
-private listener as the AFD path, with the same AKV cert — a "trusted-
-bypass" lane for the same stamp.
+private listener as the AFD path, with the same AKV cert — a
+"trusted-bypass" lane to the same stamp for authenticated tenant users
+who don't match the public allow-list (e.g. remote / off-network /
+unmanaged-device users).
 
 - **Constraints**: `EDGE_MODE=afd` is required (code: `vpn-requires-afd`).
   `validateVpnGatewayCombo()` accepts any AKV-family `TLS_SOURCE` (`akv`

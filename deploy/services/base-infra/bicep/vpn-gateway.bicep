@@ -4,9 +4,10 @@
 //
 // Provisioned conditionally from `main.bicep` when `vpnGatewayEnabled=true`.
 // Coexists with the AFD edge mode as an additive, optional ingress — the
-// "trusted-bypass" pattern for off-network employees who are blocked by
-// AFD WAF service-tag allow-lists (CorpNetPublic / CorpNetSAW) but hold a
-// valid Entra ID token.
+// "trusted-bypass" pattern for authenticated tenant users who hold a valid
+// Entra ID token but are blocked at the public edge by operator-defined
+// AFD WAF allow-lists (e.g. service-tag, IP-range, or header-based rules
+// that gate AFD to a known managed-network population).
 //
 // Note: this module emits the gateway + its public IP + a diagnostic-settings
 // sink. The orchestrator does NOT render a vpn-postdeploy hook; client-profile

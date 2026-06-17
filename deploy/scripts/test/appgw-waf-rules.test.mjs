@@ -31,7 +31,7 @@ import {
 import { _internals } from "../lib/deploy-bicep.mjs";
 
 const SAMPLE_OPS = [
-  { name: "AllowCorpNet", priority: 100, ruleType: "MatchRule", action: "Allow", matchConditions: [] },
+  { name: "AllowOperator", priority: 100, ruleType: "MatchRule", action: "Allow", matchConditions: [] },
   { name: "BlockAnon", priority: 110, ruleType: "MatchRule", action: "Block", matchConditions: [] },
 ];
 
@@ -109,7 +109,7 @@ test("buildMergedCustomRules: VPN on + ops non-empty → seed then ops, in array
   assert.equal(merged.length, 5);
   assert.deepEqual(
     merged.map((r) => r.name),
-    ["AllowAfd", "AllowVpn", "BlockOther", "AllowCorpNet", "BlockAnon"],
+    ["AllowAfd", "AllowVpn", "BlockOther", "AllowOperator", "BlockAnon"],
   );
 });
 

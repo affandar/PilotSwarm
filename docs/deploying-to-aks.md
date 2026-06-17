@@ -178,17 +178,19 @@ The IaC path supports an optional, additive Azure VPN Gateway
 (Point-to-Site, OpenVPN protocol, Microsoft Entra ID authentication) that
 coexists with `EDGE_MODE=afd`. The VPN tunnel terminates inside the stamp
 VNet and reaches the **same AppGw private listener** as the AFD path, with
-the **same AKV cert** — so a CorpNet user (through AFD) and an off-CorpNet
-user (through VPN) both reach `https://<resourceName>.<SSL_CERT_DOMAIN_SUFFIX>`
-and observe an identical cert chain. This is the "trusted-bypass" pattern
-for off-CorpNet employees with valid Entra ID who would otherwise be
-blocked by the AFD WAF service-tag allow-lists (`CorpNetPublic` /
-`CorpNetSAW`). VPN is **not** a replacement for any existing edge mode.
+the **same AKV cert** — so an allow-listed user (through AFD) and an
+off-allow-list authenticated user (through VPN) both reach
+`https://<resourceName>.<SSL_CERT_DOMAIN_SUFFIX>` and observe an identical
+cert chain. This is the "trusted-bypass" pattern for tenant users with a
+valid Entra ID token who would otherwise be blocked at the public edge by
+operator-defined AFD WAF allow-lists (typically service-tag, IP-range, or
+header-based rules that gate the public ingress to a known managed-network
+population). VPN is **not** a replacement for any existing edge mode.
 
 #### Architecture
 
 ```
-                                  (CorpNet user)
+                            (allow-listed public user)
                                   ────────────►  AFD Premium
                                                     │  (Private Link)
                                                     ▼
@@ -198,7 +200,7 @@ blocked by the AFD WAF service-tag allow-lists (`CorpNetPublic` /
                                                 AKS portal pod
                                                     ▲
                                                     │
-                                  (off-CorpNet user)│
+                       (off-allow-list authenticated user)
                                   ────────────►  Azure VPN Gateway P2S
                                   Entra ID + MFA   (GatewaySubnet, OpenVPN)
 ```
