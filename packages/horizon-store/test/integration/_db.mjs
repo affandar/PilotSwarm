@@ -105,7 +105,7 @@ function combinedStore(factStore, graphStore) {
     const GRAPH = [
         "searchGraphNodes", "searchGraphEdges", "graphNeighbourhood",
         "upsertGraphNode", "upsertGraphEdge", "mergeGraphNodes",
-        "deleteGraphNode", "deleteGraphEdge",
+        "deleteGraphNode", "deleteGraphEdge", "graphStats",
     ];
     const s = {};
     for (const m of FACT) if (typeof factStore[m] === "function") s[m] = (...a) => factStore[m](...a);

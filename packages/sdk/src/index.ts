@@ -74,6 +74,7 @@ export type {
     GraphEdgeInput,
     GraphNodeQuery,
     GraphEdgeQuery,
+    GraphNamespaceQuery,
     GraphNodeRef,
     GraphNodeHit,
     GraphEdgeRef,

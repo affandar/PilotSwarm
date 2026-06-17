@@ -4,9 +4,9 @@
 // typed Cypher layer in TypeScript, not plpgsql-wrapped Cypher). The data
 // model (03-design §2.2):
 //
-//   (:GraphNode {node_key, kind, name, aliases, created_by})
+//   (:GraphNode {node_key, kind, name, aliases, namespace, created_by})
 //       -[:REL {predicate, predicate_key, confidence, observations,
-//               evidence[], asserted_by[], model}]-> (:GraphNode)
+//               evidence[], asserted_by[], namespace, model}]-> (:GraphNode)
 //       -[:EVIDENCED_BY]-> (:Fact {scope_key})
 //
 // Evidence has two physical forms: a NODE's evidence is a real EVIDENCED_BY
@@ -31,6 +31,46 @@ import { withDbRetry, isLabelCreationRaceError } from "./db-retry.js";
 import { nodeKeyOf, predicateKey as makePredicateKey, mergeAliases, decideEdgeUpsert, reinforceConfidence, clamp01 } from "./graph-model.js";
 
 const FACT_SEED = /^(shared|session):/;
+
+function normalizeNamespace(namespace?: string): string | null {
+    const clean = namespace?.trim().replace(/\/+$/g, "") ?? "";
+    return clean.length > 0 ? clean : null;
+}
+
+function namespacePredicate(alias: string, namespace?: string): string | null {
+    const ns = normalizeNamespace(namespace);
+    if (!ns) return null;
+    return `(${alias}.namespace = ${cypherStr(ns)} OR ${alias}.namespace STARTS WITH ${cypherStr(`${ns}/`)})`;
+}
+
+function namespaceMatches(value: unknown, namespace?: string): boolean {
+    const ns = normalizeNamespace(namespace);
+    if (!ns) return true;
+    const current = typeof value === "string" ? normalizeNamespace(value) : null;
+    return current === ns || current?.startsWith(`${ns}/`) === true;
+}
+
+function namespaceProp(namespace?: string): string {
+    const ns = normalizeNamespace(namespace);
+    return ns ? `, namespace: ${cypherStr(ns)}` : "";
+}
+
+function namespaceSet(alias: string, namespace?: string): string {
+    const ns = normalizeNamespace(namespace);
+    return ns ? `, ${alias}.namespace = ${cypherStr(ns)}` : "";
+}
+
+function edgeNamespacePredicate(namespace?: string): string | null {
+    const ns = normalizeNamespace(namespace);
+    if (!ns) return null;
+    const exact = cypherStr(ns);
+    const prefix = cypherStr(`${ns}/`);
+    return `(` +
+        `r.namespace = ${exact} OR r.namespace STARTS WITH ${prefix} OR ` +
+        `a.namespace = ${exact} OR a.namespace STARTS WITH ${prefix} OR ` +
+        `b.namespace = ${exact} OR b.namespace STARTS WITH ${prefix}` +
+        `)`;
+}
 
 /**
  * Load the AGE shared library for this session. On managed Postgres where age
@@ -126,17 +166,24 @@ export class GraphQueries {
         const depth = Math.max(1, Math.min(Math.trunc(q.depth ?? 1), 5));
 
         return this.withAge(async (c) => {
-            const found = new Map<string, { nodeKey: string; kind: string; name: string; aliases: string[] }>();
+            const found = new Map<string, { nodeKey: string; kind: string; name: string; namespace?: string; aliases: string[] }>();
             const collect = (rows: any[]) => {
                 for (const r of rows) {
                     const nodeKey = ag(r.node_key);
                     if (!found.has(nodeKey)) {
-                        found.set(nodeKey, { nodeKey, kind: ag(r.kind), name: ag(r.name), aliases: agArr(r.aliases) });
+                        const namespace = ag(r.namespace);
+                        found.set(nodeKey, {
+                            nodeKey,
+                            kind: ag(r.kind),
+                            name: ag(r.name),
+                            ...(typeof namespace === "string" ? { namespace } : {}),
+                            aliases: agArr(r.aliases),
+                        });
                     }
                 }
             };
-            const RET = `RETURN DISTINCT n.node_key, n.kind, n.name, n.aliases`;
-            const COLS = ["node_key", "kind", "name", "aliases"];
+            const RET = `RETURN DISTINCT n.node_key, n.kind, n.name, n.namespace, n.aliases`;
+            const COLS = ["node_key", "kind", "name", "namespace", "aliases"];
 
             const seeds = q.seeds ?? [];
             if (seeds.length > 0) {
@@ -165,12 +212,13 @@ export class GraphQueries {
                          WHERE s.node_key IN ${cypherStrList([...baseKeys])} ${RET}`, COLS);
                     collect(rows);
                 }
-                // kind/nameLike combine as post-filters when seeds anchor the query.
-                if (q.kind || q.nameLike) {
+                // kind/nameLike/namespace combine as post-filters when seeds anchor the query.
+                if (q.kind || q.nameLike || q.namespace) {
                     const kindNorm = q.kind;
                     const pat = q.nameLike?.toLowerCase();
                     for (const [k, n] of [...found]) {
                         if (kindNorm && n.kind !== kindNorm) { found.delete(k); continue; }
+                        if (!namespaceMatches(n.namespace, q.namespace)) { found.delete(k); continue; }
                         if (pat) {
                             const hay = [n.name, ...n.aliases].map((x) => x.toLowerCase());
                             if (!hay.some((x) => x.includes(pat))) found.delete(k);
@@ -180,6 +228,8 @@ export class GraphQueries {
             } else {
                 const filters: string[] = [];
                 if (q.kind) filters.push(`n.kind = ${cypherStr(q.kind)}`);
+                const ns = namespacePredicate("n", q.namespace);
+                if (ns) filters.push(ns);
                 if (q.nameLike) {
                     const pat = cypherStr(q.nameLike.toLowerCase());
                     // AGE lacks `any(x IN list WHERE ...)`; use list comprehension.
@@ -249,32 +299,45 @@ export class GraphQueries {
         if (pk) filters.push(`r.predicate_key = ${cypherStr(pk)}`);
         if (q.fromKey) filters.push(`a.node_key = ${cypherStr(q.fromKey)}`);
         if (q.toKey) filters.push(`b.node_key = ${cypherStr(q.toKey)}`);
+        const ns = edgeNamespacePredicate(q.namespace);
+        if (ns) filters.push(ns);
         if (q.minConfidence != null) filters.push(`r.confidence >= ${cypherNum(q.minConfidence)}`);
         const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
         const limit = cypherNum(Math.max(1, Math.min(Math.trunc(q.limit ?? 50), 500)));
         return this.withAge(async (c) => {
             const rows = await this.cypher(c,
                 `MATCH (a:GraphNode)-[r:REL]->(b:GraphNode) ${where}
-                 RETURN a.node_key, b.node_key, r.predicate, r.predicate_key, r.confidence, r.observations, r.evidence
+                 RETURN a.node_key, b.node_key, r.predicate, r.predicate_key, r.namespace, r.confidence, r.observations, r.evidence
                  LIMIT ${limit}`,
-                ["from_key", "to_key", "predicate", "predicate_key", "confidence", "observations", "evidence"]);
+                ["from_key", "to_key", "predicate", "predicate_key", "namespace", "confidence", "observations", "evidence"]);
             return rows.map((r) => ({
                 fromKey: ag(r.from_key), toKey: ag(r.to_key), predicate: ag(r.predicate),
-                predicateKey: ag(r.predicate_key), confidence: Number(ag(r.confidence)),
+                predicateKey: ag(r.predicate_key), namespace: ag(r.namespace) ?? undefined,
+                confidence: Number(ag(r.confidence)),
                 observations: Number(ag(r.observations)),
                 evidence: agArr(r.evidence).filter((sk) => scopeKeyAccessible(sk, access)),
             }));
         });
     }
 
-    async graphNeighbourhood(nodeKey: string, depth: number, _access?: AccessContext): Promise<SubGraph> {
+    async graphNeighbourhood(nodeKey: string, depth: number, _access?: AccessContext, opts: { namespace?: string } = {}): Promise<SubGraph> {
         const d = Math.max(1, Math.min(Math.trunc(depth), 5));
         return this.withAge(async (c) => {
+            const ns = namespacePredicate("n", opts.namespace);
             const nodeRows = await this.cypher(c,
                 `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} })-[:REL*1..${d}]-(n:GraphNode)
-                 RETURN DISTINCT n.node_key, n.kind, n.name`,
-                ["node_key", "kind", "name"]);
-            const nodes = nodeRows.map((r) => ({ nodeKey: ag(r.node_key), kind: ag(r.kind), name: ag(r.name) }));
+                 ${ns ? `WHERE ${ns}` : ""}
+                 RETURN DISTINCT n.node_key, n.kind, n.name, n.namespace`,
+                ["node_key", "kind", "name", "namespace"]);
+            const nodes = nodeRows.map((r) => {
+                const namespace = ag(r.namespace);
+                return {
+                    nodeKey: ag(r.node_key),
+                    kind: ag(r.kind),
+                    name: ag(r.name),
+                    ...(typeof namespace === "string" ? { namespace } : {}),
+                };
+            });
             if (nodes.length === 0) return { nodes: [], edges: [] };
 
             // Edges among the reachable set (+ anchor); avoids AGE-unsupported
@@ -284,14 +347,19 @@ export class GraphQueries {
             const edgeRows = await this.cypher(c,
                 `MATCH (a:GraphNode)-[r:REL]->(b:GraphNode)
                  WHERE a.node_key IN ${list} AND b.node_key IN ${list}
-                 RETURN a.node_key, b.node_key, r.predicate, r.confidence`,
-                ["from_key", "to_key", "predicate", "confidence"]);
+                 RETURN a.node_key, b.node_key, r.predicate, r.namespace, r.confidence`,
+                ["from_key", "to_key", "predicate", "namespace", "confidence"]);
             return {
                 nodes,
-                edges: edgeRows.map((r) => ({
-                    fromKey: ag(r.from_key), toKey: ag(r.to_key),
-                    predicate: ag(r.predicate), confidence: Number(ag(r.confidence)),
-                })),
+                edges: edgeRows.map((r) => {
+                    const namespace = ag(r.namespace);
+                    return {
+                        fromKey: ag(r.from_key), toKey: ag(r.to_key),
+                        predicate: ag(r.predicate),
+                        ...(typeof namespace === "string" ? { namespace } : {}),
+                        confidence: Number(ag(r.confidence)),
+                    };
+                }),
             };
         });
     }
@@ -301,10 +369,14 @@ export class GraphQueries {
      * a single `count()` Cypher per axis instead of a client-side fan-out.
      * AGE has no edge-only catalog, so edges are counted via a directed match.
      */
-    async graphStats(): Promise<{ nodeCount: number; edgeCount: number }> {
+    async graphStats(opts: { namespace?: string } = {}): Promise<{ nodeCount: number; edgeCount: number }> {
         return this.withAge(async (c) => {
-            const nodeRows = await this.cypher(c, `MATCH (n:GraphNode) RETURN count(n) AS c`, ["c"]);
-            const edgeRows = await this.cypher(c, `MATCH (:GraphNode)-[r]->() RETURN count(r) AS c`, ["c"]);
+            const nodeFilters = [namespacePredicate("n", opts.namespace)].filter(Boolean);
+            const nodeWhere = nodeFilters.length ? `WHERE ${nodeFilters.join(" AND ")}` : "";
+            const edgeFilters = [edgeNamespacePredicate(opts.namespace)].filter(Boolean);
+            const edgeWhere = edgeFilters.length ? `WHERE ${edgeFilters.join(" AND ")}` : "";
+            const nodeRows = await this.cypher(c, `MATCH (n:GraphNode) ${nodeWhere} RETURN count(n) AS c`, ["c"]);
+            const edgeRows = await this.cypher(c, `MATCH (a:GraphNode)-[r]->(b:GraphNode) ${edgeWhere} RETURN count(r) AS c`, ["c"]);
             return {
                 nodeCount: Number(ag(nodeRows[0]?.c) ?? 0),
                 edgeCount: Number(ag(edgeRows[0]?.c) ?? 0),
@@ -322,22 +394,24 @@ export class GraphQueries {
         const key = nodeKeyOf(n.kind, n.name);
         return this.withAge(async (c) => {
             const existing = await this.cypher(c,
-                `MATCH (e:GraphNode { node_key: ${cypherStr(key)} }) RETURN e.aliases`, ["aliases"]);
+                `MATCH (e:GraphNode { node_key: ${cypherStr(key)} }) RETURN e.aliases, e.namespace`, ["aliases", "namespace"]);
             const incomingAliases = mergeAliases(n.aliases ?? [], [n.name]);
             let ref: GraphNodeRef;
             if (existing.length > 0) {
                 const merged = mergeAliases(agArr(existing[0].aliases), incomingAliases);
+                const namespace = normalizeNamespace(n.namespace) ?? normalizeNamespace(ag(existing[0].namespace));
                 await this.cypher(c,
                     `MATCH (e:GraphNode { node_key: ${cypherStr(key)} })
-                     SET e.aliases = ${cypherStrList(merged)}, e.updated_at = timestamp()
+                     SET e.aliases = ${cypherStrList(merged)}, e.updated_at = timestamp()${namespaceSet("e", n.namespace)}
                      RETURN e.node_key`, ["node_key"]);
-                ref = { nodeKey: key, kind: n.kind, name: n.name, aliases: merged, created: false };
+                ref = { nodeKey: key, kind: n.kind, name: n.name, ...(namespace ? { namespace } : {}), aliases: merged, created: false };
             } else {
+                const namespace = normalizeNamespace(n.namespace);
                 await this.cypher(c,
                     `CREATE (e:GraphNode { node_key: ${cypherStr(key)}, kind: ${cypherStr(n.kind)},
-                        name: ${cypherStr(n.name)}, aliases: ${cypherStrList(incomingAliases)},
+                        name: ${cypherStr(n.name)}, aliases: ${cypherStrList(incomingAliases)}${namespaceProp(n.namespace)},
                         created_by: ${cypherStr(n.agentId)} }) RETURN e.node_key`, ["node_key"]);
-                ref = { nodeKey: key, kind: n.kind, name: n.name, aliases: incomingAliases, created: true };
+                ref = { nodeKey: key, kind: n.kind, name: n.name, ...(namespace ? { namespace } : {}), aliases: incomingAliases, created: true };
             }
             // Node evidence = real EVIDENCED_BY edges to lazy :Fact anchors
             // (03-design §2.2). Unioned on every upsert.
@@ -373,13 +447,14 @@ export class GraphQueries {
                 `(b:GraphNode { node_key: ${cypherStr(e.toKey)} })`;
 
             const existingRows = await this.cypher(c,
-                `${MATCH_EDGE} RETURN rel.confidence, rel.observations, rel.evidence`,
-                ["confidence", "observations", "evidence"]);
+                `${MATCH_EDGE} RETURN rel.confidence, rel.observations, rel.evidence, rel.namespace`,
+                ["confidence", "observations", "evidence", "namespace"]);
             const existing = existingRows.length > 0
                 ? {
                     confidence: Number(ag(existingRows[0].confidence)),
                     observations: Number(ag(existingRows[0].observations)),
                     evidence: agArr(existingRows[0].evidence),
+                    namespace: normalizeNamespace(ag(existingRows[0].namespace)),
                   }
                 : null;
 
@@ -390,33 +465,37 @@ export class GraphQueries {
                     `MATCH (a:GraphNode { node_key: ${cypherStr(e.fromKey)} }), (b:GraphNode { node_key: ${cypherStr(e.toKey)} })
                      CREATE (a)-[rel:REL { predicate: ${cypherStr(e.predicate)}, predicate_key: ${cypherStr(pk)},
                         confidence: ${cypherNum(d.confidence)}, observations: ${cypherNum(d.observations)},
-                        asserted_by: ${cypherStrList([e.agentId])}, evidence: ${cypherStrList(d.evidence)},
+                        asserted_by: ${cypherStrList([e.agentId])}, evidence: ${cypherStrList(d.evidence)}${namespaceProp(e.namespace)},
                         model: ${cypherStr(e.model ?? "")}, first_seen: timestamp(), last_seen: timestamp() }]->(b)
                      RETURN rel.predicate_key`, ["predicate_key"]);
             } else if (d.action === "reinforce") {
                 await this.cypher(c,
                     `${MATCH_EDGE}
                      SET rel.confidence = ${cypherNum(d.confidence)}, rel.observations = ${cypherNum(d.observations)},
-                         rel.evidence = ${cypherStrList(d.evidence)}, rel.last_seen = timestamp()
+                         rel.evidence = ${cypherStrList(d.evidence)}, rel.last_seen = timestamp()${namespaceSet("rel", e.namespace)}
                      RETURN rel.predicate_key`, ["predicate_key"]);
             }
             // action === "noop": already-known evidence only — leave untouched (GR7).
 
+            const namespace = normalizeNamespace(e.namespace) ?? existing?.namespace ?? undefined;
             return {
                 fromKey: e.fromKey, toKey: e.toKey, predicate: e.predicate, predicateKey: pk,
+                ...(namespace ? { namespace } : {}),
                 confidence: d.confidence, observations: d.observations,
                 reinforced: d.action === "reinforce",
             };
         });
     }
 
-    async mergeGraphNodes(fromKey: string, intoKey: string, reason: string): Promise<void> {
+    async mergeGraphNodes(fromKey: string, intoKey: string, reason: string, opts: { namespace?: string } = {}): Promise<void> {
         await this.withAge(async (c) => {
+            const ns = namespacePredicate("e", opts.namespace);
             const dup = await this.cypher(c,
-                `MATCH (e:GraphNode { node_key: ${cypherStr(fromKey)} }) RETURN e.aliases`, ["aliases"]);
+                `MATCH (e:GraphNode { node_key: ${cypherStr(fromKey)} }) ${ns ? `WHERE ${ns}` : ""} RETURN e.aliases`, ["aliases"]);
             if (dup.length === 0) return; // nothing to merge
+            const survivorNs = namespacePredicate("e", opts.namespace);
             const survivor = await this.cypher(c,
-                `MATCH (e:GraphNode { node_key: ${cypherStr(intoKey)} }) RETURN e.aliases`, ["aliases"]);
+                `MATCH (e:GraphNode { node_key: ${cypherStr(intoKey)} }) ${survivorNs ? `WHERE ${survivorNs}` : ""} RETURN e.aliases`, ["aliases"]);
             if (survivor.length === 0) throw new Error(`mergeGraphNodes: merge target not found: ${intoKey}`);
 
             // 1. Union aliases onto the survivor (+ audit note).
@@ -495,26 +574,29 @@ export class GraphQueries {
         });
     }
 
-    async deleteGraphNode(nodeKey: string): Promise<boolean> {
+    async deleteGraphNode(nodeKey: string, opts: { namespace?: string } = {}): Promise<boolean> {
         return this.withAge(async (c) => {
+            const ns = namespacePredicate("e", opts.namespace);
             const exists = await this.cypher(c,
-                `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} }) RETURN e.node_key`, ["node_key"]);
+                `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} }) ${ns ? `WHERE ${ns}` : ""} RETURN e.node_key`, ["node_key"]);
             if (exists.length === 0) return false;
             await this.cypher(c,
-                `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} }) DETACH DELETE e`, []);
+                `MATCH (e:GraphNode { node_key: ${cypherStr(nodeKey)} }) ${ns ? `WHERE ${ns}` : ""} DETACH DELETE e`, []);
             return true;
         });
     }
 
-    async deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string): Promise<boolean> {
+    async deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string, opts: { namespace?: string } = {}): Promise<boolean> {
         return this.withAge(async (c) => {
             const MATCH =
                 `MATCH (a:GraphNode { node_key: ${cypherStr(fromKey)} })` +
                 `-[r:REL { predicate_key: ${cypherStr(predicateKey)} }]->` +
                 `(b:GraphNode { node_key: ${cypherStr(toKey)} })`;
-            const exists = await this.cypher(c, `${MATCH} RETURN r.predicate_key`, ["predicate_key"]);
+            const ns = edgeNamespacePredicate(opts.namespace);
+            const where = ns ? ` WHERE ${ns}` : "";
+            const exists = await this.cypher(c, `${MATCH}${where} RETURN r.predicate_key`, ["predicate_key"]);
             if (exists.length === 0) return false;
-            await this.cypher(c, `${MATCH} DELETE r`, []);
+            await this.cypher(c, `${MATCH}${where} DELETE r`, []);
             return true;
         });
     }

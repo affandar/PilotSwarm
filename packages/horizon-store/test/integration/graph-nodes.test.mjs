@@ -45,10 +45,51 @@ describe.skipIf(!HAS_DB)("graph nodes (GE1–GE5)", () => {
         assert.deepEqual([...hits[0].evidence].sort(), ["shared:arch/m1", "shared:arch/m2"], "evidence unioned, deduped");
     });
 
+    it("GE4b namespace persists, searches by exact/subtree prefix, and legacy nodes are excluded", async () => {
+        const checkout = await store.upsertGraphNode({
+            kind: "service",
+            name: "Checkout API",
+            namespace: "corpus/acme/services",
+            agentId,
+            evidence: ["shared:corpus/acme/doc1"],
+        });
+        const billing = await store.upsertGraphNode({
+            kind: "service",
+            name: "Billing API",
+            namespace: "corpus/acme/billing",
+            agentId,
+        });
+        await store.upsertGraphNode({ kind: "service", name: "Robotics API", namespace: "corpus/globex/services", agentId });
+        assert.equal(checkout.namespace, "corpus/acme/services", "created ref carries namespace");
+
+        const preserved = await store.upsertGraphNode({ kind: "service", name: "Checkout API", agentId });
+        assert.equal(preserved.created, false, "idempotent upsert hits existing node");
+        assert.equal(preserved.namespace, "corpus/acme/services", "idempotent upsert preserves existing namespace when omitted");
+
+        const acme = await store.searchGraphNodes({ namespace: "corpus/acme", limit: 20 }, { unrestricted: true });
+        const acmeKeys = acme.map((h) => h.nodeKey).sort();
+        assert.deepEqual(acmeKeys, [billing.nodeKey, checkout.nodeKey].sort(), "namespace subtree includes both acme descendants only");
+        assert.ok(acme.every((h) => h.namespace?.startsWith("corpus/acme/")), "hits expose namespace");
+
+        const exact = await store.searchGraphNodes({ namespace: "corpus/acme/services", limit: 20 }, { unrestricted: true });
+        assert.deepEqual(exact.map((h) => h.nodeKey), [checkout.nodeKey], "exact namespace also includes its subtree, here only checkout");
+
+        const none = await store.searchGraphNodes({ namespace: "corpus/acme", kind: "person", limit: 20 }, { unrestricted: true });
+        assert.equal(none.length, 0, "legacy un-namespaced Tom Lane is excluded by namespace filter");
+    });
+
     it("GE5 (neg) empty name/kind rejected with clear error", async () => {
         await assert.rejects(() => store.upsertGraphNode({ kind: "", name: "x", agentId }), /kind and name/);
         await assert.rejects(() => store.upsertGraphNode({ kind: "person", name: "  ", agentId }), /kind and name/);
         await assert.rejects(() => store.upsertGraphNode({ kind: "person", name: "x" }), /agentId/);
+    });
+
+    it("GE5b namespace guard prevents deleting a node outside the subtree", async () => {
+        const target = await store.upsertGraphNode({ kind: "service", name: "Guarded Delete API", namespace: "corpus/acme/ops", agentId });
+        assert.equal(await store.deleteGraphNode(target.nodeKey, { namespace: "corpus/globex" }), false, "wrong namespace guard blocks delete");
+        assert.equal((await store.searchGraphNodes({ seeds: [target.nodeKey] }, { unrestricted: true })).length, 1, "node still exists");
+        assert.equal(await store.deleteGraphNode(target.nodeKey, { namespace: "corpus/acme" }), true, "ancestor namespace guard permits delete");
+        assert.equal((await store.searchGraphNodes({ seeds: [target.nodeKey] }, { unrestricted: true })).length, 0, "node deleted");
     });
 
     it("GE6 single quotes / backslashes in name + alias round-trip (Cypher escaping)", async () => {

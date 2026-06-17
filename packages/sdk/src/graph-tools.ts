@@ -90,6 +90,11 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             properties: {
                 kind: { type: "string", description: "Free-text node kind filter (person, patch, file, …)." },
                 nameLike: { type: "string", description: "Lexical match on node name or any alias. The resolve key." },
+                namespace: {
+                    type: "string",
+                    description:
+                        "Optional graph namespace subtree. Matches this exact namespace and descendants, e.g. 'corpus/acme' includes 'corpus/acme/services'.",
+                },
                 seeds: { type: "array", items: { type: "string" }, description: "Fact scopeKeys OR node keys to anchor from." },
                 depth: { type: "number", description: "Hops to expand from seeds (1..5)." },
                 limit: { type: "number" },
@@ -98,10 +103,10 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         handler: async (a: any, ctx: any) => {
             const access = await resolveAccess(ctx?.sessionId);
             const hits = await graphStore.searchGraphNodes(
-                { kind: a.kind, nameLike: a.nameLike, seeds: a.seeds, depth: a.depth, limit: a.limit },
+                { kind: a.kind, nameLike: a.nameLike, namespace: a.namespace, seeds: a.seeds, depth: a.depth, limit: a.limit },
                 access,
             );
-            recordSearch(ctx?.sessionId, "search_nodes", { kind: a.kind, nameLike: a.nameLike, seeds: a.seeds, depth: a.depth }, hits.length);
+            recordSearch(ctx?.sessionId, "search_nodes", { kind: a.kind, nameLike: a.nameLike, namespace: a.namespace, seeds: a.seeds, depth: a.depth }, hits.length);
             return hits;
         },
     }));
@@ -117,6 +122,11 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                 predicateKey: { type: "string", description: "EXACT normalized key (preferred)." },
                 fromKey: { type: "string" },
                 toKey: { type: "string" },
+                namespace: {
+                    type: "string",
+                    description:
+                        "Optional graph namespace subtree. An edge matches when the edge itself or either endpoint is in the namespace subtree.",
+                },
                 minConfidence: { type: "number" },
                 limit: { type: "number" },
             },
@@ -136,13 +146,18 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             properties: {
                 nodeKey: { type: "string" },
                 depth: { type: "number", description: "Hops (clamped 1..5)." },
+                namespace: {
+                    type: "string",
+                    description:
+                        "Optional graph namespace subtree for returned nodes/edges. Matches exact namespace and descendants.",
+                },
             },
             required: ["nodeKey", "depth"] as const,
         },
         handler: async (a: any, ctx: any) => {
             const access = await resolveAccess(ctx?.sessionId);
-            const sub = await graphStore.graphNeighbourhood(a.nodeKey, a.depth, access);
-            recordSearch(ctx?.sessionId, "neighbourhood", { nodeKey: a.nodeKey, depth: a.depth }, sub.nodes.length);
+            const sub = await graphStore.graphNeighbourhood(a.nodeKey, a.depth, access, { namespace: a.namespace });
+            recordSearch(ctx?.sessionId, "neighbourhood", { nodeKey: a.nodeKey, depth: a.depth, namespace: a.namespace }, sub.nodes.length);
             return sub;
         },
     }));
@@ -153,8 +168,17 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             description:
                 "Read-only graph report: node + edge counts and crawl-queue status (how many facts remain " +
                 "uncrawled, reported up to a bounded probe). Use for status/health reporting — it never mutates the graph.",
-            parameters: { type: "object" as const, properties: {} },
-            handler: async () => {
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    namespace: {
+                        type: "string",
+                        description:
+                            "Optional graph namespace subtree for node/edge counts and crawl backlog. Matches exact namespace and descendants.",
+                    },
+                },
+            },
+            handler: async (a: any = {}) => {
                 // Prefer a provider aggregate (single cheap query). If the store
                 // does not implement graphStats(), fall back to a BOUNDED count —
                 // never a fan-out traversal (that would be a multi-minute DoS on a
@@ -169,11 +193,11 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                 // beyond the probe is not needed for a health report.
                 const BACKLOG_PROBE = 500;
                 const statsFn = (graphStore as any).graphStats;
-                const uncrawled = await factStore.readUncrawledFacts({ limit: BACKLOG_PROBE });
+                const uncrawled = await factStore.readUncrawledFacts({ namespace: a.namespace, limit: BACKLOG_PROBE });
                 const uncrawledFacts = uncrawled.count;
                 const uncrawledFactsCapped = uncrawled.count >= BACKLOG_PROBE;
                 if (typeof statsFn === "function") {
-                    const s = await statsFn.call(graphStore);
+                    const s = await statsFn.call(graphStore, { namespace: a.namespace });
                     return {
                         nodeCount: s.nodeCount,
                         edgeCount: s.edgeCount,
@@ -185,7 +209,7 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                 // crawl backlog, without an O(N) traversal. nodeCount is a lower
                 // bound (capped sample) so callers know it is approximate.
                 const SAMPLE = 1000;
-                const sample = await graphStore.searchGraphNodes({ limit: SAMPLE }, { unrestricted: true });
+                const sample = await graphStore.searchGraphNodes({ namespace: a.namespace, limit: SAMPLE }, { unrestricted: true });
                 return {
                     nodeCountAtLeast: sample.length,
                     nodeCountExact: sample.length < SAMPLE ? sample.length : undefined,
@@ -254,6 +278,11 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             properties: {
                 kind: { type: "string", description: "Free text: person, patch, code_file, thread…" },
                 name: { type: "string", description: "Canonical surface form." },
+                namespace: {
+                    type: "string",
+                    description:
+                        "Optional graph namespace, aligned with fact key prefixes (e.g. 'corpus/acme' or 'corpus/acme/services').",
+                },
                 aliases: { type: "array", items: { type: "string" }, description: "Other observed surface forms." },
                 evidence: { type: "array", items: { type: "string" }, description: "Fact scopeKeys justifying this node." },
             },
@@ -273,6 +302,11 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                 fromKey: { type: "string", description: "Source node key." },
                 toKey: { type: "string", description: "Target node key." },
                 predicate: { type: "string", description: "Free-text verb, e.g. 'revives argument from'." },
+                namespace: {
+                    type: "string",
+                    description:
+                        "Optional graph namespace for this edge assertion. Use the same namespace as the source evidence/domain when known.",
+                },
                 confidence: { type: "number", description: "0..1 for THIS observation (default 1.0)." },
                 evidence: { type: "array", items: { type: "string" }, description: "Fact scopeKeys justifying the edge." },
             },
@@ -290,21 +324,28 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             properties: {
                 fromKey: { type: "string", description: "Duplicate to remove." },
                 intoKey: { type: "string", description: "Survivor to keep." },
+                namespace: {
+                    type: "string",
+                    description: "Optional namespace guard. Merge only when both duplicate and survivor are in this namespace subtree.",
+                },
                 reason: { type: "string", description: "Why they're the same (audit)." },
             },
             required: ["fromKey", "intoKey", "reason"] as const,
         },
-        handler: async (a: any) => { await graphStore.mergeGraphNodes(a.fromKey, a.intoKey, a.reason); return { merged: true }; },
+        handler: async (a: any) => { await graphStore.mergeGraphNodes(a.fromKey, a.intoKey, a.reason, { namespace: a.namespace }); return { merged: true }; },
     }));
 
     tools.push(defineTool("graph_delete_node", {
         description: "Remove a node and all its edges (DETACH DELETE). No cascade to facts.",
         parameters: {
             type: "object" as const,
-            properties: { nodeKey: { type: "string" } },
+            properties: {
+                nodeKey: { type: "string" },
+                namespace: { type: "string", description: "Optional namespace guard. Delete only when the node is in this namespace subtree." },
+            },
             required: ["nodeKey"] as const,
         },
-        handler: async (a: any) => ({ deleted: await graphStore.deleteGraphNode(a.nodeKey) }),
+        handler: async (a: any) => ({ deleted: await graphStore.deleteGraphNode(a.nodeKey, { namespace: a.namespace }) }),
     }));
 
     tools.push(defineTool("graph_delete_edge", {
@@ -315,10 +356,14 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                 fromKey: { type: "string" },
                 toKey: { type: "string" },
                 predicateKey: { type: "string" },
+                namespace: {
+                    type: "string",
+                    description: "Optional namespace guard. Delete only when the edge itself or either endpoint is in this namespace subtree.",
+                },
             },
             required: ["fromKey", "toKey", "predicateKey"] as const,
         },
-        handler: async (a: any) => ({ deleted: await graphStore.deleteGraphEdge(a.fromKey, a.toKey, a.predicateKey) }),
+        handler: async (a: any) => ({ deleted: await graphStore.deleteGraphEdge(a.fromKey, a.toKey, a.predicateKey, { namespace: a.namespace }) }),
     }));
 
     return tools;

@@ -185,6 +185,12 @@ Key disciplines encoded in the prompt:
 - **Resolve before create.** `graph_search_nodes(kind, nameLike)` first; a short
   handle (`tgl`) for an existing person merges in as an alias rather than minting
   a duplicate node.
+- **Carry one namespace.** Use the same namespace string for facts and graph,
+  for example `corpus/acme`: `facts_read_uncrawled({ namespace })`,
+  `facts_search({ namespace })`, `graph_search_nodes({ namespace, ... })`, and
+  `graph_upsert_node` / `graph_upsert_edge` with `namespace`. Graph namespace is
+  a property, so `corpus/acme` also includes descendants such as
+  `corpus/acme/services`.
 - **Re-assert, never merge evidence.** A follow-up email restating a relationship
   asserts it **again** with the new email's evidence, reusing the **exact same
   predicate**. Same verb reinforces an edge; a synonym fragments it.
@@ -257,11 +263,11 @@ the tools the model sees *are* the provider's descriptors.
 | `facts_read` | reader + harvester | `readFacts` (full email by scopeKey) |
 | `facts_read_uncrawled` | harvester | gated queue read |
 | `facts_mark_crawled` | harvester | stamp `last_crawled_at` |
-| `graph_search_nodes` | reader + harvester | `searchGraphNodes` (seeds + depth) |
-| `graph_search_edges` | reader + harvester | `searchGraphEdges` |
-| `graph_neighbourhood` | reader | `graphNeighbourhood(nodeKey, depth)` |
-| `graph_upsert_node` | harvester | idempotent node MERGE |
-| `graph_upsert_edge` | harvester | idempotent edge MERGE |
+| `graph_search_nodes` | reader + harvester | `searchGraphNodes` (namespace + seeds + depth) |
+| `graph_search_edges` | reader + harvester | `searchGraphEdges` (namespace-aware) |
+| `graph_neighbourhood` | reader | `graphNeighbourhood(nodeKey, depth, namespace?)` |
+| `graph_upsert_node` | harvester | idempotent node MERGE + optional namespace stamp |
+| `graph_upsert_edge` | harvester | idempotent edge MERGE + optional namespace stamp |
 
 The `availableTools` allow-list given to a session decides which subset the model
 can call. Readers get the read tools; harvesters additionally get the write +

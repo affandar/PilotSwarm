@@ -369,7 +369,7 @@ export function createFactTools(opts: {
                 properties: {
                     query: { type: "string", description: "Keywords for lexical, natural language for semantic, keyword-rich phrase for hybrid." },
                     mode: { type: "string", enum: ["lexical", "semantic", "hybrid"], description: "Default hybrid." },
-                    namespace: { type: "string", description: "Key-prefix filter, e.g. 'skills'." },
+                    namespace: { type: "string", description: "Key-prefix filter over fact keys, matched as '<prefix>/%'. Accepts ANY number of '/'-delimited segments: a reserved namespace ('skills', 'asks') or a domain root ('acme', 'acme/services') to scope a multi-domain corpus to one domain/sub-domain before lexical/semantic/hybrid ranking." },
                     tags: { type: "array", items: { type: "string" } },
                     limit: { type: "number", description: "Max results (default 20)." },
                 },
@@ -388,22 +388,30 @@ export function createFactTools(opts: {
             description:
                 "Given a fact you already have, return the semantically nearest other facts (vector kNN over the " +
                 "fact's stored embedding — no query text, no re-embedding). Use for clustering, dedup hunting, or " +
-                "expanding context around a known fact.",
+                "expanding context around a known fact. Pass namespace to restrict candidates to a fact key-prefix " +
+                "subtree before nearest-neighbour ranking, using the same semantics as facts_search.",
             parameters: {
                 type: "object" as const,
                 properties: {
                     scopeKey: { type: "string", description: "The anchor fact's scopeKey." },
+                    namespace: {
+                        type: "string",
+                        description:
+                            "Optional key-prefix filter over candidate fact keys, matched as '<prefix>/%'. Accepts any number of '/'-delimited segments, e.g. 'skills' or 'corpus/acme/services'.",
+                    },
                     k: { type: "number", description: "Top-k neighbours (default 8)." },
                     minScore: { type: "number", description: "Drop neighbours below this cosine score (0..1)." },
                 },
                 required: ["scopeKey"] as const,
             },
-            handler: async (a: { scopeKey: string; k?: number; minScore?: number }, ctx?: { sessionId?: string }) => {
+            handler: async (a: { scopeKey: string; namespace?: string; k?: number; minScore?: number }, ctx?: { sessionId?: string }) => {
+                const nsError = blockReservedSearch(a.namespace);
+                if (nsError) return { error: nsError };
                 const access = await resolveSearchAccess(ctx);
-                const result = await enhancedFactStore.similarFacts(a.scopeKey, { k: a.k, minScore: a.minScore }, access);
+                const result = await enhancedFactStore.similarFacts(a.scopeKey, { k: a.k, minScore: a.minScore, namespace: a.namespace }, access);
                 // Post-filter reserved keys — similarFacts has no namespace arg, so
-                // a kNN from an accessible anchor could still surface intake/* near
-                // neighbours for a task agent.
+                // a kNN from an accessible anchor could still surface reserved
+                // near-neighbours for a task agent when namespace is broad/omitted.
                 return stripReserved(result);
             },
         }));
@@ -447,6 +455,110 @@ export function createFactTools(opts: {
                 },
             }));
         }
+    }
+
+    // ── manage_embedder — durable embedder lifecycle (CONTROL PLANE) ─────────
+    //   The embedder is the single eternal in-DB batch loop that fills the
+    //   `embedding` column so semantic/hybrid search and facts_similar work.
+    //   It is a SHARED, durable, fleet-wide resource (one loop per facts schema,
+    //   advisory-locked across workers), so its lifecycle is an OPERATOR action,
+    //   not a per-task tool. Restrict it to the Facts Manager — the singleton
+    //   curator that already owns the knowledge-base control surface. Gate on
+    //   `capabilities.embedder` (NOT `.search`): a store can have search without
+    //   an embedder (lexical-only), and vice versa.
+    if (
+        enhancedFactStore &&
+        enhancedFactStore.capabilities.embedder &&
+        agentIdentity === FACTS_MANAGER_AGENT_ID
+    ) {
+        enhancedTools.push(defineTool("manage_embedder", {
+            description:
+                "Inspect and control the durable embedding loop that powers semantic/hybrid facts_search and " +
+                "facts_similar. This is a SHARED, fleet-wide resource (one loop per facts schema) — changes affect " +
+                "all agents and all sessions, so use it deliberately. Actions: 'status' (current running state — " +
+                "always safe), 'start' (idempotently ensure the loop is running; optionally tune batch size / poll " +
+                "interval), 'stop' (halt embedding fleet-wide — semantic search degrades to lexical until restarted), " +
+                "'configure' (replace the embedding endpoint; rejects a model whose vector dimension differs from the " +
+                "column, since that needs a schema migration + full re-embed). Prefer 'status' first; only 'stop' when " +
+                "an operator explicitly asks, because new and updated facts stop getting embeddings while it is stopped.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    action: {
+                        type: "string",
+                        enum: ["status", "start", "stop", "configure"],
+                        description: "status = read-only; start/stop = lifecycle; configure = replace endpoint.",
+                    },
+                    intervalSeconds: {
+                        type: "number",
+                        description: "start only: seconds between embed passes (loop poll interval).",
+                    },
+                    batch: {
+                        type: "number",
+                        description: "start only: rows embedded per pass.",
+                    },
+                    reason: {
+                        type: "string",
+                        description: "stop only: human-readable reason recorded for the cancellation.",
+                    },
+                    endpoint: {
+                        type: "object",
+                        description:
+                            "configure only: OpenAI/Azure-compatible embeddings endpoint. `dim` MUST match the " +
+                            "column dimension fixed at migration time.",
+                        properties: {
+                            url: { type: "string", description: "Embeddings endpoint URL." },
+                            model: { type: "string", description: "Model / deployment name." },
+                            dim: { type: "number", description: "Vector dimension (must match the column)." },
+                            apiKey: { type: "string", description: "API key (optional)." },
+                            apiKeyHeader: { type: "string", description: "Auth header name (default 'api-key')." },
+                            bearer: { type: "boolean", description: "Send the key as 'Bearer <key>' (default false)." },
+                        },
+                        required: ["url", "model", "dim"] as const,
+                    },
+                },
+                required: ["action"] as const,
+            },
+            handler: async (a: {
+                action: "status" | "start" | "stop" | "configure";
+                intervalSeconds?: number;
+                batch?: number;
+                reason?: string;
+                endpoint?: { url: string; model: string; dim: number; apiKey?: string; apiKeyHeader?: string; bearer?: boolean };
+            }) => {
+                try {
+                    switch (a.action) {
+                        case "status":
+                            return { action: "status", ...(await enhancedFactStore.embedderStatus()) };
+                        case "start":
+                            return {
+                                action: "start",
+                                ...(await enhancedFactStore.startEmbedder({
+                                    intervalSeconds: a.intervalSeconds,
+                                    batch: a.batch,
+                                })),
+                            };
+                        case "stop":
+                            return { action: "stop", ...(await enhancedFactStore.stopEmbedder(a.reason)) };
+                        case "configure": {
+                            if (!a.endpoint) {
+                                return { error: "configure requires an 'endpoint' object with url, model, and dim." };
+                            }
+                            return {
+                                action: "configure",
+                                ...(await enhancedFactStore.configureEmbedder(a.endpoint, { restartIfRunning: true })),
+                            };
+                        }
+                        default:
+                            return { error: `Unknown action '${a.action}'. Use status, start, stop, or configure.` };
+                    }
+                } catch (err) {
+                    // Surface the provider's error to the agent (e.g. dim mismatch on
+                    // configure) rather than throwing out of the tool call.
+                    return { error: err instanceof Error ? err.message : String(err) };
+                }
+            },
+        }));
     }
 
     return [storeTool, readTool, deleteTool, ...enhancedTools];

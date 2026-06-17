@@ -147,7 +147,7 @@ export interface SearchWeights {
 export interface SearchOpts {
     mode?: SearchMode;          // default "hybrid"
     scope?: ReadFactsQuery["scope"];
-    namespace?: string;         // key-prefix filter, e.g. "skills"
+    namespace?: string;         // key-prefix filter, matched as "<prefix>/%". Any depth: "skills" or a domain root "acme/services".
     tags?: string[];
     limit?: number;             // default 20
     /** Candidate pool size per signal before fusion (default 50). ACL applies
@@ -162,7 +162,7 @@ export interface SearchOpts {
 export interface SimilarOpts {
     k?: number;                 // top-k neighbours (default 8)
     minScore?: number;          // cosine floor (0..1)
-    namespace?: string;
+    namespace?: string;         // candidate key-prefix filter, matched as "<prefix>/%". Any depth: "skills" or "corpus/acme/services".
 }
 
 /** One fused, ACL-resolved hit. */

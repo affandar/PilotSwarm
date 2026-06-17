@@ -25,6 +25,18 @@ describe.skipIf(!HAS_DB)("graph merge (GM1–GM4)", () => {
         if (schema) await dropSchemaAndGraph(schema, graph);
     });
 
+    it("GM0 namespace guard prevents merging nodes outside the subtree", async () => {
+        const dup = await store.upsertGraphNode({ kind: "service", name: "namespace merge duplicate", namespace: "corpus/acme/services", agentId });
+        const survivor = await store.upsertGraphNode({ kind: "service", name: "namespace merge survivor", namespace: "corpus/acme/services", agentId });
+        await store.mergeGraphNodes(dup.nodeKey, survivor.nodeKey, "wrong guard", { namespace: "corpus/globex" });
+        assert.equal((await store.searchGraphNodes({ seeds: [dup.nodeKey] }, all)).length, 1, "wrong namespace guard is a no-op");
+
+        await store.mergeGraphNodes(dup.nodeKey, survivor.nodeKey, "same service", { namespace: "corpus/acme" });
+        assert.equal((await store.searchGraphNodes({ seeds: [dup.nodeKey] }, all)).length, 0, "ancestor namespace guard permits merge");
+        const [hit] = await store.searchGraphNodes({ seeds: [survivor.nodeKey] }, all);
+        assert.equal(hit.namespace, "corpus/acme/services", "survivor namespace is preserved");
+    });
+
     it("GM1–GM3 merge: aliases unioned, edges repointed (deduped), duplicate gone", async () => {
         await store.mergeGraphNodes(alastor.nodeKey, moody.nodeKey, "same person");
 

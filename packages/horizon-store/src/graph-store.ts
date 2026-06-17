@@ -17,7 +17,7 @@
 
 import type {
     AccessContext, GraphEdgeHit, GraphEdgeInput, GraphEdgeQuery, GraphNodeHit,
-    GraphNodeInput, GraphNodeQuery, GraphNodeRef, GraphEdgeRef, GraphStore, SubGraph,
+    GraphNamespaceQuery, GraphNodeInput, GraphNodeQuery, GraphNodeRef, GraphEdgeRef, GraphStore, SubGraph,
 } from "./types.js";
 import type { HorizonFactsConfig } from "./config.js";
 import { resolveConfig, buildPoolConfig } from "./config.js";
@@ -98,8 +98,8 @@ export class HorizonDBGraphStore implements GraphStore {
     searchGraphEdges(q: GraphEdgeQuery, access?: AccessContext): Promise<GraphEdgeHit[]> {
         return this.graphQueries.searchGraphEdges(q, access);
     }
-    graphNeighbourhood(nodeKey: string, depth: number, access?: AccessContext): Promise<SubGraph> {
-        return this.graphQueries.graphNeighbourhood(nodeKey, depth, access);
+    graphNeighbourhood(nodeKey: string, depth: number, access?: AccessContext, opts?: GraphNamespaceQuery): Promise<SubGraph> {
+        return this.graphQueries.graphNeighbourhood(nodeKey, depth, access, opts);
     }
     upsertGraphNode(n: GraphNodeInput): Promise<GraphNodeRef> {
         return this.graphQueries.upsertGraphNode(n);
@@ -107,19 +107,19 @@ export class HorizonDBGraphStore implements GraphStore {
     upsertGraphEdge(e: GraphEdgeInput): Promise<GraphEdgeRef> {
         return this.graphQueries.upsertGraphEdge(e);
     }
-    mergeGraphNodes(fromKey: string, intoKey: string, reason: string): Promise<void> {
-        return this.graphQueries.mergeGraphNodes(fromKey, intoKey, reason);
+    mergeGraphNodes(fromKey: string, intoKey: string, reason: string, opts?: GraphNamespaceQuery): Promise<void> {
+        return this.graphQueries.mergeGraphNodes(fromKey, intoKey, reason, opts);
     }
-    deleteGraphNode(nodeKey: string): Promise<boolean> {
-        return this.graphQueries.deleteGraphNode(nodeKey);
+    deleteGraphNode(nodeKey: string, opts?: GraphNamespaceQuery): Promise<boolean> {
+        return this.graphQueries.deleteGraphNode(nodeKey, opts);
     }
-    deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string): Promise<boolean> {
-        return this.graphQueries.deleteGraphEdge(fromKey, toKey, predicateKey);
+    deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string, opts?: GraphNamespaceQuery): Promise<boolean> {
+        return this.graphQueries.deleteGraphEdge(fromKey, toKey, predicateKey, opts);
     }
 
     /** Cheap whole-graph counts for graph_stats (07 P5) — single count() Cypher
      * per axis, no client-side fan-out. The SDK tool adds the crawl backlog. */
-    graphStats(): Promise<{ nodeCount: number; edgeCount: number }> {
-        return this.graphQueries.graphStats();
+    graphStats(opts?: GraphNamespaceQuery): Promise<{ nodeCount: number; edgeCount: number }> {
+        return this.graphQueries.graphStats(opts);
     }
 }

@@ -20,6 +20,10 @@ COPY packages/cli/package.json ./packages/cli/
 COPY packages/portal/package.json ./packages/portal/
 COPY packages/ui-core/package.json ./packages/ui-core/
 COPY packages/ui-react/package.json ./packages/ui-react/
+# horizon-store package.json must be present BEFORE `npm ci` so npm creates the
+# node_modules/@pilotswarm/horizon-store workspace symlink the management client's
+# dynamic import("@pilotswarm/horizon-store") resolves at runtime (optional EnhancedFactStore).
+COPY packages/horizon-store/package.json ./packages/horizon-store/
 COPY scripts/postinstall.js ./scripts/
 
 # Install all deps including devDeps (Vite build happens in-image). `npm ci`
@@ -33,6 +37,11 @@ RUN npm ci --force
 COPY packages/sdk/dist/ ./packages/sdk/dist/
 COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
+
+# horizon-store built output + runtime-read migrations (sibling layout: the
+# migrator resolves ../../migrations from dist/src/).
+COPY packages/horizon-store/dist/ ./packages/horizon-store/dist/
+COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
 
 # Copy CLI (plain JS)
 COPY packages/cli/bin/ ./packages/cli/bin/

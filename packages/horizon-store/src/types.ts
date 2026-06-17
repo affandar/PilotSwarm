@@ -34,6 +34,7 @@ export type {
     GraphStore,
     GraphNodeInput,
     GraphEdgeInput,
+    GraphNamespaceQuery,
     GraphNodeQuery,
     GraphEdgeQuery,
     GraphNodeRef,

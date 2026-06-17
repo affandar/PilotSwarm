@@ -6,7 +6,7 @@ import { describe, it, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
 import {
     HAS_DB, makeStore, dropSchemaAndGraph, rawPool, aclOf,
-    FX, fxScopeKey, seedFX, cosine,
+    FX, FX_MODEL, fxScopeKey, seedFX, cosine,
 } from "./_db.mjs";
 
 describe.skipIf(!HAS_DB)("similarFacts (SF1–SF5)", () => {
@@ -78,6 +78,35 @@ describe.skipIf(!HAS_DB)("similarFacts (SF1–SF5)", () => {
         const keys = res.facts.map((f) => f.scopeKey);
         assert.ok(keys.includes(fxScopeKey(FX[4])), "own session fact visible");
         assert.ok(!keys.includes(fxScopeKey(FX[5])), "other session's fact filtered");
+    });
+
+    it("SF6 namespace filter excludes semantically-close facts from other namespaces", async () => {
+        // Regression guard for: dog under sherlock/* must not return animal
+        // under enola/* even when their vectors are identical / nearest.
+        const rows = [
+            { key: "sherlock/dog", value: { text: "dog hound canine" }, vec: [1, 0, 0, 0] },
+            { key: "sherlock/hound", value: { text: "hound dog canine" }, vec: [0.99, 0.01, 0, 0] },
+            { key: "enola/animal", value: { text: "animal creature dog" }, vec: [1, 0, 0, 0] },
+        ];
+        for (const r of rows) {
+            await store.storeFact({ key: r.key, value: r.value, shared: true, agentId: "fixture" });
+            await pool.query(
+                `UPDATE "${schema}".facts
+                    SET embedding = $1::vector, embedded_at = now(),
+                        embedding_model = $2, last_embedded_hash = content_hash
+                  WHERE scope_key = $3`,
+                [`[${r.vec.join(",")}]`, FX_MODEL, `shared:${r.key}`],
+            );
+        }
+
+        const unrestricted = await store.similarFacts("shared:sherlock/dog", { k: 10 }, aclOf(null, [], true));
+        assert.ok(unrestricted.facts.some((f) => f.scopeKey === "shared:enola/animal"), "precondition: cross-namespace nearest neighbour would appear without a namespace filter");
+
+        const sherlock = await store.similarFacts("shared:sherlock/dog", { k: 10, namespace: "sherlock" }, aclOf(null, [], true));
+        const keys = sherlock.facts.map((f) => f.scopeKey);
+        assert.ok(keys.includes("shared:sherlock/hound"), "same-namespace similar fact returned");
+        assert.ok(!keys.includes("shared:enola/animal"), "other namespace excluded despite identical vector");
+        assert.ok(sherlock.facts.every((f) => f.key.startsWith("sherlock/")), "every result is under the namespace prefix");
     });
 
     it("(S4 twin) anchor with NULL embedding → empty, not a crash", async () => {

@@ -65,17 +65,20 @@ if (!VALID.has(SCENARIO)) {
 
 const HARVEST_PROMPT =
     "Run a full harvest cycle: ingest every document from the knowledge source into " +
-    "corpus/northwind facts, then drain the crawl queue — for each fact resolve existing " +
-    "entities first (facts_similar + graph_search_nodes) so you don't duplicate, then " +
+    "corpus/northwind facts, then drain the crawl queue with namespace 'corpus/northwind' — " +
+    "for each fact resolve existing entities first (facts_similar + graph_search_nodes with " +
+    "namespace 'corpus/northwind') so you don't duplicate, then " +
     "extract services, teams, and people into graph nodes and OWNED_BY / LED_BY / " +
-    "DEPENDS_ON edges (anchored to each fact's scopeKey), and mark each fact crawled with " +
+    "DEPENDS_ON edges (anchored to each fact's scopeKey and stamped with namespace " +
+    "'corpus/northwind'), and mark each fact crawled with " +
     "its exact contentHash. Finish with a short summary of documents ingested and " +
     "nodes/edges created.";
 
 const ASK_PROMPT =
     "Question: if telemetry-pipeline has an outage, which services are affected, and which " +
-    "teams (and team leads) own them? Seed with facts_search, expand through the graph's " +
-    "DEPENDS_ON and OWNED_BY edges, and ground your answer in what you retrieve.";
+    "teams (and team leads) own them? Seed with facts_search(namespace='corpus/northwind'), " +
+    "expand through the graph's DEPENDS_ON and OWNED_BY edges with namespace 'corpus/northwind', " +
+    "and ground your answer in what you retrieve.";
 
 const HARVEST_TIMEOUT_MS = 300_000;
 const ASK_TIMEOUT_MS = 180_000;

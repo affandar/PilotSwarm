@@ -104,6 +104,27 @@ describe("P4: enhanced facts tool gating (createFactTools)", () => {
         assert(keys.includes("skills/azure"), "allowed skills fact kept");
         assert(!keys.some((k) => k.startsWith("intake/")), "reserved intake fact stripped from results");
     });
+
+    it("facts_similar forwards namespace to the provider", async () => {
+        const enh = fakeEnhancedStore();
+        let seenOpts;
+        enh.similarFacts = async (_scopeKey, opts) => {
+            seenOpts = opts;
+            return { count: 0, mode: "semantic", facts: [] };
+        };
+        const tools = createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "default" });
+        await byName(tools, "facts_similar").handler({ scopeKey: "shared:corpus/acme/dog", namespace: "corpus/acme", k: 7, minScore: 0.4 }, { sessionId: "s1" });
+        assertEqual(seenOpts.namespace, "corpus/acme", "namespace forwarded");
+        assertEqual(seenOpts.k, 7, "k forwarded");
+        assertEqual(seenOpts.minScore, 0.4, "minScore forwarded");
+    });
+
+    it("HIGH#3: facts_similar blocks the reserved intake/* namespace for a task agent", async () => {
+        const enh = fakeEnhancedStore();
+        const tools = createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "default" });
+        const res = await byName(tools, "facts_similar").handler({ scopeKey: "shared:skills/x", namespace: "intake" }, { sessionId: "s1" });
+        assert(res && typeof res.error === "string" && /intake/.test(res.error), "intake namespace similar search is rejected for a task agent");
+    });
 });
 
 describe("P4: graph tool gating (createGraphTools)", () => {
@@ -137,6 +158,50 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         assert(n.has("graph_stats"), "tuner gets graph_stats");
         assert(!n.has("graph_upsert_node") && !n.has("graph_delete_node") && !n.has("graph_merge_nodes"), "tuner gets NO graph writes");
         assert(!n.has("facts_read_uncrawled") && !n.has("facts_mark_crawled"), "tuner gets NO crawl queue (even with isHarvester)");
+    });
+
+    it("namespace is forwarded through every graph read/write/delete/stat tool", async () => {
+        const ns = "corpus/acme/services";
+        const seen = {};
+        const gs = {
+            ...fakeGraphStore(),
+            searchGraphNodes: async (q) => { seen.searchNodes = q; return []; },
+            searchGraphEdges: async (q) => { seen.searchEdges = q; return []; },
+            graphNeighbourhood: async (_nodeKey, _depth, _access, opts) => { seen.neighbourhood = opts; return { nodes: [], edges: [] }; },
+            upsertGraphNode: async (input) => { seen.upsertNode = input; return {}; },
+            upsertGraphEdge: async (input) => { seen.upsertEdge = input; return {}; },
+            mergeGraphNodes: async (_fromKey, _intoKey, _reason, opts) => { seen.mergeNodes = opts; },
+            deleteGraphNode: async (_nodeKey, opts) => { seen.deleteNode = opts; return true; },
+            deleteGraphEdge: async (_fromKey, _toKey, _predicateKey, opts) => { seen.deleteEdge = opts; return true; },
+            graphStats: async (opts) => { seen.graphStats = opts; return { nodeCount: 1, edgeCount: 2 }; },
+        };
+        const factStore = {
+            ...fakeBaseStore(),
+            readUncrawledFacts: async (opts = {}) => { seen.uncrawled = opts; return { count: 0, facts: [] }; },
+        };
+        const tools = createGraphTools({ graphStore: gs, factStore, agentIdentity: "facts-manager" });
+
+        await byName(tools, "graph_search_nodes").handler({ namespace: ns, nameLike: "checkout" }, { sessionId: "s1" });
+        await byName(tools, "graph_search_edges").handler({ namespace: ns, predicateKey: "depends_on" }, { sessionId: "s1" });
+        await byName(tools, "graph_neighbourhood").handler({ namespace: ns, nodeKey: "service:checkout", depth: 2 }, { sessionId: "s1" });
+        await byName(tools, "graph_stats").handler({ namespace: ns }, { sessionId: "s1" });
+        await byName(tools, "facts_read_uncrawled").handler({ namespace: ns, limit: 10 }, { sessionId: "s1" });
+        await byName(tools, "graph_upsert_node").handler({ namespace: ns, kind: "service", name: "checkout" }, { sessionId: "s1" });
+        await byName(tools, "graph_upsert_edge").handler({ namespace: ns, fromKey: "service:checkout", toKey: "service:inventory", predicate: "depends on" }, { sessionId: "s1" });
+        await byName(tools, "graph_merge_nodes").handler({ namespace: ns, fromKey: "service:checkout-old", intoKey: "service:checkout", reason: "same" }, { sessionId: "s1" });
+        await byName(tools, "graph_delete_node").handler({ namespace: ns, nodeKey: "service:checkout-old" }, { sessionId: "s1" });
+        await byName(tools, "graph_delete_edge").handler({ namespace: ns, fromKey: "service:checkout", toKey: "service:inventory", predicateKey: "depends_on" }, { sessionId: "s1" });
+
+        assertEqual(seen.searchNodes.namespace, ns, "graph_search_nodes forwards namespace");
+        assertEqual(seen.searchEdges.namespace, ns, "graph_search_edges forwards namespace");
+        assertEqual(seen.neighbourhood.namespace, ns, "graph_neighbourhood forwards namespace");
+        assertEqual(seen.graphStats.namespace, ns, "graph_stats forwards namespace to provider aggregate");
+        assertEqual(seen.uncrawled.namespace, ns, "graph_stats/facts_read_uncrawled forward namespace to crawl queue");
+        assertEqual(seen.upsertNode.namespace, ns, "graph_upsert_node forwards namespace");
+        assertEqual(seen.upsertEdge.namespace, ns, "graph_upsert_edge forwards namespace");
+        assertEqual(seen.mergeNodes.namespace, ns, "graph_merge_nodes forwards namespace guard");
+        assertEqual(seen.deleteNode.namespace, ns, "graph_delete_node forwards namespace guard");
+        assertEqual(seen.deleteEdge.namespace, ns, "graph_delete_edge forwards namespace guard");
     });
 
     it("BLOCKER#1: with no resolveAccess, a reader's graph search FAILS CLOSED (own session only, never unrestricted)", async () => {

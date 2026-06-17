@@ -84,6 +84,52 @@ describe.skipIf(!HAS_DB)("graph edges (GR1–GR8)", () => {
         assert.equal(ref.observations, before[0].observations + 1);
     });
 
+    it("GR9 namespace persists on edges and namespace search includes edge or endpoint subtree matches", async () => {
+        const checkout = await store.upsertGraphNode({ kind: "service", name: "checkout namespace edge", namespace: "corpus/acme/services", agentId });
+        const inventory = await store.upsertGraphNode({ kind: "service", name: "inventory namespace edge", namespace: "corpus/acme/services", agentId });
+        const globex = await store.upsertGraphNode({ kind: "service", name: "globex namespace edge", namespace: "corpus/globex/services", agentId });
+
+        const intra = await store.upsertGraphEdge({
+            fromKey: checkout.nodeKey,
+            toKey: inventory.nodeKey,
+            predicate: "depends on",
+            namespace: "corpus/acme/services",
+            evidence: ["shared:corpus/acme/doc-edge"],
+            agentId,
+        });
+        assert.equal(intra.namespace, "corpus/acme/services", "created edge ref carries namespace");
+        const bridge = await store.upsertGraphEdge({
+            fromKey: globex.nodeKey,
+            toKey: checkout.nodeKey,
+            predicate: "calls",
+            namespace: "corpus/globex/services",
+            agentId,
+        });
+
+        const acme = await store.searchGraphEdges({ namespace: "corpus/acme", limit: 20 }, { unrestricted: true });
+        const acmeTriples = acme.map((e) => `${e.fromKey}->${e.toKey}:${e.predicateKey}`).sort();
+        assert.ok(acmeTriples.includes(`${checkout.nodeKey}->${inventory.nodeKey}:${intra.predicateKey}`), "edge namespace under acme matches");
+        assert.ok(acmeTriples.includes(`${globex.nodeKey}->${checkout.nodeKey}:${bridge.predicateKey}`), "bridge edge matches because one endpoint is in acme namespace");
+
+        const exact = await store.searchGraphEdges({ namespace: "corpus/acme/services", predicateKey: intra.predicateKey }, { unrestricted: true });
+        assert.equal(exact.find((e) => e.fromKey === checkout.nodeKey && e.toKey === inventory.nodeKey)?.namespace, "corpus/acme/services");
+
+        const stats = await store.graphStats({ namespace: "corpus/acme" });
+        assert.ok(stats.nodeCount >= 2, "namespaced stats count matching nodes");
+        assert.ok(stats.edgeCount >= 2, "namespaced stats count edge/endpoint namespace matches");
+    });
+
+    it("GR10 namespace guard prevents deleting an edge outside the subtree", async () => {
+        const from = await store.upsertGraphNode({ kind: "service", name: "guarded edge from", namespace: "corpus/acme/ops", agentId });
+        const to = await store.upsertGraphNode({ kind: "service", name: "guarded edge to", namespace: "corpus/acme/ops", agentId });
+        const ref = await store.upsertGraphEdge({ fromKey: from.nodeKey, toKey: to.nodeKey, predicate: "observes", namespace: "corpus/acme/ops", agentId });
+
+        assert.equal(await store.deleteGraphEdge(from.nodeKey, to.nodeKey, ref.predicateKey, { namespace: "corpus/globex" }), false, "wrong namespace guard blocks delete");
+        assert.equal((await store.searchGraphEdges({ fromKey: from.nodeKey, predicateKey: ref.predicateKey }, { unrestricted: true })).length, 1, "edge still exists");
+        assert.equal(await store.deleteGraphEdge(from.nodeKey, to.nodeKey, ref.predicateKey, { namespace: "corpus/acme" }), true, "ancestor namespace guard permits delete");
+        assert.equal((await store.searchGraphEdges({ fromKey: from.nodeKey, predicateKey: ref.predicateKey }, { unrestricted: true })).length, 0, "edge deleted");
+    });
+
     it("(neg) validation: self-edge, bad confidence, missing predicate", async () => {
         await assert.rejects(() => store.upsertGraphEdge({ fromKey: a.nodeKey, toKey: a.nodeKey, predicate: "is", agentId }), /self-referential/);
         await assert.rejects(() => store.upsertGraphEdge({ fromKey: a.nodeKey, toKey: b.nodeKey, predicate: "is", confidence: 1.5, agentId }), /confidence/);

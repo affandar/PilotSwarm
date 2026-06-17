@@ -314,6 +314,13 @@ but the **tools** are shipped by PilotSwarm:
 - A harvester should **resolve before it creates**: `graph_search_nodes` by
   `nameLike` first, then `graph_upsert_node` with the source fact's `scopeKey` as
   evidence — this is what makes reinforcement dedup work.
+- Graph tools accept the same `namespace` concept as the crawl/search tools.
+  `namespace: "corpus/acme"` matches graph nodes/edges stamped exactly with
+  `corpus/acme` and descendants such as `corpus/acme/services`. Use the same
+  namespace string for `facts_read_uncrawled`, `facts_search`,
+  `graph_search_*`, `graph_upsert_*`, `graph_neighbourhood`, `graph_stats`,
+  merge, and delete operations so a harvester can discover or maintain one
+  corpus/domain without enumerating seed nodes first.
 
 ### Access control (evidence is ACL-filtered, topology is shared)
 

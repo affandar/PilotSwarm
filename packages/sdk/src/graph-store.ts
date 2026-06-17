@@ -24,6 +24,9 @@ import type { AccessContext } from "./facts-store.js";
 export interface GraphNodeInput {
     kind: string;            // free text: person, patch, file, ...
     name: string;
+    /** Optional corpus/domain namespace. Prefix semantics match facts_search:
+     * "corpus/acme" includes "corpus/acme" and "corpus/acme/...". */
+    namespace?: string;
     aliases?: string[];      // merged into existing aliases on upsert
     evidence?: string[];     // OPTIONAL fact scope_keys; unioned on upsert (EVIDENCED_BY anchors)
     agentId: string;
@@ -33,6 +36,8 @@ export interface GraphEdgeInput {
     fromKey: string;         // node_key
     toKey: string;
     predicate: string;       // free text, e.g. "revives argument from"
+    /** Optional corpus/domain namespace for this assertion/edge. */
+    namespace?: string;
     confidence?: number;     // 0..1, default 1.0
     evidence?: string[];     // OPTIONAL; unioned on upsert (edge provenance, property array)
     agentId: string;
@@ -44,6 +49,9 @@ export interface GraphEdgeInput {
 export interface GraphNodeQuery {
     kind?: string;
     nameLike?: string;       // lexical match on name/aliases (no embeddings)
+    /** Optional corpus/domain namespace filter. Matches exact namespace OR any
+     * descendant (`namespace` + "/..."). */
+    namespace?: string;
     /** Fact scopeKeys OR node keys anchoring the query. Fact seeds pivot via
      * EVIDENCED_BY (inaccessible fact seeds are IGNORED — treated unknown);
      * node seeds expand directly. */
@@ -58,8 +66,15 @@ export interface GraphEdgeQuery {
     predicateKey?: string;   // EXACT normalized key (preferred)
     fromKey?: string;        // anchor endpoints (explore mode)
     toKey?: string;
+    /** Optional corpus/domain namespace filter. An edge matches when the edge
+     * itself OR either endpoint is in the namespace subtree. */
+    namespace?: string;
     minConfidence?: number;
     limit?: number;
+}
+
+export interface GraphNamespaceQuery {
+    namespace?: string;
 }
 
 // ─── Read outputs ────────────────────────────────────────────────────────────
@@ -68,6 +83,7 @@ export interface GraphNodeRef {
     nodeKey: string;
     kind: string;
     name: string;
+    namespace?: string;
     aliases: string[];
     created: boolean;
 }
@@ -76,6 +92,7 @@ export interface GraphNodeHit {
     nodeKey: string;
     kind: string;
     name: string;
+    namespace?: string;
     aliases: string[];
     /** EVIDENCED_BY fact scopeKeys, FILTERED to caller-accessible keys. */
     evidence: string[];
@@ -87,6 +104,7 @@ export interface GraphEdgeRef {
     toKey: string;
     predicate: string;
     predicateKey: string;
+    namespace?: string;
     confidence: number;
     observations: number;
     reinforced: boolean;
@@ -97,6 +115,7 @@ export interface GraphEdgeHit {
     toKey: string;
     predicate: string;
     predicateKey: string;
+    namespace?: string;
     confidence: number;
     observations: number;
     /** ACL-filtered, as on GraphNodeHit. */
@@ -104,8 +123,8 @@ export interface GraphEdgeHit {
 }
 
 export interface SubGraph {
-    nodes: { nodeKey: string; kind: string; name: string }[];
-    edges: { fromKey: string; toKey: string; predicate: string; confidence: number }[];
+    nodes: { nodeKey: string; kind: string; name: string; namespace?: string }[];
+    edges: { fromKey: string; toKey: string; predicate: string; namespace?: string; confidence: number }[];
 }
 
 // ─── The graph store ─────────────────────────────────────────────────────────
@@ -117,17 +136,17 @@ export interface GraphStore {
     // read (evidence arrays ACL-filtered; inaccessible fact seeds ignored)
     searchGraphNodes(q: GraphNodeQuery, access?: AccessContext): Promise<GraphNodeHit[]>;
     searchGraphEdges(q: GraphEdgeQuery, access?: AccessContext): Promise<GraphEdgeHit[]>;
-    graphNeighbourhood(nodeKey: string, depth: number, access?: AccessContext): Promise<SubGraph>;
+    graphNeighbourhood(nodeKey: string, depth: number, access?: AccessContext, opts?: GraphNamespaceQuery): Promise<SubGraph>;
 
     // write (upsert + merge; evidence OPTIONAL, unions in; reinforcement
     // counts only novel evidence — known-evidence re-asserts are no-ops)
     upsertGraphNode(n: GraphNodeInput): Promise<GraphNodeRef>;
     upsertGraphEdge(e: GraphEdgeInput): Promise<GraphEdgeRef>;
-    mergeGraphNodes(fromKey: string, intoKey: string, reason: string): Promise<void>;
+    mergeGraphNodes(fromKey: string, intoKey: string, reason: string, opts?: GraphNamespaceQuery): Promise<void>;
 
     // delete (no cross-store cascade)
-    deleteGraphNode(nodeKey: string): Promise<boolean>;
-    deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string): Promise<boolean>;
+    deleteGraphNode(nodeKey: string, opts?: GraphNamespaceQuery): Promise<boolean>;
+    deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string, opts?: GraphNamespaceQuery): Promise<boolean>;
 
     /**
      * OPTIONAL cheap aggregate for `graph_stats` (enhancedfactstore 07 P4):

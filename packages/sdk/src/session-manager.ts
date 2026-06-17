@@ -633,9 +633,13 @@ export class SessionManager {
             factStore: this.factStore,
             getLineageSessionIds: this._getLineageSessionIds ?? undefined,
             agentIdentity: effectiveSerializableConfig.agentIdentity,
-            // Enhanced search tools (facts_search / facts_similar / search_skills)
-            // light up only when the store is an EnhancedFactStore with search.
-            enhancedFactStore: isEnhancedFactStore(this.factStore) && this.factStore.capabilities.search
+            // Enhanced tools light up only when the store is an EnhancedFactStore.
+            // Pass it when EITHER capability is present: search powers
+            // facts_search / facts_similar / search_skills; embedder powers the
+            // facts-manager-only `manage_embedder` control tool. The tools
+            // themselves gate on the specific capability they need.
+            enhancedFactStore: isEnhancedFactStore(this.factStore)
+                && (this.factStore.capabilities.search || this.factStore.capabilities.embedder)
                 ? this.factStore
                 : undefined,
             recordEvent: this.sessionCatalog

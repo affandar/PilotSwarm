@@ -279,6 +279,61 @@ describe("E1: enhanced facts (search) + graph", () => {
     });
 });
 
+// ─── manage_embedder: control-plane tool gated to facts-manager × embedder cap ─
+//   The durable embedder loop is a shared fleet-wide resource, so its lifecycle
+//   tool is restricted to the singleton Facts Manager AND requires the store to
+//   actually have the embedder capability. Orthogonal to `search`.
+describe("manage_embedder gating (capability × role)", () => {
+    const EMBEDDER_TOOL = "manage_embedder";
+
+    it("facts-manager + embedder capability → manage_embedder present", async () => {
+        const { names } = await register({
+            factStore: fakeEnhancedStore({ search: true, embedder: true }),
+            agentIdentity: "facts-manager",
+        });
+        assert(names.has(EMBEDDER_TOOL), "facts-manager on an embedder-capable store gets manage_embedder");
+    });
+
+    it("facts-manager WITHOUT embedder capability → no manage_embedder", async () => {
+        const { names } = await register({
+            factStore: fakeEnhancedStore({ search: true, embedder: false }),
+            agentIdentity: "facts-manager",
+        });
+        assert(!names.has(EMBEDDER_TOOL), "manage_embedder gated off when caps.embedder is false");
+    });
+
+    it("embedder-only store (search=false) → facts-manager STILL gets manage_embedder", async () => {
+        // The control tool keys off `embedder`, not `search`: a deployment can
+        // run the embedder loop to populate vectors even if the search tools are
+        // gated off. SessionManager must pass the enhanced store through on the
+        // embedder capability alone.
+        const { names } = await register({
+            factStore: fakeEnhancedStore({ search: false, embedder: true }),
+            agentIdentity: "facts-manager",
+        });
+        assert(names.has(EMBEDDER_TOOL), "manage_embedder present on an embedder-capable, search-less store");
+        assert(hasNone(names, SEARCH_TOOLS), "search tools still gated off when caps.search is false");
+    });
+
+    it("non-facts-manager roles NEVER get manage_embedder (control-plane restriction)", async () => {
+        for (const role of ["default", "agent-tuner", "app-harvester"]) {
+            const { names } = await register({
+                factStore: fakeEnhancedStore({ search: true, embedder: true }),
+                agentIdentity: role,
+                ...(role === "app-harvester" ? { isHarvester: true } : {}),
+            });
+            assert(!names.has(EMBEDDER_TOOL), `${role}: manage_embedder is facts-manager-only`);
+        }
+    });
+
+    it("base (non-enhanced) store → no manage_embedder for any role", async () => {
+        for (const role of ["default", "facts-manager", "agent-tuner"]) {
+            const { names } = await register({ factStore: fakeBaseStore(), agentIdentity: role });
+            assert(!names.has(EMBEDDER_TOOL), `${role}: a base FactStore exposes no embedder control`);
+        }
+    });
+});
+
 // ─── E1: base facts + graph — the composition tier (graph keys off !!graphStore) ─
 describe("E1: base facts + graph (composition tier)", () => {
     it("reader gets the FULL graph read surface but NO search tools", async () => {

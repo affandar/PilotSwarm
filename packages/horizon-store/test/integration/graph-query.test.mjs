@@ -99,6 +99,21 @@ describe.skipIf(!HAS_DB)("graph queries (GQ1–GQ16, RF1–RF5)", () => {
         assert.ok(sub.edges.some((e) => e.predicate === "tunes"));
     });
 
+    it("GQ8b graphNeighbourhood can be filtered by namespace subtree", async () => {
+        const root = await store.upsertGraphNode({ kind: "service", name: "namespace neighbourhood root", namespace: "corpus/acme/services", agentId: "fixture" });
+        const acmeLeaf = await store.upsertGraphNode({ kind: "service", name: "namespace neighbourhood acme leaf", namespace: "corpus/acme/services/leaf", agentId: "fixture" });
+        const globexLeaf = await store.upsertGraphNode({ kind: "service", name: "namespace neighbourhood globex leaf", namespace: "corpus/globex/services", agentId: "fixture" });
+        await store.upsertGraphEdge({ fromKey: root.nodeKey, toKey: acmeLeaf.nodeKey, predicate: "links", namespace: "corpus/acme/services", agentId: "fixture" });
+        await store.upsertGraphEdge({ fromKey: root.nodeKey, toKey: globexLeaf.nodeKey, predicate: "links", namespace: "corpus/globex/services", agentId: "fixture" });
+
+        const sub = await store.graphNeighbourhood(root.nodeKey, 1, all, { namespace: "corpus/acme" });
+        const keys = sub.nodes.map((x) => x.nodeKey).sort();
+        assert.deepEqual(keys, [acmeLeaf.nodeKey], "only namespace-matching neighbour returned");
+        assert.equal(sub.nodes[0].namespace, "corpus/acme/services/leaf", "node namespace is surfaced");
+        assert.ok(sub.edges.some((e) => e.toKey === acmeLeaf.nodeKey && e.namespace === "corpus/acme/services"), "matching edge namespace is surfaced");
+        assert.ok(!sub.edges.some((e) => e.toKey === globexLeaf.nodeKey), "non-matching neighbour/edge excluded");
+    });
+
     it("GQ9 neighbourhood depth clamped to 1..5", async () => {
         const a = await store.graphNeighbourhood(n.vacuum.nodeKey, 99, all);
         const b = await store.graphNeighbourhood(n.vacuum.nodeKey, 5, all);
