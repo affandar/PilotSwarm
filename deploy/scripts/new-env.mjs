@@ -634,7 +634,7 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
   // and friends. Boolean `true` is normalised via String(v).
   const foundryOn = normaliseYesNo(foundryEnabled) === "y";
   // VPN_GATEWAY_SKU and VPN_AAD_AUDIENCE flow through from template.env
-  // defaults (VpnGw1 and the Microsoft-registered Azure VPN Client app id
+  // defaults (VpnGw1AZ and the Microsoft-registered Azure VPN Client app id
   // c632b3df-... respectively); we don't prompt for them and don't
   // override here. When VPN is disabled the template's
   // VPN_GATEWAY_ENABLED=false default flows through unchanged — we still
@@ -674,7 +674,7 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
     FOUNDRY_DEPLOYMENTS_FILE: foundryOn ? `deploy/envs/local/${name}/foundry-deployments.json` : "",
     // VPN gateway. Only the two prompted keys are threaded;
     // VPN_GATEWAY_SKU and VPN_AAD_AUDIENCE remain at their template
-    // defaults (VpnGw1 / c632b3df-... respectively) and the operator
+    // defaults (VpnGw1AZ / c632b3df-... respectively) and the operator
     // overrides them by hand-editing the .env if needed (e.g. legacy
     // 41b23e61-... audience, larger SKU). When VPN is disabled the pool
     // override is omitted so the template's documented default
@@ -1160,7 +1160,7 @@ async function main() {
     console.log("                             in .env for tenants on older Azure VPN client builds");
     console.log("                             (audience override is documented in template.env).");
     console.log("");
-    console.log("💰  Cost:                    ~$140/month (VpnGw1 SKU + Public IP + gateway hours)");
+    console.log("💰  Cost:                    ~$140/month (VpnGw1AZ SKU + Public IP + gateway hours)");
     console.log("⏱  First-deploy time:        45+ minutes (VPN gateway provisioning is the long pole)");
     console.log("");
     console.log("⬇  VPN client profile (after first deploy completes):");

@@ -66,7 +66,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 - When starting all workers simultaneously against a fresh DB, duroxide migrations can race. Duroxide 0.1.19+ uses advisory locks to handle this safely — workers that lose the race will retry and succeed. Earlier versions crash on duplicate migration keys.
 - Portal listens on port 3001 (HTTP) internally; TLS termination happens at the app-routing nginx ingress.
 - Portal is publicly accessible with Entra ID as the sole access gate.
-- VPN Gateway P2S is a feature of the **GitOps IaC path** (`deploy/scripts/deploy.mjs` + base-infra bicep), not this legacy `scripts/deploy-aks.sh` flow. If a user mentions VPN-enabled stamps, route them to the `pilotswarm-new-env-deploy` skill ("Optional: VPN Gateway P2S" section) and `docs/deploying-to-aks.md`. Two operator-visible costs to surface up-front when discussing VPN: **45+ minutes** added to the first deploy (gateway provisioning is the long pole) and **~$140/month** runtime cost for `VpnGw1` (gateway hours + Public IP). Subsequent param-change deploys are minutes, not 45+.
+- VPN Gateway P2S is a feature of the **GitOps IaC path** (`deploy/scripts/deploy.mjs` + base-infra bicep), not this legacy `scripts/deploy-aks.sh` flow. If a user mentions VPN-enabled stamps, route them to the `pilotswarm-new-env-deploy` skill ("Optional: VPN Gateway P2S" section) and `docs/deploying-to-aks.md`. Two operator-visible costs to surface up-front when discussing VPN: **45+ minutes** added to the first deploy (gateway provisioning is the long pole) and **~$140/month** runtime cost for `VpnGw1AZ` (gateway hours + Public IP). Subsequent param-change deploys are minutes, not 45+.
 
 ## Default Deploy Workflow
 

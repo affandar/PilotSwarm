@@ -97,8 +97,8 @@ param foundryDeployments array = []
 @description('Whether to provision the Azure VPN Gateway (P2S, AAD-authenticated) as an additive ingress alongside AFD. False by default.')
 param vpnGatewayEnabled bool = false
 
-@description('VPN Gateway SKU. See vpn-gateway.bicep for allowed values; Basic is excluded (no OpenVPN/AAD support).')
-param vpnGatewaySku string = 'VpnGw1'
+@description('VPN Gateway SKU. See vpn-gateway.bicep for allowed values; only AZ variants are supported (Azure no longer accepts non-AZ SKUs). Basic is excluded (no OpenVPN/AAD support).')
+param vpnGatewaySku string = 'VpnGw1AZ'
 
 @description('VPN client address pool (must not overlap the VNet or any reachable on-prem range).')
 param vpnClientAddressPool string = '172.16.200.0/24'

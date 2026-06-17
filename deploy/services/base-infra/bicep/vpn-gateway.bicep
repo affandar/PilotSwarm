@@ -23,16 +23,13 @@ param resourceName string
 @description('Resource ID of the GatewaySubnet inside the BaseInfra VNet (vnet.bicep emits this only when vpnGatewayEnabled=true).')
 param gatewaySubnetId string
 
-@description('VPN Gateway SKU. VpnGw1 is the smallest RouteBased SKU that supports AAD authentication + OpenVPN; AZ variants are zone-redundant. Basic SKU is intentionally excluded — it does not support OpenVPN or AAD.')
+@description('VPN Gateway SKU. VpnGw1AZ is the smallest RouteBased AZ SKU that supports AAD authentication + OpenVPN. Non-AZ SKUs (VpnGw1/2/3) are no longer accepted by Azure for new VPN gateways; only AZ variants are supported. Basic SKU is also excluded — it does not support OpenVPN or AAD.')
 @allowed([
-  'VpnGw1'
-  'VpnGw2'
-  'VpnGw3'
   'VpnGw1AZ'
   'VpnGw2AZ'
   'VpnGw3AZ'
 ])
-param vpnGatewaySku string = 'VpnGw1'
+param vpnGatewaySku string = 'VpnGw1AZ'
 
 @description('CIDR block from which VPN clients receive addresses once connected. Must not overlap the VNet address space or any on-prem range reachable via the VPN. /24 gives ~250 concurrent clients.')
 param vpnClientAddressPool string = '172.16.200.0/24'

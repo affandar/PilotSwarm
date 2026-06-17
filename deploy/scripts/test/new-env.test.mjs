@@ -409,7 +409,7 @@ test("scaffolder accepts private + akv-selfsigned with HOST and PRIVATE_DNS_ZONE
 // reuse validateVpnGatewayCombo (no duplicated arithmetic).
 //
 // VPN_GATEWAY_SKU and VPN_AAD_AUDIENCE are NOT prompted — they flow
-// through unchanged from template.env defaults (VpnGw1, c632b3df-...).
+// through unchanged from template.env defaults (VpnGw1AZ, c632b3df-...).
 // The unsupported keys VPN_AAD_TENANT_ID, VPN_PRIVATE_DNS_MODE,
 // PRIVATE_DNS_ZONE_ID, VPN_AAD_USERS_GROUP_NAME_HINT must NEVER be emitted.
 
@@ -467,7 +467,7 @@ test("scaffolder writes VPN keys at expected defaults on afd+akv with --vpn-enab
     assert.match(content, /^VPN_GATEWAY_ENABLED=true$/m);
     assert.match(content, /^VPN_CLIENT_ADDRESS_POOL=172\.16\.200\.0\/24$/m);
     // Two template-default keys flow through verbatim.
-    assert.match(content, /^VPN_GATEWAY_SKU=VpnGw1\b/m);
+    assert.match(content, /^VPN_GATEWAY_SKU=VpnGw1AZ\b/m);
     assert.match(content, /^VPN_AAD_AUDIENCE=c632b3df-fb67-4d84-bdcf-b95ad541b5c8\b/m);
     // Dropped-from-spec keys must NOT be present.
     for (const dropped of [
