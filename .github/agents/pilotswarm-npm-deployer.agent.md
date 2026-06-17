@@ -38,6 +38,7 @@ On your first turn, identify which sub-path the user wants. Ask if ambiguous:
 |---|---|---|
 | "new env", "sandbox", "stamp", `new-env`, fresh RG name, `chkrawps*`-style names | **new-env (fresh)** | `pilotswarm-new-env-deploy` |
 | "redeploy / roll out / update / patch <service> to/on `ps<stamp>`", "rebuild and push the worker image to my stamp", any reference to an existing `deploy/envs/local/<stamp>/` directory or `ps<stamp>-*` resource | **new-env (rollout to existing)** | `pilotswarm-new-env-deploy` — §"Per-service redeploys" |
+| Anything mentioning **VPN**, P2S, Entra-ID VPN auth, `VPN_GATEWAY_ENABLED`, `GatewaySubnet`, "trusted-bypass for off-allow-list users", or hybrid AFD+VPN ingress | **new-env (fresh or rollout)** — VPN-enabled variant | `pilotswarm-new-env-deploy` — §"Optional: VPN Gateway P2S" (Step 4) |
 | Bare "the cluster" / "prod" / "live" with no stamp qualifier, references to `scripts/deploy-aks.sh` or `scripts/deploy-portal.sh`, or to k8s manifests under `deploy/k8s/` | **legacy bash** (out of scope here) | hand off to `pilotswarm-aks-deployer` agent (skills: `pilotswarm-aks-deploy`, `pilotswarm-aks-reset`) |
 
 Disambiguation cues, in order of strength:
@@ -320,6 +321,8 @@ gate. Pre-fill from the discovered UPN unless the user overrides.
 
 Validate the EDGE_MODE × TLS_SOURCE combination against the supported matrix before running anything (see `pilotswarm-new-env-deploy` skill §"Edge mode × TLS source selection"). The combos `afd+akv-selfsigned` and `private+letsencrypt` are rejected by `deploy.mjs` itself — call them out before the user hits a `UNSUPPORTED_COMBOS` error.
 
+When the user wants `VPN_GATEWAY_ENABLED=true`, also validate the VPN combo gates up-front (see skill §"Optional: VPN Gateway P2S"). The only valid combo is `EDGE_MODE=afd + TLS_SOURCE=akv`; anything else surfaces a named `[vpn-incompatible-combo]` / `vpn-requires-afd` / `vpn-requires-akv` error from `new-env.mjs` or `validateVpnGatewayCombo()` in `deploy.mjs`. Surface the refusal reason and ask the user to revise — do not retry, and do not silently scaffold without VPN. Likewise, the `VPN_CLIENT_ADDRESS_POOL` (default `172.16.200.0/24`) must not overlap the VNet (default `10.20.0.0/16`); a pool clash surfaces as `[vpn-pool-overlap]`.
+
 Only proceed after explicit confirmation. The resource prefix written by the scaffolder is `ps<name>` (e.g. `psmysandbox-wus3-rg`, `psmysandboxglobal`). The env file lands at `deploy/envs/local/<name>/.env` — note the `/local/` subdir.
 
 If your first invocation form fails (e.g. you tried the `npm run deploy:new-env -- … --location …` form and npm stripped the flag), **re-confirm the mode with the user** before retrying with a different form. Do not silently switch from interactive to non-interactive — the prompt surface differs materially.
@@ -424,6 +427,10 @@ rendered service manifests:
 **AFD propagation delay (`EDGE_MODE=afd` only).** After `deploy.mjs all <stamp>` returns success, the AFD endpoint can take **5–15 minutes** to propagate to edge POPs. During that window, `curl https://<afd-host>/api/health` will return `HTTP 404` with an `x-azure-ref` header and `X-Cache: CONFIG_NOCACHE` — and `az afd endpoint list` will show `DeploymentStatus: NotStarted` even though the control-plane route/origin/origin-group are all `Succeeded`. This is **expected, not a failure**. Wait and retry; do not start re-running deploy steps. Symptoms and root cause are documented in `.github/skills/pilotswarm-new-env-deploy/SKILL.md` §"Common Pitfalls" → *"DNS prop delays on AFD"*.
 
 **Portal sign-in loop after deploy.** Redirect URI on the Entra app reg doesn't match the deployed AFD endpoint. Run `az ad app show --id <clientId> --query "spa.redirectUris"` and compare. If the app was created before the AFD endpoint was known, re-run `Setup-PortalAuth.ps1 -ExistingAppId <appId> -EnvName <stamp>` to append the now-known redirect URI.
+
+**VPN gateway provisioning lead time (`VPN_GATEWAY_ENABLED=true` only).** First-time provisioning of the Azure VPN Gateway adds **45+ minutes** to the `base-infra` step — gateway hours are the long pole, not anything in our control. During that window, `az network vnet-gateway show -g <rg> -n <name> --query provisioningState` will sit at `Updating` and `deploy.mjs` will appear stalled. This is **expected, not a failure**. Do not interrupt, re-run, or `--force-module` the bicep step. Subsequent `base-infra` re-deploys against an existing gateway are minutes, not 45+. Confirmation that the deploy is healthy = `provisioningState: Succeeded` on both the gateway and its Public IP; only then move to client-profile distribution.
+
+**VPN access depends on a tenant-admin Conditional Access policy.** `deploy.mjs` cannot create or verify the CA policy that gates the Azure VPN Client app (`c632b3df-fb67-4d84-bdcf-b95ad541b5c8`, or the legacy `41b23e61-...` audience if overridden in `.env`). Without it, the deploy itself succeeds but every first-time connect attempt fails with an opaque AAD error. Before declaring a VPN-enabled stamp ready for use, confirm with the user that a tenant admin has created the CA policy (named users group + require MFA, do **not** require device compliance). The post-scaffold reminder block in `new-env.mjs` re-prints these requirements; surface them again on rollout if VPN is being enabled for the first time on an existing stamp.
 
 ## Constraints
 
