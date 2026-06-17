@@ -130,14 +130,18 @@ Ask, in order:
    - `entra` → continue.
 2. **"Do you already have a `PORTAL_AUTH_ENTRA_CLIENT_ID` (an existing
    Entra app registration), or shall I provision one for this stamp?"**
-   - **Default recommendation: provision a new dedicated app for this
-     stamp.** One app per stamp keeps redirect URI lists clean, lets
-     each environment be retired (and its app deleted) independently,
-     and avoids the "shared app blast radius" where revoking one
-     stamp's access touches every other stamp on the same client id.
-     Only reuse a shared existing app when the user explicitly asks
-     for it.
-   - "Provision one" (recommended) → invoke the
+   - **Each stamp gets its own dedicated Entra app — always provision
+     a new one.** One app per stamp keeps redirect URI lists clean,
+     lets each environment be retired (and its app deleted)
+     independently, and avoids the "shared app blast radius" where
+     revoking one stamp's access touches every other stamp on the
+     same client id.
+   - **Never auto-suggest copying `PORTAL_AUTH_ENTRA_CLIENT_ID` from a
+     sibling stamp's `.env` file.** When a previous local stamp is
+     used as a reference (for subscription, tenant, region, etc.),
+     pull non-auth values only — the client id is bound to that
+     stamp's lifecycle and redirect URIs and must not be reused.
+   - The only valid path is: invoke the
      `pilotswarm-portal-app-reg` skill **before** Step 1. That skill
      produces the `clientId` and writes it to
      `deploy/envs/local/<stamp>/entra-app.json`. The script requires
@@ -147,8 +151,11 @@ Ask, in order:
      The script auto-derives the display name `"PilotSwarm Portal -
      <stamp>"`; do not pass `-DisplayName` unless the user wants to
      override.
-   - "I have one / I want to share" → take the client id directly, or
-     invoke the skill in append mode (`-ExistingAppId <appId> -EnvName <stamp>`).
+   - The only exception is if the user **explicitly and unprompted**
+     asks to reuse a specific existing app. In that case take the
+     client id directly from them, or invoke the skill in append mode
+     (`-ExistingAppId <appId> -EnvName <stamp>`). Do not infer this
+     intent from the presence of a sibling stamp.
 3. **"Should sign-in be locked down to assigned users only, or open to
    any tenant member?"** (only when `entra` and provisioning new)
    - **Production stamp (recommended)** → `-CreateAppRoles` + assign
