@@ -23,13 +23,14 @@ param resourceName string
 @description('Resource ID of the GatewaySubnet inside the BaseInfra VNet (vnet.bicep emits this only when vpnGatewayEnabled=true).')
 param gatewaySubnetId string
 
-@description('VPN Gateway SKU. VpnGw1AZ is the smallest RouteBased AZ SKU that supports AAD authentication + OpenVPN. Non-AZ SKUs (VpnGw1/2/3) are no longer accepted by Azure for new VPN gateways; only AZ variants are supported. Basic SKU is also excluded — it does not support OpenVPN or AAD.')
+@description('VPN Gateway SKU. VpnGw2AZ is the smallest Generation2 AZ SKU that reliably serves OpenVPN+AAD. VpnGw1AZ (Generation1) is excluded: Microsoft no longer accepts non-AZ SKUs for new gateways, AND the AZ Generation1 SKU has been observed to silently drop OpenVPN HardResetClientV2 packets ~5s after TCP accept, with no diagnostic event other than a P2SDiagnosticLog "Connection Initialized" + 5s-later "Disconnect Successful". Generation2 (VpnGw2AZ+) does not exhibit this. Basic SKU is also excluded — no OpenVPN/AAD support.')
 @allowed([
-  'VpnGw1AZ'
   'VpnGw2AZ'
   'VpnGw3AZ'
+  'VpnGw4AZ'
+  'VpnGw5AZ'
 ])
-param vpnGatewaySku string = 'VpnGw1AZ'
+param vpnGatewaySku string = 'VpnGw2AZ'
 
 @description('CIDR block from which VPN clients receive addresses once connected. Must not overlap the VNet address space or any on-prem range reachable via the VPN. /24 gives ~250 concurrent clients.')
 param vpnClientAddressPool string = '172.16.200.0/24'
@@ -43,17 +44,25 @@ param vpnAadAudience string = 'c632b3df-fb67-4d84-bdcf-b95ad541b5c8'
 @description('Resource ID of the stamp Log Analytics workspace that receives gateway tunnel + RouteDiagnostic logs and metrics. Empty string disables the diagnostic setting.')
 param logAnalyticsWorkspaceId string = ''
 
+// Note on P2S client DNS: the classic Microsoft.Network/virtualNetworkGateways
+// resource has NO DNS-push property of its own (verified against the live
+// ARM schema for api-version 2024-01-01 → 2025-07-01). DNS servers pushed to
+// P2S clients come from the parent VNet's `dhcpOptions.dnsServers`. See
+// vnet.bicep `dnsServers` param and main.bicep which threads the Private DNS
+// Resolver inbound endpoint IP when VPN ingress is enabled.
+
 @description('Resource tags to apply to gateway resources.')
 param tags object = {}
 
 // ---------------------------------------------------------------------------
 // VPN Gateway Public IP frontend.
 //
-// Zone-redundancy: AZ VPN gateway SKUs (VpnGw1AZ / VpnGw2AZ / VpnGw3AZ)
+// Zone-redundancy: AZ VPN gateway SKUs (VpnGw2AZ / VpnGw3AZ / ...)
 // REQUIRE their associated Public IP to be zone-redundant. Without
 // `zones: ['1', '2', '3']` Azure rejects the gateway deployment with
 // VmssVpnGatewayPublicIpsMustHaveZonesConfigured. Since the gateway SKU
-// list is AZ-only (non-AZ SKUs are deprecated), the PIP is unconditionally
+// list is AZ-only (non-AZ SKUs are deprecated and Generation1 SKUs are
+// excluded — see vpnGatewaySku @description), the PIP is unconditionally
 // zone-redundant.
 //
 // SKU: Standard + Static is required for RouteBased gateways (Basic PIPs
@@ -83,6 +92,9 @@ resource vpnGatewayPip 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
 //
 // Key choices baked in here (do not parameterise without revisiting Spec):
 //   - gatewayType=Vpn, vpnType=RouteBased — AAD auth requires RouteBased.
+//   - vpnGatewayGeneration=Generation2 — Generation1 (VpnGw1AZ) has been
+//     observed to silently drop OpenVPN+AAD HardResetClientV2 packets ~5s
+//     after TCP accept; Generation2 (VpnGw2AZ+) is the supported floor.
 //   - activeActive=false, enableBgp=false — P2S-only deployment.
 //   - vpnClientProtocols=['OpenVPN'] — only protocol that supports AAD auth.
 //   - vpnAuthenticationTypes=['AAD'] — no certificate/RADIUS fallback.
@@ -97,6 +109,7 @@ resource vpnGateway 'Microsoft.Network/virtualNetworkGateways@2024-01-01' = {
   properties: {
     gatewayType: 'Vpn'
     vpnType: 'RouteBased'
+    vpnGatewayGeneration: 'Generation2'
     activeActive: false
     enableBgp: false
     sku: {

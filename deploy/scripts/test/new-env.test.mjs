@@ -409,7 +409,7 @@ test("scaffolder accepts private + akv-selfsigned with HOST and PRIVATE_DNS_ZONE
 // reuse validateVpnGatewayCombo (no duplicated arithmetic).
 //
 // VPN_GATEWAY_SKU and VPN_AAD_AUDIENCE are NOT prompted — they flow
-// through unchanged from template.env defaults (VpnGw1AZ, c632b3df-...).
+// through unchanged from template.env defaults (VpnGw2AZ, c632b3df-...).
 // The unsupported keys VPN_AAD_TENANT_ID, VPN_PRIVATE_DNS_MODE,
 // PRIVATE_DNS_ZONE_ID, VPN_AAD_USERS_GROUP_NAME_HINT must NEVER be emitted.
 
@@ -467,7 +467,7 @@ test("scaffolder writes VPN keys at expected defaults on afd+akv with --vpn-enab
     assert.match(content, /^VPN_GATEWAY_ENABLED=true$/m);
     assert.match(content, /^VPN_CLIENT_ADDRESS_POOL=172\.16\.200\.0\/24$/m);
     // Two template-default keys flow through verbatim.
-    assert.match(content, /^VPN_GATEWAY_SKU=VpnGw1AZ\b/m);
+    assert.match(content, /^VPN_GATEWAY_SKU=VpnGw2AZ\b/m);
     assert.match(content, /^VPN_AAD_AUDIENCE=c632b3df-fb67-4d84-bdcf-b95ad541b5c8\b/m);
     // Dropped-from-spec keys must NOT be present.
     for (const dropped of [
@@ -588,7 +588,8 @@ test("scaffolder emits the post-scaffold VPN reminder block on success", () => {
     // Legacy audience override.
     assert.match(out, /41b23e61-6c1e-4545-b367-cd054e0ed4b4/);
     // Cost + time disclosure.
-    assert.match(out, /\$140\/month/);
+    assert.match(out, /\$450\/month/);
+    assert.match(out, /Private DNS Resolver/);
     assert.match(out, /45\+ minutes/);
     // Docs pointer (referenced by section name in deploying-to-aks.md).
     assert.match(out, /docs\/deploying-to-aks\.md/);

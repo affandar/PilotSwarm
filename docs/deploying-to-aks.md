@@ -236,8 +236,8 @@ below).
 
 | Var | Default | Notes |
 |---|---|---|
-| `VPN_GATEWAY_ENABLED` | `false` | Master switch. `true` provisions the gateway + GatewaySubnet + managed Private DNS zone and seeds the WAF guard rules. |
-| `VPN_GATEWAY_SKU` | `VpnGw1AZ` | `VpnGw1AZ`, `VpnGw2AZ`, or `VpnGw3AZ`. Azure no longer accepts non-AZ SKUs (`VpnGw1/2/3`); Basic SKU is also rejected (no OpenVPN / AAD support). |
+| `VPN_GATEWAY_ENABLED` | `false` | Master switch. `true` provisions the gateway + GatewaySubnet + managed Private DNS zone + Azure Private DNS Resolver inbound endpoint (with its own `/28` subnet), and seeds the WAF guard rules. The Resolver IP is advertised to P2S clients via the parent VNet's `dhcpOptions.dnsServers` (the supported P2S DNS-push path) so the portal hostname resolves through the tunnel without hosts-file edits. |
+| `VPN_GATEWAY_SKU` | `VpnGw2AZ` | `VpnGw2AZ`, `VpnGw3AZ`, `VpnGw4AZ`, or `VpnGw5AZ`. Generation2 AZ SKUs only. `VpnGw1AZ` (Generation1) is excluded — silently drops OpenVPN+AAD HardResetClientV2 packets ~5s after TCP accept with no diagnostic event. Non-AZ SKUs (`VpnGw1/2/3`) and Basic are also rejected. |
 | `VPN_CLIENT_ADDRESS_POOL` | `172.16.200.0/24` | CIDR assigned to connected clients. MUST NOT overlap the VNet. |
 | `VPN_AAD_AUDIENCE` | `c632b3df-fb67-4d84-bdcf-b95ad541b5c8` | Microsoft-registered Azure VPN Client app. Set to `41b23e61-6c1e-4545-b367-cd054e0ed4b4` only on tenants that must interop with older Azure VPN client builds. |
 | `APPGW_WAF_CUSTOM_RULES_FILE` | unset | See [AppGw WAF custom rules](#appgw-waf-custom-rules-applies-to-any-afd-stamp) below — a general-purpose facility, not VPN-specific. |
@@ -343,10 +343,21 @@ inputs fail loudly at preflight with a single named diagnostic.
 
 #### Cost and time
 
-- **Cost**: ~$140/month for `VpnGw1AZ` (Public IP + gateway hours). Higher
-  AZ SKUs (`VpnGw2AZ` / `VpnGw3AZ`) scale linearly — see Azure VPN
-  Gateway pricing for current rates. Non-AZ SKUs (`VpnGw1/2/3`) are no
-  longer accepted by Azure for new VPN gateways.
+- **Cost**: ~$450/month total for a VPN-enabled stamp:
+  - ~$280/month for `VpnGw2AZ` (Public IP + gateway hours). Higher AZ SKUs
+    (`VpnGw3AZ` / `VpnGw4AZ` / `VpnGw5AZ`) scale linearly — see Azure VPN
+    Gateway pricing for current rates. `VpnGw1AZ` (Generation1) and non-AZ
+    SKUs (`VpnGw1/2/3`) are excluded — see the SKU notes above.
+  - ~$170/month for the Azure Private DNS Resolver inbound endpoint, which
+    is co-provisioned with the VPN gateway so P2S clients can resolve
+    Private DNS Zone records (e.g. the portal hostname) through the tunnel
+    without hosts-file edits. P2S clients cannot reach the Azure-magic
+    `168.63.129.16` resolver — that IP only works from inside Azure VMs —
+    so the Resolver inbound endpoint sits on a regular VNet IP. P2S clients
+    inherit this IP via the parent VNet's `dhcpOptions.dnsServers` block,
+    which the gateway pushes at connect time (the classic VPN gateway
+    resource has no dedicated DNS-push property — VNet DHCP options are the
+    supported path).
 - **First-deploy time**: **45+ minutes**. Gateway provisioning is the
   long pole; the rest of the stamp finishes well before the gateway
   reports `Succeeded`. Subsequent param-change deploys are minutes, not

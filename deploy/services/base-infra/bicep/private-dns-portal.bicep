@@ -5,8 +5,14 @@
 // When VPN ingress is enabled, off-network employees resolve the portal
 // hostname (`<recordName>.<dnsZoneName>`) to the AppGw private frontend IP
 // over the VPN tunnel. The zone is created in the BaseInfra RG and linked to
-// the BaseInfra VNet; the VPN Gateway pushes the VNet's resolver (168.63.129.16)
-// to clients, so clients then resolve via the linked private zone.
+// the BaseInfra VNet; the Azure Private DNS Resolver (dns-resolver.bicep)
+// answers queries from P2S clients via its inbound endpoint IP. That IP is
+// advertised to P2S clients via the parent VNet's `dhcpOptions.dnsServers`
+// — the classic Microsoft.Network/virtualNetworkGateways resource has no
+// DNS-push field of its own, so VNet DHCP options are the supported path
+// for P2S DNS distribution. (P2S clients cannot reach the Azure-magic DNS
+// IP 168.63.129.16 — that IP only works from inside Azure VMs — which is
+// precisely why the Resolver is co-provisioned with the VPN.)
 //
 // Cross-reference: deploy/services/portal/bicep/main.bicep:239-261 hosts a
 // similar private-DNS pattern, but that module is `edgeMode='private'`-only
@@ -25,7 +31,7 @@ param vpnGatewayEnabled bool
 @description('Private DNS zone name to provision (= SSL_CERT_DOMAIN_SUFFIX so the portal cert SAN resolves over the tunnel).')
 param dnsZoneName string
 
-@description('Hostname label for the portal A record (= base-infra resourceNamePrefix, matching the AFD endpoint host shape).')
+@description('Hostname label for the portal A record. MUST match the AppGw HTTPS listener hostname (= AKV cert subject), which portal/bicep/main.bicep composes as portalResourceName.sslCertificateDomainSuffix (e.g. pschkrawvpn-wus3-portal). Threaded from main.bicep portalResourceName (PORTAL_RESOURCE_NAME env var).')
 param recordName string
 
 @description('AppGw private frontend IP address that VPN clients should resolve the portal hostname to.')

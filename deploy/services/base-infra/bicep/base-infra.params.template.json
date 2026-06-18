@@ -56,6 +56,9 @@
     "vpnAadAudience": {
       "value": "${VPN_AAD_AUDIENCE}"
     },
+    "portalResourceName": {
+      "value": "${PORTAL_RESOURCE_NAME}"
+    },
     "frontDoorId": {
       "value": "${FRONT_DOOR_ID}"
     },

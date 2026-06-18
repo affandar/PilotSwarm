@@ -402,7 +402,7 @@ unmanaged-device users).
   dev.contoso.example`). `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet (default
   `10.20.0.0/16`). VPN uses the existing stamp `AZURE_TENANT_ID` — same
   Entra tenant as the rest of the deploy.
-- **Cost / time**: ~$140/month for `VpnGw1AZ` (PIP + gateway hours).
+- **Cost / time**: ~$450/month total for `VpnGw2AZ` + Azure Private DNS Resolver inbound endpoint (~$280 gateway + PIP + ~$170 resolver). The Resolver is co-provisioned with the gateway so P2S clients can resolve Private DNS Zone records (e.g. portal hostname) through the tunnel without hosts-file edits.
   First-deploy time is **45+ minutes** (gateway provisioning is the long
   pole). Subsequent param changes are still measured in minutes.
 - **AAD audience**: defaults to `c632b3df-fb67-4d84-bdcf-b95ad541b5c8`

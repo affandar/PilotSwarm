@@ -97,8 +97,8 @@ param foundryDeployments array = []
 @description('Whether to provision the Azure VPN Gateway (P2S, AAD-authenticated) as an additive ingress alongside AFD. False by default.')
 param vpnGatewayEnabled bool = false
 
-@description('VPN Gateway SKU. See vpn-gateway.bicep for allowed values; only AZ variants are supported (Azure no longer accepts non-AZ SKUs). Basic is excluded (no OpenVPN/AAD support).')
-param vpnGatewaySku string = 'VpnGw1AZ'
+@description('VPN Gateway SKU. See vpn-gateway.bicep for allowed values; only AZ variants on Generation2 are supported (VpnGw1AZ is Generation1-only and has been observed to silently drop OpenVPN+AAD control-channel handshakes on new deployments). Basic is excluded (no OpenVPN/AAD support).')
+param vpnGatewaySku string = 'VpnGw2AZ'
 
 @description('VPN client address pool (must not overlap the VNet or any reachable on-prem range).')
 param vpnClientAddressPool string = '172.16.200.0/24'
@@ -114,6 +114,9 @@ param frontDoorId string = ''
 
 @description('Microsoft Entra (AAD) tenant ID threaded from the deploy-time AZURE_TENANT_ID env var via the base-infra params template. Currently consumed only by the VPN gateway module; the keyvault/postgres modules keep their own subscription().tenantId defaults. Empty default keeps non-VPN stamps byte-equivalent at the param layer.')
 param tenantId string = ''
+
+@description('Portal short hostname (e.g. pschkrawvpn-wus3-portal), threaded from the deploy-time PORTAL_RESOURCE_NAME env var. Used as the A-record label in the VPN-mode private DNS zone so VPN clients resolve the SAME hostname the AppGw listener serves (matching the AKV cert subject portalResourceName.sslCertificateDomainSuffix set in portal/bicep/main.bicep). Empty default keeps non-VPN stamps byte-equivalent.')
+param portalResourceName string = ''
 
 // ==============================================================================
 // Derived names
@@ -181,6 +184,16 @@ module Vnet './vnet.bicep' = {
     location: location
     resourceNamePrefix: resourceNamePrefix
     vpnGatewayEnabled: vpnGatewayEnabled
+    // When VPN ingress is enabled, advertise the Private DNS Resolver inbound
+    // endpoint static IP via the VNet's dhcpOptions. P2S clients connecting
+    // through the VPN gateway inherit this DNS server list (the classic
+    // Microsoft.Network/virtualNetworkGateways resource has no DNS-push field
+    // of its own — see vpn-gateway.bicep). The IP is the static address
+    // hardcoded in dns-resolver.bicep `inboundIpAddress` default (10.20.19.4)
+    // and is reachable from P2S clients via the tunnel.
+    dnsServers: vpnGatewayEnabled ? [
+      '10.20.19.4'
+    ] : []
   }
 }
 
@@ -294,6 +307,21 @@ module LogAnalytics '../../common/bicep/log-analytics.bicep' = {
 // Skipped entirely when vpnGatewayEnabled=false (default).
 // ==============================================================================
 
+// Private DNS Resolver — provisioned in lockstep with the VPN gateway so P2S
+// clients have a reachable DNS server (the Resolver inbound IP) pushed via
+// vpnClientConfiguration.customDnsServers. Without this, P2S clients cannot
+// resolve Private DNS Zone records (e.g. portal hostname) through the tunnel
+// because 168.63.129.16 is only reachable from inside Azure VMs.
+module DnsResolver './dns-resolver.bicep' = if (vpnGatewayEnabled) {
+  name: '${resourceNamePrefix}-dns-resolver-${dTime}'
+  params: {
+    location: location
+    resourceName: resourceNamePrefix
+    vnetId: Vnet.outputs.vnetId
+    inboundSubnetId: Vnet.outputs.dnsResolverInboundSubnetId
+  }
+}
+
 module VpnGateway './vpn-gateway.bicep' = if (vpnGatewayEnabled) {
   name: '${resourceNamePrefix}-vpngw-${dTime}'
   params: {
@@ -325,7 +353,14 @@ module PortalPrivateDns './private-dns-portal.bicep' = if (vpnGatewayEnabled && 
   params: {
     vpnGatewayEnabled: vpnGatewayEnabled
     dnsZoneName: sslCertificateDomainSuffix
-    recordName: resourceNamePrefix
+    // Must match the AppGw HTTPS listener hostname (= portal AKV cert
+    // subject), composed in portal/bicep/main.bicep as
+    // `${resourceName}.${sslCertificateDomainSuffix}` where `resourceName`
+    // is the portal short name (`<env>-<regionShort>-portal`). Threaded
+    // here as PORTAL_RESOURCE_NAME from the deploy env. Fallback to bare
+    // resourceNamePrefix is intentionally preserved for older stamps that
+    // pre-date this thread (cert/DNS would mismatch, but build won't break).
+    recordName: empty(portalResourceName) ? resourceNamePrefix : portalResourceName
     appGatewayPrivateIp: appGatewayPrivateIpAddress
     vnetId: Vnet.outputs.vnetId
   }

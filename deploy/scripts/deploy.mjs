@@ -135,9 +135,10 @@ function printHelp() {
       "",
       "Notes:",
       "  • VPN_GATEWAY_ENABLED=true adds 45+ min to the first `bicep` step",
-      "    and ~$140/mo (VpnGw1AZ) to the running stamp. Coexists with the",
-      "    AFD edge mode — does NOT replace it. See deploy/envs/template.env",
-      "    for the full env-var roster and the AKV-only constraint.",
+      "    and ~$450/mo (VpnGw2AZ + Private DNS Resolver) to the running stamp.",
+      "    Coexists with the AFD edge mode — does NOT replace it. See",
+      "    deploy/envs/template.env for the full env-var roster and the",
+      "    AKV-only constraint.",
       "",
     ].join("\n"),
   );
