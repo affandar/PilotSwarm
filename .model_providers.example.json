@@ -6,8 +6,8 @@
             "githubToken": "env:GITHUB_TOKEN",
             "models": [
                 {
-                    "name": "claude-opus-4.7",
-                    "description": "Claude Opus 4.7 (latest). Most capable model. Deep reasoning, complex multi-step tasks, nuanced analysis.",
+                    "name": "claude-opus-4.8",
+                    "description": "Claude Opus 4.8. Most capable Claude option for the hardest analysis and reasoning tasks through GitHub Copilot.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
                         "medium"
@@ -35,10 +35,12 @@
                 },
                 {
                     "name": "gpt-5.5",
-                    "description": "GPT-5.5 via GitHub Copilot. High-capability GPT model for advanced reasoning and coding tasks.",
+                    "description": "GPT-5.5. High-capability GPT model for advanced reasoning and coding tasks through GitHub Copilot.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
+                        "low",
                         "medium",
+                        "high",
                         "xhigh"
                     ],
                     "defaultReasoningEffort": "medium"
