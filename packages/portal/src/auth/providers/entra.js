@@ -85,8 +85,15 @@ export function createEntraBrowserAuthProvider() {
             return { account, accessToken };
         },
         async getAccessToken() {
-            if (accessToken) return accessToken;
-            return acquireToken({ interactive: true });
+            // Always attempt a silent acquire: MSAL returns the cached access
+            // token while it is still valid and transparently uses the refresh
+            // token to mint a fresh one once it expires. This is what keeps the
+            // session alive past the ~60-90min access-token lifetime instead of
+            // pinning it to the token captured at sign-in. We never force an
+            // interactive popup here — getAccessToken runs on every background
+            // API/WebSocket request; a silent failure returns null and lets the
+            // transport's 401 handler drive re-authentication.
+            return acquireToken({ interactive: false });
         },
         getAccount() {
             return account;
