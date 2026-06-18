@@ -3,9 +3,12 @@ import type { Tool } from "@github/copilot-sdk";
 import type { AccessContext, FactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
 
-// Roles that may HARVEST (crawl-queue + graph write/delete). The app assigns the
-// harvester role to its own agent; the facts-manager holds the tools but is
+// Roles that may run the privileged crawl work queue (`facts_read_uncrawled` /
+// `facts_mark_crawled`, which read facts across ALL scopes). The app assigns the
+// harvester role to its own agent; the facts-manager holds the queue too but is
 // dormant by default (07 §1.5). agent-tuner is read-only and never harvests.
+// NOTE: graph write/delete is NOT gated by this role — it is open to every
+// non-tuner session (the knowledge graph is shared).
 const TUNER_AGENT_ID = "agent-tuner";
 const FACTS_MANAGER_AGENT_ID = "facts-manager";
 
@@ -16,9 +19,11 @@ export interface CreateGraphToolsOptions {
     /** The session's agent identity, used for role gating. */
     agentIdentity?: string;
     /**
-     * Whether this session holds the app-assigned HARVESTER role (gets the
-     * crawl-queue + graph write/delete tools). The facts-manager additionally
-     * receives these tools (dormant), and agent-tuner never does.
+     * Whether this session holds the app-assigned HARVESTER role. This now gates
+     * ONLY the crawl work queue (`facts_read_uncrawled` / `facts_mark_crawled`);
+     * the facts-manager additionally receives the queue (dormant), and
+     * agent-tuner never does. Graph write/delete is NOT gated by this flag — it
+     * is available to every non-tuner session (see `canWriteGraph`).
      */
     isHarvester?: boolean;
     /**
@@ -42,9 +47,13 @@ export interface CreateGraphToolsOptions {
 /**
  * Build the graph + crawl-queue tools (enhancedfactstore 07 P4). Registered
  * ONLY when a `graphStore` is present. Reader tools (search/neighbourhood) go to
- * every session; crawl-queue + write/delete go to the harvester role and the
- * facts-manager (dormant); `graph_stats` (read-only) goes to facts-manager +
- * agent-tuner. agent-tuner never gets a mutating tool.
+ * every session; graph write/delete (`graph_upsert_*` / `graph_merge_nodes` /
+ * `graph_delete_*`) go to EVERY session EXCEPT the read-only agent-tuner, so any
+ * agent can incorporate into the SHARED graph; the crawl work queue
+ * (`facts_read_uncrawled` / `facts_mark_crawled`) stays harvester-role +
+ * facts-manager only (it reads facts across ALL scopes, bypassing per-session
+ * ACL); `graph_stats` (read-only) goes to facts-manager + agent-tuner.
+ * agent-tuner never gets a mutating tool.
  */
 export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
     const { graphStore, factStore, agentIdentity, isHarvester, recordEvent } = opts;
@@ -60,9 +69,13 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         if (opts.resolveAccess) return opts.resolveAccess(sessionId);
         return { readerSessionId: sessionId ?? null, grantedSessionIds: [] };
     };
-    // Harvester powers: the app-assigned harvester role OR the facts-manager
-    // (which holds them dormant). Never the tuner.
+    // Harvester powers (the crawl work queue): the app-assigned harvester role OR
+    // the facts-manager (which holds them dormant). Never the tuner.
     const canHarvest = !isTuner && (isHarvester === true || isFactsManager);
+    // Graph write/delete is open to EVERY session that can run tools, so any
+    // agent can incorporate into the SHARED knowledge graph. The only exception
+    // is the read-only agent-tuner, which never receives a mutating tool.
+    const canWriteGraph = !isTuner;
 
     const tools: Tool<any>[] = [];
 
@@ -223,49 +236,54 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         }));
     }
 
-    if (!canHarvest) return tools;
-
     // ── Crawl-queue tools (HARVESTER / facts-manager — privileged, all scopes) ─
-
-    tools.push(defineTool("facts_read_uncrawled", {
-        description:
-            "PRIVILEGED harvester work queue: facts not yet incorporated into the graph (new or edited since the " +
-            "last crawl), across ALL scopes. Keep each fact's contentHash — it is the receipt facts_mark_crawled needs.",
-        parameters: {
-            type: "object" as const,
-            properties: {
-                namespace: { type: "string", description: "Restrict the queue to a literal key prefix." },
-                limit: { type: "number", description: "Max facts this batch (default 20)." },
-            },
-        },
-        handler: (a: any) => factStore.readUncrawledFacts({ namespace: a.namespace, limit: a.limit }),
-    }));
-
-    tools.push(defineTool("facts_mark_crawled", {
-        description:
-            "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey AND the contentHash you " +
-            "read. A skipped stamp means the fact changed under you — it stays queued; just move on.",
-        parameters: {
-            type: "object" as const,
-            properties: {
-                stamps: {
-                    type: "array",
-                    items: {
-                        type: "object",
-                        properties: {
-                            scopeKey: { type: "string" },
-                            contentHash: { type: "string" },
-                        },
-                        required: ["scopeKey", "contentHash"],
-                    },
+    // The crawl work queue reads facts across ALL scopes (bypassing per-session
+    // ACL), so it stays restricted to the harvester role and the (dormant)
+    // facts-manager — it is NOT opened up to every session.
+    if (canHarvest) {
+        tools.push(defineTool("facts_read_uncrawled", {
+            description:
+                "PRIVILEGED harvester work queue: facts not yet incorporated into the graph (new or edited since the " +
+                "last crawl), across ALL scopes. Keep each fact's contentHash — it is the receipt facts_mark_crawled needs.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    namespace: { type: "string", description: "Restrict the queue to a literal key prefix." },
+                    limit: { type: "number", description: "Max facts this batch (default 20)." },
                 },
             },
-            required: ["stamps"] as const,
-        },
-        handler: (a: any) => factStore.markFactsCrawled(a.stamps),
-    }));
+            handler: (a: any) => factStore.readUncrawledFacts({ namespace: a.namespace, limit: a.limit }),
+        }));
 
-    // ── Graph write / delete (HARVESTER / facts-manager) ─────────────────────
+        tools.push(defineTool("facts_mark_crawled", {
+            description:
+                "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey AND the contentHash you " +
+                "read. A skipped stamp means the fact changed under you — it stays queued; just move on.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    stamps: {
+                        type: "array",
+                        items: {
+                            type: "object",
+                            properties: {
+                                scopeKey: { type: "string" },
+                                contentHash: { type: "string" },
+                            },
+                            required: ["scopeKey", "contentHash"],
+                        },
+                    },
+                },
+                required: ["stamps"] as const,
+            },
+            handler: (a: any) => factStore.markFactsCrawled(a.stamps),
+        }));
+    }
+
+    // ── Graph write / delete — every session EXCEPT the read-only agent-tuner ─
+    // The shared knowledge graph is writable by any agent that can run tools;
+    // graph incorporation is no longer a harvester/facts-manager privilege.
+    if (!canWriteGraph) return tools;
 
     tools.push(defineTool("graph_upsert_node", {
         description:

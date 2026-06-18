@@ -14,16 +14,20 @@ builder skill.
   `horizonConfigFromEnv()`, which maps the `HORIZON_*` env vars to the worker's
   `enhancedFactsDatabaseUrl` / `graphDatabaseUrl` / `horizonEmbed` / `*Schema` fields.
 - **The harvester role** — `source-harvester` declares `harvester: true`, so it (and
-  only it) gets the crawl queue (`facts_read_uncrawled` / `facts_mark_crawled`) and
-  graph-write tools (`graph_upsert_node` / `graph_upsert_edge` / …).
+  only it) gets the privileged crawl queue (`facts_read_uncrawled` /
+  `facts_mark_crawled`). The graph-write tools (`graph_upsert_node` /
+  `graph_upsert_edge` / …) are available to every session except the read-only
+  `agent-tuner` — the knowledge graph is shared, so what makes the harvester special is
+  the crawl queue, not write access.
 - **The crawl→graph→reader flow** — ingest documents as `corpus/*` facts (a dedicated
   source-capture namespace, kept separate from the Facts Manager's `intake/*` curation
   queue), drain the
   crawl queue, extract entities/edges into the graph anchored to fact `scopeKey`
   evidence, mark facts crawled with their `contentHash` receipt, then retrieve.
 - **The reader role** — `librarian` has no harvester frontmatter; it gets
-  `facts_search` / `facts_similar` and the graph **read** tools, and pivots from a
-  seed fact into the graph neighbourhood.
+  `facts_search` / `facts_similar` and the graph **read** tools (plus, like any
+  non-tuner session, the graph-write tools), and pivots from a seed fact into the
+  graph neighbourhood.
 
 ## Requirements
 

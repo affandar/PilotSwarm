@@ -130,11 +130,12 @@ describe("P4: enhanced facts tool gating (createFactTools)", () => {
 describe("P4: graph tool gating (createGraphTools)", () => {
     const base = () => ({ graphStore: fakeGraphStore(), factStore: fakeBaseStore() });
 
-    it("reader (no harvester role) → read tools only, no write/crawl/stats", () => {
+    it("reader (no harvester role) → reads + graph write/delete, but no crawl/stats", () => {
         const n = names(createGraphTools({ ...base(), agentIdentity: "default" }));
         assert(n.has("graph_search_nodes") && n.has("graph_search_edges") && n.has("graph_neighbourhood"), "graph read tools present");
-        assert(!n.has("graph_upsert_node") && !n.has("graph_delete_node"), "no write/delete for a reader");
-        assert(!n.has("facts_read_uncrawled") && !n.has("facts_mark_crawled"), "no crawl queue for a reader");
+        assert(n.has("graph_upsert_node") && n.has("graph_upsert_edge") && n.has("graph_merge_nodes")
+            && n.has("graph_delete_node") && n.has("graph_delete_edge"), "graph write/delete now available to every non-tuner session");
+        assert(!n.has("facts_read_uncrawled") && !n.has("facts_mark_crawled"), "crawl queue stays harvester/facts-manager only");
         assert(!n.has("graph_stats"), "no graph_stats for an ordinary reader");
     });
 

@@ -246,12 +246,13 @@ describe("E1: enhanced facts (search) + graph", () => {
     const enh = () => fakeEnhancedStore();
     const g = () => fakeGraphStore();
 
-    it("default reader → search + graph reads, NO stats/write/crawl", async () => {
+    it("default reader → search + graph reads + graph write/delete, NO stats/crawl", async () => {
         const { names } = await register({ factStore: enh(), graphStore: g(), agentIdentity: "default" });
         assert(hasAll(names, SEARCH_TOOLS), "reader keeps search tools");
         assert(hasAll(names, GRAPH_READS), "reader gets graph read tools");
+        assert(hasAll(names, GRAPH_WRITES), "reader now gets graph write/delete (shared-graph writes open to every non-tuner session)");
         assert(!names.has("graph_stats"), "ordinary reader gets no graph_stats");
-        assert(hasNone(names, [...GRAPH_WRITES, ...CRAWL_TOOLS]), "reader gets no graph writes/crawl");
+        assert(hasNone(names, CRAWL_TOOLS), "reader gets no crawl queue (harvester/facts-manager only)");
     });
 
     it("facts-manager → graph reads + graph_stats + harvester tools (dormant)", async () => {

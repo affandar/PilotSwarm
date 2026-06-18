@@ -140,12 +140,15 @@ HORIZON_EMBED_API_KEY=…
 > collision.
 
 **2. A `harvester: true` agent in the plugin.** The crawl-queue tools
-(`facts_read_uncrawled` / `facts_mark_crawled`) and graph-write tools
-(`graph_upsert_node` / `graph_upsert_edge` / …) appear only when **both** the graph
+(`facts_read_uncrawled` / `facts_mark_crawled`) appear only when **both** the graph
 store is configured (`HORIZON_GRAPH_DATABASE_URL`) **and** the session's own agent
-declares `harvester: true`. The role is derived per turn from the resolved agent — it
-is **not** granted by a `tools:` list and is **not** inherited when a harvester spawns a
-non-harvester child. Model the agent on the sample's
+declares `harvester: true`. The graph-write tools (`graph_upsert_node` /
+`graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_*`) need only the graph store
+— they are available to **every** session except the read-only `agent-tuner`, because
+the knowledge graph is shared. The harvester role is derived per turn from the resolved
+agent — it is **not** granted by a `tools:` list and is **not** inherited when a
+harvester spawns a non-harvester child; what it uniquely unlocks is the privileged crawl
+queue. Model the agent on the sample's
 [`source-harvester.agent.md`](../examples/horizon-harvester/plugin/agents/source-harvester.agent.md).
 
 **3. A recurring crawl schedule.** Drive the crawl with a durable timer, never a

@@ -676,9 +676,10 @@ export class SessionManager {
                 : undefined,
             }).filter((tool: any) => !isTunerSession || tool.name === "read_facts" || tool.name === "facts_search" || tool.name === "facts_similar" || tool.name === "search_skills");
         // Graph tools (07 P4) — registered ONLY when a graph store is configured.
-        // Reader tools go to every session; crawl-queue + write/delete go to the
-        // app harvester role and the facts-manager (dormant); graph_stats to
-        // facts-manager + agent-tuner. Tuner never gets a mutating tool.
+        // Reader tools AND graph write/delete go to every session (so any agent
+        // can incorporate into the SHARED graph) EXCEPT the read-only agent-tuner;
+        // the crawl queue stays app-harvester-role + facts-manager only; graph_stats
+        // to facts-manager + agent-tuner. Tuner never gets a mutating tool.
         const graphTools = this.graphStore
             ? createGraphTools({
                 graphStore: this.graphStore,

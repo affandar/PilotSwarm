@@ -539,8 +539,9 @@ export function buildRunTurnConfig(
  *
  * SECURITY (P5 review BLOCKER#2): `title` is display metadata, NOT an
  * authorization key — matching on it would let a non-harvester whose title
- * normalizes to a harvester's identity receive crawl + graph write/delete
- * tools. We match only `id` / `name`, and we FAIL CLOSED on ambiguity: when
+ * normalizes to a harvester's identity receive the privileged crawl queue
+ * (`facts_read_uncrawled` / `facts_mark_crawled`, which read facts across ALL
+ * scopes). We match only `id` / `name`, and we FAIL CLOSED on ambiguity: when
  * more than one loaded agent resolves to the same normalized identity, the
  * privileged role is granted only if EVERY one of them declares `harvester`.
  */

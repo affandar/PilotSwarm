@@ -46,8 +46,8 @@ what *search* the harvester and readers also get:
 
 | Fact store (with a graph store) | Harvester also gets | Readers also get |
 |---|---|---|
-| **Base `PgFactStore`** (plain Postgres, no extensions) | crawl + graph write only | graph traversal only |
-| **EnhancedFactStore** (HorizonDB: pgvector + pg_textsearch + pg_durable) | `facts_search` / `facts_similar` for resolution | `facts_search` / `facts_similar` alongside graph traversal |
+| **Base `PgFactStore`** (plain Postgres, no extensions) | the privileged crawl queue | graph traversal + graph write |
+| **EnhancedFactStore** (HorizonDB: pgvector + pg_textsearch + pg_durable) | `facts_search` / `facts_similar` for resolution | `facts_search` / `facts_similar` alongside graph traversal + graph write |
 
 Read it as two independent decisions:
 
@@ -98,14 +98,19 @@ harmlessly ignored).
 | Role | `harvester` frontmatter | Gets | Responsibility |
 |------|------------------------|------|----------------|
 | **Harvester** | `harvester: true` | crawl queue (`facts_read_uncrawled` / `facts_mark_crawled`) + graph writes (`graph_upsert_node` / `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_node` / `graph_delete_edge`) | Crawl sources into a dedicated `corpus/*` (source-capture) namespace, build the graph, mark facts crawled |
-| **Reader** | (none) | `facts_search` / `facts_similar` + graph reads (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood` / `graph_stats`) | Retrieve knowledge; pivot fact↔graph |
+| **Reader** | (none) | `facts_search` / `facts_similar` + graph reads (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood`) + graph writes (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) | Retrieve knowledge; pivot fact↔graph; may also incorporate into the shared graph |
 | **Facts Manager** | system agent (dormant) | crawl + graph writes, but **does not crawl** unless an operator explicitly asks | Curate `intake/*` (task-agent observations) into reusable skills |
 
 The harvester role is **authoritative per turn** — the runtime derives it from the
 agent's own `harvester: true` frontmatter on every turn (replay-safe, survives
 hydration). It is **never inherited** through spawn: a harvester that spawns a child
 does not make the child a harvester. Only agents whose own definition declares
-`harvester: true` get the crawl/write surface.
+`harvester: true` get the privileged **crawl queue** (`facts_read_uncrawled` /
+`facts_mark_crawled`), which reads facts across all scopes. The **graph-write** tools
+(`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) are **not** gated by the
+harvester role — they are available to every session except the read-only `agent-tuner`,
+because the knowledge graph is shared. A harvester is simply the agent that owns the
+systematic crawl→graph loop.
 
 > The table's `Gets` column shows the **enhanced fact store + graph** tier. The
 > `facts_search` / `facts_similar` tools in the Reader and Harvester rows require the
