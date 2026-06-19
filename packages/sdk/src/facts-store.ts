@@ -58,16 +58,26 @@ export interface ReadFactsQuery {
 
 export interface DeleteFactInput {
     key: string;
-    shared?: boolean;
-    sessionId?: string | null;
-}
-
-export interface DeleteFactsInput {
-    keyPattern: string;
+    /** Required true to treat `key` as a pattern instead of an exact key. */
+    pattern?: boolean;
+    /** Pattern-delete scope. Exact deletes infer scope from `shared`. */
     scope?: "session" | "shared" | "all";
     shared?: boolean;
     sessionId?: string | null;
+    /** Required for scope="all"; used only by privileged callers. */
     unrestricted?: boolean;
+}
+
+export interface DeletedFactResult {
+    key: string;
+    shared: boolean;
+    deleted: boolean;
+}
+
+export interface DeletedFactsResult {
+    keyPattern: string;
+    scope: "session" | "shared" | "all";
+    deleted: number;
 }
 
 /** How visibility is resolved inside the read/search procs. */
@@ -97,17 +107,14 @@ export interface FactsStatsRow {
 export interface FactStore {
     initialize(): Promise<void>;
     storeFact(input: StoreFactInput): Promise<StoredFactResult>;
-    storeFacts(inputs: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }>;
+    storeFact(input: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }>;
     readFacts(query: ReadFactsQuery, access?: AccessContext): Promise<{
         count: number;
         facts: FactRecord[];
     }>;
-    deleteFact(input: DeleteFactInput): Promise<{
-        key: string;
-        shared: boolean;
-        deleted: boolean;
-    }>;
-    deleteFacts(input: DeleteFactsInput): Promise<{ deleted: number; keyPattern: string; scope: "session" | "shared" | "all" }>;
+    deleteFact(input: DeleteFactInput & { pattern: true }): Promise<DeletedFactsResult>;
+    deleteFact(input: DeleteFactInput & { pattern?: false | undefined }): Promise<DeletedFactResult>;
+    deleteFact(input: DeleteFactInput): Promise<DeletedFactResult | DeletedFactsResult>;
     deleteSessionFactsForSession(sessionId: string): Promise<number>;
     /** Per-session non-shared facts, bucketed by namespace. */
     getSessionFactsStats(sessionId: string): Promise<FactsStatsRow[]>;
@@ -289,10 +296,8 @@ function sqlForSchema(schema: string) {
         schema,
         fn: {
             storeFact:                 `${schema}.facts_store_fact`,
-            storeFacts:                `${schema}.facts_store_facts`,
             readFacts:                 `${schema}.facts_read_facts`,
             deleteFact:                `${schema}.facts_delete_fact`,
-            deleteFacts:               `${schema}.facts_delete_facts`,
             deleteSessionFacts:        `${schema}.facts_delete_session_facts`,
             getSessionFactsStats:      `${schema}.facts_get_session_facts_stats`,
             getFactsStatsForSessions:  `${schema}.facts_get_facts_stats_for_sessions`,
@@ -514,13 +519,11 @@ export class PgFactStore implements FactStore {
         this.initialized = true;
     }
 
-    async storeFact(input: StoreFactInput): Promise<StoredFactResult> {
-        const stored = await this.storeFacts([input]);
-        return stored.facts[0];
-    }
-
-    async storeFacts(inputs: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }> {
-        if (!Array.isArray(inputs) || inputs.length === 0) return { stored: 0, facts: [] };
+    async storeFact(input: StoreFactInput): Promise<StoredFactResult>;
+    async storeFact(input: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }>;
+    async storeFact(input: StoreFactInput | StoreFactInput[]): Promise<StoredFactResult | { stored: number; facts: StoredFactResult[] }> {
+        const inputs = Array.isArray(input) ? input : [input];
+        if (inputs.length === 0) return { stored: 0, facts: [] };
         const facts = inputs.map((input) => {
             const shared = input.shared === true;
             return {
@@ -535,13 +538,15 @@ export class PgFactStore implements FactStore {
             };
         });
         await this.pool.query(
-            `SELECT ${this.sql.fn.storeFacts}($1::jsonb)`,
+            `SELECT ${this.sql.fn.storeFact}($1::jsonb)`,
             [JSON.stringify(facts)],
         );
-        return {
+        const storedFacts: StoredFactResult[] = facts.map((fact) => ({ key: fact.key, shared: fact.shared, stored: true }));
+        const result = {
             stored: facts.length,
-            facts: facts.map((fact) => ({ key: fact.key, shared: fact.shared, stored: true })),
+            facts: storedFacts,
         };
+        return Array.isArray(input) ? result : result.facts[0];
     }
 
     async readFacts(
@@ -581,29 +586,31 @@ export class PgFactStore implements FactStore {
         };
     }
 
-    async deleteFact(input: DeleteFactInput): Promise<{ key: string; shared: boolean; deleted: boolean }> {
+    async deleteFact(input: DeleteFactInput & { pattern: true }): Promise<DeletedFactsResult>;
+    async deleteFact(input: DeleteFactInput & { pattern?: false | undefined }): Promise<DeletedFactResult>;
+    async deleteFact(input: DeleteFactInput): Promise<DeletedFactResult | DeletedFactsResult>;
+    async deleteFact(input: DeleteFactInput): Promise<DeletedFactResult | DeletedFactsResult> {
+        if (input.pattern === true) {
+            const keyPattern = normalizeLikePattern(input.key);
+            if (!keyPattern) throw new Error("deleteFact pattern mode requires key");
+            const scope = input.scope ?? (input.shared === true ? "shared" : "session");
+            const { rows } = await this.pool.query(
+                `SELECT ${this.sql.fn.deleteFact}($1, $2, $3, $4, $5) AS deleted_count`,
+                [keyPattern, true, scope, input.sessionId ?? null, input.unrestricted === true],
+            );
+            return { keyPattern, scope, deleted: Number(rows[0]?.deleted_count) || 0 };
+        }
         const shared = input.shared === true;
         const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
         const { rows } = await this.pool.query(
-            `SELECT ${this.sql.fn.deleteFact}($1) AS deleted_count`,
-            [scopeKey],
+            `SELECT ${this.sql.fn.deleteFact}($1, $2, $3, $4, $5) AS deleted_count`,
+            [scopeKey, false, null, null, false],
         );
         return {
             key: input.key,
             shared,
             deleted: Number(rows[0]?.deleted_count) > 0,
         };
-    }
-
-    async deleteFacts(input: DeleteFactsInput): Promise<{ deleted: number; keyPattern: string; scope: "session" | "shared" | "all" }> {
-        const keyPattern = normalizeLikePattern(input.keyPattern);
-        if (!keyPattern) throw new Error("deleteFacts requires keyPattern");
-        const scope = input.scope ?? (input.shared === true ? "shared" : "session");
-        const { rows } = await this.pool.query(
-            `SELECT ${this.sql.fn.deleteFacts}($1, $2, $3, $4) AS deleted_count`,
-            [keyPattern, scope, input.sessionId ?? null, input.unrestricted === true],
-        );
-        return { keyPattern, scope, deleted: Number(rows[0]?.deleted_count) || 0 };
     }
 
     async deleteSessionFactsForSession(sessionId: string): Promise<number> {

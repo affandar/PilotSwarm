@@ -281,7 +281,7 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
 
     // ── Graph write / delete — every session EXCEPT the read-only agent-tuner ─
     // The shared knowledge graph is writable by any agent that can run tools;
-    // graph incorporation is no longer a harvester/facts-manager privilege.
+    // graph population is app-owned and is not a facts-manager-only job.
     if (!canWriteGraph) return tools;
 
     tools.push(defineTool("graph_upsert_node", {

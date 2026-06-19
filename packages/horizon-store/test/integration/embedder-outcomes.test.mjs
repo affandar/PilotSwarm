@@ -129,7 +129,7 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
     it("oversized embedding failure is isolated by batch failure -> single-row retry", async () => {
         await store.configureEmbedder(realEmbedding());
         const oversized = Array.from({ length: 9000 }, (_, i) => `oversized-token-${i}`).join(" ");
-        await store.storeFacts([
+        await store.storeFact([
             { key: "live/oversized", value: { text: oversized }, shared: true },
             { key: "live/retry-good", value: { text: "small row paired with oversized batch failure" }, shared: true },
         ]);

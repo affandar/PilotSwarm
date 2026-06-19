@@ -379,35 +379,37 @@ The privileged harvester reads with `unrestricted` and sees everything.
 - **`graphNeighbourhood(nodeKey, depth, access)`** — bounded subgraph (depth
   clamped 1..5) around an anchor node.
 
-### 6.6 Crawl tracking (harvester support)
+### 6.6 Crawl tracking (generic crawler support)
 
-To make the harvester easy to write, the facts table carries a **`last_crawled_at`**
-column that marks whether a fact has already been incorporated into the graph.
+To make external crawlers easy to write, the facts table carries a
+**`last_crawled_at`** column that marks whether a fact has already been consumed.
+A graph harvester is one possible consumer; the base facts API has no built-in
+graph crawler concept.
 
 - **Reset on write.** Whenever a fact's content changes via `storeFact`
   (upsert/create/replace), `last_crawled_at` is reset to `NULL`. This is
   enforced by a DB trigger keyed on `key` / `value` changes, so no write path can
   forget it.
 - **Pending crawl = `last_crawled_at IS NULL`.** A freshly created or freshly
-  updated fact is, by definition, uncrawled until the harvester re-incorporates
-  it.
-- **Crawling is privileged.** The harvester is a trusted role: it crawls **all**
+  updated fact is, by definition, uncrawled until a crawler consumes it.
+- **Crawling is privileged.** A crawler role is trusted: it reads **all**
   facts (shared + every session), so `readUncrawledFacts` / `markFactsCrawled`
   take no access context and are exposed only to the harvester role — they are
   not registered as tools for ordinary reader agents.
 - **`readUncrawledFacts({ namespace?, limit? })`** — base-store read that
   returns facts with `last_crawled_at IS NULL` (optionally restricted to a key
-  prefix, bounded by `limit`), across all scopes. This is the harvester's work
+  prefix, bounded by `limit`), across all scopes. This is the crawler's work
   queue. Each returned fact carries its `scopeKey`, which is the receipt for
   `markFactsCrawled`.
 - **`markFactsCrawled(stamps: { scopeKey }[])`** — base-store
   write that stamps `last_crawled_at = now()` for the given facts after they
-  have been incorporated into the graph. Returns `{ marked, skipped }`; skipped
+  have been consumed. Returns `{ marked, skipped }`; skipped
   means already marked or missing.
 
-The harvester loop becomes: `readUncrawledFacts` → extract → `upsertGraphNode` /
-`upsertGraphEdge` → `markFactsCrawled(stamps)`. Because any later edit resets the
-column, stale facts automatically re-enter the queue. `last_crawled_at` is
+One graph-fill loop can be: `readUncrawledFacts` → extract → `upsertGraphNode` /
+`upsertGraphEdge` → `markFactsCrawled(stamps)`. Other crawlers can consume the
+same queue for another sink. Because any later edit resets the column, stale
+facts automatically re-enter the queue. `last_crawled_at` is
 independent of the embedding pending-state; the embedder never reads or writes
 `last_crawled_at`.
 

@@ -8,7 +8,7 @@ The facts table keeps embedding and graph-crawl state intentionally small:
 
 | Column | Owner | Meaning |
 |---|---|---|
-| `last_crawled_at` | Graph crawler | `NULL` means the fact is pending graph incorporation. Only graph-crawler paths modify it: the write trigger resets it on content change, and `facts_mark_crawled` stamps it. |
+| `last_crawled_at` | Generic crawler bookkeeping | `NULL` means the fact is pending consumption by an external crawler. Crawler paths modify it: the write trigger resets it on content change, and `facts_mark_crawled` stamps it. |
 | `embedding` | Embedder | Stored vector. `NULL` means no current vector is available. |
 | `embedding_model` | Embedder | Model/deployment that produced `embedding`. Rows with another model are pending for the configured model. |
 | `last_embed_error` | Embedder | `NULL` = eligible/healthy, `-1` = internal single-row retry marker, `> 0` = terminal row failure. |
@@ -27,18 +27,18 @@ embedding_model = NULL,
 last_embed_error = NULL
 ```
 
-This is enough to requeue the fact for both graph crawling and embedding. Metadata-only writes should not reset derived state.
+This is enough to requeue the fact for both crawling and embedding. Metadata-only writes should not reset derived state.
 
 ## Crawl Ownership
 
-`last_crawled_at` is graph-crawler state only.
+`last_crawled_at` is crawler state only; it is not graph-specific.
 
 Allowed writers:
 
 - The write trigger resets `last_crawled_at = NULL` on fact content changes.
-- `facts_mark_crawled` stamps `last_crawled_at = now()` after the graph crawler incorporates the fact.
+- `facts_mark_crawled` stamps `last_crawled_at = now()` after a crawler consumes the fact.
 
-The embedder never reads or writes `last_crawled_at`. Embedding failures must not mark facts crawled. A graph harvester can decide whether and how to handle facts whose embedding failed, but that is crawler policy, not embedder policy.
+The embedder never reads or writes `last_crawled_at`. Embedding failures must not mark facts crawled. A crawler can decide whether and how to handle facts whose embedding failed, but that is crawler policy, not embedder policy.
 
 The crawl API uses scope-key receipts only:
 

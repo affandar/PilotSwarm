@@ -17,7 +17,7 @@
 // access.
 
 import type {
-    AccessContext, CrawledFactStamp, DeleteFactInput, DeleteFactsInput, EmbedderLoopStatus, EmbedderStatus,
+    AccessContext, CrawledFactStamp, DeletedFactResult, DeletedFactsResult, DeleteFactInput, EmbedderLoopStatus, EmbedderStatus,
     EmbeddingEndpointConfig, EnhancedFactStore, FactRecord, FactsStatsRow,
     ReadFactsQuery, ScoredFact, SearchOpts, SearchResult, SimilarOpts,
     StoreFactInput, StoredFactResult,
@@ -160,13 +160,11 @@ export class HorizonDBFactStore implements EnhancedFactStore {
 
     // ─── base FactStore (drop-in; all access via procs) ──────────────────────
 
-    async storeFact(input: StoreFactInput): Promise<StoredFactResult> {
-        const stored = await this.storeFacts([input]);
-        return stored.facts[0];
-    }
-
-    async storeFacts(inputs: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }> {
-        if (!Array.isArray(inputs) || inputs.length === 0) return { stored: 0, facts: [] };
+    async storeFact(input: StoreFactInput): Promise<StoredFactResult>;
+    async storeFact(input: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }>;
+    async storeFact(input: StoreFactInput | StoreFactInput[]): Promise<StoredFactResult | { stored: number; facts: StoredFactResult[] }> {
+        const inputs = Array.isArray(input) ? input : [input];
+        if (inputs.length === 0) return { stored: 0, facts: [] };
         const facts = inputs.map((input) => {
             const shared = input.shared === true;
             return {
@@ -180,10 +178,12 @@ export class HorizonDBFactStore implements EnhancedFactStore {
             };
         });
         await withDbRetry("facts_store", () => this.pool.query(
-            `SELECT ${this.s}.facts_store_batch($1::jsonb)`,
+            `SELECT ${this.s}.facts_store($1::jsonb)`,
             [JSON.stringify(facts)],
         ));
-        return { stored: facts.length, facts: facts.map((fact) => ({ key: fact.key, shared: fact.shared, stored: true })) };
+        const storedFacts: StoredFactResult[] = facts.map((fact) => ({ key: fact.key, shared: fact.shared, stored: true }));
+        const result = { stored: facts.length, facts: storedFacts };
+        return Array.isArray(input) ? result : result.facts[0];
     }
 
     async readFacts(query: ReadFactsQuery, access?: AccessContext): Promise<{ count: number; facts: FactRecord[] }> {
@@ -207,23 +207,25 @@ export class HorizonDBFactStore implements EnhancedFactStore {
         return { count: rows.length, facts: rows.map(mapFactRow) };
     }
 
-    async deleteFact(input: DeleteFactInput): Promise<{ key: string; shared: boolean; deleted: boolean }> {
+    async deleteFact(input: DeleteFactInput & { pattern: true }): Promise<DeletedFactsResult>;
+    async deleteFact(input: DeleteFactInput & { pattern?: false | undefined }): Promise<DeletedFactResult>;
+    async deleteFact(input: DeleteFactInput): Promise<DeletedFactResult | DeletedFactsResult>;
+    async deleteFact(input: DeleteFactInput): Promise<DeletedFactResult | DeletedFactsResult> {
+        if (input.pattern === true) {
+            const keyPattern = input.key?.includes("%") ? input.key : input.key?.replaceAll("*", "%");
+            if (!keyPattern) throw new Error("deleteFact pattern mode requires key");
+            const scope = input.scope ?? (input.shared === true ? "shared" : "session");
+            const { rows } = await withDbRetry<{ rows: any[] }>("facts_delete", () => this.pool.query(
+                `SELECT ${this.s}.facts_delete($1, $2, $3, $4, $5) AS deleted`,
+                [keyPattern, true, scope, input.sessionId ?? null, input.unrestricted === true],
+            ));
+            return { keyPattern, scope, deleted: Number(rows[0]?.deleted ?? 0) };
+        }
         const shared = input.shared === true;
         const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
         const { rows } = await withDbRetry<{ rows: any[] }>("facts_delete", () => this.pool.query(
-            `SELECT ${this.s}.facts_delete($1) AS deleted`, [scopeKey]));
-        return { key: input.key, shared, deleted: rows[0]?.deleted === true };
-    }
-
-    async deleteFacts(input: DeleteFactsInput): Promise<{ deleted: number; keyPattern: string; scope: "session" | "shared" | "all" }> {
-        const keyPattern = input.keyPattern?.includes("%") ? input.keyPattern : input.keyPattern?.replaceAll("*", "%");
-        if (!keyPattern) throw new Error("deleteFacts requires keyPattern");
-        const scope = input.scope ?? (input.shared === true ? "shared" : "session");
-        const { rows } = await withDbRetry<{ rows: any[] }>("facts_delete_pattern", () => this.pool.query(
-            `SELECT ${this.s}.facts_delete_pattern($1, $2, $3, $4) AS n`,
-            [keyPattern, scope, input.sessionId ?? null, input.unrestricted === true],
-        ));
-        return { keyPattern, scope, deleted: Number(rows[0]?.n ?? 0) };
+            `SELECT ${this.s}.facts_delete($1, $2, $3, $4, $5) AS deleted`, [scopeKey, false, null, null, false]));
+        return { key: input.key, shared, deleted: Number(rows[0]?.deleted ?? 0) > 0 };
     }
 
     async deleteSessionFactsForSession(sessionId: string): Promise<number> {
@@ -521,12 +523,12 @@ export class HorizonDBFactStore implements EnhancedFactStore {
         const labels = this.embedderLabels;
         await this.cancelRunningLabel(this.legacyEmbedderLabel, "superseded by two-loop embedder", exec);
         await exec.query(
-            `SELECT df.start(${this.s}.embedder_batch_workflow($1, $2), $3, NULL) AS iid`,
-            [intervalSeconds, batch, labels.batch],
+            `SELECT df.start(${this.s}.embedder_workflow($1, $2, $3), $4, NULL) AS iid`,
+            ["batch", intervalSeconds, batch, labels.batch],
         );
         await exec.query(
-            `SELECT df.start(${this.s}.embedder_retry_workflow($1), $2, NULL) AS iid`,
-            [intervalSeconds, labels.retry],
+            `SELECT df.start(${this.s}.embedder_workflow($1, $2, $3), $4, NULL) AS iid`,
+            ["retry", intervalSeconds, 1, labels.retry],
         );
         return this.embedderStatus(exec);
     }

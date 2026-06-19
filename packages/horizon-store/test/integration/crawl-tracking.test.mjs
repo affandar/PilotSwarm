@@ -62,18 +62,18 @@ describe.skipIf(!HAS_DB)("crawl tracking (C1–C7)", () => {
     });
 
     it("base provider batch store and explicit pattern delete", async () => {
-        const batch = await store.storeFacts([
+        const batch = await store.storeFact([
             { key: "batch/hz/a", value: { n: 1 }, shared: true },
             { key: "batch/hz/b", value: { n: 2 }, shared: true },
             { key: "batch/hz/session", value: { n: 3 }, sessionId: "S-BATCH" },
         ]);
-        assert.equal(batch.stored, 3, "storeFacts stores every fact");
+        assert.equal(batch.stored, 3, "storeFact stores every fact in batch mode");
         const read = await store.readFacts({ keyPattern: "batch/hz/%", scope: "accessible" }, { readerSessionId: "S-BATCH" });
         assert.equal(read.count, 3, "batch facts are readable through the normal surface");
 
-        const sharedDelete = await store.deleteFacts({ keyPattern: "batch/hz/*", scope: "shared", unrestricted: false });
+        const sharedDelete = await store.deleteFact({ key: "batch/hz/*", pattern: true, scope: "shared", unrestricted: false });
         assert.equal(sharedDelete.deleted, 2, "shared pattern delete removes matching shared facts only");
-        const sessionDelete = await store.deleteFacts({ keyPattern: "batch/hz/*", scope: "session", sessionId: "S-BATCH" });
+        const sessionDelete = await store.deleteFact({ key: "batch/hz/*", pattern: true, scope: "session", sessionId: "S-BATCH" });
         assert.equal(sessionDelete.deleted, 1, "session pattern delete removes owned session facts");
     });
 

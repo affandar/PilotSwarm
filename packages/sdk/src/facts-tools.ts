@@ -159,7 +159,7 @@ export function createFactTools(opts: {
                 if (nsError) return { error: nsError };
             }
 
-            const result = await factStore.storeFacts(factInputs.map((fact) => ({
+            const result = await factStore.storeFact(factInputs.map((fact) => ({
                 key: fact.key,
                 value: fact.value,
                 tags: fact.tags,
@@ -363,8 +363,9 @@ export function createFactTools(opts: {
                 if (scope === "all" && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
                     return { error: "Error: delete_fact scope='all' is reserved for the Facts Manager." };
                 }
-                return factStore.deleteFacts({
-                    keyPattern: args.key,
+                return factStore.deleteFact({
+                    key: args.key,
+                    pattern: true,
                     scope,
                     sessionId: ctx?.sessionId ?? null,
                     unrestricted: agentIdentity === FACTS_MANAGER_AGENT_ID,

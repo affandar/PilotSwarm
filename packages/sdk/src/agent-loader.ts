@@ -89,10 +89,9 @@ export interface AgentConfig {
     promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     /**
      * App-assigned HARVESTER role (enhancedfactstore 07 §1.5). When `true`, a
-     * session bound to this agent receives the privileged crawl-queue +
-     * graph write/delete tools (only when a graph store is configured) and is
-     * the active graph crawler. Graph extraction is app-specific, so the app
-     * sets `harvester: true` in its own harvester agent's frontmatter. The
+    * session bound to this agent receives the privileged crawl queue when a
+    * graph store is configured. Graph extraction/fill is app-specific, so the
+    * app sets `harvester: true` in its own harvester agent's frontmatter. The
      * role is derived from this definition on the worker every turn — never
      * inherited from a parent session.
      */

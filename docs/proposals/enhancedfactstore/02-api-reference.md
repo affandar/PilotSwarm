@@ -186,7 +186,7 @@ interface SearchResult { count: number; mode: SearchMode; facts: ScoredFact[]; }
 > const related = await store.readFacts({ scopeKeys: connectedKeys }, acl);   // §1c base-API addition
 > ```
 
-### 3a. Crawl tracking (harvester support)
+### 3a. Crawl tracking (generic crawler support)
 
 ```ts
 /** Crawl-queue receipt: the scope key returned by readUncrawledFacts. */
@@ -194,18 +194,18 @@ interface CrawledFactStamp { scopeKey: string; }
 
 // NOTE (07 D3): the crawl queue lives on the BASE `FactStore`, not the enhanced
 // interface — it is vanilla facts-table bookkeeping (a nullable `last_crawled_at`
-// column + two procs, no extension), so a base-facts deployment can feed a
-// separate `GraphStore`. Shown here for locality with the rest of the harvester
-// surface.
+// column + two procs, no extension), so a base-facts deployment can feed any
+// external crawler/consumer. A graph harvester is one possible consumer, not a
+// built-in store responsibility.
 interface FactStore {
   storeFact(input: StoreFactInput): Promise<StoredFactResult>;
-  storeFacts(inputs: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }>;
+  storeFact(input: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }>;
   deleteFact(input: DeleteFactInput): Promise<{ key: string; shared: boolean; deleted: boolean }>;
-  deleteFacts(input: DeleteFactsInput): Promise<{ deleted: number; keyPattern: string; scope: "session" | "shared" | "all" }>;
+  deleteFact(input: DeleteFactInput & { pattern: true }): Promise<{ deleted: number; keyPattern: string; scope: "session" | "shared" | "all" }>;
 
   /**
-   * Facts not yet incorporated into the graph (last_crawled_at IS NULL).
-   * PRIVILEGED: the crawler is a trusted role; this read spans ALL facts
+   * Facts not yet consumed by a crawler (last_crawled_at IS NULL).
+   * PRIVILEGED: crawler roles are trusted; this read spans ALL facts
    * (shared + every session), regardless of caller session. Each returned
    * fact carries its scopeKey for the markFactsCrawled receipt.
    */
@@ -213,24 +213,25 @@ interface FactStore {
     Promise<{ count: number; facts: FactRecord[] }>;
 
   /**
-  * Stamp last_crawled_at = now() after incorporating these facts into the
-  * graph. PRIVILEGED (same trust as readUncrawledFacts). Skipped stamps mean
+  * Stamp last_crawled_at = now() after a crawler consumes these facts.
+  * PRIVILEGED (same trust as readUncrawledFacts). Skipped stamps mean
   * the fact was already marked or no longer exists.
    */
   markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }>;
 }
 ```
 
-`storeFacts` is the bulk ingestion path for large harvests. `deleteFacts` is an
-explicit pattern-delete path (`*` globs normalize to SQL `%`) and must be scoped:
+`storeFact` is overloaded for single-row and batch ingestion. `deleteFact` has an
+explicit pattern-delete mode (`*` globs normalize to SQL `%`) and must be scoped:
 ordinary agents use `session` or `shared`; Facts Manager can use `all` for
 privileged cleanup.
 
 - `last_crawled_at` resets to `NULL` automatically on any `storeFact` content
   change (DB trigger on `key` / `value`). Pending-crawl is
   therefore `last_crawled_at IS NULL`.
-- Harvester loop: `readUncrawledFacts` → extract → `upsertGraphNode` /
-  `upsertGraphEdge` → `markFactsCrawled(stamps)`.
+- Example graph-fill loop: `readUncrawledFacts` → extract → `upsertGraphNode` /
+  `upsertGraphEdge` → `markFactsCrawled(stamps)`. A non-graph crawler can consume
+  the same queue for another sink.
 - **Privileged surface.** Crawling is a deliberate, host-granted capability:
   these two methods are only exposed to the harvester role (they are not
   registered as tools for ordinary reader agents). They take no

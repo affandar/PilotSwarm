@@ -14,7 +14,7 @@ It is intentionally focused on surfaces app authors, agent authors, operators, a
 
 This branch adds a graph-aware, search-capable facts stack while keeping the core API small:
 
-- Base `FactStore` gains batch writes, explicit pattern deletes, crawl-queue receipts, and `scopeKey` round trips.
+- Base `FactStore` gains batch input on `storeFact`, explicit pattern mode on `deleteFact`, generic crawl-queue receipts, and `scopeKey` round trips.
 - `EnhancedFactStore` is introduced as a strict opt-in superset for facts search and embedder lifecycle only.
 - `GraphStore` is a separate provider surface, not part of `EnhancedFactStore`.
 - LLM tools gain batch store, explicit pattern delete, facts search, similar facts, skill search, graph tools, crawl tools for harvesters, and an operator-only embedder lifecycle tool.
@@ -53,10 +53,10 @@ interface ReadFactsQuery {
 
 interface FactStore {
   storeFact(input: StoreFactInput): Promise<StoredFactResult>;
-  storeFacts(inputs: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }>;
+  storeFact(input: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }>;
 
   deleteFact(input: DeleteFactInput): Promise<{ key: string; shared: boolean; deleted: boolean }>;
-  deleteFacts(input: DeleteFactsInput): Promise<{
+  deleteFact(input: DeleteFactInput & { pattern: true }): Promise<{
     deleted: number;
     keyPattern: string;
     scope: "session" | "shared" | "all";
@@ -71,16 +71,16 @@ Why:
 
 - `scopeKey` gives graph evidence a stable, lossless pointer back to the facts row.
 - `scopeKeys` lets graph evidence resolve back to facts without inventing a second lookup API.
-- `storeFacts` avoids per-row tool/proc calls for harvesters and other large ingestion paths.
-- `deleteFacts` gives cleanup a scoped bulk path without making wildcard deletes implicit.
-- `readUncrawledFacts` / `markFactsCrawled` are minimal graph-harvester bookkeeping: one queue read, one receipt stamp.
+- Batch-mode `storeFact` avoids per-row tool/proc calls for harvesters and other large ingestion paths.
+- Pattern-mode `deleteFact` gives cleanup a scoped bulk path without making wildcard deletes implicit.
+- `readUncrawledFacts` / `markFactsCrawled` are generic crawler bookkeeping: one queue read, one receipt stamp. A graph harvester can use them, but the API has no graph-specific crawler concept.
 
 Minimalist assessment:
 
 - Pass. These are orthogonal primitives, not compound workflows.
 - Pass. Batch write and pattern delete are extensions of existing write/delete behavior.
 - Pass. Crawl tracking uses `scopeKey` receipts only; no content hash or extra receipt model is exposed.
-- Watch item. `readUncrawledFacts` is privileged and specialized, but it lives on base `FactStore` because graph crawling is facts-table bookkeeping and does not require semantic search.
+- Watch item. `readUncrawledFacts` is privileged and specialized, but it lives on base `FactStore` because crawl bookkeeping belongs to the facts table and does not require semantic search.
 
 ### `EnhancedFactStore`
 
@@ -137,8 +137,9 @@ interface GraphStore {
 
 Why:
 
-- Graph storage and traversal are a separate concern from facts retrieval.
+- Graph storage and traversal are a separate add-on concern from facts retrieval.
 - Fact rows remain the source of ACL-checked evidence; graph nodes/edges are shared published structure.
+- Nothing automatically fills the graph. Apps can populate it out of band with provider APIs or in band with agent tools.
 
 Minimalist assessment:
 
@@ -268,9 +269,9 @@ Minimalist assessment:
 
 This branch adds these external-facing schema behaviors:
 
-- `last_crawled_at TIMESTAMPTZ` tracks whether a fact needs graph incorporation.
-- `facts_store_facts(jsonb)` stores batches.
-- `facts_delete_facts(pattern, scope, sessionId, unrestricted)` deletes scoped patterns.
+- `last_crawled_at TIMESTAMPTZ` tracks whether a fact needs consumption by a crawler.
+- `facts_store_fact(jsonb)` stores one or many normalized fact inputs.
+- `facts_delete_fact(keyOrPattern, pattern, scope, sessionId, unrestricted)` deletes exact keys or scoped patterns.
 - `facts_read_uncrawled(namespace, limit)` reads the harvester queue.
 - `facts_mark_crawled(stamps)` stamps queue receipts.
 - `facts_read_facts` supports `scopeKeys` for bulk evidence round trips.
@@ -297,7 +298,7 @@ This branch adds `@pilotswarm/horizon-store`, with migrations for:
 - BM25/search text generated from `key + value::text`
 - AGE graph bootstrap
 - graph node/edge support through separate graph schema objects
-- graph crawl queue via `last_crawled_at`
+- generic crawl queue via `last_crawled_at`
 - durable embedding workflows
 
 Final embedder state is intentionally small:
@@ -319,12 +320,15 @@ embed_retry_at
 facts_embedding_failures(...)
 ```
 
-Two durable embedder workflows replace the older single-loop shape:
+One durable embedder workflow function replaces the older single-loop shape:
 
 ```text
-embedder_batch_workflow(interval, batch)
-embedder_retry_workflow(interval)
+embedder_workflow(mode, interval, batch)
 ```
+
+The runtime starts two durable instances of this one workflow with `mode="batch"`
+and `mode="retry"`. They stay separate durable loops so terminal retries cannot
+block normal batch embedding, but the schema exposes one workflow concept.
 
 Runtime labels:
 
@@ -377,7 +381,7 @@ Passes:
 
 Exceptions to watch:
 
-- `readUncrawledFacts` / `markFactsCrawled` are specialized harvester methods on the base store. They are justified because crawl state belongs to the facts table, but they should stay privileged and not become ordinary task-agent tools.
+- `readUncrawledFacts` / `markFactsCrawled` are specialized crawler methods on the base store. They are justified because crawl state belongs to the facts table, but they should stay privileged and not become ordinary task-agent tools.
 - `manage_embedder` is operational control, not app memory. It is justified for Facts Manager/operator use only and should remain tightly gated.
 
 Rejected as non-minimal:

@@ -97,7 +97,7 @@ export async function makeStore({ tag = "t", embeddingDim = 4, embedding = undef
  *  factStore and graphStore independently (07 D2). close() ends both pools. */
 function combinedStore(factStore, graphStore) {
     const FACT = [
-        "storeFact", "storeFacts", "readFacts", "deleteFact", "deleteFacts", "deleteSessionFactsForSession",
+        "storeFact", "readFacts", "deleteFact", "deleteSessionFactsForSession",
         "getSessionFactsStats", "getFactsStatsForSessions", "getSharedFactsStats",
         "searchFacts", "similarFacts", "readUncrawledFacts", "markFactsCrawled",
         "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",

@@ -54,6 +54,11 @@ export function FACTS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "batch_store_pattern_delete",
             sql: migration_0008_batch_store_pattern_delete(schema),
         },
+        {
+            version: "0009",
+            name: "unified_store_delete_api",
+            sql: migration_0009_unified_store_delete_api(schema),
+        },
     ];
 }
 
@@ -849,5 +854,95 @@ BEGIN
     RETURN deleted_count;
 END;
 $$ LANGUAGE plpgsql;
+`;
+}
+
+function migration_0009_unified_store_delete_api(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0009_unified_store_delete_api: collapse plural stored procedure names back
+-- into the singular store/delete API. Batch store is facts_store_fact(jsonb);
+-- pattern delete is facts_delete_fact(key, pattern, scope, sessionId, unrestricted).
+
+DROP FUNCTION IF EXISTS ${s}.facts_store_fact(JSONB);
+DROP FUNCTION IF EXISTS ${s}.facts_store_fact(TEXT, TEXT, JSONB, TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT[]);
+CREATE OR REPLACE FUNCTION ${s}.facts_store_fact(p_facts JSONB)
+RETURNS INT
+LANGUAGE sql AS $$
+    WITH input AS (
+        SELECT
+            e->>'scopeKey' AS scope_key,
+            e->>'key' AS key,
+            e->'value' AS value,
+            e->>'agentId' AS agent_id,
+            e->>'sessionId' AS session_id,
+            coalesce((e->>'shared')::boolean, false) AS shared,
+            coalesce((e->>'transient')::boolean, true) AS transient,
+            coalesce(ARRAY(SELECT jsonb_array_elements_text(e->'tags')), '{}'::text[]) AS tags
+        FROM jsonb_array_elements(p_facts) e
+    ), upserted AS (
+        INSERT INTO ${t}
+            (scope_key, key, value, agent_id, session_id, shared, transient, tags)
+        SELECT scope_key, key, value, agent_id, session_id, shared, transient, tags
+        FROM input
+        ON CONFLICT (scope_key) DO UPDATE SET
+            value      = EXCLUDED.value,
+            agent_id   = EXCLUDED.agent_id,
+            session_id = EXCLUDED.session_id,
+            shared     = EXCLUDED.shared,
+            transient  = EXCLUDED.transient,
+            tags       = EXCLUDED.tags,
+            updated_at = now()
+        RETURNING 1
+    )
+    SELECT count(*)::int FROM upserted;
+$$;
+
+DROP FUNCTION IF EXISTS ${s}.facts_delete_fact(TEXT);
+DROP FUNCTION IF EXISTS ${s}.facts_delete_fact(TEXT, BOOLEAN, TEXT, TEXT, BOOLEAN);
+CREATE OR REPLACE FUNCTION ${s}.facts_delete_fact(
+    p_key_or_pattern TEXT,
+    p_pattern BOOLEAN DEFAULT FALSE,
+    p_scope TEXT DEFAULT NULL,
+    p_session_id TEXT DEFAULT NULL,
+    p_unrestricted BOOLEAN DEFAULT FALSE
+) RETURNS BIGINT AS $$
+DECLARE
+    deleted_count BIGINT;
+    v_scope TEXT;
+BEGIN
+    IF p_pattern THEN
+        IF p_key_or_pattern IS NULL OR p_key_or_pattern = '' THEN
+            RAISE EXCEPTION 'facts_delete_fact pattern mode requires key';
+        END IF;
+        v_scope := coalesce(p_scope, 'session');
+        IF v_scope NOT IN ('session', 'shared', 'all') THEN
+            RAISE EXCEPTION 'facts_delete_fact scope must be session, shared, or all';
+        END IF;
+        IF v_scope = 'all' AND p_unrestricted IS DISTINCT FROM TRUE THEN
+            RAISE EXCEPTION 'facts_delete_fact scope=all requires unrestricted=true';
+        END IF;
+        IF v_scope = 'session' AND p_session_id IS NULL THEN
+            RAISE EXCEPTION 'facts_delete_fact scope=session requires sessionId';
+        END IF;
+
+        DELETE FROM ${t} f
+        WHERE f.key LIKE p_key_or_pattern
+          AND (
+            (v_scope = 'shared' AND f.shared = TRUE)
+            OR (v_scope = 'session' AND f.shared = FALSE AND f.session_id = p_session_id)
+            OR (v_scope = 'all' AND p_unrestricted = TRUE)
+          );
+    ELSE
+        DELETE FROM ${t} WHERE scope_key = p_key_or_pattern;
+    END IF;
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS ${s}.facts_store_facts(JSONB);
+DROP FUNCTION IF EXISTS ${s}.facts_delete_facts(TEXT, TEXT, TEXT, BOOLEAN);
 `;
 }

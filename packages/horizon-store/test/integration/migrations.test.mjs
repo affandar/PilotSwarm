@@ -32,7 +32,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
 
         const { rows: vers } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
-        assert.deepEqual(vers.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"]);
+        assert.deepEqual(vers.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011"]);
 
         const { rows: cols } = await pool.query(
             `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'facts'`,
@@ -54,12 +54,15 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         for (const p of ["facts_store", "facts_read", "facts_delete", "facts_delete_session", "facts_stats",
                          "facts_search_lexical", "facts_search_semantic", "facts_similar",
                          "facts_read_uncrawled", "facts_mark_crawled",
-                         "facts_touch", "embedder_batch_workflow", "embedder_retry_workflow",
-                         "facts_store_batch", "facts_delete_pattern",
+                         "facts_touch", "embedder_workflow",
                          "facts_acl", "embed_error_code", "embed_error_label"]) {
             assert.ok(procSet.has(p), `proc ${p} exists`);
         }
         assert.ok(!procSet.has("facts_embedding_failures"), "embedding failure state is internal, not a public proc");
+        assert.ok(!procSet.has("facts_store_batch"), "batch mode is part of facts_store, not a separate proc");
+        assert.ok(!procSet.has("facts_delete_pattern"), "pattern mode is part of facts_delete, not a separate proc");
+        assert.ok(!procSet.has("embedder_batch_workflow"), "batch is an embedder_workflow mode, not a separate proc");
+        assert.ok(!procSet.has("embedder_retry_workflow"), "retry is an embedder_workflow mode, not a separate proc");
 
         const { rows: trig } = await pool.query(
             `SELECT tgname FROM pg_trigger tr JOIN pg_class c ON c.oid = tr.tgrelid
@@ -99,7 +102,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
             `SELECT count(*)::int AS n FROM "${names.schema}".schema_migrations`);
         // The FACT provider runs all non-AGE migrations; the 0003 AGE bootstrap belongs to
         // HorizonDBGraphStore (07 D2) and is not recorded in the facts schema.
-        assert.equal(rows[0].n, 9, "each FACT migration recorded exactly once");
+        assert.equal(rows[0].n, 10, "each FACT migration recorded exactly once");
     });
 
     it("MG4 partial-chain resume: only the missing tail is applied", async () => {
@@ -109,7 +112,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         const { rows } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
-        assert.deepEqual(rows.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"]);
+        assert.deepEqual(rows.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011"]);
     });
 
     it("MG5 trigger semantics (direct SQL probes)", async () => {

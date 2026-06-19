@@ -22,7 +22,7 @@ open knowledge graph (`GraphStore`). First providers: **HorizonDB**
 | # | Doc | Contents |
 |---|-----|----------|
 | 01 | [Functional Specification](./01-functional-spec.md) | Purpose, scope, actors, functional requirements, acceptance criteria. |
-| 02 | [API Reference](./02-api-reference.md) | Target TypeScript interfaces for retrieval, the embedder lifecycle, and the graph crawler. |
+| 02 | [API Reference](./02-api-reference.md) | Target TypeScript interfaces for retrieval, the embedder lifecycle, generic crawl bookkeeping, and the graph add-on. |
 | 03 | [Design](./03-design.md) | Component/data-model/embedder/retrieval/migration designs with diagrams. |
 | 04 | [Test Specification](./04-test-spec.md) | Deterministic datasets, functional matrices, negative cases, embedder lifecycle, fail-fast, layout. |
 | 05 | [Agent Tools Spec](./05-tools-spec.md) | LLM-facing tool contract (`facts_*` / `graph_*`), harvester loop, a **worked graph example** (§5a, diagrammed over the real pgsql-hackers corpus), and the Phase 2 context tools. |
@@ -65,14 +65,14 @@ open knowledge graph (`GraphStore`). First providers: **HorizonDB**
   `NULL` for healthy/eligible rows, `-1` for internal retry, and `> 0` for
   terminal failures. See [08](./08-embedding-handling.md).
 - **Crawl tracking (base `FactStore`):** the facts table gains `last_crawled_at`
-  (marks graph incorporation). It resets to `NULL` on any `storeFact` content
-  change (trigger), so pending-crawl = `last_crawled_at IS NULL`. Harvester
+  as generic crawl bookkeeping. It resets to `NULL` on any `storeFact` content
+  change (trigger), so pending-crawl = `last_crawled_at IS NULL`. Crawler
   support — `readUncrawledFacts` (work queue) + `markFactsCrawled` (stamp done) —
   lives on the **base `FactStore`** (not the enhanced interface), so a base-facts
-  deployment can feed a separate `GraphStore`. **Crawling is privileged** — the
-  harvester reads all facts across scopes — and `markFactsCrawled` takes
-  `{ scopeKey }` receipts. `last_crawled_at` is owned by the graph crawler; the
-  embedder never reads or writes it. See [08](./08-embedding-handling.md).
+  deployment can feed any external consumer, including but not limited to a
+  `GraphStore`. **Crawling is privileged** — crawler flows read all facts across
+  scopes — and `markFactsCrawled` takes `{ scopeKey }` receipts. The embedder
+  never reads or writes `last_crawled_at`. See [08](./08-embedding-handling.md).
 - **Fail-fast:** `initialize()` requires `vector`, `age`,
   `pg_textsearch` (BM25), `pg_durable`+`df.http`; no feature flags, no Node
   fallback.

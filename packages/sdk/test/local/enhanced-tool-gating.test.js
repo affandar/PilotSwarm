@@ -40,11 +40,14 @@ function baseFactSurface() {
     return {
         async initialize() {},
         async close() {},
-        async storeFact(i) { return { key: i.key, shared: i.shared === true, stored: true }; },
-        async storeFacts(inputs) { return { stored: inputs.length, facts: inputs.map((i) => ({ key: i.key, shared: i.shared === true, stored: true })) }; },
+        async storeFact(input) {
+            if (Array.isArray(input)) {
+                return { stored: input.length, facts: input.map((i) => ({ key: i.key, shared: i.shared === true, stored: true })) };
+            }
+            return { key: input.key, shared: input.shared === true, stored: true };
+        },
         async readFacts() { return { count: 0, facts: [] }; },
-        async deleteFact(i) { return { key: i.key, shared: i.shared === true, deleted: true }; },
-        async deleteFacts(i) { return { keyPattern: i.keyPattern, scope: i.scope ?? "session", deleted: 0 }; },
+        async deleteFact(i) { return i.pattern ? { keyPattern: i.key, scope: i.scope ?? "session", deleted: 0 } : { key: i.key, shared: i.shared === true, deleted: true }; },
         async deleteSessionFactsForSession() { return 0; },
         async getSessionFactsStats() { return []; },
         async getFactsStatsForSessions() { return []; },
