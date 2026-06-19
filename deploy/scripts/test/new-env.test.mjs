@@ -708,8 +708,12 @@ test("VPN reminder block includes Azure portal download path for VPN client prof
     assert.match(out, /Resource group/);
     assert.match(out, /Point-to-site configuration/);
     assert.match(out, /Download VPN client/);
-    // CLI alternative is documented for scriptability.
-    assert.match(out, /az network vnet-gateway vpn-client generate-url/);
+    // CLI alternative is documented for scriptability (the supported subcommand is
+    // `vpn-client generate --authentication-method EAPTLS`; the helper script in
+    // deploy/scripts/auth/Get-VpnClientProfile.ps1 is the preferred path).
+    assert.match(out, /Get-VpnClientProfile\.ps1/);
+    assert.match(out, /az network vnet-gateway vpn-client generate\b/);
+    assert.match(out, /--authentication-method EAPTLS/);
   } finally {
     cleanup();
   }

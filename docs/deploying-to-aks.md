@@ -180,8 +180,12 @@ coexists with `EDGE_MODE=afd`. The VPN tunnel terminates inside the stamp
 VNet and reaches the **same AppGw private listener** as the AFD path, with
 the **same AKV cert** — so an allow-listed user (through AFD) and an
 off-allow-list authenticated user (through VPN) both reach
-`https://<resourceName>.<SSL_CERT_DOMAIN_SUFFIX>` and observe an identical
-cert chain. This is the "trusted-bypass" pattern for tenant users with a
+`https://<PORTAL_RESOURCE_NAME>.<SSL_CERT_DOMAIN_SUFFIX>` (e.g.
+`pschkrawvpn-wus3-portal.dev.pilotswarm.azure.com`) and observe an identical
+cert chain. The Private DNS A record is keyed on `PORTAL_RESOURCE_NAME` so
+it matches the AppGw listener hostname and AKV cert subject;
+`RESOURCE_PREFIX` alone is only a backwards-compat fallback when
+`PORTAL_RESOURCE_NAME` is empty. This is the "trusted-bypass" pattern for tenant users with a
 valid Entra ID token who would otherwise be blocked at the public edge by
 operator-defined AFD WAF allow-lists (typically service-tag, IP-range, or
 header-based rules that gate the public ingress to a known managed-network

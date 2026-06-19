@@ -405,7 +405,7 @@ export const INPUTS = [
     help: [
       "Provision an Azure VPN Gateway P2S (Microsoft Entra ID auth, OpenVPN)",
       "as an additive ingress alongside AFD. Requires --edge-mode afd and",
-      "--tls-source akv. Adds ~$140/mo and 45+ min to the first deploy.",
+      "--tls-source akv. Adds ~$450/mo (~$280 VPN + ~$170 DNS Resolver) and 45+ min to the first deploy.",
       "Default no.",
     ],
     cliChoices: ["y", "n", "yes", "no", "true", "false"],
@@ -416,7 +416,7 @@ export const INPUTS = [
     choices: ["n", "y"],
     choiceDescriptions: {
       n: "No VPN gateway (default)",
-      y: "Provision VPN Gateway P2S (~$140/mo, 45+ min first deploy; requires EDGE_MODE=afd + TLS_SOURCE=akv)",
+      y: "Provision VPN Gateway P2S (~$450/mo total, 45+ min first deploy; requires EDGE_MODE=afd + TLS_SOURCE=akv)",
     },
     transform: (v) => normaliseYesNo(v),
   },
@@ -1168,12 +1168,16 @@ async function main() {
     console.log("⏱  First-deploy time:        45+ minutes (VPN gateway provisioning is the long pole)");
     console.log("");
     console.log("⬇  VPN client profile (after first deploy completes):");
+    console.log(`     • Preferred — helper:   pwsh -File deploy/scripts/auth/Get-VpnClientProfile.ps1 \\`);
+    console.log(`                               -EnvName ${inputs.name}`);
+    console.log("                             (see .github/skills/pilotswarm-vpn-client-profile/SKILL.md)");
     console.log(`     • Azure portal:        Resource group → ${targets.RESOURCE_GROUP}`);
     console.log("                             → <vpn-gateway-name> → Point-to-site configuration");
     console.log("                             → Download VPN client");
-    console.log(`     • Or via az CLI:       az network vnet-gateway vpn-client generate-url \\`);
+    console.log(`     • az CLI fallback:     az network vnet-gateway vpn-client generate \\`);
     console.log(`                               --resource-group ${targets.RESOURCE_GROUP} \\`);
-    console.log("                               --name <vpn-gateway-name>");
+    console.log("                               --name <vpn-gateway-name> \\");
+    console.log("                               --authentication-method EAPTLS");
     console.log("                             Then import the .zip into the Azure VPN Client app.");
     console.log("");
     console.log("📖  Full guidance:           docs/deploying-to-aks.md → 'Optional: VPN Gateway P2S' section");
