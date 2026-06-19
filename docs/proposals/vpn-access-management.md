@@ -154,6 +154,75 @@ VPN-only access (someone needs VPN but no portal access) is fully supported — 
 | 3 | `deploy.mjs` / `new-env.mjs` env threading + scaffolder UX + tests |
 | 4 | New skill, modified skill, modified agent — docs |
 | 5 | Migration documentation for existing CA-required stamps |
+| 6 | **iOS support via dual-auth (certificate)** — see next section |
+
+---
+
+## iOS support requires certificate-based authentication (additive Phase 6)
+
+**Status:** Confirmed via web research 2026-06-18 — **there is no Azure VPN Client app on the iOS App Store**. Microsoft ships Azure VPN Client for Windows, macOS, and Android only. AAD-interactive authentication from iOS to Azure VPN Gateway is therefore **not possible at all** — not a CA policy issue, not a tenant issue, just absent product.
+
+This is not a single-user convenience; it is a platform limitation that affects every iOS user who needs P2S access to a PilotSwarm stamp. Any organization with an iPad/iPhone user population that needs portal access from outside corp/SAW will hit this immediately.
+
+### iOS-supported auth options on Azure VPN P2S
+
+| Path | iOS-native? | Works with our AAD-gated gateway? |
+|---|---|---|
+| Native iOS VPN with IKEv2 + **certificate auth** | YES (no app install) | Only if gateway has cert auth enabled alongside AAD |
+| Third-party OpenVPN client + cert auth | App Store apps available (e.g. Passepartout) | Same — requires cert auth on gateway |
+| Azure VPN Client (AAD) | **Not available on iOS** | N/A |
+
+### Dual-auth gateway pattern
+
+Azure VPN Gateway supports **multiple authentication methods simultaneously** in a single `vpnClientConfiguration` block — AAD config and `vpnClientRootCertificates[]` can coexist. Each end user picks which auth method to use when they import the profile. AAD users (Windows/macOS/Android) are completely unaffected; iOS users get a separate cert-auth profile.
+
+### Scope additions for Phase 6
+
+| Piece | Notes |
+|---|---|
+| `vpn-gateway.bicep` — optional `vpnClientRootCertificates[]` block | Conditional on new `VPN_CERT_AUTH_ENABLED` flag. ~30 lines of bicep. |
+| New env vars: `VPN_CERT_AUTH_ENABLED`, `VPN_ROOT_CERT_NAME` (AKV cert) or `VPN_ROOT_CERT_DATA` (raw base64) | Prefer AKV — we already have one for the AppGw cert. |
+| `New-VpnRootCertificate.ps1` | Generates self-signed root, uploads to AKV, exports the public cert in the bicep-expected base64 form. Operators with a corp PKI root skip this. |
+| `New-VpnClientCertificate.ps1 -UserName <upn>` | Per-user client cert signed by the root, exported as password-protected PFX into `deploy/envs/local/<env>/vpn-client/clients/<upn>.pfx`. |
+| `Get-VpnClientProfile.ps1 -AuthMethod cert -UserName <upn>` | Extends the existing helper. Bundles the cert-auth profile zip + the per-user PFX in one drop. |
+| **iOS sugar: `New-VpnIosMobileconfig.ps1 -UserName <upn>`** | Generates a signed Apple Configuration Profile (`.mobileconfig`) bundling the IKEv2 VPN config + client cert + CA root. End user taps once on the iPhone — VPN installed and ready. Without this, iOS cert VPN setup is a 15-step manual process and not appropriate for non-technical users. |
+| `pilotswarm-vpn-client-profile` skill update | Document `-AuthMethod cert` and the iOS `.mobileconfig` path. |
+| Cost | $0 additional Azure cost; PKI is operational overhead only. |
+
+### Critical access-control implications
+
+**Certificate-auth users completely bypass Entra ID.** This must be flagged loudly in every operator-facing surface:
+
+- No MFA challenge
+- No Conditional Access enforcement
+- No tenant audit trail of who connected when
+- No revocation if the device is lost without re-issuing PKI (or maintaining a revocation list)
+
+This is by design and unavoidable for cert-based VPN — but it inverts the access-control story we built in Phase 1. **Cert auth should be the exception, not the default.**
+
+Required mitigations bundled with Phase 6:
+
+- **Short cert validity**: 30–90 day default, never indefinite
+- **Per-device certificates**, not per-user — so loss of one device does not invalidate everyone with the same identity
+- **Revocation list maintained in bicep** via `vpnClientRevokedCertificates`, with a `Revoke-VpnClientCertificate.ps1` helper to add a cert thumbprint and trigger a `deploy.mjs base-infra` step
+- **AKV-stored root with HSM-protected private key** — losing the root would compromise every issued client cert
+- **`pilotswarm-vpn-client-profile` skill warning block** rendered prominently whenever `-AuthMethod cert` is used
+
+### Phase 6 backwards compatibility
+
+| Stamp state | Behavior |
+|---|---|
+| `VPN_CERT_AUTH_ENABLED` unset / false | No change. AAD-only behavior from current PR + custom-audience proposal. |
+| `VPN_CERT_AUTH_ENABLED=true`, `VPN_CERT_AUTH_ENABLED` env added | Bicep emits dual-auth gateway. Existing AAD profiles continue working untouched. |
+| Add cert auth to a stamp deployed AAD-only | One `deploy.mjs base-infra` re-run (~minutes against an existing gateway, not 45+) flips the gateway into dual-auth mode. |
+
+### Why this is Phase 6 (last) and not Phase 1
+
+- Phases 1–5 deliver the deployer-owned access-control story for the majority case (Windows/macOS/Android) which is what most PilotSwarm deployments hit.
+- Phase 6 is genuinely additive — no changes to anything in Phases 1–5.
+- The PKI operational story (cert issuance, rotation, revocation) is meaningful additional surface area that deserves its own focused PR with its own tests, rather than being bundled.
+- The iOS mobileconfig polish in particular needs care — a malformed mobileconfig is a security incident, not a UX bug.
+
 
 ## Acceptance criteria
 
