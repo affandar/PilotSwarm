@@ -57,14 +57,27 @@ async function testFactToolsStoreReadDelete(env) {
             { key: "baseline/tps", value: { value: 1250 }, shared: true, tags: ["baseline"] },
             { sessionId: "session-a", agentId: "analyst" },
         );
+        const batch = await storeFact.handler(
+            {
+                facts: [
+                    { key: "bulk/a/one", value: { n: 1 }, tags: ["bulk"] },
+                    { key: "bulk/a/two", value: { n: 2 }, tags: ["bulk"] },
+                    { key: "bulk/b/shared", value: { n: 3 }, shared: true, tags: ["bulk"] },
+                ],
+            },
+            { sessionId: "session-a", agentId: "builder" },
+        );
+        assertEqual(batch.stored, 3, "store_fact should ingest a batch");
 
         const accessible = await readFacts.handler(
             { scope: "accessible" },
             { sessionId: "session-a" },
         );
-        assertEqual(accessible.count, 2, "session-a should see its session fact plus shared fact");
+        assertEqual(accessible.count, 5, "session-a should see its session facts plus shared facts");
         assert(accessible.facts.some((fact) => fact.key === "build/status" && fact.shared === false), "session fact returned");
         assert(accessible.facts.some((fact) => fact.key === "baseline/tps" && fact.shared === true), "shared fact returned");
+        assert(accessible.facts.some((fact) => fact.key === "bulk/a/one" && fact.shared === false), "batch session fact returned");
+        assert(accessible.facts.some((fact) => fact.key === "bulk/b/shared" && fact.shared === true), "batch shared fact returned");
         assert(!accessible.facts.some((fact) => fact.sessionId === "session-b"), "other session's private fact should be hidden");
 
         const sessionOnly = await readFacts.handler(
@@ -80,8 +93,26 @@ async function testFactToolsStoreReadDelete(env) {
         );
         assertEqual(deleted.deleted, true, "delete_fact should delete the current session's private fact");
 
+        const literalStar = await deleteFact.handler(
+            { key: "bulk/a/*" },
+            { sessionId: "session-a" },
+        );
+        assertEqual(literalStar.deleted, false, "glob-like keys are not patterns unless pattern=true");
+
+        const patternDelete = await deleteFact.handler(
+            { key: "bulk/a/*", pattern: true },
+            { sessionId: "session-a" },
+        );
+        assertEqual(patternDelete.deleted, 2, "explicit pattern delete removes matching owned session facts");
+
+        const sharedPatternDelete = await deleteFact.handler(
+            { key: "bulk/b/*", pattern: true, scope: "shared" },
+            { sessionId: "session-a" },
+        );
+        assertEqual(sharedPatternDelete.deleted, 1, "explicit shared pattern delete removes matching shared facts");
+
         const rows = await listFactRows(env);
-        assertEqual(rows.length, 2, "two facts should remain after deleting session-a's private fact");
+        assertEqual(rows.length, 2, "two facts should remain after deletes");
         assert(rows.some((row) => row.key === "build/status" && row.session_id === "session-b"), "session-b private fact should remain");
         assert(rows.some((row) => row.key === "baseline/tps" && row.shared === true), "shared fact should remain");
     } finally {

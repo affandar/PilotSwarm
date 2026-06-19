@@ -92,7 +92,7 @@ describe.skipIf(!HAS_DB)("similarFacts (SF1–SF5)", () => {
             await store.storeFact({ key: r.key, value: r.value, shared: true, agentId: "fixture" });
             await pool.query(
                 `UPDATE "${schema}".facts
-                    SET embedding = $1::vector, embedded_at = now(),
+                    SET embedding = $1::vector,
                         embedding_model = $2
                   WHERE scope_key = $3`,
                 [`[${r.vec.join(",")}]`, FX_MODEL, `shared:${r.key}`],

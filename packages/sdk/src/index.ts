@@ -49,8 +49,10 @@ export type {
     FactStore,
     FactRecord,
     StoreFactInput,
+    StoredFactResult,
     ReadFactsQuery,
     DeleteFactInput,
+    DeleteFactsInput,
     FactsStatsRow,
     FactsNamespace,
     AccessContext,
@@ -64,11 +66,7 @@ export type {
     ScoredFact,
     SearchResult,
     EmbedderStatus,
-    EmbedFailureCode,
-    EmbedFailureStatsRow,
-    FailedEmbeddingFact,
-    ReadEmbeddingFailuresOpts,
-    ReadEmbeddingFailuresResult,
+    EmbedderLoopStatus,
     EmbeddingEndpointConfig,
 } from "./facts-store.js";
 // Graph store contract (optional, separately injected — enhancedfactstore 07 D2)

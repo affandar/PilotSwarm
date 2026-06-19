@@ -23,17 +23,17 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
     beforeAll(async () => {
         ({ store, schema, graph } = await makeStore({ tag: "eout", embeddingDim: REAL_EMBED_DIM }));
         pool = rawPool();
-    });
+    }, 120_000);
     afterAll(async () => {
         await store?.stopEmbedder("suite teardown").catch(() => {});
         await store?.close();
         await pool?.end();
         if (schema) await dropSchemaAndGraph(schema, graph);
-    });
+    }, 120_000);
 
     const rowState = async (key) => {
         const { rows } = await pool.query(
-            `SELECT embedding IS NOT NULL AS has_vec, embedded_at, embedding_model,
+            `SELECT embedding IS NOT NULL AS has_vec, embedding_model, updated_at,
                     last_embed_error IS NULL AS healthy
              FROM "${schema}".facts WHERE scope_key = $1`, [`shared:${key}`]);
         return rows[0];
@@ -64,7 +64,7 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
             assert.ok(rankOf("live/jsonb") < cooking && rankOf("live/jsonb2") < cooking,
                 "clearly-related pair outranks the clearly-unrelated fact");
         }
-    });
+    }, 240_000);
 
     it("H1–H3 hybrid fusion over the live corpus", async () => {
         const hybrid = await store.searchFacts("jsonb subscript", { mode: "hybrid", limit: 5 }, all);
@@ -79,23 +79,22 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
         const pureSem = await store.searchFacts("jsonb subscript", { mode: "semantic", limit: 5 }, all);
         assert.deepEqual(semOnly.facts.map((f) => f.key), pureSem.facts.map((f) => f.key),
             "lexical weight 0 behaves like semantic-only");
-    });
+    }, 120_000);
 
     it("S2 minSemanticScore cutoff excludes below-threshold facts", async () => {
         const res = await store.searchFacts("jsonb subscripting semantics",
             { mode: "semantic", minSemanticScore: 0.99, limit: 10 }, all);
         assert.equal(res.facts.filter((f) => f.key === "live/cooking").length, 0);
-    });
+    }, 120_000);
 
-    it("E5 edited fact is re-embedded (embedded_at advances)", async () => {
-        const before = await rowState("live/jsonb2");
+    it("E5 edited fact is re-embedded after vector reset", async () => {
         await store.storeFact({ key: "live/jsonb2", value: { text: "subscript syntax for jsonb columns — REVISED edition" }, shared: true });
         assert.equal((await rowState("live/jsonb2")).has_vec, false, "edit clears the row's stale vector");
         await pollUntil(async () => {
             const st = await rowState("live/jsonb2");
-            return st.has_vec && new Date(st.embedded_at) > new Date(before.embedded_at);
+            return st.has_vec && st.embedding_model === REAL_EMBED_MODEL;
         }, { label: "re-embed after edit", timeoutMs: 120_000 });
-    });
+    }, 180_000);
 
     it("E13 mid-flight edits converge: the FINAL content is what ends up embedded", async () => {
         // Edit the fact repeatedly while the loop is actively embedding a batch;
@@ -105,14 +104,13 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
             await store.storeFact({ key: "live/jsonb", value: { text: `jsonb subscripting churn edit ${i}` }, shared: true });
             await new Promise((r) => setTimeout(r, 300)); // churn cadence, not a sync sleep
         }
-        const lastEdit = new Date();
         await pollUntil(async () => {
             const st = await rowState("live/jsonb");
-            return st.has_vec && new Date(st.embedded_at) > lastEdit;
+            return st.has_vec && st.embedding_model === REAL_EMBED_MODEL;
         }, { label: "convergence on final content", timeoutMs: 120_000 });
         const st = await rowState("live/jsonb");
         assert.equal(st.has_vec, true, "final content is embedded");
-    });
+    }, 180_000);
 
     it("E14 model rotation: reconfigured model re-embeds; mismatched rows vanish from semantic results", async () => {
         const ROTATED = `${REAL_EMBED_MODEL}-v2`; // same deployment (URL routes it); new model STAMP
@@ -126,7 +124,45 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
         }, { label: "rolling re-embed under the rotated model", timeoutMs: 180_000 });
         const res = await store.searchFacts("jsonb subscripting semantics", { mode: "semantic", limit: 5 }, all);
         assert.ok(res.facts.some((f) => f.key.startsWith("live/jsonb")), "rotated rows are searchable again");
-    });
+    }, 240_000);
+
+    it("oversized embedding failure is isolated by batch failure -> single-row retry", async () => {
+        await store.configureEmbedder(realEmbedding());
+        const oversized = Array.from({ length: 9000 }, (_, i) => `oversized-token-${i}`).join(" ");
+        await store.storeFacts([
+            { key: "live/oversized", value: { text: oversized }, shared: true },
+            { key: "live/retry-good", value: { text: "small row paired with oversized batch failure" }, shared: true },
+        ]);
+        const st = await store.startEmbedder({ intervalSeconds: 1, batch: 2 });
+        assert.equal(st.running, true, "embedder status requires both loops running");
+        assert.equal(st.loops?.length, 2, "status reports batch and retry loops");
+        assert.ok(st.loops.every((loop) => loop.running), "both durable loops are running");
+
+        await pollUntil(async () => {
+            const { rows } = await pool.query(
+                `SELECT key, embedding IS NOT NULL AS has_vec, last_embed_error
+                   FROM "${schema}".facts
+                  WHERE key IN ('live/oversized', 'live/retry-good')
+                  ORDER BY key`);
+            const byKey = new Map(rows.map((row) => [row.key, row]));
+            return byKey.get("live/oversized")?.last_embed_error === 1001
+                && byKey.get("live/retry-good")?.has_vec === true
+                && byKey.get("live/retry-good")?.last_embed_error === null;
+        }, { label: "oversized row terminally fails while good row retries successfully", timeoutMs: 180_000 });
+
+        const { rows: failedRows } = await pool.query(
+            `SELECT key, last_embed_error
+               FROM "${schema}".facts
+              WHERE key IN ('live/oversized', 'live/retry-good')
+              ORDER BY key`);
+        const failedByKey = new Map(failedRows.map((row) => [row.key, row]));
+        assert.equal(failedByKey.get("live/oversized")?.last_embed_error, 1001, "oversized fact is marked input_too_large internally");
+        assert.equal(failedByKey.get("live/retry-good")?.last_embed_error, null, "successfully retried fact is not marked failed");
+
+        const after = await store.embedderStatus();
+        assert.equal(after.running, true, "both loops remain running after isolating failure");
+        assert.ok(after.loops.every((loop) => loop.running), "batch and retry loops both still running");
+    }, 240_000);
 
     it("S3 (neg) semantic with no endpoint configured throws (fresh store)", async () => {
         const fresh = await makeStore({ tag: "noembed", embeddingDim: 4 });
@@ -138,5 +174,5 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
             await fresh.store.close();
             await dropSchemaAndGraph(fresh.schema, fresh.graph);
         }
-    });
+    }, 120_000);
 });

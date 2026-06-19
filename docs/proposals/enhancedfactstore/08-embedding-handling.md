@@ -99,6 +99,9 @@ They can run independently. The batch loop does not wait for or drain retry work
 sleep(interval)
 select rows where last_embed_error IS NULL and embedding is pending
 if no rows: continue
+if any selected input is DB-classified oversized (>8000 chars):
+  mark selected still-current rows last_embed_error = -1
+  continue
 POST array embedding request
 if response is valid and count matches selected ids:
   write embedding + embedding_model, clear last_embed_error
@@ -112,6 +115,9 @@ else:
 sleep(interval)
 select one row where last_embed_error = -1
 if no rows: continue
+if selected input is DB-classified oversized (>8000 chars):
+  set last_embed_error = 1001
+  continue
 POST single-row embedding request
 if response is valid:
   write embedding + embedding_model, clear last_embed_error

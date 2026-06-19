@@ -17,11 +17,10 @@
 // access.
 
 import type {
-    AccessContext, CrawledFactStamp, DeleteFactInput, EmbedderStatus,
+    AccessContext, CrawledFactStamp, DeleteFactInput, DeleteFactsInput, EmbedderLoopStatus, EmbedderStatus,
     EmbeddingEndpointConfig, EnhancedFactStore, FactRecord, FactsStatsRow,
-    ReadEmbeddingFailuresOpts, ReadEmbeddingFailuresResult,
     ReadFactsQuery, ScoredFact, SearchOpts, SearchResult, SimilarOpts,
-    StoreFactInput,
+    StoreFactInput, StoredFactResult,
 } from "./types.js";
 import type { HorizonFactsConfig } from "./config.js";
 import { resolveConfig, buildPoolConfig } from "./config.js";
@@ -161,15 +160,30 @@ export class HorizonDBFactStore implements EnhancedFactStore {
 
     // ─── base FactStore (drop-in; all access via procs) ──────────────────────
 
-    async storeFact(input: StoreFactInput): Promise<{ key: string; shared: boolean; stored: true }> {
-        const shared = input.shared === true;
-        const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
+    async storeFact(input: StoreFactInput): Promise<StoredFactResult> {
+        const stored = await this.storeFacts([input]);
+        return stored.facts[0];
+    }
+
+    async storeFacts(inputs: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }> {
+        if (!Array.isArray(inputs) || inputs.length === 0) return { stored: 0, facts: [] };
+        const facts = inputs.map((input) => {
+            const shared = input.shared === true;
+            return {
+                scopeKey: computeScopeKey(input.key, shared, input.sessionId),
+                key: input.key,
+                value: input.value,
+                agentId: input.agentId ?? null,
+                sessionId: input.sessionId ?? null,
+                shared,
+                tags: input.tags ?? [],
+            };
+        });
         await withDbRetry("facts_store", () => this.pool.query(
-            `SELECT ${this.s}.facts_store($1, $2, $3::jsonb, $4, $5, $6, $7)`,
-            [scopeKey, input.key, JSON.stringify(input.value), input.agentId ?? null,
-             input.sessionId ?? null, shared, input.tags ?? []],
+            `SELECT ${this.s}.facts_store_batch($1::jsonb)`,
+            [JSON.stringify(facts)],
         ));
-        return { key: input.key, shared, stored: true };
+        return { stored: facts.length, facts: facts.map((fact) => ({ key: fact.key, shared: fact.shared, stored: true })) };
     }
 
     async readFacts(query: ReadFactsQuery, access?: AccessContext): Promise<{ count: number; facts: FactRecord[] }> {
@@ -199,6 +213,17 @@ export class HorizonDBFactStore implements EnhancedFactStore {
         const { rows } = await withDbRetry<{ rows: any[] }>("facts_delete", () => this.pool.query(
             `SELECT ${this.s}.facts_delete($1) AS deleted`, [scopeKey]));
         return { key: input.key, shared, deleted: rows[0]?.deleted === true };
+    }
+
+    async deleteFacts(input: DeleteFactsInput): Promise<{ deleted: number; keyPattern: string; scope: "session" | "shared" | "all" }> {
+        const keyPattern = input.keyPattern?.includes("%") ? input.keyPattern : input.keyPattern?.replaceAll("*", "%");
+        if (!keyPattern) throw new Error("deleteFacts requires keyPattern");
+        const scope = input.scope ?? (input.shared === true ? "shared" : "session");
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_delete_pattern", () => this.pool.query(
+            `SELECT ${this.s}.facts_delete_pattern($1, $2, $3, $4) AS n`,
+            [keyPattern, scope, input.sessionId ?? null, input.unrestricted === true],
+        ));
+        return { keyPattern, scope, deleted: Number(rows[0]?.n ?? 0) };
     }
 
     async deleteSessionFactsForSession(sessionId: string): Promise<number> {
@@ -363,32 +388,6 @@ export class HorizonDBFactStore implements EnhancedFactStore {
         return { marked: Number(rows[0]?.marked ?? 0), skipped: Number(rows[0]?.skipped ?? 0) };
     }
 
-    async readEmbeddingFailures(opts: ReadEmbeddingFailuresOpts = {}): Promise<ReadEmbeddingFailuresResult> {
-        const errorCodes = Array.isArray(opts.errorCodes) && opts.errorCodes.length > 0
-            ? opts.errorCodes.map((n) => Math.trunc(Number(n))).filter((n) => Number.isFinite(n))
-            : null;
-        const { rows } = await withDbRetry<{ rows: any[] }>("facts_embedding_failures", () => this.pool.query(
-            `SELECT * FROM ${this.s}.facts_embedding_failures($1, $2, $3)`,
-            [namespacePrefix(opts.namespace), errorCodes, Math.min(opts.limit ?? 20, 500)],
-        ));
-        const stats = rows.filter((r: any) => r.row_kind === "stat").map((r: any) => ({
-            code: Number(r.code),
-            label: String(r.label ?? "unknown_embedding_error"),
-            count: Number(r.count ?? 0),
-            oldestAt: r.oldest_at ?? null,
-            newestAt: r.newest_at ?? null,
-            maxInputChars: Number(r.max_input_chars ?? 0),
-        }));
-        const facts = rows.filter((r: any) => r.row_kind === "fact").map((r: any) => ({
-            ...mapFactRow(r),
-            lastEmbedError: Number(r.last_embed_error),
-            lastEmbedErrorLabel: String(r.label ?? "unknown_embedding_error"),
-            lastEmbedErrorAt: r.last_embed_error_at ?? null,
-            inputChars: Number(r.input_chars ?? 0),
-        }));
-        return { stats, count: facts.length, facts };
-    }
-
     // ─── embedder lifecycle (02 §4) ──────────────────────────────────────────
     //
     // Config lives in durable variables (df.setvar), namespaced per schema.
@@ -400,8 +399,28 @@ export class HorizonDBFactStore implements EnhancedFactStore {
         return `hz_${this.schema}_${suffix}`;
     }
 
-    private get embedderLabel(): string {
+    private embedderLabel(kind: "batch" | "retry"): string {
+        return `hz-embed-${kind}-cron:${this.schema}`;
+    }
+
+    private get legacyEmbedderLabel(): string {
         return `hz-embed-cron:${this.schema}`;
+    }
+
+    private get embedderLabels(): Record<"batch" | "retry", string> {
+        return { batch: this.embedderLabel("batch"), retry: this.embedderLabel("retry") };
+    }
+
+    private async cancelRunningLabel(label: string, reason: string, exec: any = this.pool): Promise<void> {
+        const { rows } = await exec.query(
+            `SELECT id FROM df.instances
+             WHERE label = $1 AND status IN ('pending', 'running')
+             ORDER BY created_at DESC`,
+            [label],
+        );
+        for (const row of rows) {
+            await exec.query(`SELECT df.cancel($1, $2)`, [row.id, reason]);
+        }
     }
 
     /**
@@ -412,7 +431,7 @@ export class HorizonDBFactStore implements EnhancedFactStore {
      * checked-out client for the whole critical section, then release it.
      */
     private async withEmbedderLock<T>(fn: (client: any) => Promise<T>): Promise<T> {
-        const lockKey = hashSchemaName(this.embedderLabel, HORIZON_FACTS_LOCK_SEED);
+        const lockKey = hashSchemaName(`hz-embed-cron:${this.schema}`, HORIZON_FACTS_LOCK_SEED);
         const client = await this.pool.connect();
         try {
             await client.query("SELECT pg_advisory_lock($1)", [lockKey]);
@@ -465,11 +484,14 @@ export class HorizonDBFactStore implements EnhancedFactStore {
         if (!restartIfRunning) return this.embedderStatus();
         return this.withEmbedderLock(async (client) => {
             const st = await this.embedderStatus(client);
-            if (!st.running || !st.instanceId) return st;
-            await client.query(`SELECT df.cancel($1, $2)`, [st.instanceId, "reconfigured"]);
+            if (!st.running) return st;
+            for (const loop of st.loops ?? []) {
+                if (loop.running && loop.instanceId) await client.query(`SELECT df.cancel($1, $2)`, [loop.instanceId, "reconfigured"]);
+            }
+            await this.cancelRunningLabel(this.legacyEmbedderLabel, "reconfigured", client);
             const interval = await this.getvar("interval");
             const batch = await this.getvar("batch");
-            return this.startLoop(Number(interval ?? 5), Number(batch ?? 128), client);
+            return this.startLoops(Number(interval ?? 5), Number(batch ?? 128), client);
         });
     }
 
@@ -489,37 +511,58 @@ export class HorizonDBFactStore implements EnhancedFactStore {
         return this.withEmbedderLock(async (client) => {
             const existing = await this.embedderStatus(client);
             if (existing.running) return existing;
-            return this.startLoop(intervalSeconds, batch, client);
+            return this.startLoops(intervalSeconds, batch, client);
         });
     }
 
-    private async startLoop(intervalSeconds: number, batch: number, exec: any = this.pool): Promise<EmbedderStatus> {
+    private async startLoops(intervalSeconds: number, batch: number, exec: any = this.pool): Promise<EmbedderStatus> {
         await exec.query(`SELECT df.setvar($1, $2)`, [this.varName("interval"), String(intervalSeconds)]);
         await exec.query(`SELECT df.setvar($1, $2)`, [this.varName("batch"), String(batch)]);
+        const labels = this.embedderLabels;
+        await this.cancelRunningLabel(this.legacyEmbedderLabel, "superseded by two-loop embedder", exec);
         await exec.query(
-            `SELECT df.start(${this.s}.embedder_workflow($1, $2), $3, NULL) AS iid`,
-            [intervalSeconds, batch, this.embedderLabel],
+            `SELECT df.start(${this.s}.embedder_batch_workflow($1, $2), $3, NULL) AS iid`,
+            [intervalSeconds, batch, labels.batch],
+        );
+        await exec.query(
+            `SELECT df.start(${this.s}.embedder_retry_workflow($1), $2, NULL) AS iid`,
+            [intervalSeconds, labels.retry],
         );
         return this.embedderStatus(exec);
     }
 
     async stopEmbedder(reason = "stopped by host"): Promise<EmbedderStatus> {
         const st = await this.embedderStatus();
-        if (st.running && st.instanceId) {
-            await this.pool.query(`SELECT df.cancel($1, $2)`, [st.instanceId, reason]);
+        for (const loop of st.loops ?? []) {
+            if (loop.running && loop.instanceId) {
+                await this.pool.query(`SELECT df.cancel($1, $2)`, [loop.instanceId, reason]);
+            }
         }
+        await this.cancelRunningLabel(this.legacyEmbedderLabel, reason);
         return this.embedderStatus();
     }
 
     async embedderStatus(exec: any = this.pool): Promise<EmbedderStatus> {
-        const { rows } = await exec.query(
-            `SELECT id, status FROM df.instances
-             WHERE label = $1 ORDER BY created_at DESC LIMIT 1`,
-            [this.embedderLabel]);
-        if (rows.length === 0) return { running: false };
-        const status = String(rows[0].status);
-        const running = status === "pending" || status === "running";
-        return { running, instanceId: String(rows[0].id), status };
+        const labels = this.embedderLabels;
+        const loops: EmbedderLoopStatus[] = [];
+        for (const name of ["batch", "retry"] as const) {
+            const { rows } = await exec.query(
+                `SELECT id, status FROM df.instances
+                 WHERE label = $1 ORDER BY created_at DESC LIMIT 1`,
+                [labels[name]],
+            );
+            const row = rows[0];
+            const status = row ? String(row.status) : undefined;
+            const running = status === "pending" || status === "running";
+            loops.push({ name, label: labels[name], running, instanceId: row ? String(row.id) : undefined, status });
+        }
+        const running = loops.every((loop) => loop.running);
+        return {
+            running,
+            instanceId: loops.find((loop) => loop.name === "batch")?.instanceId,
+            status: running ? "running" : loops.map((loop) => `${loop.name}:${loop.status ?? "missing"}`).join(","),
+            loops,
+        };
     }
 
     private async getvar(suffix: EmbedVarSuffix): Promise<string | null> {

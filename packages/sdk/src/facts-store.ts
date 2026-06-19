@@ -35,6 +35,12 @@ export interface StoreFactInput {
     sessionId?: string | null;
 }
 
+export interface StoredFactResult {
+    key: string;
+    shared: boolean;
+    stored: true;
+}
+
 export interface ReadFactsQuery {
     keyPattern?: string;
     /**
@@ -54,6 +60,14 @@ export interface DeleteFactInput {
     key: string;
     shared?: boolean;
     sessionId?: string | null;
+}
+
+export interface DeleteFactsInput {
+    keyPattern: string;
+    scope?: "session" | "shared" | "all";
+    shared?: boolean;
+    sessionId?: string | null;
+    unrestricted?: boolean;
 }
 
 /** How visibility is resolved inside the read/search procs. */
@@ -82,11 +96,8 @@ export interface FactsStatsRow {
 
 export interface FactStore {
     initialize(): Promise<void>;
-    storeFact(input: StoreFactInput): Promise<{
-        key: string;
-        shared: boolean;
-        stored: true;
-    }>;
+    storeFact(input: StoreFactInput): Promise<StoredFactResult>;
+    storeFacts(inputs: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }>;
     readFacts(query: ReadFactsQuery, access?: AccessContext): Promise<{
         count: number;
         facts: FactRecord[];
@@ -96,6 +107,7 @@ export interface FactStore {
         shared: boolean;
         deleted: boolean;
     }>;
+    deleteFacts(input: DeleteFactsInput): Promise<{ deleted: number; keyPattern: string; scope: "session" | "shared" | "all" }>;
     deleteSessionFactsForSession(sessionId: string): Promise<number>;
     /** Per-session non-shared facts, bucketed by namespace. */
     getSessionFactsStats(sessionId: string): Promise<FactsStatsRow[]>;
@@ -177,44 +189,15 @@ export interface EmbedderStatus {
     running: boolean;
     instanceId?: string;
     status?: string;
+    loops?: EmbedderLoopStatus[];
 }
 
-export type EmbedFailureCode =
-    | 1001   // input too large for the embedding model
-    | 1400   // provider rejected the request as a bad row/request
-    | 1401   // provider authentication failed
-    | 1403   // provider authorization failed
-    | 1429   // provider rate-limited the row request
-    | 1500   // provider returned a 5xx response
-    | 1901   // provider returned a malformed embedding payload
-    | 9999;  // unknown terminal embedding failure
-
-export interface EmbedFailureStatsRow {
-    code: EmbedFailureCode | number;
+export interface EmbedderLoopStatus {
+    name: "batch" | "retry";
     label: string;
-    count: number;
-    oldestAt: Date | null;
-    newestAt: Date | null;
-    maxInputChars: number;
-}
-
-export interface FailedEmbeddingFact extends FactRecord {
-    lastEmbedError: EmbedFailureCode | number;
-    lastEmbedErrorLabel: string;
-    lastEmbedErrorAt: Date | null;
-    inputChars: number;
-}
-
-export interface ReadEmbeddingFailuresOpts {
-    namespace?: string;
-    errorCodes?: number[];
-    limit?: number;
-}
-
-export interface ReadEmbeddingFailuresResult {
-    stats: EmbedFailureStatsRow[];
-    count: number;
-    facts: FailedEmbeddingFact[];
+    running: boolean;
+    instanceId?: string;
+    status?: string;
 }
 
 /** OpenAI/Azure-OpenAI-compatible embeddings endpoint (database-agnostic). */
@@ -255,15 +238,12 @@ export interface EnhancedFactStore extends FactStore {
 
     /** Record/replace the embedding endpoint; restarts a running loop. */
     configureEmbedder(endpoint: EmbeddingEndpointConfig, opts?: { restartIfRunning?: boolean }): Promise<EmbedderStatus>;
-    /** Start the single eternal batch-embedding loop. Idempotent. */
+    /** Start the durable batch and single-row retry loops. Idempotent. */
     startEmbedder(opts?: { intervalSeconds?: number; batch?: number }): Promise<EmbedderStatus>;
-    /** Cancel the loop. No-op if already stopped. */
+    /** Cancel the durable batch/retry loops. No-op if already stopped. */
     stopEmbedder(reason?: string): Promise<EmbedderStatus>;
     /** Current lifecycle state. */
     embedderStatus(): Promise<EmbedderStatus>;
-
-    /** Optional provider diagnostic: failed current-content embeddings by code. */
-    readEmbeddingFailures?(opts?: ReadEmbeddingFailuresOpts): Promise<ReadEmbeddingFailuresResult>;
 }
 
 /**
@@ -309,8 +289,10 @@ function sqlForSchema(schema: string) {
         schema,
         fn: {
             storeFact:                 `${schema}.facts_store_fact`,
+            storeFacts:                `${schema}.facts_store_facts`,
             readFacts:                 `${schema}.facts_read_facts`,
             deleteFact:                `${schema}.facts_delete_fact`,
+            deleteFacts:               `${schema}.facts_delete_facts`,
             deleteSessionFacts:        `${schema}.facts_delete_session_facts`,
             getSessionFactsStats:      `${schema}.facts_get_session_facts_stats`,
             getFactsStatsForSessions:  `${schema}.facts_get_facts_stats_for_sessions`,
@@ -532,28 +514,33 @@ export class PgFactStore implements FactStore {
         this.initialized = true;
     }
 
-    async storeFact(input: StoreFactInput): Promise<{ key: string; shared: boolean; stored: true }> {
-        const shared = input.shared === true;
-        const scopeKey = computeScopeKey(input.key, shared, input.sessionId);
+    async storeFact(input: StoreFactInput): Promise<StoredFactResult> {
+        const stored = await this.storeFacts([input]);
+        return stored.facts[0];
+    }
 
-        await this.pool.query(
-            `SELECT ${this.sql.fn.storeFact}($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [
-                scopeKey,
-                input.key,
-                JSON.stringify(input.value),
-                input.agentId ?? null,
-                input.sessionId ?? null,
+    async storeFacts(inputs: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }> {
+        if (!Array.isArray(inputs) || inputs.length === 0) return { stored: 0, facts: [] };
+        const facts = inputs.map((input) => {
+            const shared = input.shared === true;
+            return {
+                scopeKey: computeScopeKey(input.key, shared, input.sessionId),
+                key: input.key,
+                value: input.value,
+                agentId: input.agentId ?? null,
+                sessionId: input.sessionId ?? null,
                 shared,
-                !shared,
-                input.tags ?? [],
-            ],
+                transient: !shared,
+                tags: input.tags ?? [],
+            };
+        });
+        await this.pool.query(
+            `SELECT ${this.sql.fn.storeFacts}($1::jsonb)`,
+            [JSON.stringify(facts)],
         );
-
         return {
-            key: input.key,
-            shared,
-            stored: true,
+            stored: facts.length,
+            facts: facts.map((fact) => ({ key: fact.key, shared: fact.shared, stored: true })),
         };
     }
 
@@ -606,6 +593,17 @@ export class PgFactStore implements FactStore {
             shared,
             deleted: Number(rows[0]?.deleted_count) > 0,
         };
+    }
+
+    async deleteFacts(input: DeleteFactsInput): Promise<{ deleted: number; keyPattern: string; scope: "session" | "shared" | "all" }> {
+        const keyPattern = normalizeLikePattern(input.keyPattern);
+        if (!keyPattern) throw new Error("deleteFacts requires keyPattern");
+        const scope = input.scope ?? (input.shared === true ? "shared" : "session");
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.deleteFacts}($1, $2, $3, $4) AS deleted_count`,
+            [keyPattern, scope, input.sessionId ?? null, input.unrestricted === true],
+        );
+        return { keyPattern, scope, deleted: Number(rows[0]?.deleted_count) || 0 };
     }
 
     async deleteSessionFactsForSession(sessionId: string): Promise<number> {

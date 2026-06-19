@@ -22,6 +22,13 @@ function checkNamespaceWrite(key: string, agentIdentity?: string): string | null
     return null;
 }
 
+function patternTouchesPrefix(pattern: string, prefix: string): boolean {
+    const normalized = pattern.replace(/\*/g, "%");
+    const wildcardIndex = normalized.search(/[%_]/);
+    const literalPrefix = wildcardIndex === -1 ? normalized : normalized.slice(0, wildcardIndex);
+    return prefix.startsWith(literalPrefix) || literalPrefix.startsWith(prefix);
+}
+
 function checkNamespaceRead(keyPattern: string | undefined, agentIdentity?: string): string | null {
     if (!keyPattern) return null;
     // Normalize glob wildcards to SQL pattern for prefix check
@@ -42,6 +49,18 @@ function checkNamespaceDelete(key: string, agentIdentity?: string): string | nul
     }
     for (const prefix of RESERVED_DELETE_PREFIXES) {
         if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
+            return `Error: the '${prefix}' key namespace is reserved. Only the Facts Manager can delete from it.`;
+        }
+    }
+    return null;
+}
+
+function checkNamespaceDeletePattern(keyPattern: string, agentIdentity?: string): string | null {
+    if (agentIdentity === TUNER_AGENT_ID) {
+        return "Error: agent-tuner sessions are read-only and cannot delete facts.";
+    }
+    for (const prefix of RESERVED_DELETE_PREFIXES) {
+        if (patternTouchesPrefix(keyPattern, prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved. Only the Facts Manager can delete from it.`;
         }
     }
@@ -88,9 +107,10 @@ export function createFactTools(opts: {
 
     const storeTool = defineTool("store_fact", {
         description:
-            "Store a fact in the facts table for durable structured memory. " +
+            "Store one fact or a batch of facts in the facts table for durable structured memory. " +
             "Facts are session-scoped by default, visible to every session in the same spawn tree (ancestors, descendants, siblings, cousins — anything spawned from a common root), and are deleted when the session is deleted. " +
-            "Set shared=true to create shared durable memory visible across all sessions globally; shared facts persist until explicitly deleted.",
+            "Set shared=true to create shared durable memory visible across all sessions globally; shared facts persist until explicitly deleted. " +
+            "For large ingestion, pass facts=[{key,value,tags?,shared?}, ...] instead of a single key/value.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -110,34 +130,59 @@ export function createFactTools(opts: {
                     type: "boolean",
                     description: "If true, store as shared global knowledge visible across sessions. Default: false.",
                 },
+                facts: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            key: { type: "string" },
+                            value: {},
+                            tags: { type: "array", items: { type: "string" } },
+                            shared: { type: "boolean" },
+                        },
+                        required: ["key", "value"],
+                    },
+                    description: "Optional batch of facts to store. When provided, top-level key/value are ignored.",
+                },
             },
-            required: ["key", "value"] as const,
         },
         handler: async (
-            args: { key: string; value: unknown; tags?: string[]; shared?: boolean },
+            args: { key?: string; value?: unknown; tags?: string[]; shared?: boolean; facts?: Array<{ key: string; value: unknown; tags?: string[]; shared?: boolean }> },
             ctx?: { sessionId?: string; agentId?: string },
         ) => {
-            const nsError = checkNamespaceWrite(args.key, agentIdentity);
-            if (nsError) return { error: nsError };
+            const factInputs = Array.isArray(args.facts) && args.facts.length > 0
+                ? args.facts
+                : (typeof args.key === "string" && "value" in args ? [{ key: args.key, value: args.value, tags: args.tags, shared: args.shared }] : []);
+            if (factInputs.length === 0) return { error: "Error: store_fact requires either { key, value } or facts=[{ key, value }, ...]." };
+            for (const fact of factInputs) {
+                const nsError = checkNamespaceWrite(fact.key, agentIdentity);
+                if (nsError) return { error: nsError };
+            }
 
-            const result = await factStore.storeFact({
-                key: args.key,
-                value: args.value,
-                tags: args.tags,
-                shared: args.shared,
+            const result = await factStore.storeFacts(factInputs.map((fact) => ({
+                key: fact.key,
+                value: fact.value,
+                tags: fact.tags,
+                shared: fact.shared,
                 sessionId: ctx?.sessionId ?? null,
                 agentId: ctx?.agentId ?? null,
-            });
-            if (result.shared && args.key.startsWith("intake/") && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
-                await onSharedIntakeFactStored?.({
-                    key: args.key,
-                    sourceSessionId: ctx?.sessionId ?? null,
-                    agentId: ctx?.agentId ?? null,
-                }).catch(() => {});
+            })));
+            for (const fact of result.facts) {
+                if (fact.shared && fact.key.startsWith("intake/") && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
+                    await onSharedIntakeFactStored?.({
+                        key: fact.key,
+                        sourceSessionId: ctx?.sessionId ?? null,
+                        agentId: ctx?.agentId ?? null,
+                    }).catch(() => {});
+                }
+            }
+            if (result.facts.length === 1) {
+                const fact = result.facts[0];
+                return { ...fact, scope: fact.shared ? "shared" : "session" };
             }
             return {
-                ...result,
-                scope: result.shared ? "shared" : "session",
+                stored: result.stored,
+                facts: result.facts.map((fact) => ({ ...fact, scope: fact.shared ? "shared" : "session" })),
             };
         },
     });
@@ -278,8 +323,9 @@ export function createFactTools(opts: {
 
     const deleteTool = defineTool("delete_fact", {
         description:
-            "Delete a fact. By default this deletes the current session's fact for the given key. " +
-            "Set shared=true to delete the shared durable fact with that key instead.",
+            "Delete facts. By default this deletes the current session's fact for the given exact key. " +
+            "Set shared=true to delete the shared durable fact with that key instead. " +
+            "For pattern deletes, set pattern=true and pass a key glob such as 'a/b/*'. Pattern deletes are explicit and never enabled by accident.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -291,15 +337,39 @@ export function createFactTools(opts: {
                     type: "boolean",
                     description: "If true, delete the shared fact. Otherwise delete the current session's fact.",
                 },
+                pattern: {
+                    type: "boolean",
+                    description: "Required true to treat key as a pattern. Supports '*' globs or SQL '%' wildcards.",
+                },
+                scope: {
+                    type: "string",
+                    enum: ["session", "shared", "all"],
+                    description: "Pattern-delete scope. session=current session only, shared=shared facts only, all=Facts Manager unrestricted cleanup.",
+                },
             },
             required: ["key"] as const,
         },
         handler: async (
-            args: { key: string; shared?: boolean },
+            args: { key: string; shared?: boolean; pattern?: boolean; scope?: "session" | "shared" | "all" },
             ctx?: { sessionId?: string },
         ) => {
-            const nsError = checkNamespaceDelete(args.key, agentIdentity);
+            const nsError = args.pattern
+                ? checkNamespaceDeletePattern(args.key, agentIdentity)
+                : checkNamespaceDelete(args.key, agentIdentity);
             if (nsError) return { error: nsError };
+
+            if (args.pattern) {
+                const scope = args.scope ?? (args.shared === true ? "shared" : "session");
+                if (scope === "all" && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
+                    return { error: "Error: delete_fact scope='all' is reserved for the Facts Manager." };
+                }
+                return factStore.deleteFacts({
+                    keyPattern: args.key,
+                    scope,
+                    sessionId: ctx?.sessionId ?? null,
+                    unrestricted: agentIdentity === FACTS_MANAGER_AGENT_ID,
+                });
+            }
 
             return factStore.deleteFact({
                 key: args.key,
@@ -479,16 +549,15 @@ export function createFactTools(opts: {
                 "always safe), 'start' (idempotently ensure the loop is running; optionally tune batch size / poll " +
                 "interval), 'stop' (halt embedding fleet-wide — semantic search degrades to lexical until restarted), " +
                 "'configure' (replace the embedding endpoint; rejects a model whose vector dimension differs from the " +
-                "column, since that needs a schema migration + full re-embed), 'failures' (read counts and samples of " +
-                "facts whose current content failed embedding and was skipped until rewritten). Prefer 'status' first; only 'stop' when " +
+                "column, since that needs a schema migration + full re-embed). Prefer 'status' first; only 'stop' when " +
                 "an operator explicitly asks, because new and updated facts stop getting embeddings while it is stopped.",
             parameters: {
                 type: "object" as const,
                 properties: {
                     action: {
                         type: "string",
-                        enum: ["status", "start", "stop", "configure", "failures"],
-                        description: "status/failures = read-only; start/stop = lifecycle; configure = replace endpoint.",
+                        enum: ["status", "start", "stop", "configure"],
+                        description: "status = read-only; start/stop = lifecycle; configure = replace endpoint.",
                     },
                     intervalSeconds: {
                         type: "number",
@@ -517,31 +586,15 @@ export function createFactTools(opts: {
                         },
                         required: ["url", "model", "dim"] as const,
                     },
-                    namespace: {
-                        type: "string",
-                        description: "failures only: optional fact key-prefix namespace, for example 'corpus/dba-se-qa'.",
-                    },
-                    errorCodes: {
-                        type: "array",
-                        items: { type: "number" },
-                        description: "failures only: optional numeric last_embed_error code filter.",
-                    },
-                    limit: {
-                        type: "number",
-                        description: "failures only: maximum failed fact samples to return. Default 20.",
-                    },
                 },
                 required: ["action"] as const,
             },
             handler: async (a: {
-                action: "status" | "start" | "stop" | "configure" | "failures";
+                action: "status" | "start" | "stop" | "configure";
                 intervalSeconds?: number;
                 batch?: number;
                 reason?: string;
                 endpoint?: { url: string; model: string; dim: number; apiKey?: string; apiKeyHeader?: string; bearer?: boolean };
-                namespace?: string;
-                errorCodes?: number[];
-                limit?: number;
             }) => {
                 try {
                     switch (a.action) {
@@ -566,22 +619,8 @@ export function createFactTools(opts: {
                                 ...(await enhancedFactStore.configureEmbedder(a.endpoint, { restartIfRunning: true })),
                             };
                         }
-                        case "failures": {
-                            if (typeof enhancedFactStore.readEmbeddingFailures !== "function") {
-                                return { action: "failures", supported: false, error: "This facts provider does not expose embedding failure diagnostics." };
-                            }
-                            return {
-                                action: "failures",
-                                supported: true,
-                                ...(await enhancedFactStore.readEmbeddingFailures({
-                                    namespace: a.namespace,
-                                    errorCodes: a.errorCodes,
-                                    limit: a.limit,
-                                })),
-                            };
-                        }
                         default:
-                            return { error: `Unknown action '${a.action}'. Use status, start, stop, configure, or failures.` };
+                            return { error: `Unknown action '${a.action}'. Use status, start, stop, or configure.` };
                     }
                 } catch (err) {
                     // Surface the provider's error to the agent (e.g. dim mismatch on

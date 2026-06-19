@@ -61,10 +61,26 @@ describe.skipIf(!HAS_DB)("crawl tracking (C1–C7)", () => {
         assert.equal(facts.length, 1, "limit applies");
     });
 
+    it("base provider batch store and explicit pattern delete", async () => {
+        const batch = await store.storeFacts([
+            { key: "batch/hz/a", value: { n: 1 }, shared: true },
+            { key: "batch/hz/b", value: { n: 2 }, shared: true },
+            { key: "batch/hz/session", value: { n: 3 }, sessionId: "S-BATCH" },
+        ]);
+        assert.equal(batch.stored, 3, "storeFacts stores every fact");
+        const read = await store.readFacts({ keyPattern: "batch/hz/%", scope: "accessible" }, { readerSessionId: "S-BATCH" });
+        assert.equal(read.count, 3, "batch facts are readable through the normal surface");
+
+        const sharedDelete = await store.deleteFacts({ keyPattern: "batch/hz/*", scope: "shared", unrestricted: false });
+        assert.equal(sharedDelete.deleted, 2, "shared pattern delete removes matching shared facts only");
+        const sessionDelete = await store.deleteFacts({ keyPattern: "batch/hz/*", scope: "session", sessionId: "S-BATCH" });
+        assert.equal(sessionDelete.deleted, 1, "session pattern delete removes owned session facts");
+    });
+
     it("C6 crawl reset does not clear an existing embedding (independent states)", async () => {
         await store.storeFact({ key: "arch/c6", value: { text: "embed me" }, shared: true });
         await pool.query(
-            `UPDATE "${schema}".facts SET embedding = $1::vector, embedded_at = now(), embedding_model = 'seeded-4'
+            `UPDATE "${schema}".facts SET embedding = $1::vector, embedding_model = 'seeded-4'
              WHERE scope_key = 'shared:arch/c6'`, ["[1,0,0,0]"]);
         await store.storeFact({ key: "arch/c6", value: { text: "embed me EDITED" }, shared: true });
         const { rows } = await pool.query(
@@ -91,27 +107,15 @@ describe.skipIf(!HAS_DB)("crawl tracking (C1–C7)", () => {
         assert.deepEqual(await store.markFactsCrawled([]), { marked: 0, skipped: 0 });
     });
 
-    it("embedding failure diagnostics report current-content failures and edits clear them", async () => {
+    it("content edits clear internal embedding failure state", async () => {
         await store.storeFact({ key: "arch/embed-fail", value: { text: "oversized source placeholder" }, shared: true });
         await pool.query(
             `UPDATE "${schema}".facts
                 SET last_embed_error = 1001,
-                    last_embed_error_at = now(),
                     last_crawled_at = now()
               WHERE scope_key = 'shared:arch/embed-fail'`);
 
-        const failures = await store.readEmbeddingFailures({ namespace: "arch", limit: 10 });
-        assert.ok(failures.stats.some((s) => s.code === 1001 && s.label === "input_too_large" && s.count >= 1),
-            "stats include input_too_large");
-        const failed = failures.facts.find((f) => f.scopeKey === "shared:arch/embed-fail");
-        assert.ok(failed, "failed fact sample returned");
-        assert.equal(failed.lastEmbedError, 1001);
-        assert.equal(failed.lastEmbedErrorLabel, "input_too_large");
-
         await store.storeFact({ key: "arch/embed-fail", value: { text: "rewritten shorter source" }, shared: true });
-        const after = await store.readEmbeddingFailures({ namespace: "arch", limit: 10 });
-        assert.ok(!after.facts.some((f) => f.scopeKey === "shared:arch/embed-fail"),
-            "content rewrite clears failure and removes it from diagnostics");
         const { rows } = await pool.query(
             `SELECT last_embed_error, last_crawled_at FROM "${schema}".facts WHERE scope_key = 'shared:arch/embed-fail'`);
         assert.equal(rows[0].last_embed_error, null, "rewrite clears last_embed_error");

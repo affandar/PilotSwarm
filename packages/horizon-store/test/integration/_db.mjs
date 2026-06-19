@@ -97,10 +97,10 @@ export async function makeStore({ tag = "t", embeddingDim = 4, embedding = undef
  *  factStore and graphStore independently (07 D2). close() ends both pools. */
 function combinedStore(factStore, graphStore) {
     const FACT = [
-        "storeFact", "readFacts", "deleteFact", "deleteSessionFactsForSession",
+        "storeFact", "storeFacts", "readFacts", "deleteFact", "deleteFacts", "deleteSessionFactsForSession",
         "getSessionFactsStats", "getFactsStatsForSessions", "getSharedFactsStats",
         "searchFacts", "similarFacts", "readUncrawledFacts", "markFactsCrawled",
-        "readEmbeddingFailures", "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
+        "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
     ];
     const GRAPH = [
         "searchGraphNodes", "searchGraphEdges", "graphNeighbourhood",
@@ -192,7 +192,7 @@ export async function seedFX(store, schema, pool) {
     for (const f of FX) {
         await pool.query(
             `UPDATE "${schema}".facts
-               SET embedding = $1::vector, embedded_at = now(),
+               SET embedding = $1::vector,
                    embedding_model = $2
              WHERE scope_key = $3`,
             [`[${f.vec.join(",")}]`, FX_MODEL, fxScopeKey(f)],

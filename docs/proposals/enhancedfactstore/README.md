@@ -29,6 +29,7 @@ open knowledge graph (`GraphStore`). First providers: **HorizonDB**
 | 06 | [Provider Test Plan](./06-provider-test-plan.md) | Executable plan for 04: no-mocks/full-validation ground rule, suite order, live-HorizonDB lifecycle, migration tests, real-endpoint embedder validation, and the Copilot-SDK harvester scenarios on the pgsql-hackers corpus. |
 | 07 | [PilotSwarm Integration Plan](./07-pilotswarm-integration.md) | Execution plan for landing the contract in `packages/sdk`: dependency inversion (SDK owns `EnhancedFactStore`, HorizonDB implements it), provider injection, capability-gated tools, phased PR sequence (P0–P8, where **P0 — the incubator provider split — is done**), risks/rollback, and open decisions. |
 | 08 | [Embedding Handling](./08-embedding-handling.md) | Canonical minimal embedding/crawl state model: no content hashes, two independent pg_durable loops, and `last_embed_error` retry/error semantics. |
+| 09 | [External API and Schema Delta](./09-api-schema-delta.md) | External-facing store/tool/schema changes relative to `main`, rationale, and minimalist-criteria assessment. |
 
 ## Phasing
 

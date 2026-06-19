@@ -15,7 +15,7 @@ function readRepoFile(relativePath) {
 }
 
 describe("starter docker model config", () => {
-    it("keeps the local starter catalog on the gpt-5.4 family", () => {
+    it("keeps the local starter catalog on the current GHCP model family", () => {
         const config = loadStarterModelConfig();
         const provider = config.providers.find((entry) => entry.id === "github-copilot");
         expect(provider).toBeTruthy();
@@ -27,9 +27,11 @@ describe("starter docker model config", () => {
             "claude-sonnet-4.6",
             "gpt-5.4",
             "gpt-5.4-mini",
-            "claude-opus-4.7",
+            "claude-opus-4.8",
             "claude-opus-4.6",
+            "gpt-5.5",
         ]);
+        expect(names).not.toContain("claude-opus-4.7");
         expect(names).not.toContain("gpt-5-mini");
         expect(names).not.toContain("gpt-5.4-nano");
         expect(names).not.toContain("gpt-5.1");

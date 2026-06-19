@@ -91,8 +91,8 @@ One row per email. Defined in
 | `search_text` (generated) | `key` + full `value::text`, concatenated — the lexical text |
 | `last_crawled_at` | `NULL` ⇒ pending crawl. **This is the harvester work queue.** |
 | `embedding vector(dim)` | `NULL` until the embedder fills it |
-| `embedded_at`, `embedding_model` | embedding provenance and model gate |
-| `last_embed_error`, `last_embed_error_at`, `embed_retry_at` | minimal embedder failure/retry state |
+| `embedding_model` | model gate; rows from another model are pending re-embed |
+| `last_embed_error` | `NULL` = eligible/healthy, `-1` = internal single-row retry marker, `> 0` = terminal failure |
 | `shared`, `agent_id`, `session_id`, `tags` | access-control + provenance (PilotSwarm parity) |
 
 Two partial indexes back the two work queues:
@@ -225,16 +225,23 @@ by [`eval/validate-embedding-gate.mjs`](../eval/validate-embedding-gate.mjs).
 
 ### III.4 The embedder
 
-An "eternal" `pg_durable` workflow — one durable instance per schema
-(`hz-embed-cron:<schema>`) — batch-embeds via a single HTTP call per batch
-(array-input API), guarded so a fact edited mid-flight stays pending. If a batch
-fails, its rows are marked with `embed_retry_at` and retried one at a time; a row
-that still fails gets `last_embed_error` set, is stamped crawled for
-embedded-only harvesters, and stops blocking later rows until its content
-changes. It is
-started idempotently under an advisory lock on `initialize()`. Details in
-[`migrations/0005_embedder_workflow.sql`](../migrations/0005_embedder_workflow.sql)
-and [`migrations/0008_embedder_failure_recovery.sql`](../migrations/0008_embedder_failure_recovery.sql).
+Two independent `pg_durable` workflows run per schema:
+
+- `hz-embed-batch-cron:<schema>` embeds ordinary pending rows in array batches.
+- `hz-embed-retry-cron:<schema>` embeds `last_embed_error = -1` rows one at a time.
+
+The batch loop ignores retry and terminal-failure rows. If a batch fails, the
+selected still-current rows are marked `last_embed_error = -1`; the retry loop
+then either writes the embedding or classifies the row with a positive terminal
+error code. Inputs that are clearly oversized are classified deterministically in
+the database: the batch loop routes the selected batch to retry, and the retry
+loop records `1001 input_too_large` without a doomed HTTP call.
+
+The embedder never reads or writes `last_crawled_at`; graph-crawl state remains
+owned by the crawler. Details live in
+[`migrations/0010_minimal_two_loop_embedder.sql`](../migrations/0010_minimal_two_loop_embedder.sql)
+and the canonical proposal note
+[`08-embedding-handling.md`](../../../docs/proposals/enhancedfactstore/08-embedding-handling.md).
 
 ### III.5 Reliability
 

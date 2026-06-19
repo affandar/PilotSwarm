@@ -12,8 +12,10 @@ export type {
     // base facts
     FactRecord,
     StoreFactInput,
+    StoredFactResult,
     ReadFactsQuery,
     DeleteFactInput,
+    DeleteFactsInput,
     FactsNamespace,
     FactsStatsRow,
     AccessContext,
@@ -29,11 +31,7 @@ export type {
     ScoredFact,
     SearchResult,
     EmbedderStatus,
-    EmbedFailureCode,
-    EmbedFailureStatsRow,
-    FailedEmbeddingFact,
-    ReadEmbeddingFailuresOpts,
-    ReadEmbeddingFailuresResult,
+    EmbedderLoopStatus,
     EmbeddingEndpointConfig,
     // graph
     GraphStore,

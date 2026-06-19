@@ -111,21 +111,23 @@ The schema name defaults to `pilotswarm_facts` and is configurable via `factsSch
 
 ### `store_fact`
 
-Stores or upserts a fact. Session-scoped by default.
+Stores or upserts one fact, or a batch of facts. Session-scoped by default.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `key` | string | yes | Fact identifier (e.g., `baseline/tps`) |
-| `value` | any | yes | JSON-serializable value |
+| `key` | string | yes, unless `facts` is set | Fact identifier (e.g., `baseline/tps`) |
+| `value` | any | yes, unless `facts` is set | JSON-serializable value |
 | `tags` | string[] | no | Tags for filtering |
 | `shared` | boolean | no | `true` for cross-session shared fact (default: `false`) |
+| `facts` | `{ key, value, tags?, shared? }[]` | no | Batch ingestion form. When present, top-level `key` / `value` are ignored. |
 
 **Behavior:**
 - Uses `ON CONFLICT (scope_key) DO UPDATE` — calling `store_fact` with the same key overwrites the previous value.
 - The session ID and agent ID are automatically populated from the calling context.
 - Returns `{ key, shared, scope: "shared" | "session", stored: true }`.
+- Batch form returns `{ stored, facts: [...] }` with the same per-fact result shape.
 
 ### `read_facts`
 
@@ -159,7 +161,7 @@ Reads facts visible to the calling session.
 
 ### `delete_fact`
 
-Deletes a fact by key.
+Deletes a fact by exact key, or deletes matching keys when explicitly requested.
 
 **Parameters:**
 
@@ -167,8 +169,12 @@ Deletes a fact by key.
 |-----------|------|----------|-------------|
 | `key` | string | yes | Fact key to delete |
 | `shared` | boolean | no | `true` to delete the shared fact; `false` (default) to delete the caller's session-scoped fact |
+| `pattern` | boolean | no | Must be `true` to treat `key` as a pattern. Supports `*` globs and SQL `%` wildcards. |
+| `scope` | string | no | Pattern-delete scope: `session`, `shared`, or `all`. `all` is Facts Manager only. |
 
 **Returns:** `{ key, shared, deleted: boolean }`.
+
+For pattern deletes, returns `{ keyPattern, scope, deleted }`. Pattern deletes are opt-in so a key like `a/b/*` is literal unless `pattern=true`. Ordinary task agents can only delete facts they own; the Facts Manager can use `scope="all"` for shared and session cleanup.
 
 ## Scoping and Lifecycle
 
@@ -257,15 +263,13 @@ is an `EnhancedFactStore` **and** `capabilities.search` is true. The embedder
 only affects semantic ranking and prompt wording — with `embedder: false`,
 search still registers and runs in lexical/hybrid mode.
 
-When a batch embed fails, the durable embedder marks the batch rows with
-`embed_retry_at` and retries them one by one before selecting fresh batch work.
-When a single row still cannot be embedded, it records a numeric
-`last_embed_error` on that fact, stamps the row as crawled for embedded-only
-harvesters, and continues with later rows. A subsequent content change clears
-`embed_retry_at` and `last_embed_error`, putting the row back into normal
-batched embedding. The Facts Manager can inspect failures with
-`manage_embedder(action="failures")`.
-Known codes are:
+When a batch embed fails, the durable embedder marks those rows with its internal
+retry marker and retries them one by one before selecting fresh batch work. When
+a single row still cannot be embedded, it records a numeric internal
+`last_embed_error` on that fact and continues with later rows. A subsequent
+content change clears the error, putting the row back into normal batched
+embedding. Store users do not need to read this field; it is embedder state.
+Known internal codes are:
 
 | Code | Meaning |
 |------|---------|

@@ -162,6 +162,36 @@ graph node) and want the raw fact rows. Also the way to read **lineage**:
 > To rank a lineage, call `facts_read({ scope: "descendants" })` then pass those
 > keys/topic through `facts_search`. There is no separate “lineage” tool.
 
+### `store_fact`
+
+**Purpose.** Store one fact or ingest many facts in one call.
+
+| Param | Type | Req | Meaning |
+|-------|------|-----|---------|
+| `key` | string | ✓ unless `facts` | Single fact key. |
+| `value` | any | ✓ unless `facts` | Single JSON-serializable fact value. |
+| `tags` | string[] | | Tags for the single fact. |
+| `shared` | boolean | | Store the single fact in shared scope. |
+| `facts` | `{ key, value, tags?, shared? }[]` | | Batch ingestion form; top-level `key` / `value` are ignored. |
+
+Batch form returns `{ stored, facts }`. Each fact follows the same namespace and
+ownership gates as a single write.
+
+### `delete_fact`
+
+**Purpose.** Delete one exact fact, or explicitly delete a scoped key pattern.
+
+| Param | Type | Req | Meaning |
+|-------|------|-----|---------|
+| `key` | string | ✓ | Exact key, unless `pattern=true`. |
+| `shared` | boolean | | Exact delete targets shared scope when true. |
+| `pattern` | boolean | | Must be true to treat `key` as a glob / SQL pattern. |
+| `scope` | `"session" \| "shared" \| "all"` | | Pattern delete scope. `all` is Facts Manager only. |
+
+Pattern deletes are never implicit: `a/b/*` is an exact key unless `pattern=true`.
+Task agents can only delete their own session facts or permitted shared facts;
+Facts Manager can use `scope="all"` for cleanup across shared and session facts.
+
 ---
 
 ## 2. Crawl-queue tools (harvester)

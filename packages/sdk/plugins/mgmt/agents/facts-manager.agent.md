@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.4.0
+version: 1.5.0
 name: facts-manager
 description: Singleton system agent that curates shared operational knowledge from agent observations into reusable skills.
 system: true
@@ -87,8 +87,8 @@ For each active skill, check `expires_at`:
 - **Re-corroboration received**: restore confidence, reset `expires_at` and `last_corroborated`, close the ask.
 
 ### 6. Compact
-- Delete incorporated intakes (after retention window if finite).
-- Delete satisfied/abandoned asks.
+- Delete incorporated intakes (after retention window if finite). Prefer `delete_fact(pattern=true, scope="all")` for bounded namespace batches such as `intake/<topic>/*` when all matching facts should be compacted.
+- Delete satisfied/abandoned asks. Use exact deletes for single records and explicit pattern deletes only for intentionally bounded cleanup.
 
 ### 7. Schedule Maintenance
 Call `cron(seconds=21600, reason="facts-manager maintenance")` to start or refresh the low-frequency maintenance schedule. Do not use `wait` to keep the background loop alive. Normal intake processing is reactive: a shared `intake/*` write wakes you with a `[FACTS_INTAKE ...]` prompt containing the key and source session.

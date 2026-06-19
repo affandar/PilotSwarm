@@ -198,6 +198,11 @@ interface CrawledFactStamp { scopeKey: string; }
 // separate `GraphStore`. Shown here for locality with the rest of the harvester
 // surface.
 interface FactStore {
+  storeFact(input: StoreFactInput): Promise<StoredFactResult>;
+  storeFacts(inputs: StoreFactInput[]): Promise<{ stored: number; facts: StoredFactResult[] }>;
+  deleteFact(input: DeleteFactInput): Promise<{ key: string; shared: boolean; deleted: boolean }>;
+  deleteFacts(input: DeleteFactsInput): Promise<{ deleted: number; keyPattern: string; scope: "session" | "shared" | "all" }>;
+
   /**
    * Facts not yet incorporated into the graph (last_crawled_at IS NULL).
    * PRIVILEGED: the crawler is a trusted role; this read spans ALL facts
@@ -215,6 +220,11 @@ interface FactStore {
   markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }>;
 }
 ```
+
+`storeFacts` is the bulk ingestion path for large harvests. `deleteFacts` is an
+explicit pattern-delete path (`*` globs normalize to SQL `%`) and must be scoped:
+ordinary agents use `session` or `shared`; Facts Manager can use `all` for
+privileged cleanup.
 
 - `last_crawled_at` resets to `NULL` automatically on any `storeFact` content
   change (DB trigger on `key` / `value`). Pending-crawl is

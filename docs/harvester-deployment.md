@@ -236,12 +236,11 @@ to lexical — never an error. You can add the embedder later without code chang
 in-DB loop backfills embeddings for existing facts.
 
 **Embedding failures do not block the queue.** If the array batch fails, the
-embedder marks those facts with `embed_retry_at` and retries them one row at a
-time. A row that still fails is marked with `last_embed_error`, stamped as
-crawled for embedded-only harvesters, and skipped until its content changes. The
-Facts Manager can run `manage_embedder(action="failures", namespace=...)` to see
-counts and samples; rewriting or summarizing a failed fact with `store_fact`
-clears the error and requeues it for normal batched embedding.
+embedder marks those facts with its internal retry marker and retries them one
+row at a time. A row that still fails gets an internal `last_embed_error` and is
+skipped by the embedder until its content changes. Rewriting or summarizing a
+failed fact with `store_fact` clears the internal error and requeues it for
+normal batched embedding.
 
 **Watch crawl-backlog health.** `graph_stats` reports graph size and the uncrawled
 backlog. A backlog that only grows means the harvester is not keeping up — increase its

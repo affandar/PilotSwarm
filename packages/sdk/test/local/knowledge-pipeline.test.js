@@ -162,6 +162,11 @@ async function testTaskAgentCannotDeleteSkills(env) {
             { sessionId: "session-a" },
         );
         assert(result.error, "Task agent should NOT be able to delete from skills/");
+        const wildcard = await deleteFact.handler(
+            { key: "skills/terraform/*", pattern: true, scope: "shared" },
+            { sessionId: "session-a" },
+        );
+        assert(wildcard.error, "Task agent should NOT be able to pattern-delete from skills/");
         console.log("  ✓ Task agent blocked from deleting skills/");
     } finally {
         await factStore.close();
@@ -254,6 +259,22 @@ async function testFactsManagerCanDeleteAll(env) {
             { sessionId: "session-fm" },
         );
         assert(!r2.error, "FM should delete from skills/");
+
+        await storeFact.handler(
+            {
+                facts: [
+                    { key: "skills/test/batch-a", value: { data: "a" }, shared: true },
+                    { key: "skills/test/batch-b", value: { data: "b" }, shared: true },
+                    { key: "intake/test/batch-c", value: { data: "c" }, shared: true },
+                ],
+            },
+            { sessionId: "session-fm", agentId: "facts-manager" },
+        );
+        const r3 = await deleteFact.handler(
+            { key: "skills/test/batch-*", pattern: true, scope: "all" },
+            { sessionId: "session-fm" },
+        );
+        assertEqual(r3.deleted, 2, "FM should pattern-delete matching facts with scope=all");
 
         console.log("  ✓ Facts Manager can delete from all namespaces");
     } finally {

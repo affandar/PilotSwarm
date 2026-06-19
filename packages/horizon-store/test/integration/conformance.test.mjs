@@ -54,9 +54,9 @@ test("numbered-migration discipline: NNNN_name.sql, contiguous from 0001", () =>
 test("interface coverage: every public EnhancedFactStore/GraphInterface method is exercised by some suite", () => {
     const METHODS = [
         "storeFact", "readFacts", "deleteFact", "deleteSessionFactsForSession",
+        "storeFacts", "deleteFacts",
         "getSessionFactsStats", "getFactsStatsForSessions", "getSharedFactsStats",
         "searchFacts", "similarFacts", "readUncrawledFacts", "markFactsCrawled",
-        "readEmbeddingFailures",
         "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
         "searchGraphNodes", "searchGraphEdges", "graphNeighbourhood",
         "upsertGraphNode", "upsertGraphEdge", "mergeGraphNodes",

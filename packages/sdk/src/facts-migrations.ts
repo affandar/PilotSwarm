@@ -49,6 +49,11 @@ export function FACTS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "minimal_crawl_queue",
             sql: migration_0007_minimal_crawl_queue(schema),
         },
+        {
+            version: "0008",
+            name: "batch_store_pattern_delete",
+            sql: migration_0008_batch_store_pattern_delete(schema),
+        },
     ];
 }
 
@@ -744,5 +749,105 @@ LANGUAGE sql AS $$
     SELECT (SELECT count(*) FROM upd)::int AS marked,
            ((SELECT count(*) FROM stamps) - (SELECT count(*) FROM upd))::int AS skipped;
 $$;
+`;
+}
+
+function migration_0008_batch_store_pattern_delete(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0008_batch_store_pattern_delete: batch fact ingestion and explicit pattern
+-- deletes for the base FactStore. Stored procedures stay the only write/delete
+-- data-access surface.
+
+CREATE OR REPLACE FUNCTION ${s}.facts_store_facts(p_facts JSONB)
+RETURNS INT
+LANGUAGE sql AS $$
+    WITH input AS (
+        SELECT
+            e->>'scopeKey' AS scope_key,
+            e->>'key' AS key,
+            e->'value' AS value,
+            e->>'agentId' AS agent_id,
+            e->>'sessionId' AS session_id,
+            coalesce((e->>'shared')::boolean, false) AS shared,
+            coalesce((e->>'transient')::boolean, true) AS transient,
+            coalesce(ARRAY(SELECT jsonb_array_elements_text(e->'tags')), '{}'::text[]) AS tags
+        FROM jsonb_array_elements(p_facts) e
+    ), upserted AS (
+        INSERT INTO ${t}
+            (scope_key, key, value, agent_id, session_id, shared, transient, tags)
+        SELECT scope_key, key, value, agent_id, session_id, shared, transient, tags
+        FROM input
+        ON CONFLICT (scope_key) DO UPDATE SET
+            value      = EXCLUDED.value,
+            agent_id   = EXCLUDED.agent_id,
+            session_id = EXCLUDED.session_id,
+            shared     = EXCLUDED.shared,
+            transient  = EXCLUDED.transient,
+            tags       = EXCLUDED.tags,
+            updated_at = now()
+        RETURNING 1
+    )
+    SELECT count(*)::int FROM upserted;
+$$;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_store_fact(
+    p_scope_key  TEXT,
+    p_key        TEXT,
+    p_value      JSONB,
+    p_agent_id   TEXT,
+    p_session_id TEXT,
+    p_shared     BOOLEAN,
+    p_transient  BOOLEAN,
+    p_tags       TEXT[]
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM ${s}.facts_store_facts(jsonb_build_array(jsonb_build_object(
+        'scopeKey', p_scope_key,
+        'key', p_key,
+        'value', p_value,
+        'agentId', p_agent_id,
+        'sessionId', p_session_id,
+        'shared', p_shared,
+        'transient', p_transient,
+        'tags', coalesce(p_tags, '{}'::text[])
+    )));
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_delete_facts(
+    p_key_pattern TEXT,
+    p_scope       TEXT,
+    p_session_id  TEXT,
+    p_unrestricted BOOLEAN DEFAULT FALSE
+) RETURNS BIGINT AS $$
+DECLARE
+    deleted_count BIGINT;
+BEGIN
+    IF p_key_pattern IS NULL OR p_key_pattern = '' THEN
+        RAISE EXCEPTION 'facts_delete_facts requires a key pattern';
+    END IF;
+    IF p_scope NOT IN ('session', 'shared', 'all') THEN
+        RAISE EXCEPTION 'facts_delete_facts scope must be session, shared, or all';
+    END IF;
+    IF p_scope = 'all' AND p_unrestricted IS DISTINCT FROM TRUE THEN
+        RAISE EXCEPTION 'facts_delete_facts scope=all requires unrestricted=true';
+    END IF;
+    IF p_scope = 'session' AND p_session_id IS NULL THEN
+        RAISE EXCEPTION 'facts_delete_facts scope=session requires sessionId';
+    END IF;
+
+    DELETE FROM ${t} f
+    WHERE f.key LIKE p_key_pattern
+      AND (
+        (p_scope = 'shared' AND f.shared = TRUE)
+        OR (p_scope = 'session' AND f.shared = FALSE AND f.session_id = p_session_id)
+        OR (p_scope = 'all' AND p_unrestricted = TRUE)
+      );
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
 `;
 }
