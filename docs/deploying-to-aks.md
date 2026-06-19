@@ -265,16 +265,26 @@ Gateway P2S`).
 #### Distributing the VPN client profile
 
 After the first deploy completes, hand operators the OpenVPN client
-profile via either path:
+profile via one of these paths (in order of preference):
 
+- **Helper script (recommended)**:
+  `pwsh -File deploy/scripts/auth/Get-VpnClientProfile.ps1 -EnvName <stamp>`.
+  Wraps the `az network vnet-gateway vpn-client generate` call, downloads
+  the signed zip, and extracts it under the gitignored
+  `deploy/envs/local/<stamp>/vpn-client/` folder. See the
+  `pilotswarm-vpn-client-profile` skill for full usage.
 - **Azure portal**: `Resource group → <gateway-name> → Point-to-site
   configuration → Download VPN client`.
-- **CLI**: `az network vnet-gateway vpn-client generate-url
-  --resource-group <rg> --name <gateway-name>`.
+- **CLI**: `az network vnet-gateway vpn-client generate
+  --resource-group <rg> --name <gateway-name>
+  --authentication-method EAPTLS`.
 
-Both emit a `.zip` that imports directly into the Azure VPN Client app
-(Windows / macOS / iOS / Android). The profile embeds the AAD audience
-and the gateway public IP — re-issue it if you rotate `VPN_AAD_AUDIENCE`.
+All three emit the same `.zip` that imports directly into the Azure VPN
+Client app (Windows / macOS / iOS / Android). The profile embeds the
+AAD audience and the gateway public IP — re-issue it (`-Force` on the
+helper script) if you rotate `VPN_AAD_AUDIENCE`. The XML carries no
+per-user credentials; end users authenticate with their own Entra ID
+at connect time.
 
 #### WAF guard rules (auto-seeded at priorities 90 / 91 / 92)
 

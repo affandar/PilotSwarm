@@ -434,11 +434,18 @@ block in `new-env.mjs` re-prints these requirements when `VPN_GATEWAY_ENABLED=tr
 #### Distributing the VPN client profile
 
 After the first deploy completes, hand operators the OpenVPN client
-profile via either the Azure portal — `Resource group → <gateway-name> →
-Point-to-site configuration → Download VPN client` — or the CLI
-`az network vnet-gateway vpn-client generate-url --resource-group <rg>
---name <gateway-name>`. Both paths emit a `.zip` that imports directly
-into the Azure VPN Client app (Windows / macOS / iOS / Android).
+profile. Preferred path is the repo helper:
+`pwsh -File deploy/scripts/auth/Get-VpnClientProfile.ps1 -EnvName <stamp>`
+(see the `pilotswarm-vpn-client-profile` skill). It wraps
+`az network vnet-gateway vpn-client generate --authentication-method EAPTLS`,
+downloads the signed zip, and extracts it under the gitignored
+`deploy/envs/local/<stamp>/vpn-client/` folder. As fallbacks: the Azure
+portal — `Resource group → <gateway-name> → Point-to-site configuration →
+Download VPN client` — or the raw CLI `az network vnet-gateway vpn-client
+generate --resource-group <rg> --name <gateway-name>
+--authentication-method EAPTLS`. All three emit the same `.zip` that
+imports directly into the Azure VPN Client app (Windows / macOS / iOS /
+Android).
 
 ## Step 5 — Deploy
 

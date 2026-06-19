@@ -54,6 +54,7 @@ If after those cues it's still ambiguous, ask the user one clarifying question b
 - `.github/skills/pilotswarm-new-env-deploy/SKILL.md` — for any npm new-env work (fresh or rollout)
 - `.github/skills/pilotswarm-portal-app-reg/SKILL.md` — Entra app registration for portal auth (optional new-env pre-step)
 - `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md` — assign / revoke / list app-role assignments (mandatory follow-up to app-reg when posture is roles-driven)
+- `.github/skills/pilotswarm-vpn-client-profile/SKILL.md` — download the Azure VPN client profile (`azurevpnconfig.xml`) for VPN-enabled stamps; offer to run automatically at the end of a first successful VPN-enabled deploy
 - `.github/copilot-instructions.md` — source of truth for DO NOT WIPE, repo-scope boundary, sensitive-files rule
 - `deploy/scripts/README.md` — canonical orchestrator reference (services, steps, EDGE_MODE × TLS_SOURCE, troubleshooting)
 - `deploy/scripts/auth/README.md` — portal app-registration scripts
