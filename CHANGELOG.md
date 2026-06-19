@@ -1,5 +1,91 @@
 # Changelog
 
+## 0.2.0 — 2026-06-19
+
+### Deploy — Azure VPN Gateway P2S Ingress (Entra ID auth)
+
+Adds an optional Azure VPN Gateway Point-to-Site ingress to the node-based
+deployment orchestrator. Coexists with the existing AFD edge mode as a
+"trusted-bypass" path: off-network employees with valid Entra ID credentials
+can reach the portal without being caught by AFD WAF service-tag allow-lists.
+
+**Bicep / infra (Phase 1)**
+- New `deploy/services/base-infra/bicep/vpn-gateway.bicep` — VPN Gateway with
+  Microsoft Entra ID P2S auth, supporting both the current
+  (`c632b3df-…`) and legacy (`41b23e61-…`) Azure VPN Client audience GUIDs.
+- `frontDoorId` threading in `global-infra` so the AppGw WAF can distinguish
+  AFD vs. VPN traffic at the custom-rules level.
+- New `deploy/services/base-infra/bicep/dns-resolver.bicep` — Azure Private DNS
+  Resolver inbound endpoint (`10.20.19.4`) on a dedicated subnet
+  (`10.20.19.0/28`). The VNet carries the resolver IP via `dhcpOptions.dnsServers`
+  so P2S clients inherit it automatically at connect time — zero-touch DNS for
+  end users. Cost delta: **+$170/mo**; total VPN+resolver footprint **+$450/mo**.
+- `private-dns-portal.bicep` now threads `PORTAL_RESOURCE_NAME` so the private
+  DNS A record label matches the AppGw HTTPS listener / AKV cert subject
+  (fixes a `NET::ERR_CERT_COMMON_NAME_INVALID` regression on AFD+VPN stamps).
+
+**Orchestrator wiring (Phase 2)**
+- `deploy.mjs` env threading for `VPN_GATEWAY_ENABLED`, `VPN_CLIENT_ADDRESS_POOL`,
+  `PORTAL_HOSTNAME`, `PORTAL_RESOURCE_NAME`, and `VPN_GATEWAY_ID`.
+- AppGw WAF custom-rules file wiring and `tenantId` resolution via env threading
+  (no implicit `az account` dependency in the hot path).
+- `resolveAppgwWafCustomRulesFile()` now runs on the deploy path; `deploy-bicep.mjs`
+  parses and structurally validates `APPGW_WAF_CUSTOM_RULES_FILE` (fail-closed,
+  named error) before invoking `az`.
+- VPN combo-error hints in `overlay-contracts.mjs` point to the canonical
+  `docs/deploying-to-aks.md`.
+
+**Scaffolder UX (Phase 3)**
+- `new-env.mjs` VPN UX prompts: `VPN_GATEWAY_ENABLED`, address-pool CIDR,
+  `VPN_GATEWAY_AUDIENCE_GUID` (default or legacy), and CA policy guidance.
+- Pool-overlap validation on both interactive and non-interactive paths.
+- Latent `foundryEnabled` truthy-string bug fixed.
+
+**Docs (Phase 4)**
+- `docs/deploying-to-aks.md`: AFD+VPN row in topology matrix; new
+  "Optional: VPN Gateway P2S" section covering architecture, preconditions,
+  env vars, CA policy, client-profile distribution, the auto-seeded WAF guards
+  (rules 90/91/92), and the `APPGW_WAF_CUSTOM_RULES_FILE` operator hook.
+- `.github/skills/pilotswarm-new-env-deploy/SKILL.md` and
+  `.github/skills/pilotswarm-aks-deploy/SKILL.md` updated with topology tables,
+  VPN combo-error matrix, and 45+ min / ~$140/mo cost notes.
+
+**Portal app registration — dual redirect URIs**
+- `Setup-PortalAuth.ps1` accepts `-RedirectUri` as `[string[]]`.
+- `Resolve-RedirectUriFromEnv` returns both the AFD endpoint AND
+  `PORTAL_HOSTNAME` on AFD+VPN stamps, registered idempotently.
+- `.github/skills/pilotswarm-portal-app-reg/SKILL.md` documents the dual-URI
+  behavior.
+
+**VPN client-profile helper**
+- New `deploy/scripts/auth/Get-VpnClientProfile.ps1` — wraps
+  `az network vnet-gateway vpn-client generate --authentication-method EAPTLS`,
+  downloads the gateway-issued zip, and extracts `azurevpnconfig.xml` under
+  `deploy/envs/local/<stamp>/vpn-client/` (gitignored).
+- New `.github/skills/pilotswarm-vpn-client-profile/SKILL.md` with usage
+  guidance, sensitivity notes, and end-user import instructions.
+- `pilotswarm-npm-deployer` agent updated to offer the helper automatically
+  after a successful VPN-enabled deploy.
+- "Distributing the VPN client profile" sections in docs and the deploy skill
+  now point at the helper (corrects stale `vpn-client generate-url` reference
+  to `vpn-client generate --authentication-method EAPTLS`).
+
+**VPN access management — proposal doc**
+- `docs/proposals/vpn-access-management.md`: forward-looking proposal to fold
+  VPN access management into the deployer-owned model (per-stamp custom audience
+  app, `Setup-VpnAuth.ps1`, `Set-VpnAccess.ps1`, optional `-MirrorToVpn` flag).
+  Proposal only — no code changes.
+
+### Tests
+
+**248 / 248** deploy-scripts tests pass (was 238 before Phase 2/3 guards; +2 new
+regression guards for VPN combo-error pointer and AppGw WAF rules wiring). The
+live SDK integration suite requires a PostgreSQL + Copilot token environment and
+was last run prior to merging PR #53 at 238 / 238 pass. No SDK source changed
+in this release.
+
+---
+
 ## 0.1.35 — 2026-05-29
 
 ### SDK — Hotfix: declare `@opentelemetry/api` as a dependency
