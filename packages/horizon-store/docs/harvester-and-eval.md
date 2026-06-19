@@ -88,20 +88,21 @@ One row per email. Defined in
 |---|---|
 | `scope_key` | **the join key** — stable unique id used everywhere (graph anchors, reader grounding) |
 | `key`, `value` (JSONB) | PilotSwarm-parity fact payload; the email lives in `value` (`subject`/`body`/…) |
-| `search_text` (generated) | `key` + conventional value fields, concatenated — the lexical/embeddable text |
-| `content_hash` | trigger-maintained; **changes ⇒ re-crawl + re-embed** |
+| `search_text` (generated) | `key` + full `value::text`, concatenated — the lexical text |
 | `last_crawled_at` | `NULL` ⇒ pending crawl. **This is the harvester work queue.** |
 | `embedding vector(dim)` | `NULL` until the embedder fills it |
+| `embedded_at`, `embedding_model` | embedding provenance and model gate |
+| `last_embed_error`, `last_embed_error_at`, `embed_retry_at` | minimal embedder failure/retry state |
 | `shared`, `agent_id`, `session_id`, `tags` | access-control + provenance (PilotSwarm parity) |
 
 Two partial indexes back the two work queues:
 `idx_facts_uncrawled WHERE last_crawled_at IS NULL` and
 `idx_facts_needs_embedding WHERE embedding IS NULL`.
 
-A **write-resets-pending-state** trigger recomputes `content_hash` from the
-embeddable content; when it changes it sets `last_crawled_at → NULL` (re-crawl)
-and leaves `last_embedded_hash` stale (re-embed). Identical-content writes change
-nothing — the basis for replay-immunity (Part VI).
+A **write-resets-pending-state** trigger watches `key` / `value`; when content
+changes it sets `last_crawled_at → NULL`, clears the stored embedding/model, and
+clears embed retry/error state. Identical-content writes change nothing — the
+basis for replay-immunity (Part VI).
 
 ### II.2 The AGE graph
 
@@ -171,7 +172,7 @@ flowchart TD
     E --> F[graph_upsert_node per entity<br/>+ evidence scopeKey]
     F --> G[graph_upsert_edge per relationship<br/>resolved nodeKeys + predicate + evidence]
     G --> H[similarity refinement:<br/>facts_similar k=5 → cross-email edges]
-    H --> I[facts_mark_crawled<br/>scopeKey + contentHash]
+    H --> I[facts_mark_crawled<br/>scopeKey]
     I --> C
     C -->|count 0| Z[done]
 ```
@@ -226,9 +227,14 @@ by [`eval/validate-embedding-gate.mjs`](../eval/validate-embedding-gate.mjs).
 
 An "eternal" `pg_durable` workflow — one durable instance per schema
 (`hz-embed-cron:<schema>`) — batch-embeds via a single HTTP call per batch
-(array-input API), guarded so a fact edited mid-flight stays pending. It is
+(array-input API), guarded so a fact edited mid-flight stays pending. If a batch
+fails, its rows are marked with `embed_retry_at` and retried one at a time; a row
+that still fails gets `last_embed_error` set, is stamped crawled for
+embedded-only harvesters, and stops blocking later rows until its content
+changes. It is
 started idempotently under an advisory lock on `initialize()`. Details in
-[`migrations/0005_embedder_workflow.sql`](../migrations/0005_embedder_workflow.sql).
+[`migrations/0005_embedder_workflow.sql`](../migrations/0005_embedder_workflow.sql)
+and [`migrations/0008_embedder_failure_recovery.sql`](../migrations/0008_embedder_failure_recovery.sql).
 
 ### III.5 Reliability
 

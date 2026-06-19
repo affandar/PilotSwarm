@@ -64,6 +64,11 @@ export type {
     ScoredFact,
     SearchResult,
     EmbedderStatus,
+    EmbedFailureCode,
+    EmbedFailureStatsRow,
+    FailedEmbeddingFact,
+    ReadEmbeddingFailuresOpts,
+    ReadEmbeddingFailuresResult,
     EmbeddingEndpointConfig,
 } from "./facts-store.js";
 // Graph store contract (optional, separately injected — enhancedfactstore 07 D2)

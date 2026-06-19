@@ -131,10 +131,9 @@ flowchart LR
 |--------|---------|
 | `scope_key` | Canonical ACL scope key (`shared:<key>` / `session:<id>:<key>`). |
 | `key`, `value` | The KV fact. |
-| `content_hash` | Hash of embeddable content; drives re-embedding. |
 | `embedding` | `vector(dim)` — pgvector column. NULL until embedded. |
-| `last_embedded_hash` | Hash at last embed; `IS DISTINCT FROM content_hash` ⇒ pending. |
-| `embedded_at`, `embedding_model` | Provenance of the embedding. |
+| `embedding_model` | Model/deployment that produced the embedding. Model mismatch ⇒ pending. |
+| `last_embed_error` | `NULL` healthy/eligible, `-1` internal single-row retry, `> 0` terminal embedding failure. |
 | `last_crawled_at` | `timestamptz` NULL — when the fact was last incorporated into the graph. `NULL` ⇒ pending crawl. Reset to `NULL` on content change (trigger). |
 | ACL / tags / timestamps | As today. |
 
@@ -143,18 +142,18 @@ Lexical ranking: **BM25 via `pg_textsearch`** (a fail-fast precondition, same as
 `vector`/`age`/`pg_durable`).
 
 **Write-resets-pending-state (trigger).** A `BEFORE INSERT OR UPDATE` trigger
-recomputes `content_hash` from key/value; when it changes it (a) leaves
-`last_embedded_hash` stale so the embedder re-embeds, and (b) sets
-`last_crawled_at = NULL` so the harvester re-crawls. This makes `storeFact`
-(upsert/create/replace) reset crawl/embedding state with no per-proc bookkeeping.
+compares `key` / `value`; when content changes it clears `embedding`,
+`embedding_model`, and `last_embed_error`, and sets `last_crawled_at = NULL` so
+the harvester re-crawls. This makes `storeFact` (upsert/create/replace) reset
+crawl/embedding state with no per-proc bookkeeping.
 `readUncrawledFacts` selects `last_crawled_at IS NULL` across all scopes
-(privileged harvester read); `markFactsCrawled` stamps `now()` **only
-`WHERE content_hash` matches the hash the harvester read** — the receipt that
-closes the read→mark TOCTOU race (a mid-crawl edit keeps the fact queued).
+(privileged harvester read); `markFactsCrawled` stamps `now()` for `{ scopeKey }`
+receipts that are still queued. The embedder never reads or writes
+`last_crawled_at`.
 
-**Model is part of pending.** A row is pending when `embedding IS NULL OR
-last_embedded_hash IS DISTINCT FROM content_hash OR embedding_model IS DISTINCT
-FROM {embed_model}`. Rows embedded under another model are treated as
+**Model is part of pending.** A row is pending when `last_embed_error IS NULL`
+and (`embedding IS NULL OR embedding_model IS DISTINCT FROM {embed_model}`). Rows
+embedded under another model are treated as
 NULL-embedded everywhere (embedder re-embeds them; semantic kNN excludes them) —
 vectors from different models are not comparable. A model rotation is therefore
 a rolling re-embed, no manual reset; a `dim` change still needs a `vector(N)`
@@ -234,7 +233,7 @@ at result-assembly time:
 
 ## 3. Embedding generator
 
-### 3.1 Why a single eternal loop (not df-in-df)
+### 3.1 Why durable loops (not df-in-df)
 
 A naive design would schedule a plpgsql procedure that, **per fact**, starts a
 child `df.http` instance and blocks on `df.wait_for_completion` — a durable
@@ -251,8 +250,8 @@ is unnecessary because `df.http` bodies are **not** static.
 - **`$name`** — a step's result named with `|=>`, substituted at runtime
   (used for the dynamic batch body).
 
-So a single eternal loop can build a batch body in SQL and feed it straight into
-one `df.http` call. No nesting.
+So durable loops can build request bodies in SQL and feed them straight into
+`df.http` calls. No nesting.
 
 **Consequence — reconfiguration = restart.** Because `{var}` is frozen at
 `df.start`, an eternal loop can never pick up new config mid-run. The lifecycle
@@ -263,33 +262,42 @@ the new instance. (The rejected alternative — reading `df.getvar` per tick via
 `$cfg` step — works but adds a per-tick query and diverges from pg_durable's
 setvar-then-start pattern.)
 
-### 3.2 The single eternal loop
+### 3.2 Two independent durable loops
 
 ```mermaid
 flowchart TB
-  S(["df.start(loop, 'hz-embed-cron:schema')"]) --> L
-  subgraph L["df.loop (eternal)"]
+  S(["df.start(batch loop)<br/>df.start(retry loop)"]) --> B
+  S --> R
+  subgraph B["batch df.loop"]
     SL["df.sleep(intervalSeconds)"]
-    Q["SQL: select pending facts LIMIT {batch}<br/>(pending incl. embedding_model mismatch)<br/>build body = input[] + model;<br/>ids = int[], hashes = text[]  |=> 'batch'"]
+    Q["SQL: select pending facts LIMIT {batch}<br/>last_embed_error IS NULL<br/>embedding missing/model mismatch"]
     IF{"df.if_rows('batch')"}
-    H["df.http('{embed_url}','POST','$batch.body',<br/>headers w/ {embed_key})  |=> 'resp'"]
-    U["SQL: zip $resp.data[] WITH ORDINALITY<br/>↔ unnest($batch.ids, $batch.hashes) → UPDATE facts<br/>SET embedding,<br/>last_embedded_hash = batch.hash (select-time, NOT current content_hash),<br/>embedding_model = {embed_model}"]
-    BK["df.sleep(intervalSeconds)<br/>(nothing pending: back off)"]
+    H["df.http array request"]
+    U["success: UPDATE embedding + embedding_model<br/>failure: last_embed_error = -1"]
     SL --> Q --> IF
     IF -- rows --> H --> U
-    IF -- empty --> BK
+    IF -- empty --> SL
+  end
+  subgraph R["retry df.loop"]
+    RS["df.sleep(intervalSeconds)"]
+    RQ["SQL: select one row<br/>last_embed_error = -1"]
+    RH["df.http single-row request"]
+    RU["success: clear error + write vector<br/>failure: positive terminal code"]
+    RS --> RQ --> RH --> RU
   end
 ```
 
-- **One** `df.start`, **one** eternal instance, identified by a stable label.
-- **Batch per tick** via the array-input embedding API → one HTTP per batch.
-- `df.if_rows` skips the HTTP when nothing is pending.
+- Two eternal instances are identified by stable labels, one for batch work and
+  one for single-row retries.
+- The batch loop and retry loop operate independently. The batch loop ignores
+  rows with any `last_embed_error`; the retry loop owns `last_embed_error = -1`.
 - Positional zip-back (`WITH ORDINALITY`) maps `data[i]` to `ids[i]`.
-- **Select-time hash write-back.** The batch carries each row's `content_hash`
-  as read at select time; the UPDATE writes *that* hash into
-  `last_embedded_hash`. A row edited while the HTTP call was in flight stays
-  pending (`last_embedded_hash ≠ content_hash`) and is re-embedded next tick —
-  a stale vector can never be marked fresh.
+- Write-back is guarded with the selected row's `updated_at`, preventing a stale
+  HTTP response from writing over edited content.
+- Neither loop reads or writes `last_crawled_at`.
+
+The full state model is canonicalized in
+[08-embedding-handling.md](./08-embedding-handling.md).
 
 ### 3.3 Config & secret flow
 

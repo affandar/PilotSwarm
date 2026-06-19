@@ -244,7 +244,7 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         tools.push(defineTool("facts_read_uncrawled", {
             description:
                 "PRIVILEGED harvester work queue: facts not yet incorporated into the graph (new or edited since the " +
-                "last crawl), across ALL scopes. Keep each fact's contentHash — it is the receipt facts_mark_crawled needs.",
+                "last crawl), across ALL scopes. Keep each fact's scopeKey — it is the receipt facts_mark_crawled needs.",
             parameters: {
                 type: "object" as const,
                 properties: {
@@ -257,8 +257,8 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
 
         tools.push(defineTool("facts_mark_crawled", {
             description:
-                "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey AND the contentHash you " +
-                "read. A skipped stamp means the fact changed under you — it stays queued; just move on.",
+                "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey. " +
+                "A skipped stamp means the fact was already marked or no longer exists; just move on.",
             parameters: {
                 type: "object" as const,
                 properties: {
@@ -268,9 +268,8 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                             type: "object",
                             properties: {
                                 scopeKey: { type: "string" },
-                                contentHash: { type: "string" },
                             },
-                            required: ["scopeKey", "contentHash"],
+                            required: ["scopeKey"],
                         },
                     },
                 },

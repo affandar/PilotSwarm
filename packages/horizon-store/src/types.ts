@@ -29,6 +29,11 @@ export type {
     ScoredFact,
     SearchResult,
     EmbedderStatus,
+    EmbedFailureCode,
+    EmbedFailureStatsRow,
+    FailedEmbeddingFact,
+    ReadEmbeddingFailuresOpts,
+    ReadEmbeddingFailuresResult,
     EmbeddingEndpointConfig,
     // graph
     GraphStore,

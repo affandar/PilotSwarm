@@ -148,9 +148,10 @@ table below separates these by *role*, not by deployment boundary.
 (shared / session / granted / unrestricted).
 
 `storeFact` remains the write primitive and doubles as upsert (create/replace).
-Any content change re-marks the fact **pending for embedding** (recomputes
-`content_hash`) and **resets crawl state** (`last_crawled_at → NULL`, §6.6) in
-stores that track those columns.
+Any content change re-marks the fact **pending for embedding** by clearing the
+stored vector/model/error and **resets crawl state** (`last_crawled_at → NULL`) in
+stores that track those columns. See [08-embedding-handling.md](./08-embedding-handling.md)
+for the canonical state model.
 
 ### 4.2 `searchFacts(query, opts, access)` — facts store only
 
@@ -225,14 +226,12 @@ search returns the fact.
 A fact needs embedding when
 
 ```
-embedding IS NULL
-OR last_embedded_hash IS DISTINCT FROM content_hash
-OR embedding_model    IS DISTINCT FROM <configured model>
+last_embed_error IS NULL
+AND (embedding IS NULL OR embedding_model IS DISTINCT FROM <configured model>)
 ```
 
 Storing a fact with changed content re-marks it pending, so the loop re-embeds
-it on its next tick. Content hashing makes re-embedding idempotent (no
-re-billing for unchanged content).
+it on its next tick. Unchanged content writes do not reset embedding state.
 
 **Model rotation.** The model used to generate an embedding is stored with it
 (`embedding_model`, stamped by the loop). Any row whose `embedding_model`
@@ -245,17 +244,13 @@ column.
 
 ### 5.3 Batch embedding
 
-The loop embeds a **batch per tick** using the endpoint's array-input API
-(`input: [t1, t2, …]` → `data[]` in order) — one HTTP request per batch, not per
-fact. Vectors are mapped back to facts positionally.
-
-**Write-back is guarded against mid-flight edits.** The batch captures each
-fact's `content_hash` at **select time**; the write-back sets
-`last_embedded_hash = <hash captured at select>` (never the row's current
-`content_hash`) and stamps `embedding_model`. A fact edited while the HTTP call
-was in flight therefore still satisfies `last_embedded_hash IS DISTINCT FROM
-content_hash` and is re-embedded on the next tick — a stale vector can never be
-marked fresh.
+The embedder runs two independent durable loops. The batch loop embeds ordinary
+pending rows using the endpoint's array-input API (`input: [t1, t2, …]` →
+`data[]` in order). If a whole batch fails, selected rows are marked
+`last_embed_error = -1` for the retry loop. The retry loop embeds `-1` rows one at
+a time; success clears `last_embed_error`, while failure stores a positive
+terminal error code. Both loops guard write-back with the row's selected
+`updated_at` value so stale HTTP responses cannot overwrite edited content.
 
 ### 5.4 Configuration & secrets
 
@@ -391,7 +386,7 @@ column that marks whether a fact has already been incorporated into the graph.
 
 - **Reset on write.** Whenever a fact's content changes via `storeFact`
   (upsert/create/replace), `last_crawled_at` is reset to `NULL`. This is
-  enforced by a DB trigger keyed on `content_hash` change, so no write path can
+  enforced by a DB trigger keyed on `key` / `value` changes, so no write path can
   forget it.
 - **Pending crawl = `last_crawled_at IS NULL`.** A freshly created or freshly
   updated fact is, by definition, uncrawled until the harvester re-incorporates
@@ -400,24 +395,21 @@ column that marks whether a fact has already been incorporated into the graph.
   facts (shared + every session), so `readUncrawledFacts` / `markFactsCrawled`
   take no access context and are exposed only to the harvester role — they are
   not registered as tools for ordinary reader agents.
-- **`readUncrawledFacts({ namespace?, limit? })`** — enhanced-store read that
+- **`readUncrawledFacts({ namespace?, limit? })`** — base-store read that
   returns facts with `last_crawled_at IS NULL` (optionally restricted to a key
   prefix, bounded by `limit`), across all scopes. This is the harvester's work
-  queue. Each returned fact carries its `contentHash`, which is the receipt for
+  queue. Each returned fact carries its `scopeKey`, which is the receipt for
   `markFactsCrawled`.
-- **`markFactsCrawled(stamps: { scopeKey, contentHash }[])`** — enhanced-store
+- **`markFactsCrawled(stamps: { scopeKey }[])`** — base-store
   write that stamps `last_crawled_at = now()` for the given facts after they
-  have been incorporated into the graph. **Race-guarded:** each stamp applies
-  only `WHERE content_hash` still equals the supplied hash, so a fact edited
-  between read and mark keeps `last_crawled_at = NULL` and re-enters the queue
-  (the mid-crawl edit can never be silently swallowed). Returns
-  `{ marked, skipped }`; mismatches are skipped, not errors.
+  have been incorporated into the graph. Returns `{ marked, skipped }`; skipped
+  means already marked or missing.
 
 The harvester loop becomes: `readUncrawledFacts` → extract → `upsertGraphNode` /
 `upsertGraphEdge` → `markFactsCrawled(stamps)`. Because any later edit resets the
 column, stale facts automatically re-enter the queue. `last_crawled_at` is
-independent of the embedding pending-state (`content_hash` vs
-`last_embedded_hash`); a write resets both.
+independent of the embedding pending-state; the embedder never reads or writes
+`last_crawled_at`.
 
 ## 7. Phase 2 — compound cross-store reads (context APIs)
 
@@ -499,11 +491,10 @@ the structure that makes the cluster legible to an LLM. `factLinks` is bounded
    `searchFacts` output as `seeds` returns graph-expanded connections that pure
    facts search would miss.
 5. **Crawl tracking:** a new fact has `last_crawled_at IS NULL`;
-   `markFactsCrawled` stamps it **only when the supplied `contentHash` still
-   matches** (a mid-crawl edit is skipped and stays queued); any subsequent
-   `storeFact` content change resets it to `NULL`; `readUncrawledFacts` returns
-   exactly the pending set across **all** scopes (privileged), each row
-   carrying the `contentHash` receipt.
+  `markFactsCrawled` stamps it by `scopeKey`; any subsequent `storeFact` content
+  change resets it to `NULL`; `readUncrawledFacts` returns exactly the pending
+  set across **all** scopes (privileged), each row carrying the `scopeKey`
+  receipt.
 6. `startEmbedder` creates exactly **one** durable instance; a second start is a
    no-op returning the same instance; `stopEmbedder` cancels it; a second stop is
    a no-op. `configureEmbedder` while running restarts the loop (new instance,

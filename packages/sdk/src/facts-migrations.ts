@@ -44,6 +44,11 @@ export function FACTS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "crawl_queue",
             sql: migration_0006_crawl_queue(schema),
         },
+        {
+            version: "0007",
+            name: "minimal_crawl_queue",
+            sql: migration_0007_minimal_crawl_queue(schema),
+        },
     ];
 }
 
@@ -668,7 +673,72 @@ LANGUAGE sql AS $$
            SET last_crawled_at = now()
           FROM stamps s
          WHERE f.scope_key = s.scope_key
-           AND f.content_hash = s.content_hash
+                     AND f.content_hash = s.content_hash
+        RETURNING f.scope_key
+    )
+    SELECT (SELECT count(*) FROM upd)::int AS marked,
+           ((SELECT count(*) FROM stamps) - (SELECT count(*) FROM upd))::int AS skipped;
+$$;
+`;
+}
+
+function migration_0007_minimal_crawl_queue(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0007_minimal_crawl_queue: remove content_hash from the base facts final
+-- schema. Crawl state is intentionally minimal: last_crawled_at NULL means
+-- pending, and facts_mark_crawled accepts scopeKey-only receipts.
+
+CREATE OR REPLACE FUNCTION ${s}.facts_touch() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' OR NEW.key IS DISTINCT FROM OLD.key OR NEW.value IS DISTINCT FROM OLD.value THEN
+        NEW.last_crawled_at := NULL;
+    END IF;
+    RETURN NEW;
+END $$;
+
+ALTER TABLE ${t} DROP COLUMN IF EXISTS content_hash;
+
+DROP FUNCTION IF EXISTS ${s}.facts_read_uncrawled(TEXT, INT);
+
+CREATE OR REPLACE FUNCTION ${s}.facts_read_uncrawled(
+    p_ns_prefix TEXT,
+    p_limit     INT
+) RETURNS TABLE (
+    scope_key    TEXT,
+    key          TEXT,
+    value        JSONB,
+    agent_id     TEXT,
+    session_id   TEXT,
+    shared       BOOLEAN,
+    tags         TEXT[],
+    created_at   TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ
+) LANGUAGE sql STABLE AS $$
+    SELECT f.scope_key, f.key, f.value, f.agent_id, f.session_id, f.shared,
+           f.tags, f.created_at, f.updated_at
+    FROM ${t} f
+    WHERE f.last_crawled_at IS NULL
+      AND (p_ns_prefix IS NULL OR starts_with(f.key, p_ns_prefix))
+    ORDER BY f.id
+    LIMIT p_limit;
+$$;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_mark_crawled(p_stamps JSONB)
+RETURNS TABLE (marked INT, skipped INT)
+LANGUAGE sql AS $$
+    WITH stamps AS (
+        SELECT e->>'scopeKey' AS scope_key
+        FROM jsonb_array_elements(p_stamps) e
+    ),
+    upd AS (
+        UPDATE ${t} f
+           SET last_crawled_at = now()
+          FROM stamps s
+         WHERE f.scope_key = s.scope_key
+           AND f.last_crawled_at IS NULL
         RETURNING f.scope_key
     )
     SELECT (SELECT count(*) FROM upd)::int AS marked,

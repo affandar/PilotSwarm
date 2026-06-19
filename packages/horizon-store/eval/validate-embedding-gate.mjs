@@ -138,7 +138,7 @@ async function main() {
         check("facts reappear in gated queue once embedded (next turn)", gatedAfter.count === N, `count=${gatedAfter.count}/${N}`);
 
         // 4) crawling drains the queue
-        const stamps = gatedAfter.facts.map((f) => ({ scopeKey: f.scopeKey, contentHash: f.contentHash }));
+        const stamps = gatedAfter.facts.map((f) => ({ scopeKey: f.scopeKey }));
         const marked = await store.markFactsCrawled(stamps);
         const gatedDrained = await store.readUncrawledFacts({ namespace: NS, limit: 100, embeddedOnly: true });
         check("queue drains after crawl", gatedDrained.count === 0, `marked=${marked.marked}, remaining=${gatedDrained.count}`);

@@ -34,7 +34,7 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
     const rowState = async (key) => {
         const { rows } = await pool.query(
             `SELECT embedding IS NOT NULL AS has_vec, embedded_at, embedding_model,
-                    last_embedded_hash IS NOT DISTINCT FROM content_hash AS fresh
+                    last_embed_error IS NULL AS healthy
              FROM "${schema}".facts WHERE scope_key = $1`, [`shared:${key}`]);
         return rows[0];
     };
@@ -47,7 +47,7 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
         await pollUntil(async () => (await rowState("live/cooking"))?.has_vec, { label: "corpus embedded", timeoutMs: 180_000 });
         const st = await rowState("live/jsonb");
         assert.equal(st.embedding_model, REAL_EMBED_MODEL);
-        assert.equal(st.fresh, true);
+        assert.equal(st.healthy, true);
 
         const { rows: dims } = await pool.query(
             `SELECT vector_dims(embedding) AS d FROM "${schema}".facts WHERE scope_key = 'shared:live/jsonb'`);
@@ -87,20 +87,20 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
         assert.equal(res.facts.filter((f) => f.key === "live/cooking").length, 0);
     });
 
-    it("E5 edited fact is re-embedded (embedded_at advances, hash converges)", async () => {
+    it("E5 edited fact is re-embedded (embedded_at advances)", async () => {
         const before = await rowState("live/jsonb2");
         await store.storeFact({ key: "live/jsonb2", value: { text: "subscript syntax for jsonb columns — REVISED edition" }, shared: true });
-        assert.equal((await rowState("live/jsonb2")).fresh, false, "edit marks the row pending");
+        assert.equal((await rowState("live/jsonb2")).has_vec, false, "edit clears the row's stale vector");
         await pollUntil(async () => {
             const st = await rowState("live/jsonb2");
-            return st.fresh && new Date(st.embedded_at) > new Date(before.embedded_at);
+            return st.has_vec && new Date(st.embedded_at) > new Date(before.embedded_at);
         }, { label: "re-embed after edit", timeoutMs: 120_000 });
     });
 
     it("E13 mid-flight edits converge: the FINAL content is what ends up embedded", async () => {
         // Edit the fact repeatedly while the loop is actively embedding a batch;
         // once edits stop, the loop must converge on the final content — the
-        // select-time-hash write-back makes it impossible to settle stale.
+        // select-time updated_at write-back guard makes it impossible to settle stale.
         for (let i = 0; i < 5; i++) {
             await store.storeFact({ key: "live/jsonb", value: { text: `jsonb subscripting churn edit ${i}` }, shared: true });
             await new Promise((r) => setTimeout(r, 300)); // churn cadence, not a sync sleep
@@ -108,10 +108,10 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
         const lastEdit = new Date();
         await pollUntil(async () => {
             const st = await rowState("live/jsonb");
-            return st.fresh && new Date(st.embedded_at) > lastEdit;
+            return st.has_vec && new Date(st.embedded_at) > lastEdit;
         }, { label: "convergence on final content", timeoutMs: 120_000 });
         const st = await rowState("live/jsonb");
-        assert.equal(st.fresh, true, "last_embedded_hash equals the FINAL content_hash");
+        assert.equal(st.has_vec, true, "final content is embedded");
     });
 
     it("E14 model rotation: reconfigured model re-embeds; mismatched rows vanish from semantic results", async () => {
@@ -122,7 +122,7 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
         assert.ok(Array.isArray(during.facts));
         await pollUntil(async () => {
             const st = await rowState("live/cooking");
-            return st.embedding_model === ROTATED && st.fresh;
+            return st.embedding_model === ROTATED && st.has_vec;
         }, { label: "rolling re-embed under the rotated model", timeoutMs: 180_000 });
         const res = await store.searchFacts("jsonb subscripting semantics", { mode: "semantic", limit: 5 }, all);
         assert.ok(res.facts.some((f) => f.key.startsWith("live/jsonb")), "rotated rows are searchable again");

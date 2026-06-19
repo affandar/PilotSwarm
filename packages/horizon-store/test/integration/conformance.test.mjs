@@ -56,6 +56,7 @@ test("interface coverage: every public EnhancedFactStore/GraphInterface method i
         "storeFact", "readFacts", "deleteFact", "deleteSessionFactsForSession",
         "getSessionFactsStats", "getFactsStatsForSessions", "getSharedFactsStats",
         "searchFacts", "similarFacts", "readUncrawledFacts", "markFactsCrawled",
+        "readEmbeddingFailures",
         "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
         "searchGraphNodes", "searchGraphEdges", "graphNeighbourhood",
         "upsertGraphNode", "upsertGraphEdge", "mergeGraphNodes",

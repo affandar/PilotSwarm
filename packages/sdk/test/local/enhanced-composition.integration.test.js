@@ -140,20 +140,7 @@ describe.skipIf(!HAS_HDB)("E3: base PgFactStore + real graph composition (live H
         const queue = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "harv1" });
         const queued = queue.facts.find((f) => f.key === factKey);
         assert(queued, "the new intake fact is in the uncrawled queue");
-        assert(typeof queued.scopeKey === "string" && typeof queued.contentHash === "string",
-            "queued fact carries scopeKey + contentHash receipt");
-
-        // 3. NEGATIVE: a WRONG contentHash must NOT mark the fact crawled — the
-        //    receipt guard is what makes the read→mark race safe. Without this the
-        //    happy path alone would still pass if mark ignored the hash entirely.
-        const bogus = await markCrawled.handler(
-            { stamps: [{ scopeKey: queued.scopeKey, contentHash: "deadbeef-not-the-real-hash" }] },
-            { sessionId: "harv1" },
-        );
-        assertEqual(bogus.marked, 0, "a stale/wrong contentHash marks nothing");
-        assertEqual(bogus.skipped, 1, "the mismatched stamp is skipped (receipt guard)");
-        const stillQueued = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "harv1" });
-        assert(stillQueued.facts.some((f) => f.key === factKey), "the fact REMAINS queued after a bad receipt");
+        assert(typeof queued.scopeKey === "string", "queued fact carries scopeKey receipt");
 
         // 4. Harvest it into the graph: a node evidenced by the fact's scopeKey.
         const node = await upsertNode.handler(
@@ -162,8 +149,8 @@ describe.skipIf(!HAS_HDB)("E3: base PgFactStore + real graph composition (live H
         );
         assert(node.nodeKey, "graph node created");
 
-        // 5. The CORRECT receipt stamps it crawled → it leaves the queue.
-        const marked = await markCrawled.handler({ stamps: [{ scopeKey: queued.scopeKey, contentHash: queued.contentHash }] }, { sessionId: "harv1" });
+        // 5. The receipt stamps it crawled → it leaves the queue.
+        const marked = await markCrawled.handler({ stamps: [{ scopeKey: queued.scopeKey }] }, { sessionId: "harv1" });
         assertEqual(marked.marked, 1, "exactly the one fact is stamped crawled");
 
         const after = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "harv1" });

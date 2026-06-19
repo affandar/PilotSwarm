@@ -127,8 +127,9 @@ interface FactStore {
 ```
 
 `storeFact` remains the write primitive and doubles as upsert (create/replace).
-On content change it recomputes `content_hash` (re-mark embedding pending) and
-resets `last_crawled_at → NULL` (§3a) in stores that carry those columns.
+On content change it clears derived embedding state and resets
+`last_crawled_at → NULL` (§3a) in stores that carry those columns. See
+[08-embedding-handling.md](./08-embedding-handling.md).
 
 ## 3. EnhancedFactStore — retrieval
 
@@ -188,8 +189,8 @@ interface SearchResult { count: number; mode: SearchMode; facts: ScoredFact[]; }
 ### 3a. Crawl tracking (harvester support)
 
 ```ts
-/** A crawled-fact receipt: the scope key plus the content hash that was read. */
-interface CrawledFactStamp { scopeKey: string; contentHash: string; }
+/** Crawl-queue receipt: the scope key returned by readUncrawledFacts. */
+interface CrawledFactStamp { scopeKey: string; }
 
 // NOTE (07 D3): the crawl queue lives on the BASE `FactStore`, not the enhanced
 // interface — it is vanilla facts-table bookkeeping (a nullable `last_crawled_at`
@@ -201,25 +202,22 @@ interface FactStore {
    * Facts not yet incorporated into the graph (last_crawled_at IS NULL).
    * PRIVILEGED: the crawler is a trusted role; this read spans ALL facts
    * (shared + every session), regardless of caller session. Each returned
-   * fact carries its contentHash for the markFactsCrawled receipt.
+   * fact carries its scopeKey for the markFactsCrawled receipt.
    */
   readUncrawledFacts(opts: { namespace?: string; limit?: number }):
-    Promise<{ count: number; facts: (FactRecord & { contentHash: string })[] }>;
+    Promise<{ count: number; facts: FactRecord[] }>;
 
   /**
-   * Stamp last_crawled_at = now() after incorporating these facts into the
-   * graph. PRIVILEGED (same trust as readUncrawledFacts). Guarded against
-   * the read→mark race: each stamp applies only WHERE content_hash still
-   * equals the supplied hash — a fact edited mid-crawl keeps
-   * last_crawled_at = NULL and re-enters the queue. Returns how many were
-   * stamped; mismatches are skipped, not errors.
+  * Stamp last_crawled_at = now() after incorporating these facts into the
+  * graph. PRIVILEGED (same trust as readUncrawledFacts). Skipped stamps mean
+  * the fact was already marked or no longer exists.
    */
   markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }>;
 }
 ```
 
 - `last_crawled_at` resets to `NULL` automatically on any `storeFact` content
-  change (DB trigger on `content_hash`). Pending-crawl is
+  change (DB trigger on `key` / `value`). Pending-crawl is
   therefore `last_crawled_at IS NULL`.
 - Harvester loop: `readUncrawledFacts` → extract → `upsertGraphNode` /
   `upsertGraphEdge` → `markFactsCrawled(stamps)`.
@@ -268,12 +266,11 @@ interface EnhancedFactStore {
   `configureEmbedder` only writes the vars.
 - **Model rotation.** The configured `model` is stamped per row
   (`embedding_model`). A fact is **pending** when
-  `embedding IS NULL OR last_embedded_hash IS DISTINCT FROM content_hash OR
-  embedding_model IS DISTINCT FROM <configured model>` — i.e. rows embedded
-  under a different model are treated as having NULL embeddings and are
-  re-embedded by the loop. Semantic search likewise ignores
-  mismatched-model vectors. Changing `dim` still requires a migration of the
-  `vector(N)` column.
+  `last_embed_error IS NULL` and (`embedding IS NULL OR embedding_model IS
+  DISTINCT FROM <configured model>`) — i.e. rows embedded under a different model
+  are treated as having NULL embeddings and are re-embedded by the loop. Semantic
+  search likewise ignores mismatched-model vectors. Changing `dim` still requires
+  a migration of the `vector(N)` column.
 
 ## 5. GraphStore
 
@@ -401,7 +398,7 @@ interface SubGraph {
 | `startEmbedder` when already running | No-op; returns existing status. |
 | `stopEmbedder` when already stopped | No-op; returns `{ running: false }`. |
 | `configureEmbedder` while running | Writes vars, **restarts** the loop (cancel + start, same label, new `instanceId`) — vars are captured at `df.start`. |
-| `markFactsCrawled` stamp whose `contentHash` no longer matches | Skipped, counted in `skipped` (not an error); fact stays queued. |
+| `markFactsCrawled` stamp for an already-marked or missing fact | Skipped, counted in `skipped` (not an error). |
 
 ## 7. Intentionally out of scope
 

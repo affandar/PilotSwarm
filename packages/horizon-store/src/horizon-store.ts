@@ -19,6 +19,7 @@
 import type {
     AccessContext, CrawledFactStamp, DeleteFactInput, EmbedderStatus,
     EmbeddingEndpointConfig, EnhancedFactStore, FactRecord, FactsStatsRow,
+    ReadEmbeddingFailuresOpts, ReadEmbeddingFailuresResult,
     ReadFactsQuery, ScoredFact, SearchOpts, SearchResult, SimilarOpts,
     StoreFactInput,
 } from "./types.js";
@@ -341,25 +342,51 @@ export class HorizonDBFactStore implements EnhancedFactStore {
     // ─── crawl tracking (02 §3a — PRIVILEGED harvester surface) ──────────────
 
     async readUncrawledFacts(opts: { namespace?: string; limit?: number; embeddedOnly?: boolean } = {}):
-        Promise<{ count: number; facts: (FactRecord & { contentHash: string })[] }> {
+        Promise<{ count: number; facts: FactRecord[] }> {
         const { rows } = await withDbRetry<{ rows: any[] }>("facts_read_uncrawled", () => this.pool.query(
             `SELECT * FROM ${this.s}.facts_read_uncrawled($1, $2, $3)`,
             [namespacePrefix(opts.namespace), Math.min(opts.limit ?? 20, 500), opts.embeddedOnly ?? false],
         ));
-        const facts = rows.map((r: any) => ({ ...mapFactRow(r), contentHash: r.content_hash }));
+        const facts = rows.map(mapFactRow);
         return { count: facts.length, facts };
     }
 
     async markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }> {
         if (!Array.isArray(stamps) || stamps.length === 0) return { marked: 0, skipped: 0 };
         for (const st of stamps) {
-            if (!st?.scopeKey || !st?.contentHash) {
-                throw new Error("markFactsCrawled: every stamp requires { scopeKey, contentHash } (the receipt from readUncrawledFacts)");
+            if (!st?.scopeKey) {
+                throw new Error("markFactsCrawled: every stamp requires { scopeKey } (the receipt from readUncrawledFacts)");
             }
         }
         const { rows } = await withDbRetry<{ rows: any[] }>("facts_mark_crawled", () => this.pool.query(
             `SELECT * FROM ${this.s}.facts_mark_crawled($1::jsonb)`, [JSON.stringify(stamps)]));
         return { marked: Number(rows[0]?.marked ?? 0), skipped: Number(rows[0]?.skipped ?? 0) };
+    }
+
+    async readEmbeddingFailures(opts: ReadEmbeddingFailuresOpts = {}): Promise<ReadEmbeddingFailuresResult> {
+        const errorCodes = Array.isArray(opts.errorCodes) && opts.errorCodes.length > 0
+            ? opts.errorCodes.map((n) => Math.trunc(Number(n))).filter((n) => Number.isFinite(n))
+            : null;
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_embedding_failures", () => this.pool.query(
+            `SELECT * FROM ${this.s}.facts_embedding_failures($1, $2, $3)`,
+            [namespacePrefix(opts.namespace), errorCodes, Math.min(opts.limit ?? 20, 500)],
+        ));
+        const stats = rows.filter((r: any) => r.row_kind === "stat").map((r: any) => ({
+            code: Number(r.code),
+            label: String(r.label ?? "unknown_embedding_error"),
+            count: Number(r.count ?? 0),
+            oldestAt: r.oldest_at ?? null,
+            newestAt: r.newest_at ?? null,
+            maxInputChars: Number(r.max_input_chars ?? 0),
+        }));
+        const facts = rows.filter((r: any) => r.row_kind === "fact").map((r: any) => ({
+            ...mapFactRow(r),
+            lastEmbedError: Number(r.last_embed_error),
+            lastEmbedErrorLabel: String(r.label ?? "unknown_embedding_error"),
+            lastEmbedErrorAt: r.last_embed_error_at ?? null,
+            inputChars: Number(r.input_chars ?? 0),
+        }));
+        return { stats, count: facts.length, facts };
     }
 
     // ─── embedder lifecycle (02 §4) ──────────────────────────────────────────

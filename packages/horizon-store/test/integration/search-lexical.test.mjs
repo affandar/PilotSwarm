@@ -54,6 +54,17 @@ describe.skipIf(!HAS_DB)("lexical search (L1–L4)", () => {
         assert.ok(ns.facts.every((f) => f.key.startsWith("skills/")), "namespace prefix respected");
     });
 
+    it("lexical search indexes arbitrary JSON value fields, not only conventional keys", async () => {
+        await store.storeFact({
+            key: "corpus/arbitrary-content",
+            value: { content: "calamondin retry ledger note", metadata: { source: "nonstandard-field" } },
+            shared: true,
+        });
+        const res = await store.searchFacts("calamondin", { mode: "lexical", namespace: "corpus" }, all);
+        assert.ok(res.facts.some((f) => f.scopeKey === "shared:corpus/arbitrary-content"),
+            "lexical search sees value::text beyond name/description/text/body/subject");
+    });
+
     it("(neg) unknown mode throws (no graph mode)", async () => {
         await assert.rejects(() => store.searchFacts("jsonb", { mode: "graph" }, all), /no "graph" mode/);
     });

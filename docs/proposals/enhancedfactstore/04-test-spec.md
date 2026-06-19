@@ -102,13 +102,13 @@ SKIPs without the env var, but a full-validation pass requires it to have run
 
 | # | Case | Expectation |
 |---|------|-------------|
-| C1 | new fact is uncrawled | `readUncrawledFacts` includes it (`last_crawled_at IS NULL`); each row carries `contentHash` |
-| C2 | `markFactsCrawled(stamps)` with matching hashes | `marked` count; facts drop out of `readUncrawledFacts` |
+| C1 | new fact is uncrawled | `readUncrawledFacts` includes it (`last_crawled_at IS NULL`); each row carries `scopeKey` |
+| C2 | `markFactsCrawled(stamps)` with scope keys | `marked` count; facts drop out of `readUncrawledFacts` |
 | C3 | `storeFact` replace resets crawl | re-storing a crawled fact resets `last_crawled_at` |
 | C4 | `storeFact` no-op write does not reset | writing identical content leaves crawl stamp unchanged |
 | C5 | `readUncrawledFacts` is privileged + bounded | spans ALL scopes (shared + every session, no access ctx); bounded by `limit`; `namespace` prefix filter applies |
-| C6 | independent of embedding state | crawl reset does not clear an existing embedding (separate columns) |
-| C7 | **(race)** edit between read and mark | fact edited after `readUncrawledFacts` → `markFactsCrawled` with the stale `contentHash` is **skipped** (`skipped: 1`); fact stays uncrawled and re-enters the queue |
+| C6 | content update resets embedding state | editing a fact clears `embedding`, `embedding_model`, and `last_embed_error` |
+| C7 | repeated mark | second `markFactsCrawled` for the same `scopeKey` is skipped because the fact is already marked |
 
 ### 2.2 Lexical search
 
@@ -287,7 +287,7 @@ asserted.
 | E2 | `startEmbedder()` | `running: true`; one instance id |
 | E3 | **double start** | second call no-op; **same** instance id; still exactly one instance for the label |
 | E4 | outcome: pending facts embedded | within a few ticks, vectors populate at the real dim; semantic search then finds them and a related pair outranks an unrelated one (robust assertion) |
-| E5 | outcome: changed fact re-embedded | mutate content → poll until `embedded_at` advances and `last_embedded_hash == content_hash` of the new content |
+| E5 | outcome: changed fact re-embedded | mutate content → vector is cleared, then poll until `embedding IS NOT NULL` and `embedding_model` matches the configured model |
 | E6 | df-state while running | loop instance is `pending`/`running` |
 | E7 | `stopEmbedder()` | `running: false`; instance `cancelled` |
 | E8 | **double stop** | second call no-op; `running: false` |
@@ -295,7 +295,7 @@ asserted.
 | E10 | **(neg)** start without configured endpoint | throws (precondition) |
 | E11 | `configureEmbedder` while running | loop **restarted**: `running` stays true, `instanceId` changes, exactly one instance for the label; new config in effect (vars are captured at `df.start` — pg_durable contract). Every call restarts (no config-equality check); a second configure yields another fresh instance, still exactly one for the label |
 | E12 | `configureEmbedder` while stopped | vars written only; no instance started |
-| E13 | mid-flight edit converges | with a large batch in flight, edit a batched fact; once edits stop, poll until `last_embedded_hash` equals the **final** content's hash and `embedded_at` postdates the last edit — the select-time-hash write-back means the loop can never settle with a stale vector marked fresh |
+| E13 | mid-flight edit converges | with a large batch in flight, edit a batched fact; once edits stop, poll until the final content is embedded under the configured model — `updated_at` guards prevent stale HTTP write-back |
 | E14 | model rotation re-embeds | reconfigure with a second real deployment/model → previously-embedded rows become pending and are re-embedded; `embedding_model` updated; mismatched rows absent from semantic results during the transition (S5's live twin) |
 
 ## 5. Preconditions / fail-fast

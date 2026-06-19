@@ -32,15 +32,17 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
 
         const { rows: vers } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
-        assert.deepEqual(vers.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]);
+        assert.deepEqual(vers.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"]);
 
         const { rows: cols } = await pool.query(
             `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'facts'`,
             [names.schema]);
         const colSet = new Set(cols.map((r) => r.column_name));
-        for (const c of ["scope_key", "content_hash", "last_crawled_at", "embedding", "embedding_model", "last_embedded_hash", "search_text"]) {
+        for (const c of ["scope_key", "last_crawled_at", "embedding", "embedding_model", "last_embed_error", "last_embed_error_at", "embed_retry_at", "search_text"]) {
             assert.ok(colSet.has(c), `column ${c} exists`);
         }
+        assert.ok(!colSet.has("content_hash"), "content_hash removed from minimal schema");
+        assert.ok(!colSet.has("last_embedded_hash"), "last_embedded_hash removed from minimal schema");
 
         const { rows: procs } = await pool.query(
             `SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1`,
@@ -48,7 +50,8 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         const procSet = new Set(procs.map((r) => r.proname));
         for (const p of ["facts_store", "facts_read", "facts_delete", "facts_delete_session", "facts_stats",
                          "facts_search_lexical", "facts_search_semantic", "facts_similar",
-                         "facts_read_uncrawled", "facts_mark_crawled", "facts_touch", "embedder_workflow", "facts_acl"]) {
+                         "facts_read_uncrawled", "facts_mark_crawled", "facts_embedding_failures",
+                         "facts_touch", "embedder_workflow", "facts_acl", "embed_error_code", "embed_error_label"]) {
             assert.ok(procSet.has(p), `proc ${p} exists`);
         }
 
@@ -88,9 +91,9 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         await s1.close(); await s2.close();
         const { rows } = await pool.query(
             `SELECT count(*)::int AS n FROM "${names.schema}".schema_migrations`);
-        // The FACT provider runs 6 migrations; the 0003 AGE bootstrap belongs to
+        // The FACT provider runs all non-AGE migrations; the 0003 AGE bootstrap belongs to
         // HorizonDBGraphStore (07 D2) and is not recorded in the facts schema.
-        assert.equal(rows[0].n, 6, "each FACT migration recorded exactly once");
+        assert.equal(rows[0].n, 8, "each FACT migration recorded exactly once");
     });
 
     it("MG4 partial-chain resume: only the missing tail is applied", async () => {
@@ -100,7 +103,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         const { rows } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
-        assert.deepEqual(rows.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]);
+        assert.deepEqual(rows.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"]);
     });
 
     it("MG5 trigger semantics (direct SQL probes)", async () => {
@@ -110,14 +113,19 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
 
         await pool.query(
             `INSERT INTO ${T} (scope_key, key, value, shared, transient) VALUES ('shared:k/1', 'k/1', '{"text":"v1"}', true, false)`);
-        let { rows } = await pool.query(`SELECT content_hash, last_crawled_at FROM ${T} WHERE scope_key = 'shared:k/1'`);
-        assert.match(rows[0].content_hash, /^[0-9a-f]{32}$/, "INSERT sets content_hash");
+        let { rows } = await pool.query(`SELECT last_crawled_at FROM ${T} WHERE scope_key = 'shared:k/1'`);
         assert.equal(rows[0].last_crawled_at, null, "new row is uncrawled");
 
-        await pool.query(`UPDATE ${T} SET last_crawled_at = now() WHERE scope_key = 'shared:k/1'`);
+        await pool.query(`UPDATE ${T} SET last_crawled_at = now(), embedding = '[1,0,0,0]'::vector, embedded_at = now(), embedding_model = 'seeded-4', last_embed_error = 1001, last_embed_error_at = now(), embed_retry_at = now() WHERE scope_key = 'shared:k/1'`);
         await pool.query(`UPDATE ${T} SET value = '{"text":"v2"}' WHERE scope_key = 'shared:k/1'`);
-        ({ rows } = await pool.query(`SELECT last_crawled_at FROM ${T} WHERE scope_key = 'shared:k/1'`));
+        ({ rows } = await pool.query(`SELECT last_crawled_at, embedding IS NULL AS embedding_cleared, embedded_at, embedding_model, last_embed_error, last_embed_error_at, embed_retry_at FROM ${T} WHERE scope_key = 'shared:k/1'`));
         assert.equal(rows[0].last_crawled_at, null, "content change resets crawl stamp");
+        assert.equal(rows[0].embedding_cleared, true, "content change clears stale embedding");
+        assert.equal(rows[0].embedded_at, null, "content change clears embedding timestamp");
+        assert.equal(rows[0].embedding_model, null, "content change clears embedding model");
+        assert.equal(rows[0].last_embed_error, null, "content change clears terminal embedding error");
+        assert.equal(rows[0].last_embed_error_at, null, "content change clears terminal embedding error timestamp");
+        assert.equal(rows[0].embed_retry_at, null, "content change clears transient retry state");
 
         await pool.query(`UPDATE ${T} SET last_crawled_at = now() WHERE scope_key = 'shared:k/1'`);
         await pool.query(`UPDATE ${T} SET value = '{"text":"v2"}' WHERE scope_key = 'shared:k/1'`); // identical

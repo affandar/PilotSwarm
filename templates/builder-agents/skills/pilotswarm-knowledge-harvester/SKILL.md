@@ -146,7 +146,7 @@ deliberately and idempotently.
    `corpus/<source>/...` namespace (NOT `intake/*` — see Boundaries). `scope: shared`.
 2. **Pull the backlog.** `facts_read_uncrawled(namespace="corpus/<source>/", limit=20)`
    returns facts that have never been crawled or whose content changed since the last
-   crawl. Each carries a `scopeKey` and a `contentHash` receipt.
+  crawl. Each carries a `scopeKey` receipt.
 3. **Resolve before you create (similarity search).** For each fact, use
    `facts_similar(scopeKey)` to find related captures and `graph_search_nodes(kind,
    nameLike)` to check whether an entity already exists. Reuse the existing node key
@@ -154,10 +154,8 @@ deliberately and idempotently.
 4. **Build the graph.** For each entity: `graph_upsert_node(...)` with the fact's
    `scopeKey` as evidence. For each relationship: `graph_upsert_edge(...)`. Upserts
    are idempotent — re-running the same crawl converges, it does not duplicate.
-5. **Mark crawled.** `facts_mark_crawled` takes a `stamps` array of
-   `{ scopeKey, contentHash }` using the EXACT `contentHash` from step 2. A
-   wrong/stale hash is rejected (the fact stays queued) — this guards against marking
-   a fact you processed against old content.
+5. **Mark crawled.** `facts_mark_crawled` takes a `stamps` array of `{ scopeKey }`.
+  A skipped stamp means the fact was already marked or no longer exists.
 6. Repeat until `facts_read_uncrawled` returns empty, then stop.
 
 ## Recurring Harvest
@@ -220,5 +218,5 @@ seed and navigate by graph topology alone (`graph_search_nodes` → `graph_neigh
 - [ ] Worker, client, and management client all spread `horizonConfigFromEnv()`.
 - [ ] Exactly the harvester agent(s) declare `harvester: true`; readers do not.
 - [ ] Recurring crawl uses `cron` / `cron_at`, not a polling loop.
-- [ ] `facts_mark_crawled` passes the unmodified `contentHash` receipt in `stamps`.
+- [ ] `facts_mark_crawled` passes the unmodified `scopeKey` receipt in `stamps`.
 - [ ] Gating + composition tests added; composition test auto-skips without HDB.

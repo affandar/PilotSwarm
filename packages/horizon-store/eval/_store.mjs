@@ -12,7 +12,7 @@ const FACT_METHODS = [
     "storeFact", "readFacts", "deleteFact", "deleteSessionFactsForSession",
     "getSessionFactsStats", "getFactsStatsForSessions", "getSharedFactsStats",
     "searchFacts", "similarFacts", "readUncrawledFacts", "markFactsCrawled",
-    "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
+    "readEmbeddingFailures", "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
 ];
 const GRAPH_METHODS = [
     "searchGraphNodes", "searchGraphEdges", "graphNeighbourhood",

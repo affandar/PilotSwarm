@@ -77,9 +77,9 @@ their keys).
    `scope_key` of the fact you are reading — it is the provenance for any
    node/edge you derive from it, and it is what makes reinforcement dedup work.
 4. **Mark work done.** After incorporating a fact into the graph, call
-   `facts_mark_crawled` with the fact's `scopeKey` **and the `contentHash` you
-   read** so it leaves the queue. If the fact was edited while you worked, your
-   stamp is skipped and the fact stays queued — that is correct; just move on.
+  `facts_mark_crawled` with the fact's `scopeKey` so it leaves the queue. If
+  the stamp is skipped, the fact was already marked or no longer exists — just
+  move on.
    Editing a fact later re-queues it automatically.
 
 ---
@@ -183,8 +183,8 @@ These make the harvester loop trivial: pull the backlog, do work, stamp done.
 | `namespace` | string | | Restrict the queue to a key prefix, e.g. `"archive/pgsql-hackers"`. |
 | `limit` | number | | Max facts to pull this batch (default 20). |
 
-**Returns.** `{ count, facts: [{ scopeKey, key, value, tags, contentHash }] }` —
-keep each fact's `contentHash`; it is the receipt `facts_mark_crawled` needs.
+**Returns.** `{ count, facts: [{ scopeKey, key, value, tags }] }` — keep each
+fact's `scopeKey`; it is the receipt `facts_mark_crawled` needs.
 
 **Note.** A fact is uncrawled when it is new or was edited since it was last
 crawled. You do not manage this flag on writes — it resets automatically.
@@ -197,11 +197,10 @@ fact.
 
 | Param | Type | Req | Meaning |
 |-------|------|-----|---------|
-| `stamps` | `{ scopeKey, contentHash }[]` | ✓ | One stamp per processed fact, with the `contentHash` returned by `facts_read_uncrawled`. |
+| `stamps` | `{ scopeKey }[]` | ✓ | One stamp per processed fact, with the `scopeKey` returned by `facts_read_uncrawled`. |
 
 **Returns.** `{ marked, skipped }` — a stamp is **skipped** (not an error) when
-the fact's content changed since you read it; the fact stays in the queue and
-you will see its new version on a later pull.
+the fact was already marked or no longer exists.
 
 ---
 
@@ -358,10 +357,8 @@ repeat:
       graph_upsert_edge({ fromKey, toKey, predicate, confidence,
                           evidence: [fact.scopeKey] })
 
-    # 5. MARK done (with the contentHash you read; a skip means the fact
-    #    changed under you — it stays queued, move on)
-    facts_mark_crawled({ stamps: [{ scopeKey: fact.scopeKey,
-                                    contentHash: fact.contentHash }] })
+    # 5. MARK done (with the scopeKey you read)
+    facts_mark_crawled({ stamps: [{ scopeKey: fact.scopeKey }] })
 ```
 
 **What “correct” looks like** (the eval asserts these):

@@ -194,7 +194,7 @@ export function createFactsTools(
         name: "facts_read_uncrawled",
         description:
             "PRIVILEGED work queue: facts not yet incorporated into the graph (new or edited since last crawl), " +
-            "across ALL scopes. Keep each fact's contentHash — it is the receipt facts_mark_crawled needs.",
+            "across ALL scopes. Keep each fact's scopeKey — it is the receipt facts_mark_crawled needs.",
         parameters: {
             type: "object",
             properties: {
@@ -208,8 +208,8 @@ export function createFactsTools(
     tools.push({
         name: "facts_mark_crawled",
         description:
-            "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey AND the contentHash " +
-            "you read. A skipped stamp means the fact changed under you — it stays queued; just move on.",
+            "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey. " +
+            "A skipped stamp means the fact was already marked or no longer exists; just move on.",
         parameters: {
             type: "object",
             properties: {
@@ -219,9 +219,8 @@ export function createFactsTools(
                         type: "object",
                         properties: {
                             scopeKey: { type: "string" },
-                            contentHash: { type: "string" },
                         },
-                        required: ["scopeKey", "contentHash"],
+                        required: ["scopeKey"],
                     },
                 },
             },

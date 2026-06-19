@@ -63,14 +63,9 @@ export interface AccessContext {
     unrestricted?: boolean;
 }
 
-/**
- * A crawled-fact receipt: the scope key plus the content hash that was read.
- * The crawl queue is base-store bookkeeping (enhancedfactstore 07 D3) that feeds
- * whatever `GraphStore` is configured; it requires no extension.
- */
+/** Crawl-queue receipt: the scope key returned by readUncrawledFacts. */
 export interface CrawledFactStamp {
     scopeKey: string;
-    contentHash: string;
 }
 
 /** Knowledge-namespace bucket used by facts stats aggregations. */
@@ -111,18 +106,17 @@ export interface FactStore {
     /**
      * PRIVILEGED crawl-queue read (base-store bookkeeping, enhancedfactstore 07 D3):
      * facts not yet incorporated into a graph (`last_crawled_at IS NULL`), across
-     * ALL scopes. Each returned fact carries its `contentHash` — the receipt for
-     * `markFactsCrawled`. Only useful when a graph harvester is running; inert
-     * otherwise.
+     * ALL scopes. Each returned fact carries its `scopeKey` — the receipt for
+     * `markFactsCrawled`. Only useful when a graph harvester is running; inert otherwise.
      */
     readUncrawledFacts(opts?: { namespace?: string; limit?: number }): Promise<{
         count: number;
-        facts: (FactRecord & { contentHash: string })[];
+        facts: FactRecord[];
     }>;
     /**
-     * PRIVILEGED crawl-queue write: stamp `last_crawled_at = now()` — but only
-     * where `content_hash` still equals the supplied hash (read→mark race guard).
-     * Mismatches are skipped, not errors.
+    * PRIVILEGED crawl-queue write: stamp `last_crawled_at = now()` for the
+    * supplied scope keys that are still uncrawled. Facts edited before marking
+    * remain uncrawled because writes reset `last_crawled_at` to NULL again.
      */
     markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }>;
     close(): Promise<void>;
@@ -185,6 +179,44 @@ export interface EmbedderStatus {
     status?: string;
 }
 
+export type EmbedFailureCode =
+    | 1001   // input too large for the embedding model
+    | 1400   // provider rejected the request as a bad row/request
+    | 1401   // provider authentication failed
+    | 1403   // provider authorization failed
+    | 1429   // provider rate-limited the row request
+    | 1500   // provider returned a 5xx response
+    | 1901   // provider returned a malformed embedding payload
+    | 9999;  // unknown terminal embedding failure
+
+export interface EmbedFailureStatsRow {
+    code: EmbedFailureCode | number;
+    label: string;
+    count: number;
+    oldestAt: Date | null;
+    newestAt: Date | null;
+    maxInputChars: number;
+}
+
+export interface FailedEmbeddingFact extends FactRecord {
+    lastEmbedError: EmbedFailureCode | number;
+    lastEmbedErrorLabel: string;
+    lastEmbedErrorAt: Date | null;
+    inputChars: number;
+}
+
+export interface ReadEmbeddingFailuresOpts {
+    namespace?: string;
+    errorCodes?: number[];
+    limit?: number;
+}
+
+export interface ReadEmbeddingFailuresResult {
+    stats: EmbedFailureStatsRow[];
+    count: number;
+    facts: FailedEmbeddingFact[];
+}
+
 /** OpenAI/Azure-OpenAI-compatible embeddings endpoint (database-agnostic). */
 export interface EmbeddingEndpointConfig {
     url: string;
@@ -229,6 +261,9 @@ export interface EnhancedFactStore extends FactStore {
     stopEmbedder(reason?: string): Promise<EmbedderStatus>;
     /** Current lifecycle state. */
     embedderStatus(): Promise<EmbedderStatus>;
+
+    /** Optional provider diagnostic: failed current-content embeddings by code. */
+    readEmbeddingFailures?(opts?: ReadEmbeddingFailuresOpts): Promise<ReadEmbeddingFailuresResult>;
 }
 
 /**
@@ -607,7 +642,7 @@ export class PgFactStore implements FactStore {
 
     async readUncrawledFacts(
         opts: { namespace?: string; limit?: number } = {},
-    ): Promise<{ count: number; facts: (FactRecord & { contentHash: string })[] }> {
+    ): Promise<{ count: number; facts: FactRecord[] }> {
         // Literal key prefix (NOT a LIKE pattern) — the proc uses starts_with so
         // any `_` / `%` in the namespace are matched literally, not as wildcards.
         const nsPrefix = opts.namespace ?? null;
@@ -618,10 +653,7 @@ export class PgFactStore implements FactStore {
         );
         return {
             count: rows.length,
-            facts: rows.map((row: any) => ({
-                ...mapFactRow(row),
-                contentHash: String(row.content_hash ?? ""),
-            })),
+            facts: rows.map(mapFactRow),
         };
     }
 
@@ -629,9 +661,9 @@ export class PgFactStore implements FactStore {
         stamps: CrawledFactStamp[],
     ): Promise<{ marked: number; skipped: number }> {
         for (const s of stamps) {
-            if (!s || typeof s.scopeKey !== "string" || typeof s.contentHash !== "string") {
+            if (!s || typeof s.scopeKey !== "string") {
                 throw new Error(
-                    "markFactsCrawled: every stamp requires { scopeKey, contentHash } " +
+                    "markFactsCrawled: every stamp requires { scopeKey } " +
                     "(the receipt returned by readUncrawledFacts).",
                 );
             }

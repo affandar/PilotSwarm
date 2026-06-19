@@ -23,7 +23,7 @@ builder skill.
   source-capture namespace, kept separate from the Facts Manager's `intake/*` curation
   queue), drain the
   crawl queue, extract entities/edges into the graph anchored to fact `scopeKey`
-  evidence, mark facts crawled with their `contentHash` receipt, then retrieve.
+  evidence, mark facts crawled with their `scopeKey` receipt, then retrieve.
 - **The reader role** — `librarian` has no harvester frontmatter; it gets
   `facts_search` / `facts_similar` and the graph **read** tools (plus, like any
   non-tuner session, the graph-write tools), and pivots from a seed fact into the

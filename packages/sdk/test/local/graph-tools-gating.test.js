@@ -20,6 +20,7 @@ function fakeEnhancedStore(caps = { search: true, embedder: true }) {
         startEmbedder: async () => ({ running: true }),
         stopEmbedder: async () => ({ running: false }),
         embedderStatus: async () => ({ running: false }),
+        readEmbeddingFailures: async () => ({ stats: [], count: 0, facts: [] }),
         // base FactStore surface (unused here)
         storeFact: async () => ({}), readFacts: async () => ({ count: 0, facts: [] }),
         deleteFact: async () => ({}), deleteSessionFactsForSession: async () => 0,
@@ -75,6 +76,26 @@ describe("P4: enhanced facts tool gating (createFactTools)", () => {
         const n = names(createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "facts-manager" }));
         assert(n.has("facts_search"), "facts-manager gets facts_search");
         assert(!n.has("search_skills"), "facts-manager does NOT get search_skills");
+    });
+
+    it("facts-manager manage_embedder failures queries provider diagnostics", async () => {
+        const enh = fakeEnhancedStore();
+        let seen;
+        enh.readEmbeddingFailures = async (opts) => {
+            seen = opts;
+            return {
+                stats: [{ code: 1001, label: "input_too_large", count: 2, oldestAt: null, newestAt: null, maxInputChars: 42000 }],
+                count: 1,
+                facts: [{ scopeKey: "shared:corpus/x", key: "corpus/x", value: {}, shared: true, tags: [], agentId: null, sessionId: null, createdAt: null, updatedAt: null, lastEmbedError: 1001, lastEmbedErrorLabel: "input_too_large", lastEmbedErrorAt: null, inputChars: 42000 }],
+            };
+        };
+        const tools = createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "facts-manager" });
+        const res = await byName(tools, "manage_embedder").handler({ action: "failures", namespace: "corpus", errorCodes: [1001], limit: 3 });
+        assertEqual(seen.namespace, "corpus", "namespace forwarded");
+        assertEqual(seen.errorCodes[0], 1001, "error code filter forwarded");
+        assertEqual(seen.limit, 3, "limit forwarded");
+        assertEqual(res.supported, true, "provider diagnostics supported");
+        assertEqual(res.stats[0].label, "input_too_large", "stats returned");
     });
 
     it("agent-tuner → factory yields facts_search + facts_similar + search_skills (read-only)", () => {
@@ -257,7 +278,7 @@ describe("P4: graph tool gating (createGraphTools)", () => {
             ...fakeBaseStore(),
             readUncrawledFacts: async ({ limit } = {}) => {
                 const n = Math.min(limit ?? 20, BACKLOG);
-                return { count: n, facts: Array.from({ length: n }, (_, i) => ({ key: `intake/x/${i}`, contentHash: String(i) })) };
+                return { count: n, facts: Array.from({ length: n }, (_, i) => ({ key: `intake/x/${i}`, scopeKey: `shared:intake/x/${i}` })) };
             },
         };
         const tools = createGraphTools({ graphStore: gs, factStore, agentIdentity: "facts-manager" });
@@ -274,7 +295,7 @@ describe("P4: graph tool gating (createGraphTools)", () => {
             // Queue deeper than any probe → always returns the full requested limit.
             readUncrawledFacts: async ({ limit } = {}) => {
                 const n = limit ?? 20;
-                return { count: n, facts: Array.from({ length: n }, (_, i) => ({ key: `intake/x/${i}`, contentHash: String(i) })) };
+                return { count: n, facts: Array.from({ length: n }, (_, i) => ({ key: `intake/x/${i}`, scopeKey: `shared:intake/x/${i}` })) };
             },
         };
         const tools = createGraphTools({ graphStore: gs, factStore, agentIdentity: "facts-manager" });

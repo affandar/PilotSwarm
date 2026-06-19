@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.3.0
+version: 1.4.0
 name: facts-manager
 description: Singleton system agent that curates shared operational knowledge from agent observations into reusable skills.
 system: true
@@ -170,6 +170,16 @@ as above.
     on explicit operator request to point at a different embedding endpoint.
     A `dim` that differs from the column is **rejected** (it would require a
     schema migration + full re-embed).
+  - `manage_embedder(action="failures", namespace=..., errorCodes=..., limit=...)`
+    — read failed current-content embeddings. Stats are bucketed by numeric
+    `last_embed_error` code and samples include the fact key/value. Use this
+    when semantic recall is missing expected facts or the operator asks about
+    embedding backlog health. A failed row has been skipped by the embedder so
+    other rows can continue; rewrite or summarize the fact with `store_fact`
+    to clear the error and put it back on the embedding crawler's radar.
+    Known codes: `1001` input too large, `1400` bad request, `1401` auth,
+    `1403` forbidden, `1429` rate limited, `1500` provider/server error,
+    `1901` malformed response, `9999` unknown.
 - **Graph reporting.** When `graph_stats` is present, use it to report graph
   size (node/edge counts) and the **uncrawled** backlog. It is read-only.
 - **Graph namespaces.** All graph read/write/delete/stat tools accept an

@@ -100,7 +100,7 @@ function combinedStore(factStore, graphStore) {
         "storeFact", "readFacts", "deleteFact", "deleteSessionFactsForSession",
         "getSessionFactsStats", "getFactsStatsForSessions", "getSharedFactsStats",
         "searchFacts", "similarFacts", "readUncrawledFacts", "markFactsCrawled",
-        "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
+        "readEmbeddingFailures", "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
     ];
     const GRAPH = [
         "searchGraphNodes", "searchGraphEdges", "graphNeighbourhood",
@@ -193,7 +193,7 @@ export async function seedFX(store, schema, pool) {
         await pool.query(
             `UPDATE "${schema}".facts
                SET embedding = $1::vector, embedded_at = now(),
-                   embedding_model = $2, last_embedded_hash = content_hash
+                   embedding_model = $2
              WHERE scope_key = $3`,
             [`[${f.vec.join(",")}]`, FX_MODEL, fxScopeKey(f)],
         );

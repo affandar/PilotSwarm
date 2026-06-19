@@ -257,6 +257,27 @@ is an `EnhancedFactStore` **and** `capabilities.search` is true. The embedder
 only affects semantic ranking and prompt wording — with `embedder: false`,
 search still registers and runs in lexical/hybrid mode.
 
+When a batch embed fails, the durable embedder marks the batch rows with
+`embed_retry_at` and retries them one by one before selecting fresh batch work.
+When a single row still cannot be embedded, it records a numeric
+`last_embed_error` on that fact, stamps the row as crawled for embedded-only
+harvesters, and continues with later rows. A subsequent content change clears
+`embed_retry_at` and `last_embed_error`, putting the row back into normal
+batched embedding. The Facts Manager can inspect failures with
+`manage_embedder(action="failures")`.
+Known codes are:
+
+| Code | Meaning |
+|------|---------|
+| `1001` | Input too large for the embedding model. |
+| `1400` | Provider rejected the row/request as bad input. |
+| `1401` | Provider authentication failed. |
+| `1403` | Provider authorization failed. |
+| `1429` | Provider rate limited the row request. |
+| `1500` | Provider/server returned a 5xx response. |
+| `1901` | Provider returned a malformed embedding payload. |
+| `9999` | Unknown terminal embedding failure. |
+
 ### Enhanced retrieval replaces the capped skills push
 
 On a base store, the framework injects a capped slice of curated skills into the
@@ -286,17 +307,15 @@ graph_search_nodes(...) -> node.evidence (scopeKeys) -> read_facts({ scopeKeys }
 
 ### The crawl queue (harvester work queue)
 
-Every base fact carries a `scopeKey` and a `contentHash`, and a `last_crawled_at`
-stamp. Facts with `last_crawled_at IS NULL` (new or edited since the last crawl)
-are the **harvester work queue**:
+Every base fact carries a `scopeKey` and a `last_crawled_at` stamp. Facts with
+`last_crawled_at IS NULL` (new or edited since the last crawl) are the
+**harvester work queue**:
 
 - `facts_read_uncrawled({ namespace?, limit? })` — returns queued facts, each with
-  its `scopeKey` **and** `contentHash` receipt.
-- `facts_mark_crawled({ stamps: [{ scopeKey, contentHash }] })` — stamps facts as
-  incorporated so they leave the queue. The `contentHash` is a **receipt**: if the
-  fact changed under the harvester between read and mark, the stamp is **skipped**
-  (returned in `skipped`, not `marked`) and the fact stays queued. This makes the
-  read→incorporate→mark loop safe against concurrent edits.
+  its `scopeKey` receipt.
+- `facts_mark_crawled({ stamps: [{ scopeKey }] })` — stamps facts as incorporated
+  so they leave the queue. A skipped stamp means the fact was already marked or no
+  longer exists.
 
 ### The harvester role
 

@@ -93,7 +93,7 @@ describe.skipIf(!HAS_DB)("similarFacts (SF1–SF5)", () => {
             await pool.query(
                 `UPDATE "${schema}".facts
                     SET embedding = $1::vector, embedded_at = now(),
-                        embedding_model = $2, last_embedded_hash = content_hash
+                        embedding_model = $2
                   WHERE scope_key = $3`,
                 [`[${r.vec.join(",")}]`, FX_MODEL, `shared:${r.key}`],
             );

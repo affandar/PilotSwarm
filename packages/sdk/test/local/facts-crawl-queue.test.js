@@ -55,16 +55,15 @@ async function testCrawlQueueRoundTrip(env) {
         await factStore.storeFact({ key: `${ns}/a`, value: { v: "a1" }, shared: true });
         await factStore.storeFact({ key: `${ns}/b`, value: { v: "b1" }, shared: true });
 
-        // 1. New facts are uncrawled and carry a contentHash receipt.
+        // 1. New facts are uncrawled and carry scopeKey receipts.
         const q1 = await factStore.readUncrawledFacts({ namespace: ns });
         assertEqual(q1.count, 2, "both new facts are uncrawled");
         for (const f of q1.facts) {
-            assert(typeof f.contentHash === "string" && f.contentHash.length > 0, "uncrawled fact carries contentHash");
             assert(typeof f.scopeKey === "string", "uncrawled fact carries scopeKey");
         }
 
         // 2. Mark both crawled with valid receipts → they leave the queue.
-        const stamps = q1.facts.map((f) => ({ scopeKey: f.scopeKey, contentHash: f.contentHash }));
+        const stamps = q1.facts.map((f) => ({ scopeKey: f.scopeKey }));
         const m1 = await factStore.markFactsCrawled(stamps);
         assertEqual(m1.marked, 2, "both facts marked crawled");
         assertEqual(m1.skipped, 0, "no skips with valid receipts");
@@ -72,25 +71,26 @@ async function testCrawlQueueRoundTrip(env) {
         const q2 = await factStore.readUncrawledFacts({ namespace: ns });
         assertEqual(q2.count, 0, "crawled facts leave the queue");
 
-        // 3. Editing a fact re-enters it into the queue (content_hash changed →
-        //    last_crawled_at reset by the trigger).
+        // 3. Editing a fact re-enters it into the queue.
         await factStore.storeFact({ key: `${ns}/a`, value: { v: "a2-edited" }, shared: true });
         const q3 = await factStore.readUncrawledFacts({ namespace: ns });
         assertEqual(q3.count, 1, "edited fact re-enters the queue");
         assertEqual(q3.facts[0].key, `${ns}/a`, "the edited fact is the one re-queued");
 
-        // 4. A stale receipt (wrong contentHash) is skipped, not an error; the
-        //    fact stays queued.
-        const stale = await factStore.markFactsCrawled([{ scopeKey: q3.facts[0].scopeKey, contentHash: "deadbeefdeadbeefdeadbeefdeadbeef" }]);
-        assertEqual(stale.marked, 0, "stale receipt marks nothing");
-        assertEqual(stale.skipped, 1, "stale receipt is counted as skipped");
+        // 4. A scopeKey receipt marks the queued fact; a second mark is skipped.
+        const marked = await factStore.markFactsCrawled([{ scopeKey: q3.facts[0].scopeKey }]);
+        assertEqual(marked.marked, 1, "scopeKey receipt marks queued fact");
+        assertEqual(marked.skipped, 0, "valid queued receipt is not skipped");
+        const stale = await factStore.markFactsCrawled([{ scopeKey: q3.facts[0].scopeKey }]);
+        assertEqual(stale.marked, 0, "already-marked receipt marks nothing");
+        assertEqual(stale.skipped, 1, "already-marked receipt is counted as skipped");
         const q4 = await factStore.readUncrawledFacts({ namespace: ns });
-        assertEqual(q4.count, 1, "fact stays queued after a stale mark");
+        assertEqual(q4.count, 0, "fact leaves queue after mark");
 
         // 5. markFactsCrawled validates receipt shape.
         let threw = false;
         try {
-            await factStore.markFactsCrawled([{ scopeKey: "x" }]);
+            await factStore.markFactsCrawled([{ contentHash: "old" }]);
         } catch {
             threw = true;
         }

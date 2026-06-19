@@ -479,15 +479,16 @@ export function createFactTools(opts: {
                 "always safe), 'start' (idempotently ensure the loop is running; optionally tune batch size / poll " +
                 "interval), 'stop' (halt embedding fleet-wide — semantic search degrades to lexical until restarted), " +
                 "'configure' (replace the embedding endpoint; rejects a model whose vector dimension differs from the " +
-                "column, since that needs a schema migration + full re-embed). Prefer 'status' first; only 'stop' when " +
+                "column, since that needs a schema migration + full re-embed), 'failures' (read counts and samples of " +
+                "facts whose current content failed embedding and was skipped until rewritten). Prefer 'status' first; only 'stop' when " +
                 "an operator explicitly asks, because new and updated facts stop getting embeddings while it is stopped.",
             parameters: {
                 type: "object" as const,
                 properties: {
                     action: {
                         type: "string",
-                        enum: ["status", "start", "stop", "configure"],
-                        description: "status = read-only; start/stop = lifecycle; configure = replace endpoint.",
+                        enum: ["status", "start", "stop", "configure", "failures"],
+                        description: "status/failures = read-only; start/stop = lifecycle; configure = replace endpoint.",
                     },
                     intervalSeconds: {
                         type: "number",
@@ -516,15 +517,31 @@ export function createFactTools(opts: {
                         },
                         required: ["url", "model", "dim"] as const,
                     },
+                    namespace: {
+                        type: "string",
+                        description: "failures only: optional fact key-prefix namespace, for example 'corpus/dba-se-qa'.",
+                    },
+                    errorCodes: {
+                        type: "array",
+                        items: { type: "number" },
+                        description: "failures only: optional numeric last_embed_error code filter.",
+                    },
+                    limit: {
+                        type: "number",
+                        description: "failures only: maximum failed fact samples to return. Default 20.",
+                    },
                 },
                 required: ["action"] as const,
             },
             handler: async (a: {
-                action: "status" | "start" | "stop" | "configure";
+                action: "status" | "start" | "stop" | "configure" | "failures";
                 intervalSeconds?: number;
                 batch?: number;
                 reason?: string;
                 endpoint?: { url: string; model: string; dim: number; apiKey?: string; apiKeyHeader?: string; bearer?: boolean };
+                namespace?: string;
+                errorCodes?: number[];
+                limit?: number;
             }) => {
                 try {
                     switch (a.action) {
@@ -549,8 +566,22 @@ export function createFactTools(opts: {
                                 ...(await enhancedFactStore.configureEmbedder(a.endpoint, { restartIfRunning: true })),
                             };
                         }
+                        case "failures": {
+                            if (typeof enhancedFactStore.readEmbeddingFailures !== "function") {
+                                return { action: "failures", supported: false, error: "This facts provider does not expose embedding failure diagnostics." };
+                            }
+                            return {
+                                action: "failures",
+                                supported: true,
+                                ...(await enhancedFactStore.readEmbeddingFailures({
+                                    namespace: a.namespace,
+                                    errorCodes: a.errorCodes,
+                                    limit: a.limit,
+                                })),
+                            };
+                        }
                         default:
-                            return { error: `Unknown action '${a.action}'. Use status, start, stop, or configure.` };
+                            return { error: `Unknown action '${a.action}'. Use status, start, stop, configure, or failures.` };
                     }
                 } catch (err) {
                     // Surface the provider's error to the agent (e.g. dim mismatch on

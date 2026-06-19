@@ -28,6 +28,7 @@ open knowledge graph (`GraphStore`). First providers: **HorizonDB**
 | 05 | [Agent Tools Spec](./05-tools-spec.md) | LLM-facing tool contract (`facts_*` / `graph_*`), harvester loop, a **worked graph example** (§5a, diagrammed over the real pgsql-hackers corpus), and the Phase 2 context tools. |
 | 06 | [Provider Test Plan](./06-provider-test-plan.md) | Executable plan for 04: no-mocks/full-validation ground rule, suite order, live-HorizonDB lifecycle, migration tests, real-endpoint embedder validation, and the Copilot-SDK harvester scenarios on the pgsql-hackers corpus. |
 | 07 | [PilotSwarm Integration Plan](./07-pilotswarm-integration.md) | Execution plan for landing the contract in `packages/sdk`: dependency inversion (SDK owns `EnhancedFactStore`, HorizonDB implements it), provider injection, capability-gated tools, phased PR sequence (P0–P8, where **P0 — the incubator provider split — is done**), risks/rollback, and open decisions. |
+| 08 | [Embedding Handling](./08-embedding-handling.md) | Canonical minimal embedding/crawl state model: no content hashes, two independent pg_durable loops, and `last_embed_error` retry/error semantics. |
 
 ## Phasing
 
@@ -52,17 +53,16 @@ open knowledge graph (`GraphStore`). First providers: **HorizonDB**
   `readFacts`. Signal type is orthogonal to which store you query. **ACL is part
   of the search procs' WHERE clause, before ranking/LIMIT** — never a
   post-ranking filter.
-- **Embedder:** one durable, eternal `df.loop` that embeds **batches** via the
-  array-input API and one `df.http` per batch — no "df-in-df" nesting. Config in
+- **Embedder:** two durable loops: a batch loop for ordinary pending rows and a
+  single-row retry loop for rows marked `last_embed_error = -1`. Config in
   `df.setvar` (sourced from `.env`/k8s); durable vars are **captured at
   `df.start` and immutable for the run** (pg_durable contract), so
-  `configureEmbedder` **restarts a running loop** to apply new config/keys.
-  The API key is in a durable var **for now** (plaintext-at-rest TODO).
-  Lifecycle: `configureEmbedder` / `startEmbedder` / `stopEmbedder` /
-  `embedderStatus`. Write-back stamps `embedding_model` and the **select-time**
-  `content_hash`; rows embedded under another model count as un-embedded
-  (pending + invisible to semantic search), so model rotation is a rolling
-  re-embed.
+  `configureEmbedder` **restarts running loops** to apply new config/keys. The API
+  key is in a durable var **for now** (plaintext-at-rest TODO). Lifecycle:
+  `configureEmbedder` / `startEmbedder` / `stopEmbedder` / `embedderStatus`.
+  Write-back stamps only `embedding` + `embedding_model`; `last_embed_error` is
+  `NULL` for healthy/eligible rows, `-1` for internal retry, and `> 0` for
+  terminal failures. See [08](./08-embedding-handling.md).
 - **Crawl tracking (base `FactStore`):** the facts table gains `last_crawled_at`
   (marks graph incorporation). It resets to `NULL` on any `storeFact` content
   change (trigger), so pending-crawl = `last_crawled_at IS NULL`. Harvester
@@ -70,8 +70,8 @@ open knowledge graph (`GraphStore`). First providers: **HorizonDB**
   lives on the **base `FactStore`** (not the enhanced interface), so a base-facts
   deployment can feed a separate `GraphStore`. **Crawling is privileged** — the
   harvester reads all facts across scopes — and `markFactsCrawled` takes
-  `{ scopeKey, contentHash }` receipts, stamping only when the hash still matches
-  (mid-crawl edits stay queued).
+  `{ scopeKey }` receipts. `last_crawled_at` is owned by the graph crawler; the
+  embedder never reads or writes it. See [08](./08-embedding-handling.md).
 - **Fail-fast:** `initialize()` requires `vector`, `age`,
   `pg_textsearch` (BM25), `pg_durable`+`df.http`; no feature flags, no Node
   fallback.

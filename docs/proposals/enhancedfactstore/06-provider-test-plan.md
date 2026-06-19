@@ -30,7 +30,7 @@ Concretely:
   `pg_textsearch`/`pg_durable`, and against a real low-privilege role on the
   HorizonDB for the grant negative.
 - **No marker-fact shims / adapters.** Scenarios run on the real columns
-  (`last_crawled_at`, `content_hash`, receipts) and the real method names; the
+  (`last_crawled_at`, scope-key receipts) and the real method names; the
   eval's `_crawlmark/*` and old-API adapter are deleted.
 - **No PilotSwarm runtime.** Agent scenarios drive the tool layer with the
   **GitHub Copilot SDK directly** (as the existing eval does).
@@ -121,7 +121,7 @@ is itself a first-class test subject:
 | MG2 | **Idempotent re-run** | second `initialize()` on same schema = no-op; version rows unchanged; no duplicate objects |
 | MG3 | **Advisory-lock concurrency** | two `initialize()` calls started concurrently (two pools) → both resolve, schema valid, versions recorded once (M3) |
 | MG4 | **Partial-chain resume** | apply `0001..0003` manually, then `initialize()` → only `0004..` applied (migrator resumes, doesn't restart) |
-| MG5 | **Trigger semantics** | direct-SQL probes of the `content_hash` trigger: INSERT sets hash + `last_crawled_at IS NULL`; UPDATE changing value resets `last_crawled_at` and leaves `last_embedded_hash` stale; UPDATE writing identical content changes **nothing** (C4's DB-level twin) |
+| MG5 | **Trigger semantics** | direct-SQL probes of the write trigger: INSERT leaves `last_crawled_at IS NULL`; UPDATE changing value resets `last_crawled_at`, clears embedding/model/error state; UPDATE writing identical content changes **nothing** (C4's DB-level twin) |
 | MG6 | **Downgrade/unknown version** | migrations table contains a version newer than the code knows → `initialize()` throws a precise error (never "repairs") |
 | MG7 | **Schema-rename gate** | `scripts/verify-schema-migration.mjs` (9 checks, self-cleaning) stays a standalone, re-runnable gate — referenced, not duplicated, here (04 §6.1, X1–X6) |
 
@@ -159,8 +159,8 @@ You cannot drop `vector`/`age` on a shared HorizonDB — so the negatives use
 ## 5. Deterministic fixtures
 
 - **`FX`** (04 §1.1) — 6 facts, hand-authored dim-4 unit vectors written
-  directly into the real `embedding` column (+ matching `embedding_model`,
-  `last_embedded_hash`) so cosine order is **exact**. Expected ranks are
+  directly into the real `embedding` column (+ matching `embedding_model`) so
+  cosine order is **exact**. Expected ranks are
   **computed in the test from the seeded vectors**, never hard-coded. This is
   deterministic *data*, not a mock: every query still runs the real proc, the
   real pgvector kNN, the real ANN index. The same ranking contracts are
@@ -223,15 +223,14 @@ exercised, not idling).
   outcome** — semantic `searchFacts` finds them, `similarFacts` orders a
   clearly-related pair above a clearly-unrelated one (robust assertions; real
   embeddings don't allow exact-order checks).
-- **E5** edit → re-embed: mutate content, poll until `embedded_at` advances
-  and `last_embedded_hash == content_hash` for the new content.
+- **E5** edit → re-embed: mutate content, assert vector/model/error state is
+  cleared, then poll until `embedding IS NOT NULL` and `embedding_model` matches
+  the configured model.
 - **E13** mid-flight edit convergence: with a large pending batch in flight,
   edit one batched fact; terminal assertion is **convergence** — once edits
-  stop, polling reaches a state where the fact's `last_embedded_hash` equals
-  the *final* content's hash and `embedded_at` postdates the last edit. The
-  select-time-hash write-back guarantees the loop cannot settle with a stale
-  vector marked fresh; the test asserts the observable consequence (it always
-  re-embeds the final content) rather than trying to freeze the race window.
+  stop, polling reaches a state where the final content is embedded under the
+  configured model. The `updated_at` write-back guard prevents stale HTTP
+  responses from overwriting edited content.
 - **E14** model rotation: `configureEmbedder` with a second real deployment
   (or deployment alias) → previously embedded rows become pending and
   re-embed; `embedding_model` updates; while mismatched, those rows are absent
@@ -302,7 +301,7 @@ the harvester and reader agents are Copilot-SDK agents (the existing
 `eval/harvester-eval.mjs` pattern) given the real `facts_*`/`graph_*` tools
 from [05-tools-spec.md](./05-tools-spec.md), wired straight onto the provider.
 The eval's current adapter shims are **deleted**: real `last_crawled_at`
-column + `contentHash` receipts (no `_crawlmark/*` marker facts), real method
+column + scope-key receipts (no `_crawlmark/*` marker facts), real method
 names, privileged/unrestricted access for the harvester role.
 
 Because LLM output is non-deterministic, scenarios assert **structural
@@ -337,7 +336,7 @@ every tool call** (for SC2).
    evidence is exactly `{msg-1001, msg-1002}`.
 6. **Queue drained + receipts:** no uncrawled fact remains; every
    `facts_mark_crawled` call in the recorded transcript passed the
-   `contentHash` read from the queue, and the run totals satisfy
+  `scopeKey` read from the queue, and the run totals satisfy
    `marked == Σ stamps`, `skipped == 0`.
 
 **SC1b — real corpus (60 messages, invariants derived from

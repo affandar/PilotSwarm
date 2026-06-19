@@ -71,7 +71,7 @@ const HARVEST_PROMPT =
     "extract services, teams, and people into graph nodes and OWNED_BY / LED_BY / " +
     "DEPENDS_ON edges (anchored to each fact's scopeKey and stamped with namespace " +
     "'corpus/northwind'), and mark each fact crawled with " +
-    "its exact contentHash. Finish with a short summary of documents ingested and " +
+    "its exact scopeKey. Finish with a short summary of documents ingested and " +
     "nodes/edges created.";
 
 const ASK_PROMPT =

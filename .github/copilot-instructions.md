@@ -275,7 +275,7 @@ When you change harvester-relevant behavior, keep these in sync in the same chan
 Load-bearing conventions to preserve:
 
 - **Namespaces are not interchangeable.** The harvester writes raw source captures under its own `corpus/*` namespace; `intake/*` is the system Facts Manager's curation queue for short task-agent observations. Never route harvester documents through `intake/*`.
-- **Embedder wiring.** `HORIZON_EMBED_*` (in repo-root `.env`) configures the durable in-DB embed loop; without it the `embedding` column stays NULL and `facts_similar` returns nothing. The embed input is `key + value::text` (horizon-store migration `0007`), so any value shape embeds — keep new value shapes embeddable rather than widening the `search_text` cherry-pick.
+- **Embedder/search text wiring.** `HORIZON_EMBED_*` (in repo-root `.env`) configures the durable in-DB embed loop; without it the `embedding` column stays NULL and `facts_similar` returns nothing. The embed input is `key + value::text` (horizon-store migration `0007`), and lexical `search_text` uses the same broad `key + value::text` source (migration `0009`), so any JSON value shape remains embeddable and lexically searchable.
 - **The durable embed loop survives a schema drop.** Any teardown must cancel it first (the `--drop` path does); never leave a stale loop running against a dropped schema.
 
 ## Agent Prompt Tuning & Model Compatibility

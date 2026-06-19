@@ -67,6 +67,7 @@ function fakeEnhancedStore(caps = { search: true, embedder: true }) {
         async startEmbedder() { return { running: true }; },
         async stopEmbedder() { return { running: false }; },
         async embedderStatus() { return { running: false }; },
+        async readEmbeddingFailures() { return { stats: [], count: 0, facts: [] }; },
     };
 }
 
