@@ -41,11 +41,17 @@ export function parseEnvFile(path) {
     const key = line.slice(0, eq).trim();
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
     let value = line.slice(eq + 1).trim();
-    if (
+    const quoted =
       (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
+      (value.startsWith("'") && value.endsWith("'"));
+    if (quoted) {
       value = value.slice(1, -1);
+    } else {
+      // Strip inline `# comment` for unquoted values. Standard dotenv
+      // behavior: the `#` must be preceded by whitespace so values
+      // containing `#` (e.g. URLs with fragments) aren't truncated.
+      const commentMatch = value.match(/\s+#.*$/);
+      if (commentMatch) value = value.slice(0, commentMatch.index).trimEnd();
     }
     out[key] = value;
   }

@@ -44,6 +44,103 @@ param appGwExists bool = false
 @description('Resource ID of the Log Analytics workspace that receives Application Gateway diagnostic logs (access + firewall) and metrics. Empty string disables the diagnostic setting.')
 param logAnalyticsWorkspaceResourceId string = ''
 
+@description('Operator-supplied WAF custom rules array (e.g. loaded from APPGW_WAF_CUSTOM_RULES_FILE via deploy-bicep.mjs, mirroring the AFD precedent). Expected to start at priority >= 100; priorities 90-92 are reserved for the auto-seeded VPN guard rules below.')
+param appgwWafCustomRules array = []
+
+@description('Whether the auto-seeded VPN guard rules (AllowAfd / AllowVpn / BlockOther at priorities 90-92) are constructed and prepended to the WAF custom-rules array. When false, only operator-supplied rules apply (or none, preserving prior behaviour for non-VPN stamps).')
+param vpnGatewayEnabled bool = false
+
+@description('CIDR block assigned to connected VPN clients — used by the auto-seeded AllowVpn rule to allow-list tunnelled traffic. Ignored when vpnGatewayEnabled=false.')
+param vpnClientAddressPool string = ''
+
+@description('AFD frontDoorId GUID — used by the auto-seeded AllowAfd rule to allow-list requests carrying the matching X-Azure-FDID header. Threaded from the global-infra frontDoorId output via the deploy-bicep.mjs alias pipeline. Ignored when vpnGatewayEnabled=false.')
+param frontDoorId string = ''
+
+// ---------------------------------------------------------------------------
+// WAF custom rules — hybrid AFD + VPN trusted-bypass.
+// ---------------------------------------------------------------------------
+// Priority bands:
+//   * 90-92  — reserved for the auto-seeded VPN guard rules below.
+//   * >= 100 — operator-supplied rules via APPGW_WAF_CUSTOM_RULES_FILE.
+//
+// Auto-seeded guard semantics when vpnGatewayEnabled=true:
+//   * AllowAfd  (prio 90): requests with X-Azure-FDID == <our frontDoorId>
+//                          bypass the catch-all block — this is the AFD
+//                          origin-authenticity check Azure documents for
+//                          AFD -> origin pinning.
+//   * AllowVpn  (prio 91): requests whose remote address lives in the VPN
+//                          client pool bypass the catch-all block.
+//   * BlockOther(prio 92): catch-all explicit block. Belt-and-braces against
+//                          accidentally exposing the AppGw private FE outside
+//                          the AFD or VPN paths if downstream NSG/route
+//                          changes ever shifted topology.
+//
+// When vpnGatewayEnabled=false AND appgwWafCustomRules is empty, mergedCustomRules
+// is [] and the customRules.rules block is a no-op (matches the AFD WAF
+// policy precedent in frontdoor-waf-policy.bicep:93-95 for empty arrays).
+// ---------------------------------------------------------------------------
+var autoSeedRules = vpnGatewayEnabled ? [
+  {
+    name: 'AllowAfd'
+    priority: 90
+    ruleType: 'MatchRule'
+    action: 'Allow'
+    matchConditions: [
+      {
+        matchVariables: [
+          {
+            variableName: 'RequestHeaders'
+            selector: 'X-Azure-FDID'
+          }
+        ]
+        operator: 'Equal'
+        matchValues: [
+          frontDoorId
+        ]
+      }
+    ]
+  }
+  {
+    name: 'AllowVpn'
+    priority: 91
+    ruleType: 'MatchRule'
+    action: 'Allow'
+    matchConditions: [
+      {
+        matchVariables: [
+          {
+            variableName: 'RemoteAddr'
+          }
+        ]
+        operator: 'IPMatch'
+        matchValues: [
+          vpnClientAddressPool
+        ]
+      }
+    ]
+  }
+  {
+    name: 'BlockOther'
+    priority: 92
+    ruleType: 'MatchRule'
+    action: 'Block'
+    matchConditions: [
+      {
+        matchVariables: [
+          {
+            variableName: 'RemoteAddr'
+          }
+        ]
+        operator: 'IPMatch'
+        matchValues: [
+          '0.0.0.0/0'
+        ]
+      }
+    ]
+  }
+] : []
+var mergedCustomRules = concat(autoSeedRules, appgwWafCustomRules)
+
 // ---------------------------------------------------------------------------
 // WAF policy
 // ---------------------------------------------------------------------------
@@ -109,6 +206,7 @@ resource wafPolicy 'Microsoft.Network/ApplicationGatewayWebApplicationFirewallPo
         }
       ]
     }
+    customRules: mergedCustomRules
   }
 }
 

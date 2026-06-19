@@ -133,6 +133,13 @@ function printHelp() {
       "",
       "Spec: .paw/work/oss-deploy-script/Spec.md",
       "",
+      "Notes:",
+      "  • VPN_GATEWAY_ENABLED=true adds 45+ min to the first `bicep` step",
+      "    and ~$450/mo (VpnGw2AZ + Private DNS Resolver) to the running stamp.",
+      "    Coexists with the AFD edge mode — does NOT replace it. See",
+      "    deploy/envs/template.env for the full env-var roster and the",
+      "    AKV-only constraint.",
+      "",
     ].join("\n"),
   );
 }
@@ -395,15 +402,24 @@ async function main() {
   // off-path keys get auto-stubbed to `unused`. Adding a new overlay key
   // is a one-line change in overlay-contracts.mjs — deploy.mjs picks it
   // up automatically.
-  const missingRequired = validateRequiredEnv({ edgeMode, tlsSource, env });
-  if (missingRequired.length > 0) {
-    log(
-      "err",
-      `EDGE_MODE='${edgeMode}' TLS_SOURCE='${tlsSource}' requires ${missingRequired.join(", ")} to be set ` +
-        `(per overlay contract in deploy/scripts/lib/overlay-contracts.mjs). ` +
-        `Re-run \`npm run deploy:new-env -- ${envName} --force\` and supply values when prompted, ` +
-        `or hand-edit deploy/envs/local/${envName}/.env.`,
-    );
+  const { missing: missingRequired, combo: comboErrors } = validateRequiredEnv({ edgeMode, tlsSource, env });
+  if (missingRequired.length > 0 || comboErrors.length > 0) {
+    if (missingRequired.length > 0) {
+      log(
+        "err",
+        `EDGE_MODE='${edgeMode}' TLS_SOURCE='${tlsSource}' requires ${missingRequired.join(", ")} to be set ` +
+          `(per overlay contract in deploy/scripts/lib/overlay-contracts.mjs). ` +
+          `Re-run \`npm run deploy:new-env -- ${envName} --force\` and supply values when prompted, ` +
+          `or hand-edit deploy/envs/local/${envName}/.env.`,
+      );
+    }
+    // Combo errors render as named errors with a hint that points operators
+    // at the env file / docs — NOT at the scaffolder (re-running new-env.mjs
+    // would clobber operator edits, and the underlying problem isn't an
+    // unset key, it's a bad combination).
+    for (const e of comboErrors) {
+      log("err", `[${e.code}] ${e.message} ${e.hint}`);
+    }
     process.exit(1);
   }
   // TLS_SOURCE=akv no longer requires a pre-set PORTAL_TLS_ISSUER_NAME —
